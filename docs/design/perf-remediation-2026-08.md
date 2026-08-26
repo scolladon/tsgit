@@ -6,14 +6,20 @@
 > every bounded-concurrency pool derives its bound from the actual limiting resource — CPU-bound
 > stages from core count, I/O-bound stages from threadpool width / storage characteristics — never
 > from a single magic constant, with the platform knowledge living in adapters behind a port.
-> Status: draft → self-reviewed ×3 → **revised against ADRs 718–730**
+> Status: draft → self-reviewed ×3 → revised against ADRs 718–730 → **revised against ADR-731 (DC-17 folded)**
 >
-> **All sixteen decision candidates are settled** and authored as ADRs **718–730**. Every gate
+> **All seventeen decision candidates are settled** and authored as ADRs **718–731**. Every gate
 > resolved to "do it": P5 ships F3 **and** F4, P7's progress shape is completion-ordered, P9 is in
-> scope at **full breadth** (commit-graph write *and* gc-lite). The Decision-candidates section is
-> retained below as the historical record, each row carrying its settled outcome. One **new**
-> candidate — **DC-17**, how gc-lite treats unreachable objects — emerged from the P9 expansion and
-> is **unsettled**; it is the only open question in this document.
+> scope at **full breadth** (commit-graph write *and* gc), and **DC-17 resolved to (c) — full
+> cruft-pack parity** (ADR-731, above the designer's recommendation of (a)). The
+> Decision-candidates section is retained below as the historical record, each row carrying its
+> settled outcome. **There is no open question left in this document.**
+>
+> DC-17's fold is not cosmetic: gc stops being "gc-lite". It gains a second on-disk format
+> (the cruft pack's `.mtimes` sidecar, read **and** write), an expiry lifecycle with an injectable
+> clock, and real — not vacuous — discharge of ADR-724's two carried constraints. The format is
+> pinned empirically against git 2.55.0 in **Pins P–U** below; nothing about it is asserted from
+> memory or from the manual page.
 
 ---
 
@@ -63,13 +69,13 @@ concurrency-policy seam is a prerequisite for two later parts rather than a tail
 | **P6** | F7, F13 | index/status/add I/O shaping; consumes P1's policy. FlatTree key settled by ADR-726. |
 | **P7** | F6, F8 | checkout/clone; consumes P1's policy. Progress is completion-ordered (ADR-725); quarantine is git's layout + tidy unlink (ADR-728). |
 | **P8** | F9, F14 | Structural; ADR-721 (read-side containment) and ADR-722 (session token) each already authored. |
-| **P9** | F11 | **In scope at full breadth** (ADR-724): commit-graph write **and** gc-lite. New Tier-1 command; the largest single lift. |
+| **P9** | F11 | **In scope at full breadth** (ADR-724): commit-graph write **and** gc. Since ADR-731 the gc task carries git's full **cruft-pack lifecycle** — a second new on-disk format. New Tier-1 command; the largest single lift, by a wide margin. |
 
 ### What constrains it
 
 | Constraint | Source | Effect on this design |
 |---|---|---|
-| Git-faithfulness prime directive | `CLAUDE.md`, ADR-226 | Object SHAs, refs, state files and **refusal conditions** stay byte-identical unless an ADR diverges. F3 and F9 change refusal behaviour and have their divergences recorded (ADR-718, ADR-721). F11 writes new on-disk artefacts and carries its own pinned matrix (Pins C, E–K). Every other part is in-memory strategy only. The pinned matrix below is the authority — no git behaviour in this document is asserted from memory. |
+| Git-faithfulness prime directive | `CLAUDE.md`, ADR-226 | Object SHAs, refs, state files and **refusal conditions** stay byte-identical unless an ADR diverges. F3 and F9 change refusal behaviour and have their divergences recorded (ADR-718, ADR-721). F11 writes new on-disk artefacts and carries its own pinned matrix (Pins C, E–K and **P–U**). Every other part is in-memory strategy only. The pinned matrix below is the authority — no git behaviour in this document is asserted from memory. |
 | Structured output, not cosmetics | ADR-249 | Engaged only by F11: a `maintenance` command returns counts/oids/booleans, never a rendered line. `MaintenanceResult` carries no message, no formatted size, no rendered summary. |
 | Hexagonal dependency rule | `.dependency-cruiser.cjs`, ADR-001, `docs/design/ports-and-adapters.md` | `ports/ ✗→ adapters/`, `ports/ ✗→ application/`, `domain/ ✗→ *`, `primitives/ ✗→ adapters/`. `tsPreCompilationDeps: true`, so **type-only imports count as edges**. There is no rule restricting `from: ^src/adapters/` — adapters are gated by packaging, not dep-cruiser. |
 | `node:`-free default entry | `tooling/verify-tarball.sh:246-276` | The guard walks the packed tarball's transitive static import graph from `dist/esm/index.default.js` and fails on the first `node:` specifier. **`node:os` may only be reached from `src/index.node.ts`.** A sibling grep guards the CDN bundle. |
@@ -194,8 +200,8 @@ Fresh `mktemp -d` repo, 3 commits, `gc.cruftPacks` at its default.
 
 | Setup | `git gc` (default) | Result |
 |---|---|---|
-| only reachable loose objects | one pack | `objects/pack/pack-<sha>.{idx,pack,rev}`, **no mtime sidecar**, zero loose left |
-| + one **unreachable, recent** loose blob | two packs | a normal pack **and** a second pack carrying an mtime sidecar — the **cruft pack**. The blob is **not** loose and **not** deleted: `cat-file -e` → 0 |
+| only reachable loose objects | one pack | `objects/pack/pack-<sha>.{idx,pack,rev}`, **no `.mtimes`**, zero loose left |
+| + one **unreachable, recent** loose blob | two packs | a normal pack **and** a second pack carrying a `pack-<sha>.mtimes` sidecar — the **cruft pack**. The blob is **not** loose and **not** deleted: `cat-file -e` → 0 |
 | + one **unreachable** loose blob with mtime forced to 2020 | — | **deleted**. `cat-file -e` → non-zero |
 | unreachable recent loose blob, `git gc --prune=now` | — | **deleted** |
 | unreachable recent loose blob, `gc.cruftPacks=false` | one pack | the blob **stays loose** and survives; `count-objects -v` → `count: 1`, `in-pack: 9` |
@@ -206,13 +212,11 @@ Fresh `mktemp -d` repo, 3 commits, `gc.cruftPacks` at its default.
 suppresses pruning.
 
 **Reading.** git 2.55's *default* gc neither leaves unreachable objects loose nor deletes them
-outright: it moves them into a **cruft pack** — a `.pack` with a sibling index recording each
-object's `mtime` (git spells that extension as the plural of `mtime`; this document calls it the
-**mtime sidecar**, because naming the literal here would owe a `cspell.json` dictionary entry this
-commit is not scoped to make — the entry is owed by whichever change first writes the literal
-path). git deletes those objects on the next gc once they age past two weeks. **tsgit neither
-reads nor writes the mtime sidecar.** The reachable direction is unambiguous and is what P9 implements;
-the unreachable direction is DC-17.
+outright: it moves them into a **cruft pack** — a `.pack` whose sibling `pack-<sha>.mtimes` file
+records each object's `mtime` — and deletes them on a later gc once they age past
+`gc.pruneExpire`. Both directions are in scope: **ADR-731 ratified full cruft-pack parity**, so P9
+reads *and* writes the sidecar. Pins P–U below pin the format, the mtime provenance, the expiry
+arithmetic and the lifecycle of an existing cruft pack, byte by byte.
 
 ### Pin F — `.rev` and the pack-sibling lifecycle
 
@@ -223,7 +227,7 @@ old .pack gone? YES     old .idx gone? YES     old .rev gone? YES
 
 A pack's `.rev` is removed with the pack. Bitmaps are **not** written by default
 (`repack.writeBitmaps=true` adds `pack-<sha>.bitmap`; the default run emits only
-`.idx`/`.pack`/`.rev`), so a gc-lite that writes no bitmap matches git's default exactly.
+`.idx`/`.pack`/`.rev`), so a `gc` that writes no bitmap matches git's default exactly.
 
 ### Pin G — the multi-pack-index lives in `objects/pack/`, and `gc` deletes it
 
@@ -290,7 +294,7 @@ $ git gc
 ```
 
 `git gc` runs `pack-refs`, `reflog expire` and `worktree prune` as well as repacking. **P9's
-gc-lite does none of them**: tsgit already ships `packRefs()` as its own Tier-1 command, and
+`gc` does none of them**: tsgit already ships `packRefs()` as its own Tier-1 command, and
 bundling it into `maintenance` would make one call mutate the ref backend. Stated, not inherited.
 
 ### Pin K — the commit-graph header `git commit-graph write --reachable` emits
@@ -359,6 +363,173 @@ The commit reachable only from the deleted branch's reflog is **absent from the 
 Pin H shows the very same commit **is** retained and packed by `gc`. One command, two root sets;
 see P9.
 
+### Pin P — the `.mtimes` sidecar is a **flat** file, not a chunked one
+
+The brief asked for its *chunk* structure. It has none. Unlike `commit-graph`, `midx` and the
+bitmap index, the cruft sidecar carries **no chunk table and no chunk ids** — it is a fixed 12-byte
+header, a dense `u32BE` array, and two trailing digests. Verified against real bytes:
+
+```text
+$ git gc                       # repo with 4 unreachable objects
+$ xxd .git/objects/pack/pack-a204c436….mtimes
+00000000: 4d54 4d45 0000 0001 0000 0001 6a8e f72a   MTME........j..*
+00000010: 6a8e f72a 6a8e f72a 6a8e f72a a204 c436   j..*j..*j..*...6
+00000020: 941c 335b cc59 e413 fe79 e7fa 46d2 c380   ..3[.Y...y..F...
+00000030: 5bfd e0b7 28b5 07a5 00a7 ba48 c7da ef7f   [...(......H....
+00000040: c8ae 844f                                 ...O
+          total 68 bytes = 12 + 4×4 + 20 + 20
+```
+
+| Offset | Width | Field | Pinned value |
+|---|---|---|---|
+| 0 | 4 | signature | `MTME` = `4d54 4d45` — note the final byte is `45`/`E`, **not** `53`/`S`; the plural-looking spelling is the wrong guess |
+| 4 | 4 | version | `1` |
+| 8 | 4 | hash id | `1` = SHA-1 (20 B) · `2` = SHA-256 (32 B) — Pin U |
+| 12 | `4 × objectCount` | mtime table | one `u32BE` **seconds-since-epoch** per object, in **`.idx` order** |
+| `12+4n` | `hashLength` | pack checksum | equals the `.pack` trailer and the `.idx` pack-hash field, and equals the `<sha>` in the file name |
+| `12+4n+hashLength` | `hashLength` | file checksum | `hash(bytes[0 … len−hashLength))` — i.e. **over the pack-checksum field too** |
+
+The self-checksum was verified, not assumed: recomputing `sha1`/`sha256` over every byte before the
+trailer reproduced the trailer exactly in **all seven** sidecars produced across these probes.
+
+**Ordering is `.idx` order — oid-ascending, not pack-offset order.** Read straight out of the
+sibling `.idx` fanout table (`--prune=never`, three danglers with distinct forced mtimes):
+
+```text
+[0] 77a24379436bd40df5c2c855e8a0c11408109968   1767225660
+[1] 862dcbda8e8d9fa19e65785e262f33b03c1e9156   1787754322
+[2] e522cdc3d5447b9b90ab38314fd550b036d1168f   1785538860
+```
+
+The mtimes are **not** monotonic while the oids are, which is what proves the index is the `.idx`
+position and not a time- or offset-ordered one.
+
+### Pin Q — the mtime a cruft entry carries is the **source file's** mtime, never the gc clock
+
+Three probes, three sources, one rule.
+
+| Where the object was before gc | mtime written into `.mtimes` | Probe |
+|---|---|---|
+| **loose** (`objects/ab/cdef…`) | that loose file's `st_mtime`, verbatim | forced `1767225660` / `1785538860` → recorded byte-identically |
+| **inside a normal pack** | that **`.pack` file's** `st_mtime`, verbatim | the `.pack`'s mtime forced back to `1780000000`; all three objects recorded `1780000000` while the wall clock read `1787754444` |
+| **inside an existing cruft pack** | its previous `.mtimes` entry, **carried forward verbatim** | gen-1 entry `1787000000` survived into gen-2's sidecar unchanged — Pin S |
+
+This is the whole point of the format: an object's age survives being repacked, so the expiry clock
+is never reset by maintenance. A writer that stamped `Date.now()` would make aged garbage immortal.
+**tsgit's mtime source is therefore `lstat` on the containing file** (loose object or pack), and for
+an object already in a cruft pack it is the previous sidecar entry — *never* the current time.
+
+**When an object has two sources, the newest wins — git "freshens" it.** Pinned directly, because
+the rule is not derivable from the rows above:
+
+```text
+$ …dangler crufted with mtime 1780000000, then rewritten:  echo revived | git hash-object -w --stdin
+loose copies: 0 → 1                     # git writes a fresh loose copy beside the cruft entry
+$ git gc --prune=never
+sidecar entry: 1780000000 → 1787755416  # the NEW mtime, not the carried one
+```
+
+Writing an object again resets its expiry clock, which is exactly the behaviour that keeps a
+resurrected-but-still-unreachable object from being destroyed on the next run. So the mtime rule is
+a **maximum over the available sources**, not a precedence order between them:
+`mtime(o) = max(loose lstat if present, carried sidecar entry if present, containing pack lstat if
+present)`. Taking the carried value unconditionally would destroy an object the user just rewrote.
+
+### Pin R — the expiry arithmetic, pinned **at the boundary**
+
+Three unreachable blobs with mtimes at `cutoff−1`, `cutoff`, `cutoff+1`, then
+`git gc --prune=@<cutoff>` with `cutoff = 1787500000`:
+
+```text
+survivors in the cruft pack: 1
+[0] 63721ceef9ea9654…  1787500001
+```
+
+Only `cutoff+1` survived. **The object exactly *at* the cutoff was dropped.** The rule is therefore
+
+```text
+drop  iff  mtime <= cutoff
+keep  iff  mtime >  cutoff
+```
+
+— a strict `>`, and the boundary case is a real test, not a rounding detail. Supporting rows:
+
+| Configuration | Cutoff | Outcome |
+|---|---|---|
+| default (nothing set) | `now − 2 weeks` | danglers at 2026-01-01 and 2026-08-01 dropped; the fresh one kept (probe ran 2026-08-26) |
+| `gc.pruneExpire=30.days.ago` | `now − 30 days` | 2026-08-01 dangler now **kept**; 2026-01-01 dropped — config is honoured |
+| `gc.pruneExpire=never` / `--prune=never` | — | all three kept, in a cruft pack. **Not** "no cruft pack" — the cruft pack is still written, nothing is ever dropped from it |
+| `--prune=now` | `now` | **no cruft pack at all**; every unreachable object deleted outright |
+| `gc.cruftPacks=false` | `now − 2 weeks` | no cruft pack; aged unreachable objects deleted, the fresh one **stays loose** |
+| `--prune=bogus` | — | `fatal: failed to parse prune expiry value bogus`, **exit 128**, nothing written |
+
+`--prune=never` and `--prune=now` are the two ends, and they are *not* symmetric: `never` still
+produces the sidecar, `now` suppresses the cruft pack entirely.
+
+### Pin S — what the next `gc` does to an **existing** cruft pack
+
+The single most load-bearing pin for the lifecycle, and the least guessable. Four probes:
+
+| Situation on the next `gc` | Verdict |
+|---|---|
+| new unreachable objects appeared | cruft pack **rewritten under a new `<sha>`**, holding the **union**; every surviving old entry's mtime **carried forward verbatim**; all gen-1 siblings removed |
+| some cruft entries expired, some survived | **rewritten under a new `<sha>`** with the survivors only; the expired objects are gone from the repository; all gen-1 siblings (`.pack`/`.idx`/`.mtimes`/`.rev`) removed |
+| **every** cruft entry expired | cruft pack **deleted outright** — no empty cruft pack is left behind, `objects/pack/` holds only the normal pack |
+| nothing new, nothing expired | **left in place, byte-identical** — same file name, same `shasum`, *even while the normal packs around it were consolidated into a new pack* |
+
+So the rule is a set comparison, not a schedule:
+
+```text
+survivors = { o in existingCruft : mtime(o) > cutoff } ∪ { newly-unreachable objects }
+if   survivors == existingCruft's object set   → leave the cruft pack untouched, byte for byte
+elif survivors is empty                        → delete the cruft pack and all four siblings
+else                                           → write a new cruft pack, delete all four old siblings
+```
+
+The byte-identical no-op case is worth calling out: a naive "always rewrite" implementation stays
+*functionally* correct but churns the pack sha on every run, which is observable and which the
+interop pin will catch.
+
+**A resurrected object leaves the cruft pack.** An unreachable commit that a later `git branch`
+makes reachable again moves into the **normal** pack on the next gc, and the cruft pack (holding
+nothing else) disappears. Reachability is re-evaluated every run against the whole cruft set — cruft
+membership is not sticky.
+
+### Pin T — naming, siblings, readability, and the midx
+
+```text
+$ ls .git/objects/pack/
+pack-571d590c….idx  pack-571d590c….pack  pack-571d590c….rev          ← normal
+pack-a204c436….idx  pack-a204c436….mtimes  pack-a204c436….pack  pack-a204c436….rev   ← cruft
+```
+
+- **Naming.** `pack-<sha>.mtimes`, a plain sibling; `<sha>` is the pack's own trailer hash, the same
+  `<sha>` the `.pack`/`.idx`/`.rev` carry. A cruft pack is *exactly* a normal pack plus one file.
+- **`.rev` too.** The cruft pack gets a `.rev`, in the identical `RIDX` v1 format
+  (`5249 4458 0000 0001 0000 0001 …`) — so tsgit's existing `.rev` writer applies unchanged.
+- **No `.bitmap`.** Neither pack gets one at default settings (Pin F).
+- **Readable as an ordinary pack.** `git cat-file -e <cruft oid>` → exit 0; `count-objects -v`
+  counts cruft objects under `in-pack` and the cruft pack under `packs`; `git fsck` reports
+  `dangling blob …` and exits **0**. A cruft pack is not a quarantine — it is a normal part of the
+  object store that happens to carry ages.
+- **The midx is deleted.** With a `multi-pack-index` present, a `gc` that consolidates away the
+  packs it names removes it (`midx after gc: NO`) — Pin G row 1, reconfirmed in the cruft setting.
+- **`git repack -a -d --cruft` produces the identical layout**, so the sidecar is a property of the
+  repack, not of `gc`'s wrapper.
+
+### Pin U — SHA-256 cruft packs
+
+```text
+$ git init --object-format=sha256 … && git gc --prune=never
+pack-00be266ff095d27fc0f7a27eca507213cf763010daa4c648de6ad68059170111.mtimes
+sig="MTME" ver=1 hash-id=2 entries=1 bytes=80         # 12 + 4 + 32 + 32
+self-checksum sha256(bytes[0…48)) == trailer → true
+```
+
+Only the hash-id word and the two trailer widths move; the signature, the version and the `u32BE`
+mtime width are unchanged. The same `digestLength === 32 ? 2 : 1` derivation `serializePackRevIndex`
+already uses (`rev-index.ts:124`) is correct here verbatim.
+
 ---
 
 ## Requirements
@@ -400,20 +571,52 @@ statements. `Rn` numbers are referenced by the parts.
   `objects/info/commit-graph` **byte-identical** to `git commit-graph write --reachable` run on the
   same repository by git 2.55.0, for both SHA-1 and SHA-256 repositories, and
   `git commit-graph verify` accepts the result at exit 0.
-- **R23** `maintenance` never loses an object. For every object readable before the call —
+- **R23** `maintenance` never loses an object **that git would have kept**. For every object
+  readable before the call whose recorded mtime is strictly newer than the expiry cutoff —
   reachable or not, loose or packed — `readObject` succeeds after it, and `git fsck` on the
-  resulting repository is silent at exit 0.
-- **R24** gc-lite unlinks a loose object **only** after the pack, `.idx` and `.rev` containing it
-  are all present at their final paths, and **only** if that object is in the pack it just wrote.
-  No object is deleted on age. No pack, `.idx`, `.rev`, `.bitmap`, `.promisor`, mtime sidecar or
-  `multi-pack-index` file that existed before the call is removed by it (under DC-17(a); DC-17(b)
-  replaces this clause — see the part).
-- **R25** After gc-lite, a host `git` reads the repository unchanged: `git fsck`, `git log`,
+  resulting repository is silent at exit 0. The single class of object the call may destroy is
+  named in R28 and nowhere else.
+- **R24** gc unlinks a loose object **only** after the pack, `.idx`, `.rev` and (for the cruft
+  pack) `.mtimes` containing it are all present at their final paths, and **only** if that object
+  is in a pack the call just wrote. **No pre-existing *normal* pack is rewritten or removed** (the
+  bounded-consolidation choice — see P9); their `.idx` files are *consulted*, to identify the
+  `prune-packable` class, but never rewritten. No `.bitmap` or `.promisor` file is ever removed.
+  The complete set of files the call may delete is: loose objects it has just packed or found
+  already packed; a superseded **cruft** pack's `.pack`/`.idx`/`.rev`/`.mtimes`; and
+  `objects/pack/multi-pack-index` when it names that retired cruft pack. Nothing else, ever.
+- **R25** After gc, a host `git` reads the repository unchanged: `git fsck`, `git log`,
   `git cat-file -p` on a packed oid and `git rev-list --all --objects` all succeed, and
-  `git count-objects -v` reports the expected `count` / `in-pack` split.
+  `git count-objects -v` reports the expected `count` / `in-pack` / `packs` split.
 - **R26** `maintenance` mutates neither refs nor reflogs nor the index (Pin J): no `pack-refs`,
   no `reflog expire`, no `worktree prune`. A test asserts `packed-refs`, every loose ref file and
   every reflog is byte-identical across the call.
+- **R27** `serializeCruftMtimes` and `parseCruftMtimes` round-trip: for any object count ≥ 1, any
+  `u32` mtime vector and either hash width, parsing the serialized bytes yields the original
+  `(oid → mtime)` mapping, and the bytes are byte-identical to what git 2.55.0 writes for the same
+  cruft set — `MTME`, version `1`, hash id from the digest width, `u32BE` table in `.idx` order,
+  pack checksum, self checksum over everything before it (Pins P, U). A `*.properties.test.ts`
+  sibling proves the round-trip over generated inputs (lens 1).
+- **R28** Age-based deletion is exact at the boundary and honours configuration: an unreachable
+  object is destroyed **iff** its recorded mtime is `<= cutoff`, where `cutoff` is derived from
+  `gc.pruneExpire` (default `now − 2 weeks`; `never` ⇒ nothing is ever dropped; `now` ⇒ no cruft
+  pack is written at all) — Pin R. `now` comes from an **injectable clock**, never `Date.now()`
+  read inline, so every expiry test is deterministic.
+- **R29** An object's recorded age survives maintenance, and only a rewrite advances it. For an
+  object that is unreachable and untouched across two consecutive `gc` calls, the mtime in the
+  second call's sidecar is **byte-identical** to the first call's, whatever its source was (loose
+  `lstat`, containing-pack `lstat`, or a prior sidecar entry). If the object **is** rewritten
+  between the calls, its recorded mtime advances to the newer value — the mtime is a `max` over
+  available sources, never a carried-value precedence (Pins Q, S). Both directions are tested: one
+  case lets an object cross the expiry boundary between two calls and proves it is destroyed; a
+  second rewrites it first and proves it survives.
+- **R30** The cruft pack's file lifecycle matches Pin S exactly: rewritten under a new sha when the
+  surviving set changes, deleted with all four siblings when the surviving set is empty, and left
+  **byte-identical** when the surviving set is unchanged. `.rev` sibling deletion and midx handling
+  are exercised for real by this clause — they are no longer vacuous.
+- **R31** `MaintenanceResult` reports the cruft lifecycle in scalars only: how many objects entered
+  the cruft pack, how many were carried forward, how many were destroyed by expiry, and whether a
+  cruft pack exists afterwards. No rendered text, no formatted date, no human-readable age
+  (ADR-249).
 
 **Artifacts / observability**
 
@@ -478,14 +681,16 @@ P1 concurrency policy seam    ← P6 and P7 consume it
    ├── P6 status/add/index    (consumes P1; ADR-726)
    ├── P7 checkout/clone      (consumes P1; ADR-725, ADR-728)
    └── P8 structural          (ADR-721, ADR-722)
-P9 maintenance                (ADR-724, full breadth; largest lift, new command surface)
+P9 maintenance                (ADR-724 + ADR-731; largest lift, new command surface,
+                               two new on-disk formats, the only destructive command)
 ```
 
 P9 sits **last** and depends on three earlier parts, which is why it cannot be reordered:
 P1's `ioBound` bucket sizes its loose-object enumeration fan-out; P3's lazy successor lookup is
 what makes reading every object out of an existing pack affordable; and P5's `verifyHash: false`
-default must **not** apply to it — gc-lite reads objects it is about to delete the only copy of,
-so it opts back in explicitly (see the part).
+default must **not** apply to it — `gc` reads objects it is about to delete the only copy of,
+so it opts back in explicitly (see the part). Since ADR-731 that reasoning covers the **cruft**
+pack too, whose objects have the weakest claim on being kept and the fewest other readers.
 
 P0-before-everything is not a preference. The committed baseline is stale *and* — as P0
 establishes — under-sampled to the point where several of the review's headline share numbers are
@@ -508,7 +713,7 @@ post-canonicalisation re-entry — and record the walk in the part's commit body
 | P6's index cache | `acquireIndexLock` → `lock.commit`; every `writeIndex` path; an external `git add` between two tsgit calls (the `(size, mtimeMs, mtimeNs, ino)` key is what catches it — **and second-resolution filesystems are why `mtimeNs` and `ino` are both in the key**) |
 | P8's containment relaxation | the discovery walk (before any adapter exists); `worktreeFs(path)` (a fresh adapter per call); submodule child contexts; the config-scope allowlist paths; `unsafeRawAdapters`; user-supplied `opts.fs` (must be unaffected) |
 | P8's session token | all seven derivation sites, in both directions — write through the derived Context and read through the original, **and** the reverse |
-| P9's loose-object unlink | `internal/loose-oid-cache.ts` states the invariant **"tsgit never prunes loose objects"** twice in prose (`:13-15`, `:61`) and its only mutator is add-only (`invalidateLooseOid :67-69`). gc-lite falsifies it: every fanout prefix it unlinks from must go through `forgetLooseOidPrefix` (`:76-78`) — or gain a remove-member helper — **in the same commit that adds the unlink**, and the two prose blocks must be rewritten. Also walk: `object-resolver.ts:197/203` (the probe + stale-HIT recovery), `write-object.ts:49/54`, and `refreshPackRegistry` after the new pack lands |
+| P9's loose-object unlink | `internal/loose-oid-cache.ts` states the invariant **"tsgit never prunes loose objects"** twice in prose (`:13-15`, `:61`) and its only mutator is add-only (`invalidateLooseOid :67-69`). `gc` falsifies it: every fanout prefix it unlinks from must go through `forgetLooseOidPrefix` (`:76-78`) — or gain a remove-member helper — **in the same commit that adds the unlink**, and the two prose blocks must be rewritten. Also walk: `object-resolver.ts:197/203` (the probe + stale-HIT recovery), `write-object.ts:49/54`, and `refreshPackRegistry` after **both** new packs land — the cruft pack is a pack registry member like any other, and forgetting it makes step 8's verify read the wrong file |
 
 Every cache added here is also **write-path symmetric**: the part that adds the read cache adds
 its invalidation in the same commit, never in a follow-up.
@@ -1712,7 +1917,7 @@ plus a fresh `NodeFileSystem` + validator each — and the loop is sequential.
 
 ---
 
-### P9 — Maintenance (F11) — full breadth (ADR-724)
+### P9 — Maintenance (F11) — full breadth (ADR-724, ADR-731)
 
 **The situation, verified.** tsgit reads commit-graph, midx, `.rev` and bitmaps. It **writes**
 `.rev` and nothing else: no commit-graph writer, no midx writer, no bitmap writer, no
@@ -1729,6 +1934,17 @@ commit-graph fast path in `commitDateWalk` — the one that makes the date walk 
 dead code in practice, because tsgit cannot produce a commit-graph. **ADR-724 ratified the full
 answer, above the design's own recommendation**: both tasks ship, explicit-only, in this PR.
 
+**And ADR-731 went one further.** The design recommended DC-17(a) — pack the reachable half, leave
+unreachable objects alone forever. The user ratified **(c)**: git's full cruft-pack lifecycle. That
+supersedes ADR-724's prune semantics and changes this part's centre of gravity. The gc task now
+owns a second on-disk format it must both read and write, an expiry clock that can *destroy* data,
+and the real discharge of the two carried backlog constraints. It is no longer "gc-lite"; this
+document drops the suffix. What ADR-731 pins as faithfulness surfaces is narrow and explicit —
+**object placement by file class, the `.mtimes` sidecar format, file naming, refusal conditions and
+the expiry arithmetic**. Pack-internal byte layout is explicitly *not* a surface (git varies it by
+version and thread count), which is what makes a delta-free packer a documented size trade rather
+than a correctness divergence.
+
 #### Anchors (verified with Serena)
 
 | Thing | Anchor | Shape |
@@ -1736,7 +1952,9 @@ answer, above the design's own recommendation**: both tasks ship, explicit-only,
 | in-memory pack builder | `primitives/build-pack.ts:40-53` `buildPack(ctx, { oids })` | returns `{ bytes, sha, objectCount, entries }`. **Non-delta** — every oid becomes a base entry (`:1-12`); serial `for` loop `:42-45`, one `readObject` per oid via `encodeEntry` `:55-67` |
 | disk writer | `primitives/internal/write-pack-artifacts.ts:141-163` `writePackArtifacts(ctx, { packDir, packBytes, entries, packSha, promisor })` | writes `.pack` → `.idx` → optional `.promisor` → optional `.rev`, all through `writeExclusive`; one shared `sortPackIndexEntries` |
 | `.idx` serializer | `domain/storage/pack-writer.ts:65-163` `serializePackIndex` | **pack-index v2** (magic `0xff744f63` `:107`, version `2` `:108`); refuses digest widths ≠ 20/32 `:70-73` |
-| `.rev` serializer | `domain/storage/rev-index.ts:112-143` `serializePackRevIndex` | **rev v1** `:135`, magic `RIDX` `:16`, header 12 `:18`; leaves the trailer zeroed for the caller |
+| `.rev` serializer | `domain/storage/rev-index.ts:111-142` `serializePackRevIndex` | **rev v1**, magic `RIDX`, header 12; `hashId = digestLength === 32 ? 2 : 1` `:124`; writes the pack checksum and **leaves the self-checksum zeroed for the caller**. ⭐ **the shape precedent for `.mtimes`** — same header triple, same `u32BE`-per-object body, same two-digest trailer |
+| `.rev` trailer finalisation | `write-pack-artifacts.ts:53-69` `buildRev` | `trailerStart = bytes.length - packChecksum.length`; `ctx.hash.hash(bytes.subarray(0, trailerStart))`; `bytes.set(digest, trailerStart)`. Pin P confirms `.mtimes` uses the **identical** rule — the digest covers the pack-checksum field. The docstring's "one width source" argument transfers verbatim |
+| artefact path builder | `write-pack-artifacts.ts:108-113` `artifactPaths(packDir, packSha)` | returns `{ packPath, idxPath, promisorPath, revPath }` as `pack-${packSha}.<ext>` — **gains `mtimesPath`**, one line, matching Pin T's naming |
 | `.rev` write gate | `write-pack-artifacts.ts:80-83` (`pack.writeReverseIndex`, default `true`), evaluated at `:145` **before any artefact is created** | inherited free by any reuse of `writePackArtifacts` |
 | loose enumeration | `primitives/enumerate-objects.ts:23-39` `enumerateObjects(ctx, { includePacks })`; loose half `collectLooseObjectIds :41-53` | **materialised** `Set` → sorted array; walks all 256 `HEX_PREFIXES` with `exists` **then** `readdir` = up to 512 serial fs round trips. Sole caller today: `commands/fsck.ts:79-82` |
 | loose membership cache | `primitives/internal/loose-oid-cache.ts:22,32-51,54-57,67-69,76-78` | `WeakMap<Context, Map<prefix, Set<suffix>>>`; **`invalidateLooseOid` is add-only**; `forgetLooseOidPrefix` is the only removal escape hatch |
@@ -1776,6 +1994,11 @@ export interface MaintenanceResult {
   readonly packsBefore: number;
   readonly packsAfter: number;
   readonly packId: ObjectId | undefined;
+  // --- cruft lifecycle (ADR-731) ---
+  readonly cruftObjectsAdded: number;
+  readonly cruftObjectsRetained: number;
+  readonly cruftObjectsExpired: number;
+  readonly cruftPackId: ObjectId | undefined;
 }
 ```
 
@@ -1787,6 +2010,22 @@ each still a plain scalar: `tasksRun` (the `auto` gate can decline, and the call
 tell "declined" from "ran and found nothing"), `looseObjectsBefore` (without the denominator
 `looseObjectsPacked` is the same unreadable share P0 spent a whole part fixing), and `packId` (the
 caller needs a handle on the pack it just created). Nothing was removed from the sketch.
+
+**Four more are forced by ADR-731** (R31), and the split is not arbitrary — it maps one-to-one onto
+Pin S's three-way outcome, which is the only way a caller can tell the three apart:
+
+| Field | Means | Why it cannot be derived from the others |
+|---|---|---|
+| `cruftObjectsAdded` | newly-unreachable objects that entered the cruft pack this run | the only measure of how much garbage the working period produced |
+| `cruftObjectsRetained` | objects carried forward from the previous cruft pack, mtimes intact (Pin Q row 3) | distinguishes "wrote a cruft pack because there was new garbage" from "rewrote it because some aged out" |
+| `cruftObjectsExpired` | objects **destroyed** by the expiry cutoff | the one number in this whole design that counts data leaving the repository forever. It must be its own field precisely because it is the destructive one — a caller that wants to alarm on it must not have to infer it from a difference |
+| `cruftPackId` | the cruft pack's sha, or `undefined` when none exists afterwards | `undefined` is Pin S row 3 (everything expired) *and* Pin R's `--prune=now` equivalent; a caller checking "is there still garbage parked here" reads exactly this |
+
+`cruftObjectsAdded + cruftObjectsRetained` is the surviving set's size, and
+`packsAfter − packsBefore` stays readable because the cruft pack is counted in both. When the
+surviving set is unchanged and the sidecar is left byte-identical (Pin S row 4), `cruftPackId`
+still reports the existing pack's sha — "no rewrite" is not "no cruft pack", and conflating them
+is the mistake this field exists to prevent.
 
 `tasks` is required and non-empty; an unknown task is an `invalidOption('tasks', …)` refusal
 mirroring `git maintenance run --task=bogus` → `error: 'bogus' is not a valid task` (Pin D).
@@ -1805,7 +2044,7 @@ The gate uses an **exact loose count**, not git's estimator. Pin I records why: 
 predicate samples a single fanout directory and its own documentation says "**approximately** more
 than this many loose objects", and the exact sampling predicate **could not be reproduced** — no
 `gc.auto` value made `--auto` fire at small object counts. An exact count sits inside git's
-documented "approximately", is strictly more accurate, and is free because gc-lite enumerates the
+documented "approximately", is strictly more accurate, and is free because `gc` enumerates the
 loose objects anyway. Stated in the docs page, not inferred.
 
 **Out of `maintenance`'s scope, deliberately** (Pin J): `git gc` also runs `pack-refs`, `reflog
@@ -1911,109 +2150,300 @@ gathers the commit set and writes the file — the same split `pack-writer.ts` /
 `write-pack-artifacts.ts` already uses. The serializer being pure and in the domain is what makes
 it 100 %-coverage-testable and property-testable against the existing reader.
 
-#### Task 2 — `gc`-lite
+#### Task 2 — `gc`
 
-**What it does, in order.** Every step is ordered so that a crash at any point leaves a repository
-git still reads:
+##### The new domain format module
+
+`src/domain/storage/cruft-pack.ts` (ADR-731 names the file). Pure, zero platform dependencies,
+inside the 100 %-coverage gate, and — critically — a **near-clone of `rev-index.ts`**, which is why
+this is a bounded addition rather than a new subsystem:
+
+```ts
+export const CRUFT_MTIMES_MAGIC = 0x4d544d45;              // 'MTME' — Pin P
+const CRUFT_HEADER_SIZE = 12;
+
+export function serializeCruftMtimes(
+  entries: ReadonlyArray<PackIndexWriterEntry>,
+  packChecksum: Uint8Array,
+  mtimeOf: (oid: ObjectId) => number,
+  presorted?: ReadonlyArray<SortedEntry>,
+): Uint8Array;
+
+export function parseCruftMtimes(
+  bytes: Uint8Array,
+  oidsInIndexOrder: ReadonlyArray<ObjectId>,
+): ReadonlyMap<ObjectId, number>;
+```
+
+Line for line against `serializePackRevIndex` (`rev-index.ts:111-142`):
+
+| `serializePackRevIndex` does | `serializeCruftMtimes` does |
+|---|---|
+| refuses `digestLength ∉ {20,32}` with `invalidPackRevIndex('hash-id', …)` | same guard, its own typed refusal — a width the pack cannot carry must refuse, not truncate |
+| `hashId = digestLength === 32 ? 2 : 1` `:124` | **identical** (Pin U) |
+| `body = packPositionsByOffset(presorted ?? sortPackIndexEntries(entries))` | `mtimeOf` applied over `presorted ?? sortPackIndexEntries(entries)` — **the same one-sort-per-pack contract**, and the same `presorted` hand-off from the `.idx` writer's caller |
+| allocates `REV_HEADER_SIZE + 4n + 2·digestLength` | allocates `CRUFT_HEADER_SIZE + 4n + 2·digestLength` — Pin P's `68 = 12 + 16 + 20 + 20` |
+| writes magic / `1` / `hashId`, then `u32BE` body, then `packChecksum`; **leaves the self-checksum zeroed** | **identical**, with `MTME` for `RIDX` |
+
+The trailer is finalised by an application-layer `buildMtimes` that copies `buildRev`
+(`write-pack-artifacts.ts:53-69`) verbatim, including its "one width source" argument:
+`trailerStart = bytes.length - packChecksum.length`, `ctx.hash.hash(bytes.subarray(0, trailerStart))`,
+`bytes.set(digest, trailerStart)`. Pin P confirmed empirically that git's digest covers the
+pack-checksum field, so `buildRev`'s existing offset arithmetic is right without adjustment.
+
+The **ordering contract is the one thing a reader of this module must not get wrong**, and it is
+worth a named type rather than a comment: the `u32BE` at slot *i* belongs to the oid at `.idx`
+position *i* — oid-ascending, **not** pack-offset order. `serializePackRevIndex` is the trap next
+door, because its body *is* offset-indexed (`packPositionsByOffset`). Two sibling files, two
+different index spaces; name them (`mtimesByIndexPosition` vs `packPositionsByOffset`) so the
+difference is unmissable at the call site.
+
+`parseCruftMtimes` takes the oid list from the already-parsed sibling `.idx` rather than re-parsing
+it — the reader half must never invent its own index order.
+
+**R27 mandates the round-trip property test** (lens 1): `parseCruftMtimes(serializeCruftMtimes(x)) ≡ x`
+over arbitrary object counts, `u32` mtime vectors and both hash widths, in
+`cruft-pack.properties.test.ts` beside the example test, reusing a generator in the directory's
+`arbitraries.ts`. The example test pins git's literal bytes from Pin P; the property proves the
+grammar. Neither substitutes for the other.
+
+##### The pipeline
+
+Every step is ordered so that a crash at any point leaves a repository git still reads. **Steps 2,
+5, 7 and 10 are new since ADR-731**; step 4's partition gained its second intersection and step 8's
+verify gained a second pack.
 
 1. **Count.** `enumerateObjects(ctx, { includePacks: false })` → the loose set.
    `looseObjectsBefore`. If `auto` is set and the count does not exceed `gc.auto`, return with
    `tasksRun` omitting `'gc'`.
-2. **Partition by reachability.** Collect retention roots as gc does — refs + HEAD + index +
-   reflogs (Pin H); `internal/fsck/roots.ts`'s three collectors are the reusable half. Feed the
-   root oids to `computeClosure(ctx, { wants: roots, not: [], objects: true, tier })` and intersect
-   with the loose set. **Reachable loose** is what gets packed.
-3. **Build.** `buildPack(ctx, { oids: reachableLoose })` → bytes + entries.
-4. **Write.** `writePackArtifacts(ctx, { packDir: packsDir(commonGitDir(ctx)), … })` — `.pack`,
-   `.idx`, and `.rev` **if `pack.writeReverseIndex` allows** (the gate at `:80-83,145` is inherited,
-   not re-implemented). `packId` is the pack sha.
-5. **Refresh, then verify.** `refreshPackRegistry(ctx)`, then read **every** oid just packed back
-   out of the new pack with **`verifyHash: true` passed explicitly**. This is the one place in the
-   codebase that must opt back in after ADR-718's flip: gc-lite is about to delete the only other
-   copy, so "trust the bytes" is exactly wrong here. R24 hangs on this step.
-6. **Prune.** Only now unlink the loose files, via `ctx.fs.rm`. Unlink the objects that went into
-   the new pack, **plus** any loose object that was already present in an existing pack — git's
-   `count-objects -v` names that second class `prune-packable` and `repack -d` removes it.
-   `prunedLooseObjects` counts the unlinks and may exceed `looseObjectsPacked` for exactly that
-   reason; the two fields are separate so the difference is visible rather than silent.
-7. **Invalidate.** `forgetLooseOidPrefix` for every fanout prefix touched — see §0.1. The
-   loose-oid cache's stated invariant ("tsgit never prunes loose objects",
-   `loose-oid-cache.ts:13-15,:61`) is falsified by this step and its prose must be rewritten in the
-   same commit.
+2. **Read the existing cruft pack, if any.** Scan `objects/pack/` for a `pack-<sha>.mtimes`; parse
+   it with `parseCruftMtimes` against its sibling `.idx`'s oid list → `existingCruft: Map<oid, mtime>`.
+   Absent sidecar ⇒ empty map, and every downstream branch degenerates correctly. A `.mtimes` whose
+   object count disagrees with its `.idx`, or whose self-checksum fails, is a **typed refusal** that
+   writes nothing — not a silent empty map.
+3. **Collect retention roots** as gc does — refs + HEAD + index + reflogs (Pin H);
+   `internal/fsck/roots.ts`'s three collectors are the reusable half.
+4. **Partition by reachability.** Feed the root oids to
+   `computeClosure(ctx, { wants: roots, not: [], objects: true, tier })`. Intersect with the loose
+   set **and** with `existingCruft`'s key set — the second intersection is what implements Pin S's
+   resurrection rule, and omitting it would strand a now-reachable object in a cruft pack that is
+   about to expire it.
 
-**How unreachable loose objects are treated — stated explicitly, and pinned.** They are **never
-packed and never pruned.** They stay exactly where they are, at their existing paths, with their
-existing `mtime` values, for as long as the repository lives. gc-lite deletes nothing on age and
-has no notion of an expiry.
+   ```text
+   toNormalPack    = reachable ∩ (looseSet ∪ existingCruft.keys)
+   cruftCandidates = (looseSet ∪ existingCruft.keys) \ reachable
+   mtime(o)        = max( lstat(loose path).mtime   if o ∈ looseSet,
+                          existingCruft.get(o)      if o ∈ existingCruft )      ← Pin Q
+   prunePackable   = looseSet ∩ (already in some existing pack, cruft pack INCLUDED)
+   ```
 
-Pin E is what makes this a *choice* rather than an oversight, and it is worth being blunt about:
-git 2.55's **default** `gc` does something tsgit cannot reproduce. It moves an unreachable, recent
-loose object into a **cruft pack** — a `.pack` with an **mtime sidecar** recording each object's
-`mtime` — and deletes it on a later gc once it ages past `gc.pruneExpire` (2 weeks). **tsgit
-neither reads nor writes that sidecar.** With `gc.cruftPacks=false` git instead leaves that object loose and
-alive (Pin E, row 5) — which is precisely the state gc-lite produces. So gc-lite's output matches a
-**configured** git, not a default one, and the difference is entirely in the unreachable direction:
+   `prunePackable` counts the **cruft** pack as a pack: a loose object that is also in the cruft
+   pack is a redundant copy, and leaving it loose would keep it alive past its own expiry.
 
-| Object class | git default `gc` | git `gc.cruftPacks=false` | tsgit gc-lite |
+   **`mtime` is a `max`, not a lookup with a fallback**, and the difference is destructive. An
+   object can legitimately have both sources — a crufted object the caller has since rewritten
+   (Pin Q's freshen probe) — and taking the carried sidecar value there would destroy something the
+   user just wrote. **Neither source is the current time**, and a helper that defaults to "now" when
+   it cannot stat is the bug the pin exists to prevent: it would make aged garbage immortal. A loose
+   object whose `lstat` fails is a refusal, not a `Date.now()` fallback.
+5. **Apply the expiry cutoff.** `cutoff = expiryCutoff(config, now)`, where `now` comes from the
+   **injectable clock** (below). Partition `cruftCandidates` on Pin R's strict rule:
+
+   ```text
+   survivors = { o ∈ cruftCandidates : mtime(o) >  cutoff }
+   doomed    = { o ∈ cruftCandidates : mtime(o) <= cutoff }     ← destroyed at step 10
+   ```
+
+   `gc.pruneExpire=never` ⇒ `cutoff = -Infinity`, `doomed` empty. `--prune=now` semantics
+   ⇒ `cutoff = now`, and per Pin R **no cruft pack is written at all** — the surviving set is
+   empty and step 7 takes its delete branch.
+6. **Build and write the normal pack.** `buildPack(ctx, { oids: toNormalPack })` →
+   `writePackArtifacts(ctx, { packDir: packsDir(commonGitDir(ctx)), … })` — `.pack`, `.idx`, and
+   `.rev` **if `pack.writeReverseIndex` allows** (the gate at `:80-83,145` is inherited, not
+   re-implemented). `packId` is the pack sha. Skipped entirely when `toNormalPack` is empty.
+7. **Decide the cruft pack's fate** — Pin S's three-way branch, evaluated as a **set comparison**,
+   never as a schedule:
+
+   | Condition | Action |
+   |---|---|
+   | `survivors` set `==` `existingCruft` key set | **no-op.** Leave the sidecar and its pack byte-identical. `cruftPackId` reports the existing sha |
+   | `survivors` empty | **delete branch** (step 10) — no empty cruft pack is ever written |
+   | otherwise | `buildPack(ctx, { oids: survivors })` + `writePackArtifacts` + `buildMtimes`, under a **new** sha; the old cruft pack's four siblings are removed at step 10 |
+
+   The no-op branch is not an optimisation, it is a faithfulness requirement: Pin S row 4 shows git
+   leaves the file byte-identical even while consolidating the packs around it, so an
+   always-rewrite implementation would churn a sha git does not churn.
+8. **Refresh, then verify.** `refreshPackRegistry(ctx)`, then read **every** oid just packed — into
+   either pack — back out with **`verifyHash: true` passed explicitly**. This is the one place in
+   the codebase that must opt back in after ADR-718's flip: gc is about to delete the only other
+   copy, so "trust the bytes" is exactly wrong here. R23/R24 hang on this step, and under ADR-731 it
+   now covers the **cruft** pack too — the objects with the weakest claim on being kept are exactly
+   the ones nobody else will notice going bad.
+9. **Prune loose.** Only now unlink the loose files, via `ctx.fs.rm`. **Three** classes, and
+   missing the third is a silent leak that keeps expired garbage alive forever:
+
+   ```text
+   unlink = (toNormalPack ∪ survivors) ∩ looseSet     # now safely in a pack we just verified
+          ∪ prunePackable                             # redundant copy of an already-packed object
+          ∪ (doomed ∩ looseSet)                       # expired and loose ⇒ destroyed HERE
+   ```
+
+   The third class is what Pin R's default row measured directly: two aged loose danglers were
+   **gone from disk** after `git gc`, having entered no pack at all. A doomed object that was
+   *loose* is destroyed by this unlink; a doomed object that was in the **old cruft pack** is
+   destroyed by step 10 instead, and needs no unlink of its own. `cruftObjectsExpired` counts both.
+
+   git's `count-objects -v` names the second class `prune-packable` and `repack -d` removes it.
+   `prunedLooseObjects` counts every unlink and may exceed `looseObjectsPacked` for two distinct
+   reasons now; the fields stay separate so the difference is visible rather than silent.
+10. **Retire the superseded cruft pack.** Delete `pack-<oldSha>.{pack,idx,mtimes,rev}` — **all
+    four**, tolerating an absent `.rev` when `pack.writeReverseIndex` is off. This is the step that
+    discharges ADR-724's two carried constraints **for real**:
+    - the `.rev`-sibling rule (Pin F) now has something to fire on — a pack *is* removed;
+    - and if `objects/pack/multi-pack-index` names the retired cruft pack, it is **deleted**
+      (Pin T; Pin G row 1). Deletion is the only available verb — tsgit has no midx writer — and it
+      matches what git does when it removes a pack the midx covers.
+
+    Doomed objects that lived in the **old cruft pack** need no unlink of their own — retiring it is
+    what destroys them. Doomed objects that were **loose** were already unlinked at step 9. Between
+    the two, every doomed object is accounted for exactly once, and
+    `cruftObjectsExpired = |doomed|` spans both.
+11. **Invalidate.** `forgetLooseOidPrefix` for every fanout prefix touched — see §0.1. The
+    loose-oid cache's stated invariant ("tsgit never prunes loose objects",
+    `loose-oid-cache.ts:13-15,:61`) is falsified by step 9 and its prose must be rewritten in the
+    same commit.
+
+##### The injectable clock
+
+R28 requires it and ADR-731 states it. **The house pattern already exists** and is followed exactly,
+not invented: `acquireIndexLock` carries
+
+```ts
+/** Injectable clock — defaults to `Date.now`. Tests override to simulate stale/skewed locks. */
+readonly now?: () => number;
+```
+
+on its **internal** options interface (`primitives/internal/index-lock.ts:7-8`), consumed as
+`const now = opts.now ?? (() => Date.now())` (`:50`). The gc pipeline's internal options bag takes
+the same field with the same docstring shape. Being internal, it **does not widen
+`reports/api.json`** and does not appear on `MaintenanceOptions` — a public "pretend it is
+Tuesday" knob is not a feature, and every expiry test gets determinism without one.
+
+Note the unit mismatch and handle it once, at the seam: `Date.now()` is **milliseconds**, the
+sidecar stores **seconds** (Pin P). Convert at the single point where the cutoff is computed —
+`Math.floor(now() / 1000)`, exactly as `reflog-identity.ts:31` and `commit.ts:355` already do — and
+keep every comparison downstream in seconds. Mixing the two is a 1000× expiry bug that a test with
+a fixed clock will catch only if the test's clock is also in milliseconds; write it that way.
+
+##### Object placement by file class — the pinned surface
+
+ADR-731 names object placement by file class as a faithfulness surface, so here it is, exhaustively,
+with the one divergence called out rather than buried:
+
+| Object class | git default `gc` | tsgit `maintenance({tasks:['gc']})` | Same? |
 |---|---|---|---|
-| reachable loose | packed | packed | **packed** |
-| unreachable loose, recent | → cruft pack (mtime sidecar) | stays loose | **stays loose** |
-| unreachable loose, > 2 weeks | **deleted** | **deleted** † | **stays loose** |
-| loose already in a pack (`prune-packable`) ‡ | removed | removed | **removed** |
+| reachable loose | → normal pack | → normal pack | ✅ |
+| unreachable loose, newer than cutoff | → cruft pack + `.mtimes` | → cruft pack + `.mtimes` | ✅ |
+| unreachable loose, `mtime <= cutoff` | **destroyed** | **destroyed** | ✅ |
+| in cruft pack, still unreachable, newer than cutoff | carried forward, mtime intact | carried forward, mtime intact | ✅ |
+| in cruft pack, `mtime <= cutoff` | **destroyed** | **destroyed** | ✅ |
+| in cruft pack, **now reachable again** | → normal pack, cruft pack shrinks/vanishes | → normal pack, cruft pack shrinks/vanishes | ✅ |
+| loose but already in a pack (`prune-packable`) | loose copy removed | loose copy removed | ✅ |
+| **in a normal pack, since become unreachable** | → **cruft pack**, carrying the source `.pack`'s mtime (Pin Q row 2) | **stays in its normal pack** | ⚠️ **diverges** |
 
-† The default-`gc` deletion is pinned directly (Pin E, row 3: an unreachable blob with its mtime
-forced to 2020 was gone after `git gc`). The `gc.cruftPacks=false` cell of that row is **not**
-directly pinned — it follows from `gc.pruneExpire`'s documented `prune --expire 2.weeks.ago`. It
-changes nothing in the tsgit column, which deletes in neither case, so nothing in this design rests
-on it; pin it if DC-17 lands as (b) or (c).
+**The last row is the one divergence, and it is a consequence of bounded consolidation, not of the
+cruft design.** It is stated here, in the docs page, and pinned by an interop test that asserts the
+divergence explicitly (an interop test that *documents* a difference is worth more than one that
+quietly omits the case). Its practical shape: tsgit reclaims space from unreachable objects that
+were **loose** or already **cruft**, and never from objects that were consolidated into a normal
+pack while reachable and later became garbage. Those are retained indefinitely — the same
+conservative failure mode DC-17(a) had, now narrowed to one class instead of all of them.
 
-‡ Also documented rather than separately pinned: `git count-objects -v` reports this class as
-`prune-packable` (it read `0` in every probe above, because no probe created the case), and
-`repack -d` is what removes it. Pin it in the implementing change — it is the one row where
-tsgit *does* delete something, so it is the row that most deserves a pin.
+##### The consolidation question, confronted
 
-tsgit is strictly *more* conservative than git in every row: it never deletes an object git would
-keep, and it keeps objects git would delete. Nothing is lost; a repo maintained only by tsgit
-retains unreachable garbage indefinitely. **This is the open question DC-17 carries** — see
-Decision candidates. The design above is DC-17(a).
+Default `git gc` does two things: it runs the cruft lifecycle **and** it repacks all existing packs
+into one. Pin Q row 2 and this probe are unambiguous:
 
-**Why gc-lite does not consolidate existing packs, and what changes if DC-17 says it must.**
+```text
+$ git repack -d      # two normal packs, 6 objects each
+$ git gc
+pack-a09fb454….{idx,pack,rev}   objects=12      packs: 2 → 1
+```
+
+So "full parity with default gc" would include all-into-one consolidation. **This design does the
+cruft lifecycle now and defers consolidation of existing normal packs**, for one reason, which
+ADR-731 itself already weighed:
+
 `buildPack` is **delta-free** — `build-pack.ts:1-12` is explicit that every oid becomes a base
-entry. Reading an existing pack's delta chains and re-emitting them as full base entries would
-**inflate** the repository, possibly several times over: a "gc" that makes the repository bigger
-is the opposite of gc. So under DC-17(a) no existing pack is read, rewritten or removed, and three consequences
-follow that must be asserted rather than assumed:
+entry. Consolidating means reading every existing pack's delta chains and re-emitting them as full
+base entries. On real history that inflates the repository, plausibly several-fold: **a `gc` that
+makes the repository bigger is the opposite of `gc`**, and it would do so on the one workload P9
+exists to serve — the browser/OPFS repository with no host git to repair it afterwards.
 
-- **`packsAfter = packsBefore + 1`** on a run that packs anything, and `= packsBefore` otherwise.
-  The pair is thin under (a); it becomes informative only under (b).
-- **The two carried backlog constraints are discharged structurally.** No pack is removed, so no
-  `.rev` can be orphaned (Pin F's rule never fires). The midx is left in place, which is exactly
-  what `git repack -d` does when a *new* pack appears — Pin G row 2: the midx survives, `git fsck`
-  is silent at exit 0, and reads still work. Git deletes the midx only when it removes the packs
-  the midx names (Pin G row 1), which gc-lite never does. tsgit's `bindMidx` already tolerates the
-  partial-coverage case without a refusal (`midx-binding.ts:89-103,123-134`). **A test must assert
-  both**, so that a later change to (b) fails loudly instead of orphaning artefacts.
-- **No bitmap is written.** Pin F: git's default gc writes only `.idx`/`.pack`/`.rev`; `.bitmap`
-  needs `repack.writeBitmaps=true`. Writing none matches the default exactly.
+**Why this is ADR-731's own reading and not a fresh decision.** ADR-731 weighed
+*"Consolidate à la `repack -A -d`, cruft off"* as option 2 and **rejected it**, on exactly this
+ground ("with a delta-free `buildPack` the repository inflates"). It then chose option 3 and wrote
+the decision as *"reachable **loose** objects pack normally; unreachable objects go to a cruft pack
+…"* — the word *loose* is load-bearing, and the ADR's Decision paragraph is the operative text. Its
+"the delta-free packer is a documented size trade" sentence is what licenses re-emitting *cruft*
+objects base-only, which the lifecycle genuinely requires (Pin S's carry-forward); it is not a
+licence to inflate the whole repository.
 
-If DC-17 lands as **(b)** (consolidate like `git repack -A -d` with cruft packs off), the delta
-below is added to this part and nothing above is removed: a delta-capable pack writer or an
-accepted size regression; loosening unreachable objects out of superseded packs before deleting
-them; deleting each superseded pack together with its `.idx`, `.rev`, `.bitmap` and `.promisor`
-siblings (Pin F); and **deleting `objects/pack/multi-pack-index`** when any pack it names is
-removed (Pin G row 1) — deletion being the only option, since no midx writer exists.
+⚠️ **One tension, recorded honestly rather than smoothed over.** DC-17's option table below defines
+(c) as "**(b) plus** a cruft-pack writer", and (b) *was* the consolidating option. ADR-731's own
+options list drops that phrasing and describes option 3 purely as cruft parity. The two texts can
+be read against each other. This design follows ADR-731's Decision paragraph, because it is the
+ratified artifact and the narrower, non-destructive reading — and because the ADR's stated
+consequences are all satisfied without consolidation (see the next paragraph). **If the user meant
+full `repack -A -d` parity, this is the cheap place to say so**: the delta below is additive, and
+nothing else in P9 changes.
+
+**The two carried constraints are discharged for real — by the cruft lifecycle, not by
+consolidation.** This is the load-bearing check on the reading above, and it passes:
+
+- **`.rev` sibling deletion (Pin F) fires.** Step 10 retires a superseded cruft pack and deletes
+  its `.rev` with it. Under DC-17(a) nothing was ever removed and the rule was vacuous; it is not
+  vacuous now. A cruft rewrite happens on any run where the unreachable set changes, which is most
+  runs.
+- **midx expiry fires.** If `objects/pack/multi-pack-index` names the retired cruft pack, step 10
+  deletes it — Pin T reconfirms Pin G row 1 in the cruft setting (`midx after gc: NO`). Deletion is
+  the only verb available (no midx writer exists), and it is what git does. When the midx does
+  **not** name the retired pack, it is left alone, which is Pin G row 2 and equally correct.
+  tsgit's `bindMidx` already tolerates the partial-coverage case (`midx-binding.ts:89-103,123-134`).
+- **`packsAfter` / `packsBefore` became informative.** Under (a) the pair could only ever differ by
+  one. It now spans `−1` (cruft expired away), `0` (cruft rewritten in place of its predecessor),
+  `+1` and `+2` (a normal pack and a first cruft pack). Assert the arithmetic per branch.
+- **No bitmap is written.** Pin F: git's default gc writes only `.idx`/`.pack`/`.rev`(+`.mtimes`);
+  `.bitmap` needs `repack.writeBitmaps=true`. Writing none matches the default exactly.
+
+**What full consolidation would add**, if it is ever taken (unchanged from the DC-17(b) delta, and
+still gated on the same prerequisite): a delta-capable pack writer **or** an accepted and measured
+size regression; reading unreachable objects out of superseded normal packs into the cruft set
+before deleting them (Pin Q row 2 gives their mtime — the source `.pack`'s); and deleting each
+superseded normal pack with its `.idx`, `.rev`, `.bitmap` and `.promisor` siblings. Nothing above
+is removed by that delta; it is purely additive, which is what makes deferring it safe.
 
 **Crash safety.** The ordering above is the safety argument, and it is the same one Pin B gives for
-clone: nothing is deleted until its replacement is present, verified and readable. A crash after
-step 4 leaves a valid extra pack whose objects are also still loose — redundant, not corrupt, and
-the next run cleans it up as `prune-packable`. A crash mid-step-6 leaves a partially pruned loose
-set, all of whose objects are in the pack. `ctx.fs.rm` throwing `FILE_NOT_FOUND` on an
-already-gone path (`ports/file-system.ts:106-107`) must be tolerated **by code, not by a bare
-catch**: narrow to that one code and rethrow the rest. `writeExclusive`'s contract already
-anticipates a concurrent pruner (`ports/file-system.ts:66-79` — "if the parent is removed between
-the implicit mkdir and the open (e.g. concurrent `git gc` prunes the fanout), the adapter retries
-once"), so a host git running against the same repository is a supported concurrency, not an
-excluded one.
+clone: nothing is deleted until its replacement is present, verified and readable. Walking the new
+steps:
+
+| Crash point | State left behind | Recovery |
+|---|---|---|
+| after step 6 (normal pack written) | a valid extra pack whose objects are also still loose | redundant, not corrupt; next run cleans it as `prune-packable` |
+| after step 7 (new cruft pack written, old not yet retired) | **two** cruft packs, both valid, the objects duplicated | readable by git and tsgit; the next run's step 2 must therefore tolerate finding more than one `.mtimes` — treat the set union as `existingCruft` and retire all but the one it writes. **This is the one crash state that needs explicit code**, not just an argument |
+| mid step 9 | partially pruned loose set, every object of it in a pack | benign; re-running completes it |
+| mid step 10 | a retired cruft pack missing some siblings (e.g. `.mtimes` gone, `.pack` present) | a pack without a sidecar reads as a **normal** pack — its objects survive and simply stop aging. Delete `.mtimes` **last** of the four so this is the only reachable partial state, and it is the safe one |
+
+Deleting the sidecar last is a deliberate ordering choice: every other order can leave a `.mtimes`
+without its `.pack`, which step 2 must then refuse. Ordering it this way means the crash window
+produces a state that is *conservative* (garbage retained) rather than one that refuses.
+
+`ctx.fs.rm` throwing `FILE_NOT_FOUND` on an already-gone path (`ports/file-system.ts:106-107`) must
+be tolerated **by code, not by a bare catch**: narrow to that one code and rethrow the rest.
+`writeExclusive`'s contract already anticipates a concurrent pruner
+(`ports/file-system.ts:66-79` — "if the parent is removed between the implicit mkdir and the open
+(e.g. concurrent `git gc` prunes the fanout), the adapter retries once"), so a host git running
+against the same repository is a supported concurrency, not an excluded one.
 
 **Cost shape, and where P1's policy applies.** `collectLooseObjectIds` is 512 serial fs round trips
 (`exists` then `readdir` per prefix) — the enumeration goes through P1's **`ioBound`** pool, which
@@ -2021,11 +2451,43 @@ is the single largest win available in this task and the reason P9 sits after P1
 per-oid `readObject` + deflate loop is `cpuBound`. Neither pool is invented here; both come from
 `limitFor(ctx, …)`.
 
-**Config.** Adding `gc.auto` means adding the first `gc` section to `ParsedConfig`. Follow
-`pack.writeReverseIndex` exactly — interface member near `config-read.ts:114`, a `mergeGc` beside
-`mergePack` (`:909-914`), type echoes at `:499`, `:1048`, `:1127` — and validate it through the
-same `assertValidBooleanConfig`-style eager path so a malformed `gc.auto` refuses like every other
-malformed key rather than silently defaulting.
+**Config.** Adding the first `gc` section to `ParsedConfig` now carries **three** keys, not one.
+Follow `pack.writeReverseIndex` exactly — interface member near `config-read.ts:114`, a `mergeGc`
+beside `mergePack` (`:909-914`), type echoes at `:499`, `:1048`, `:1127` — and validate through the
+same eager path so a malformed key refuses like every other malformed key rather than silently
+defaulting:
+
+| Key | Type | Default | Semantics (pinned) |
+|---|---|---|---|
+| `gc.auto` | integer | `6700` | Pin D/I — consulted **only** under `auto: true` |
+| `gc.pruneExpire` | date expression | `2.weeks.ago` | Pin R — `never` ⇒ nothing expires; `now` ⇒ no cruft pack written |
+| `gc.cruftPacks` | boolean | `true` | Pin E/R — `false` selects the pre-cruft path: unreachable objects stay **loose** and aged ones are deleted outright |
+
+`gc.pruneExpire` is the one that is **not** a boolean or an integer, so it does not fall out of the
+existing validator shapes. It accepts git's date-expression grammar (`2.weeks.ago`, `now`, `never`,
+`@<epoch>`, ISO-8601), and git's refusal on a value it cannot parse is pinned exactly (Pin R):
+
+```text
+$ git gc --prune=bogus
+fatal: failed to parse prune expiry value bogus        exit 128
+```
+
+— it refuses **before writing anything**. tsgit refuses with a typed `invalidConfig`-family error
+carrying the offending value in `.data`, and writes nothing, which is the faithful behaviour and
+also the only safe one for a destructive operation. **Scope control:** implement the subset the
+lifecycle needs — `never`, `now`, `@<epoch>`, ISO-8601, and the `<n>.<unit>.ago` forms — and
+*refuse* the rest rather than approximating it. A date expression tsgit silently mis-parses moves
+the cutoff, and moving the cutoff destroys data. Refusing an exotic-but-valid git expression is a
+recoverable inconvenience; mis-parsing one is not.
+
+`gc.cruftPacks=false` is cheap to honour because it is a strictly smaller pipeline: skip steps 2, 7
+and 10 (no sidecar is read, written or retired). **Step 5 still runs** — the cutoff is still
+computed and still applied, but to the loose objects directly: those past it are unlinked in step 9,
+and those newer than it are simply left loose. That is exactly Pin E row 5 and probe `gc.cruftPacks=false`
+(`loose: 1` — the two aged danglers deleted, the fresh one untouched), and getting it wrong in the
+other direction (skipping expiry too) would make this flag mean "never reclaim anything", which is
+what `gc.pruneExpire=never` already means. The flag earns its place as the escape hatch for anyone
+who does not want a tsgit-written sidecar in their object store.
 
 #### Surface gates — the full Tier-1 checklist
 
@@ -2039,7 +2501,7 @@ Budget every row; `npm run validate` catches only some of them, and `reports/api
 | 3 | facade interface | `src/repository.ts` (`packRefs` at `:380`) | `readonly maintenance: BindCtx<typeof commands.maintenance>;`, alphabetical |
 | 4 | facade impl | `src/repository.ts` (`packRefs` at `:797-800`, `packObjects` at `:793-796`) | the **options-taking** arrow shape (like `packObjects`), not the no-arg shape |
 | 5 | binding-integrity key list | `test/unit/repository/repository.test.ts:249-…` (array), assertion `:248`, `it` at `:242` | add `'maintenance'` in sorted position — this test asserts `Object.keys(sut)` **exactly** |
-| 6 | docs page | `docs/use/commands/maintenance.md` + the index row | both tasks, the `auto` semantics, the exact-count note, and the unreachable-object table above |
+| 6 | docs page | `docs/use/commands/maintenance.md` + the index row | both tasks, the `auto` semantics, the exact-count note, the **object-placement table** above including its one ⚠️ divergence row, the three `gc.*` keys, and an explicit warning that `gc` **destroys** aged unreachable objects — this is the first tsgit command that can |
 | 7 | parity scenario | `test/parity/scenarios/maintenance.scenario.ts`; registered in `test/parity/scenarios/index.ts` (import ≈`:24`, array entry ≈`:93`) | runs on node **and** memory adapters (`test/parity/{node,memory}.test.ts`) |
 | 8 | README count | `README.md:47` — "**46** Tier-1 commands · 20+ AsyncIterable primitives · …" | 46 → **47** |
 | 9 | `reports/api.json` | prepush gate | `npm run docs:json`, committed **in this part** |
@@ -2058,22 +2520,47 @@ Every row becomes a case in a new `test/integration/maintenance-interop.test.ts`
 | commit-graph, SHA-256 | same, in a `--object-format=sha256` repo; header hash version `2` (Pin N) |
 | commit-graph accepted by git | `git commit-graph verify` on tsgit's file → silent, exit 0 |
 | commit-graph root set | a commit reachable only from a reflog is **absent** from tsgit's graph, as it is from git's (Pin O) |
-| gc-lite reachable direction | after tsgit gc-lite, `git fsck` silent exit 0; `git count-objects -v` `count`/`in-pack` split matches the equivalent `git -c gc.cruftPacks=false gc --prune=never` run |
-| gc-lite unreachable direction | an unreachable recent loose object is byte-identical and at the same path after the call (Pin E row 5 is the git-side comparison) |
-| gc-lite retention roots | an index-only blob and a reflog-only commit both survive and are **packed** (Pin H) |
+| gc reachable direction | after tsgit `gc`, `git fsck` silent exit 0; `git count-objects -v` `count`/`in-pack`/`packs` split matches the equivalent real-git run |
+| gc retention roots | an index-only blob and a reflog-only commit both survive and are **packed** into the normal pack (Pin H) |
 | no ref mutation | `packed-refs`, every loose ref file and every reflog byte-identical across the call (Pin J is the contrast: git's `gc` **does** pack refs) |
-| artefact siblings | the new pack carries `.idx` and `.rev`; no `.bitmap`, no mtime sidecar (Pin F) |
-| midx survival | a pre-existing `objects/pack/multi-pack-index` is untouched and still readable by git afterwards (Pin G row 2) |
+| artefact siblings | the normal pack carries `.idx` and `.rev` and **no** `.mtimes`; the cruft pack carries `.idx`, `.rev` **and** `.mtimes`; neither carries `.bitmap` (Pins F, T) |
+| **cruft creation** | seed unreachable loose objects, run tsgit `gc`, then assert git agrees: `git cat-file -e` exit 0 on each, `git fsck` reports them as `dangling` at exit 0, `git count-objects -v` counts them `in-pack`. Then run `git gc` on a **twin** repository and assert the same object→file-class partition |
+| **`.mtimes` byte format** | tsgit's sidecar parsed by an independent decoder: signature `MTME`, version `1`, hash id `1`/`2`, `objectCount` entries, `u32BE` table in `.idx` (oid-ascending) order, pack checksum `==` the `.pack` trailer `==` the name's `<sha>`, self-checksum `== hash(bytes[0…len−hashLength))` (Pins P, U). **Byte-compared against git's own sidecar for the same cruft set and the same mtimes** |
+| **mtime provenance** | a loose object whose mtime is forced to a fixed past value carries **exactly** that value in tsgit's sidecar — not the run time (Pin Q row 1) |
+| **freshen** | an object already in the cruft pack, rewritten via `writeObject` before the next `gc`, has its sidecar mtime **advanced** to the new value and therefore survives a cutoff that would otherwise destroy it — matching git's behaviour under `git hash-object -w` + `git gc` (Pin Q) |
+| **expiry boundary** | three unreachable objects at `cutoff−1`, `cutoff`, `cutoff+1` with an injected clock: **only `cutoff+1` survives**. The at-cutoff object is destroyed, matching git's strict `>` (Pin R). Run the identical setup through real git with `--prune=@<cutoff>` and compare the surviving sets |
+| **`--prune=never` equivalence** | `gc.pruneExpire=never` ⇒ every unreachable object survives **in a cruft pack** (not loose, not deleted); the resulting object→file-class partition equals `git gc --prune=never`'s on a twin repository (Pin R) |
+| **`--prune=now` equivalence** | `gc.pruneExpire=now` ⇒ **no cruft pack exists** afterwards and every unreachable object is gone, matching `git gc --prune=now` (Pin R) |
+| **`gc.cruftPacks=false` fallback** | unreachable recent objects stay **loose** and aged ones are deleted, matching `git -c gc.cruftPacks=false gc` (Pin E row 5) |
+| **existing cruft, next gc** | all four Pin S branches: (1) new garbage ⇒ rewritten under a new sha, **old mtimes byte-identical** in the new sidecar; (2) partial expiry ⇒ rewritten with survivors only, old siblings gone; (3) total expiry ⇒ cruft pack **and all four siblings** absent; (4) unchanged set ⇒ sidecar **byte-identical**, same file name. Each mirrored against real git on a twin repository |
+| **resurrection** | an object in the cruft pack made reachable again moves to the normal pack and leaves the cruft set (Pin S) |
+| **`.rev` sibling + midx deletion** | retiring a cruft pack deletes its `.rev` with it, and deletes `objects/pack/multi-pack-index` when that midx names the retired pack (Pins F, T, G row 1). **This is the row that proves the two carried backlog constraints are discharged for real** |
+| midx survival | a pre-existing midx that does **not** name any retired pack is untouched and still readable by git afterwards (Pin G row 2) |
+| **SHA-256 cruft** | the whole lifecycle in an `--object-format=sha256` repository: sidecar hash id `2`, 32-byte trailers, 80-byte file for one entry (Pin U) |
+| **malformed prune expiry** | an unparseable `gc.pruneExpire` refuses with typed data **and writes nothing** — no pack, no sidecar, no deletion — mirroring `fatal: failed to parse prune expiry value bogus` / exit 128 (Pin R) |
+| ⚠️ **the one divergence, asserted** | an object consolidated into a normal pack while reachable and since made unreachable: **git moves it to the cruft pack, tsgit leaves it in its normal pack.** The test asserts *both* behaviours explicitly, so the divergence is a pinned, reviewed fact rather than an untested gap — and so that a future consolidating change fails this test loudly instead of drifting |
 
 Parity scenarios prove cross-adapter consistency only; **none of the above is provable by a parity
 test**. Interop is the only faithfulness proof.
 
 #### Oracles
 
-- **R22–R26** above.
-- A new `test/bench/maintenance.bench.ts` with two scenarios: commit-graph write over
-  `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count, and gc-lite over a fixture seeded with a few
-  thousand loose objects. Absolute wall-clock only, through P0.5's driver.
+- **R22–R31** above.
+- A new `test/bench/maintenance.bench.ts` with **three** scenarios, absolute wall-clock only,
+  through P0.5's driver:
+  1. commit-graph write over `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count;
+  2. `gc` over a fixture seeded with a few thousand **reachable** loose objects — the pack-and-prune
+     path;
+  3. **`gc` over a fixture seeded with a few thousand *unreachable* loose objects plus an existing
+     cruft pack** — the cruft path, which is the one ADR-731 added and the one with a genuinely
+     different cost shape: it pays an extra pack build, an extra `.idx`/`.rev`/`.mtimes` write, and
+     a full re-read of the previous cruft pack for carry-forward. Its honest headline is
+     *second-run* cost, so the scenario must measure a **repeat** `gc`, not a first one — a
+     first-run number would flatter the design by skipping the carry-forward entirely.
+- Scenario 3 is a **cost ceiling, not a win**: nothing here is faster than before, because before
+  there was no cruft lifecycle at all. Report it as a budget (this is what maintenance now costs on
+  a garbage-heavy repo) and revert only on a result that makes `gc` unusable, never on a delta
+  against a baseline that does not exist.
 - The **transitive** oracle, and the reason this part pays for itself: after a `commit-graph` run
   on a tsgit-created repo, `test/bench/log.bench.ts` must show the commit-graph fast path engaging
   — F12's prefetcher stops being dead code. Measure it; do not assert it in prose.
@@ -2107,12 +2594,11 @@ Recorded so the corrections do not have to be re-derived:
 
 ## Decision candidates
 
-**DC-1 … DC-16 are all settled — see ADRs 718–730.** The table is retained verbatim as the
+**DC-1 … DC-17 are all settled — see ADRs 718–731.** The table is retained verbatim as the
 historical record of what was weighed, with a **Settled** column carrying each outcome. The
-designer decided none of them. **DC-17 is new, arrived with the P9 expansion, and is
-unsettled** — it is the only open question in this document.
+designer decided none of them. **There is no open question left in this document.**
 
-**ADRs authored.** Thirteen, numbered **718–730** (`docs/adr/` held 727 files, highest 717, when
+**ADRs authored.** Fourteen, numbered **718–731** (`docs/adr/` held 727 files, highest 717, when
 this design was first written). The mapping is one ADR per load-bearing decision, with the
 concurrency seam's four sub-shapes collapsed into one:
 
@@ -2131,21 +2617,36 @@ concurrency seam's four sub-shapes collapsed into one:
 | **728** — clone pack quarantine matches git, with tidy unlink | DC-14 | **adopted as recommended (b)**; the handled-failure pin is an explicit implementer obligation | — |
 | **729** — perf baseline records tick totals | DC-15 | **adopted as recommended (a)** | refines ADR-652 (the baseline stays ungated) |
 | **730** — remediation ships as one PR | DC-16 | **user-ratified (a)** — all ten parts, P9 included | — |
+| **731** — gc uses cruft packs | DC-17 | **user-ratified (c) — above the recommendation.** The design recommended (a), reachable-only; the user took full cruft-pack parity | **supersedes ADR-724** (the gc task's prune-loose semantics only) |
 
-**Two supersessions, both narrow.** ADR-389 → 718 gives up only the *default-on posture* and the
+**Three supersessions, all narrow.** ADR-389 → 718 gives up only the *default-on posture* and the
 premise that dropping verification weakens faithfulness (Pin A shows that premise is backwards);
 the incremental end-of-stream verification mechanism and the `{ verifyHash }` option surface are
 carried forward. ADR-541 → 721 gives up only the premise that the facade wrapper is a load-bearing
 **read-path** layer for first-party adapters; the root-set containment model, canonical-prefix
 derivation and the entire write-path posture are carried forward.
 
-**One deviation from the design's recommendation:** DC-2. The design recommended (a) —
-`commit-graph write` alone, on the grounds that gc-lite "is a phase, not a slice". The user chose
-(b). P9 above is rewritten to that scope, and DC-17 is the question that scope opened.
+**ADR-724 → 731** is the third, and the only one internal to this document's own decision set. It
+gives up exactly one clause: ADR-724's *"prune the packed loose objects"* semantics for
+**unreachable** objects, replaced by git's cruft-pack lifecycle. Everything else in ADR-724 is
+carried forward verbatim and is **not** re-litigated by 731 — the `maintenance` command itself,
+explicit-only invocation, the commit-graph task in full, the structured-result posture, the
+midx-expiry and `.rev`-sibling constraints (which 731 turns from vacuous into load-bearing), and
+the eleven-row Tier-1 surface gate set. ADR-724's status line reads *superseded by ADR-731 (prune
+semantics; the command and commit-graph task stand)*, and its header carries the forward pointer,
+so a reader arriving at 724 first is not misled about which parts still bind.
 
-**One ADR is arguably owed and deliberately not written yet:** DC-17's outcome. Whichever option
-the user takes, it either amends ADR-724's gc-lite scope with the cruft-pack divergence (option a
-or b) or expands it (option c). It is left unwritten because the designer does not decide it.
+**Two deviations from the design's recommendation, both in P9's direction:** DC-2 and DC-17. The
+design recommended commit-graph write alone (DC-2 (a)), on the grounds that gc "is a phase, not a
+slice"; the user took (b). The design then recommended the reachable-only gc (DC-17 (a)), on the
+grounds that a whole new on-disk format is a second phase inside that phase; the user took (c).
+Both were product-scope calls and both went the same way — toward the honest full answer to the
+parked backlog entry. P9 above is written to the ratified scope, not to the recommendation, and
+the recommendation's reasoning is retained in the DC-17 row below only as the record of what was
+weighed and rejected.
+
+**No ADR is outstanding.** DC-17's outcome is ADR-731, authored; the "one ADR arguably owed" note
+that stood here in the previous revision is discharged.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why | Settled |
 |---|---|---|---|---|---|
@@ -2165,7 +2666,7 @@ or b) or expands it (option c). It is left unwritten because the designer does n
 | **DC-14** | **F8 quarantine failure posture** | (a) Match git exactly: `tmp_pack_<random>` in `objects/pack/`, renamed after trailer verification, no cleanup on hard kill. (b) (a) plus a best-effort `try/finally` unlink on a caught failure. (c) Stream to a `tmp/` sibling directory instead of `objects/pack/`. | **(b)** | Pin B shows git leaves a partial `tmp_pack_*` after `SIGKILL`, so (a) is literally faithful for the un-cleanable case. Whether git also unlinks on a *handled* failure is **not pinned here** — the probe only covered a hard kill — so (b) is proposed on tidiness grounds, not faithfulness grounds, and the implementer should pin the handled-failure case (kill `git-upload-pack` mid-stream rather than the client) before claiming parity. Either way the hard-kill leftover matches git. (c) diverges from git's on-disk layout for no benefit and would confuse a host `git gc` running against the same repository. | **(b)** · adopted as recommended · **ADR-728** |
 | **DC-15** | **P0.1 baseline schema change** — `baseline.json` is a committed artifact | (a) Add `ticks` per frame + `totalTicks` per command, and mark under-sampled commands. (b) Keep the schema; record tick totals in a separate `docs/perf/sampling.md`. (c) Keep the schema; raise iterations until every command clears the floor and say so in the commit message. | **(a)** | The whole defect is that a share with no denominator cannot be read; putting the denominator in a sibling document reproduces the problem for the next reader (b). (c) fixes today's artifact but not the next regeneration on a different machine, where the same command may fall under the floor again. (a) is a one-field change to a file nothing gates on, and `tooling/test/unit/profile-digest.test.ts` already pins the shape so the migration is mechanical. | **(a)** · adopted as recommended · **ADR-729** |
 | **DC-16** | **Delivery shape** | (a) All ten parts in one PR, sequential commits, decision-gated parts dropped if their decision says no. (b) Split: P0–P4 in one PR, P5–P9 in a second. (c) One PR per part. | **(a)** | The repo's workflow is trunk-based with one PR per run, and the parts share oracles: P0's harness fixes are what make P3/P4/P6/P7's numbers readable, and P1's policy is consumed by P6/P7. Splitting (b) means the second PR re-derives the first's measurement context. (c) multiplies the mutation/validate/nightly cost by ten for a change whose parts are individually small. The risk (a) carries is a large diff for the review phase, mitigated by atomic per-part commits. **If DC-2 adopts F11**, P9 alone is plausibly its own PR — it adds a command surface, not a perf fix. | **(a)** · user-ratified · **ADR-730** |
-| **DC-17** 🆕 | **How gc-lite treats unreachable objects** — git 2.55's *default* `gc` writes a **cruft pack** with an mtime sidecar, a format tsgit neither reads nor writes (Pin E) | (a) **Reachable-only, additive**: pack only *reachable* loose objects, prune only those (plus `prune-packable` loose-already-in-a-pack); never touch existing packs; never touch unreachable loose objects; never delete on age. Equivalent to `git -c gc.cruftPacks=false -c gc.pruneExpire=never gc`, restricted to the loose→pack direction. (b) **Consolidating, cruft-free**: `git repack -A -d` with cruft packs off — one new pack of all reachable objects, unreachable objects loosened out of superseded packs first, superseded packs removed with `.idx`/`.rev`/`.bitmap`/`.promisor`, `objects/pack/multi-pack-index` deleted. (c) **Default parity**: (b) plus a cruft-pack writer (mtime sidecar, read **and** write) and `gc.pruneExpire=2.weeks.ago` age-based deletion. | **(a)** | `buildPack` is **delta-free** (`build-pack.ts:1-12`: every oid becomes a base entry). Under (b) gc-lite would read existing packs' delta chains and re-emit them as full base entries — a `gc` that **inflates** the repository, which is the opposite of the point. (b) becomes sane only once a delta-capable pack writer exists, and that is a phase of its own. (a) is strictly more conservative than git in every row of the Pin E table: it never deletes an object git keeps, and it keeps objects git would delete after two weeks — nothing is ever lost, at the cost of unreachable garbage accumulating indefinitely in a tsgit-only repository. (c) is byte-faithful to git's default and is the only option that ever *reclaims* space from unreachable objects, but it adds a whole on-disk format to both the reader and the writer, and its age-based deletion is the one operation in this design that can destroy data. **The cost of (a) is honesty about what it is**: ADR-724's two carried constraints (midx expiry, `.rev` sibling deletion) are then discharged *vacuously* — nothing is removed, so nothing can be orphaned — and `packsBefore`/`packsAfter` only ever differ by one. If that reads as under-delivering against the ratified scope, (b) is the answer and P9 carries the written delta for it. | **NEW — UNSETTLED.** The only open question in this document. |
+| **DC-17** 🆕 | **How gc-lite treats unreachable objects** — git 2.55's *default* `gc` writes a **cruft pack** with an mtime sidecar, a format tsgit neither reads nor writes (Pin E) | (a) **Reachable-only, additive**: pack only *reachable* loose objects, prune only those (plus `prune-packable` loose-already-in-a-pack); never touch existing packs; never touch unreachable loose objects; never delete on age. Equivalent to `git -c gc.cruftPacks=false -c gc.pruneExpire=never gc`, restricted to the loose→pack direction. (b) **Consolidating, cruft-free**: `git repack -A -d` with cruft packs off — one new pack of all reachable objects, unreachable objects loosened out of superseded packs first, superseded packs removed with `.idx`/`.rev`/`.bitmap`/`.promisor`, `objects/pack/multi-pack-index` deleted. (c) **Default parity**: (b) plus a cruft-pack writer (mtime sidecar, read **and** write) and `gc.pruneExpire=2.weeks.ago` age-based deletion. | **(a)** | `buildPack` is **delta-free** (`build-pack.ts:1-12`: every oid becomes a base entry). Under (b) gc-lite would read existing packs' delta chains and re-emit them as full base entries — a `gc` that **inflates** the repository, which is the opposite of the point. (b) becomes sane only once a delta-capable pack writer exists, and that is a phase of its own. (a) is strictly more conservative than git in every row of the Pin E table: it never deletes an object git keeps, and it keeps objects git would delete after two weeks — nothing is ever lost, at the cost of unreachable garbage accumulating indefinitely in a tsgit-only repository. (c) is byte-faithful to git's default and is the only option that ever *reclaims* space from unreachable objects, but it adds a whole on-disk format to both the reader and the writer, and its age-based deletion is the one operation in this design that can destroy data. **The cost of (a) is honesty about what it is**: ADR-724's two carried constraints (midx expiry, `.rev` sibling deletion) are then discharged *vacuously* — nothing is removed, so nothing can be orphaned — and `packsBefore`/`packsAfter` only ever differ by one. If that reads as under-delivering against the ratified scope, (b) is the answer and P9 carries the written delta for it. | **(c)** · user-ratified **above the recommendation** · **ADR-731** (supersedes 724's prune semantics). The "vacuous discharge" cost the recommendation flagged is exactly what the user declined to accept. Scope note recorded in P9: (c) is taken as the **cruft lifecycle in full**, with consolidation of pre-existing *normal* packs deferred on the delta-free-packer grounds this row already gives — ADR-731 weighed and rejected the consolidating option, and its Decision paragraph says "reachable **loose** objects pack normally". |
 
 ---
 
@@ -2184,7 +2685,7 @@ or b) or expands it (option c). It is left unwritten because the designer does n
 | P6 | index cache hit/miss/invalidate keyed on `(size,mtimeMs,mtimeNs,ino)`; every syscall-count pin in the table above re-asserted through the new mechanism; FlatTree cache key incl. `maxDepth`; gitlink preservation | — | `status`/`add` interop suites unchanged; `git-parity-containment-interop` untouched | `status`, `status-dirty`, `add` |
 | P7 | wave ordering (deletes → dirs → children); pool drain on first throw before `lock.commit`; `checkDirty` refusal arrays byte-order-identical under a pool; quarantine rename + failure unlink; zlib threshold both sides | — | clone/fetch network interop (`test/integration/network/*`, real `git-http-backend`); `test/browser/decompression-stream.spec.ts` | **new** `checkout.bench.ts`; `clone-small-repo`; `bench-memory` clone workload at two pack sizes |
 | P8 | provenance brand in `composeAdapters`; verdict identity between wrapper and adapter over a path corpus; `deriveContext` preserving/renewing the session token per dimension; `listWorktrees` ref-store reuse count | **new** containment verdict-identity property (lens 2, ADR-485 already asks for one) | `git-parity-containment-interop`, `worktree-interop`, `linked-worktree-discovery-interop`, `ownership-trust-gate-interop` | `merge` (the `guard` frame), `status` |
-| P9 | **commit-graph writer**: chunk table layout, `numChunks` 4 vs 5 (octopus ⇒ `EDGE`), `OIDF` 1024-byte fanout, oid-sorted `OIDL` positions, `CDAT` field-by-field incl. the `(genWord & 3) << 32 \| dateWord` split, `GDA2` corrected-date offsets, `NO_PARENT` / `OCTOPUS_FLAG` encoding, SHA-1 **and** SHA-256 header, the GDO2-overflow **refusal**, the ≥2³⁴ committer-date refusal, lock-file contention on `commit-graph.lock`, refs-only root set. **gc-lite**: `auto` gate on / off × `gc.auto` 0 / default / exceeded; the reachable-vs-unreachable partition; `prune-packable` unlink; unlink-after-verify ordering (a fault injected between write and prune must leave every object readable); `forgetLooseOidPrefix` called for every touched prefix; `ctx.fs.rm` `FILE_NOT_FOUND` narrowed and every other code rethrown; malformed `gc.auto` refusal; **no** pack / `.rev` / `.bitmap` / midx removed (R24); refs, reflogs and index byte-identical (R26); `MaintenanceResult` carries no rendered text | serializer ↔ parser round-trip for the commit-graph writer over an arbitrary commit DAG — `parseCommitGraphLayer(serializeCommitGraph(dag)) ≡ dag` incl. octopus merges and multi-root DAGs (lens 1); `commit-graph-writer.properties.test.ts`, reusing `test/unit/domain/commit/arbitraries.ts` | **new** `test/integration/maintenance-interop.test.ts` — all ten rows of the "Faithfulness pins this part owes" table: commit-graph byte identity (linear / merge / **octopus**), SHA-256 header, `git commit-graph verify` exit 0, refs-only root set (Pin O), gc-lite `fsck` + `count-objects -v` parity against `git -c gc.cruftPacks=false gc --prune=never`, unreachable-loose survival (Pin E), index-only + reflog-only retention (Pin H), ref/reflog immutability (Pin J), artefact siblings — `.idx`+`.rev`, no `.bitmap`, no mtime sidecar (Pin F), pre-existing midx untouched and still git-readable (Pin G). One shared `beforeAll` repo, 60 s timeout, `GIT_*` scrubbed, `HOME` isolated, signing off | **new** `maintenance.bench.ts`: (1) commit-graph write over `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count; (2) gc-lite over a fixture seeded with a few thousand loose objects, absolute wall-clock through P0.5's driver. Plus the **transitive** oracle — `log.bench.ts` must show the commit-graph fast path engaging on a tsgit-created repo after the write, i.e. F12's prefetcher stops being dead code |
+| P9 | **commit-graph writer**: chunk table layout, `numChunks` 4 vs 5 (octopus ⇒ `EDGE`), `OIDF` 1024-byte fanout, oid-sorted `OIDL` positions, `CDAT` field-by-field incl. the `(genWord & 3) << 32 \| dateWord` split, `GDA2` corrected-date offsets, `NO_PARENT` / `OCTOPUS_FLAG` encoding, SHA-1 **and** SHA-256 header, the GDO2-overflow **refusal**, the ≥2³⁴ committer-date refusal, lock-file contention on `commit-graph.lock`, refs-only root set. **gc**: `auto` gate on / off × `gc.auto` 0 / default / exceeded; the reachable-vs-unreachable partition; `prune-packable` unlink; unlink-after-verify ordering (a fault injected between write and prune must leave every object readable); `forgetLooseOidPrefix` called for every touched prefix; `ctx.fs.rm` `FILE_NOT_FOUND` narrowed and every other code rethrown; malformed `gc.auto` **and** malformed `gc.pruneExpire` refusals, each asserted on `.data` not on the error class; refs, reflogs and index byte-identical (R26); `MaintenanceResult` carries no rendered text. **cruft (ADR-731)**: `serializeCruftMtimes` header/body/trailer field-by-field incl. both hash widths and the `digestLength ∉ {20,32}` refusal; `.idx`-order (**not** offset-order) indexing, with a fixture whose mtimes are deliberately non-monotonic so an offset-indexed implementation fails; `parseCruftMtimes` on a count/`.idx` mismatch and on a bad self-checksum — **separate tests per guard**, since `if (A \|\| B) throw` needs each condition triggered alone; mtime provenance from loose `lstat` vs carried-forward sidecar entry, **and the `max` when both are present** (a lookup-with-fallback implementation must fail this test in both orderings — carried-newer and loose-newer); the expiry predicate at `cutoff−1` / `cutoff` / `cutoff+1` with an injected clock (the at-cutoff case is its own test — a StringLiteral/boundary mutant survives a two-sided test); `never` / `now` / `@epoch` / `<n>.<unit>.ago` cutoff derivation and the refusal for unsupported grammar; ms→s conversion at the seam; all four Pin S branches incl. the **byte-identical no-op**; the two-cruft-packs crash-recovery state; `.rev`+midx deletion on cruft retirement (R30); every cruft count in `MaintenanceResult` (R31) | serializer ↔ parser round-trip for the commit-graph writer over an arbitrary commit DAG — `parseCommitGraphLayer(serializeCommitGraph(dag)) ≡ dag` incl. octopus merges and multi-root DAGs (lens 1); `commit-graph-writer.properties.test.ts`, reusing `test/unit/domain/commit/arbitraries.ts`. **new** `cruft-pack.properties.test.ts` (R27, lens 1): `parseCruftMtimes(serializeCruftMtimes(x)) ≡ x` over arbitrary object counts, arbitrary `u32` mtime vectors and both hash widths; `numRuns` **200** (cheap round-trip tier); generators in the directory's `arbitraries.ts` | **new** `test/integration/maintenance-interop.test.ts` — every row of the "Faithfulness pins this part owes" table: commit-graph byte identity (linear / merge / **octopus**), SHA-256 header, `git commit-graph verify` exit 0, refs-only root set (Pin O), index-only + reflog-only retention (Pin H), ref/reflog immutability (Pin J), artefact siblings (Pins F, T), **cruft creation, `.mtimes` byte format against git's own sidecar, mtime provenance, the expiry boundary, `--prune=never` / `--prune=now` / `gc.cruftPacks=false` equivalences, all four existing-cruft branches, resurrection, `.rev`+midx deletion, SHA-256 cruft, the prune-expiry refusal, and the one ⚠️ divergence asserted explicitly** (Pins P–U). Twin-repository comparison — tsgit on one, real git on its clone — is the shape for every placement row. One shared `beforeAll` repo, 60 s timeout, `GIT_*` scrubbed, `HOME` isolated, signing off | **new** `maintenance.bench.ts`: (1) commit-graph write over `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count; (2) `gc` over a few thousand **reachable** loose objects; (3) **repeat** `gc` over a few thousand **unreachable** loose objects plus an existing cruft pack — a cost ceiling, not a win. Absolute wall-clock through P0.5's driver. Plus the **transitive** oracle — `log.bench.ts` must show the commit-graph fast path engaging on a tsgit-created repo after the write, i.e. F12's prefetcher stops being dead code |
 
 ### Cross-cutting
 
@@ -2192,10 +2693,21 @@ or b) or expands it (option c). It is left unwritten because the designer does n
   about git. Every refusal-adjacent change (P3's `INVALID_PACK_INDEX` layering, P5's flip, P7's
   quarantine, P8's containment) and every new on-disk artefact (P9's commit-graph and pack)
   gets an interop pin or an explicit ADR line saying why not.
-- **Three pins are owed *by implementers*, not by this design**, and each blocks a parity claim
-  until it is run: git's behaviour on a **handled** clone failure (ADR-728 / P7), whether git emits
-  a **`GDO2`** chunk under corrected-date overflow (P9 task 1), and — should DC-17 land as (b) or
-  (c) — git's exact cruft-pack mtime-sidecar layout. Record each matrix in this document when run.
+- **Two pins are owed *by implementers*, not by this design**, and each blocks a parity claim
+  until it is run: git's behaviour on a **handled** clone failure (ADR-728 / P7), and whether git
+  emits a **`GDO2`** chunk under corrected-date overflow (P9 task 1). Record each matrix in this
+  document when run. *(The third — the cruft-pack sidecar layout — is **discharged**: Pins P–U
+  above pin the format, ordering, mtime provenance, expiry arithmetic, existing-cruft lifecycle,
+  naming and SHA-256 variant against git 2.55.0.)*
+- **The expiry clock must be injected in tests, never mocked globally.** Every cruft test drives
+  `now` through the internal options seam (`index-lock.ts:7-8,:50`'s pattern). A test that reaches
+  for fake timers to move the expiry boundary is testing the wrong thing and will not survive a
+  mutant on the comparison operator — the boundary cases in R28 need a **real** `<=` evaluated
+  against three deliberately-chosen values, not a frozen wall clock.
+- **`gc` is the first destructive command in the library.** Every other command in tsgit either
+  adds or rewrites; `gc` with a non-`never` expiry **destroys objects permanently**. Reviews of
+  this part weight the expiry predicate and the step-10 deletion set accordingly, and the docs page
+  says so in the caller's words, not in a footnote.
 - **Interop hygiene** (prior-run learnings, all still binding): scrub `GIT_*` when spawning git
   (a husky hook leaks `GIT_DIR`; `-C` does not override it); isolate `HOME`; signing OFF for
   goldens; pin `-c merge.conflictStyle=merge` when comparing conflict bytes; share one
@@ -2220,17 +2732,23 @@ or b) or expands it (option c). It is left unwritten because the designer does n
   parse them today either, so it is a read+write pair, not a rider. They appear only under
   `--changed-paths` (Pin C), so omitting them is what byte-identity with the default write
   *requires*, not a shortfall against it.
-- **Cruft packs (the mtime sidecar) and age-based pruning.** git 2.55's default `gc` stores unreachable
-  objects in a cruft pack and deletes them past `gc.pruneExpire` (Pin E). tsgit neither reads nor
-  writes the mtime sidecar, and P9 adds neither. Consequence, stated plainly: a repository maintained only
-  by tsgit **never reclaims space from unreachable objects**. This is DC-17's subject — if the user
-  takes option (c), it moves back into scope and stops being a line here.
-- **A delta-capable pack writer.** `buildPack` emits base entries only (`build-pack.ts:1-12`).
-  Until that changes, gc-lite cannot consolidate existing packs without inflating the repository,
-  which is what pins DC-17 to option (a) and keeps `git repack -A -d` parity out of reach.
+- ~~**Cruft packs and age-based pruning.**~~ **Moved into scope by ADR-731** — P9 reads and writes
+  the `.mtimes` sidecar and runs the expiry lifecycle. Pins P–U carry the format.
+- **Consolidation of pre-existing *normal* packs** (`git repack -A -d`'s all-into-one half).
+  Deferred, with the reasoning written down in P9: `buildPack` emits base entries only
+  (`build-pack.ts:1-12`), so consolidating would re-emit existing delta chains as full bases and
+  **inflate** the repository — on exactly the browser/OPFS workload P9 exists to serve. ADR-731
+  weighed the consolidating option and rejected it on this ground. The cost is one pinned
+  divergence, named in P9's object-placement table: an object that was packed while reachable and
+  has since become unreachable stays in its normal pack instead of moving to the cruft pack, so its
+  space is never reclaimed. Everything else in the placement table matches git exactly.
+- **A delta-capable pack writer.** The prerequisite for the line above, and the single change that
+  would unlock `git repack -A -d` parity. Until it exists, consolidation cannot be done without a
+  measured size regression.
 - **A multi-pack-index writer.** None exists (`src/` has no `serializeMultiPackIndex`). P9's only
-  midx verb would be *delete*, and under DC-17(a) it does not even need that — it leaves a
-  partial-coverage midx exactly as `git repack -d` does (Pin G).
+  midx verb is *delete* — which it now genuinely exercises when a retired cruft pack is named by
+  the midx (Pin T) — and it leaves a partial-coverage midx alone otherwise, exactly as
+  `git repack -d` does (Pin G row 2).
 - **Pack bitmaps.** tsgit reads them and does not write them. git's default `gc` does not write
   them either (`repack.writeBitmaps` is off by default, Pin F), so P9 matches the default without
   doing anything.

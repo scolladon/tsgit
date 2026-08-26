@@ -665,6 +665,8 @@
     "mtext",
     "mtimeMs",
     "mtimeNs",
+    "mtimes",
+    "mtme",
     "multiack",
     "multicollision",
     "multicollisions",
