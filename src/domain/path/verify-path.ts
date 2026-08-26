@@ -77,10 +77,42 @@ const matchAliasPart = (part: string): VerifyPathRejection | undefined => {
   return hfsNormalized === DOTGIT ? 'dotgit-hfs-alias' : undefined;
 };
 
+const ASCII_DOT = 0x2e;
+const ASCII_UPPER_G = 0x47;
+const ASCII_LOWER_G = 0x67;
+const ASCII_BACKSLASH = 0x5c;
+const ASCII_MAX = 0x7f;
+
+/**
+ * True when `component` cannot possibly normalise (case-fold, trailing
+ * dot/space strip, or ignorable-codepoint strip) to `.git`, `git~1`, or
+ * either of their stream/alias forms — every target of {@link matchAliasPart}
+ * begins with `.` or `g`/`G` and is pure ASCII. A component whose first
+ * character is neither, that carries no backslash (which could re-anchor a
+ * LATER split part's own first character), and no byte ≥ 0x80 (every
+ * {@link IGNORABLE_CODEPOINTS} entry is ≥ 0x80, and an ignorable codepoint
+ * hiding at the FRONT of a component is exactly what turns a
+ * non-alias-looking prefix into `.git` once stripped) is provably safe to
+ * skip the allocating split/regex/case-fold machinery below — trailing
+ * dot/space stripping only removes characters from the END, so it can never
+ * change what the FIRST character is.
+ */
+const isObviouslyNotAnAlias = (component: string): boolean => {
+  if (component.length === 0) return false;
+  const first = component.charCodeAt(0);
+  if (first === ASCII_DOT || first === ASCII_UPPER_G || first === ASCII_LOWER_G) return false;
+  for (let i = 0; i < component.length; i += 1) {
+    const code = component.charCodeAt(i);
+    if (code > ASCII_MAX || code === ASCII_BACKSLASH) return false;
+  }
+  return true;
+};
+
 // The `\` split exists only to feed this scan (`.git\config` reads as two
 // parts, `.git` and `config`) — a bare backslash is never a rejection. Most
 // components carry no backslash at all, so skip the allocating split for them.
 const matchAliasComponent = (component: string): VerifyPathRejection | undefined => {
+  if (isObviouslyNotAnAlias(component)) return undefined;
   if (component.indexOf('\\') === -1) return matchAliasPart(component);
   for (const part of component.split('\\')) {
     const reason = matchAliasPart(part);

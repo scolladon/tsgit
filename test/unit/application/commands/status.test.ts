@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as repoState from '../../../../src/application/commands/internal/repo-state.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import {
@@ -1123,6 +1124,49 @@ describe('status — unmerged column', () => {
 
         // Assert
         expect(result.unmerged.map((u) => u.path)).toEqual(['a.txt', 'z.txt']);
+      });
+    });
+  });
+
+  describe('Given status over three conflicted (unmerged) paths', () => {
+    describe('When status runs', () => {
+      it('Then requireWorkTree is called once, not once per unmerged path', async () => {
+        // Arrange — three files conflicted, so `buildUnmergedEntries`'s per-path
+        // `readWorktreeMode` runs three times; requireWorkTree must be hoisted
+        // to the single call at status()'s entry.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'shared\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'FEATURE\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'MAIN\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        await mergeRun(ctx, { rev: 'feature', author });
+        const requireWorkTreeSpy = vi.spyOn(repoState, 'requireWorkTree');
+
+        try {
+          // Act
+          const result = await status(ctx);
+
+          // Assert
+          expect(result.unmerged).toHaveLength(3);
+          expect(requireWorkTreeSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          requireWorkTreeSpy.mockRestore();
+        }
       });
     });
   });

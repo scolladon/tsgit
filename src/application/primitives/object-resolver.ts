@@ -3,6 +3,7 @@
  * Consumed only by readObject.
  */
 import { operationAborted, TsgitError } from '../../domain/error.js';
+import { encode } from '../../domain/objects/encoding.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
   emptyTreeOid,
@@ -351,7 +352,7 @@ function prependHeader(
 ): Uint8Array {
   const typeName = packTypeName(type, targetId);
   const headerStr = `${typeName} ${content.length}\0`;
-  const headerBytes = new TextEncoder().encode(headerStr);
+  const headerBytes = encode(headerStr);
   const out = new Uint8Array(headerBytes.length + content.length);
   out.set(headerBytes, 0);
   out.set(content, headerBytes.length);

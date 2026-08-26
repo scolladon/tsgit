@@ -1383,7 +1383,12 @@ describe('NodeFileSystem', () => {
             // Arrange & Act
             const result = mapStat(makeBigIntStat());
 
-            // Assert
+            // Assert — key PRESENCE, not just value: a mutant collapsing the
+            // conditional spread to an unconditional one would still pass a
+            // toBe(...) check on the present-fields case, so `in` is what
+            // actually pins the branch.
+            expect('ctimeNs' in result).toBe(true);
+            expect('mtimeNs' in result).toBe(true);
             expect(result.ctimeNs).toBe(BigInt(1_000_000_000));
             expect(result.mtimeNs).toBe(BigInt(2_000_000_000));
           });
@@ -1400,7 +1405,11 @@ describe('NodeFileSystem', () => {
             // Act
             const result = mapStat(rest);
 
-            // Assert
+            // Assert — key ABSENCE (`in`), not merely an undefined value: a
+            // mutant that assigns `mtimeNs: undefined` unconditionally would
+            // still pass a toBeUndefined() check alone.
+            expect('ctimeNs' in result).toBe(false);
+            expect('mtimeNs' in result).toBe(false);
             expect(result.ctimeNs).toBeUndefined();
             expect(result.mtimeNs).toBeUndefined();
             expect(result.size).toBe(42);

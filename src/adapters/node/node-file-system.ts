@@ -354,23 +354,39 @@ export function mapStat(s: {
   isDirectory: () => boolean;
   isSymbolicLink: () => boolean;
 }): FileStat {
-  const base = {
-    ctimeMs: Number(s.ctimeMs),
-    mtimeMs: Number(s.mtimeMs),
-    dev: Number(s.dev),
-    ino: Number(s.ino),
-    mode: Number(s.mode),
-    uid: Number(s.uid),
-    gid: Number(s.gid),
-    size: Number(s.size),
-    isFile: s.isFile(),
-    isDirectory: s.isDirectory(),
-    isSymbolicLink: s.isSymbolicLink(),
-  };
+  // Each field is coerced exactly once into a local, then the RETURNED
+  // object is built directly — once, in whichever branch applies — instead
+  // of building an intermediate `base` object and spreading it into a
+  // second one for the ns-bearing case.
+  const ctimeMs = Number(s.ctimeMs);
+  const mtimeMs = Number(s.mtimeMs);
+  const dev = Number(s.dev);
+  const ino = Number(s.ino);
+  const mode = Number(s.mode);
+  const uid = Number(s.uid);
+  const gid = Number(s.gid);
+  const size = Number(s.size);
+  const isFile = s.isFile();
+  const isDirectory = s.isDirectory();
+  const isSymbolicLink = s.isSymbolicLink();
   if (s.ctimeNs !== undefined && s.mtimeNs !== undefined) {
-    return { ...base, ctimeNs: s.ctimeNs, mtimeNs: s.mtimeNs };
+    return {
+      ctimeMs,
+      mtimeMs,
+      dev,
+      ino,
+      mode,
+      uid,
+      gid,
+      size,
+      isFile,
+      isDirectory,
+      isSymbolicLink,
+      ctimeNs: s.ctimeNs,
+      mtimeNs: s.mtimeNs,
+    };
   }
-  return base;
+  return { ctimeMs, mtimeMs, dev, ino, mode, uid, gid, size, isFile, isDirectory, isSymbolicLink };
 }
 
 export class NodeFileSystem implements FileSystem {
@@ -1012,8 +1028,20 @@ export class NodeFileSystem implements FileSystem {
     // separators (a `/` on Windows). The adapter is contractually allowed
     // to receive mixed-separator input; resolving here produces a
     // platform-native form so the containment prefix-check compares
-    // like-for-like.
-    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
+    // like-for-like AND so `realpathForCreation`'s fallback walk-up
+    // (`realpathNearestExisting`, which splits on `policy.sep` alone) can
+    // segment the path correctly.
+    //
+    // Non-allocating prefilter, mirroring `resolveRead`'s: skip `resolve()`
+    // only when it is PROVABLY a no-op for both purposes above — no `..` to
+    // collapse, and (Windows only) no foreign `/` separator for `resolve()`
+    // to fold to `\`. A backslash-free, dot-dot-free POSIX path never needs
+    // `resolve()` for either reason, so POSIX always takes the fast path;
+    // Windows takes it only when the path is already native-separator.
+    const absolute = toAbsolute(path, this.rootDir, this.pathPolicy);
+    const needsResolve =
+      absolute.indexOf('..') !== -1 || (this.pathPolicy.windowsSyntax && absolute.includes('/'));
+    const resolved = needsResolve ? this.pathPolicy.resolve(absolute) : absolute;
     // Every root is constant for the adapter's lifetime; their normalised
     // raw and canonical prefixes are held as one `RootSet` instance field.
     // The same synchronous-first-path idiom as every read surface

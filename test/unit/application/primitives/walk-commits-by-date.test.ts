@@ -169,6 +169,44 @@ describe('walkCommitsByDate', () => {
     });
   });
 
+  describe('Given a linear 5-commit chain walked with an early `break`', () => {
+    describe('When the consumer stops after the first two commits', () => {
+      it('Then iteration stops cleanly with the first two commits still in date order', async () => {
+        // Arrange — the public iteration contract (order, values, early-break
+        // cleanup) must survive the generator-layer collapse: `log`'s own
+        // `limit` cutoff relies on exactly this shape.
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 5);
+
+        // Act
+        const seen: ObjectId[] = [];
+        for await (const commit of walkCommitsByDate(ctx, { from: [ids.at(-1)!] })) {
+          seen.push(commit.id);
+          if (seen.length === 2) break;
+        }
+
+        // Assert
+        expect(seen).toEqual([ids.at(-1), ids.at(-2)]);
+      });
+    });
+
+    describe('When the returned iterator is closed explicitly mid-walk', () => {
+      it('Then return() resolves done without throwing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 5);
+        const iterator = walkCommitsByDate(ctx, { from: [ids.at(-1)!] })[Symbol.asyncIterator]();
+        await iterator.next();
+
+        // Act
+        const result = await iterator.return?.();
+
+        // Assert
+        expect(result).toEqual({ done: true, value: undefined });
+      });
+    });
+  });
+
   describe('Given a diamond DAG with strictly increasing dates', () => {
     describe('When walkCommitsByDate is called from the merge', () => {
       it('Then yields all parents in exact newest-date order [d, c, b, a]', async () => {

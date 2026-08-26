@@ -18,15 +18,40 @@ import {
  * delegates the all-parents traversal. The core's first-parent variant is
  * internal — no public consumer needs date + first-parent yet (`log` routes
  * `--first-parent` through `walkCommits`'s lazy FIFO).
+ *
+ * Hand-rolls the `AsyncIterable` protocol instead of an `async function*`
+ * wrapper: the projection is a single field read (`step.commit`), so a
+ * second generator coroutine over `commitDateWalk`'s own would add a second
+ * suspend/resume per commit for no work. `next`/`return` are forwarded
+ * directly onto `commitDateWalk`'s iterator so an early `break` (`log`'s
+ * `limit` cutoff) still closes it, exactly as `for await...of` would.
+ * `assertValidSeeds` still fires at the same point relative to iteration —
+ * on `[Symbol.asyncIterator]()`, i.e. when a consumer starts iterating, not
+ * at call time — matching the previous generator's lazy-until-first-`next()`
+ * validation.
  */
-export async function* walkCommitsByDate(
+export function walkCommitsByDate(
   ctx: Context,
   options: WalkCommitsByDateOptions,
 ): AsyncIterable<Commit> {
-  assertValidSeeds(options.from);
-  for await (const step of commitDateWalk(ctx, options)) {
-    yield step.commit;
-  }
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Commit> {
+      assertValidSeeds(options.from);
+      const source = commitDateWalk(ctx, options)[Symbol.asyncIterator]();
+      return {
+        next: async (): Promise<IteratorResult<Commit>> => {
+          const step = await source.next();
+          return step.done === true
+            ? { done: true, value: undefined }
+            : { done: false, value: step.value.commit };
+        },
+        return: async (): Promise<IteratorResult<Commit>> => {
+          await source.return?.();
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
 }
 
 const assertValidSeeds = (from: ReadonlyArray<ObjectId>): void => {

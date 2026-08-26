@@ -59,6 +59,22 @@ import {
 
 export type { AttributeProvider } from '../primitives/internal/read-gitattributes.js';
 
+/** Runs the guard at most once, on first use, per {@link createPromisorGuard} call. */
+type PromisorGuard = () => Promise<void>;
+
+/**
+ * Defers `assertValidPromisorRemoteConfig` to the first file the write path
+ * actually touches, and single-flights it thereafter — so a pathspec that
+ * matches nothing never pays it (or refuses on it) at all, while a
+ * multi-file `add` pays it once instead of once per file. Each of `add`'s
+ * three write-path entry points (`addLiteralOnly`, `addByPathspec`,
+ * `addAll`) creates its own guard, scoping "once" to one `add` invocation.
+ */
+const createPromisorGuard = (ctx: Context): PromisorGuard => {
+  let pending: Promise<void> | undefined;
+  return () => (pending ??= assertValidPromisorRemoteConfig(ctx));
+};
+
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
   'INVALID_INDEX_HEADER',
@@ -135,13 +151,21 @@ const addLiteralOnly = async (
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
     for (const path of validated) {
-      const result = await stageOne(ctx, path, provider, existing.get(path), indexMtime);
+      const result = await stageOne(
+        ctx,
+        path,
+        provider,
+        existing.get(path),
+        indexMtime,
+        ensurePromisorConfigValid,
+      );
       if (result === 'missing') throw pathspecNoMatch(path);
       const previous = existing.get(path);
       newEntries.set(path, result);
@@ -204,6 +228,7 @@ const addByPathspec = async (
     return !matchesPathspec(matcher, path);
   };
   const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
@@ -212,7 +237,15 @@ const addByPathspec = async (
     const modified: FilePath[] = [];
     const seen = new Set<FilePath>();
     for await (const walkEntry of walkWorkingTree(ctx, { ignore: combinedIgnore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider, indexMtime);
+      const result = await processWalkEntry(
+        ctx,
+        walkEntry,
+        existing,
+        seen,
+        provider,
+        indexMtime,
+        ensurePromisorConfigValid,
+      );
       if (result === undefined) continue;
       matched.push(result.path);
       newEntries.set(result.path, result.entry);
@@ -240,6 +273,7 @@ export const addAll = async (
 ): Promise<AddResult> => {
   const ignore = ignoreOverride ?? (await buildRepoIgnorePredicate(ctx));
   const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
@@ -251,7 +285,15 @@ export const addAll = async (
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
     for await (const walkEntry of walkWorkingTree(ctx, { ignore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider, indexMtime);
+      const result = await processWalkEntry(
+        ctx,
+        walkEntry,
+        existing,
+        seen,
+        provider,
+        indexMtime,
+        ensurePromisorConfigValid,
+      );
       if (result === undefined) continue;
       newEntries.set(result.path, result.entry);
       if (result.kind === 'added') added.push(result.path);
@@ -327,6 +369,7 @@ const processWalkEntry = async (
   seen: Set<FilePath>,
   provider: AttributeProvider | undefined,
   indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome | undefined> => {
   const { path, isFile, isDirectory, isSymbolicLink } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
@@ -346,6 +389,7 @@ const processWalkEntry = async (
     provider,
     existing.get(path),
     indexMtime,
+    ensurePromisorConfigValid,
   );
   const previous = existing.get(path);
   if (previous === undefined) return { kind: 'added', path, entry };
@@ -382,10 +426,11 @@ const stageOne = async (
   provider: AttributeProvider | undefined,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
 ): Promise<IndexEntry | 'missing'> => {
   const stat = await lstatOrMissing(ctx, path);
   if (stat === undefined) return 'missing';
-  return stageFromStat(ctx, path, stat, provider, previous, indexMtime);
+  return stageFromStat(ctx, path, stat, provider, previous, indexMtime, ensurePromisorConfigValid);
 };
 
 /**
@@ -402,6 +447,7 @@ const stageFromStat = async (
   provider: AttributeProvider | undefined,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
 ): Promise<IndexEntry> => {
   // Re-lstat under the index lock to close the TOCTOU window: an attacker
   // swapping the inode (regular ↔ symlink, file ↔ directory) between `kind`
@@ -413,8 +459,9 @@ const stageFromStat = async (
   // for the walked case the reference point is readdir instead of a walk-time
   // lstat, a marginally wider window of the SAME TOCTOU class; this fresh
   // lstat remains the sole authority either way.
-  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — once the write path engages.
-  await assertValidPromisorRemoteConfig(ctx);
+  // Promisor-remote guard (see createPromisorGuard) — lazy-once per add()
+  // invocation, first paid when the write path actually engages.
+  await ensurePromisorConfigValid();
   const fresh = await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'add'), path));
   if (
     fresh.isSymbolicLink !== kind.isSymbolicLink ||

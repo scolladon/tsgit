@@ -80,8 +80,12 @@ export function createLruCache<V>(
       if (node === undefined) {
         return undefined;
       }
-      removeNode(node);
-      addToHead(node);
+      // Already the most-recently-used node: recency order is unchanged, so
+      // skip the unlink/relink dance entirely.
+      if (node !== head) {
+        removeNode(node);
+        addToHead(node);
+      }
       return node.value;
     },
 
@@ -98,8 +102,11 @@ export function createLruCache<V>(
         existing.value = value;
         existing.byteSize = byteSize;
         currentSize += byteSize;
-        removeNode(existing);
-        addToHead(existing);
+        // Same head fast-path as `get`: already-MRU needs no relink.
+        if (existing !== head) {
+          removeNode(existing);
+          addToHead(existing);
+        }
       } else {
         const node: Node<V> = { key, value, byteSize, prev: null, next: null };
         map.set(key, node);

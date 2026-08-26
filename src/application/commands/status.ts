@@ -127,7 +127,7 @@ interface GranularityTracker {
  */
 export const status = async (ctx: Context): Promise<StatusResult> => {
   await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, 'status');
+  const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
   const head = await readHeadRaw(ctx);
@@ -171,7 +171,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     const headTree = await readHeadTree(ctx);
     const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
     const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);
-    const unmerged = await buildUnmergedEntries(ctx, grouped.unmerged);
+    const unmerged = await buildUnmergedEntries(ctx, grouped.unmerged, workDir);
     const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
     return { branch, detached, changes, untracked, unmerged, clean };
   } finally {
@@ -347,10 +347,11 @@ const conflictStage = (entry: IndexEntry): BlobSide => ({ id: entry.id, mode: en
 const buildUnmergedEntries = (
   ctx: Context,
   groups: ReadonlyMap<FilePath, UnmergedEntryGroup>,
+  workDir: string,
 ): Promise<UnmergedEntry[]> =>
   Promise.all(
     [...groups].map(async ([path, group]) => {
-      const worktreeMode = await readWorktreeMode(ctx, path);
+      const worktreeMode = await readWorktreeMode(ctx, workDir, path);
       return {
         kind: classifyUnmerged(group),
         path,
@@ -363,9 +364,11 @@ const buildUnmergedEntries = (
   );
 
 /** The conflicted file's on-disk git mode, or `undefined` when it is absent. */
-const readWorktreeMode = async (ctx: Context, path: FilePath): Promise<FileMode | undefined> => {
-  const stat = await ctx.fs
-    .lstat(joinPath(requireWorkTree(ctx, 'status'), path))
-    .catch(() => undefined);
+const readWorktreeMode = async (
+  ctx: Context,
+  workDir: string,
+  path: FilePath,
+): Promise<FileMode | undefined> => {
+  const stat = await ctx.fs.lstat(joinPath(workDir, path)).catch(() => undefined);
   return stat === undefined ? undefined : deriveWorkingMode(stat);
 };

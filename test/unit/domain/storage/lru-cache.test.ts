@@ -132,6 +132,55 @@ describe('lru-cache', () => {
         });
       });
     });
+
+    describe('Given cache(100) with A(30), B(30), C(30) set in that order (C is head/MRU)', () => {
+      describe('When the already-head key is read again via get, then D(30) forces eviction', () => {
+        it('Then A (never re-touched) is still the evicted LRU tail — the head read is a no-op reorder', () => {
+          // Arrange — no honest black-box observable distinguishes the head
+          // fast-path from the unconditional relink (both preserve list
+          // order identically); this pins the correctness invariant the
+          // fast-path relies on. The perf delta is proven separately by the
+          // A/B bench oracle, not by this test.
+          const sut = createLruCache<string>(100);
+          sut.set('a', 'val-a', 30);
+          sut.set('b', 'val-b', 30);
+          sut.set('c', 'val-c', 30);
+
+          // Act
+          sut.get('c');
+          sut.set('d', 'val-d', 30);
+
+          // Assert
+          expect(sut.has('a')).toBe(false);
+          expect(sut.has('b')).toBe(true);
+          expect(sut.has('c')).toBe(true);
+          expect(sut.has('d')).toBe(true);
+        });
+      });
+    });
+
+    describe('Given cache(100) with A(30), B(30), C(30) set in that order (C is head/MRU)', () => {
+      describe('When C is re-set (update, not insert) while already head, then D(30) forces eviction', () => {
+        it('Then A (never re-touched) is still the evicted LRU tail — the head-update is a no-op reorder', () => {
+          // Arrange — sibling of the get() case above, for `set`'s own
+          // already-head fast path on an existing-key update.
+          const sut = createLruCache<string>(100);
+          sut.set('a', 'val-a', 30);
+          sut.set('b', 'val-b', 30);
+          sut.set('c', 'val-c', 30);
+
+          // Act
+          sut.set('c', 'val-c-2', 30);
+          sut.set('d', 'val-d', 30);
+
+          // Assert
+          expect(sut.has('a')).toBe(false);
+          expect(sut.has('b')).toBe(true);
+          expect(sut.get('c')).toBe('val-c-2');
+          expect(sut.has('d')).toBe(true);
+        });
+      });
+    });
   });
 
   describe('size tracking', () => {

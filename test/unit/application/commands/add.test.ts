@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as boolConfigGuard from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -2199,6 +2200,62 @@ describe('add — remote.promisor guard', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(data.key).toBe('remote.origin.promisor');
         expect(data.value).toBe('maybe');
+      });
+    });
+  });
+
+  describe('Given add stages three files', () => {
+    describe('When add runs', () => {
+      it('Then the promisor-remote config guard runs once, not once per file', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
+        const guardSpy = vi.spyOn(boolConfigGuard, 'assertValidPromisorRemoteConfig');
+
+        try {
+          // Act
+          await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+
+          // Assert
+          expect(guardSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          guardSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a literal pathspec that matches no file on disk', () => {
+    describe('When add runs', () => {
+      it('Then the promisor-remote config guard never runs (zero-match adds do not start refusing)', async () => {
+        // Arrange — the missing literal routes through addByPathspec (not
+        // addLiteralOnly, since allLiteralsAreFiles fails its lstat), whose
+        // walk yields zero entries, so stageFromStat — the guard's only call
+        // site — never runs.
+        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = maybe\n',
+        );
+        __resetConfigCacheForTests();
+        const guardSpy = vi.spyOn(boolConfigGuard, 'assertValidPromisorRemoteConfig');
+
+        try {
+          // Act
+          let caught: unknown;
+          try {
+            await add(ctx, ['missing.txt']);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — a bad promisor value would surface as
+          // CONFIG_BAD_BOOLEAN_VALUE if the guard ran; the pathspec instead
+          // fails with PATHSPEC_NO_MATCH, proving the guard never fired.
+          expect((caught as TsgitError | undefined)?.data.code).toBe('PATHSPEC_NO_MATCH');
+          expect(guardSpy).not.toHaveBeenCalled();
+        } finally {
+          guardSpy.mockRestore();
+        }
       });
     });
   });
