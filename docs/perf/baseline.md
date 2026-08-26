@@ -1,317 +1,469 @@
 ## log
 
+totalTicks: 619
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| parseRequiredFields | 0.22 |
-| verifyAndReturn | 0.14 |
-| resolveObjectBytes | 0.1 |
-| parseObject | 0.08 |
-| readCommit | 0.08 |
-| commitDateWalk | 0.07 |
-| log | 0.06 |
-| enqueueParents | 0.06 |
+| parseRequiredFields | 0.35 |
+| isValidObjectIdHex | 0.18 |
+| verifyAndReturn | 0.09 |
+| resolveObjectBytes | 0.06 |
+| parseObject | 0.05 |
+| readCommit | 0.05 |
+| enqueueParents | 0.05 |
+| log | 0.04 |
+| commitDateWalk | 0.03 |
+| enqueueCommit | 0.03 |
+| <anonymous> | 0.02 |
+| commitHeader | 0.01 |
+| walkCommitsByDate | 0.01 |
+
+## log-commit-graph
+
+totalTicks: 608
+
+### hotShares
+
+| frame | self |
+| --- | --- |
+| parseRequiredFields | 0.4 |
+| isValidObjectIdHex | 0.2 |
+| parseObject | 0.04 |
+| enqueueParents | 0.04 |
+| readCommit | 0.04 |
 | enqueueCommit | 0.04 |
-| commitHeader | 0.04 |
-| <anonymous> | 0.03 |
+| commitDateWalk | 0.04 |
+| <anonymous> | 0.04 |
+| log | 0.03 |
+| verifyAndReturn | 0.03 |
 | walkCommitsByDate | 0.02 |
-| acquire | 0.02 |
+| resolveObjectBytes | 0.02 |
 | decode$1 | 0.01 |
+| resolveObject$1 | 0.01 |
+| commitHeader | 0.01 |
 
 ## status
 
+totalTicks: 1307
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| lstat | 0.39 |
-| <anonymous> | 0.1 |
-| compareWorkingTreeDelta | 0.09 |
-| parseIndex | 0.08 |
+| lstat | 0.38 |
+| parseIndex | 0.09 |
+| <anonymous> | 0.08 |
 | stepEntry | 0.07 |
-| flattenEntry | 0.04 |
+| compareWorkingTreeDelta | 0.05 |
+| flattenEntry | 0.05 |
 | validateIndexPath | 0.04 |
-| flattenLevel | 0.04 |
-| walkWorkingTree | 0.03 |
-| advanceCursor | 0.03 |
-| diffIndexAgainstTree | 0.02 |
-| scanUntracked | 0.01 |
+| walkWorkingTree | 0.04 |
+| flattenLevel | 0.03 |
+| mapStat | 0.03 |
+| statOnlyVerdict | 0.03 |
+| scanForPrefetch | 0.02 |
+| scanUntracked | 0.02 |
+| diffIndexAgainstTree | 0.01 |
 | runFs | 0.01 |
 | matchSixByteMode | 0.01 |
 | groupUnmergedEntries | 0.01 |
-| buildChanges | 0.01 |
 
 ## pack-read
 
+totalTicks: 546
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| gatherByRevIndex | 0.46 |
-| entryOffsets | 0.31 |
-| revIndexPositionAt | 0.08 |
-| buildOffsetTable | 0.08 |
-| NodeCompressor | 0.08 |
+| entryOffsets | 0.3 |
+| resolveSortedOffsets | 0.18 |
+| gatherByRevIndex | 0.12 |
+| openRepository | 0.07 |
+| sectionedEntries | 0.03 |
+| layoutRootsOf | 0.03 |
+| readSlice | 0.03 |
+| <anonymous> | 0.02 |
+| stat | 0.02 |
+| resolveRead | 0.01 |
+| resolveFormatVersion | 0.01 |
+| openRepository$1 | 0.01 |
+| lastTopLevelEntry | 0.01 |
+| join | 0.01 |
+| buildOffsetTable | 0.01 |
+| NodeFileSystem | 0.01 |
+| resolveNodeLayout | 0.01 |
+| readRepositoryFormat | 0.01 |
+| pickScoped | 0.01 |
+| isContainedIn | 0.01 |
+| runFs | 0.01 |
 
 ## describe
 
+totalTicks: 575
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| exists | 0.12 |
-| resolveRead | 0.09 |
-| readLooseCompressed | 0.07 |
-| resolveObjectBytes | 0.05 |
-| parseRequiredFields | 0.05 |
-| probeLooseOid | 0.05 |
+| parseRequiredFields | 0.17 |
+| parseTagContent | 0.09 |
+| resolveObjectBytes | 0.08 |
+| from | 0.08 |
+| resolveRead | 0.07 |
+| isValidObjectIdHex | 0.06 |
+| parseObject | 0.05 |
 | readLooseContent | 0.04 |
-| peelRefToCommit | 0.04 |
-| buildNameMap | 0.04 |
-| tryLoose | 0.04 |
-| resolveDirectChain | 0.03 |
-| resolveDirect | 0.03 |
-| describe | 0.03 |
-| assertOperationalRepository | 0.03 |
-| parseTagContent | 0.03 |
-| enqueueParents | 0.03 |
-| validateRefName | 0.01 |
-| runFs | 0.01 |
-| resolveCommitIsh | 0.01 |
-| release | 0.01 |
-| peelChain | 0.01 |
-| exceedsMaxPeelDepth | 0.01 |
-| commitHeader | 0.01 |
-| assertEagerConfigValid | 0.01 |
-| assertDiscoveryBooleansValid | 0.01 |
-| BinaryHeap | 0.01 |
-| readObject | 0.01 |
-| read | 0.01 |
-| parseObject | 0.01 |
-| parseLooseRef | 0.01 |
-| looseObjectPath | 0.01 |
-| findFirstInvalidCompression | 0.01 |
-| collectLooseRefs | 0.01 |
+| readLooseCompressed | 0.04 |
+| verifyAndReturn | 0.03 |
+| buildNameMap | 0.02 |
+| resolveRef | 0.02 |
+| exists | 0.02 |
+| enforceLooseCap | 0.02 |
+| parseLooseRef | 0.02 |
+| describe | 0.02 |
+| tryLoose | 0.01 |
+| resolveObject$1 | 0.01 |
+| checkAborted$1 | 0.01 |
+| parseIdentity | 0.01 |
+| parseCommitContent | 0.01 |
 | assertLoadable | 0.01 |
+| walkRefDir | 0.01 |
+| walkAllLooseRefNames | 0.01 |
+| resolveCommitIsh | 0.01 |
+| readObject | 0.01 |
+| decode$1 | 0.01 |
+| assertEagerConfigValid | 0.01 |
+| resolveDirectChain | 0.01 |
+| <anonymous> | 0.01 |
 
 ## name-rev
 
+totalTicks: 1370
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| exists | 0.14 |
-| parseObject | 0.12 |
-| resolveRead | 0.1 |
-| readLooseCompressed | 0.1 |
-| parseRequiredFields | 0.07 |
-| resolveObjectBytes | 0.07 |
-| resolveDirect | 0.05 |
-| tryLoose | 0.05 |
-| parseTagContent | 0.05 |
-| <anonymous> | 0.05 |
-| withLazyFetchRetry | 0.02 |
-| qualifies | 0.02 |
-| parseNameRevOptions | 0.02 |
-| runFs | 0.02 |
+| parseRequiredFields | 0.24 |
+| isValidObjectIdHex | 0.12 |
+| readLooseCompressed | 0.07 |
+| parseTagContent | 0.06 |
+| from | 0.05 |
+| resolveObjectBytes | 0.05 |
+| read | 0.05 |
+| parseObject | 0.04 |
+| readLooseContent | 0.03 |
+| resolveRead | 0.03 |
+| nameRev | 0.02 |
 | readObject | 0.02 |
-| findFirstRejectedBoolean | 0.02 |
-| decode$1 | 0.02 |
-| commonGitDir | 0.02 |
-| collectLooseRefs | 0.02 |
+| readlink | 0.01 |
+| hasUsableHead | 0.01 |
+| resolveCommit | 0.01 |
+| hashHex | 0.01 |
+| exists | 0.01 |
+| resolveObject$1 | 0.01 |
+| parseIdentity | 0.01 |
+| verifyAndReturn | 0.01 |
+| seedRef | 0.01 |
+| peelRefToCommit | 0.01 |
+| tryLoose | 0.01 |
+| probeLooseOid | 0.01 |
+| assertAcceptedRepository | 0.01 |
+| runFs | 0.01 |
+| loadShallowSet | 0.01 |
 
 ## rev-parse
 
+totalTicks: 979
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| runFs | 0.14 |
-| resolveDirect | 0.14 |
-| isPerWorktreeRef | 0.14 |
-| findFirstInvalidCompression | 0.14 |
-| <anonymous> | 0.14 |
-| resolveRead | 0.14 |
-| exists | 0.14 |
+| readUtf8 | 0.24 |
+| resolveRead | 0.16 |
+| evaluate | 0.15 |
+| resolveDirectChain | 0.11 |
+| revParse | 0.08 |
+| parseLooseRef | 0.04 |
+| readlink | 0.04 |
+| findFirstRejectedBoolean | 0.04 |
+| assertEagerConfigValid | 0.02 |
+| findFirstInvalidBoolean | 0.01 |
+| runFs | 0.01 |
+| findFirstValuelessEntry | 0.01 |
+| assertRepository | 0.01 |
+| <anonymous> | 0.01 |
+| findLastInvalidMaxTreeDepth | 0.01 |
+| validateRefName | 0.01 |
+| hasUsableHead | 0.01 |
+| assertAcceptedRepository | 0.01 |
 
 ## cat-file
 
+totalTicks: 1420
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| resolveSortedOffsets | 0.17 |
-| parseHeader$1 | 0.17 |
-| emptyTreeOid | 0.17 |
-| catFileBatch | 0.17 |
-| catFile | 0.17 |
-| findFirstRejectedBoolean | 0.17 |
+| parseRequiredFields | 0.34 |
+| serializeCommitContent | 0.16 |
+| parseObject | 0.15 |
+| readOne | 0.06 |
+| isContainedIn | 0.05 |
+| resolveRead | 0.05 |
+| withLazyFetchRetry | 0.05 |
+| isValidObjectIdHex | 0.03 |
+| catFileBatch | 0.02 |
+| parseOptionalHeaderBlock | 0.02 |
+| resolveObject$1 | 0.01 |
+| catFile | 0.01 |
+| hasUsableHead | 0.01 |
+| assertOperationalRepository | 0.01 |
+| findFirstRejectedBoolean | 0.01 |
 
 ## show
 
+totalTicks: 638
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| gatherByRevIndex | 0.14 |
-| buildOffsetTable | 0.14 |
-| verifyAndReturn | 0.14 |
-| parseIdentity | 0.14 |
-| exists | 0.14 |
-| cursorsSame | 0.14 |
-| assertLoadable | 0.14 |
+| parseRequiredFields | 0.2 |
+| evaluate | 0.15 |
+| readUtf8 | 0.08 |
+| isValidObjectIdHex | 0.08 |
+| resolveDirectChain | 0.07 |
+| revParse | 0.05 |
+| buildForRev | 0.04 |
+| assertOperationalRepository | 0.04 |
+| resolveRead | 0.03 |
+| readlink | 0.03 |
+| resolveObjectBytes | 0.03 |
+| splitObject | 0.02 |
+| scanEntryAt | 0.02 |
+| diffRawTrees | 0.02 |
+| show | 0.02 |
+| assertRepository | 0.02 |
+| resolveObject$1 | 0.01 |
+| readCommitData | 0.01 |
+| findFirstRejectedBoolean | 0.01 |
+| peelToTree | 0.01 |
+| findLastInvalidMaxTreeDepth | 0.01 |
+| <anonymous> | 0.01 |
 
 ## diff
 
+totalTicks: 615
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| getNthParent | 0.07 |
-| parseTreeContent | 0.07 |
-| <anonymous> | 0.07 |
-| scanPacks | 0.03 |
-| revIndexPositionAt | 0.03 |
-| peel | 0.03 |
-| runFs | 0.03 |
-| resolveDirectChain | 0.03 |
-| resolveBase$1 | 0.03 |
-| readTree | 0.03 |
-| parseObject | 0.03 |
-| isContainedIn | 0.03 |
-| findFirstValuelessEntry | 0.03 |
-| findFirstInvalidBooleanInSection | 0.03 |
-| evaluate | 0.03 |
+| parseRequiredFields | 0.19 |
+| isValidObjectIdHex | 0.11 |
+| evaluate | 0.09 |
+| readUtf8 | 0.08 |
+| revParse | 0.07 |
+| resolveDirectChain | 0.07 |
+| parseTreeContent | 0.05 |
+| resolveObjectBytes | 0.05 |
+| readlink | 0.03 |
 | diff | 0.03 |
-| compareBytes | 0.03 |
-| resolveRead | 0.03 |
-| resolveObjectBytes | 0.03 |
-| readObject | 0.03 |
-| parseLooseRef | 0.03 |
-| parseCommitContent | 0.03 |
-| findFirstRejectedBoolean | 0.03 |
-| exists | 0.03 |
-| emptyTreeOid | 0.03 |
-| assertLoadable | 0.03 |
+| isContainedIn | 0.02 |
+| resolveRead | 0.02 |
+| findFirstRejectedBoolean | 0.02 |
+| assertRepository | 0.02 |
+| readObject | 0.01 |
+| parseObject | 0.01 |
+| parseLooseRef | 0.01 |
+| resolveTreeish | 0.01 |
+| getNthParent | 0.01 |
+| verifyAndReturn | 0.01 |
+| resolveAndDiff | 0.01 |
+| parseCommitContent | 0.01 |
+| findFirstInvalidBooleanInSection | 0.01 |
+| assertValidPromisorRemoteConfig | 0.01 |
+| <anonymous> | 0.01 |
 
 ## blame
 
+totalTicks: 603
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| parseTreeContent | 0.59 |
-| processSuspect | 0.06 |
-| buildOffsetTable | 0.06 |
-| readLooseCompressed | 0.06 |
-| evict | 0.06 |
-| splitLines | 0.06 |
-| decode$1 | 0.06 |
-| collectDeltaChain | 0.06 |
+| parseTreeContent | 0.43 |
+| fromRaw | 0.41 |
+| processSuspect | 0.07 |
+| findTreeEntry | 0.02 |
+| splitLines | 0.01 |
+| parseRequiredFields | 0.01 |
+| isValidObjectIdHex | 0.01 |
+| <anonymous> | 0.01 |
 
 ## commit
 
+totalTicks: 879
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| writeExclusive | 0.1 |
-| runFs | 0.1 |
-| resolveHooksDir | 0.1 |
-| parseLooseRef | 0.1 |
-| findLastInvalidMaxTreeDepth | 0.1 |
-| findFirstValuelessEntry | 0.1 |
-| commit$1 | 0.1 |
-| allLiteralsAreFiles | 0.1 |
-| acquireIndexLock | 0.1 |
-| resolveRead | 0.1 |
+| resolveWrite | 0.17 |
+| resolveRead | 0.07 |
+| guard | 0.05 |
+| exists | 0.05 |
+| <anonymous> | 0.04 |
+| realpathForCreation | 0.03 |
+| hasUsableHead | 0.03 |
+| writeUtf8 | 0.03 |
+| readUtf8 | 0.03 |
+| mkdir | 0.02 |
+| readLooseContent | 0.01 |
+| assertNoPendingOperation | 0.01 |
+| appendUtf8 | 0.01 |
+| wrapFsValidator | 0.01 |
+| validateRefName | 0.01 |
+| lstat | 0.01 |
+| rename | 0.01 |
+| layoutRootsOf | 0.01 |
+| tokenizeLine | 0.01 |
+| reflogFileExists | 0.01 |
+| invokeHook | 0.01 |
+| commit$1 | 0.01 |
+| writeObject | 0.01 |
+| readIndex | 0.01 |
+| lstatOrMissing | 0.01 |
+| findFirstRejectedBoolean | 0.01 |
+| realpathNearestExisting | 0.01 |
+| openRepository$1 | 0.01 |
+| hasValidHead | 0.01 |
+| findFirstValuelessEntry | 0.01 |
 
 ### setupShares
 
 | frame | self |
 | --- | --- |
+| cachedParentRealpath | 0.03 |
+| isContainedIn | 0.02 |
+| runFs | 0.01 |
+| findLayout | 0.01 |
+| assertRepository | 0.01 |
+| openRepository | 0.01 |
+| bootstrapRepository | 0.01 |
 
 _Shared object-write frames reached by both the scratch build and the measured command are attributed to `command`, never `setup`._
 
 ## add
 
+totalTicks: 566
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| isAbsolute | 0.22 |
-| runFs | 0.11 |
-| removeNode | 0.11 |
-| layoutRootsOf | 0.11 |
-| createLruCache | 0.11 |
-| basename | 0.11 |
-| addToHead | 0.11 |
-| <anonymous> | 0.11 |
+| resolveWrite | 0.21 |
+| guard | 0.06 |
+| <anonymous> | 0.06 |
+| resolveRead | 0.04 |
+| writeUtf8 | 0.04 |
+| mkdir | 0.04 |
+| exists | 0.03 |
+| hasUsableHead | 0.03 |
+| realpathForCreation | 0.02 |
+| tokenizeLine | 0.02 |
+| walkWorkingTree | 0.02 |
+| addAll | 0.02 |
+| stageFromStat | 0.01 |
+| layoutRootsOf | 0.01 |
+| get | 0.01 |
+| stat | 0.01 |
+| readUtf8 | 0.01 |
+| openRepository$1 | 0.01 |
+| findFirstRejectedBoolean | 0.01 |
+| findFirstInvalidBooleanInSection | 0.01 |
+| wrapFsValidator | 0.01 |
+| resolveFilterDriver | 0.01 |
+| realpathNearestExisting | 0.01 |
+| findLastInvalidMaxTreeDepth | 0.01 |
+| buildIgnoreEvaluator | 0.01 |
+| rename | 0.01 |
+| hasValidHead | 0.01 |
+| processWalkEntry | 0.01 |
+| parseGitignore | 0.01 |
+| loadConfigEntry | 0.01 |
+| assertValidBooleanConfigInSection | 0.01 |
+| assertDiscoveryBooleansValid | 0.01 |
+| add | 0.01 |
+| requireWorkTree | 0.01 |
 
 ### setupShares
 
 | frame | self |
 | --- | --- |
+| cachedParentRealpath | 0.03 |
+| isContainedIn | 0.02 |
+| runFs | 0.02 |
+| findLayout | 0.01 |
+| openRepository | 0.01 |
+| bootstrapRepository | 0.01 |
 
 _Shared object-write frames reached by both the scratch build and the measured command are attributed to `command`, never `setup`._
 
 ## merge
 
+totalTicks: 666
+
 ### hotShares
 
 | frame | self |
 | --- | --- |
-| <anonymous> | 0.08 |
-| resolveRead | 0.07 |
-| runFs | 0.05 |
-| resolveWrite | 0.05 |
-| readIndex | 0.04 |
-| cachedParentRealpath | 0.04 |
+| resolveWrite | 0.14 |
+| resolveRead | 0.1 |
+| <anonymous> | 0.06 |
 | guard | 0.04 |
-| set | 0.03 |
-| readLooseCompressed | 0.03 |
-| parseLooseRef | 0.03 |
-| findFirstInvalidCompression | 0.03 |
-| isContainedInAnyRoot | 0.03 |
-| join | 0.03 |
-| toAuthor | 0.01 |
-| sourcesForPath | 0.01 |
-| sortByPath | 0.01 |
-| serializeAndHash | 0.01 |
-| resolveRef | 0.01 |
-| resolveLoose | 0.01 |
-| resolveDirectChain | 0.01 |
-| rename | 0.01 |
-| readUtf8 | 0.01 |
-| readHeadRaw | 0.01 |
-| readExistingEntries | 0.01 |
-| openBlobSource | 0.01 |
-| normalizeAliasCandidate | 0.01 |
-| isPerWorktreeRef | 0.01 |
-| from | 0.01 |
-| commitReflogMessage | 0.01 |
+| readUtf8 | 0.02 |
+| rename | 0.02 |
+| exists | 0.02 |
+| loadAndParse$1 | 0.02 |
+| hasUsableHead | 0.02 |
 | commit$1 | 0.01 |
-| chmod | 0.01 |
-| checkout | 0.01 |
-| checkAborted$1 | 0.01 |
-| blobMatches | 0.01 |
-| basename | 0.01 |
-| assertEagerConfigValid | 0.01 |
-| applyCommitMessageHooks | 0.01 |
-| applyCleanFilter | 0.01 |
-| TsgitError | 0.01 |
+| assertNoPendingOperation | 0.01 |
+| reflogFileExists | 0.01 |
+| findFirstRejectedBoolean | 0.01 |
 | validateRefName | 0.01 |
+| appendUtf8 | 0.01 |
+| chmod | 0.01 |
+| updateRef | 0.01 |
+| resolveDirect | 0.01 |
+| readLooseContent | 0.01 |
+| parseRequiredFields | 0.01 |
+| parseObject | 0.01 |
+| lstat | 0.01 |
+| buildAttributeProvider | 0.01 |
+| basename | 0.01 |
+| rm | 0.01 |
+| resolveObject$1 | 0.01 |
+| resolveDirectChain | 0.01 |
+| commit | 0.01 |
+| writeExclusive | 0.01 |
 | realpathForCreation | 0.01 |
-| hasIgnorableCodepoint | 0.01 |
-| exists | 0.01 |
-| containedByPrefix | 0.01 |
-| commonDirOf | 0.01 |
-| bytesToHex | 0.01 |
+| readIndex | 0.01 |
+| writeObject | 0.01 |
 
 ### setupShares
 
 | frame | self |
 | --- | --- |
+| cachedParentRealpath | 0.04 |
+| isContainedIn | 0.03 |
+| runFs | 0.02 |
 
 _Shared object-write frames reached by both the scratch build and the measured command are attributed to `command`, never `setup`._

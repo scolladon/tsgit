@@ -1,6 +1,6 @@
 # 652 — No staleness guard for the perf baseline
 
-- **Status:** accepted
+- **Status:** accepted · **Refined by:** ADR-729
 - **Date:** 2026-08-16
 - **Design:** docs/design/perf-review-remediation.md (candidate D14)
 

@@ -2,23 +2,46 @@
 // self-shares, and (for write commands) partitions those frames into
 // "command" vs "setup" work per the scratch-repo build path.
 
-export type FrameShare = { readonly frame: string; readonly self: number };
+export type FrameShare = { readonly frame: string; readonly self: number; readonly ticks: number };
 
 export type DigestPartition = {
   readonly hotShares: ReadonlyArray<FrameShare>;
   readonly setupShares?: ReadonlyArray<FrameShare>;
+  /** Sum of ticks over every extracted tsgit frame — the denominator the shares were computed from. */
+  readonly totalTicks: number;
+  readonly underSampled: boolean;
 };
 
+// Below this many surviving ticks, a share vector rests on too few samples to
+// trust its ranking — commands under the floor are flagged, not hidden.
+export const UNDER_SAMPLED_TICK_FLOOR = 500;
+
 // Frames on the build-only path (repo creation: `openRepository` → `init` →
-// `bootstrapRepository`) that no write command under measurement reaches itself
-// — every measured command runs against an already-open, already-initialised
-// scratch. Deliberately excludes shared object-write primitives (`writeObject`,
-// `writeTree`, …) that BOTH the scratch build and the measured command call —
-// those stay in `hotShares` so a write command's cost is never under-reported.
+// `bootstrapRepository`, plus the transitive layout/path-discovery machinery
+// `openRepository` walks to find the git dir) that no write command under
+// measurement reaches itself — every measured command runs against an
+// already-open, already-initialised scratch. Widened (rather than kept to the
+// three top-level names) because `--prof-process`'s flat self-time table
+// attributes a helper's ticks to the helper's own frame, not its caller — a
+// three-name list left every transitive open/layout helper misclassified as
+// command cost for the one write workload (`add`) whose build genuinely
+// cannot be hoisted out of the sampled loop (see `profile.ts`). Deliberately
+// excludes shared object-write primitives (`writeObject`, `writeTree`, …)
+// that BOTH the scratch build and the measured command call — those stay in
+// `hotShares` so a write command's cost is never under-reported.
 export const SETUP_FRAMES: ReadonlySet<string> = new Set([
   'openRepository',
   'init',
   'bootstrapRepository',
+  'findLayout',
+  'dirChain',
+  'normalizeSeparators',
+  'isContainedIn',
+  'runFs',
+  'createSingleFlightIndexResolver',
+  'cachedParentRealpath',
+  'assertTrusted',
+  'assertRepository',
 ]);
 
 const NOISE_FLOOR_SELF = 0.01;
@@ -54,27 +77,40 @@ const sumByFrame = (
   return [...totals].map(([frame, ticks]) => ({ frame, ticks }));
 };
 
-const normaliseShares = (frames: ReadonlyArray<{ frame: string; ticks: number }>): FrameShare[] => {
+type NormalisedShares = { readonly shares: ReadonlyArray<FrameShare>; readonly totalTicks: number };
+
+const normaliseShares = (
+  frames: ReadonlyArray<{ frame: string; ticks: number }>,
+): NormalisedShares => {
   const totalTicks = frames.reduce((sum, f) => sum + f.ticks, 0);
   if (totalTicks === 0) {
-    return [];
+    return { shares: [], totalTicks };
   }
-  return frames
-    .map((f) => ({ frame: f.frame, self: Math.round((f.ticks / totalTicks) * 100) / 100 }))
+  const shares = frames
+    .map((f) => ({
+      frame: f.frame,
+      self: Math.round((f.ticks / totalTicks) * 100) / 100,
+      ticks: f.ticks,
+    }))
     .filter((share) => share.self >= NOISE_FLOOR_SELF)
     .sort((a, b) => b.self - a.self);
+  return { shares, totalTicks };
 };
 
-export const parseDigest = (digestText: string): ReadonlyArray<FrameShare> =>
-  normaliseShares(sumByFrame(extractTsgitFrames(digestText)));
+export const parseDigest = (digestText: string): DigestPartition => {
+  const { shares, totalTicks } = normaliseShares(sumByFrame(extractTsgitFrames(digestText)));
+  return { hotShares: shares, totalTicks, underSampled: totalTicks < UNDER_SAMPLED_TICK_FLOOR };
+};
 
 export const partitionWriteDigest = (
   digestText: string,
   setupFrames: ReadonlySet<string> = SETUP_FRAMES,
 ): DigestPartition => {
-  const shares = parseDigest(digestText);
+  const { hotShares, totalTicks, underSampled } = parseDigest(digestText);
   return {
-    hotShares: shares.filter((share) => !setupFrames.has(share.frame)),
-    setupShares: shares.filter((share) => setupFrames.has(share.frame)),
+    hotShares: hotShares.filter((share) => !setupFrames.has(share.frame)),
+    setupShares: hotShares.filter((share) => setupFrames.has(share.frame)),
+    totalTicks,
+    underSampled,
   };
 };
