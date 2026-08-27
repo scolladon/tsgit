@@ -4,7 +4,7 @@
   "description": "Lightning-fast git, pure TypeScript, everywhere.",
   "type": "module",
   "license": "MIT",
-  "author": "Sébastien Colladon",
+  "author": "S\u00e9bastien Colladon",
   "homepage": "https://github.com/scolladon/tsgit#readme",
   "repository": {
     "type": "git",
@@ -839,7 +839,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^rollup \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -1372,7 +1372,7 @@
     "knip": "6.32.3",
     "lint-staged": "17.4.1",
     "minimatch": "10.2.6",
-    "rollup": "4.63.0",
+    "rollup": "4.62.5",
     "rollup-plugin-dts": "6.5.1",
     "rollup-plugin-visualizer": "7.1.1",
     "size-limit": "13.0.3",

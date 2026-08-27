@@ -720,6 +720,22 @@ describe('NodeCompressor', () => {
         });
       });
 
+      describe('When deflate runs on a payload above the threshold with an explicit level', () => {
+        it('Then the callback path receives the level option', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
+
+          // Act
+          await sut.deflate(data, 1);
+
+          // Assert
+          expect(deflateCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(deflateCallbackSpy.mock.calls[0]?.[1]).toEqual({ level: 1 });
+          expect(deflateSyncSpy).not.toHaveBeenCalled();
+        });
+      });
+
       describe('When deflateRaw runs on a payload below the threshold', () => {
         it('Then the synchronous path is used', async () => {
           // Arrange
@@ -746,6 +762,22 @@ describe('NodeCompressor', () => {
 
           // Assert
           expect(deflateRawCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(deflateRawSyncSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When deflateRaw runs on a payload above the threshold with an explicit level', () => {
+        it('Then the callback path receives the level option', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
+
+          // Act
+          await sut.deflateRaw(data, 1);
+
+          // Assert
+          expect(deflateRawCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(deflateRawCallbackSpy.mock.calls[0]?.[1]).toEqual({ level: 1 });
           expect(deflateRawSyncSpy).not.toHaveBeenCalled();
         });
       });
