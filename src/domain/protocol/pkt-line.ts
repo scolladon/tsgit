@@ -23,7 +23,7 @@ const DECODER = new TextDecoder('utf-8', { fatal: false });
 // Stryker disable next-line Regex: equivalent — the tested header decodes from exactly 4 bytes, hence at most 4 UTF-16 units, so a match of four hex chars must span the whole string and each anchor is redundant
 const HEX_LENGTH_RE = /^[0-9a-f]{4}$/i;
 const PKT_LENGTH_BYTES = 4;
-const ACC_CAPACITY = MAX_PKT_LINE_PAYLOAD + PKT_LENGTH_BYTES;
+const MAX_PKT_LINE_FRAME = MAX_PKT_LINE_PAYLOAD + PKT_LENGTH_BYTES;
 
 export const FLUSH_PKT: Readonly<Uint8Array> = ENCODER.encode('0000');
 export const DELIM_PKT: Readonly<Uint8Array> = ENCODER.encode('0001');
@@ -83,13 +83,13 @@ export const encodePktStream = (payloads: ReadonlyArray<Uint8Array>): Uint8Array
 export const encodePktLines = (payloads: ReadonlyArray<Uint8Array>): Uint8Array =>
   concatPktLines(payloads, new Uint8Array(0));
 
-const parseLength = (acc: Uint8Array): number => {
-  const header = DECODER.decode(acc.subarray(0, PKT_LENGTH_BYTES));
+const parseLength = (view: Uint8Array, offset: number): number => {
+  const header = DECODER.decode(view.subarray(offset, offset + PKT_LENGTH_BYTES));
   if (!HEX_LENGTH_RE.test(header)) {
     throw invalidPktLength(header);
   }
   const length = Number.parseInt(header, 16);
-  if (length > ACC_CAPACITY) {
+  if (length > MAX_PKT_LINE_FRAME) {
     throw pktTooLarge(length);
   }
   return length;
@@ -127,33 +127,46 @@ const classify = (length: number, available: number, v2: boolean): Decision => {
   return { kind: 'data', consume: length };
 };
 
+const concatTail = (tail: Uint8Array, chunk: Uint8Array): Uint8Array => {
+  if (tail.byteLength === 0) return chunk;
+  const out = new Uint8Array(tail.byteLength + chunk.byteLength);
+  out.set(tail, 0);
+  out.set(chunk, tail.byteLength);
+  return out;
+};
+
+/**
+ * Carries only the trailing INCOMPLETE pkt-line between chunks, never the
+ * chunk itself — a delivered chunk of any size is drained of every complete
+ * pkt-line it contains. The surviving tail is always shorter than one frame
+ * (MAX_PKT_LINE_FRAME bytes): a declared length above that refuses via
+ * parseLength before any body bytes are considered for buffering.
+ */
 class PktBuffer {
-  readonly acc = new Uint8Array(ACC_CAPACITY);
-  used = 0;
+  private tail = new Uint8Array(0);
 
-  accept(chunk: Uint8Array): void {
-    if (this.used + chunk.byteLength <= ACC_CAPACITY) {
-      this.acc.set(chunk, this.used);
-      this.used += chunk.byteLength;
-      return;
+  get pending(): number {
+    return this.tail.byteLength;
+  }
+
+  *accept(chunk: Uint8Array, v2: boolean): Generator<PktLine, void, unknown> {
+    const view = concatTail(this.tail, chunk);
+    let offset = 0;
+    while (view.byteLength - offset >= PKT_LENGTH_BYTES) {
+      const length = parseLength(view, offset);
+      const decision = classify(length, view.byteLength - offset, v2);
+      if (decision.kind === 'wait') break;
+      if (decision.kind === 'data') {
+        yield {
+          kind: 'data',
+          payload: view.slice(offset + PKT_LENGTH_BYTES, offset + decision.consume),
+        };
+      } else {
+        yield { kind: decision.kind };
+      }
+      offset += decision.consume;
     }
-    // Fill the header bytes from the chunk so parseLength can surface
-    // INVALID_PKT_LENGTH or PKT_TOO_LARGE; never try to buffer the body.
-    const headerNeeded = Math.max(0, PKT_LENGTH_BYTES - this.used);
-    const headerSlice = chunk.subarray(0, headerNeeded);
-    this.acc.set(headerSlice, this.used);
-    this.used += headerSlice.byteLength;
-    parseLength(this.acc);
-    throw pktTooLarge(this.used);
-  }
-
-  drop(consume: number): void {
-    this.acc.copyWithin(0, consume, this.used);
-    this.used -= consume;
-  }
-
-  slice(from: number, to: number): Uint8Array {
-    return this.acc.slice(from, to);
+    this.tail = view.slice(offset);
   }
 }
 
@@ -163,26 +176,9 @@ async function* decode(
 ): AsyncGenerator<PktLine, void, unknown> {
   const buf = new PktBuffer();
   for await (const chunk of source) {
-    buf.accept(chunk);
-    yield* drain(buf, v2);
+    yield* buf.accept(chunk, v2);
   }
-  if (buf.used > 0) {
-    throw pktTruncated(buf.used);
-  }
-}
-
-function* drain(buf: PktBuffer, v2: boolean): Generator<PktLine, void, unknown> {
-  while (buf.used >= PKT_LENGTH_BYTES) {
-    const length = parseLength(buf.acc);
-    const decision = classify(length, buf.used, v2);
-    if (decision.kind === 'wait') return;
-    if (decision.kind === 'data') {
-      const payload = buf.slice(PKT_LENGTH_BYTES, decision.consume);
-      buf.drop(decision.consume);
-      yield { kind: 'data', payload };
-      continue;
-    }
-    buf.drop(decision.consume);
-    yield { kind: decision.kind };
+  if (buf.pending > 0) {
+    throw pktTruncated(buf.pending);
   }
 }
