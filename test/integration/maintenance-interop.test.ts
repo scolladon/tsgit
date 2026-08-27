@@ -20,10 +20,11 @@ import { execFileSync } from 'node:child_process';
 import { cp, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { maintenance } from '../../src/application/commands/maintenance.js';
 import { commonGitDir, packsDir } from '../../src/application/primitives/path-layout.js';
+import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { parseCruftMtimes, parsePackIndex } from '../../src/domain/storage/index.js';
@@ -99,11 +100,24 @@ async function disposeTwin(twin: Twin): Promise<void> {
   await rm(twin.oursDir, { recursive: true, force: true });
 }
 
+// Every Context a row builds is disposed after the row — packed reads open
+// persistent FileHandles, and an undisposed registry surfaces as the
+// GC-close warning the handle-lifecycle work treats as its leak oracle.
+const liveContexts: Context[] = [];
+function trackedNodeContext(oursDir: string, algorithm: 'sha1' | 'sha256'): Context {
+  const ctx = createNodeContext({ workDir: oursDir, algorithm });
+  liveContexts.push(ctx);
+  return ctx;
+}
+afterEach(async () => {
+  await Promise.all(liveContexts.splice(0).map((ctx) => disposePackRegistry(ctx)));
+});
+
 async function runOursGc(
   oursDir: string,
   algorithm: 'sha1' | 'sha256' = 'sha1',
 ): Promise<{ readonly ctx: Context; readonly result: Awaited<ReturnType<typeof maintenance>> }> {
-  const ctx = createNodeContext({ workDir: oursDir, algorithm });
+  const ctx = trackedNodeContext(oursDir, algorithm);
   const result = await maintenance(ctx, { tasks: ['gc'] });
   return { ctx, result };
 }
@@ -194,11 +208,11 @@ async function peerPackNamesContaining(dir: string, oid: string): Promise<Readon
 /**
  * Builds a pack from exactly `oids` via `git pack-objects` and marks it with
  * `suffix` (`.promisor`, `.keep`, …) — the same manual-construction shape
- * the existing `*.keep` fixture above uses, and the one Pin Z itself was
- * pinned with: real `git gc` keys a pack's class off its sibling MARKER
- * FILE alone, never off remote/partial-clone config, so a bare `.promisor`
- * touch reproduces a partial clone's placement rules without the protocol
- * negotiation a real `--filter=blob:none` clone would need.
+ * the existing `*.keep` fixture above uses: real `git gc` keys a pack's
+ * class off its sibling MARKER FILE alone, never off remote/partial-clone
+ * config, so a bare `.promisor` touch reproduces a partial clone's
+ * placement rules without the protocol negotiation a real
+ * `--filter=blob:none` clone would need.
  */
 async function buildMarkedPack(
   dir: string,
@@ -421,13 +435,27 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       writeLooseBlobGit(twin.oursDir, 'gen2');
       await forceMtime(looseGitPath(twin.peerDir, genTwoId), 1_950_000_000);
       await forceMtime(looseGitPath(twin.oursDir, genTwoId), 1_950_000_000);
-      const { result: second } = await runBothGc(twin, ['gc.pruneExpire=never']);
+      const { ctx, result: second } = await runBothGc(twin, ['gc.pruneExpire=never']);
       const peerSecondEntries = await packDirEntries(twin.peerDir);
       const peerSecondCruft = peerSecondEntries.find((n) => n.endsWith('.mtimes'));
+      const oursSecondEntries = await packDirEntries(twin.oursDir);
 
       // Assert — both rewrote under a new name, both carry both generations.
+      // `oursFirstCruft`/`second.cruftPackId` are asserted defined FIRST:
+      // an undefined `cruftPackId` would otherwise make the template
+      // literal below `"pack-undefined.mtimes"`, which trivially differs
+      // from any real first-generation name without proving a rewrite
+      // happened at all.
+      expect(peerFirstCruft).toBeDefined();
       expect(peerSecondCruft).not.toBe(peerFirstCruft);
-      expect(`pack-${second.cruftPackId}.mtimes`).not.toBe(oursFirstCruft);
+      expect(oursFirstCruft).toBeDefined();
+      expect(second.cruftPackId).toBeDefined();
+      const oursSecondCruftName = `pack-${second.cruftPackId}.mtimes`;
+      expect(oursSecondCruftName).not.toBe(oursFirstCruft);
+      expect(oursSecondEntries).toContain(oursSecondCruftName);
+      const oursMtimes = await readOursMtimesMap(ctx, second.cruftPackId as ObjectId);
+      expect(oursMtimes.has(genOneId as ObjectId)).toBe(true);
+      expect(oursMtimes.has(genTwoId as ObjectId)).toBe(true);
       expect(catFileExists(twin.peerDir, genOneId)).toBe(true);
       expect(catFileExists(twin.peerDir, genTwoId)).toBe(true);
       expect(catFileExists(twin.oursDir, genOneId)).toBe(true);
@@ -455,9 +483,10 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       // Arrange
       const twin = await makeTwin(baseDir, 'resurrection');
       // `gc.packRefs=false`: a blob-headed branch is unusual but not
-      // malformed (exactly what Pin H's own probe constructs) — git's
-      // `pack-refs` sub-step refuses it outright, a divergence from the
-      // cruft lifecycle this row is pinning, so it is turned off on both.
+      // malformed (exactly what gc's own retention-roots probe constructs)
+      // — git's `pack-refs` sub-step refuses it outright, a divergence
+      // from the cruft lifecycle this row is pinning, so it is turned off
+      // on both.
       await runBothGc(twin, ['gc.pruneExpire=never', 'gc.packRefs=false']);
 
       // Act — a plain ref-file write, bypassing `update-ref`'s commit-only
@@ -604,15 +633,13 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         'gc',
       ]);
 
-      // Act
+      // Act — config is written BEFORE the Context is built, matching
+      // every other row's ordering (`runBothGc`'s own `setOursGcConfig`
+      // call precedes `runOursGc`'s Context construction).
       let oursCaught: unknown;
       try {
-        const ctx = createNodeContext({ workDir: twin.oursDir });
-        await writeFile(
-          path.join(twin.oursDir, '.git', 'config'),
-          (await readFile(path.join(twin.oursDir, '.git', 'config'), 'utf8')) +
-            '\n[gc]\n\tpruneExpire = not-a-date\n',
-        );
+        await setOursGcConfig(twin.oursDir, ['gc.pruneExpire=not-a-date']);
+        const ctx = trackedNodeContext(twin.oursDir, 'sha1');
         await maintenance(ctx, { tasks: ['gc'] });
       } catch (error) {
         oursCaught = error;
@@ -806,7 +833,8 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       const bytesAfter = await readFile(packPathOf(second.packId as ObjectId));
 
       // Assert — same content reproduced under the same sha; a pack was
-      // genuinely written both times (Pin W: no "already consolidated" skip).
+      // genuinely written both times (no "already consolidated" skip — the
+      // no-op boundary reproduces the same sha, never a skipped rewrite).
       expect(second.packId).toBe(first.packId);
       expect(Buffer.compare(bytesBefore, bytesAfter)).toBe(0);
       await disposeTwin(twin);
@@ -866,7 +894,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
 
     beforeAll(async () => {
       baseDir = await initRepo('promisor-rebuild');
-      // p0's commit+tree+blob repacked together (Pin Z's own setup) — a
+      // p0's commit+tree+blob repacked together — a manually-marked
       // multi-object pack, not a single blob: tsgit's base-only packer and
       // git's own can otherwise reproduce byte-identical output for a
       // trivial one-object pack, which would make the "old pack gone"

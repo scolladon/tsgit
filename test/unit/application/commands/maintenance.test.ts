@@ -22,7 +22,7 @@
  *  - `gc.cruftPacks=false` write-back path
  *  - deletion safety: half-retired pack invisible to the registry; an
  *    interrupted cruft-pack creation still reads as an ordinary pack
- *  - R26: refs/reflogs/index untouched; loose-oid cache invariant repair
+ *  - refs/reflogs/index untouched; loose-oid cache invariant repair
  *  - structural: every result field is a count, boolean or enum
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -36,6 +36,7 @@ import {
 } from '../../../../src/application/commands/maintenance.js';
 import * as enumerateObjectsMod from '../../../../src/application/primitives/enumerate-objects.js';
 import * as cruftPackLifecycleMod from '../../../../src/application/primitives/internal/cruft-pack-lifecycle.js';
+import { probeLooseOid } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
 import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
   commonGitDir,
@@ -841,12 +842,11 @@ describe('maintenance', () => {
   // ---------------------------------------------------------------------
 
   describe.each([
-    { label: 'cutoff - 1', mtime: 999_999_999, cutoff: 1_000_000_000, survives: false },
-    { label: 'exactly at cutoff', mtime: 1_000_000_000, cutoff: 1_000_000_000, survives: false },
-    { label: 'cutoff + 1', mtime: 1_000_000_001, cutoff: 1_000_000_000, survives: true },
-  ])('Given an unreachable loose object at $label', ({ mtime, cutoff, survives }) => {
+    { label: 'cutoff - 1', mtime: 999_999_999, cutoff: 1_000_000_000 },
+    { label: 'exactly at cutoff', mtime: 1_000_000_000, cutoff: 1_000_000_000 },
+  ])('Given an unreachable loose object at $label', ({ mtime, cutoff }) => {
     describe('When gc runs', () => {
-      it(`Then it is ${survives ? 'kept' : 'destroyed'}`, async () => {
+      it('Then it is destroyed', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, `boundary-${mtime}`);
@@ -859,25 +859,44 @@ describe('maintenance', () => {
         const result = await sut(ctx, { tasks: ['gc'] });
 
         // Assert
-        if (survives) {
-          expect(result.cruftObjectsAdded).toBe(1);
-          expect(result.cruftObjectsExpired).toBe(0);
-          await expect(readObject(ctx, blobId)).resolves.toMatchObject({ type: 'blob' });
-        } else {
-          expect(result.cruftObjectsExpired).toBe(1);
-          expect(result.cruftPackId).toBeUndefined();
-          let caught: unknown;
-          try {
-            await readObject(ctx, blobId);
-            expect.unreachable();
-          } catch (error) {
-            caught = error;
-          }
-          expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect(result.cruftObjectsExpired).toBe(1);
+        expect(result.cruftPackId).toBeUndefined();
+        let caught: unknown;
+        try {
+          await readObject(ctx, blobId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
         }
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
       });
     });
   });
+
+  describe.each([{ label: 'cutoff + 1', mtime: 1_000_000_001, cutoff: 1_000_000_000 }])(
+    'Given an unreachable loose object at $label',
+    ({ mtime, cutoff }) => {
+      describe('When gc runs', () => {
+        it('Then it is kept', async () => {
+          // Arrange
+          const ctx = await seedOneCommit();
+          const blobId = await writeLooseBlob(ctx, `boundary-${mtime}`);
+          const { forceMtimeSeconds } = installLstatOverrides(ctx);
+          forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), mtime);
+          await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${cutoff}\n`);
+          const sut = maintenance;
+
+          // Act
+          const result = await sut(ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect(result.cruftObjectsAdded).toBe(1);
+          expect(result.cruftObjectsExpired).toBe(0);
+          await expect(readObject(ctx, blobId)).resolves.toMatchObject({ type: 'blob' });
+        });
+      });
+    },
+  );
 
   describe('Given gc.pruneExpire=never with an aged unreachable object', () => {
     describe('When gc runs', () => {
@@ -1184,7 +1203,7 @@ describe('maintenance', () => {
 
   describe('Given a cruft pack retirement interrupted right after the .idx unlink', () => {
     describe('When the fault propagates', () => {
-      it('Then the half-retired pack is already invisible — its .idx is gone', async () => {
+      it('Then the fault is not swallowed, and the named .idx is gone from disk and the registry', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'half-retired');
@@ -1192,7 +1211,10 @@ describe('maintenance', () => {
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), 2_000_000_000);
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
         const sut = maintenance;
-        await sut(ctx, { tasks: ['gc'] }); // creates the first cruft pack
+        const first = await sut(ctx, { tasks: ['gc'] }); // creates the first cruft pack
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const retiredIdxPath = `${packDir}/pack-${first.cruftPackId}.idx`;
 
         // Act — force a NEW cruft generation (rewrite branch), then fail the
         // retirement right after the old pack's `.idx` unlink.
@@ -1202,7 +1224,7 @@ describe('maintenance', () => {
         let idxUnlinked = false;
         let faultInjected = false;
         const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
-          if (path.endsWith('.idx') && !idxUnlinked) {
+          if (path === retiredIdxPath && !idxUnlinked) {
             idxUnlinked = true;
             return originalRm(path);
           }
@@ -1223,10 +1245,17 @@ describe('maintenance', () => {
         }
         rmSpy.mockRestore();
 
-        // Assert — the fault propagated (not swallowed) and the old pack's
-        // `.idx` is gone: pack-registry discovery is keyed on `.idx`.
-        expect(caught).toBeDefined();
+        // Assert — the fault propagated (not swallowed), naming the
+        // injected reason, and the old pack's own `.idx` is gone both from
+        // disk and from a freshly-refreshed registry (pack discovery keys
+        // on `.idx`).
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toBe('injected-fault');
         expect(idxUnlinked).toBe(true);
+        expect(await ctx.fs.exists(retiredIdxPath)).toBe(false);
+        refreshPackRegistry(ctx);
+        const registeredNames = (await getPackRegistry(ctx).all()).map((p) => p.name);
+        expect(registeredNames).not.toContain(`pack-${first.cruftPackId}`);
       });
     });
   });
@@ -1270,6 +1299,40 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a loose object whose content does not hash to its own filename', () => {
+    describe('When gc runs', () => {
+      it("Then step 8's post-write verify refuses OBJECT_HASH_MISMATCH and nothing is destroyed", async () => {
+        // Arrange — the same corrupted-loose-file technique
+        // `read-object.test.ts` uses: a loose file planted at a chosen
+        // (fake) oid whose content hashes to something else entirely.
+        // `buildPack` reads it without verification, so the corruption
+        // survives into the freshly-built cruft pack undetected — proving
+        // step 8's OWN post-write `readObject(..., { verifyHash: true })`
+        // pass, not the build step, is what has to catch it.
+        const ctx = await seedOneCommit();
+        const fakeId = 'b'.repeat(ctx.hashConfig.hexLength) as ObjectId;
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(looseObjectPath(commonGitDir(ctx), fakeId), compressed);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
+        expect(await isLoose(ctx, fakeId)).toBe(true);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Refs, reflogs and the index are untouched
   // ---------------------------------------------------------------------
@@ -1309,20 +1372,26 @@ describe('maintenance', () => {
   // Loose-oid cache invariant repair
   // ---------------------------------------------------------------------
 
-  describe('Given a pruned fanout prefix', () => {
-    describe('When a subsequent probe checks the same object', () => {
-      it('Then it re-reads the directory rather than trusting a stale HIT', async () => {
-        // Arrange
+  describe('Given a pruned fanout prefix, cached as a HIT before gc runs', () => {
+    describe('When the loose-oid cache is reprobed after gc', () => {
+      it('Then it reports false rather than trusting the stale HIT', async () => {
+        // Arrange — prime the cache with a real HIT for this exact oid
+        // BEFORE gc unlinks it, the only way to prove gc's own
+        // `forgetLooseOidPrefix` call actually invalidates the cache
+        // rather than the assertion merely re-deriving from the
+        // filesystem, unrelated to the cache at all.
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'pruned-and-reprobed');
+        expect(await probeLooseOid(ctx, blobId)).toBe(true);
         const sut = maintenance;
+
+        // Act
         await sut(ctx, { tasks: ['gc'] }); // packs the reachable set; blob crufted
 
-        // Act — probe the loose path directly; the fanout cache must not
-        // report a stale HIT for a prefix gc unlinked from.
+        // Assert — the cache itself, re-probed, must not report a stale HIT
+        // for a prefix gc unlinked from.
+        expect(await probeLooseOid(ctx, blobId)).toBe(false);
         const stillLoose = await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), blobId));
-
-        // Assert
         expect(stillLoose).toBe(false);
       });
     });
@@ -1471,8 +1540,8 @@ describe('maintenance', () => {
       it('Then every one of its files survives — never treated as existing cruft, never retired', async () => {
         // Arrange — a genuine cruft pack (`.mtimes` written by a real gc
         // run) subsequently ALSO marked `.keep` without dropping `.mtimes`
-        // — Pin V's total exclusion must win over the cruft lifecycle even
-        // when both markers coexist.
+        // — the `.keep` total exclusion must win over the cruft lifecycle
+        // even when both markers coexist.
         const ctx = await seedOneCommit();
         const sut = maintenance;
         const blobId = await writeLooseBlob(ctx, 'keep-and-mtimes');
@@ -1526,7 +1595,7 @@ describe('maintenance', () => {
   });
 
   // ---------------------------------------------------------------------
-  // The no-op boundary — Pin W
+  // The no-op boundary — unchanged content reproduces the same sha
   // ---------------------------------------------------------------------
 
   describe('Given exactly one normal pack and nothing loose', () => {
@@ -2099,14 +2168,15 @@ describe('maintenance', () => {
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert
+        // Assert — seedOneCommit's own reachable content (blob/tree/commit)
+        // guarantees a normal pack always exists this run, so this is
+        // asserted unconditionally rather than behind a dead guard.
         expect(result.promisorPackId).toBeDefined();
         const promisorOids = await packMemberOids(ctx, result.promisorPackId as string);
         expect(promisorOids.has(overlapId)).toBe(true);
-        if (result.packId !== undefined) {
-          const normalOids = await packMemberOids(ctx, result.packId);
-          expect(normalOids.has(overlapId)).toBe(false);
-        }
+        expect(result.packId).toBeDefined();
+        const normalOids = await packMemberOids(ctx, result.packId as ObjectId);
+        expect(normalOids.has(overlapId)).toBe(false);
         expect(await isLoose(ctx, overlapId)).toBe(false);
       });
     });
@@ -2125,14 +2195,13 @@ describe('maintenance', () => {
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert
+        // Assert — the only unreachable object here lives inside the
+        // promisor pack, so no cruft candidate ever exists this run; a
+        // dead "if it exists" guard would never prove that.
         expect(result.promisorPackId).toBeDefined();
         const promisorOids = await packMemberOids(ctx, result.promisorPackId as string);
         expect(promisorOids.has(unreachableId as ObjectId)).toBe(true);
-        if (result.cruftPackId !== undefined) {
-          const cruftOids = await packMemberOids(ctx, result.cruftPackId);
-          expect(cruftOids.has(unreachableId as ObjectId)).toBe(false);
-        }
+        expect(result.cruftPackId).toBeUndefined();
       });
     });
   });
@@ -2202,9 +2271,9 @@ describe('maintenance', () => {
   describe('Given a second gc on a REACHABLE promisor set unchanged since the last run', () => {
     describe('When gc runs again', () => {
       it('Then both the normal pack sha and the promisor pack sha stay identical', async () => {
-        // Arrange — Pin W's no-op boundary, over the duplicated set: a
-        // repeat run over an unchanged reachable promisor object must
-        // reproduce the same sha for BOTH packs it now lives in.
+        // Arrange — the no-op boundary, over the duplicated set: a repeat
+        // run over an unchanged reachable promisor object must reproduce
+        // the same sha for BOTH packs it now lives in.
         const ctx = await seedOneCommit();
         const sut = maintenance;
         const content = 'repeat-duplicate-seed';
@@ -2424,10 +2493,10 @@ describe('maintenance', () => {
   describe('Given a second gc on a promisor set unchanged since the last run', () => {
     describe('When gc runs again', () => {
       it('Then the same promisor pack sha keeps being produced, with .promisor still present', async () => {
-        // Arrange — the no-op boundary (Pin W) applied to the promisor
-        // class: a repeat run over an unchanged set reproduces the exact
-        // same sha, so the rewrite must tolerate a `.promisor` sentinel
-        // already sitting at that name from the prior run.
+        // Arrange — the no-op boundary applied to the promisor class: a
+        // repeat run over an unchanged set reproduces the exact same sha,
+        // so the rewrite must tolerate a `.promisor` sentinel already
+        // sitting at that name from the prior run.
         const ctx = await seedOneCommit();
         const sut = maintenance;
         await writePromisorPack(ctx, 'no-op-boundary', ['no-op-boundary-seed']);
@@ -2451,7 +2520,8 @@ describe('maintenance', () => {
         // Arrange — identical final object SET, opposite pack-write (hence
         // discovery) order; `toPromisorPack` must sort before packing or
         // the two runs assemble their entries in different array order and
-        // produce different shas for the same content (Pin W).
+        // produce different shas for the same content, breaking the no-op
+        // boundary's promise that content alone determines the sha.
         const ctxA = await seedOneCommit();
         await writePromisorPack(ctxA, 'promisor-order-p1', ['sort-stability-p1']);
         await writePromisorPack(ctxA, 'promisor-order-p2', ['sort-stability-p2']);
