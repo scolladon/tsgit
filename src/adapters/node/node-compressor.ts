@@ -1,6 +1,19 @@
-import { createInflate, deflateRawSync, deflateSync, inflateSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import {
+  createInflate,
+  deflate as deflateCallback,
+  deflateRaw as deflateRawCallback,
+  deflateRawSync,
+  deflateSync,
+  inflate as inflateCallback,
+  inflateSync,
+} from 'node:zlib';
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+
+const deflateAsync = promisify(deflateCallback);
+const deflateRawAsync = promisify(deflateRawCallback);
+const inflateAsync = promisify(inflateCallback);
 
 /** @internal Exported so we can exercise the non-Error fallback branch under unit tests. */
 export function describeError(err: unknown): string {
@@ -12,6 +25,38 @@ export function describeError(err: unknown): string {
  * delta `targetLength` cap (2 GiB) so a single object cannot exhaust heap.
  */
 const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * Below this size, dispatching to Node's callback zlib API costs more than it
+ * saves: the hop to the libuv threadpool and back is fixed overhead that a
+ * sub-millisecond `*Sync` call doesn't have. Above it, the callback API's
+ * threadpool dispatch lets concurrent calls (bounded by `limitFor(ctx,
+ * 'cpuBound')` at the call sites that pool this work) genuinely overlap
+ * instead of serializing on the one JS thread the way a promise-wrapped sync
+ * call does.
+ *
+ * MEASURED, not derived — A/B at concurrency 4 (`min(cores, threadpoolWidth)`
+ * on the measuring machine: 11 cores, default `UV_THREADPOOL_SIZE`=4), 64
+ * calls per size class, mean of 3 runs:
+ *
+ * | size   | deflate sync | deflate callback | speedup | inflate sync | inflate callback | speedup |
+ * |--------|--------------|-------------------|---------|--------------|--------------------|---------|
+ * | 4 KiB  | 2.11 ms      | 2.11 ms            | ~1.0x   | 0.20 ms      | 1.55 ms            | ~0.13x  |
+ * | 16 KiB | 4.12 ms      | 2.20 ms            | ~1.9x   | 0.24 ms      | 1.41 ms            | ~0.17x  |
+ * | 64 KiB | 15.72 ms     | 6.14 ms            | ~2.6x   | 0.66 ms      | 2.33 ms            | ~0.28x  |
+ *
+ * `deflate`/`deflateRaw` cross from break-even to a clear win between 4 and
+ * 16 KiB — compression is CPU-heavy enough that four threadpool-overlapped
+ * calls beat four serialized sync calls well before 16 KiB, and the win only
+ * grows at 64 KiB. `inflate` never crosses over in this range: decompression
+ * is cheap enough per byte that dispatch overhead still dominates at 64 KiB,
+ * costing a small, bounded (~1-1.5 ms per call, not growing with size here)
+ * regression on the decompress path. 16 KiB is chosen over 64 KiB so the
+ * (larger, better-established) `deflate` win reaches a bigger share of
+ * real payloads, accepting the disclosed `inflate` trade-off rather than
+ * deferring it to a size class few objects ever reach.
+ */
+export const CALLBACK_DISPATCH_THRESHOLD_BYTES = 16 * 1024;
 
 interface NodeCompressorOptions {
   /** Override the inflated-output cap. Tests use a small value to exercise the overflow branch. */
@@ -33,8 +78,21 @@ export class NodeCompressor implements Compressor {
       : Math.min(maxOutputBytes, this.maxInflatedBytes);
   }
 
+  /** Above the threshold, dispatch through Node's callback zlib API (libuv
+   *  threadpool, genuine overlap); at or below it, the sync API's dispatch
+   *  overhead outweighs any parallelism it could offer. See
+   *  `CALLBACK_DISPATCH_THRESHOLD_BYTES` for the measured table. */
+  private usesCallbackDispatch(data: Uint8Array): boolean {
+    return data.length > CALLBACK_DISPATCH_THRESHOLD_BYTES;
+  }
+
   deflate = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
+      if (this.usesCallbackDispatch(data)) {
+        return new Uint8Array(
+          level === undefined ? await deflateAsync(data) : await deflateAsync(data, { level }),
+        );
+      }
       // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateSync(data, { level: undefined })`, which Node treats identically to the no-options `deflateSync(data)`, byte-for-byte across all inputs.
       return new Uint8Array(level === undefined ? deflateSync(data) : deflateSync(data, { level }));
     } catch (err) {
@@ -44,6 +102,13 @@ export class NodeCompressor implements Compressor {
 
   deflateRaw = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
+      if (this.usesCallbackDispatch(data)) {
+        return new Uint8Array(
+          level === undefined
+            ? await deflateRawAsync(data)
+            : await deflateRawAsync(data, { level }),
+        );
+      }
       // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateRawSync(data, { level: undefined })`, which Node treats identically to the no-options `deflateRawSync(data)`, byte-for-byte across all inputs.
       return new Uint8Array(
         level === undefined ? deflateRawSync(data) : deflateRawSync(data, { level }),
@@ -55,6 +120,9 @@ export class NodeCompressor implements Compressor {
 
   inflate = async (data: Uint8Array): Promise<Uint8Array> => {
     try {
+      if (this.usesCallbackDispatch(data)) {
+        return new Uint8Array(await inflateAsync(data, { maxOutputLength: this.maxInflatedBytes }));
+      }
       return new Uint8Array(inflateSync(data, { maxOutputLength: this.maxInflatedBytes }));
     } catch (err) {
       throw decompressFailed(describeError(err));

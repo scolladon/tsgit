@@ -1,9 +1,44 @@
-import { describe, expect, it } from 'vitest';
-import { describeError, NodeCompressor } from '../../../../src/adapters/node/node-compressor.js';
+import { randomBytes } from 'node:crypto';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CALLBACK_DISPATCH_THRESHOLD_BYTES,
+  describeError,
+  NodeCompressor,
+} from '../../../../src/adapters/node/node-compressor.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { compressorContractTests } from '../../ports/compressor.contract.js';
 
+vi.mock('node:zlib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:zlib')>();
+  return {
+    ...actual,
+    deflate: vi.fn(actual.deflate),
+    deflateRaw: vi.fn(actual.deflateRaw),
+    deflateRawSync: vi.fn(actual.deflateRawSync),
+    deflateSync: vi.fn(actual.deflateSync),
+    inflate: vi.fn(actual.inflate),
+    inflateSync: vi.fn(actual.inflateSync),
+  };
+});
+
+const zlib = await import('node:zlib');
+const deflateSyncSpy = vi.mocked(zlib.deflateSync);
+const deflateRawSyncSpy = vi.mocked(zlib.deflateRawSync);
+const inflateSyncSpy = vi.mocked(zlib.inflateSync);
+const deflateCallbackSpy = vi.mocked(zlib.deflate);
+const deflateRawCallbackSpy = vi.mocked(zlib.deflateRaw);
+const inflateCallbackSpy = vi.mocked(zlib.inflate);
+
 describe('NodeCompressor', () => {
+  beforeEach(() => {
+    deflateSyncSpy.mockClear();
+    deflateCallbackSpy.mockClear();
+    deflateRawSyncSpy.mockClear();
+    deflateRawCallbackSpy.mockClear();
+    inflateSyncSpy.mockClear();
+    inflateCallbackSpy.mockClear();
+  });
+
   compressorContractTests(async () => new NodeCompressor());
 
   describe('node-specific behaviors', () => {
@@ -636,6 +671,200 @@ describe('NodeCompressor', () => {
           // Assert — cancellation resolves cleanly, not as a decompression failure
           expect(caught).toBeUndefined();
         }, 5000);
+      });
+    });
+
+    describe('Given the callback-dispatch size gate', () => {
+      describe('When deflate runs on a payload below the threshold', () => {
+        it('Then the synchronous path is used, not the callback path', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES - 1);
+
+          // Act
+          await sut.deflate(data);
+
+          // Assert
+          expect(deflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(deflateCallbackSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When deflate runs on a payload exactly at the threshold', () => {
+        it('Then the synchronous path is used (the boundary is strictly greater-than)', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES);
+
+          // Act
+          await sut.deflate(data);
+
+          // Assert
+          expect(deflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(deflateCallbackSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When deflate runs on a payload above the threshold', () => {
+        it('Then the callback path is used, not the synchronous path', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
+
+          // Act
+          await sut.deflate(data);
+
+          // Assert
+          expect(deflateCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(deflateSyncSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When deflateRaw runs on a payload below the threshold', () => {
+        it('Then the synchronous path is used', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES - 1);
+
+          // Act
+          await sut.deflateRaw(data);
+
+          // Assert
+          expect(deflateRawSyncSpy).toHaveBeenCalledTimes(1);
+          expect(deflateRawCallbackSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When deflateRaw runs on a payload above the threshold', () => {
+        it('Then the callback path is used', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
+
+          // Act
+          await sut.deflateRaw(data);
+
+          // Assert
+          expect(deflateRawCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(deflateRawSyncSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When inflate runs on a payload below the threshold', () => {
+        it('Then the synchronous path is used', async () => {
+          // Arrange — garbage bytes are fine: dispatch is decided before the
+          // zlib stream is ever parsed, so a rejection does not confound the spy.
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES - 1);
+
+          // Act
+          await sut.inflate(data).catch(() => undefined);
+
+          // Assert
+          expect(inflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(inflateCallbackSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When inflate runs on a payload exactly at the threshold', () => {
+        it('Then the synchronous path is used (the boundary is strictly greater-than)', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES);
+
+          // Act
+          await sut.inflate(data).catch(() => undefined);
+
+          // Assert
+          expect(inflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(inflateCallbackSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When inflate runs on a payload above the threshold', () => {
+        it('Then the callback path is used, not the synchronous path', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
+
+          // Act
+          await sut.inflate(data).catch(() => undefined);
+
+          // Assert
+          expect(inflateCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(inflateSyncSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe('Given a payload above the threshold that inflates past the instance cap', () => {
+      describe('When inflate runs', () => {
+        it('Then it refuses with DECOMPRESS_FAILED — the cap holds exactly as it does on the synchronous path', async () => {
+          // Arrange — poorly compressible so the compressed buffer itself
+          // (the argument `inflate` gates on) lands above the dispatch threshold.
+          const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+          const payload = new Uint8Array(randomBytes(32 * 1024));
+          const deflated = await sut.deflate(payload);
+          deflateCallbackSpy.mockClear();
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.inflate(deflated);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — the callback path was genuinely the one exercised
+          expect(inflateCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        });
+      });
+    });
+
+    describe('Given the callback path rejects on input the zlib binding cannot accept', () => {
+      describe('When deflate runs on a payload above the threshold', () => {
+        it('Then the error surfaces as COMPRESS_FAILED — the same shape as the synchronous path', async () => {
+          // Arrange — a `.length` above the threshold routes to the callback
+          // path, but the value is not real deflatable data.
+          const sut = new NodeCompressor();
+          const bogus = { length: CALLBACK_DISPATCH_THRESHOLD_BYTES + 1 } as unknown as Uint8Array;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.deflate(bogus);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(deflateCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('COMPRESS_FAILED');
+        });
+      });
+
+      describe('When inflate runs on a payload above the threshold', () => {
+        it('Then the error surfaces as DECOMPRESS_FAILED — the same shape as the synchronous path', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const bogus = { length: CALLBACK_DISPATCH_THRESHOLD_BYTES + 1 } as unknown as Uint8Array;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.inflate(bogus);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(inflateCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        });
       });
     });
   });
