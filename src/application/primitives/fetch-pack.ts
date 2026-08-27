@@ -13,7 +13,7 @@
  * Out of scope here (handled by callers): URL validation, capability
  * negotiation, ref-update propagation.
  */
-import { TsgitError } from '../../domain/error.js';
+import { fileExists, TsgitError } from '../../domain/error.js';
 import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import {
@@ -176,10 +176,17 @@ const materializePack = async (
   // response round-tripped a pack rather than a zero-byte body). Suppress
   // promoting it, same as the zero-byte-body guard above.
   if (entries.length === 0) {
-    await removeQuarantineFileIfPresent(ctx, receipt.tmpPath);
+    await cleanupQuarantine(ctx, receipt.tmpPath);
     return emptyPackResult(download.shallow, download.unshallow);
   }
-  await renamePackIntoPlace(ctx, receipt.tmpPath, packFilePath(packDir, receipt.packSha));
+  try {
+    await renamePackIntoPlace(ctx, receipt.tmpPath, packFilePath(packDir, receipt.packSha));
+  } catch (err) {
+    // A rename failure leaves the verified quarantine file behind unless
+    // cleaned up here — nothing later in this function gets a chance to.
+    await cleanupQuarantine(ctx, receipt.tmpPath);
+    throw err;
+  }
   const written = await writePackSiblingArtifacts(ctx, {
     packDir,
     entries,
@@ -208,11 +215,15 @@ const walkQuarantinedEntries = async (
   tmpPath: string,
   totalBytes: number,
 ): Promise<ReadonlyArray<WalkedEntry>> => {
-  const packBytes = await ctx.fs.readSlice(tmpPath, 0, totalBytes);
   try {
+    const packBytes = await ctx.fs.readSlice(tmpPath, 0, totalBytes);
     return await walkPackEntries(ctx, packBytes);
   } catch (err) {
-    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    // The read-back is inside this try alongside the walk itself — a
+    // failure reading the just-written quarantine file back off disk must
+    // reap the temp file exactly like a malformed-body failure does, not
+    // leak it because the read happened to fail before the walk started.
+    await cleanupQuarantine(ctx, tmpPath);
     throw err;
   }
 };
@@ -238,6 +249,33 @@ const randomTmpPackName = (): string => {
     suffix += TMP_PACK_SUFFIX_ALPHABET[Math.floor(Math.random() * TMP_PACK_SUFFIX_ALPHABET.length)];
   }
   return `${TMP_PACK_PREFIX}${suffix}`;
+};
+
+/** Bounds `claimQuarantinePath`'s retry loop — a collision on every one of
+ *  this many independently-drawn 6-character suffixes is astronomically
+ *  unlikely; this is a defence-in-depth ceiling, not an expected path. */
+const MAX_QUARANTINE_NAME_ATTEMPTS = 8;
+
+/**
+ * Claims a unique quarantine path via an exclusive create, retrying with a
+ * fresh random suffix on a name collision — git's own `mkstemp` gives the
+ * same guarantee for free; `writeStream` has no exclusive-create option, so
+ * claiming the name here, before the streaming write starts, is what keeps
+ * a same-name collision from silently clobbering another in-flight
+ * quarantine write. The claimed (empty) placeholder is immediately
+ * overwritten in place by the caller's streaming write to the same path.
+ */
+const claimQuarantinePath = async (ctx: Context, packDir: string): Promise<string> => {
+  for (let attempt = 0; attempt < MAX_QUARANTINE_NAME_ATTEMPTS; attempt += 1) {
+    const candidate = `${packDir}/${randomTmpPackName()}`;
+    try {
+      await ctx.fs.writeExclusive(candidate, new Uint8Array(0));
+      return candidate;
+    } catch (err) {
+      if (errorDataCode(err) !== 'FILE_EXISTS') throw err;
+    }
+  }
+  throw fileExists(`${packDir}/${TMP_PACK_PREFIX}<random>`);
 };
 
 const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
@@ -270,16 +308,28 @@ const removeQuarantineFileIfPresent = async (ctx: Context, path: string): Promis
   }
 };
 
-/** Renames a verified quarantine file into its final `pack-<sha>.pack`
- *  name, preferring the platform's atomic replace when available and
- *  falling back to plain `rename` where it is not (OPFS). */
+/**
+ * A quarantine unlink on a handled-failure path is best-effort — it must
+ * never be able to REPLACE the diagnosis it was cleaning up after. Every
+ * failure call site in this file sits inside a `catch`/early-return about
+ * to surface (or having just surfaced) the real error — trailer mismatch,
+ * PACK_TOO_LARGE, a malformed body — so a *second*, unrelated failure right
+ * here (e.g. PERMISSION_DENIED unlinking the temp file) swallows silently
+ * rather than masking that original diagnosis. `removeQuarantineFileIfPresent`
+ * itself stays selective (FILE_NOT_FOUND only) rather than a blanket catch,
+ * so any future caller that DOES need to observe a genuine cleanup fault
+ * still can.
+ */
+const cleanupQuarantine = (ctx: Context, path: string): Promise<void> =>
+  removeQuarantineFileIfPresent(ctx, path).catch(() => {});
+
+/** Renames a verified quarantine file into its final `pack-<sha>.pack` name. */
 const renamePackIntoPlace = async (
   ctx: Context,
   tmpPath: string,
   finalPath: string,
 ): Promise<void> => {
-  const rename = ctx.fs.atomicRename ?? ctx.fs.rename;
-  await rename(tmpPath, finalPath);
+  await ctx.fs.rename(tmpPath, finalPath);
 };
 
 interface QuarantineReceipt {
@@ -313,7 +363,7 @@ const receivePackToQuarantine = async (
   const cap = ctx.config?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const trailerLen = ctx.hash.digestLength;
   const hasher = ctx.hash.createHasher();
-  const tmpPath = `${packDir}/${randomTmpPackName()}`;
+  const tmpPath = await claimQuarantinePath(ctx, packDir);
   let total = 0;
   let lastTick = 0;
   let tail: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
@@ -341,7 +391,7 @@ const receivePackToQuarantine = async (
   try {
     await ctx.fs.writeStream(tmpPath, tee());
   } catch (err) {
-    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    await cleanupQuarantine(ctx, tmpPath);
     throw err;
   }
 
@@ -353,18 +403,18 @@ const receivePackToQuarantine = async (
   }
 
   if (total === 0) {
-    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    await cleanupQuarantine(ctx, tmpPath);
     return { tmpPath, totalBytes: 0, packSha: '' };
   }
   if (total < PACK_HEADER_BYTES + trailerLen) {
-    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    await cleanupQuarantine(ctx, tmpPath);
     throw invalidPackHeader('trailer mismatch: pack too short for header + trailer');
   }
 
   const expectedHex = await hasher.digestHex();
   const actualHex = bytesToHex(tail);
   if (expectedHex !== actualHex) {
-    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    await cleanupQuarantine(ctx, tmpPath);
     throw invalidPackHeader(`trailer mismatch: expected ${expectedHex}, got ${actualHex}`);
   }
 
@@ -551,11 +601,11 @@ const tryResolveEntry = async (
     }
     const base = byOffset.get(baseOffset);
     if (base === undefined) return undefined;
-    return resolveDelta(ctx, entry, base);
+    return await resolveDelta(ctx, entry, base);
   }
   // REF_DELTA — base may be in-pack or supplied by an external resolver.
   const packBase = byId.get(entry.header.baseId);
-  if (packBase !== undefined) return resolveDelta(ctx, entry, packBase);
+  if (packBase !== undefined) return await resolveDelta(ctx, entry, packBase);
   if (externalBaseResolver === undefined) return undefined;
   const external = await externalBaseResolver(entry.header.baseId as ObjectId);
   if (external === undefined) return undefined;
@@ -566,7 +616,7 @@ const tryResolveEntry = async (
     crc32: 0,
     offset: 0,
   };
-  return resolveDelta(ctx, entry, syntheticBase);
+  return await resolveDelta(ctx, entry, syntheticBase);
 };
 
 const resolveDelta = async (
@@ -610,5 +660,5 @@ const computeLooseObjectId = async (
   const loose = new Uint8Array(headerBytes.length + content.length);
   loose.set(headerBytes, 0);
   loose.set(content, headerBytes.length);
-  return ctx.hash.hashHex(loose);
+  return await ctx.hash.hashHex(loose);
 };

@@ -2072,8 +2072,11 @@ describe('pack quarantine', () => {
 
   describe('Given cleanup fails with something other than FILE_NOT_FOUND', () => {
     describe('When fetchPack fails on a corrupted trailer', () => {
-      it('Then the cleanup failure rethrows instead of being swallowed', async () => {
-        // Arrange
+      it('Then the ORIGINAL trailer-mismatch error still surfaces — the cleanup failure is swallowed, not masking it', async () => {
+        // Arrange — a cleanup failure on a handled-failure path must never
+        // REPLACE the diagnosis it was cleaning up after: the trailer
+        // mismatch is the refusal that matters here, not the unrelated
+        // PERMISSION_DENIED unlinking the doomed quarantine file.
         const baseCtx = createMemoryContext();
         const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'permission trouble\n');
         const corrupted = packBytes.slice();
@@ -2099,10 +2102,122 @@ describe('pack quarantine', () => {
           caught = err;
         }
 
-        // Assert — the cleanup's own failure surfaces rather than being
-        // silently dropped or masked by the original trailer-mismatch error.
+        // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('INVALID_PACK_HEADER');
+        expect(data.reason).toContain('trailer');
+      });
+    });
+  });
+
+  describe('Given the quarantined pack cannot be read back off disk', () => {
+    describe('When fetchPack walks the quarantined entries', () => {
+      it('Then the temp file is removed instead of leaking', async () => {
+        // Arrange — the read-back (not the walk) is what fails here: it
+        // must be covered by the SAME cleanup as a malformed-body failure,
+        // not skipped because it happens before the walk even starts.
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'read-back fails\n');
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (): Promise<Uint8Array> => {
+            throw permissionDenied('quarantine read-back');
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
         expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given the rename into place fails after the pack is verified', () => {
+    describe('When fetchPack promotes the quarantined pack', () => {
+      it('Then the quarantine temp file is removed instead of orphaned', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'rename fails\n');
+        const ctx = withFsPatch(baseCtx, {
+          rename: async (): Promise<void> => {
+            throw permissionDenied('final pack path');
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a quarantine name collision with another in-flight write', () => {
+    describe('When fetchPack drains a pack into quarantine', () => {
+      it('Then it claims a distinct name instead of silently clobbering the colliding file', async () => {
+        // Arrange — force the FIRST drawn suffix ("AAAAAA") to collide with
+        // an existing file, then a different one ("ffffff") to succeed —
+        // proves claimQuarantinePath retries on FILE_EXISTS rather than
+        // writing straight through the collision.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'my content\n');
+        await ctx.fs.mkdir(packDir(ctx));
+        const collidingPath = `${packDir(ctx)}/tmp_pack_AAAAAA`;
+        const sentinel = 'this must survive untouched';
+        await ctx.fs.writeUtf8(collidingPath, sentinel);
+        const randomSpy = vi.spyOn(Math, 'random');
+        for (let i = 0; i < 6; i += 1) randomSpy.mockReturnValueOnce(0);
+        randomSpy.mockReturnValue(0.5);
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let result: Awaited<ReturnType<typeof fetchPack>>;
+        try {
+          result = await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } finally {
+          randomSpy.mockRestore();
+        }
+
+        // Assert — the pre-existing colliding file is untouched and the
+        // fetch still completed against a distinct claimed name.
+        expect(result.objectCount).toBe(1);
+        const bytes = await ctx.fs.read(collidingPath);
+        expect(new TextDecoder().decode(bytes)).toBe(sentinel);
       });
     });
   });
