@@ -25,33 +25,54 @@ export function describeError(err: unknown): string {
 const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
 
 /**
- * Below this size, dispatching to Node's callback zlib API costs more than it
- * saves: the hop to the libuv threadpool and back is fixed overhead that a
- * sub-millisecond `*Sync` call doesn't have. Above it, the callback API's
- * threadpool dispatch lets concurrent calls genuinely overlap instead of
- * serializing on the one JS thread the way a promise-wrapped sync call does.
+ * This gate applies to `deflate`/`deflateRaw` ONLY — see the design note
+ * below for why. `inflate` always stays on `inflateSync`; it is never worth
+ * gating (measured table below).
  *
- * This gate applies to `deflate`/`deflateRaw` ONLY. `inflate` stays on
- * `inflateSync` at every size — see the measured table below, where
- * decompression never crosses over in the measured range.
+ * The callback zlib API is dispatched to the libuv threadpool and returns
+ * the JS thread to the event loop while it runs. Per call, that round trip
+ * costs MORE than the equivalent `*Sync` call — there is no in-repo caller
+ * that runs `deflate`/`deflateRaw` concurrently (the pack writer's own loop
+ * is sequential), so this is not a throughput win. The gate exists because a
+ * single large `deflateSync` call blocks the whole process — including
+ * unrelated work a host application has scheduled on the same event loop —
+ * for as long as it runs; the callback arm avoids that stall at the cost of
+ * its own per-call overhead. `inflate` is excluded because decompression is
+ * cheap enough per byte that the stall this trades away never gets large
+ * enough to be worth the overhead, at any size measured.
  *
- * MEASURED, not derived — A/B at concurrency 4 (`min(cores, threadpoolWidth)`
- * on the measuring machine: 11 cores, default `UV_THREADPOOL_SIZE`=4), 64
- * calls per size class, mean of 3 runs:
+ * MEASURED, not derived (concurrency 1 throughout — no concurrent producer
+ * to benchmark against):
  *
- * | size   | deflate sync | deflate callback | speedup | inflate sync | inflate callback | speedup |
- * |--------|--------------|-------------------|---------|--------------|--------------------|---------|
- * | 4 KiB  | 2.11 ms      | 2.11 ms            | ~1.0x   | 0.20 ms      | 1.55 ms            | ~0.13x  |
- * | 16 KiB | 4.12 ms      | 2.20 ms            | ~1.9x   | 0.24 ms      | 1.41 ms            | ~0.17x  |
- * | 64 KiB | 15.72 ms     | 6.14 ms            | ~2.6x   | 0.66 ms      | 2.33 ms            | ~0.28x  |
+ * Per-call latency, median of 21 runs:
  *
- * `deflate`/`deflateRaw` cross from break-even to a clear win between 4 and
- * 16 KiB — compression is CPU-heavy enough that four threadpool-overlapped
- * calls beat four serialized sync calls well before 16 KiB, and the win only
- * grows at 64 KiB. `inflate` never crosses over in this range: decompression
- * is cheap enough per byte that dispatch overhead still dominates at 64 KiB,
- * costing a bounded (~1-1.5 ms per call, not growing with size here)
- * regression — which is why `inflate` does not gate on this threshold at all.
+ * | size    | deflate sync | deflate callback | inflate sync | inflate callback |
+ * |---------|--------------|-------------------|---------------|--------------------|
+ * | 4 KiB   | 0.039 ms     | 0.079 ms           | 0.005 ms      | 0.044 ms            |
+ * | 16 KiB  | 0.090 ms     | 0.131 ms           | 0.005 ms      | 0.041 ms            |
+ * | 64 KiB  | 0.516 ms     | 0.643 ms           | 0.011 ms      | 0.076 ms            |
+ *
+ * The callback arm is strictly slower per call at every size, for both
+ * `deflate` and `inflate` — this table alone would argue for gating neither.
+ * The `deflate` gate is justified by a second effect the above table can't
+ * show: how long an UNRELATED `setTimeout` scheduled at the same moment is
+ * delayed (median of 15 runs, nominal delay 5 ms):
+ *
+ * | size    | sync-path delay to unrelated timer | callback-path delay |
+ * |---------|-------------------------------------|-----------------------|
+ * | 16 KiB  | 6.454 ms (+1.454 stall)              | 6.582 ms (noise)       |
+ * | 256 KiB | 5.130 ms (noise)                     | 5.364 ms (noise)       |
+ * | 1 MiB   | 12.596 ms (+7.596 ms stall)           | 4.572 ms (no stall)    |
+ *
+ * At 16 KiB — the current threshold — the stall this buys back is
+ * indistinguishable from noise; the gate is not earning its keep yet at the
+ * boundary itself. It becomes real by 1 MiB (~8 ms of avoided stall to
+ * whatever else shares the event loop). The threshold is kept where it is
+ * — not raised to where the benefit first becomes measurable — because the
+ * per-call cost of gating early is small in absolute terms (tens of
+ * microseconds) and objects large enough to matter are rare enough that a
+ * more precise threshold is not worth tuning against a single measuring
+ * machine.
  */
 export const CALLBACK_DISPATCH_THRESHOLD_BYTES = 16 * 1024;
 
@@ -76,10 +97,11 @@ export class NodeCompressor implements Compressor {
   }
 
   /** Above the threshold, dispatch through Node's callback zlib API (libuv
-   *  threadpool, genuine overlap); at or below it, the sync API's dispatch
-   *  overhead outweighs any parallelism it could offer. Consulted by
-   *  `deflate`/`deflateRaw` only — `inflate` never crosses over (see
-   *  `CALLBACK_DISPATCH_THRESHOLD_BYTES` for the measured table) and always
+   *  threadpool) to keep the event loop free during a large compression
+   *  call; at or below it, that stall never gets big enough to be worth the
+   *  callback API's own per-call overhead. Consulted by `deflate`/
+   *  `deflateRaw` only — `inflate` never benefits from this trade (see
+   *  `CALLBACK_DISPATCH_THRESHOLD_BYTES` for the measured tables) and always
    *  stays on `inflateSync`. */
   private usesCallbackDispatch(data: Uint8Array): boolean {
     return data.length > CALLBACK_DISPATCH_THRESHOLD_BYTES;
