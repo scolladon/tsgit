@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   PARSED_OBJECT_MEMO_FRACTION,
+  PARSED_OBJECT_MEMO_MAX_ENTRIES,
+  parsedObjectByteSize,
   resolveObject,
   resolveObjectBytes,
 } from '../../../../src/application/primitives/object-resolver.js';
@@ -17,18 +19,26 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import * as gitObjectMod from '../../../../src/domain/objects/index.js';
 import { type Blob, EMPTY_TREE_OID, type ObjectId } from '../../../../src/domain/objects/index.js';
-import {
+import type { Context } from '../../../../src/ports/context.js';
+import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
+import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
+
+vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/domain/storage/index.js')>();
+  return { ...actual, createLruCache: vi.fn(actual.createLruCache) };
+});
+
+const storage = await import('../../../../src/domain/storage/index.js');
+const createLruCacheSpy = vi.mocked(storage.createLruCache);
+const {
   createLruCache,
   encodeOfsDistance,
   encodePackEntryHeader,
   PACK_ENTRY_TYPE,
   parsePackIndex,
   serializePackHeader,
-} from '../../../../src/domain/storage/index.js';
-import type { Context } from '../../../../src/ports/context.js';
-import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
-import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
+} = storage;
 
 const ENC = new TextEncoder();
 
@@ -2679,12 +2689,14 @@ describe('object-resolver', () => {
       });
     });
 
-    describe('Given a commit whose parsed size computes to zero', () => {
+    describe('Given a commit whose unbounded-length fields sum to zero', () => {
       describe('When it is read twice', () => {
-        it('Then the sizer floors at 1, set does not throw, and the second read hits the memo', async () => {
-          // Arrange — an empty message, no gpg signature and no extra headers
-          // is a real, valid commit (`git commit --allow-empty-message`)
-          // whose unbounded-field footprint sums to exactly 0.
+        it('Then the fixed overhead alone keeps the size positive, set does not throw, and the second read hits the memo', async () => {
+          // Arrange — an empty message, no gpg signature, no extra headers and
+          // no parents is a real, valid commit (`git commit
+          // --allow-empty-message`) whose message/signature/headers/parents
+          // terms all sum to 0; PARSED_OBJECT_FIXED_OVERHEAD_BYTES alone must
+          // keep the sizer's result positive.
           const ctx = await buildSeededContext();
           const commitId = await writeCommitWithMessage(ctx, '');
           const registry = createPackRegistry(ctx);
@@ -2695,8 +2707,8 @@ describe('object-resolver', () => {
           const first = await resolveObject(ctx, registry, commitId, false);
           const second = await resolveObject(ctx, registry, commitId, false);
 
-          // Assert — no throw reached this line, and the floor kept the
-          // entry genuinely cached rather than silently dropping it.
+          // Assert — no throw reached this line, and the entry was genuinely
+          // cached rather than silently dropped.
           expect(second).toEqual(first);
           expect(parseCallsSince(parseSpy, baseline)).toBe(1);
           parseSpy.mockRestore();
@@ -2704,15 +2716,79 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given the sizer applied to commits differing only in parent count', () => {
+      describe('When comparing an octopus merge against a single-parent commit', () => {
+        it('Then every extra parent adds exactly one hex-oid width to the size', () => {
+          // Arrange — identical message/signature/headers; only parents differ.
+          const shared = { message: 'm', extraHeaders: [] };
+          const hexLength = 40;
+          const oneParent = { ...shared, parents: ['a'.repeat(40) as ObjectId] };
+          const fourParents = {
+            ...shared,
+            parents: Array.from({ length: 4 }, () => 'a'.repeat(40) as ObjectId),
+          };
+          const sut = parsedObjectByteSize;
+
+          // Act
+          const oneParentSize = sut(oneParent, hexLength);
+          const fourParentsSize = sut(fourParents, hexLength);
+
+          // Assert
+          expect(fourParentsSize - oneParentSize).toBe(3 * hexLength);
+        });
+      });
+
+      describe('When comparing a SHA-256 repo against a SHA-1 repo for the same parent count', () => {
+        it('Then the wider hex oid width is reflected, not a SHA-1-shaped assumption', () => {
+          // Arrange
+          const data = { message: 'm', extraHeaders: [], parents: ['a'.repeat(64) as ObjectId] };
+          const sut = parsedObjectByteSize;
+
+          // Act
+          const sha1Size = sut(data, 40);
+          const sha256Size = sut(data, 64);
+
+          // Assert
+          expect(sha256Size - sha1Size).toBe(24);
+        });
+      });
+    });
+
+    describe('Given the memo is created for the first time', () => {
+      describe('When createLruCache is called to build it', () => {
+        it('Then it is given an entry cap, not just a byte cap', async () => {
+          // Arrange — a byte cap alone admits unboundedly many small entries;
+          // the entry cap is a second, independent defence.
+          const ctx = await buildSeededContext();
+          const commitId = await writeCommitWithMessage(ctx, 'entry cap wiring');
+          const registry = createPackRegistry(ctx);
+          createLruCacheSpy.mockClear();
+
+          // Act
+          await resolveObject(ctx, registry, commitId, false);
+
+          // Assert
+          const memoCall = createLruCacheSpy.mock.calls.find(
+            (call) => call[0] === ctx.deltaCache.maxSize * PARSED_OBJECT_MEMO_FRACTION,
+          );
+          expect(memoCall?.[1]).toBe(PARSED_OBJECT_MEMO_MAX_ENTRIES);
+        });
+      });
+    });
+
     describe('Given entries exceeding the memo cap', () => {
       describe('When a fourth commit is read after the first is touched again', () => {
         it('Then the least-recently-used entry is evicted, not the oldest-inserted one', async () => {
-          // Arrange — cap fits exactly three 10-byte messages: A, B, C fill
-          // it exactly (no eviction yet). Re-reading A promotes it to MRU,
-          // leaving B — untouched since its own insert — as the LRU tail.
-          // A plain FIFO would evict A on the next insert (oldest inserted);
-          // an LRU evicts B instead (least recently touched).
-          const cap = 30;
+          // Arrange — cap fits exactly three same-size, parentless, 10-char
+          // messages: A, B, C fill it exactly (no eviction yet). Re-reading A
+          // promotes it to MRU, leaving B — untouched since its own insert —
+          // as the LRU tail. A plain FIFO would evict A on the next insert
+          // (oldest inserted); an LRU evicts B instead (least recently
+          // touched). Sized via the production sizer itself (default sha1
+          // hexLength=40, matching this Context's unspecified algorithm) so
+          // the cap tracks PARSED_OBJECT_FIXED_OVERHEAD_BYTES automatically.
+          const perEntry = parsedObjectByteSize({ message: 'AAAAAAAAAA', extraHeaders: [] }, 40);
+          const cap = perEntry * 3;
           const ctx = createMemoryContext({
             deltaCacheMaxBytes: cap / PARSED_OBJECT_MEMO_FRACTION,
           });

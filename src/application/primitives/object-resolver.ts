@@ -107,12 +107,21 @@ const parsedObjectMemos = new WeakMap<Context['session'], LruCache<MemoisedObjec
  */
 export const PARSED_OBJECT_MEMO_FRACTION = 0.0625;
 
+/**
+ * Entry-count ceiling for the parsed-object memo, mirroring the commit-graph
+ * header cache's own cap — a byte cap alone under-defends against a repo of
+ * many small commits (short messages, no signature): the byte budget alone
+ * could admit on the order of a million entries before ever filling.
+ */
+export const PARSED_OBJECT_MEMO_MAX_ENTRIES = 65_536;
+
 function parsedObjectMemoFor(ctx: Context): LruCache<MemoisedObject> | undefined {
   if (!deltaBaseCachingEnabled(ctx)) return undefined;
   const existing = parsedObjectMemos.get(ctx.session);
   if (existing !== undefined) return existing;
   const created = createLruCache<MemoisedObject>(
     ctx.deltaCache.maxSize * PARSED_OBJECT_MEMO_FRACTION,
+    PARSED_OBJECT_MEMO_MAX_ENTRIES,
   );
   parsedObjectMemos.set(ctx.session, created);
   return created;
@@ -134,29 +143,55 @@ export function forgetParsedObjectMemo(ctx: Context, id: ObjectId): void {
 }
 
 /**
- * Approximate retained footprint of a parsed commit/tag: the sum of its
- * unbounded-length fields — the message, an armored gpg/ssh signature, and
- * any extra header's key+value (a `mergetag` header can embed a whole
- * nested tag object). Fixed-size fields (the tree/object oid, parent oids,
- * identity name/email/timestamp/timezone) are deliberately excluded: they
- * vary by tens of bytes at most, while the fields counted here vary by
- * orders of magnitude — the same reason a byte cap beats an entry cap for
- * this memo. Floored at 1: `LruCache.set` throws on `byteSize <= 0`, and a
- * commit with an empty message, no signature and no extra headers is a
- * real, valid object (e.g. `git commit --allow-empty-message`), not an
- * edge case worth special-casing away.
+ * Fixed overhead per cached entry: the `Commit`/`Tag` and `CommitData`/
+ * `TagData` wrapper objects, the entry's own oid and tree/target oid, and
+ * two identity blocks worth of name/email/timestamp/timezone (a commit's
+ * author+committer; a tag's single tagger fits comfortably inside the same
+ * budget). These vary by tens of bytes, not orders of magnitude, so one
+ * conservative constant — not per-field measurement — is enough to stop
+ * every entry being undercounted regardless of message length, which a
+ * message-only sizer did: a short-message, unsigned, parentless commit
+ * sized to a handful of bytes despite retaining hundreds.
  */
-function parsedObjectByteSize(data: {
-  readonly message: string;
-  readonly gpgSignature?: string;
-  readonly extraHeaders: ReadonlyArray<{ readonly key: string; readonly value: string }>;
-}): number {
+const PARSED_OBJECT_FIXED_OVERHEAD_BYTES = 256;
+
+/**
+ * Approximate retained footprint of a parsed commit/tag: the sum of its
+ * unbounded-length fields — the message, an armored gpg/ssh signature, any
+ * extra header's key+value (a `mergetag` header can embed a whole nested tag
+ * object), and every parent oid (unbounded for an octopus merge) — plus
+ * {@link PARSED_OBJECT_FIXED_OVERHEAD_BYTES} for the fields that vary too
+ * little to be worth measuring individually. The fixed term alone is always
+ * positive, so — unlike a message-only sizer — this can never compute to a
+ * non-positive size; `LruCache.set`'s `byteSize <= 0` guard is unreachable
+ * from here by construction, not by a floor this function adds itself.
+ *
+ * `hexLength` is the active hash algorithm's hex oid width (40 for SHA-1, 64
+ * for SHA-256) — parent oids are counted at their real on-disk width, not a
+ * SHA-1-shaped assumption.
+ */
+export function parsedObjectByteSize(
+  data: {
+    readonly message: string;
+    readonly gpgSignature?: string;
+    readonly extraHeaders: ReadonlyArray<{ readonly key: string; readonly value: string }>;
+    readonly parents?: ReadonlyArray<ObjectId>;
+  },
+  hexLength: number,
+): number {
   const extraHeaderBytes = data.extraHeaders.reduce(
     (sum, header) => sum + header.key.length + header.value.length,
     0,
   );
   const signatureBytes = data.gpgSignature?.length ?? 0;
-  return Math.max(1, data.message.length + signatureBytes + extraHeaderBytes);
+  const parentsBytes = (data.parents?.length ?? 0) * hexLength;
+  return (
+    data.message.length +
+    signatureBytes +
+    extraHeaderBytes +
+    parentsBytes +
+    PARSED_OBJECT_FIXED_OVERHEAD_BYTES
+  );
 }
 
 export async function resolveObjectBytes(
@@ -212,7 +247,7 @@ export async function resolveObject(
   if (memoised !== undefined) return memoised;
   const parsed = parseObject(id, bytes, ctx.hashConfig);
   if (parsed.type === 'commit' || parsed.type === 'tag') {
-    memo?.set(id, parsed, parsedObjectByteSize(parsed.data));
+    memo?.set(id, parsed, parsedObjectByteSize(parsed.data, ctx.hashConfig.hexLength));
   }
   return parsed;
 }
