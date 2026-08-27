@@ -8,7 +8,7 @@ supersedes:
 ---
 # 731 — gc uses cruft packs
 
-- **Status:** accepted
+- **Status:** accepted · **Refined by:** ADR-732
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-17) · **Supersedes/Refines:** supersedes ADR-724 (prune semantics only; the command, the commit-graph task and the surface gates stand)
 

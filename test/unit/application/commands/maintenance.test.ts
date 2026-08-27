@@ -37,13 +37,23 @@ import {
 import {
   commonGitDir,
   looseObjectPath,
+  multiPackIndexPath,
   packsDir,
 } from '../../../../src/application/primitives/path-layout.js';
-import { readObject } from '../../../../src/application/primitives/read-object.js';
+import {
+  getPackRegistry,
+  readObject,
+  refreshPackRegistry,
+} from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { parseCruftMtimes } from '../../../../src/domain/storage/index.js';
+import { allObjectIds } from '../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { buildMidx } from '../../domain/storage/arbitraries.js';
+import { writeSyntheticPack } from '../primitives/pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -104,6 +114,80 @@ function installLstatOverrides(ctx: Context): {
     forceFailure: (path, error) => failureOverrides.set(path, error),
   };
 }
+
+/** Every oid a registered pack carries, by its sha — the registry is
+ *  refreshed first so a pack written moments ago by the very call under
+ *  test is visible. */
+async function packMemberOids(ctx: Context, packSha: string): Promise<ReadonlySet<ObjectId>> {
+  refreshPackRegistry(ctx);
+  const packs = await getPackRegistry(ctx).all();
+  const pack = packs.find((p) => p.name === `pack-${packSha}`);
+  if (pack === undefined) return new Set();
+  return new Set(allObjectIds(await pack.index()));
+}
+
+/** Reads one oid's recorded mtime straight out of a cruft pack's `.mtimes`
+ *  sidecar, bypassing `maintenance`'s own read path entirely. */
+async function readCruftMtime(ctx: Context, cruftSha: string, id: ObjectId): Promise<number> {
+  refreshPackRegistry(ctx);
+  const packDir = packDirOf(ctx);
+  const packs = await getPackRegistry(ctx).all();
+  const pack = packs.find((p) => p.name === `pack-${cruftSha}`) as NonNullable<
+    (typeof packs)[number]
+  >;
+  const oidsInIndexOrder = allObjectIds(await pack.index());
+  const bytes = await ctx.fs.read(`${packDir}/pack-${cruftSha}.mtimes`);
+  const parsed = parseCruftMtimes(bytes, oidsInIndexOrder);
+  return parsed.get(id) as number;
+}
+
+const hashVersionFor = (ctx: Context): 1 | 2 => (ctx.hashConfig.digestLength === 32 ? 2 : 1);
+
+/** Writes a minimal, structurally valid multi-pack-index naming the given
+ *  `.idx` files — zero objects, since `expireMidxIfNeeded` reads only
+ *  `packNames`. */
+const writeMinimalMidx = (ctx: Context, packDir: string, packIdxNames: ReadonlyArray<string>) =>
+  ctx.fs.write(
+    `${packDir}/multi-pack-index`,
+    buildMidx({
+      version: 1,
+      hashVersion: hashVersionFor(ctx),
+      digestLength: ctx.hashConfig.digestLength,
+      numBaseFiles: 0,
+      packNames: packIdxNames,
+      entries: [],
+    }),
+  );
+
+/** A standalone commit → tree → blob triple, reachable ONLY via a
+ *  throwaway `refs/heads/doomed` branch written directly (so no reflog
+ *  entry is created for it either) — `severDoomedBranch` makes the whole
+ *  triple unreachable in one step, with nothing else keeping it alive. */
+async function seedDoomedBlob(ctx: Context, content: string): Promise<ObjectId> {
+  const blobId = await writeLooseBlob(ctx, content);
+  const treeId = await writeObject(ctx, {
+    type: 'tree' as const,
+    id: '' as ObjectId,
+    entries: [{ mode: FILE_MODE.REGULAR, name: 'doomed.txt', id: blobId }],
+  });
+  const commitId = await writeObject(ctx, {
+    type: 'commit' as const,
+    id: '' as ObjectId,
+    data: {
+      tree: treeId,
+      parents: [],
+      author: AUTHOR,
+      committer: AUTHOR,
+      message: 'doomed',
+      extraHeaders: [],
+    },
+  });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/doomed`, `${commitId}\n`);
+  return blobId;
+}
+
+const severDoomedBranch = (ctx: Context): Promise<void> =>
+  ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/doomed`);
 
 describe('maintenance', () => {
   describe('Given tasks: []', () => {
@@ -1070,6 +1154,9 @@ describe('maintenance', () => {
             'cruftObjectsRetained',
             'cruftObjectsExpired',
             'cruftPackId',
+            'packsRetired',
+            'packBytesBefore',
+            'packBytesAfter',
           ].sort(),
         );
         expect(typeof result.commitGraphWritten).toBe('boolean');
@@ -1082,10 +1169,571 @@ describe('maintenance', () => {
         expect(typeof result.cruftObjectsAdded).toBe('number');
         expect(typeof result.cruftObjectsRetained).toBe('number');
         expect(typeof result.cruftObjectsExpired).toBe('number');
+        expect(typeof result.packsRetired).toBe('number');
+        expect(typeof result.packBytesBefore).toBe('number');
+        expect(typeof result.packBytesAfter).toBe('number');
         expect(Array.isArray(result.tasksRun)).toBe(true);
         for (const task of result.tasksRun) {
           expect(['commit-graph', 'gc']).toContain(task);
         }
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Consolidation — *.keep total exclusion
+  // ---------------------------------------------------------------------
+
+  describe('Given a reachable object living only in a *.keep-marked pack', () => {
+    describe('When gc runs again', () => {
+      it('Then its oid does NOT appear in the new normal pack', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const keptCommitId = (
+          await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)
+        ).trim() as ObjectId;
+        const packDir = packDirOf(ctx);
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — absence, never a count.
+        expect(second.packId).toBeDefined();
+        expect(second.packId).not.toBe(first.packId);
+        const newPackOids = await packMemberOids(ctx, second.packId as string);
+        expect(newPackOids.has(keptCommitId)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an unreachable object living inside a *.keep-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then no cruft pack is written for it', async () => {
+        // Arrange — a standalone unreferenced blob, first packed via the
+        // ordinary cruft lifecycle, then re-marked as a kept pack (drop
+        // `.mtimes`, add `.keep`) to simulate a pre-existing kept pack
+        // whose sole member is unreachable.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await writeLooseBlob(ctx, 'kept-unreachable');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        await ctx.fs.rm(`${packDir}/pack-${first.cruftPackId}.mtimes`);
+        await ctx.fs.write(`${packDir}/pack-${first.cruftPackId}.keep`, new Uint8Array(0));
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBeUndefined();
+        await expect(readObject(ctx, blobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
+  describe('Given a repository whose only pack is *.keep-marked and nothing is loose', () => {
+    describe('When gc runs', () => {
+      it('Then gc writes nothing', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
+        const entriesBefore = (await ctx.fs.readdir(packDir)).map((e) => e.name).sort();
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+        const entriesAfter = (await ctx.fs.readdir(packDir)).map((e) => e.name).sort();
+
+        // Assert — distinct from the single-normal-pack case below: here
+        // NOTHING is written, not even a rewrite under the same sha.
+        expect(second.packId).toBeUndefined();
+        expect(second.cruftPackId).toBeUndefined();
+        expect(second.packsRetired).toBe(0);
+        expect(entriesAfter).toEqual(entriesBefore);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // The no-op boundary — Pin W
+  // ---------------------------------------------------------------------
+
+  describe('Given exactly one normal pack and nothing loose', () => {
+    describe('When gc runs again', () => {
+      it('Then it rewrites the pack under the SAME sha', async () => {
+        // Arrange — distinct from the *.keep empty-input case above: here
+        // gc DOES write, reproducing the same content.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const commitId = (
+          await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)
+        ).trim() as ObjectId;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.packId).toBe(first.packId);
+        await expect(readObject(ctx, commitId, { verifyHash: true })).resolves.toMatchObject({
+          type: 'commit',
+        });
+      });
+    });
+  });
+
+  describe('Given a second gc on an object set unchanged since the last run', () => {
+    describe('When a third gc runs too', () => {
+      it('Then the same <sha> keeps being produced', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Act
+        const third = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.packId).toBe(first.packId);
+        expect(third.packId).toBe(first.packId);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // The three-source mtime max
+  // ---------------------------------------------------------------------
+
+  describe('Given an object present in all three mtime sources at once', () => {
+    const CUTOFF = 2_000_000_000;
+
+    /** Seeds an object that is simultaneously loose, carried forward in an
+     *  existing cruft sidecar (from a prior gc run), and present inside a
+     *  synthetic pre-existing NORMAL pack — with each source's mtime
+     *  independently controllable. */
+    async function seedTripleSourceObject(
+      ctx: Context,
+      content: string,
+      mtimes: { readonly loose: number; readonly carried: number; readonly normalPack: number },
+    ): Promise<void> {
+      const { forceMtimeSeconds } = installLstatOverrides(ctx);
+      const blobId = await writeLooseBlob(ctx, content);
+      const loosePath = looseObjectPath(commonGitDir(ctx), blobId);
+      forceMtimeSeconds(loosePath, mtimes.carried);
+      await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+      await maintenance(ctx, { tasks: ['gc'] }); // crufts it — carried mtime = mtimes.carried
+
+      await writeLooseBlob(ctx, content); // freshen: loose again
+      forceMtimeSeconds(loosePath, mtimes.loose);
+      await writeSyntheticPack(ctx, 'triple-src', [
+        { kind: 'base', type: 'blob', content: enc.encode(content) },
+      ]);
+      forceMtimeSeconds(`${packDirOf(ctx)}/pack-triple-src.pack`, mtimes.normalPack);
+    }
+
+    describe('When the loose copy is the newest source', () => {
+      it('Then it survives on the loose mtime alone', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await seedTripleSourceObject(ctx, 'triple-loose-wins', {
+          loose: 3_000_000_000,
+          carried: 1_000_000_000,
+          normalPack: 1_000_000_000,
+        });
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftObjectsRetained).toBe(1);
+        expect(result.cruftObjectsExpired).toBe(0);
+      });
+    });
+
+    describe('When the carried sidecar entry is the newest source', () => {
+      it('Then it survives on the carried mtime alone', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await seedTripleSourceObject(ctx, 'triple-carried-wins', {
+          loose: 1_000_000_000,
+          carried: 3_000_000_000,
+          normalPack: 1_000_000_000,
+        });
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftObjectsRetained).toBe(1);
+        expect(result.cruftObjectsExpired).toBe(0);
+      });
+    });
+
+    describe('When the superseded normal pack is the newest source', () => {
+      it('Then it survives on the normal-pack mtime alone', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await seedTripleSourceObject(ctx, 'triple-normal-pack-wins', {
+          loose: 1_000_000_000,
+          carried: 1_000_000_000,
+          normalPack: 3_000_000_000,
+        });
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftObjectsRetained).toBe(1);
+        expect(result.cruftObjectsExpired).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an object packed while reachable, then made unreachable', () => {
+    describe('When gc runs', () => {
+      it("Then it migrates to the cruft pack carrying its source pack's mtime, not the run time", async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await seedDoomedBlob(ctx, 'migrates-with-source-mtime');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        const PAST_MTIME = 1_600_000_000;
+        forceMtimeSeconds(`${packDir}/pack-${first.packId}.pack`, PAST_MTIME);
+        await severDoomedBranch(ctx);
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — the assertion that catches an implementation stat-ing
+        // AFTER the rename rather than before.
+        expect(second.cruftPackId).toBeDefined();
+        const recorded = await readCruftMtime(ctx, second.cruftPackId as string, blobId);
+        expect(recorded).toBe(PAST_MTIME);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Deletion safety — normal-pack retirement
+  // ---------------------------------------------------------------------
+
+  describe('Given a normal-pack retirement interrupted right after the .idx unlink', () => {
+    describe('When the fault propagates', () => {
+      it('Then the half-retired pack is invisible to createPackRegistry', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const packDir = packDirOf(ctx);
+
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        let idxUnlinked = false;
+        let faultInjected = false;
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path === `${packDir}/pack-${first.packId}.idx` && !idxUnlinked) {
+            idxUnlinked = true;
+            return originalRm(path);
+          }
+          if (idxUnlinked && !faultInjected) {
+            faultInjected = true;
+            throw new Error('injected-fault');
+          }
+          return originalRm(path);
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+        } catch (error) {
+          caught = error;
+        }
+        rmSpy.mockRestore();
+
+        // Assert
+        expect(caught).toBeDefined();
+        expect(idxUnlinked).toBe(true);
+        refreshPackRegistry(ctx);
+        const registeredNames = (await getPackRegistry(ctx).all()).map((p) => p.name);
+        expect(registeredNames).not.toContain(`pack-${first.packId}`);
+      });
+    });
+  });
+
+  describe('Given a superseded normal pack with a .bitmap sibling', () => {
+    describe('When gc consolidates it away', () => {
+      it('Then the bitmap is deleted with it and no orphan is left', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.bitmap`, new Uint8Array(4));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(`${packDir}/pack-${first.packId}.bitmap`)).toBe(false);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // midx expiry
+  // ---------------------------------------------------------------------
+
+  describe('Given a multi-pack-index naming a pack gc retires', () => {
+    describe('When gc runs', () => {
+      it('Then the multi-pack-index is deleted', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(multiPackIndexPath(packDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming only a *.keep-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then it is left untouched and still readable', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
+        const midxBefore = await ctx.fs.read(multiPackIndexPath(packDir));
+
+        // Act — nothing else reachable to pack; the kept pack is untouched.
+        await sut(ctx, { tasks: ['gc'] });
+        const midxAfter = await ctx.fs.read(multiPackIndexPath(packDir));
+
+        // Assert
+        expect(Buffer.compare(Buffer.from(midxBefore), Buffer.from(midxAfter))).toBe(0);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // gc.cruftPacks=false loosening a superseded NORMAL pack's member
+  // ---------------------------------------------------------------------
+
+  describe('Given gc.cruftPacks=false and an unreachable object living only inside a pack about to be superseded', () => {
+    describe('When gc runs', () => {
+      it('Then it is written back out as a loose file and survives', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await seedDoomedBlob(ctx, 'loosened-from-normal-pack');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+        await severDoomedBranch(ctx);
+        await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n');
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBeUndefined();
+        expect(await isLoose(ctx, blobId)).toBe(true);
+        await expect(readObject(ctx, blobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
+  describe('Given gc.cruftPacks=false and an aged unreachable object living only inside a pack about to be superseded', () => {
+    describe('When gc runs', () => {
+      it('Then it is destroyed with the pack — a skip-the-cruft-steps implementation would pass every other case and lose data here', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await seedDoomedBlob(ctx, 'destroyed-with-normal-pack');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(`${packDir}/pack-${first.packId}.pack`, 1_000_000_000);
+        await severDoomedBranch(ctx);
+        await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n\tpruneExpire = @1500000000\n');
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — the doomed commit, tree AND blob all migrate out of the
+        // same superseded pack together, so all three expire together.
+        expect(second.cruftObjectsExpired).toBe(3);
+        expect(await isLoose(ctx, blobId)).toBe(false);
+        let caught: unknown;
+        try {
+          await readObject(ctx, blobId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Two-cruft-pack crash recovery
+  // ---------------------------------------------------------------------
+
+  describe('Given a crash state with two valid cruft packs (a retirement that never completed)', () => {
+    describe('When the next gc runs', () => {
+      it('Then it treats their union as existingCruft and retires all but the one it writes', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const oldBlobId = await writeLooseBlob(ctx, 'crash-old');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), oldBlobId), 1_900_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const c1Sha = first.cruftPackId as string;
+        const packDir = packDirOf(ctx);
+
+        // Simulate "crashed between step 7's write and step 10's retire":
+        // new garbage forces fate='rewrite' (a genuinely new sha), but the
+        // old cruft pack's own retirement is suppressed so both survive.
+        const newBlobId = await writeLooseBlob(ctx, 'crash-new');
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), newBlobId), 1_950_000_000);
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path.startsWith(`${packDir}/pack-${c1Sha}.`)) return;
+          return originalRm(path);
+        });
+        const second = await sut(ctx, { tasks: ['gc'] });
+        rmSpy.mockRestore();
+        expect(second.cruftPackId).toBeDefined();
+        expect(second.cruftPackId).not.toBe(c1Sha);
+        const c2Sha = second.cruftPackId as string;
+        expect(await ctx.fs.exists(`${packDir}/pack-${c1Sha}.mtimes`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${c2Sha}.mtimes`)).toBe(true);
+
+        // Act
+        const third = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(third.cruftObjectsRetained).toBe(2);
+        expect(await ctx.fs.exists(`${packDir}/pack-${c1Sha}.mtimes`)).toBe(false);
+        await expect(readObject(ctx, oldBlobId)).resolves.toMatchObject({ type: 'blob' });
+        await expect(readObject(ctx, newBlobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // packsRetired / packBytesBefore / packBytesAfter
+  // ---------------------------------------------------------------------
+
+  describe('Given a normal pack superseded by a fresh consolidation', () => {
+    describe('When gc runs', () => {
+      it('Then packsRetired counts it and packBytesBefore matches the summed .pack bytes on disk beforehand', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const packDir = packDirOf(ctx);
+        const entriesBefore = await ctx.fs.readdir(packDir);
+        let expectedBefore = 0;
+        for (const entry of entriesBefore) {
+          if (entry.isFile && entry.name.endsWith('.pack')) {
+            expectedBefore += (await ctx.fs.stat(`${packDir}/${entry.name}`)).size;
+          }
+        }
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.packsRetired).toBe(1);
+        expect(second.packBytesBefore).toBe(expectedBefore);
+        expect(second.packBytesAfter).toBeGreaterThan(0);
+        expect(first.packId).not.toBe(second.packId);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // settleRefresh ordering
+  // ---------------------------------------------------------------------
+
+  describe('Given a normal pack about to be superseded by consolidation', () => {
+    describe('When gc runs', () => {
+      it('Then settleRefresh is awaited before the first unlink of that pack', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const packDir = packDirOf(ctx);
+
+        const registry = getPackRegistry(ctx);
+        const events: string[] = [];
+        const settleSpy = vi.spyOn(registry, 'settleRefresh').mockImplementation(async () => {
+          events.push('settleRefresh');
+        });
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path.startsWith(`${packDir}/pack-${first.packId}.`)) events.push(`rm:${path}`);
+          return originalRm(path);
+        });
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+        settleSpy.mockRestore();
+        rmSpy.mockRestore();
+
+        // Assert
+        expect(events[0]).toBe('settleRefresh');
+        expect(events.length).toBeGreaterThan(1);
       });
     });
   });

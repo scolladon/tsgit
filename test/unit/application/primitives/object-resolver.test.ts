@@ -171,6 +171,7 @@ async function stubRegistry(
   };
   return {
     all: async () => [],
+    fileNames: async () => new Set(),
     assertLoadable: async () => {},
     refresh: () => undefined,
     settleRefresh: async () => {},
@@ -1774,6 +1775,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [pack],
+            fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
             settleRefresh: async () => {},
@@ -1846,6 +1848,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
             settleRefresh: async () => {},
@@ -1923,6 +1926,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
             settleRefresh: async () => {},
@@ -1996,6 +2000,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
             settleRefresh: async () => {},

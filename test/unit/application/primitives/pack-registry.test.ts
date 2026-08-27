@@ -123,6 +123,49 @@ describe('pack-registry', () => {
         expect(result).toBeUndefined();
       });
     });
+    describe('When fileNames() is called', () => {
+      it('Then returns an empty set', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.fileNames();
+
+        // Assert
+        expect(result).toEqual(new Set());
+      });
+    });
+  });
+
+  describe('Given a pack directory whose listing carries sibling marker files', () => {
+    describe('When fileNames() is called', () => {
+      it('Then returns exactly the regular-file names the scan saw — the same set hasRevIndex/hasBitmap consult', async () => {
+        // Arrange — the SAME wrapped-readdir shape the oversized-.idx test
+        // below uses, so this exercises the real scan path rather than a
+        // second, hand-rolled listing mechanism.
+        const ctx = await buildSeededContext();
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async () => [
+              dirEntry('pack-aaa.idx'),
+              dirEntry('pack-aaa.pack'),
+              dirEntry('pack-aaa.keep'),
+              { ...dirEntry('subdir'), isFile: false, isDirectory: true },
+            ],
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const result = await sut.fileNames();
+
+        // Assert — the directory entry is excluded, only regular files remain.
+        expect(result).toEqual(new Set(['pack-aaa.idx', 'pack-aaa.pack', 'pack-aaa.keep']));
+      });
+    });
   });
 
   describe('Given a pack directory that exists but whose readdir rejects with FILE_NOT_FOUND', () => {

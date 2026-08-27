@@ -576,4 +576,233 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       await disposeTwin(twin);
     });
   });
+
+  // ---------------------------------------------------------------------
+  // Consolidation — pre-existing packs
+  // ---------------------------------------------------------------------
+
+  describe('Given three separate reachable packs plus loose content, When gc runs on both twins', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('consolidate');
+      await addCommit(baseDir, 'p1');
+      git(baseDir, 'repack', '-q', '-d'); // pack #1
+      await addCommit(baseDir, 'p2');
+      git(baseDir, 'repack', '-q', '-d'); // pack #2
+      await addCommit(baseDir, 'p3');
+      git(baseDir, 'repack', '-q', '-d'); // pack #3
+      await addCommit(baseDir, 'loose'); // stays loose going into gc
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then every reachable object ends up in exactly one new pack on both twins, and every predecessor is gone', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'consolidate');
+      const entriesBefore = await packDirEntries(twin.oursDir);
+      const packCountBefore = entriesBefore.filter((n) => n.endsWith('.pack')).length;
+      expect(packCountBefore).toBe(3); // p1/p2/p3, loose still loose
+
+      // Act
+      const { result } = await runBothGc(twin);
+
+      // Assert — one surviving pack on each twin, and the predecessors are gone.
+      const peerEntries = await packDirEntries(twin.peerDir);
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(peerEntries.filter((n) => n.endsWith('.pack')).length).toBe(1);
+      expect(oursEntries.filter((n) => n.endsWith('.pack')).length).toBe(1);
+      expect(result.packId).toBeDefined();
+      expect(oursEntries).toContain(`pack-${result.packId}.pack`);
+      expect(result.cruftPackId).toBeUndefined(); // nothing unreachable in this fixture
+      expect(result.packsRetired).toBe(3);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given an object packed while reachable, then made unreachable, When gc runs on both twins', () => {
+    let baseDir: string;
+    let doomedId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('migrate-source-mtime');
+      await addCommit(baseDir, 'c0');
+      git(baseDir, 'checkout', '-q', '-b', 'doomed');
+      doomedId = await addCommit(baseDir, 'doomed');
+      git(baseDir, 'checkout', '-q', 'main');
+      git(baseDir, 'repack', '-q', '-d'); // packs c0 AND doomed's commit together
+      git(baseDir, 'branch', '-q', '-D', 'doomed');
+      git(baseDir, 'reflog', 'expire', '--expire=now', '--all');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then it migrates to the cruft pack on both twins, and stays fsck-dangling', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'migrate-source-mtime');
+
+      // Act
+      const { result } = await runBothGc(twin);
+
+      // Assert
+      expect(result.cruftPackId).toBeDefined();
+      expect(catFileExists(twin.peerDir, doomedId)).toBe(true);
+      expect(catFileExists(twin.oursDir, doomedId)).toBe(true);
+      const peerFsck = git(twin.peerDir, 'fsck');
+      expect(peerFsck).toContain(`dangling commit ${doomedId}`);
+      // Two packs survive: the reachable-only normal pack (c0's own commit,
+      // tree and blob) and the cruft pack (doomed's commit, tree and blob,
+      // migrated out of the pack that used to hold all six together).
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(oursEntries.filter((n) => n.endsWith('.pack')).length).toBe(2);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given a *.keep-marked pack with an unreachable member, plus other reachable content, When gc runs on both twins', () => {
+    let baseDir: string;
+    let keptPackName: string;
+    let keptUnreachableId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('keep-survives');
+      await addCommit(baseDir, 'c0');
+      keptUnreachableId = writeLooseBlobGit(baseDir, 'kept-dangling');
+      // `git repack -d` alone only packs REACHABLE objects — the dangling
+      // blob would stay loose, defeating this fixture. `pack-objects` over
+      // an explicit oid list forces both into the SAME pack; the loose
+      // copies it duplicates are left in place deliberately (gc's own
+      // prune-packable unlink is what should remove them).
+      const revListOut = execFileSync('git', ['-C', baseDir, 'rev-list', '--objects', 'main'], {
+        encoding: 'utf8',
+        env: runGitEnv(),
+      });
+      const reachableOids = revListOut
+        .split('\n')
+        .map((line) => line.split(' ')[0])
+        .filter((oid): oid is string => Boolean(oid));
+      const packSha = execFileSync(
+        'git',
+        [
+          '-C',
+          baseDir,
+          'pack-objects',
+          '--non-empty',
+          path.join(baseDir, '.git', 'objects', 'pack', 'pack'),
+        ],
+        {
+          input: `${[...reachableOids, keptUnreachableId].join('\n')}\n`,
+          encoding: 'utf8',
+          env: runGitEnv(),
+        },
+      ).trim();
+      keptPackName = `pack-${packSha}.pack`;
+      await writeFile(path.join(baseDir, '.git', 'objects', 'pack', `pack-${packSha}.keep`), '');
+      await addCommit(baseDir, 'c1'); // more reachable content, left loose
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then the kept pack survives byte-identical, and its unreachable member is never crufted', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'keep-survives');
+      const keptPackPath = path.join(twin.oursDir, '.git', 'objects', 'pack', keptPackName);
+      const keptBytesBefore = await readFile(keptPackPath);
+
+      // Act
+      const { result } = await runBothGc(twin);
+      const keptBytesAfter = await readFile(keptPackPath);
+
+      // Assert — bytes unchanged; still present under its own name; its
+      // dangling member is neither duplicated into the new pack nor crufted.
+      expect(Buffer.compare(keptBytesBefore, keptBytesAfter)).toBe(0);
+      expect(catFileExists(twin.oursDir, keptUnreachableId)).toBe(true);
+      expect(catFileExists(twin.peerDir, keptUnreachableId)).toBe(true);
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(oursEntries).toContain(keptPackName);
+      expect(oursEntries.some((n) => n.endsWith('.mtimes'))).toBe(false);
+      expect(result.cruftPackId).toBeUndefined();
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given exactly one normal pack and nothing loose, When gc runs a second time on ours', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('single-pack-no-op');
+      await addCommit(baseDir, 'c0');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then it still writes a pack — behaviour, not sha equality, since tsgit is base-only and git is deltified', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'single-pack-no-op');
+      const { ctx: firstCtx, result: first } = await runOursGc(twin.oursDir);
+      const packPathOf = (id: ObjectId) =>
+        path.join(twin.oursDir, '.git', 'objects', 'pack', `pack-${id}.pack`);
+      const bytesBefore = await readFile(packPathOf(first.packId as ObjectId));
+
+      // Act — a second, independent gc run against the SAME unchanged tree.
+      const second = await maintenance(firstCtx, { tasks: ['gc'] });
+      const bytesAfter = await readFile(packPathOf(second.packId as ObjectId));
+
+      // Assert — same content reproduced under the same sha; a pack was
+      // genuinely written both times (Pin W: no "already consolidated" skip).
+      expect(second.packId).toBe(first.packId);
+      expect(Buffer.compare(bytesBefore, bytesAfter)).toBe(0);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given a multi-pack-index naming a pack gc retires, When gc runs on ours', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('midx-expiry');
+      await addCommit(baseDir, 'c0');
+      git(baseDir, 'repack', '-q', '-d');
+      git(baseDir, 'multi-pack-index', 'write');
+      await addCommit(baseDir, 'c1');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then the multi-pack-index is deleted, matching git', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'midx-expiry');
+      const midxPath = (dir: string) =>
+        path.join(dir, '.git', 'objects', 'pack', 'multi-pack-index');
+      const midxPathExisted = await readFile(midxPath(twin.oursDir))
+        .then(() => true)
+        .catch(() => false);
+      expect(midxPathExisted).toBe(true);
+
+      // Act
+      runPeerGc(twin.peerDir);
+      await runOursGc(twin.oursDir);
+
+      // Assert — both tools remove the midx once it names a retired pack.
+      const peerMidxGone = await readFile(midxPath(twin.peerDir))
+        .then(() => false)
+        .catch(() => true);
+      const oursMidxGone = await readFile(midxPath(twin.oursDir))
+        .then(() => false)
+        .catch(() => true);
+      expect(peerMidxGone).toBe(true);
+      expect(oursMidxGone).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
 });

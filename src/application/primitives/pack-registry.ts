@@ -214,6 +214,14 @@ export interface PackHealth {
 
 export interface PackRegistry {
   all(): Promise<ReadonlyArray<RegisteredPack>>;
+  /**
+   * Every regular-file name the current generation's directory scan saw —
+   * the SAME set `hasRevIndex`/`hasBitmap` already consult per pack. Exposed
+   * so a caller can classify a pack by sibling marker
+   * (`.keep`/`.promisor`/`.mtimes`, see {@link classifyPackFiles}) at zero
+   * extra I/O — never a second `readdir` of `objects/pack/`.
+   */
+  fileNames(): Promise<ReadonlySet<string>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
   /**
    * Await the store gate — the multi-pack-index load alone — for its
@@ -298,6 +306,49 @@ export interface PackRegistry {
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
   return entry.isFile && entry.name.endsWith('.idx') && isSafePackName(entry.name);
+}
+
+/** Every registered pack sorted into exactly one of gc's four file classes. */
+export interface PackFileClassification {
+  /** `*.keep`-marked — git's total opt-out (Pin V). Not read for repacking,
+   *  not rewritten, not deleted; its objects are neither duplicated into the
+   *  new pack nor migrated to the cruft pack, even when unreachable. */
+  readonly kept: ReadonlyArray<RegisteredPack>;
+  /** `.promisor`-marked. A second consolidation class in a later part; here,
+   *  excluded exactly as a kept pack is — a temporary, conservative posture. */
+  readonly promisor: ReadonlyArray<RegisteredPack>;
+  /** `.mtimes`-marked — the existing cruft pack, owned by the cruft
+   *  lifecycle, never by consolidation. */
+  readonly cruft: ReadonlyArray<RegisteredPack>;
+  /** Carries none of the three markers — consolidated into the one new pack. */
+  readonly normal: ReadonlyArray<RegisteredPack>;
+}
+
+/**
+ * Step 1b's classifier: sorts every candidate pack into exactly one of four
+ * file classes by pure sibling lookup against `fileNames` — the SAME set
+ * `hasRevIndex`/`hasBitmap` already consult, so this costs zero extra I/O.
+ * Checked in this order and mutually exclusive: `.keep` wins over
+ * everything (a pack carrying `.keep` AND `.mtimes`, or `.keep` AND
+ * `.promisor`, is kept — never cruft or promisor), `.promisor` wins over
+ * `.mtimes` and the default, and only a pack with none of the three markers
+ * is normal.
+ */
+export function classifyPackFiles(
+  packs: ReadonlyArray<RegisteredPack>,
+  fileNames: ReadonlySet<string>,
+): PackFileClassification {
+  const kept: RegisteredPack[] = [];
+  const promisor: RegisteredPack[] = [];
+  const cruft: RegisteredPack[] = [];
+  const normal: RegisteredPack[] = [];
+  for (const pack of packs) {
+    if (fileNames.has(`${pack.name}.keep`)) kept.push(pack);
+    else if (fileNames.has(`${pack.name}.promisor`)) promisor.push(pack);
+    else if (fileNames.has(`${pack.name}.mtimes`)) cruft.push(pack);
+    else normal.push(pack);
+  }
+  return { kept, promisor, cruft, normal };
 }
 
 async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array> {
@@ -818,6 +869,10 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   return {
     all: allPacks,
+    async fileNames(): Promise<ReadonlySet<string>> {
+      const generation = await currentGeneration();
+      return generation.fileNames;
+    },
     async assertLoadable(): Promise<void> {
       await currentGate();
     },

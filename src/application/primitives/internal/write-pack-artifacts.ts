@@ -25,6 +25,7 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { assertValidBooleanConfig } from './boolean-config-guard.js';
+import { errorDataCode } from './error-data-code.js';
 
 export const buildIdx = async (
   ctx: Context,
@@ -237,4 +238,92 @@ export const writePackArtifacts = async (
   const packPath = packFilePath(input.packDir, input.packSha);
   await ctx.fs.writeExclusive(packPath, input.packBytes);
   return writeSiblingsGiven(ctx, input, wantRev);
+};
+
+// git's own quarantine prefix pair (Pin B, Pin X): `tmp_pack_<6>` and
+// `tmp_idx_<6>`, written before either lands under its final name.
+const TMP_PACK_PREFIX = 'tmp_pack_';
+const TMP_IDX_PREFIX = 'tmp_idx_';
+const TMP_SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const TMP_SUFFIX_LENGTH = 6;
+
+/** Not security-sensitive (the containing directory is already trusted) —
+ *  matches this codebase's other non-cryptographic tokens. */
+const randomTmpSuffix = (): string => {
+  let suffix = '';
+  for (let i = 0; i < TMP_SUFFIX_LENGTH; i += 1) {
+    suffix += TMP_SUFFIX_ALPHABET[Math.floor(Math.random() * TMP_SUFFIX_ALPHABET.length)];
+  }
+  return suffix;
+};
+
+/** Renames `tmpPath` into `finalPath`, preferring the platform's atomic
+ *  replace where available and falling back to plain `rename` where it is
+ *  not (OPFS) — see `ports/file-system.ts`'s `atomicRename` doc. Both
+ *  replace an existing file at `finalPath`, which is exactly what a
+ *  same-sha rewrite needs. */
+const renameIntoPlace = async (ctx: Context, tmpPath: string, finalPath: string): Promise<void> => {
+  const rename = ctx.fs.atomicRename ?? ctx.fs.rename;
+  await rename(tmpPath, finalPath);
+};
+
+function isFileNotFound(error: unknown): boolean {
+  return errorDataCode(error) === 'FILE_NOT_FOUND';
+}
+
+/** Idempotent single-file removal: absent is success, everything else rethrows. */
+async function rmTolerant(ctx: Context, path: string): Promise<void> {
+  try {
+    await ctx.fs.rm(path);
+  } catch (error) {
+    if (!isFileNotFound(error)) throw error;
+  }
+}
+
+/**
+ * Writes a pack's `.pack` and `.idx` through git's own quarantine-then-
+ * rename ordering (Pin X: `tmp_pack_<6>`/`tmp_idx_<6>` streamed first,
+ * renamed to their final names only once complete) instead of
+ * `writeExclusive` straight at the final path. This is the ONLY writer that
+ * must tolerate a target already occupied by a pack of the exact same name:
+ * a consolidating `gc` rewriting a pack whose freshly-built bytes happen to
+ * reproduce an EXISTING pack byte-for-byte (Pin W's no-op boundary — git
+ * rewrites even an unchanged single pack, every run) still needs that
+ * file's mtime refreshed, because Pin Y makes a `.pack`'s own mtime the age
+ * source for an object that later migrates out of it; `writeExclusive`
+ * would refuse with `FILE_EXISTS`, and simply leaving the old file alone
+ * would silently stale-date that clock. `.rev` is NOT quarantined — Pin X
+ * names only the pack/idx pair — because it is cheap and fully
+ * reconstructible from the SAME `entries` this call already has: any stale
+ * sibling at the target name is removed first, then written fresh.
+ */
+export const writePackArtifactsViaQuarantine = async (
+  ctx: Context,
+  input: WritePackArtifactsInput,
+): Promise<WrittenPackArtifacts> => {
+  const wantRev = await writeReverseIndex(ctx);
+  const paths = artifactPaths(input.packDir, input.packSha);
+  await ctx.fs.mkdir(input.packDir);
+  const sorted = sortPackIndexEntries(input.entries);
+  const idxBytes = await buildIdx(ctx, input.entries, input.packSha, sorted);
+
+  const tmpPackPath = `${input.packDir}/${TMP_PACK_PREFIX}${randomTmpSuffix()}`;
+  const tmpIdxPath = `${input.packDir}/${TMP_IDX_PREFIX}${randomTmpSuffix()}`;
+  await ctx.fs.writeExclusive(tmpPackPath, input.packBytes);
+  await ctx.fs.writeExclusive(tmpIdxPath, idxBytes);
+  await renameIntoPlace(ctx, tmpPackPath, paths.packPath);
+  await renameIntoPlace(ctx, tmpIdxPath, paths.idxPath);
+
+  if (input.promisor) await writeEmptySentinel(ctx, paths.promisorPath);
+  if (wantRev) {
+    await rmTolerant(ctx, paths.revPath);
+    await writeRevArtifact(ctx, paths.revPath, input.entries, input.packSha, sorted);
+  }
+  return {
+    packPath: paths.packPath,
+    idxPath: paths.idxPath,
+    objectCount: input.entries.length,
+    indexBytes: idxBytes.length,
+    packSha: input.packSha,
+  };
 };

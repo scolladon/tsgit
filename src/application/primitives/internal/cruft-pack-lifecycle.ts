@@ -1,14 +1,14 @@
 /**
- * The cruft pack's lifecycle: discovering an existing cruft pack and its
- * `.mtimes` sidecar, computing mtime provenance for unreachable candidates,
- * deciding what the next `gc` does to it, and the physical write/retire
- * operations that decision drives.
+ * The cruft pack's lifecycle: discovering the existing cruft pack(s) and
+ * their `.mtimes` sidecars, computing mtime provenance for unreachable
+ * candidates, deciding what the next `gc` does to the cruft pack, and the
+ * physical write/retire operations that decision drives.
  *
- * mtime provenance has exactly two sources in this part's scope — a loose
- * file's own `lstat`, and a carried-forward sidecar entry — because `gc`
- * here never touches a pre-existing NORMAL pack (that is a later part's
- * consolidation). The third source (a superseded pack's own mtime) joins
- * this rule once that scope lands.
+ * mtime provenance has three sources — a loose file's own `lstat`, a
+ * carried-forward sidecar entry, and a superseded NORMAL pack's own
+ * `lstat` (an object gc is about to consolidate out of an existing pack
+ * carries that pack's mtime, not the run's clock) — combined by `Math.max`,
+ * never a lookup with a fallback.
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
 import {
@@ -18,6 +18,7 @@ import {
 } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
+import type { RegisteredPack } from '../pack-registry.js';
 import { commonGitDir, looseObjectPath, packsDir } from '../path-layout.js';
 import { getPackRegistry } from '../read-object.js';
 import { boundedMapFor } from './concurrency.js';
@@ -33,13 +34,19 @@ import {
 const CRUFT_HEADER_SIZE = 12;
 
 export interface ExistingCruftPack {
-  /** oid → mtime (seconds), keyed by the sidecar's own `.idx`-order oid list. */
+  /** oid → mtime (seconds) — the UNION across every `.mtimes` sidecar found,
+   *  merged by `Math.max` on a shared oid (never a `Date.now()` fallback). */
   readonly mtimes: ReadonlyMap<ObjectId, number>;
-  /** The existing cruft pack's trailer sha, or `undefined` when none exists. */
-  readonly packSha: string | undefined;
+  /**
+   * Every existing cruft pack's trailer sha, normally 0 or 1 entries. A
+   * crash between step 7's write and step 10's retirement can leave TWO
+   * valid cruft packs, both read here — the next `gc` treats their union as
+   * `existingCruft` and retires all but the one it writes.
+   */
+  readonly packShas: ReadonlyArray<string>;
 }
 
-const NO_EXISTING_CRUFT: ExistingCruftPack = { mtimes: new Map(), packSha: undefined };
+const NO_EXISTING_CRUFT: ExistingCruftPack = { mtimes: new Map(), packShas: [] };
 
 /** The `.mtimes` sidecar's own hash-id byte, peeked without trusting the
  *  rest of the header — used only to size the self-checksum slice safely. */
@@ -76,12 +83,48 @@ function isMissingDir(error: unknown): boolean {
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
+/** Merges one `.mtimes` sidecar's parsed entries into the running union —
+ *  `Math.max` on a shared oid, never a plain overwrite. */
+function mergeMtimesInto(
+  target: Map<ObjectId, number>,
+  source: ReadonlyMap<ObjectId, number>,
+): void {
+  for (const [id, mtime] of source) {
+    const prior = target.get(id);
+    target.set(id, prior === undefined ? mtime : Math.max(prior, mtime));
+  }
+}
+
+/** Parses one `.mtimes` sidecar against its sibling `.idx`'s oid list, or
+ *  `undefined` when the sidecar is orphaned (no loadable `.idx`/`.pack`
+ *  pair) — invisible to the registry exactly as an orphan `.idx` already
+ *  is, treated as absent rather than a refusal of its own. */
+async function readOneCruftSidecar(
+  ctx: Context,
+  dir: string,
+  mtimesName: string,
+  packs: ReadonlyArray<RegisteredPack>,
+): Promise<
+  { readonly packSha: string; readonly mtimes: ReadonlyMap<ObjectId, number> } | undefined
+> {
+  const base = packBaseName(`${mtimesName.slice(0, -'.mtimes'.length)}.idx`);
+  const registeredPack = packs.find((p) => p.name === base);
+  if (registeredPack === undefined) return undefined;
+
+  const index = await registeredPack.index();
+  const oidsInIndexOrder = allObjectIds(index);
+  const bytes = await ctx.fs.read(`${dir}/${mtimesName}`);
+  const selfChecksum = await candidateSelfChecksum(ctx, bytes, oidsInIndexOrder.length);
+  const mtimes = parseCruftMtimes(bytes, oidsInIndexOrder, selfChecksum);
+  return { packSha: base.slice('pack-'.length), mtimes };
+}
+
 /**
- * Discover and parse the repository's existing cruft pack, if any. At most
- * one `.mtimes` sidecar is expected at this part's scope (multi-cruft-pack
- * crash recovery belongs to a later part's consolidation classifier); when
- * more than one is somehow present, the lexicographically first is read,
- * deterministically.
+ * Discover and parse the repository's existing cruft pack(s). Normally at
+ * most one `.mtimes` sidecar is present; a crash between step 7's write and
+ * step 10's retirement can leave TWO, both valid — every one found is read
+ * and merged into a single UNION map (`Math.max` per shared oid), and every
+ * sha is returned so the caller retires all but the one it writes.
  *
  * A `.mtimes` whose object count disagrees with its sibling `.idx`, or
  * whose self-checksum fails, is a typed refusal (`INVALID_CRUFT_MTIMES`)
@@ -97,25 +140,22 @@ export async function readExistingCruftPack(ctx: Context): Promise<ExistingCruft
     throw error;
   }
 
-  const mtimesName = entries
+  const mtimesNames = entries
     .filter((e) => e.isFile && e.name.endsWith('.mtimes') && isSafePackName(e.name))
     .map((e) => e.name)
-    .sort()[0];
-  if (mtimesName === undefined) return NO_EXISTING_CRUFT;
+    .sort();
+  if (mtimesNames.length === 0) return NO_EXISTING_CRUFT;
 
-  const base = packBaseName(`${mtimesName.slice(0, -'.mtimes'.length)}.idx`);
-  const registeredPack = (await getPackRegistry(ctx).all()).find((p) => p.name === base);
-  // An orphan `.mtimes` with no loadable `.idx`/`.pack` pair is invisible to
-  // the registry exactly as an orphan `.idx` already is (`loadCandidatePack`)
-  // — treated as no existing cruft pack, not a refusal of its own.
-  if (registeredPack === undefined) return NO_EXISTING_CRUFT;
-
-  const index = await registeredPack.index();
-  const oidsInIndexOrder = allObjectIds(index);
-  const bytes = await ctx.fs.read(`${dir}/${mtimesName}`);
-  const selfChecksum = await candidateSelfChecksum(ctx, bytes, oidsInIndexOrder.length);
-  const mtimes = parseCruftMtimes(bytes, oidsInIndexOrder, selfChecksum);
-  return { mtimes, packSha: base.slice('pack-'.length) };
+  const packs = await getPackRegistry(ctx).all();
+  const mergedMtimes = new Map<ObjectId, number>();
+  const packShas: string[] = [];
+  for (const mtimesName of mtimesNames) {
+    const found = await readOneCruftSidecar(ctx, dir, mtimesName, packs);
+    if (found === undefined) continue;
+    mergeMtimesInto(mergedMtimes, found.mtimes);
+    packShas.push(found.packSha);
+  }
+  return packShas.length === 0 ? NO_EXISTING_CRUFT : { mtimes: mergedMtimes, packShas };
 }
 
 /** `Math.max` over the sources that are actually present — never a
@@ -135,23 +175,29 @@ async function looseMtimeSeconds(ctx: Context, id: ObjectId): Promise<number> {
 }
 
 /**
- * Mtime provenance for every unreachable candidate: the `max` over the
- * loose file's own `lstat` (when the object is loose) and the carried
- * sidecar entry (when it survived from an existing cruft pack) — an object
- * can legitimately have both at once (the "freshen" case), and the newer
- * one always wins. Fanned across the `ioBound` pool: each candidate's
- * `lstat` is independent of every other's.
+ * Mtime provenance for every unreachable candidate: the `max` over THREE
+ * sources — the loose file's own `lstat` (when the object is loose), the
+ * carried sidecar entry (when it survived from an existing cruft pack), and
+ * a superseded NORMAL pack's own `lstat` (when the object is migrating out
+ * of a pack consolidation is about to retire) — an object can legitimately
+ * have more than one source at once (the "freshen" case), and the newer one
+ * always wins. Every candidate has at least one source by construction (it
+ * entered `owned` through loose, the existing cruft sidecar, or a normal
+ * pack). Fanned across the `ioBound` pool: each candidate's `lstat` is
+ * independent of every other's.
  */
 export async function computeCruftMtimes(
   ctx: Context,
   candidates: ReadonlyArray<ObjectId>,
   looseSet: ReadonlySet<ObjectId>,
   existingCruft: ReadonlyMap<ObjectId, number>,
+  normalPackMtimeOf: ReadonlyMap<ObjectId, number>,
 ): Promise<ReadonlyMap<ObjectId, number>> {
   const pairs = await boundedMapFor(ctx, 'ioBound', candidates, async (id) => {
     const looseMtime = looseSet.has(id) ? await looseMtimeSeconds(ctx, id) : undefined;
     const carried = existingCruft.get(id);
-    return [id, maxDefined(looseMtime, carried)] as const;
+    const fromNormalPack = normalPackMtimeOf.get(id);
+    return [id, maxDefined(maxDefined(looseMtime, carried), fromNormalPack)] as const;
   });
   return new Map(pairs);
 }
@@ -163,12 +209,19 @@ export type CruftFate = 'noop' | 'delete' | 'rewrite';
  * the survivor set unchanged from the existing cruft pack's own key set is
  * a no-op (byte-identical, same name); an empty survivor set deletes the
  * cruft pack outright; anything else rewrites it under a new sha.
+ *
+ * `existingCruftPackCount` gates the no-op branch to EXACTLY one existing
+ * cruft pack: the two-cruft-pack crash-recovery state always has litter to
+ * collapse, even when the merged key set happens to match the survivor set,
+ * so `noop` is never reachable there — the union always rewrites into one.
  */
 export function decideCruftFate(
   survivors: ReadonlyArray<ObjectId>,
   existingCruftKeys: ReadonlySet<ObjectId>,
+  existingCruftPackCount: number,
 ): CruftFate {
   const unchanged =
+    existingCruftPackCount === 1 &&
     survivors.length === existingCruftKeys.size &&
     survivors.every((id) => existingCruftKeys.has(id));
   if (unchanged) return 'noop';

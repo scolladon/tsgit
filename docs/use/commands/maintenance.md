@@ -8,13 +8,14 @@ tasks it names run.
 
 Ships two tasks. `commit-graph` writes `objects/info/commit-graph`
 byte-identical to `git commit-graph write --reachable` for the same commit
-set. `gc` packs every reachable loose object into a normal pack and routes
-unreachable ones through git's cruft-pack lifecycle: recent unreachable
-objects survive in a cruft pack carrying a `.mtimes` age sidecar; objects
-aged past `gc.pruneExpire` are destroyed outright. **`gc` is the first tsgit
-command that can permanently destroy data** — read the expiry section below
-before relying on it. Existing packs beyond an existing cruft pack are not
-touched by this task; consolidating them is a later task's job.
+set. `gc` consolidates every pack it owns: **all** reachable objects — loose
+*and* already packed — repack into one fresh normal pack, and unreachable
+ones route through git's cruft-pack lifecycle wherever they lived: recent
+unreachable objects survive in a cruft pack carrying a `.mtimes` age
+sidecar; objects aged past `gc.pruneExpire` are destroyed outright.
+**`gc` is the first tsgit command that can permanently destroy data** — read
+the expiry section below before relying on it. `*.keep`-marked packs are
+git's own escape hatch from all of this — see below.
 
 ## Signature
 
@@ -48,6 +49,12 @@ interface MaintenanceResult {
   readonly cruftObjectsExpired: number;
   /** The cruft pack's sha, or `undefined` when no cruft pack exists afterward. */
   readonly cruftPackId: string | undefined;
+  /** Superseded packs deleted by this call — normal and cruft combined. */
+  readonly packsRetired: number;
+  /** Summed `.pack` bytes in `objects/pack/` before the call. */
+  readonly packBytesBefore: number;
+  /** The same sum after the call. */
+  readonly packBytesAfter: number;
 }
 ```
 
@@ -75,16 +82,34 @@ interface MaintenanceResult {
    and every reflog — wider than `commit-graph`'s refs-only root set,
    matching git's own `gc`. A commit reachable only from a deleted branch's
    reflog, or a blob staged but never committed, survives.
-2. **Reachable objects** — loose or already packed — land in one freshly
-   written normal pack (`packId`). No pack is written when nothing is
-   reachable-and-loose (`packId: undefined`), never an empty one.
-3. **Unreachable objects** go through the cruft-pack lifecycle
-   (`gc.cruftPacks`, default `true`):
-   - An object's age is its **source file's own mtime** — the loose file's,
-     or, when carried forward from an existing cruft pack, that sidecar's
-     recorded value — taking the **newer** of the two when both exist (a
-     rewritten object's age resets, exactly as git "freshens" it). Never the
-     wall clock.
+2. **Every pack `gc` owns is classified** by its sibling markers before
+   anything is written — the SAME rule git applies:
+   - `*.keep` → **kept**, totally excluded: not read for repacking, not
+     rewritten, not deleted, and its objects are neither duplicated into the
+     new pack nor migrated to the cruft pack even when unreachable. This is
+     the caller's escape hatch from every rule below.
+   - `.promisor` → excluded here too, as a temporary, conservative posture
+     (a partial-clone repository's promisor packs are left untouched; a
+     later capability consolidates them in their own right).
+   - `.mtimes` → the existing **cruft** pack, governed by step 4 below.
+   - anything else → **normal**, consolidated by step 3.
+3. **Reachable objects** — loose *and* already packed, across every normal
+   pack — repack into **one** freshly written normal pack (`packId`). Every
+   superseded normal pack and its siblings (`.idx`/`.pack`/`.rev`/`.bitmap`)
+   are deleted. No pack is written when nothing is reachable outside kept
+   packs (`packId: undefined`), never an empty one — and there is
+   deliberately **no** "already consolidated, skip it" shortcut: even a
+   single unchanged pack is rewritten on every run (same sha, since the
+   packer is deterministic), because a pack's own file mtime is the age an
+   object carries the moment it later becomes unreachable — a skipped
+   rewrite would silently stale-date that clock.
+4. **Unreachable objects** go through the cruft-pack lifecycle
+   (`gc.cruftPacks`, default `true`), regardless of whether they came from a
+   loose file or a pack being consolidated away:
+   - An object's age is the **newest** of up to three sources: the loose
+     file's own mtime, a carried-forward `.mtimes` sidecar entry, and — new
+     under consolidation — the mtime of the NORMAL pack it is migrating out
+     of. Never the wall clock.
    - Objects whose age is **more recent** than the cutoff derived from
      `gc.pruneExpire` (default `2.weeks.ago`; accepts `never`, `now`,
      `@<epoch>`, ISO-8601, `<n>.<unit>.ago`) survive in a cruft pack carrying
@@ -94,17 +119,22 @@ interface MaintenanceResult {
      boundary) are **destroyed** — the one operation in this command that
      permanently removes data.
    - A rerun that changes nothing rewrites nothing: the existing cruft
-     pack's bytes and file name are left exactly as they are.
-4. **`gc.cruftPacks=false`** skips the cruft pack entirely: surviving
+     pack's bytes and file name are left exactly as they are, even while the
+     normal packs around it are being consolidated.
+5. **`gc.cruftPacks=false`** skips the cruft pack entirely: surviving
    unreachable objects are written back out as ordinary loose files instead
-   (any existing cruft pack is retired), while aged-out ones are still
-   destroyed.
-5. **`auto: true`** applies the `gc.auto` gate before any of the above runs:
+   — including one whose only prior copy lived inside a normal pack about to
+   be superseded — while aged-out ones are still destroyed with the pack
+   that held them. Any existing cruft pack is retired.
+6. **A multi-pack-index naming a retired pack is deleted.** tsgit has no
+   midx writer, so deletion is the only available response; a midx naming
+   only surviving kept packs is left untouched.
+7. **`auto: true`** applies the `gc.auto` gate before any of the above runs:
    below the threshold (default 6700 loose objects), `gc` is skipped
    entirely and `tasksRun` omits `'gc'`. `gc.auto=0` disables the gate — `gc`
    always runs. `auto` absent or `false` runs unconditionally, exactly as an
    explicit `git gc` ignores `gc.auto`.
-6. **Refs, reflogs and the index are never touched.** `gc` packs objects
+8. **Refs, reflogs and the index are never touched.** `gc` packs objects
    only — no `pack-refs`, no `reflog expire`. Pack a repository's refs with
    [`packRefs`](pack-refs.md) as a separate, explicit call.
 
@@ -121,10 +151,36 @@ interface MaintenanceResult {
 | `cruftObjectsRetained` | objects carried forward from the previous cruft pack, ages intact |
 | `cruftObjectsExpired` | objects **destroyed** by the expiry cutoff — the one count that means data left the repository forever |
 | `cruftPackId` | the cruft pack's sha, or `undefined` when none exists afterward |
+| `packsRetired` | superseded packs deleted this run, normal and cruft combined — `packsAfter − packsBefore` cannot express this, since consolidating five packs into one and consolidating two into one both read `−1` |
+| `packBytesBefore` / `packBytesAfter` | summed `.pack` bytes in `objects/pack/`, before and after — the denominator and numerator of the size trade below |
 
 - **No rendered text.** Every field is a count, a boolean, an enum member or
   an object id; a caller composing a summary line ("packed 42 objects into 1
   pack") does so itself.
+
+### Object placement by file class
+
+| Object class | Where it ends up |
+|---|---|
+| reachable, loose or already packed | the one new normal pack |
+| unreachable, newer than the expiry cutoff | the cruft pack, `.mtimes` intact |
+| unreachable, at or past the cutoff | **destroyed** |
+| in a normal pack, since become unreachable | migrates to the cruft pack, carrying its SOURCE pack's mtime |
+| anything inside a `*.keep` pack | untouched — never repacked, never crufted, never duplicated |
+
+### The size trade
+
+tsgit's pack writer emits every object as a full base entry — it does not
+write delta chains. Consolidating a repository that git had delta-compressed
+therefore **inflates** it: re-emitting an existing delta chain's objects as
+base entries costs more bytes than the chain did. Measured brackets: **×1.29**
+on content that barely deltifies to begin with, up to **×6.91** on a
+deliberately deep 43-level delta chain; **×3.17** on tsgit's own real
+history is the number to plan against. The trade is accepted, not gated —
+`packBytesBefore`/`packBytesAfter` make it observable, and a delta-writing
+pack writer is the natural follow-up that retires it. `*.keep` a pack to opt
+it out of consolidation entirely if the inflation is unacceptable for that
+content.
 
 ## Examples
 
@@ -164,4 +220,5 @@ await repo.maintenance({ tasks: ['bogus' as never] }); // throws INVALID_OPTION
 
 - Related commands: [`packObjects`](pack-objects.md), [`packRefs`](pack-refs.md)
 - ADRs: [724](../../adr/724-maintenance-command-with-commit-graph-and-gc-lite.md),
-  [731](../../adr/731-gc-uses-cruft-packs.md)
+  [731](../../adr/731-gc-uses-cruft-packs.md),
+  [732](../../adr/732-gc-consolidates-existing-packs.md)
