@@ -361,11 +361,10 @@ describe('flattenTree', () => {
 
   describe('Given a tree entry with an empty name', () => {
     describe('When flattenTree runs', () => {
-      it('Then throws INVALID_TREE_ENTRY (structural: refused before any name-shape check)', async () => {
+      it('Then throws INVALID_TREE_ENTRY with the invalid-name reason', async () => {
         // Arrange — the cursor's own structural scan refuses an empty name
         // (nameEnd === nameStart) before flattenTree's own name-shape check
-        // ever observes it, so the reason is the cursor's, not
-        // parseTreeContent's 'invalid entry name: ' shape message.
+        // ever observes it, with the same reason shape parseTreeContent uses.
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const content = rawEntry(FILE_MODE.REGULAR, '', blobId);
@@ -379,7 +378,7 @@ describe('flattenTree', () => {
           const { data } = error as { data: { code: string; offset: number; reason: string } };
           expect(data.code).toBe('INVALID_TREE_ENTRY');
           expect(data.offset).toBe(0);
-          expect(data.reason).toBe('empty filename');
+          expect(data.reason).toBe('invalid entry name: ');
         }
       });
     });
