@@ -39,6 +39,20 @@ export async function enumerateObjects(
   return [...ids].sort();
 }
 
+const HEX_DIGITS = /^[0-9a-f]+$/;
+
+/** Whether `suffix` is exactly `expectedLength` lowercase hex digits — a
+ *  fanout entry's filename must satisfy this to be a real loose object.
+ *  Anything else (`tmp_obj_XXXXXX` quarantine litter, a stray dotfile, a
+ *  wrong-width name under a foreign hash algorithm) is not an oid and must
+ *  never be synthesised into one: an unfiltered filename becomes a phantom
+ *  oid that `gc` would cruft-candidate, pack, and then fail to read back
+ *  (`OBJECT_NOT_FOUND`) at its own post-write verify, wedging every future
+ *  run on the same repository. */
+function isLooseObjectSuffix(suffix: string, expectedLength: number): boolean {
+  return suffix.length === expectedLength && HEX_DIGITS.test(suffix);
+}
+
 /** One fanout prefix's loose object ids — the unit `collectLooseObjectIds`
  *  fans out across the `ioBound` pool, since each is an independent
  *  `exists`-then-`readdir` round trip against its own directory. */
@@ -50,9 +64,12 @@ async function collectPrefixObjectIds(
   const dir = objectsDir(gitDir, prefix);
   if (!(await ctx.fs.exists(dir))) return [];
   const entries = await ctx.fs.readdir(dir);
+  const suffixLength = ctx.hashConfig.hexLength - prefix.length;
   const ids: ObjectId[] = [];
   for (const entry of entries) {
-    if (entry.isFile) ids.push(`${prefix}${entry.name}` as ObjectId);
+    if (entry.isFile && isLooseObjectSuffix(entry.name, suffixLength)) {
+      ids.push(`${prefix}${entry.name}` as ObjectId);
+    }
   }
   return ids;
 }

@@ -733,6 +733,37 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given an EACCES fault reading one ref during the retention-root scan', () => {
+    describe('When gc runs', () => {
+      it('Then it aborts rather than silently rooting nothing and destroying the subgraph', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === refPath) throw eacces;
+          return originalReadUtf8(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — the fault propagated (not swallowed as "not reachable"),
+        // and nothing was destroyed: the repository never reached a write.
+        expect(caught).toBe(eacces);
+        expect((await getPackRegistry(ctx).all()).length).toBe(0);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Expiry boundary — strict `>`
   // ---------------------------------------------------------------------
@@ -1225,6 +1256,27 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a tmp_obj_ quarantine litter file sitting in a loose fanout dir', () => {
+    describe('When gc runs', () => {
+      it('Then it succeeds, leaves the litter alone, and never crufts it', async () => {
+        // Arrange — git's own quarantine naming for a loose-object write
+        // that never completed; not hex, not the right width, never an oid.
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_XXXXXX`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — succeeds without wedging; the litter is never enumerated,
+        // so it is never a cruft candidate and gc leaves it untouched.
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Structural — no rendered text
   // ---------------------------------------------------------------------
@@ -1338,6 +1390,40 @@ describe('maintenance', () => {
         // Assert
         expect(second.cruftPackId).toBeUndefined();
         await expect(readObject(ctx, blobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
+  describe('Given a pack carrying both .keep and .mtimes markers', () => {
+    describe('When gc runs again', () => {
+      it('Then every one of its files survives — never treated as existing cruft, never retired', async () => {
+        // Arrange — a genuine cruft pack (`.mtimes` written by a real gc
+        // run) subsequently ALSO marked `.keep` without dropping `.mtimes`
+        // — Pin V's total exclusion must win over the cruft lifecycle even
+        // when both markers coexist.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await writeLooseBlob(ctx, 'keep-and-mtimes');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const cruftSha = first.cruftPackId as string;
+        await ctx.fs.write(`${packDir}/pack-${cruftSha}.keep`, new Uint8Array(0));
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — never treated as existing cruft (no new cruft pack for
+        // the sole unreachable object), and its own four files untouched.
+        expect(second.cruftPackId).toBeUndefined();
+        expect(await ctx.fs.exists(`${packDir}/pack-${cruftSha}.idx`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${cruftSha}.pack`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${cruftSha}.mtimes`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${cruftSha}.keep`)).toBe(true);
+        await expect(readObject(ctx, blobId, { verifyHash: true })).resolves.toMatchObject({
+          type: 'blob',
+        });
       });
     });
   });

@@ -77,6 +77,26 @@ async function probePresence(ctx: Context, id: ObjectId): Promise<boolean | unde
 }
 
 /**
+ * The verdicts a ref resolution is allowed to fail with — an unborn HEAD, a
+ * dangling/cyclical symref, or content that never named a valid ref at all.
+ * `collectRetentionRoots`'s strict mode tolerates exactly these (a ref that
+ * genuinely isn't one roots nothing, same as `collectRoots`) and rethrows
+ * everything else — a permission fault or an I/O error means the read never
+ * happened, and a subgraph gc cannot see must never be treated as garbage.
+ */
+const GC_TOLERATED_REF_CODES: ReadonlySet<string> = new Set([
+  'REF_NOT_FOUND',
+  'INVALID_REF',
+  'REF_CHAIN_TOO_DEEP',
+  'REF_CYCLE_DETECTED',
+]);
+
+function isTolerableRefFault(err: unknown): boolean {
+  const code = errorDataCode(err);
+  return code !== undefined && GC_TOLERATED_REF_CODES.has(code);
+}
+
+/**
  * Add every resolvable ref's target to `roots`. Returns whether any ref
  * resolved to an oid ABSENT from the universe — git probes such a target
  * against the promisor machinery (`is_promisor_object`), so the caller's
@@ -86,11 +106,16 @@ async function probePresence(ctx: Context, id: ObjectId): Promise<boolean | unde
  * unconditionally and the "absent target" verdict never fires — the shape
  * `collectRetentionRoots` needs (gc has no pre-built object universe to
  * bound against; unlike `collectRoots`, it never reports corruption).
+ *
+ * `strict` (gc-only; `collectRoots`/fsck never sets it) narrows the
+ * tolerated failures to `isTolerableRefFault`'s "genuinely not a ref"
+ * verdicts and rethrows anything else — see that predicate's own doc.
  */
 async function addRefRoots(
   ctx: Context,
   roots: Set<ObjectId>,
   universe?: ReadonlySet<ObjectId>,
+  strict?: boolean,
 ): Promise<boolean> {
   const refNames = await enumerateRefs(ctx);
   let sawAbsentTarget = false;
@@ -103,14 +128,22 @@ async function addRefRoots(
       // and must NOT be added to roots (would produce spurious 'missing' findings).
       if (universe === undefined || universe.has(id)) roots.add(id);
       else sawAbsentTarget = true;
-    } catch {
+    } catch (err) {
+      if (strict === true && !isTolerableRefFault(err)) throw err;
       // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
     }
   }
   return sawAbsentTarget;
 }
 
-async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
+/**
+ * `strict` (gc-only) rethrows every reflog-read fault: `readReflog` already
+ * tolerates an absent file internally (returns `[]`), so anything that
+ * surfaces here is a genuine parse or I/O fault, never a "this isn't a
+ * reflog" verdict the way an unborn ref is — there is nothing left to
+ * tolerate once strict.
+ */
+async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boolean): Promise<void> {
   const reflogNames = await listReflogs(ctx);
   const zero = zeroOid(ctx.hashConfig);
   await boundedMapFor(ctx, 'ioBound', reflogNames, async (ref) => {
@@ -123,7 +156,8 @@ async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void>
         if (entry.oldId !== zero) roots.add(entry.oldId);
         if (entry.newId !== zero) roots.add(entry.newId);
       }
-    } catch {
+    } catch (err) {
+      if (strict === true) throw err;
       // Unreadable reflog — tolerated
     }
   });
@@ -300,7 +334,9 @@ function isMissingGitdirFile(error: unknown): boolean {
  * — whatever `enumerateRefs` resolves through that worktree's own admin
  * dir), and its own index — git's `other_head_refs()` plus a per-worktree
  * index walk. A worktree whose `gitdir` pointer is gone (prunable, `git
- * worktree prune`'s job, not gc's) contributes nothing.
+ * worktree prune`'s job, not gc's) contributes nothing; any OTHER fault
+ * reading it rethrows, the same strict policy `addRefRoots`/`addIndexRoots`
+ * already apply to everything they read.
  */
 async function addOneWorktreeRoots(
   ctx: Context,
@@ -320,7 +356,7 @@ async function addOneWorktreeRoots(
   }
   const worktreePath = stripGitSuffix(gitdirPointer);
   const worktreeCtx = deriveWorktreeContext(ctx, id, worktreePath);
-  await addRefRoots(worktreeCtx, roots);
+  await addRefRoots(worktreeCtx, roots, undefined, true);
   await addIndexRoots(worktreeCtx, roots);
 }
 
@@ -351,16 +387,20 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
  * invoked from. Unlike `collectRoots`, this takes no pre-built object
  * universe: gc is discovering the loose/cruft candidate set the
  * reachability walk will need, not consuming a finished enumeration, so a
- * universe would be the wrong cost shape here. Every collector runs
- * unbounded — an unresolvable ref, cache-tree entry or reflog simply roots
- * nothing, the same tolerance `collectRoots`'s own try/catch blocks already
- * apply; gc has nothing analogous to fsck's corruption report to raise
- * from a miss.
+ * universe would be the wrong cost shape here.
+ *
+ * Every collector runs in STRICT mode (see `isTolerableRefFault`): a ref or
+ * reflog that genuinely isn't one roots nothing, exactly as `collectRoots`
+ * tolerates, but a permission fault, an EMFILE/EIO, or any other real I/O
+ * error rethrows and aborts the run rather than silently rooting nothing —
+ * gc has no corruption report to raise from a miss the way fsck does, so a
+ * swallowed fault here would destroy a subgraph the caller never learns it
+ * lost.
  */
 export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<ObjectId>> {
   const roots = new Set<ObjectId>();
-  await addRefRoots(ctx, roots);
-  await addReflogRoots(ctx, roots);
+  await addRefRoots(ctx, roots, undefined, true);
+  await addReflogRoots(ctx, roots, true);
   await addIndexRoots(ctx, roots);
   await addOtherWorktreeRoots(ctx, roots);
   return roots;

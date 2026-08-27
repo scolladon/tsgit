@@ -20,10 +20,8 @@ import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { RegisteredPack } from '../pack-registry.js';
 import { commonGitDir, looseObjectPath, packsDir } from '../path-layout.js';
-import { getPackRegistry } from '../read-object.js';
 import { boundedMapFor } from './concurrency.js';
 import { errorDataCode } from './error-data-code.js';
-import { isSafePackName, packBaseName } from './pack-shared.js';
 import {
   buildCruftMtimes,
   cruftMtimesFilePath,
@@ -78,11 +76,6 @@ async function candidateSelfChecksum(
   return ctx.hash.hash(bytes.subarray(0, trailerStart));
 }
 
-function isMissingDir(error: unknown): boolean {
-  const code = errorDataCode(error);
-  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
-}
-
 /** Merges one `.mtimes` sidecar's parsed entries into the running union —
  *  `Math.max` on a shared oid, never a plain overwrite. */
 function mergeMtimesInto(
@@ -95,67 +88,55 @@ function mergeMtimesInto(
   }
 }
 
-/** Parses one `.mtimes` sidecar against its sibling `.idx`'s oid list, or
- *  `undefined` when the sidecar is orphaned (no loadable `.idx`/`.pack`
- *  pair) — invisible to the registry exactly as an orphan `.idx` already
- *  is, treated as absent rather than a refusal of its own. */
+/** Parses one classified-cruft pack's `.mtimes` sidecar against its own
+ *  `.idx`'s oid list. `pack` is already a REGISTERED pack drawn from
+ *  `classifyPackFiles`'s `cruft` bucket (Pin V: a pack carrying `.keep`
+ *  classifies as `kept`, never `cruft`, even when it ALSO carries
+ *  `.mtimes` — so a kept pack's sidecar is never read here, never merged
+ *  into the union, and never becomes a retirement candidate). */
 async function readOneCruftSidecar(
   ctx: Context,
   dir: string,
-  mtimesName: string,
-  packs: ReadonlyArray<RegisteredPack>,
-): Promise<
-  { readonly packSha: string; readonly mtimes: ReadonlyMap<ObjectId, number> } | undefined
-> {
-  const base = packBaseName(`${mtimesName.slice(0, -'.mtimes'.length)}.idx`);
-  const registeredPack = packs.find((p) => p.name === base);
-  if (registeredPack === undefined) return undefined;
-
-  const index = await registeredPack.index();
-  const oidsInIndexOrder = allObjectIds(index);
-  const bytes = await ctx.fs.read(`${dir}/${mtimesName}`);
+  pack: RegisteredPack,
+): Promise<{ readonly packSha: string; readonly mtimes: ReadonlyMap<ObjectId, number> }> {
+  const oidsInIndexOrder = allObjectIds(await pack.index());
+  const bytes = await ctx.fs.read(cruftMtimesFilePath(dir, pack.name.slice('pack-'.length)));
   const selfChecksum = await candidateSelfChecksum(ctx, bytes, oidsInIndexOrder.length);
   const mtimes = parseCruftMtimes(bytes, oidsInIndexOrder, selfChecksum);
-  return { packSha: base.slice('pack-'.length), mtimes };
+  return { packSha: pack.name.slice('pack-'.length), mtimes };
 }
 
+const byPackName = (a: RegisteredPack, b: RegisteredPack): number =>
+  a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+
 /**
- * Discover and parse the repository's existing cruft pack(s). Normally at
- * most one `.mtimes` sidecar is present; a crash between step 7's write and
- * step 10's retirement can leave TWO, both valid — every one found is read
- * and merged into a single UNION map (`Math.max` per shared oid), and every
- * sha is returned so the caller retires all but the one it writes.
+ * Parse the repository's existing cruft pack(s) — `cruftPacks` is
+ * `classifyPackFiles`'s own `cruft` bucket (Pin V total exclusion: a
+ * `.keep`-marked pack classifies as `kept`, never reaches here even when
+ * it ALSO carries `.mtimes`). Normally at most one is present; a crash
+ * between step 7's write and step 10's retirement can leave TWO, both
+ * valid — every one is read and merged into a single UNION map (`Math.max`
+ * per shared oid), and every sha is returned so the caller retires all but
+ * the one it writes.
  *
  * A `.mtimes` whose object count disagrees with its sibling `.idx`, or
  * whose self-checksum fails, is a typed refusal (`INVALID_CRUFT_MTIMES`)
  * that reads nothing further — never a silently empty map.
  */
-export async function readExistingCruftPack(ctx: Context): Promise<ExistingCruftPack> {
+export async function readExistingCruftPack(
+  ctx: Context,
+  cruftPacks: ReadonlyArray<RegisteredPack>,
+): Promise<ExistingCruftPack> {
+  if (cruftPacks.length === 0) return NO_EXISTING_CRUFT;
   const dir = packsDir(commonGitDir(ctx));
-  let entries: ReadonlyArray<{ readonly isFile: boolean; readonly name: string }>;
-  try {
-    entries = await ctx.fs.readdir(dir);
-  } catch (error) {
-    if (isMissingDir(error)) return NO_EXISTING_CRUFT;
-    throw error;
-  }
-
-  const mtimesNames = entries
-    .filter((e) => e.isFile && e.name.endsWith('.mtimes') && isSafePackName(e.name))
-    .map((e) => e.name)
-    .sort();
-  if (mtimesNames.length === 0) return NO_EXISTING_CRUFT;
-
-  const packs = await getPackRegistry(ctx).all();
   const mergedMtimes = new Map<ObjectId, number>();
   const packShas: string[] = [];
-  for (const mtimesName of mtimesNames) {
-    const found = await readOneCruftSidecar(ctx, dir, mtimesName, packs);
-    if (found === undefined) continue;
+  for (const pack of [...cruftPacks].sort(byPackName)) {
+    const found = await readOneCruftSidecar(ctx, dir, pack);
     mergeMtimesInto(mergedMtimes, found.mtimes);
     packShas.push(found.packSha);
   }
-  return packShas.length === 0 ? NO_EXISTING_CRUFT : { mtimes: mergedMtimes, packShas };
+  return { mtimes: mergedMtimes, packShas };
 }
 
 /** `Math.max` over the sources that are actually present — never a

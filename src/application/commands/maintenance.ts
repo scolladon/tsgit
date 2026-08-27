@@ -677,8 +677,10 @@ async function runGcTask(
     statByName,
   );
 
-  // --- step 2: existing cruft pack(s) ---
-  const existingCruft = await readExistingCruftPack(ctx);
+  // --- step 2: existing cruft pack(s) — classification.cruft already
+  // excludes a pack that ALSO carries .keep (Pin V), so it is never
+  // treated as existing cruft here nor retired below.
+  const existingCruft = await readExistingCruftPack(ctx, classification.cruft);
   const existingCruftShas = new Set(existingCruft.packShas);
 
   // --- step 3/4: retention roots, reachability, the widened partition ---
