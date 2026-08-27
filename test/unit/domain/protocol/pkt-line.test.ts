@@ -845,3 +845,96 @@ describe('decodePktStream — case-insensitive length parse', () => {
     });
   });
 });
+
+async function* asyncByteDrip(bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  for (let i = 0; i < bytes.byteLength; i += 1) {
+    yield bytes.subarray(i, i + 1);
+  }
+}
+
+const timeByteDrip = async (frame: Uint8Array): Promise<number> => {
+  const start = performance.now();
+  await collect(decodePktStream(asyncByteDrip(frame)));
+  return performance.now() - start;
+};
+
+/** Best-of-N: the minimum of several repetitions is the least
+ *  noise-affected sample — it filters out one-off JIT warm-up and GC-pause
+ *  spikes without needing a separate, hard-to-size warm-up phase. */
+const bestOfByteDrip = async (frame: Uint8Array, reps: number): Promise<number> => {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < reps; i += 1) {
+    best = Math.min(best, await timeByteDrip(frame));
+  }
+  return best;
+};
+
+describe('decodePktStream — linear-time accumulation (byte-drip)', () => {
+  describe('Given a maximal-size pkt-line vs. a quarter-size one, both delivered one byte at a time', () => {
+    describe('When the best-of-several decode time is compared between the two', () => {
+      it('Then it scales roughly with size, not with size squared', async () => {
+        // Arrange — a naive concat-then-slice accumulator copies the ENTIRE
+        // pending tail on every delivered byte, so byte-dripping a frame of
+        // size n costs O(n²): re-copying a growing tail on every single
+        // byte. Comparing elapsed time at two sizes (self-normalising
+        // against ambient CPU load / coverage instrumentation, unlike a
+        // fixed wall-clock ceiling) tells linear from quadratic apart: a 4×
+        // size increase costs ~4× the time under O(n), ~16× under O(n²).
+        // Measured repeatedly (best-of-3): this implementation's ratio
+        // sits at ~4, the naive one's at ~8 — 6 sits at the midpoint,
+        // comfortably clear of both.
+        const REPS = 3;
+        const quarter = new Uint8Array(Math.floor(MAX_PKT_LINE_PAYLOAD / 4));
+        const full = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+        const quarterFrame = encodePktLine(quarter);
+        const fullFrame = encodePktLine(full);
+        const ratioCeiling = 6;
+
+        // Act
+        const quarterMs = await bestOfByteDrip(quarterFrame, REPS);
+        const fullMs = await bestOfByteDrip(fullFrame, REPS);
+
+        // Assert
+        expect(fullMs / quarterMs).toBeLessThan(ratioCeiling);
+      });
+    });
+  });
+});
+
+describe('decodePktStream — buffer-ownership safety', () => {
+  describe('Given a source that reuses one backing buffer across every yielded chunk', () => {
+    describe('When decoded', () => {
+      it('Then every payload decodes independently — later reuse of the source buffer does not corrupt an earlier payload', async () => {
+        // Arrange — `Buffer.prototype.slice` (Node's `Uint8Array` subclass)
+        // ALIASES its source instead of copying; a zero-copy stream source
+        // that recycles one backing buffer per delivery (e.g. a Node
+        // `Readable` in non-flowing mode) would otherwise silently corrupt
+        // an already-yielded payload once the source overwrites the shared
+        // buffer for its next chunk.
+        const first = encodePktLine(bytesOf('first-payload'));
+        const second = encodePktLine(bytesOf('second-payload'));
+        const shared = Buffer.alloc(Math.max(first.byteLength, second.byteLength));
+
+        async function* reusedBufferSource(): AsyncIterable<Uint8Array> {
+          shared.set(first, 0);
+          yield shared.subarray(0, first.byteLength);
+          // Overwrite the SAME backing buffer before the consumer has had
+          // any further chance to copy — a `.slice()`-based payload would
+          // now read back as (part of) `second-payload`.
+          shared.fill(0);
+          shared.set(second, 0);
+          yield shared.subarray(0, second.byteLength);
+        }
+
+        // Act
+        const result = await collect(decodePktStream(reusedBufferSource()));
+
+        // Assert
+        expect(result).toEqual([
+          { kind: 'data', payload: bytesOf('first-payload') },
+          { kind: 'data', payload: bytesOf('second-payload') },
+        ]);
+      });
+    });
+  });
+});

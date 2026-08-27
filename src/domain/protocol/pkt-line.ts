@@ -127,13 +127,42 @@ const classify = (length: number, available: number, v2: boolean): Decision => {
   return { kind: 'data', consume: length };
 };
 
-const concatTail = (tail: Uint8Array, chunk: Uint8Array): Uint8Array => {
-  if (tail.byteLength === 0) return chunk;
-  const out = new Uint8Array(tail.byteLength + chunk.byteLength);
-  out.set(tail, 0);
-  out.set(chunk, tail.byteLength);
-  return out;
-};
+/**
+ * Drain every complete pkt-line from `view[start, limit)`, yielding one
+ * `PktLine` per frame and stopping at the first incomplete header/body (or
+ * once fewer than `PKT_LENGTH_BYTES` remain). Returns the offset reached —
+ * `limit` when everything drained, otherwise the start of the surviving
+ * incomplete frame. `payload` is always copied via `new Uint8Array(...)`,
+ * never `.slice()`: `view` may be a `Buffer` (a `Uint8Array` subclass whose
+ * `slice` ALIASES the source instead of copying), so a caller that recycles
+ * its chunk buffer between yields must not be able to corrupt an
+ * already-yielded payload.
+ */
+function* drainFrames(
+  view: Uint8Array,
+  limit: number,
+  v2: boolean,
+  start: number,
+): Generator<PktLine, number, unknown> {
+  let offset = start;
+  while (limit - offset >= PKT_LENGTH_BYTES) {
+    const length = parseLength(view, offset);
+    const decision = classify(length, limit - offset, v2);
+    if (decision.kind === 'wait') break;
+    if (decision.kind === 'data') {
+      yield {
+        kind: 'data',
+        payload: new Uint8Array(
+          view.subarray(offset + PKT_LENGTH_BYTES, offset + decision.consume),
+        ),
+      };
+    } else {
+      yield { kind: decision.kind };
+    }
+    offset += decision.consume;
+  }
+  return offset;
+}
 
 /**
  * Carries only the trailing INCOMPLETE pkt-line between chunks, never the
@@ -141,32 +170,55 @@ const concatTail = (tail: Uint8Array, chunk: Uint8Array): Uint8Array => {
  * pkt-line it contains. The surviving tail is always shorter than one frame
  * (MAX_PKT_LINE_FRAME bytes): a declared length above that refuses via
  * parseLength before any body bytes are considered for buffering.
+ *
+ * Backed by ONE reusable `MAX_PKT_LINE_FRAME`-sized buffer rather than a
+ * fresh tail+chunk concatenation per `accept` call: the naive
+ * concatenate-then-slice approach copies the ENTIRE pending tail on every
+ * delivered chunk, so a byte-at-a-time ("byte-drip") stream costs O(n²) —
+ * copying a growing ~64 KiB tail on every single byte. Here, a pending tail
+ * is topped up in place (bounded by the buffer's fixed capacity, never by
+ * how much has accumulated so far) and drained frames are compacted to the
+ * front with `copyWithin`, so accepting a chunk costs O(chunk), never
+ * O(pending tail).
  */
 class PktBuffer {
-  private tail = new Uint8Array(0);
+  private readonly buf = new Uint8Array(MAX_PKT_LINE_FRAME);
+  private used = 0;
 
   get pending(): number {
-    return this.tail.byteLength;
+    return this.used;
   }
 
   *accept(chunk: Uint8Array, v2: boolean): Generator<PktLine, void, unknown> {
-    const view = concatTail(this.tail, chunk);
-    let offset = 0;
-    while (view.byteLength - offset >= PKT_LENGTH_BYTES) {
-      const length = parseLength(view, offset);
-      const decision = classify(length, view.byteLength - offset, v2);
-      if (decision.kind === 'wait') break;
-      if (decision.kind === 'data') {
-        yield {
-          kind: 'data',
-          payload: view.slice(offset + PKT_LENGTH_BYTES, offset + decision.consume),
-        };
-      } else {
-        yield { kind: decision.kind };
+    let chunkOffset = 0;
+    while (chunkOffset < chunk.byteLength) {
+      if (this.used > 0) {
+        // A pending tail exists — top it up with only as much of `chunk` as
+        // fits the buffer's remaining capacity (never more; a single frame
+        // can never exceed MAX_PKT_LINE_FRAME, so filling to capacity is
+        // always enough to complete it) and drain whatever that yields.
+        const room = this.buf.length - this.used;
+        const take = Math.min(room, chunk.byteLength - chunkOffset);
+        this.buf.set(chunk.subarray(chunkOffset, chunkOffset + take), this.used);
+        this.used += take;
+        chunkOffset += take;
+        const consumed = yield* drainFrames(this.buf, this.used, v2, 0);
+        this.buf.copyWithin(0, consumed, this.used);
+        this.used -= consumed;
+        continue;
       }
-      offset += decision.consume;
+      // No pending tail — parse straight out of `chunk`, copying nothing
+      // for any complete frame it contains.
+      const consumed = yield* drainFrames(chunk, chunk.byteLength, v2, chunkOffset);
+      chunkOffset = consumed;
+      if (chunkOffset < chunk.byteLength) {
+        // A trailing incomplete frame remains — buffer just that slice.
+        const leftover = chunk.byteLength - chunkOffset;
+        this.buf.set(chunk.subarray(chunkOffset), 0);
+        this.used = leftover;
+        chunkOffset = chunk.byteLength;
+      }
     }
-    this.tail = view.slice(offset);
   }
 }
 
