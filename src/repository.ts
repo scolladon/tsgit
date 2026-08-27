@@ -38,7 +38,7 @@ import type { ProgressReporter } from './ports/progress-reporter.js';
 import type { PromisorRemote } from './ports/promisor.js';
 import type { SshTransport } from './ports/ssh-channel.js';
 import { noopProgress } from './progress.js';
-import { composeAdapters } from './repository/compose-adapters.js';
+import { composeAdapters, isFirstPartyFs } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
 import { defaultCwd } from './repository/default-cwd.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
@@ -582,12 +582,22 @@ export const openRepository = async (
   // under commonDir, outside workDir entirely). The security goal is "no
   // paths outside the repo's own roots."
   const layoutRoots = layoutRootsOf(fallback.layout);
+  // First-party adapters (Node/Memory/browser, sourced from the runtime
+  // fallback — never a caller-supplied `opts.fs`) already enforce read
+  // containment in their OWN read path against this same root set; guarding
+  // reads here too would be a redundant check on the hot path. The adapter
+  // becomes the single authority for reads; the wrapper keeps guarding every
+  // write regardless (it cannot do the write path's realpath escape check,
+  // so it is never redundant there).
+  const fsIsFirstParty = isFirstPartyFs(detected.fs);
   const adapters =
     opts.unsafeRawAdapters === true
       ? detected
       : {
           ...detected,
-          fs: wrapFsValidator(detected.fs, layoutRoots, computeConfigScopePaths(detected.fs)),
+          fs: wrapFsValidator(detected.fs, layoutRoots, computeConfigScopePaths(detected.fs), {
+            guardReads: !fsIsFirstParty,
+          }),
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
   // ADR-298: a linked worktree lives outside workDir and a worktree Context must
@@ -596,12 +606,32 @@ export const openRepository = async (
   // paths (the node shim roots a fresh adapter at the common ancestor), then
   // confines it with a multi-root validator to exactly those subtrees (or
   // returns the raw fs when containment is opted out).
+  //
+  // Memoised by root set: `listWorktrees` calls this once per worktree, and a
+  // fresh adapter + validator pair on every call was pure waste when the same
+  // worktree (or the same handful of worktrees) gets asked for repeatedly.
+  const worktreeFsCache = new Map<string, FileSystem>();
+  // `fallback.makeWorktreeFs`, when present, is ALWAYS a first-party adapter —
+  // it is a runtime capability (never something `opts` can supply), so its
+  // output carries the same "own read path enforces containment" guarantee
+  // `fsIsFirstParty` establishes for `detected.fs`. When absent, `worktreeFs`
+  // falls back to `detected.fs` itself, whose provenance is `fsIsFirstParty`.
+  const worktreeRawIsFirstParty = fallback.makeWorktreeFs !== undefined || fsIsFirstParty;
   const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
     const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
     const roots = [...paths, ...layoutRoots];
+    const cacheKey = roots.join('\0');
+    const cached = worktreeFsCache.get(cacheKey);
+    if (cached !== undefined) return cached;
     const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
-    if (opts.unsafeRawAdapters === true) return raw;
-    return wrapFsValidator(raw, roots, computeConfigScopePaths(raw));
+    const built =
+      opts.unsafeRawAdapters === true
+        ? raw
+        : wrapFsValidator(raw, roots, computeConfigScopePaths(raw), {
+            guardReads: !worktreeRawIsFirstParty,
+          });
+    worktreeFsCache.set(cacheKey, built);
+    return built;
   };
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();

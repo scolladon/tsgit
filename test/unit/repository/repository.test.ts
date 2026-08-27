@@ -8,6 +8,7 @@ import {
   MemoryHookRunner,
   MemoryHttpTransport,
 } from '../../../src/adapters/memory/index.js';
+import { readConfigSections } from '../../../src/application/primitives/config-scoped-read.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
@@ -1128,12 +1129,27 @@ describe('openRepository — worktreeFs capability', () => {
     });
 
     describe('When accessing a path outside the worktree-scoped fs roots', () => {
-      it('Then the wrapper rejects it with PATHSPEC_OUTSIDE_REPO', async () => {
+      it('Then it is refused with PERMISSION_DENIED — the default fs is branded first-party, so the adapter is the sole read-containment authority (not the wrapper, and not PATHSPEC_OUTSIDE_REPO)', async () => {
         // Arrange
         const sut = await open();
         const worktreeFs = worktreeScopedFs(sut, '/repo/wt');
 
-        // Act — an unwrapped raw adapter would surface its own error instead.
+        // Act — the adapter itself refuses; the wrapper no longer guards this read.
+        const code = await rejectionCode(() => worktreeFs.read('/outside/secret'));
+
+        // Assert
+        expect(code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When accessing a path outside the worktree-scoped fs roots through a user-supplied (unbranded) fs', () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+        // Arrange
+        const fallback = makeFallback();
+        const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
+        const worktreeFs = worktreeScopedFs(sut, '/repo/wt');
+
+        // Act
         const code = await rejectionCode(() => worktreeFs.read('/outside/secret'));
 
         // Assert
@@ -1243,9 +1259,31 @@ describe('openRepository — layout.commonDir plumbing', () => {
       });
     });
 
-    describe('When reading a path outside every layout root through the wrapped fs', () => {
-      it('Then it still throws PATHSPEC_OUTSIDE_REPO', async () => {
-        // Arrange
+    describe('When reading a path outside every layout root through a user-supplied (unbranded) fs', () => {
+      it('Then it still throws PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+        // Arrange — an explicit fs override keeps this fs unbranded, so both
+        // layers still apply exactly as before this part.
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        const fallback = commonDirFallback(fs);
+        const sut = await openRepository({ cwd: '/root/repo', fs }, fallback);
+
+        // Act
+        const code = await rejectionCode(() => sut.ctx.fs.read('/root/outside/secret'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+
+    describe('When reading that SAME path through the default (branded) fs', () => {
+      it("Then the read now reaches the adapter — the adapter is the sole read-containment authority, and here its own construction root ('/root') is wider than the layout roots the wrapper used to narrow to, so the read resolves (and fails on the missing file, not on containment)", async () => {
+        // Arrange — this fixture deliberately constructs the memory adapter at
+        // a WIDER root ('/root') than the layout's own roots ('/root/repo',
+        // '/root/common') specifically to isolate what the wrapper used to add
+        // on top of the raw adapter. The real Node/Memory runtime shims never
+        // construct a RuntimeFallback this way — they always root the adapter
+        // at exactly layoutRootsOf(layout) — so this widening cannot arise
+        // outside a fixture built like this one.
         const fs = new MemoryFileSystem({ rootDir: '/root' });
         const fallback = commonDirFallback(fs);
         const sut = await openRepository({ cwd: '/root/repo' }, fallback);
@@ -1253,8 +1291,10 @@ describe('openRepository — layout.commonDir plumbing', () => {
         // Act
         const code = await rejectionCode(() => sut.ctx.fs.read('/root/outside/secret'));
 
-        // Assert
-        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+        // Assert — FILE_NOT_FOUND, not a containment refusal: the adapter's
+        // own root already covers '/root/outside', so the read is admitted
+        // and only then fails because no such file exists.
+        expect(code).toBe('FILE_NOT_FOUND');
       });
     });
   });
@@ -1283,22 +1323,40 @@ describe('openRepository — config-scope allowlist', () => {
             'the system git config escapes the workDir guard and reaches the adapter (MemoryFileSystem defaults the system config to /etc/gitconfig)',
         },
         {
-          path: 'Stryker was here',
-          expectedCode: 'PATHSPEC_OUTSIDE_REPO',
+          path: '/Stryker/was/here',
+          expectedCode: 'PERMISSION_DENIED',
           label:
-            'a non-config path is rejected — the allowlist admits only the computed config scopes',
+            'a non-config absolute path is rejected by the adapter — the allowlist (wrapper-only) never even runs for this branded, default fs',
         },
       ])('Then $label', async ({ path, expectedCode }) => {
         // Arrange
         const sut = await open();
 
-        // Act — PERMISSION_DENIED means the config-scope allowlist admitted the path and
-        // the adapter was reached; PATHSPEC_OUTSIDE_REPO means the wrapper's guard blocked
-        // it first (proving the allowlist base is empty for non-config paths).
+        // Act — the default fs is branded first-party, so the adapter is the sole
+        // read-containment authority: PERMISSION_DENIED means the path is outside
+        // the adapter's own roots, full stop. The wrapper's allowlist plays no part
+        // in any of these four cases for this fs.
         const code = await rejectionCode(() => sut.ctx.fs.read(path));
 
         // Assert
         expect(code).toBe(expectedCode);
+      });
+    });
+  });
+
+  describe('Given a user-supplied (unbranded) fs exposing the same config scopes', () => {
+    describe('When accessing a non-config path through the wrapped fs', () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+        // Arrange — an explicit fs override keeps this fs unbranded.
+        const fallback = makeFallback();
+        const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
+
+        // Act — the allowlist admits only the computed config scopes; the wrapper's
+        // own guard (not the adapter) rejects this non-config path first.
+        const code = await rejectionCode(() => sut.ctx.fs.read('/Stryker/was/here'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
   });
@@ -1324,10 +1382,29 @@ describe('openRepository — config-scope allowlist', () => {
       });
     });
 
-    describe('When accessing the unavailable home config scope through the wrapped fs', () => {
-      it('Then it is not admitted to the allowlist', async () => {
+    describe('When accessing the unavailable home config scope through the branded (default) fs', () => {
+      it('Then it does not reach real home-config content — no path in the allowlist admitted it, and the adapter resolves the relative probe under its own root, missing', async () => {
         // Arrange
         const sut = await openUnavailable();
+
+        // Act — an unconditional home push would have admitted this stringified
+        // scope into the wrapper's allowlist; the default fs is branded, so the
+        // wrapper (and its allowlist) plays no part in this read at all. The
+        // adapter treats the relative-shaped probe as relative to its own root
+        // ('/repo'), so it fails on the missing file, not on containment — either
+        // way, no real home-config content is ever reached.
+        const code = await rejectionCode(() => sut.ctx.fs.read('undefined/.gitconfig'));
+
+        // Assert
+        expect(code).toBe('FILE_NOT_FOUND');
+      });
+    });
+
+    describe('When accessing the unavailable home config scope through a user-supplied (unbranded) fs', () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+        // Arrange
+        const fallback = { ...makeFallback(), fs: new UnavailableConfigFs({ rootDir: '/repo' }) };
+        const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
 
         // Act — an unconditional home push would admit this stringified scope.
         const code = await rejectionCode(() => sut.ctx.fs.read('undefined/.gitconfig'));
@@ -1337,10 +1414,24 @@ describe('openRepository — config-scope allowlist', () => {
       });
     });
 
-    describe('When accessing the unavailable XDG config scope through the wrapped fs', () => {
-      it('Then it is not admitted to the allowlist', async () => {
+    describe('When accessing the unavailable XDG config scope through the branded (default) fs', () => {
+      it('Then it does not reach real XDG-config content — same reasoning as the home scope above', async () => {
         // Arrange
         const sut = await openUnavailable();
+
+        // Act
+        const code = await rejectionCode(() => sut.ctx.fs.read('undefined/git/config'));
+
+        // Assert
+        expect(code).toBe('FILE_NOT_FOUND');
+      });
+    });
+
+    describe('When accessing the unavailable XDG config scope through a user-supplied (unbranded) fs', () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+        // Arrange
+        const fallback = { ...makeFallback(), fs: new UnavailableConfigFs({ rootDir: '/repo' }) };
+        const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
 
         // Act — an unconditional XDG push would admit this stringified scope.
         const code = await rejectionCode(() => sut.ctx.fs.read('undefined/git/config'));
@@ -1511,6 +1602,124 @@ describe('openRepository — object algorithm resolution', () => {
         // Assert
         expect(rejection).toBeInstanceOf(TsgitError);
         expect((rejection as TsgitError).data.code).toBe('OBJECT_FORMAT_CONFLICT');
+      });
+    });
+  });
+});
+
+describe('openRepository — branded read containment single-authority', () => {
+  describe('Given the default (branded) fs and an in-repo read path containing a `..` segment that collapses back inside the roots', () => {
+    describe('When the path is read', () => {
+      it('Then it is accepted — the adapter collapses `..` before checking containment; the wrapper (skipped on reads) would have refused any `..` segment outright', async () => {
+        // Arrange
+        const sut = await open();
+        await sut.ctx.fs.mkdir('/repo/sub');
+        await sut.ctx.fs.writeUtf8('/repo/target.txt', 'collapsed-and-contained');
+
+        // Act
+        const result = await sut.ctx.fs.readUtf8('/repo/sub/../target.txt');
+
+        // Assert
+        expect(result).toBe('collapsed-and-contained');
+      });
+    });
+  });
+
+  describe('Given a user-supplied (unbranded) fs and the same `..`-collapsing-inside path', () => {
+    describe('When the path is read', () => {
+      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+        // Arrange
+        const fallback = makeFallback();
+        const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
+        await sut.ctx.fs.mkdir('/repo/sub');
+        await sut.ctx.fs.writeUtf8('/repo/target.txt', 'collapsed-and-contained');
+
+        // Act
+        const code = await rejectionCode(() => sut.ctx.fs.readUtf8('/repo/sub/../target.txt'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given the default (branded) fs and a write to the same `..`-collapsing-inside path', () => {
+    describe('When the write runs', () => {
+      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — writes keep both layers, unaffected by the read-only skip', async () => {
+        // Arrange
+        const sut = await open();
+        await sut.ctx.fs.mkdir('/repo/sub');
+
+        // Act
+        const code = await rejectionCode(() =>
+          sut.ctx.fs.writeUtf8('/repo/sub/../evil.txt', 'should never land'),
+        );
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given the default (branded) fs and a config-scope path (home/XDG/system)', () => {
+    describe('When the config primitive reads the global scope', () => {
+      it('Then it resolves to an empty array, not a throw — the adapter refusal is caught exactly like a missing file', async () => {
+        // Arrange — MemoryFileSystem defaults home to /home/user, outside the
+        // repository roots, so the branded adapter (sole read authority) refuses
+        // it with PERMISSION_DENIED; the config primitive already tolerates
+        // that code alongside FILE_NOT_FOUND.
+        const sut = await open();
+
+        // Act
+        const sections = await readConfigSections({ ctx: sut.ctx, scope: 'global' });
+
+        // Assert
+        expect(sections).toEqual([]);
+      });
+    });
+
+    describe('When the config primitive reads the system scope', () => {
+      it('Then it also resolves to an empty array, not a throw', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Act
+        const sections = await readConfigSections({ ctx: sut.ctx, scope: 'system' });
+
+        // Assert
+        expect(sections).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('openRepository — worktreeFs memoisation', () => {
+  describe('Given repeated worktreeFs calls for the same root set', () => {
+    describe('When the capability is invoked twice with the same worktree path', () => {
+      it('Then the returned fs is built once — the two calls are reference-equal', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Act
+        const first = worktreeScopedFs(sut, '/repo/wt');
+        const second = worktreeScopedFs(sut, '/repo/wt');
+
+        // Assert
+        expect(second).toBe(first);
+      });
+    });
+
+    describe('When the capability is invoked with a different worktree path', () => {
+      it('Then a NEW fs is built — the cache key is the root set, not a constant', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Act
+        const first = worktreeScopedFs(sut, '/repo/wt-a');
+        const second = worktreeScopedFs(sut, '/repo/wt-b');
+
+        // Assert
+        expect(second).not.toBe(first);
       });
     });
   });

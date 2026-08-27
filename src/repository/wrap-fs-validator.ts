@@ -36,6 +36,25 @@ const hasDotDotSegment = (path: string): boolean =>
 const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
   paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
 
+/** Options controlling which surfaces {@link wrapFsValidator} guards. */
+export interface WrapFsValidatorOptions {
+  /**
+   * Guard READ surfaces (`read`, `readSlice`, `readUtf8`, `exists`, `stat`,
+   * `lstat`, `readdir`, `readlink`, `openWithNoFollow(_, 'read')`) with the
+   * same containment check as every write surface. Defaults to `true`.
+   *
+   * Pass `false` only for a branded first-party adapter whose OWN read path
+   * already enforces containment against the identical root set — the
+   * adapter becomes the single authority for those surfaces, and guarding
+   * here would be a pure redundant cost on the read hot path. WRITE surfaces
+   * are never affected by this flag: they keep the wrapper's lexical guard
+   * regardless, because only the wrapper's `guard` — not every adapter's own
+   * write path — enforces the allowlist a write to a config-scope path
+   * relies on.
+   */
+  readonly guardReads?: boolean;
+}
+
 /**
  * Wrap a user-supplied FileSystem so every path-taking method asserts that
  * the path is contained within `cwd`. commands ALREADY validate
@@ -54,6 +73,7 @@ export const wrapFsValidator = (
   fs: FileSystem,
   roots: string | ReadonlyArray<string>,
   allowExternalPaths: ReadonlyArray<string> = [],
+  { guardReads = true }: WrapFsValidatorOptions = {},
 ): FileSystem => {
   // A path is permitted when it is contained in ANY root (a worktree Context is
   // confined to its worktree path PLUS the common dir — ADR-298). A single
@@ -76,17 +96,25 @@ export const wrapFsValidator = (
     if (allowSet.has(path)) return;
     throw pathspecOutsideRepo(path as FilePath);
   };
+  // Read surfaces only: a no-op when `guardReads` is false, because the
+  // caller has already established (via a branded first-party adapter) that
+  // the underlying `fs`'s own read path enforces this same containment.
+  // Write surfaces always call `guard` directly, never this — see
+  // `WrapFsValidatorOptions.guardReads`.
+  const readGuard = (path: string): void => {
+    if (guardReads) guard(path);
+  };
   return {
     read: (p) => {
-      guard(p);
+      readGuard(p);
       return fs.read(p);
     },
     readSlice: (p, o, l) => {
-      guard(p);
+      readGuard(p);
       return fs.readSlice(p, o, l);
     },
     readUtf8: (p) => {
-      guard(p);
+      readGuard(p);
       return fs.readUtf8(p);
     },
     write: (p, d) => {
@@ -110,19 +138,19 @@ export const wrapFsValidator = (
       return fs.appendUtf8(p, c);
     },
     exists: (p) => {
-      guard(p);
+      readGuard(p);
       return fs.exists(p);
     },
     stat: (p) => {
-      guard(p);
+      readGuard(p);
       return fs.stat(p);
     },
     lstat: (p) => {
-      guard(p);
+      readGuard(p);
       return fs.lstat(p);
     },
     readdir: (p) => {
-      guard(p);
+      readGuard(p);
       return fs.readdir(p);
     },
     mkdir: (p) => {
@@ -139,7 +167,7 @@ export const wrapFsValidator = (
       return fs.rename(s, d);
     },
     readlink: (p) => {
-      guard(p);
+      readGuard(p);
       return fs.readlink(p);
     },
     symlink: (target, linkPath) => {
@@ -161,7 +189,11 @@ export const wrapFsValidator = (
       return fs.rmRecursive(p);
     },
     openWithNoFollow: (p, mode) => {
-      guard(p);
+      // `mode` decides which guard applies per call — this is the one
+      // read/write-ambiguous surface in the port; every other method is
+      // fixed one way or the other.
+      if (mode === 'write') guard(p);
+      else readGuard(p);
       return fs.openWithNoFollow(p, mode);
     },
     homedir: () => fs.homedir(),
