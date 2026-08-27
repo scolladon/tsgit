@@ -11,6 +11,7 @@ import { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from './join-working-tree-path.js';
+import { createPromiseMemo, type PromiseMemo } from './promise-memo.js';
 import { requireWorkTree } from './repo-state.js';
 
 export interface LeadingPathScanner {
@@ -42,15 +43,21 @@ type PrefixShape = 'symlink' | 'plain' | 'missing';
  * prefix across a multi-literal pathspec set costs exactly one `lstat`.
  */
 export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
-  const memo = new Map<string, PrefixShape>();
+  // One single-flight memo per prefix, not a plain settled-value cache: two
+  // concurrent scans of the SAME prefix (delete wave + write wave running
+  // through the same pool) would otherwise both miss the cache before
+  // either write lands, doubling the `lstat`. `createPromiseMemo` caches the
+  // IN-FLIGHT promise itself, so the second caller joins the first's flight.
+  const memo = new Map<string, PromiseMemo<PrefixShape>>();
   const workDir = requireWorkTree(ctx, 'createLeadingPathScanner');
 
-  const classifyPrefix = async (prefix: string): Promise<PrefixShape> => {
-    const cached = memo.get(prefix);
-    if (cached !== undefined) return cached;
-    const shape = await lstatPrefix(prefix);
-    memo.set(prefix, shape);
-    return shape;
+  const classifyPrefix = (prefix: string): Promise<PrefixShape> => {
+    let entry = memo.get(prefix);
+    if (entry === undefined) {
+      entry = createPromiseMemo(() => lstatPrefix(prefix));
+      memo.set(prefix, entry);
+    }
+    return entry.get();
   };
 
   const lstatPrefix = async (prefix: string): Promise<PrefixShape> => {

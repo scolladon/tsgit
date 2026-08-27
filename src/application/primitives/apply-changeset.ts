@@ -38,6 +38,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
+import { boundedMapFor } from './internal/concurrency.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
@@ -158,13 +159,18 @@ const checkDirty = async (
   workdir: string,
   changeset: Changeset,
 ): Promise<WouldOverwriteClasses> => {
+  // Fanned out through the ioBound pool — pure reads, so collection order
+  // is free: refusal arrays are sorted with `comparePaths` below regardless
+  // of which entry's probe lands first.
+  const offending = await boundedMapFor(ctx, 'ioBound', changeset.entries, (entry) =>
+    evaluateDirtyPath(ctx, workdir, entry),
+  );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
-  for (const entry of changeset.entries) {
-    const offending = await evaluateDirtyPath(ctx, workdir, entry);
-    if (offending === undefined) continue;
-    if (offending.class === 'local-changes') localChanges.push(offending.path);
-    else untracked.push(offending.path);
+  for (const result of offending) {
+    if (result === undefined) continue;
+    if (result.class === 'local-changes') localChanges.push(result.path);
+    else untracked.push(result.path);
   }
   // Refusal arrays mirror git's raw-byte path order, matching `findWouldOverwrite`
   // — `changeset.entries` order (UTF-16 from a JS sort upstream) is not faithful
@@ -236,23 +242,27 @@ const writeBlobToWorkingTree = async (
   await writeWorkingTreeEntryStream(ctx, path, stream, mode, scanner);
 };
 
-const applyEntry = async (
+const applyDeleteEntry = async (
   ctx: Context,
   workdir: string,
   entry: ChangesetEntry,
   scanner: LeadingPathScanner,
-  provider?: AttributeProvider,
+): Promise<void> => {
+  // git skips a removal silently when the leading directory is a symlink —
+  // the delete is never attempted, not refused.
+  if (await scanner.hasSymlinkedLeadingPath(entry.path)) return;
+  await rmIfExists(ctx, joinPath(workdir, entry.path));
+};
+
+const applyWriteEntry = async (
+  ctx: Context,
+  workdir: string,
+  entry: ChangesetEntry,
+  scanner: LeadingPathScanner,
+  provider: AttributeProvider | undefined,
 ): Promise<IndexEntry | undefined> => {
-  const absPath = joinPath(workdir, entry.path);
-  if (entry.kind === 'noop') return undefined;
-  if (entry.kind === 'delete') {
-    // git skips a removal silently when the leading directory is a
-    // symlink — the delete is never attempted, not refused.
-    if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
-    await rmIfExists(ctx, absPath);
-    return undefined;
-  }
   if (entry.id === undefined) return undefined;
+  const absPath = joinPath(workdir, entry.path);
   await writeBlobToWorkingTree(
     ctx,
     entry.path,
@@ -264,6 +274,81 @@ const applyEntry = async (
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };
 
+interface EntryWaves {
+  readonly deletes: ReadonlyArray<ChangesetEntry>;
+  readonly writes: ReadonlyArray<ChangesetEntry>;
+}
+
+/**
+ * Splits the changeset into its two write-side waves. A delete must land
+ * before any add/update — `applyEntry`'s write auto-creates missing parent
+ * directories, so a stale file/symlink a delete would have cleared must be
+ * gone first. The changeset's own `kind` split gives the wave boundary
+ * directly; `noop` entries carry no I/O and are dropped here.
+ */
+const splitWaves = (entries: ReadonlyArray<ChangesetEntry>): EntryWaves => {
+  const deletes: ChangesetEntry[] = [];
+  const writes: ChangesetEntry[] = [];
+  for (const entry of entries) {
+    if (entry.kind === 'delete') deletes.push(entry);
+    else if (entry.kind === 'add' || entry.kind === 'update') writes.push(entry);
+  }
+  return { deletes, writes };
+};
+
+/**
+ * One counter shared by both waves — `current` increments once per entry as
+ * it FINISHES, in completion order, never derived from an index or wave
+ * position. That keeps `current` strictly monotone under a concurrent pool
+ * and makes `text` always name a path that has already landed on disk.
+ */
+interface ProgressCounter {
+  current: number;
+}
+
+const reportCompletion = (
+  ctx: Context,
+  total: number,
+  counter: ProgressCounter,
+  path: FilePath,
+): void => {
+  counter.current += 1;
+  ctx.progress.update(CHECKOUT_OP, counter.current, total, path);
+};
+
+const applyDeleteWave = async (
+  ctx: Context,
+  workdir: string,
+  deletes: ReadonlyArray<ChangesetEntry>,
+  scanner: LeadingPathScanner,
+  total: number,
+  counter: ProgressCounter,
+): Promise<number> => {
+  await boundedMapFor(ctx, 'ioBound', deletes, async (entry) => {
+    await applyDeleteEntry(ctx, workdir, entry, scanner);
+    reportCompletion(ctx, total, counter, entry.path);
+  });
+  return deletes.length;
+};
+
+const applyWriteWave = async (
+  ctx: Context,
+  workdir: string,
+  writes: ReadonlyArray<ChangesetEntry>,
+  lazyProvider: () => Promise<AttributeProvider>,
+  scanner: LeadingPathScanner,
+  total: number,
+  counter: ProgressCounter,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const results = await boundedMapFor(ctx, 'ioBound', writes, async (entry) => {
+    const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
+    const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, provider);
+    reportCompletion(ctx, total, counter, entry.path);
+    return indexEntry;
+  });
+  return results.filter((entry): entry is IndexEntry => entry !== undefined);
+};
+
 const applyAllEntries = async (
   ctx: Context,
   changeset: Changeset,
@@ -271,30 +356,22 @@ const applyAllEntries = async (
   lazyProvider: () => Promise<AttributeProvider>,
   scanner: LeadingPathScanner,
 ): Promise<ApplyChangesetResult> => {
-  const writtenEntries: IndexEntry[] = [];
-  let written = 0;
-  let deleted = 0;
+  const { deletes, writes } = splitWaves(changeset.entries);
+  const total = changeset.stats.add + changeset.stats.update + changeset.stats.delete;
+  const counter: ProgressCounter = { current: 0 };
 
-  for (const entry of changeset.entries) {
-    const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
-    const indexEntry = await applyEntry(ctx, workdir, entry, scanner, provider);
-    if (entry.kind === 'delete') {
-      deleted += 1;
-    } else if (entry.kind === 'add' || entry.kind === 'update') {
-      written += 1;
-      if (indexEntry !== undefined) writtenEntries.push(indexEntry);
-    }
-    if (entry.kind !== 'noop') {
-      ctx.progress.update(
-        CHECKOUT_OP,
-        written + deleted,
-        changeset.stats.add + changeset.stats.update + changeset.stats.delete,
-        entry.path,
-      );
-    }
-  }
+  const deleted = await applyDeleteWave(ctx, workdir, deletes, scanner, total, counter);
+  const writtenEntries = await applyWriteWave(
+    ctx,
+    workdir,
+    writes,
+    lazyProvider,
+    scanner,
+    total,
+    counter,
+  );
 
-  return { writtenEntries, written, deleted };
+  return { writtenEntries, written: writes.length, deleted };
 };
 
 export const applyChangeset = async (

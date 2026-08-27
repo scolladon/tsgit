@@ -454,4 +454,29 @@ describe('createLeadingPathScanner', () => {
       });
     });
   });
+
+  describe('Given two concurrent probes of the same prefix, started before either lstat settles', () => {
+    describe('When hasSymlinkedLeadingPath is called twice on one scanner without awaiting the first', () => {
+      it('Then the prefix is lstat-ed exactly once — the second call joins the first in flight', async () => {
+        // Arrange — a parallel delete wave and write wave sharing one scanner
+        // can both probe the same leading prefix before either lstat settles;
+        // a plain settled-value cache would miss on both and lstat twice.
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/dir`);
+        const { ctx: countedCtx, calls } = withLstatCallCounter(ctx);
+        const sut = createLeadingPathScanner(countedCtx);
+
+        // Act — both calls start before either's lstat has resolved.
+        const [first, second] = await Promise.all([
+          sut.hasSymlinkedLeadingPath(path('dir/a.txt')),
+          sut.hasSymlinkedLeadingPath(path('dir/b.txt')),
+        ]);
+
+        // Assert — single-flight: one lstat serves both callers.
+        expect(first).toBe(false);
+        expect(second).toBe(false);
+        expect(calls).toEqual([`${ctx.layout.workDir}/dir`]);
+      });
+    });
+  });
 });
