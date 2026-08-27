@@ -142459,7 +142459,21 @@
 									},
 									{
 										"kind": "text",
-										"text": "'s precedent. A\nsecond call whose stat matches the cached key joins the cached parse\ninstead of re-reading, re-verifying and re-parsing the whole file.\n\nThree independent guards keep this correct: the stat-key comparison\ncatches a change to the on-disk file (this process or an external one);\nthe trailer fallback catches a same-tick external rewrite that a\nnanosecond-blind stat tuple cannot distinguish from no change at all; and\n"
+										"text": "'s precedent. A\nsecond call whose stat matches the cached key joins the cached parse\ninstead of re-reading, re-verifying and re-parsing the whole file. Above\n"
+									},
+									{
+										"kind": "inline-tag",
+										"tag": "@link",
+										"text": "INDEX_CACHE_MAX_RAW_BYTES",
+										"target": {
+											"packageName": "@scolladon/tsgit",
+											"packagePath": "src/application/primitives/read-index.ts",
+											"qualifiedName": "INDEX_CACHE_MAX_RAW_BYTES"
+										}
+									},
+									{
+										"kind": "text",
+										"text": ", the cache is bypassed entirely — every\ncall re-reads, re-verifies and re-parses — so a very large index does not\npin a multi-hundred-megabyte parsed structure for the Context's lifetime.\n\nThree independent guards keep the cached path correct: the stat-key\ncomparison catches a change to the on-disk file (this process or an\nexternal one); the trailer fallback catches a same-tick external rewrite\nthat a nanosecond-blind stat tuple cannot distinguish from no change at\nall; and "
 									},
 									{
 										"kind": "code",
@@ -142467,7 +142481,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " — called from the index-lock commit path — drops\nthe entry unconditionally the moment THIS process writes a new index, so\nneither of the read-side checks needs to run at all for our own commits."
+										"text": " — called from the index-lock commit path —\ndrops the entry unconditionally the moment THIS process writes a new\nindex, so neither of the read-side checks needs to run at all for our own\ncommits."
 									}
 								]
 							},
