@@ -10,7 +10,7 @@ import { readIndex } from '../../../../src/application/primitives/read-index.js'
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { type GitIndex, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { permissionDenied, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
@@ -1784,6 +1784,61 @@ describe('add', () => {
         expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
         const after = await readIndex(ctx);
         expect(after.entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two hostile paths in the walk where the LATER one settles first', () => {
+    describe('When add runs', () => {
+      it('Then the recorded error corresponds to the earlier-walked path, not whichever settled first', async () => {
+        // Arrange — 'a.txt' is walked (dispatched) before 'z.txt', but
+        // 'z.txt's own lstat rejects immediately and releases the gate that
+        // holds 'a.txt's rejection back — so 'z.txt' always settles FIRST
+        // in real time despite being SECOND in walk order.  A firstError
+        // keyed by settle order would record 'z.txt'; the fix must record
+        // 'a.txt' regardless.
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'z.txt': 'z' });
+        let releaseA: (() => void) | undefined;
+        const aGate = new Promise<void>((resolve) => {
+          releaseA = resolve;
+        });
+        const baseLstat = ctx.fs.lstat;
+        const racingCtx = {
+          ...ctx,
+          fs: new Proxy(ctx.fs, {
+            get(target, prop, receiver) {
+              if (prop === 'lstat') {
+                return async (path: string) => {
+                  if (path.endsWith('/z.txt')) {
+                    releaseA?.();
+                    throw permissionDenied(path);
+                  }
+                  if (path.endsWith('/a.txt')) {
+                    await aGate;
+                    throw permissionDenied(path);
+                  }
+                  return baseLstat(path);
+                };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(racingCtx, [], { all: true });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; path: string };
+        expect(data.code).toBe('PERMISSION_DENIED');
+        expect(data.path.endsWith('/a.txt')).toBe(true);
       });
     });
   });

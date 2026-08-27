@@ -223,7 +223,11 @@ const lstatOrMissing = async (
  * recorded rather than propagated immediately: every already-dispatched
  * task is drained (awaited to settlement, never left dangling) before the
  * recorded error surfaces, so the index is never committed while a pooled
- * write may still be in flight.
+ * write may still be in flight. The recorded error is the LOWEST-ordinal
+ * (earliest walk-order) rejection, not whichever settles first under the
+ * pool's own scheduling — a later-walked entry with a faster failure must
+ * not shadow an earlier one's, or the refusal payload becomes a function of
+ * pool timing instead of the deterministic walk order.
  */
 const stageWalkedEntries = async (
   ctx: Context,
@@ -237,8 +241,8 @@ const stageWalkedEntries = async (
   const limiter = limiterFor(ctx, 'ioBound');
   const outcomes: WalkOutcome[] = [];
   const pending: Promise<void>[] = [];
-  let firstError: { readonly error: unknown } | undefined;
-  const dispatch = (walkEntry: WalkWorkingTreeEntry): void => {
+  let firstError: { readonly error: unknown; readonly ordinal: number } | undefined;
+  const dispatch = (walkEntry: WalkWorkingTreeEntry, ordinal: number): void => {
     pending.push(
       limiter
         .run(() =>
@@ -257,13 +261,16 @@ const stageWalkedEntries = async (
             if (outcome !== undefined) outcomes.push(outcome);
           },
           (error: unknown) => {
-            firstError ??= { error };
+            if (firstError === undefined || ordinal < firstError.ordinal) {
+              firstError = { error, ordinal };
+            }
           },
         ),
     );
   };
   try {
-    for await (const walkEntry of walk) dispatch(walkEntry);
+    let ordinal = 0;
+    for await (const walkEntry of walk) dispatch(walkEntry, ordinal++);
   } finally {
     await Promise.all(pending);
   }
