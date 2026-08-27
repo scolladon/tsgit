@@ -12,7 +12,7 @@ import type { AuthorIdentity } from './author-identity.js';
 import { parseIdentity, serializeIdentity } from './author-identity.js';
 import type { ExtraHeader } from './commit.js';
 import {
-  decode,
+  decodePreservingBom,
   encode,
   formatContinuationHeader,
   parseHeaderLine,
@@ -60,26 +60,24 @@ function peelTagSignature(rawMessage: string): {
 }
 
 export function parseTagContent(id: ObjectId, content: Uint8Array): Tag {
-  const { headerPart, message: rawMessage } = splitHeaderAndMessage(decode(content));
+  const { headerPart, message: rawMessage } = splitHeaderAndMessage(decodePreservingBom(content));
   const lines = headerPart.split('\n');
   const { object, objectType, tagName, nextIndex: requiredEnd } = parseRequiredTagFields(lines);
   const { tagger, nextIndex } = parseTaggerField(lines, requiredEnd);
   const { extraHeaders } = parseTagOptionalHeaders(lines, nextIndex);
   const { message, gpgSignature } = peelTagSignature(rawMessage);
 
-  return {
-    type: 'tag',
-    id,
-    data: {
-      object,
-      objectType,
-      tagName,
-      ...(tagger !== undefined ? { tagger } : {}),
-      message,
-      ...(gpgSignature !== undefined ? { gpgSignature } : {}),
-      extraHeaders,
-    },
-  };
+  const data: TagData = Object.freeze({
+    object,
+    objectType,
+    tagName,
+    ...(tagger !== undefined ? { tagger } : {}),
+    message,
+    ...(gpgSignature !== undefined ? { gpgSignature } : {}),
+    extraHeaders: Object.freeze(extraHeaders),
+  });
+
+  return { type: 'tag', id, data };
 }
 
 function parseRequiredTagFields(lines: ReadonlyArray<string>): {
@@ -91,7 +89,7 @@ function parseRequiredTagFields(lines: ReadonlyArray<string>): {
   if (!lines[0]!.startsWith('object ')) {
     throw invalidTag('first line must be object');
   }
-  const object = ObjectIdFactory.fromTrustedHex(lines[0]!.slice(7));
+  const object = ObjectIdFactory.from(lines[0]!.slice(7));
 
   if (lines.length < 2 || !lines[1]!.startsWith('type ')) {
     throw invalidTag('second line must be type');

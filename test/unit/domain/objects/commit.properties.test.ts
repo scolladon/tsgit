@@ -7,7 +7,13 @@ import {
   serializeCommitContent,
 } from '../../../../src/domain/objects/commit.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
-import { arbArmorBlock, arbAuthorIdentity, arbCommitMessage, arbObjectId } from './arbitraries.js';
+import {
+  arbArmorBlock,
+  arbAuthorIdentity,
+  arbCommitMessageWithOptionalBom,
+  arbExtraHeader,
+  arbObjectId,
+} from './arbitraries.js';
 
 const DUMMY_ID = ObjectId.from('a'.repeat(40));
 
@@ -15,19 +21,24 @@ const DUMMY_ID = ObjectId.from('a'.repeat(40));
 // omits it entirely on some runs, never sets it to `undefined`) — the same
 // conditional-spread shape `parseCommitContent` produces, so a run sometimes
 // covers the "no signature" branch and sometimes the "signed" branch of both
-// serialize and parse.
+// serialize and parse. `tree`/`parents` share one hash width per run (`.chain`
+// correlates them, matching how a real repository never mixes SHA-1 and
+// SHA-256 pointers within one commit) so both the 40- and 64-char oid shapes
+// are exercised, not only the historical SHA-1 width.
 function arbCommitData(): fc.Arbitrary<CommitData> {
-  return fc.record(
-    {
-      tree: arbObjectId(40),
-      parents: fc.array(arbObjectId(40), { maxLength: 3 }),
-      author: arbAuthorIdentity(),
-      committer: arbAuthorIdentity(),
-      message: arbCommitMessage(),
-      gpgSignature: arbArmorBlock(),
-      extraHeaders: fc.constant([]),
-    },
-    { requiredKeys: ['tree', 'parents', 'author', 'committer', 'message', 'extraHeaders'] },
+  return fc.constantFrom(40 as const, 64 as const).chain((width) =>
+    fc.record(
+      {
+        tree: arbObjectId(width),
+        parents: fc.array(arbObjectId(width), { maxLength: 3 }),
+        author: arbAuthorIdentity(),
+        committer: arbAuthorIdentity(),
+        message: arbCommitMessageWithOptionalBom(),
+        gpgSignature: arbArmorBlock(),
+        extraHeaders: fc.array(arbExtraHeader(), { maxLength: 3 }),
+      },
+      { requiredKeys: ['tree', 'parents', 'author', 'committer', 'message', 'extraHeaders'] },
+    ),
   );
 }
 

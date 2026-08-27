@@ -12,7 +12,7 @@
 import type { AuthorIdentity } from './author-identity.js';
 import { parseIdentity, serializeIdentity } from './author-identity.js';
 import {
-  decode,
+  decodePreservingBom,
   encode,
   formatContinuationHeader,
   indexOf,
@@ -96,30 +96,29 @@ function lineStartsWithAscii(bytes: Uint8Array, [start, end]: LineRange, prefix:
 // Decodes a line's value (the range past its `skip`-byte keyword prefix)
 // on demand — the one decode a required field's hot path actually needs.
 function decodeLineValue(bytes: Uint8Array, [start, end]: LineRange, skip: number): string {
-  return decode(bytes.subarray(start + skip, end));
+  return decodePreservingBom(bytes.subarray(start + skip, end));
 }
 
 export function parseCommitContent(id: ObjectId, content: Uint8Array): Commit {
   const blankLineStart = findBlankLine(content);
   const headerBytes = blankLineStart === -1 ? content : content.subarray(0, blankLineStart);
-  const message = blankLineStart === -1 ? '' : decode(content.subarray(blankLineStart + 2));
+  const message =
+    blankLineStart === -1 ? '' : decodePreservingBom(content.subarray(blankLineStart + 2));
   const lines = splitByteLines(headerBytes);
   const { tree, parents, author, committer, nextIndex } = parseRequiredFields(headerBytes, lines);
   const { gpgSignature, extraHeaders } = parseOptionalHeaders(headerBytes, lines, nextIndex);
 
-  return {
-    type: 'commit',
-    id,
-    data: {
-      tree,
-      parents,
-      author,
-      committer,
-      message,
-      ...(gpgSignature !== undefined ? { gpgSignature } : {}),
-      extraHeaders,
-    },
-  };
+  const data: CommitData = Object.freeze({
+    tree,
+    parents: Object.freeze(parents),
+    author,
+    committer,
+    message,
+    ...(gpgSignature !== undefined ? { gpgSignature } : {}),
+    extraHeaders: Object.freeze(extraHeaders),
+  });
+
+  return { type: 'commit', id, data };
 }
 
 function parseRequiredFields(
@@ -135,16 +134,12 @@ function parseRequiredFields(
   if (!lineStartsWithAscii(bytes, lines[0]!, TREE_PREFIX)) {
     throw invalidCommit('first line must be tree');
   }
-  const tree = ObjectIdFactory.fromTrustedHex(
-    decodeLineValue(bytes, lines[0]!, TREE_PREFIX.length),
-  );
+  const tree = ObjectIdFactory.from(decodeLineValue(bytes, lines[0]!, TREE_PREFIX.length));
 
   const parents: ObjectId[] = [];
   let i = 1;
   while (i < lines.length && lineStartsWithAscii(bytes, lines[i]!, PARENT_PREFIX)) {
-    parents.push(
-      ObjectIdFactory.fromTrustedHex(decodeLineValue(bytes, lines[i]!, PARENT_PREFIX.length)),
-    );
+    parents.push(ObjectIdFactory.from(decodeLineValue(bytes, lines[i]!, PARENT_PREFIX.length)));
     i++;
   }
 
@@ -173,7 +168,7 @@ function parseOptionalHeaders(
 } {
   const remainingLines = lines
     .slice(startIndex)
-    .map(([start, end]) => decode(bytes.subarray(start, end)));
+    .map(([start, end]) => decodePreservingBom(bytes.subarray(start, end)));
   return parseOptionalHeaderBlock(
     remainingLines,
     0,

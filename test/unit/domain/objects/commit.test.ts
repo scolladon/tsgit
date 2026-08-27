@@ -465,6 +465,191 @@ describe('commit', () => {
         });
       });
     });
+
+    // Each row exercises a different sub-slice decode inside the parser (the
+    // message tail, an identity value, an extra-header line) — a fresh
+    // per-slice TextDecoder strips a BOM sitting at THAT slice's start even
+    // though the whole content, decoded once, would not have stripped it.
+    describe('Given a commit whose bytes carry a leading byte-order mark (U+FEFF) on a sub-slice', () => {
+      describe('When parsing', () => {
+        it('Then the BOM is preserved in the message, byte-for-byte', () => {
+          // Arrange
+          const content = commitText([
+            `tree ${'b'.repeat(40)}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '',
+            '\uFEFFBOM message line1',
+          ]);
+
+          // Act
+          const result = parseCommitContent(DUMMY_ID, content);
+
+          // Assert
+          expect(result.data.message).toBe('\uFEFFBOM message line1');
+        });
+
+        it('Then the BOM is preserved in a parsed author identity value', () => {
+          // Arrange
+          const content = commitText([
+            `tree ${'b'.repeat(40)}`,
+            'author \uFEFFAlice <alice@test.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          const result = parseCommitContent(DUMMY_ID, content);
+
+          // Assert
+          expect(result.data.author.name).toBe('\uFEFFAlice');
+        });
+
+        it('Then a BOM-prefixed extra-header key is NOT misclassified as gpgsig', () => {
+          // Arrange — bytes are BOM + "gpgsig", distinct from the literal
+          // 'gpgsig' key git special-cases; stripping the BOM would collapse
+          // the two and swallow the header as a (bogus) signature.
+          const content = commitText([
+            `tree ${'b'.repeat(40)}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '\uFEFFgpgsig not-a-real-signature',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          const result = parseCommitContent(DUMMY_ID, content);
+
+          // Assert
+          expect(result.data.gpgSignature).toBeUndefined();
+          expect(result.data.extraHeaders).toEqual([
+            { key: '\uFEFFgpgsig', value: 'not-a-real-signature' },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a commit with a non-hex tree pointer', () => {
+      describe('When parsing', () => {
+        it('Then throws INVALID_OBJECT_ID for the malformed tree hex', () => {
+          // Arrange
+          const badHex = 'z'.repeat(40);
+          const content = commitText([
+            `tree ${badHex}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          let result: unknown;
+          try {
+            parseCommitContent(DUMMY_ID, content);
+          } catch (e) {
+            result = e;
+          }
+
+          // Assert
+          expect(result).toBeInstanceOf(TsgitError);
+          expect((result as TsgitError).data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: badHex,
+          });
+        });
+      });
+    });
+
+    describe('Given a commit with a non-hex parent pointer', () => {
+      describe('When parsing', () => {
+        it('Then throws INVALID_OBJECT_ID for the malformed parent hex', () => {
+          // Arrange
+          const badHex = 'z'.repeat(40);
+          const content = commitText([
+            `tree ${'b'.repeat(40)}`,
+            `parent ${badHex}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          let result: unknown;
+          try {
+            parseCommitContent(DUMMY_ID, content);
+          } catch (e) {
+            result = e;
+          }
+
+          // Assert
+          expect(result).toBeInstanceOf(TsgitError);
+          expect((result as TsgitError).data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: badHex,
+          });
+        });
+      });
+    });
+
+    describe('Given a parsed commit', () => {
+      describe('When parsing', () => {
+        it('Then parents is frozen', () => {
+          // Arrange
+          const content = commitText([
+            `tree ${'b'.repeat(40)}`,
+            `parent ${'c'.repeat(40)}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          const result = parseCommitContent(DUMMY_ID, content);
+
+          // Assert
+          expect(Object.isFrozen(result.data.parents)).toBe(true);
+        });
+
+        it('Then extraHeaders is frozen', () => {
+          // Arrange
+          const content = commitText([
+            `tree ${'b'.repeat(40)}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            'custom-header value',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          const result = parseCommitContent(DUMMY_ID, content);
+
+          // Assert
+          expect(Object.isFrozen(result.data.extraHeaders)).toBe(true);
+        });
+
+        it('Then the returned data object is frozen', () => {
+          // Arrange
+          const content = commitText([
+            `tree ${'b'.repeat(40)}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          const result = parseCommitContent(DUMMY_ID, content);
+
+          // Assert
+          expect(Object.isFrozen(result.data)).toBe(true);
+        });
+      });
+    });
   });
 
   describe('serializeCommitContent', () => {

@@ -369,6 +369,94 @@ describe('tag', () => {
         });
       });
     });
+
+    describe('Given a tag message starting with a byte-order mark (U+FEFF)', () => {
+      describe('When parsing', () => {
+        it('Then the BOM is preserved in the message, byte-for-byte', () => {
+          // Arrange — the whole tag payload is decoded once, so an embedded
+          // BOM (not at byte offset 0 of the object) is never stream-start
+          // material; this pins that the shared BOM-preserving decoder keeps
+          // it that way.
+          const content = tagText([
+            `object ${'b'.repeat(40)}`,
+            'type commit',
+            'tag v1.0',
+            '',
+            '\uFEFFBOM message',
+          ]);
+
+          // Act
+          const result = parseTagContent(DUMMY_ID, content);
+
+          // Assert
+          expect(result.data.message).toBe('\uFEFFBOM message');
+        });
+      });
+    });
+
+    describe('Given a tag with a non-hex object pointer', () => {
+      describe('When parsing', () => {
+        it('Then throws INVALID_OBJECT_ID for the malformed object hex', () => {
+          // Arrange
+          const badHex = 'z'.repeat(40);
+          const content = tagText([`object ${badHex}`, 'type commit', 'tag v1.0', '', 'msg']);
+
+          // Act
+          let result: unknown;
+          try {
+            parseTagContent(DUMMY_ID, content);
+          } catch (e) {
+            result = e;
+          }
+
+          // Assert
+          expect(result).toBeInstanceOf(TsgitError);
+          expect((result as TsgitError).data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: badHex,
+          });
+        });
+      });
+    });
+
+    describe('Given a parsed tag', () => {
+      describe('When parsing', () => {
+        it('Then extraHeaders is frozen', () => {
+          // Arrange
+          const content = tagText([
+            `object ${'b'.repeat(40)}`,
+            'type commit',
+            'tag v1.0',
+            'custom-key value',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          const result = parseTagContent(DUMMY_ID, content);
+
+          // Assert
+          expect(Object.isFrozen(result.data.extraHeaders)).toBe(true);
+        });
+
+        it('Then the returned data object is frozen', () => {
+          // Arrange
+          const content = tagText([
+            `object ${'b'.repeat(40)}`,
+            'type commit',
+            'tag v1.0',
+            '',
+            'msg',
+          ]);
+
+          // Act
+          const result = parseTagContent(DUMMY_ID, content);
+
+          // Assert
+          expect(Object.isFrozen(result.data)).toBe(true);
+        });
+      });
+    });
   });
 
   describe('serializeTagContent', () => {
