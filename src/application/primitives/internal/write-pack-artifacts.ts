@@ -217,7 +217,8 @@ const writeSiblingsGiven = async (
 export const writePackSiblingArtifacts = async (
   ctx: Context,
   input: WritePackSiblingArtifactsInput,
-): Promise<WrittenPackArtifacts> => writeSiblingsGiven(ctx, input, await writeReverseIndex(ctx));
+): Promise<WrittenPackArtifacts> =>
+  await writeSiblingsGiven(ctx, input, await writeReverseIndex(ctx));
 
 /**
  * Writes a pack's `.pack` bytes followed by its sibling artefacts, in git's
@@ -237,7 +238,7 @@ export const writePackArtifacts = async (
   const wantRev = await writeReverseIndex(ctx);
   const packPath = packFilePath(input.packDir, input.packSha);
   await ctx.fs.writeExclusive(packPath, input.packBytes);
-  return writeSiblingsGiven(ctx, input, wantRev);
+  return await writeSiblingsGiven(ctx, input, wantRev);
 };
 
 // git's own quarantine prefix pair (Pin B, Pin X): `tmp_pack_<6>` and
@@ -309,10 +310,25 @@ export const writePackArtifactsViaQuarantine = async (
 
   const tmpPackPath = `${input.packDir}/${TMP_PACK_PREFIX}${randomTmpSuffix()}`;
   const tmpIdxPath = `${input.packDir}/${TMP_IDX_PREFIX}${randomTmpSuffix()}`;
-  await ctx.fs.writeExclusive(tmpPackPath, input.packBytes);
-  await ctx.fs.writeExclusive(tmpIdxPath, idxBytes);
-  await renameIntoPlace(ctx, tmpPackPath, paths.packPath);
-  await renameIntoPlace(ctx, tmpIdxPath, paths.idxPath);
+  // A fault anywhere between the first quarantine write and the second
+  // rename must not leave a `tmp_pack_*`/`tmp_idx_*` file behind: an
+  // unlinked pack with no `.idx` is permanent debris (never discovered,
+  // never cleaned up by any later gc, since pack discovery keys on `.idx`).
+  // `renamed` tracks each temp file's true state — a path already renamed
+  // away is untouched by the cleanup, everything else still at its tmp
+  // location is removed.
+  const renamed = { pack: false, idx: false };
+  try {
+    await ctx.fs.writeExclusive(tmpPackPath, input.packBytes);
+    await ctx.fs.writeExclusive(tmpIdxPath, idxBytes);
+    await renameIntoPlace(ctx, tmpPackPath, paths.packPath);
+    renamed.pack = true;
+    await renameIntoPlace(ctx, tmpIdxPath, paths.idxPath);
+    renamed.idx = true;
+  } finally {
+    if (!renamed.pack) await rmTolerant(ctx, tmpPackPath);
+    if (!renamed.idx) await rmTolerant(ctx, tmpIdxPath);
+  }
 
   if (input.promisor) {
     // A same-sha rewrite (Pin W's no-op boundary, promisor class included)

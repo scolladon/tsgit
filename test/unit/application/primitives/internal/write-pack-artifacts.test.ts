@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   packPositionMap,
@@ -378,6 +378,94 @@ describe('writePackArtifactsViaQuarantine', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.promisor`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the tmp .idx write fails after the tmp .pack already landed', () => {
+    describe('When writePackArtifactsViaQuarantine runs', () => {
+      it('Then no tmp_pack_*/tmp_idx_* debris is left behind', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        const spy = vi
+          .spyOn(ctx.fs, 'writeExclusive')
+          .mockImplementation(async (path: string, data: Uint8Array) => {
+            if (path.includes('tmp_idx_')) throw new Error('injected-fault');
+            return originalWriteExclusive(path, data);
+          });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, {
+            packDir: dir,
+            packBytes: PACK_BYTES,
+            entries,
+            packSha: PACK_SHA,
+            promisor: false,
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        spy.mockRestore();
+
+        // Assert
+        expect(caught).toBeDefined();
+        const remaining = (await ctx.fs.exists(dir))
+          ? (await ctx.fs.readdir(dir)).map((e) => e.name)
+          : [];
+        expect(remaining.some((name) => name.startsWith('tmp_pack_'))).toBe(false);
+        expect(remaining.some((name) => name.startsWith('tmp_idx_'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the .idx rename fails after the .pack was already renamed into place', () => {
+    describe('When writePackArtifactsViaQuarantine runs', () => {
+      it('Then the tmp .idx is cleaned up rather than left as debris', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+        const originalRename = (ctx.fs.atomicRename ?? ctx.fs.rename).bind(ctx.fs);
+        let renameCalls = 0;
+        const renameKey = ctx.fs.atomicRename !== undefined ? 'atomicRename' : 'rename';
+        const spy = vi
+          .spyOn(ctx.fs, renameKey)
+          .mockImplementation(async (from: string, to: string) => {
+            renameCalls += 1;
+            if (renameCalls === 2) throw new Error('injected-fault');
+            return originalRename(from, to);
+          });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, {
+            packDir: dir,
+            packBytes: PACK_BYTES,
+            entries,
+            packSha: PACK_SHA,
+            promisor: false,
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        spy.mockRestore();
+
+        // Assert — the .pack landed at its final name (its own rename
+        // already succeeded); only the tmp .idx debris is gone.
+        expect(caught).toBeDefined();
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.pack`)).toBe(true);
+        const remaining = (await ctx.fs.readdir(dir)).map((e) => e.name);
+        expect(remaining.some((name) => name.startsWith('tmp_idx_'))).toBe(false);
       });
     });
   });
