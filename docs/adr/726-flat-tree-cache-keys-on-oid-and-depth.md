@@ -34,3 +34,10 @@ is documented, not worked around.
 Repeat `status` on an unchanged HEAD becomes a map hit; other flatten consumers may opt
 in later. Cache correctness across a `core.maxTreeDepth` change is structural (the key),
 not an invalidation protocol.
+
+## Amendment (2026-08-27)
+
+This cache's own 1/16 fraction of `deltaCacheMaxBytes` was, and remains, accurate — but it is
+one of four caches layered on `ctx.deltaCache`'s budget, not the whole picture. See ADR-736 for
+the delta-base cache's own (additive, not fractional) sizing decision and the combined default
+total across all four (~34 MiB, not the ~16 MiB `deltaCacheMaxBytes` alone would suggest).

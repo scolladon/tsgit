@@ -34,3 +34,15 @@ so sharing parsed objects is safe.
 Repeat walks parse each commit once per session. The memo interacts with the loose-read
 byte cache (demand shifts); its size fraction is A/B-measured, and option 3 remains the
 recorded fallback if the interaction cannot be sized cleanly.
+
+## Amendment (2026-08-27)
+
+This memo's own 1/16 fraction of `deltaCacheMaxBytes` was, and remains, accurate — but it is
+one of four caches layered on `ctx.deltaCache`'s budget, not the whole picture. See ADR-736 for
+the delta-base cache's own (additive, not fractional) sizing decision and the combined default
+total across all four (~34 MiB, not the ~16 MiB `deltaCacheMaxBytes` alone would suggest). This
+revision also adds `parsedObjectByteSize`'s `PARSED_OBJECT_FIXED_OVERHEAD_BYTES` term (the
+wrapper/oid/identity fields this ADR's Decision originally called out as "deliberately excluded")
+and an entry cap (`PARSED_OBJECT_MEMO_MAX_ENTRIES = 65 536`) alongside the byte cap — the sizer
+without them undercounted a typical entry by roughly an order of magnitude, which a byte cap
+alone does not defend against.

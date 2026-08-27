@@ -621,11 +621,26 @@ function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
   return createPromiseMemo(loadStoreGate);
 }
 
+/**
+ * Entry-count ceiling for the delta-base cache, mirroring the parsed-object
+ * memo and the commit-graph header cache's own caps — a byte cap alone
+ * under-defends a repo of many small, cheap-to-cache intermediates.
+ */
+const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
+
 export function createPackRegistry(ctx: Context): PackRegistry {
   const storeGate = createStoreGate(ctx);
-  // Shares the ordinary delta cache's own byte budget rather than a second,
-  // independently-configured cap — one `deltaCacheMaxBytes` governs both.
-  const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(ctx.deltaCache.maxSize);
+  // A SEPARATE, ADDITIONAL byte budget the same size as the ordinary delta
+  // cache's own — not a share carved out of it. The two caches hold
+  // different things (raw loose-format bytes vs. header-split reconstructed
+  // delta bases) and compete only for process memory, not a shared
+  // accounting ledger; sizing this one AT `ctx.deltaCache.maxSize` rather
+  // than a fraction of it is a deliberate choice, not an oversight — see the
+  // delta-base cache sizing decision.
+  const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(
+    ctx.deltaCache.maxSize,
+    DELTA_BASE_CACHE_MAX_ENTRIES,
+  );
 
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));

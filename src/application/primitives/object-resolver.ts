@@ -740,11 +740,18 @@ function probeDeltaBaseCache(
   return cached;
 }
 
-/** Floors at 1: `LruCache.set` requires a positive `byteSize`, and a
- *  genuinely empty reconstructed intermediate (an empty blob mid-chain) is
- *  still worth caching. */
+/**
+ * Fixed per-entry overhead the raw content length alone doesn't account for:
+ * the `${packName}:${offset}` key string, the LRU's own node object, and the
+ * `{ type, content, chainDepth }` wrapper. Its presence alone keeps the
+ * result positive — `LruCache.set` requires a positive `byteSize`, and a
+ * genuinely empty reconstructed intermediate (an empty blob mid-chain) is
+ * still worth caching — so no separate floor is needed on top of it.
+ */
+const DELTA_BASE_CACHE_ENTRY_OVERHEAD_BYTES = 200;
+
 function deltaBaseCacheEntrySize(content: Uint8Array): number {
-  return Math.max(1, content.length);
+  return content.length + DELTA_BASE_CACHE_ENTRY_OVERHEAD_BYTES;
 }
 
 /**

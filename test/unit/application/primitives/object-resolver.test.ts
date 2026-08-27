@@ -1472,10 +1472,16 @@ describe('object-resolver', () => {
     describe('Given an intermediate larger than the byte cap', () => {
       describe('When resolveObject is called', () => {
         it('Then it is not cached and the read still succeeds', async () => {
-          // Arrange — a tiny deltaCacheMaxBytes so the mid-chain intermediate
-          // (far over the cap) is silently dropped by LruCache.set rather
-          // than thrown from, and the read still completes correctly.
-          const ctx = createMemoryContext({ deltaCacheMaxBytes: 4 });
+          // Arrange — a deltaCacheMaxBytes sized so the 1-byte base fits under
+          // the cap once the fixed per-entry overhead is added (1 + 200 = 201
+          // <= 205), while BOTH the 64-byte mid intermediate (64 + 200 = 264)
+          // AND the tip's own reconstructed entry (11 + 200 = 211, also
+          // cached under its own offset once fully resolved) exceed it — a
+          // cap that fit the tip too would evict the base via normal LRU
+          // eviction, defeating the point of this fixture. Every oversized
+          // entry is silently dropped by LruCache.set rather than thrown
+          // from, and the read still completes correctly.
+          const ctx = createMemoryContext({ deltaCacheMaxBytes: 205 });
           const baseContent = ENC.encode('a');
           const midContent = new Uint8Array(64).fill(0x42);
           const tipContent = ENC.encode('tip content');
@@ -1512,11 +1518,11 @@ describe('object-resolver', () => {
 
     describe('Given a zero-length intermediate', () => {
       describe('When resolveObject is called', () => {
-        it('Then the sizer floors at 1 and set does not throw', async () => {
+        it('Then the fixed per-entry overhead keeps the size positive and set does not throw', async () => {
           // Arrange — mid reconstructs to an EMPTY blob. LruCache.set throws
           // on byteSize <= 0; a naive `content.length` sizer would pass 0
           // straight through and crash the read instead of merely caching it
-          // at the floor.
+          // under the fixed overhead alone.
           const ctx = await buildSeededContext();
           const baseContent = ENC.encode('non-empty base');
           const emptyMid = new Uint8Array(0);
@@ -1536,7 +1542,7 @@ describe('object-resolver', () => {
           // Act
           const result = await resolveObject(ctx, registry, tipId, true);
 
-          // Assert — the read succeeds AND the floored entry is retained,
+          // Assert — the read succeeds AND the entry is genuinely retained,
           // not merely "didn't crash".
           expect((result as Blob).content).toEqual(tipContent);
           const cached = registry.deltaBaseCache.get(deltaBaseCacheKey('pack-zero-mid', midOffset));

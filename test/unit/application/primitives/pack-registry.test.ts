@@ -46,6 +46,14 @@ import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
 import { restampPackHeader, writeSyntheticPack, writeSyntheticRevIndex } from './pack-fixture.js';
 
+vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/domain/storage/index.js')>();
+  return { ...actual, createLruCache: vi.fn(actual.createLruCache) };
+});
+
+const storage = await import('../../../../src/domain/storage/index.js');
+const createLruCacheSpy = vi.mocked(storage.createLruCache);
+
 const dirEntry = (name: string): DirEntry => ({
   name,
   isFile: true,
@@ -2586,6 +2594,27 @@ describe('Given a registry whose delta-base cache holds an entry from an OFS cha
 
       // Assert
       expect(registry.deltaBaseCache.entryCount).toBe(0);
+    });
+  });
+});
+
+describe('Given the delta-base cache is created for a fresh registry', () => {
+  describe('When createLruCache is called to build it', () => {
+    it('Then it is given an entry cap, not just a byte cap', async () => {
+      // Arrange — a byte cap alone admits unboundedly many small entries;
+      // the entry cap is a second, independent defence.
+      const ctx = await buildSeededContext();
+      createLruCacheSpy.mockClear();
+
+      // Act
+      createPackRegistry(ctx);
+
+      // Assert
+      const deltaBaseCall = createLruCacheSpy.mock.calls.find(
+        (call) => call[0] === ctx.deltaCache.maxSize,
+      );
+      expect(deltaBaseCall?.[1]).toBeDefined();
+      expect(deltaBaseCall?.[1]).toBeGreaterThan(0);
     });
   });
 });
