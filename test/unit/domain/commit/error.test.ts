@@ -1,15 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  commitGraphDateTooLarge,
-  commitGraphGenerationOverflow,
   invalidCommitGraphChunk,
   invalidCommitGraphHeader,
 } from '../../../../src/domain/commit/error.js';
 import type { TsgitErrorData } from '../../../../src/domain/error.js';
-import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { assertExhaustiveSwitch } from '../exhaustiveness.js';
-
-const OID = 'a'.repeat(40) as ObjectId;
 
 describe('commit-graph error', () => {
   describe('factory functions', () => {
@@ -35,40 +30,6 @@ describe('commit-graph error', () => {
           expect(result.data).toEqual({
             code: 'INVALID_COMMIT_GRAPH_CHUNK',
             reason: 'truncated OIDL',
-          });
-        });
-      });
-    });
-
-    describe('Given commitGraphDateTooLarge(OID, 2 ** 34, 2 ** 34)', () => {
-      describe('When checking error.data', () => {
-        it("Then equals { code: 'COMMIT_GRAPH_DATE_TOO_LARGE', id: OID, committerDate: 2 ** 34, limit: 2 ** 34 }", () => {
-          // Arrange & Act
-          const result = commitGraphDateTooLarge(OID, 2 ** 34, 2 ** 34);
-
-          // Assert
-          expect(result.data).toEqual({
-            code: 'COMMIT_GRAPH_DATE_TOO_LARGE',
-            id: OID,
-            committerDate: 2 ** 34,
-            limit: 2 ** 34,
-          });
-        });
-      });
-    });
-
-    describe('Given commitGraphGenerationOverflow(OID, 0x80000000, 0x7fffffff)', () => {
-      describe('When checking error.data', () => {
-        it("Then equals { code: 'COMMIT_GRAPH_GENERATION_OVERFLOW', id: OID, offset: 0x80000000, limit: 0x7fffffff }", () => {
-          // Arrange & Act
-          const result = commitGraphGenerationOverflow(OID, 0x80000000, 0x7fffffff);
-
-          // Assert
-          expect(result.data).toEqual({
-            code: 'COMMIT_GRAPH_GENERATION_OVERFLOW',
-            id: OID,
-            offset: 0x80000000,
-            limit: 0x7fffffff,
           });
         });
       });

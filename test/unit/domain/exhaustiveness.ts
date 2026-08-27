@@ -33,8 +33,6 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_INDEX_ENTRY':
     case 'INVALID_COMMIT_GRAPH_HEADER':
     case 'INVALID_COMMIT_GRAPH_CHUNK':
-    case 'COMMIT_GRAPH_DATE_TOO_LARGE':
-    case 'COMMIT_GRAPH_GENERATION_OVERFLOW':
     case 'FILE_NOT_FOUND':
     case 'FILE_EXISTS':
     case 'NOT_A_DIRECTORY':

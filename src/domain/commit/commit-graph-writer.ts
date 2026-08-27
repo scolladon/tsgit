@@ -1,9 +1,11 @@
 /**
  * Commit-graph writer. `serializeCommitGraph` emits the exact chunk set
  * `git commit-graph write --reachable` writes at default settings (Pin C,
- * Pin K): `OIDF`, `OIDL`, `CDAT`, `GDA2`, and `EDGE` when any commit has more
- * than two parents. No `BASE` chunk (single-file form only) and no Bloom
- * chunks (those appear only under `--changed-paths`).
+ * Pin K): `OIDF`, `OIDL`, `CDAT`, `GDA2`, `GDO2` when any corrected-date
+ * offset overflows GDA2's plain 31-bit field, and `EDGE` when any commit has
+ * more than two parents — in that order (git's own chunk table order,
+ * confirmed against real git). No `BASE` chunk (single-file form only) and
+ * no Bloom chunks (those appear only under `--changed-paths`).
  *
  * The trailer's `hashLength` bytes are left zero — this function does not
  * hash; the caller fills them in place over the returned buffer, the same
@@ -17,8 +19,12 @@
 import { compareBytes, encode, hexToBytes } from '../objects/encoding.js';
 import type { HashConfig } from '../objects/hash-config.js';
 import type { ObjectId } from '../objects/object-id.js';
-import { EDGE_LAST_FLAG, NO_PARENT, OCTOPUS_FLAG } from './commit-graph.js';
-import { commitGraphDateTooLarge, commitGraphGenerationOverflow } from './error.js';
+import {
+  EDGE_LAST_FLAG,
+  GENERATION_OVERFLOW_FLAG,
+  NO_PARENT,
+  OCTOPUS_FLAG,
+} from './commit-graph.js';
 
 const MAGIC = 'CGPH';
 const VERSION = 1;
@@ -27,10 +33,15 @@ const CHUNK_TABLE_ROW_SIZE = 12;
 const FANOUT_ENTRIES = 256;
 const FANOUT_SIZE = FANOUT_ENTRIES * 4;
 const CDAT_FIXED_SIZE = 16;
+const GDO2_ENTRY_SIZE = 8;
 
-/** 34-bit ceiling `committerDate` fits in CDAT's `genWord`/`dateWord` split. */
-export const MAX_COMMITTER_DATE = 2 ** 34;
-/** GDA2 stores the corrected-date offset as a plain (non-flagged) u32. */
+/**
+ * GDA2 stores the corrected-date offset as a plain (non-flagged) u32; past
+ * this threshold git sets `GENERATION_OVERFLOW_FLAG` and appends the true
+ * 64-bit offset to `GDO2` instead. There is no refusal here, because git
+ * itself has none: it computes the same offset arithmetic unconditionally
+ * and only the GDA2/GDO2 split changes shape.
+ */
 export const MAX_GENERATION_OFFSET = 0x7fffffff;
 
 /** A commit's writer-facing shape — the fields `CDAT`/`GDA2` encode.
@@ -68,21 +79,32 @@ interface EdgePlan {
   readonly startByCommit: ReadonlyMap<ObjectId, number>;
 }
 
+/** Every commit whose corrected-date offset overflows GDA2's 31-bit field,
+ *  in the order GDA2 encounters them — the same append-in-position-order
+ *  shape `EdgePlan` uses for EDGE. */
+interface OverflowPlan {
+  readonly entries: readonly number[];
+  readonly indexByCommit: ReadonlyMap<ObjectId, number>;
+}
+
 export function serializeCommitGraph(
   commits: readonly CommitGraphWriterCommit[],
   hashConfig: HashConfig,
 ): Uint8Array {
-  assertEncodableDates(commits);
-
   const hashVersion: 1 | 2 = hashConfig.digestLength === 32 ? 2 : 1;
   const hashLength = hashLengthFor(hashVersion);
   const sortedCommits = sortByOid(commits);
   const positionOf = new Map(sortedCommits.map((commit, i) => [commit.id, i]));
   const generations = computeGenerations(sortedCommits);
-  assertEncodableGenerations(sortedCommits, generations);
+  const overflowPlan = planOverflowGenerations(sortedCommits, generations);
 
   const edgePlan = planEdges(sortedCommits, positionOf);
-  const chunkSpecs = planChunks(sortedCommits.length, hashLength, edgePlan.entries.length);
+  const chunkSpecs = planChunks(
+    sortedCommits.length,
+    hashLength,
+    overflowPlan.entries.length,
+    edgePlan.entries.length,
+  );
   const offsets = computeChunkOffsets(chunkSpecs);
   const trailerStart = offsets[offsets.length - 1]!;
 
@@ -111,30 +133,31 @@ export function serializeCommitGraph(
     hashLength,
     edgePlan,
   );
-  writeGenerationData(view, sortedCommits, generations, chunkOffset('GDA2'));
+  writeGenerationData(view, sortedCommits, generations, overflowPlan, chunkOffset('GDA2'));
+  if (overflowPlan.entries.length > 0) {
+    writeOverflowGenerationChunk(view, overflowPlan.entries, chunkOffset('GDO2'));
+  }
   if (edgePlan.entries.length > 0) writeEdgeChunk(view, edgePlan.entries, chunkOffset('EDGE'));
 
   return bytes;
 }
 
-function assertEncodableDates(commits: readonly CommitGraphWriterCommit[]): void {
-  for (const commit of commits) {
-    if (commit.committerDate >= MAX_COMMITTER_DATE) {
-      throw commitGraphDateTooLarge(commit.id, commit.committerDate, MAX_COMMITTER_DATE);
-    }
-  }
-}
-
-function assertEncodableGenerations(
-  commits: readonly CommitGraphWriterCommit[],
+/** GDA2's overflow flag carries an index into GDO2 — assigned in sorted
+ *  (position) order, the same order `writeGenerationData` visits commits. */
+function planOverflowGenerations(
+  sortedCommits: readonly CommitGraphWriterCommit[],
   generations: ReadonlyMap<ObjectId, Generation>,
-): void {
-  for (const commit of commits) {
+): OverflowPlan {
+  const entries: number[] = [];
+  const indexByCommit = new Map<ObjectId, number>();
+  for (const commit of sortedCommits) {
     const offset = generations.get(commit.id)!.correctedDate - commit.committerDate;
     if (offset > MAX_GENERATION_OFFSET) {
-      throw commitGraphGenerationOverflow(commit.id, offset, MAX_GENERATION_OFFSET);
+      indexByCommit.set(commit.id, entries.length);
+      entries.push(offset);
     }
   }
+  return { entries, indexByCommit };
 }
 
 function sortByOid(
@@ -194,7 +217,9 @@ function computeFrom(
  * write interop suite). `GDA2`'s corrected date is
  * `max(committerDate, 1 + max(parents' correctedDate))`; both fall out of
  * the same fold over an empty-parents commit without a branch, because a
- * root's `1 + max(∅)` degenerates to the seed value in each case.
+ * root's `1 + max(∅)` degenerates to the seed value in each case. Neither
+ * is capped — an offset past `MAX_GENERATION_OFFSET` routes through GDO2
+ * instead of being refused.
  */
 function deriveGeneration(
   commit: CommitGraphWriterCommit,
@@ -231,7 +256,12 @@ function planEdges(
   return { entries, startByCommit };
 }
 
-function planChunks(commitCount: number, hashLength: number, edgeEntryCount: number): ChunkSpec[] {
+function planChunks(
+  commitCount: number,
+  hashLength: number,
+  overflowEntryCount: number,
+  edgeEntryCount: number,
+): ChunkSpec[] {
   const cdatEntrySize = hashLength + CDAT_FIXED_SIZE;
   const specs: ChunkSpec[] = [
     { id: 'OIDF', size: FANOUT_SIZE },
@@ -239,6 +269,8 @@ function planChunks(commitCount: number, hashLength: number, edgeEntryCount: num
     { id: 'CDAT', size: commitCount * cdatEntrySize },
     { id: 'GDA2', size: commitCount * 4 },
   ];
+  if (overflowEntryCount > 0)
+    specs.push({ id: 'GDO2', size: overflowEntryCount * GDO2_ENTRY_SIZE });
   if (edgeEntryCount > 0) specs.push({ id: 'EDGE', size: edgeEntryCount * 4 });
   return specs;
 }
@@ -324,6 +356,11 @@ function writeCommitData(
     view.setUint32(entryStart + hashLength + 4, parent2);
 
     const { level } = generations.get(commit.id)!;
+    // git never refuses a committer date past the 34-bit CDAT ceiling — it
+    // computes this exact split unconditionally and the top bits silently
+    // wrap; matching that wrap is what byte-identical means here (measured:
+    // `git commit-graph write` on such a date exits 0, and only
+    // `git commit-graph verify` later flags the mismatch).
     const dateHigh = Math.floor(commit.committerDate / 0x100000000) & 0x3;
     const dateLow = commit.committerDate % 0x100000000;
     view.setUint32(entryStart + hashLength + 8, level * 4 + dateHigh);
@@ -335,11 +372,26 @@ function writeGenerationData(
   view: DataView,
   sortedCommits: readonly CommitGraphWriterCommit[],
   generations: ReadonlyMap<ObjectId, Generation>,
+  overflowPlan: OverflowPlan,
   gda2Offset: number,
 ): void {
   sortedCommits.forEach((commit, i) => {
-    const { correctedDate } = generations.get(commit.id)!;
-    view.setUint32(gda2Offset + i * 4, correctedDate - commit.committerDate);
+    const overflowIndex = overflowPlan.indexByCommit.get(commit.id);
+    const value =
+      overflowIndex === undefined
+        ? generations.get(commit.id)!.correctedDate - commit.committerDate
+        : GENERATION_OVERFLOW_FLAG | overflowIndex;
+    view.setUint32(gda2Offset + i * 4, value);
+  });
+}
+
+function writeOverflowGenerationChunk(
+  view: DataView,
+  entries: readonly number[],
+  gdo2Offset: number,
+): void {
+  entries.forEach((value, i) => {
+    setUint64BE(view, gdo2Offset + i * GDO2_ENTRY_SIZE, value);
   });
 }
 

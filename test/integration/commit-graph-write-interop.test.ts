@@ -1,21 +1,22 @@
 /**
  * Cross-tool interop — the commit-graph writer. Each scenario builds ONE
  * repository with real git (a linear history, a merge, an octopus merge, a
- * `--object-format=sha256` repo, and a repo with a reflog-only commit), then
- * copies it into two independent twins: `git commit-graph write --reachable`
- * runs on one, `writeCommitGraph` (tsgit's primitive) runs on the other. The
- * resulting `objects/info/commit-graph` bytes are compared byte-for-byte —
- * "tsgit on one, real git on its clone" is the shape every row uses.
+ * `--object-format=sha256` repo, a repo with a reflog-only commit, and a
+ * corrected-date overflow chain), then copies it into two independent
+ * twins: `git commit-graph write --reachable` runs on one, `writeCommitGraph`
+ * (tsgit's primitive) runs on the other. The resulting
+ * `objects/info/commit-graph` bytes are compared byte-for-byte — "tsgit on
+ * one, real git on its clone" is the shape every row uses.
  *
  * GDO2 pin (implementer-owed empirical probe, run in a `mktemp -d`
  * throwaway, never in this suite): a two-commit chain with
  * `GIT_COMMITTER_DATE=@4000000000` on the parent and `@1000000000` on the
  * child pushes the corrected-date offset past `0x7fffffff`. Real git 2.55.0
- * DOES emit a `GDO2` chunk there (`numChunks` 5: OIDF OIDL CDAT GDA2 GDO2) —
- * tsgit's reader does not parse it. tsgit's writer therefore REFUSES that
- * input (`COMMIT_GRAPH_GENERATION_OVERFLOW`) rather than emit a chunk it
- * cannot read back — no byte-identity row is claimed for that case; the
- * refusal itself is pinned by the domain unit test.
+ * DOES emit a `GDO2` chunk there (`numChunks` 5: OIDF OIDL CDAT GDA2 GDO2,
+ * with EDGE — when also present — sorted after GDO2). tsgit's reader now
+ * parses GDO2 and the writer emits it byte-identically; the overflow-date
+ * scenario below is the byte-identity pin for that chunk, on both hash
+ * widths.
  *
  * @proves
  *   surface:        commitGraph
@@ -37,6 +38,7 @@ import {
   GIT_AVAILABLE,
   git,
   runGit,
+  runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
@@ -59,6 +61,25 @@ async function addCommit(dir: string, name: string): Promise<string> {
   await writeFile(path.join(dir, `${name}.txt`), `${name}\n`);
   git(dir, 'add', '-A');
   git(dir, 'commit', '-q', '-m', name);
+  return git(dir, 'rev-parse', 'HEAD').trim();
+}
+
+/** Seconds-form `GIT_*_DATE` env, pinned per commit — the form the ISO date
+ *  parser rejects for far-future dates but this one accepts (probed). */
+const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
+  ...runGitEnv(),
+  GIT_AUTHOR_NAME: 'A U Thor',
+  GIT_AUTHOR_EMAIL: 'author@example.com',
+  GIT_AUTHOR_DATE: `@${epoch} +0000`,
+  GIT_COMMITTER_NAME: 'A U Thor',
+  GIT_COMMITTER_EMAIL: 'author@example.com',
+  GIT_COMMITTER_DATE: `@${epoch} +0000`,
+});
+
+async function addDatedCommit(dir: string, name: string, epoch: number): Promise<string> {
+  await writeFile(path.join(dir, `${name}.txt`), `${name}\n`);
+  git(dir, 'add', '-A');
+  runGit(['-C', dir, 'commit', '-q', '-m', name], { env: datedEnv(epoch) });
   return git(dir, 'rev-parse', 'HEAD').trim();
 }
 
@@ -97,6 +118,20 @@ async function buildSha256Repo(): Promise<string> {
   const dir = await initRepo('sha256', ['--object-format=sha256']);
   await addCommit(dir, 'c0');
   await addCommit(dir, 'c1');
+  return dir;
+}
+
+/** A two-commit chain whose corrected-date offset overflows GDA2's plain
+ *  31-bit field (the mktemp probe recipe): a parent dated far in the future
+ *  and a child dated far in the past force `correctedDate(child) - date(child)`
+ *  past `0x7fffffff`, which is exactly the condition git spills into GDO2. */
+async function buildOverflowRepo(
+  slug: string,
+  extraInitArgs: readonly string[] = [],
+): Promise<string> {
+  const dir = await initRepo(slug, extraInitArgs);
+  await addDatedCommit(dir, 'base', 4_000_000_000);
+  await addDatedCommit(dir, 'child', 1_000_000_000);
   return dir;
 }
 
@@ -240,6 +275,56 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
 
       // Assert
       expect(twin.oursBytes[5]).toBe(2);
+      expect(Buffer.compare(twin.peerBytes, twin.oursBytes)).toBe(0);
+      expectGitVerifiesSilently(twin.oursDir);
+      await rm(twin.peerDir, { recursive: true, force: true });
+      await rm(twin.oursDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('Given a SHA-1 chain whose corrected-date offset overflows 0x7fffffff', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await buildOverflowRepo('overflow-sha1');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then tsgit emits GDO2 byte-identical to git, and git verifies it silently', async () => {
+      // Arrange & Act
+      const twin = await writeBoth(baseDir, 'overflow-sha1');
+
+      // Assert — numChunks confirms GDO2 actually landed, not just that both
+      // sides happened to agree on a smaller file.
+      expect(twin.oursBytes[6]).toBe(5);
+      expect(Buffer.compare(twin.peerBytes, twin.oursBytes)).toBe(0);
+      expectGitVerifiesSilently(twin.oursDir);
+      await rm(twin.peerDir, { recursive: true, force: true });
+      await rm(twin.oursDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('Given a SHA-256 chain whose corrected-date offset overflows 0x7fffffff', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await buildOverflowRepo('overflow-sha256', ['--object-format=sha256']);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then tsgit emits GDO2 byte-identical to git at hash version 2, and git verifies it silently', async () => {
+      // Arrange & Act
+      const twin = await writeBoth(baseDir, 'overflow-sha256', 'sha256');
+
+      // Assert
+      expect(twin.oursBytes[5]).toBe(2);
+      expect(twin.oursBytes[6]).toBe(5);
       expect(Buffer.compare(twin.peerBytes, twin.oursBytes)).toBe(0);
       expectGitVerifiesSilently(twin.oursDir);
       await rm(twin.peerDir, { recursive: true, force: true });

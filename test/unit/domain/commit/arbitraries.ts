@@ -2,6 +2,7 @@ import fc from 'fast-check';
 
 import {
   EDGE_LAST_FLAG,
+  GENERATION_OVERFLOW_FLAG,
   NO_PARENT,
   OCTOPUS_FLAG,
 } from '../../../../src/domain/commit/commit-graph.js';
@@ -20,6 +21,7 @@ const HEADER_SIZE = 8;
 const CHUNK_TABLE_ROW_SIZE = 12;
 const FANOUT_SIZE = 1024;
 const CDAT_FIXED_SIZE = 16;
+const GDO2_ENTRY_SIZE = 8;
 
 export interface CommitGraphCommitModel {
   readonly oid: ObjectId;
@@ -28,6 +30,10 @@ export interface CommitGraphCommitModel {
   readonly generationV1: number;
   readonly committerDate: number;
   readonly generationV2Offset: number;
+  /** When set, the GDA2 slot carries `GENERATION_OVERFLOW_FLAG | <GDO2 index>`
+   *  instead of `generationV2Offset`, and this value is appended to GDO2
+   *  (in commit-array order) as the true 64-bit corrected-date offset. */
+  readonly generationOverflowOffset?: number;
 }
 
 export interface CommitGraphLayerModel {
@@ -61,6 +67,22 @@ function planEdgeChunk(commits: ReadonlyArray<CommitGraphCommitModel>): EdgePlan
   return { entries, startByCommit };
 }
 
+interface OverflowPlan {
+  readonly entries: readonly number[];
+  readonly indexByPosition: ReadonlyMap<number, number>;
+}
+
+function planOverflowChunk(commits: ReadonlyArray<CommitGraphCommitModel>): OverflowPlan {
+  const entries: number[] = [];
+  const indexByPosition = new Map<number, number>();
+  commits.forEach((commit, i) => {
+    if (commit.generationOverflowOffset === undefined) return;
+    indexByPosition.set(i, entries.length);
+    entries.push(commit.generationOverflowOffset);
+  });
+  return { entries, indexByPosition };
+}
+
 /**
  * Test-only encoder for the `commit-graph` on-disk format (Pin D). Production
  * code DOES write this format now (`serializeCommitGraph`,
@@ -76,6 +98,7 @@ export function buildCommitGraphBytes(model: CommitGraphLayerModel): Uint8Array 
   const commitCount = model.commits.length;
   const cdatEntrySize = hashLength + CDAT_FIXED_SIZE;
   const edgePlan = planEdgeChunk(model.commits);
+  const overflowPlan = planOverflowChunk(model.commits);
 
   const chunkSpecs: { readonly id: string; readonly size: number }[] = [
     { id: 'OIDF', size: FANOUT_SIZE },
@@ -87,6 +110,9 @@ export function buildCommitGraphBytes(model: CommitGraphLayerModel): Uint8Array 
   }
   if (model.includeGenerationData) {
     chunkSpecs.push({ id: 'GDA2', size: commitCount * 4 });
+  }
+  if (overflowPlan.entries.length > 0) {
+    chunkSpecs.push({ id: 'GDO2', size: overflowPlan.entries.length * GDO2_ENTRY_SIZE });
   }
   if (model.baseGraphHashes.length > 0) {
     chunkSpecs.push({ id: 'BASE', size: model.baseGraphHashes.length * hashLength });
@@ -146,7 +172,19 @@ export function buildCommitGraphBytes(model: CommitGraphLayerModel): Uint8Array 
   if (model.includeGenerationData) {
     const gda2Offset = chunkOffset('GDA2');
     model.commits.forEach((commit, i) => {
-      view.setUint32(gda2Offset + i * 4, commit.generationV2Offset);
+      const overflowIndex = overflowPlan.indexByPosition.get(i);
+      const value =
+        overflowIndex === undefined
+          ? commit.generationV2Offset
+          : GENERATION_OVERFLOW_FLAG | overflowIndex;
+      view.setUint32(gda2Offset + i * 4, value);
+    });
+  }
+
+  if (overflowPlan.entries.length > 0) {
+    const gdo2Offset = chunkOffset('GDO2');
+    overflowPlan.entries.forEach((value, i) => {
+      setUint64BE(view, gdo2Offset + i * GDO2_ENTRY_SIZE, value);
     });
   }
 
@@ -288,9 +326,11 @@ export interface CommitGraphWriterDag {
  * roots (any commit whose filtered candidate list is empty) and octopus
  * merges (three or more surviving candidates) across a run.
  *
- * `committerDate` is bounded well under both writer refusal ceilings
- * (`MAX_COMMITTER_DATE`, `MAX_GENERATION_OFFSET`) so every generated DAG
- * round-trips — the refusal paths get their own dedicated example tests.
+ * `committerDate` ranges up to 2**32 — past `MAX_GENERATION_OFFSET`
+ * (0x7fffffff), so a chain pairing a huge ancestor date with a small
+ * descendant date routinely overflows GDA2's plain field and round-trips
+ * through GDO2 instead; still comfortably under CDAT's own 34-bit ceiling,
+ * so `committerDate` itself never wraps and the round-trip stays exact.
  */
 export function arbCommitGraphWriterDag(): fc.Arbitrary<CommitGraphWriterDag> {
   return fc.constantFrom<1 | 2>(1, 2).chain((hashVersion) =>
@@ -306,7 +346,7 @@ export function arbCommitGraphWriterDag(): fc.Arbitrary<CommitGraphWriterDag> {
             minLength: commitCount,
             maxLength: commitCount,
           }),
-          committerDates: fc.array(fc.integer({ min: 0, max: 1_000_000_000 }), {
+          committerDates: fc.array(fc.integer({ min: 0, max: 2 ** 32 }), {
             minLength: commitCount,
             maxLength: commitCount,
           }),

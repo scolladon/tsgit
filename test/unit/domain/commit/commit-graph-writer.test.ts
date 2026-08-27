@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   EDGE_LAST_FLAG,
+  GENERATION_OVERFLOW_FLAG,
   NO_PARENT,
   OCTOPUS_FLAG,
 } from '../../../../src/domain/commit/commit-graph.js';
 import type { CommitGraphWriterCommit } from '../../../../src/domain/commit/commit-graph-writer.js';
 import { serializeCommitGraph } from '../../../../src/domain/commit/commit-graph-writer.js';
-import { TsgitError } from '../../../../src/domain/error.js';
 import { decode } from '../../../../src/domain/objects/encoding.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -48,23 +48,6 @@ function chunkRange(bytes: Uint8Array, view: DataView, id: string): { start: num
     return view.getUint32(rowStart + 4) * 0x100000000 + view.getUint32(rowStart + 8);
   };
   return { start: readOffset(rowIndex), end: readOffset(rowIndex + 1) };
-}
-
-function expectCommitGraphError(
-  act: () => void,
-  code: 'COMMIT_GRAPH_DATE_TOO_LARGE' | 'COMMIT_GRAPH_GENERATION_OVERFLOW',
-): TsgitError {
-  let caught: unknown;
-  try {
-    act();
-    expect.unreachable('expected serializeCommitGraph to throw');
-  } catch (error) {
-    caught = error;
-  }
-  expect(caught).toBeInstanceOf(TsgitError);
-  const error = caught as TsgitError;
-  expect(error.data.code).toBe(code);
-  return error;
 }
 
 describe('serializeCommitGraph', () => {
@@ -274,46 +257,86 @@ describe('serializeCommitGraph', () => {
     });
   });
 
-  describe('Given a commit with a committer date at the 34-bit ceiling', () => {
+  describe('Given a committer date at the 34-bit ceiling', () => {
     describe('When serialized', () => {
-      it('Then it refuses with COMMIT_GRAPH_DATE_TOO_LARGE and writes nothing', () => {
-        // Arrange
-        const bad = commit('c0', [], { committerDate: 2 ** 34 });
+      it('Then genWord wraps mod 2**34 rather than refusing, matching git’s own silent truncation', () => {
+        // Arrange — measured against real git: `git commit-graph write` on
+        // this date exits 0 and produces the identical wrapped split; only
+        // `git commit-graph verify` afterwards flags the mismatch. A root's
+        // level is 1, so genWord === 1 * 4 + dateHigh, and 2**34's dateHigh
+        // (`floor(date / 2**32) & 3`) wraps to 0, same as its dateLow.
+        const committerDate = 2 ** 34;
+        const commits = [commit('c0', [], { committerDate })];
 
-        // Act & Assert
-        const error = expectCommitGraphError(
-          () => serializeCommitGraph([bad], SHA1_CONFIG),
-          'COMMIT_GRAPH_DATE_TOO_LARGE',
-        );
-        if (error.data.code !== 'COMMIT_GRAPH_DATE_TOO_LARGE') throw new Error('unexpected shape');
-        expect(error.data.id).toBe(bad.id);
-        expect(error.data.committerDate).toBe(2 ** 34);
-        expect(error.data.limit).toBe(2 ** 34);
+        // Act
+        const bytes = serializeCommitGraph(commits, SHA1_CONFIG);
+        const view = new DataView(bytes.buffer);
+        const cdat = chunkRange(bytes, view, 'CDAT');
+
+        // Assert
+        expect(view.getUint32(cdat.start + 20 + 8)).toBe(1 * 4 + 0);
+        expect(view.getUint32(cdat.start + 20 + 12)).toBe(0);
       });
     });
   });
 
-  describe('Given a chain whose corrected-date offset would exceed 0x7fffffff', () => {
+  describe('Given a chain whose corrected-date offset exceeds 0x7fffffff', () => {
     describe('When serialized', () => {
-      it('Then it refuses with COMMIT_GRAPH_GENERATION_OVERFLOW rather than emitting GDO2', () => {
-        // Arrange — parent's own correctedDate (= its committerDate, a root) is
-        // just past 0x7fffffff; the child's correctedDate is pulled up to
+      it('Then numChunks is 5 (adds GDO2, no EDGE)', () => {
+        // Arrange — parent's own correctedDate (= its committerDate, a root)
+        // is just past 0x7fffffff; the child's correctedDate is pulled up to
         // parentCorrected + 1, while its OWN committerDate stays 0 — the gap
-        // between them is the offset GDA2 would have to carry.
+        // between them is the offset GDA2's plain field cannot carry.
         const parentDate = 0x7fffffff + 5;
         const parent = commit('c0', [], { committerDate: parentDate });
         const child = commit('c1', [parent.id], { committerDate: 0 });
 
-        // Act & Assert
-        const error = expectCommitGraphError(
-          () => serializeCommitGraph([parent, child], SHA1_CONFIG),
-          'COMMIT_GRAPH_GENERATION_OVERFLOW',
-        );
-        if (error.data.code !== 'COMMIT_GRAPH_GENERATION_OVERFLOW')
-          throw new Error('unexpected shape');
-        expect(error.data.id).toBe(child.id);
-        expect(error.data.offset).toBe(parentDate + 1);
-        expect(error.data.limit).toBe(0x7fffffff);
+        // Act
+        const bytes = serializeCommitGraph([parent, child], SHA1_CONFIG);
+
+        // Assert
+        expect(bytes[6]).toBe(5);
+      });
+
+      it("Then the overflowing commit's GDA2 entry is GENERATION_OVERFLOW_FLAG | 0 and GDO2 holds the true 64-bit offset", () => {
+        // Arrange
+        const parentDate = 0x7fffffff + 5;
+        const parent = commit('c0', [], { committerDate: parentDate });
+        const child = commit('c1', [parent.id], { committerDate: 0 });
+        const expectedOffset = parentDate + 1;
+
+        // Act
+        const bytes = serializeCommitGraph([parent, child], SHA1_CONFIG);
+        const view = new DataView(bytes.buffer);
+        const gda2 = chunkRange(bytes, view, 'GDA2');
+        const gdo2 = chunkRange(bytes, view, 'GDO2');
+
+        // Assert — sorted-oid order: c0 (parent, no overflow) = 0, c1 (child) = 1
+        expect(view.getUint32(gda2.start + 0 * 4)).toBe(0);
+        expect(view.getUint32(gda2.start + 1 * 4)).toBe((GENERATION_OVERFLOW_FLAG | 0) >>> 0);
+        expect(gdo2.end - gdo2.start).toBe(8);
+        expect(view.getUint32(gdo2.start)).toBe(Math.floor(expectedOffset / 0x100000000));
+        expect(view.getUint32(gdo2.start + 4)).toBe(expectedOffset % 0x100000000);
+      });
+    });
+  });
+
+  describe('Given an octopus merge whose ancestors also overflow the corrected-date offset', () => {
+    describe('When serialized', () => {
+      it('Then numChunks is 6 and GDO2 precedes EDGE in the chunk table', () => {
+        // Arrange
+        const root = commit('c0', [], { committerDate: 4_000_000_000 });
+        const a = commit('c1', [root.id], { committerDate: 1_000_000_000 });
+        const b = commit('c2', [root.id], { committerDate: 1_000_000_000 });
+        const c = commit('c3', [root.id], { committerDate: 1_000_000_000 });
+        const merge = commit('c4', [a.id, b.id, c.id], { committerDate: 1_000_000_000 });
+
+        // Act
+        const bytes = serializeCommitGraph([root, a, b, c, merge], SHA1_CONFIG);
+
+        // Assert
+        expect(bytes[6]).toBe(6);
+        expect(findChunkRowIndex(bytes, 'GDO2')).toBeLessThan(findChunkRowIndex(bytes, 'EDGE'));
       });
     });
   });
