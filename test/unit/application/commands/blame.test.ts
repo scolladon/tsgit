@@ -633,6 +633,46 @@ describe('Given a gitlink at the blamed path in an ancestor commit', () => {
   });
 });
 
+describe('Given a commit whose `tree` field points at a non-tree object', () => {
+  describe('When blaming a path as of that revision', () => {
+    it('Then refuses with UNEXPECTED_OBJECT_TYPE rather than degrading to a path-not-found', async () => {
+      // Arrange — the root of the descent shares the same raw byte-scan as
+      // every other level (Part 10's consolidation); it must still assert
+      // the root is actually a tree, the way `readTree`'s own peel-chain
+      // does, instead of silently returning "not found" for the whole file.
+      const ctx = await seed();
+      const blobId = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('not a tree'),
+      } as Blob);
+      clock += 60;
+      const corrupt = await createCommit(ctx, {
+        tree: blobId,
+        parents: [],
+        author: ident('corrupt', clock),
+        committer: ident('corrupt', clock),
+        message: 'commit with a corrupt tree field',
+      });
+
+      // Act / Assert
+      try {
+        await blame(ctx, 'f.txt', { rev: corrupt });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+          expect(data.expected).toBe('tree');
+          expect(data.actual).toBe('blob');
+          expect(data.id).toBe(blobId);
+        }
+      }
+    });
+  });
+});
+
 describe('Given a rename of a file inside a subdirectory', () => {
   describe('When blaming it under the new nested name', () => {
     it('Then the rename is followed across the subtree to the originating commit', async () => {

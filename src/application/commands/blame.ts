@@ -19,31 +19,19 @@ import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import { encode } from '../../domain/objects/encoding.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import {
-  type AuthorIdentity,
-  type FilePath,
-  invalidTreeEntry,
-  type ObjectId,
-  type TreeEntry,
-} from '../../domain/objects/index.js';
+import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
-import {
-  advanceCursor,
-  cursorMode,
-  cursorName,
-  cursorNameEquals,
-  cursorOid,
-  openTreeCursor,
-} from '../../domain/objects/tree-cursor.js';
 import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import {
+  descendMatchingTreeChain,
+  findTreeEntryChain,
+} from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
-import { readRawObject } from '../primitives/read-object.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
@@ -183,108 +171,6 @@ const isBlameableEntry = (entry: TreeEntry): boolean =>
   entry.mode !== FILE_MODE.DIRECTORY && entry.mode !== FILE_MODE.GITLINK;
 
 /**
- * Read one raw tree object and scan its entries for `name` — the byte-level,
- * refusal-preserving descent primitive Part 10 built for `findTreeEntry`
- * (`resolve-tree-path.ts`), reimplemented here (rather than shared) so the
- * two parts stay independently reviewable. Preserves both of its
- * faithfulness constraints: a per-directory duplicate-name refusal
- * byte-identical to `parseTreeContent`'s, and eager mode validation on every
- * visited sibling (a malformed mode throws immediately, not lazily).
- */
-const descendOneTreeLevel = async (
-  ctx: Context,
-  treeId: ObjectId,
-  name: string,
-): Promise<TreeEntry | undefined> => {
-  const raw = await readRawObject(ctx, treeId);
-  if (raw.type !== 'tree') return undefined;
-  return scanTreeLevelFor(ctx, raw.content, name);
-};
-
-const scanTreeLevelFor = (
-  ctx: Context,
-  content: Uint8Array,
-  name: string,
-): TreeEntry | undefined => {
-  const cursor = openTreeCursor(content, ctx.hashConfig);
-  const target = encode(name);
-  const seenNames = new Set<string>();
-  let matched: TreeEntry | undefined;
-  while (!cursor.done) {
-    const mode = cursorMode(cursor);
-    const entryName = cursorName(cursor);
-    if (seenNames.has(entryName)) {
-      throw invalidTreeEntry(cursor.offset, `duplicate entry name: ${entryName}`);
-    }
-    seenNames.add(entryName);
-    if (cursorNameEquals(cursor, target))
-      matched = { mode, name: entryName, id: cursorOid(cursor) };
-    advanceCursor(cursor);
-  }
-  return matched;
-};
-
-interface ChainDescent {
-  readonly entry: TreeEntry;
-  readonly oidChain: ReadonlyArray<ObjectId>;
-}
-
-/**
- * Full descent from `rootTreeId` to `segments`' entry, building the per-level
- * oid chain as it goes — used when there is no child chain to compare
- * against (the initial seed, and a renamed source path).
- */
-const descendTreeChain = async (
-  ctx: Context,
-  rootTreeId: ObjectId,
-  segments: ReadonlyArray<string>,
-): Promise<ChainDescent | undefined> => {
-  const chain: ObjectId[] = [rootTreeId];
-  let currentId = rootTreeId;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const dirEntry = await descendOneTreeLevel(ctx, currentId, segments[i] as string);
-    if (dirEntry === undefined) return undefined;
-    chain.push(dirEntry.id);
-    currentId = dirEntry.id;
-  }
-  const leaf = await descendOneTreeLevel(ctx, currentId, segments[segments.length - 1] as string);
-  if (leaf === undefined) return undefined;
-  chain.push(leaf.id);
-  return { entry: leaf, oidChain: chain };
-};
-
-/**
- * The per-level oid short-circuit: descend `segments` from `rootTreeId`, but
- * bail the instant a visited level's oid equals the same position in
- * `childChain`. Git's content-addressing means that level, and everything
- * below it, is byte-identical to the child's, so the path is TREESAME with
- * no further tree reads — a match at position 0 (the root itself) needs no
- * read at all.
- */
-const descendMatchingChain = async (
-  ctx: Context,
-  rootTreeId: ObjectId,
-  segments: ReadonlyArray<string>,
-  childChain: ReadonlyArray<ObjectId>,
-): Promise<'treesame' | ChainDescent | undefined> => {
-  if (rootTreeId === childChain[0]) return 'treesame';
-  const chain: ObjectId[] = [rootTreeId];
-  let currentId = rootTreeId;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const dirEntry = await descendOneTreeLevel(ctx, currentId, segments[i] as string);
-    if (dirEntry === undefined) return undefined;
-    chain.push(dirEntry.id);
-    if (dirEntry.id === childChain[chain.length - 1]) return 'treesame';
-    currentId = dirEntry.id;
-  }
-  const leaf = await descendOneTreeLevel(ctx, currentId, segments[segments.length - 1] as string);
-  if (leaf === undefined) return undefined;
-  chain.push(leaf.id);
-  if (leaf.id === childChain[chain.length - 1]) return 'treesame';
-  return { entry: leaf, oidChain: chain };
-};
-
-/**
  * Seed the working-tree pseudo-commit (git's bare `git blame <file>`). Resolves
  * HEAD first (an unborn HEAD refuses here, as git does), reads the working file,
  * then diffs it against HEAD's blob: lines common with HEAD enter the committed
@@ -303,7 +189,7 @@ const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath):
   // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty working file; without the guard the zero-count entry flows through splitAgainstParent/finalize and yields no lines, the same empty result (mirrors the committed-rev seed guard below)
   if (count === 0) return;
   const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
-  const resolved = await descendTreeChain(sb.ctx, data.tree, pathSegments(path));
+  const resolved = await findTreeEntryChain(sb.ctx, data.tree, pathSegments(path));
   if (resolved !== undefined && isBlameableEntry(resolved.entry)) {
     const headContent = (await readBlob(sb.ctx, resolved.entry.id)).content;
     const diff = diffLines(headContent, workingBlob);
@@ -383,7 +269,7 @@ const seed = async (
   rev: string,
 ): Promise<void> => {
   const data = await readCommitData(sb.ctx, commit);
-  const resolved = await descendTreeChain(sb.ctx, data.tree, pathSegments(path));
+  const resolved = await findTreeEntryChain(sb.ctx, data.tree, pathSegments(path));
   if (resolved === undefined || !isBlameableEntry(resolved.entry)) throw pathNotInTree(rev, path);
   const blob = (await readBlob(sb.ctx, resolved.entry.id)).content;
   const lines = splitLines(blob);
@@ -529,7 +415,7 @@ const resolveInParent = async (
   suspect: Suspect,
 ): Promise<ResolvedParent | undefined> => {
   const commitData = await readCommitData(ctx, parent);
-  const resolution = await descendMatchingChain(
+  const resolution = await descendMatchingTreeChain(
     ctx,
     commitData.tree,
     pathSegments(suspect.path),
@@ -551,7 +437,7 @@ const resolveInParent = async (
   }
   const renamed = await renamedSource(ctx, commitData.tree, childTree, suspect.path);
   if (renamed === undefined) return undefined;
-  const renamedChain = await descendTreeChain(
+  const renamedChain = await findTreeEntryChain(
     ctx,
     commitData.tree,
     pathSegments(renamed.sourcePath),

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  descendMatchingTreeChain,
   descendTreePath,
   findTreeEntry,
+  findTreeEntryChain,
 } from '../../../../../src/application/primitives/internal/resolve-tree-path.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
@@ -471,6 +473,204 @@ describe('findTreeEntry', () => {
 
         // Assert
         expect(result?.id).toBe(oidA);
+      });
+    });
+  });
+});
+
+describe('findTreeEntryChain', () => {
+  describe('Given a nested tree a/b/c oid', () => {
+    describe('When findTreeEntryChain walks the deep path', () => {
+      it('Then returns the leaf entry and the per-level oid chain, root through leaf', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const cId = await writeObject(ctx, blobOf(3));
+        const bId = await writeTree(ctx, [{ mode: FILE_MODE.REGULAR, name: 'c', id: cId }]);
+        const aId = await writeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'b', id: bId }]);
+        const rootId = await writeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'a', id: aId }]);
+
+        // Act
+        const result = await findTreeEntryChain(ctx, rootId, ['a', 'b', 'c']);
+
+        // Assert
+        expect(result?.entry.id).toBe(cId);
+        expect(result?.oidChain).toEqual([rootId, aId, bId, cId]);
+      });
+    });
+  });
+
+  describe('Given a single top-level segment', () => {
+    describe('When findTreeEntryChain resolves it', () => {
+      it('Then the chain is exactly [root, leaf]', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fileId = await writeObject(ctx, blobOf(1));
+        const rootId = await writeTree(ctx, [
+          { mode: FILE_MODE.REGULAR, name: 'file', id: fileId },
+        ]);
+
+        // Act
+        const result = await findTreeEntryChain(ctx, rootId, ['file']);
+
+        // Assert
+        expect(result?.oidChain).toEqual([rootId, fileId]);
+      });
+    });
+  });
+
+  describe('Given a path whose intermediate segment is absent', () => {
+    describe('When findTreeEntryChain walks it', () => {
+      it('Then returns undefined, discarding the partial chain', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rootId = await writeTree(ctx, []);
+
+        // Act
+        const result = await findTreeEntryChain(ctx, rootId, ['nope', 'leaf']);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a root oid that is not a tree (a commit whose `tree` field is corrupt)', () => {
+    describe('When findTreeEntryChain is asked to descend from it', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE naming the actual type, at every depth', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blobOf(9));
+
+        // Act / Assert
+        try {
+          await findTreeEntryChain(ctx, blobId, ['a', 'b']);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+          if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+            expect(data.expected).toBe('tree');
+            expect(data.actual).toBe('blob');
+            expect(data.id).toBe(blobId);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a root tree with a non-UTF-8 entry name', () => {
+    describe('When findTreeEntryChain searches using the lossily-decoded replacement character', () => {
+      it('Then it does not match — the root is compared by raw bytes, not by a lossy decode', async () => {
+        // Arrange — a lone continuation byte (0x80) is invalid UTF-8 on its
+        // own and decodes to U+FFFD; a decoded-string root comparison would
+        // wrongly match a query literally spelled "�" (3 UTF-8 bytes),
+        // which never equals the single raw 0x80 byte on disk.
+        const ctx = await buildSeededContext();
+        const fileId = await writeObject(ctx, blobOf(4));
+        const content = concatBytes(encode('100644 '), new Uint8Array([0x80]), new Uint8Array([0]));
+        const rootId = await writeRawObjectBytes(
+          ctx,
+          'tree',
+          concatBytes(content, hexToBytes(fileId)),
+        );
+
+        // Act
+        const result = await findTreeEntryChain(ctx, rootId, ['�']);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('descendMatchingTreeChain', () => {
+  describe("Given a parent root oid identical to the child chain's root", () => {
+    describe('When descendMatchingTreeChain compares them', () => {
+      it("Then returns 'treesame' without reading any tree", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rootId = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        const result = await descendMatchingTreeChain(ctx, rootId, ['a'], [rootId, ARBITRARY_OID]);
+
+        // Assert
+        expect(result).toBe('treesame');
+      });
+    });
+  });
+
+  describe('Given a parent whose subtree at the second level matches the child chain', () => {
+    describe('When descendMatchingTreeChain descends', () => {
+      it("Then returns 'treesame' after reading only the differing root level", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sharedSubId = await writeTree(ctx, [
+          { mode: FILE_MODE.REGULAR, name: 'c', id: await writeObject(ctx, blobOf(2)) },
+        ]);
+        const childRootId = await writeTree(ctx, [
+          { mode: FILE_MODE.DIRECTORY, name: 'a', id: sharedSubId },
+        ]);
+        const parentRootId = await writeTree(ctx, [
+          { mode: FILE_MODE.DIRECTORY, name: 'a', id: sharedSubId },
+        ]);
+
+        // Act
+        const result = await descendMatchingTreeChain(
+          ctx,
+          parentRootId,
+          ['a', 'c'],
+          [childRootId, sharedSubId, await writeObject(ctx, blobOf(2))],
+        );
+
+        // Assert
+        expect(result).toBe('treesame');
+      });
+    });
+  });
+
+  describe('Given a parent that fully diverges from the child chain', () => {
+    describe('When descendMatchingTreeChain descends to the leaf', () => {
+      it('Then returns the resolved entry and this root’s own oid chain', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leafId = await writeObject(ctx, blobOf(5));
+        const parentRootId = await writeTree(ctx, [
+          { mode: FILE_MODE.REGULAR, name: 'file', id: leafId },
+        ]);
+        const unrelatedChain = [ARBITRARY_OID, ARBITRARY_OID];
+
+        // Act
+        const result = await descendMatchingTreeChain(ctx, parentRootId, ['file'], unrelatedChain);
+
+        // Assert
+        expect(result).not.toBe('treesame');
+        expect(result).not.toBeUndefined();
+        if (result !== 'treesame' && result !== undefined) {
+          expect(result.entry.id).toBe(leafId);
+          expect(result.oidChain).toEqual([parentRootId, leafId]);
+        }
+      });
+    });
+  });
+
+  describe('Given a root oid that is not a tree', () => {
+    describe('When descendMatchingTreeChain is asked to descend from it', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blobOf(6));
+
+        // Act / Assert
+        try {
+          await descendMatchingTreeChain(ctx, blobId, ['a'], [ARBITRARY_OID, ARBITRARY_OID]);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          expect((error as TsgitError).data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        }
       });
     });
   });
