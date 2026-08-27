@@ -1535,6 +1535,27 @@ describe('object-resolver', () => {
         });
       });
     });
+
+    describe('Given a single non-delta base object (no delta chain at all)', () => {
+      describe('When resolveObject reads it cold', () => {
+        it('Then the delta-base cache stays empty — nothing will ever probe this offset as an intermediate', async () => {
+          // Arrange — a lone base entry, never a delta target or a delta base.
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('a lone base object');
+          const [id] = await writeSyntheticPack(ctx, 'pack-single-base', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const registry = createPackRegistry(ctx);
+
+          // Act
+          const result = await resolveObject(ctx, registry, id as ObjectId, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(content);
+          expect(registry.deltaBaseCache.entryCount).toBe(0);
+        });
+      });
+    });
   });
 
   describe('Given a REF_DELTA whose base is a %s', () => {
@@ -2216,6 +2237,43 @@ describe('object-resolver', () => {
           // Assert
           expect(error.data.code).toBe('DELTA_CHAIN_TOO_DEEP');
         }
+      });
+    });
+  });
+
+  describe('Given an OFS_DELTA chain of length 51, with a lower object already warming the delta-base cache', () => {
+    describe('When resolveObject reads the tip', () => {
+      it('Then it still throws DELTA_CHAIN_TOO_DEEP — the cache hit must not hide the depth beneath it', async () => {
+        // Arrange — same 51-deep chain as the cold case above, but position 25
+        // is resolved FIRST: that populates the delta-base cache for every
+        // offset from position 25 down to the true base. Resolving the tip
+        // afterwards walks only 26 levels (51 down to 25) before hitting that
+        // cache — a naive cache hit would stop counting there and let a chain
+        // that is truly 51 deep report as 26.
+        const ctx = await buildSeededContext();
+        const baseContent = new TextEncoder().encode('base');
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
+        for (let i = 0; i < 51; i += 1) {
+          const target = new TextEncoder().encode(`target-${i}`);
+          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
+        }
+        const ids = await writeSyntheticPack(ctx, 'long-chain-warm', entries);
+        const lowerId = ids[25]! as ObjectId;
+        const tipId = ids.at(-1)! as ObjectId;
+        const registry = createPackRegistry(ctx);
+
+        // Act — warm the cache with the lower object first.
+        await resolveObject(ctx, registry, lowerId, false);
+        let caught: unknown;
+        try {
+          await resolveObject(ctx, registry, tipId, false);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
       });
     });
   });

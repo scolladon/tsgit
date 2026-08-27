@@ -395,6 +395,14 @@ interface Phase1Result {
   readonly baseOffset: number | undefined;
 }
 
+/** Extracted so both the per-level walk and a cache-hit resumption share one
+ *  throw site rather than duplicating the branch inline. */
+function assertChainDepthWithinCap(depth: number): void {
+  if (depth > MAX_DELTA_CHAIN_DEPTH) {
+    throw deltaChainTooDeep(depth);
+  }
+}
+
 async function collectDeltaChain(
   ctx: Context,
   registry: PackRegistry,
@@ -416,6 +424,11 @@ async function collectDeltaChain(
     // whole rest of the walk exactly as reaching a real base entry would.
     const cached = probeDeltaBaseCache(ctx, registry, currentHit, targetId, maxBytes);
     if (cached !== undefined) {
+      // The hit resumes from partway down the chain — depth so far (levels
+      // actually walked) plus whatever the cached entry itself still has
+      // beneath it, so a chain deeper than MAX_DELTA_CHAIN_DEPTH still
+      // throws even though this walk never touched its lower levels.
+      assertChainDepthWithinCap(depth + cached.chainDepth);
       return { deltas, baseContent: cached.content, baseType: cached.type, baseOffset: undefined };
     }
     const nextOffset = nextOffsetForEntry(table, currentHit.offset);
@@ -438,9 +451,7 @@ async function collectDeltaChain(
       };
     }
     depth += 1;
-    if (depth > MAX_DELTA_CHAIN_DEPTH) {
-      throw deltaChainTooDeep(depth);
-    }
+    assertChainDepthWithinCap(depth);
     const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
@@ -489,12 +500,22 @@ export async function resolvePackChain(
   // documented: mid-chain intermediates have no known ObjectId, so a REF's
   // own id-keyed cache could only ever hold a chain's tip.
   let current = phase1.baseContent;
-  cacheDeltaBase(ctx, registry, hit.pack.name, phase1.baseOffset, phase1.baseType, current);
+  // Only a real delta chain populates the offset-keyed cache: a single
+  // non-delta base entry (deltas.length === 0) is never a delta target and
+  // never a future chain's intermediate, so caching it under its own offset
+  // would only ever be a wasted entry.
+  if (phase1.deltas.length > 0) {
+    cacheDeltaBase(ctx, registry, hit.pack.name, phase1.baseOffset, phase1.baseType, current, 0);
+  }
   for (let i = phase1.deltas.length - 1; i >= 0; i -= 1) {
     const step = phase1.deltas[i];
     if (step === undefined) break;
     current = applyDelta(current, step.instructions);
-    cacheDeltaBase(ctx, registry, hit.pack.name, step.offset, phase1.baseType, current);
+    // How many delta applications lie between THIS level and the true base:
+    // 1 for the level closest to the base (i === deltas.length - 1), up to
+    // deltas.length for the target's own level (i === 0).
+    const chainDepth = phase1.deltas.length - i;
+    cacheDeltaBase(ctx, registry, hit.pack.name, step.offset, phase1.baseType, current, chainDepth);
   }
   // Post-apply cap on the reconstructed object (delta resolution is the only
   // place a payload can grow beyond what the base entry declared). The check
@@ -704,11 +725,12 @@ function cacheDeltaBase(
   offset: number | undefined,
   type: PackEntryHeader['type'],
   content: Uint8Array,
+  chainDepth: number,
 ): void {
   if (offset === undefined || !deltaBaseCachingEnabled(ctx)) return;
   registry.deltaBaseCache.set(
     deltaBaseCacheKey(packName, offset),
-    { type, content },
+    { type, content, chainDepth },
     deltaBaseCacheEntrySize(content),
   );
 }
