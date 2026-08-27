@@ -4,12 +4,26 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
-import { readHeadTree } from '../../../../src/application/primitives/read-head-tree.js';
+import {
+  FLAT_TREE_CACHE_FRACTION,
+  FLAT_TREE_CACHE_MAX_ENTRIES,
+  flatTreeByteSize,
+  readHeadTree,
+} from '../../../../src/application/primitives/read-head-tree.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { FlatTree } from '../../../../src/domain/diff/flat-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { seedMaxTreeDepth } from './fixtures.js';
+
+vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/domain/storage/index.js')>();
+  return { ...actual, createLruCache: vi.fn(actual.createLruCache) };
+});
+
+const storage = await import('../../../../src/domain/storage/index.js');
+const createLruCacheSpy = vi.mocked(storage.createLruCache);
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -176,10 +190,11 @@ describe('readHeadTree', () => {
 
   describe('Given an empty HEAD tree', () => {
     describe('When readHeadTree runs twice', () => {
-      it('Then the sizer floors at 1, set does not throw, and the second read hits the cache', async () => {
+      it('Then the fixed base overhead keeps the size positive, set does not throw, and the second read hits the cache', async () => {
         // Arrange — a first commit over an untouched index has no parent
         // tree to compare against, so it commits the empty tree, whose
-        // per-entry footprint sums to exactly 0.
+        // per-entry footprint sums to exactly 0; FLAT_TREE_BASE_OVERHEAD_BYTES
+        // alone must keep the sizer's result positive.
         const ctx = createMemoryContext();
         await init(ctx);
         await commit(ctx, { message: 'empty', author, allowEmpty: true });
@@ -190,8 +205,8 @@ describe('readHeadTree', () => {
         const first = await readHeadTree(ctx);
         const second = await readHeadTree(ctx);
 
-        // Assert — no throw reached this line, and the floor kept the entry
-        // genuinely cached rather than silently dropping it.
+        // Assert — no throw reached this line, and the entry is genuinely
+        // cached rather than silently dropped.
         expect(first?.entries.size).toBe(0);
         expect(second?.entries.size).toBe(0);
         expect(flattenCallsSince(flattenSpy, baseline)).toBe(1);
@@ -269,6 +284,54 @@ describe('readHeadTree', () => {
         expect(second?.entries.size).toBe(2);
         expect(flattenCallsSince(flattenSpy, baseline)).toBe(2);
         flattenSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given the sizer applied to trees differing only in entry count', () => {
+    describe('When comparing a one-entry tree against the empty tree', () => {
+      it('Then the difference includes the fixed per-entry overhead, not just the raw path+oid character counts', () => {
+        // Arrange — same path/oid character counts either way; the fixed
+        // per-entry overhead is what a raw-character-count-only sizer would
+        // miss entirely.
+        const path = 'a' as FilePath;
+        const id = 'b'.repeat(40) as ObjectId;
+        const empty: FlatTree = { entries: new Map() };
+        const oneEntry: FlatTree = {
+          entries: new Map([[path, { id, mode: FILE_MODE.REGULAR }]]),
+        };
+        const sut = flatTreeByteSize;
+
+        // Act
+        const emptySize = sut(empty);
+        const oneEntrySize = sut(oneEntry);
+
+        // Assert — the delta is strictly greater than the raw character
+        // count (1 + 40 = 41): a sizer that only summed characters would
+        // report exactly 41 here.
+        const rawCharacterCount = path.length + id.length;
+        expect(oneEntrySize - emptySize).toBeGreaterThan(rawCharacterCount);
+      });
+    });
+  });
+
+  describe('Given the flat-tree cache is created for the first time', () => {
+    describe('When createLruCache is called to build it', () => {
+      it('Then it is given an entry cap, not just a byte cap', async () => {
+        // Arrange — a byte cap alone admits unboundedly many small trees;
+        // the entry cap is a second, independent defence.
+        const ctx = createMemoryContext();
+        createLruCacheSpy.mockClear();
+        await commitOneFile(ctx);
+
+        // Act
+        await readHeadTree(ctx);
+
+        // Assert
+        const memoCall = createLruCacheSpy.mock.calls.find(
+          (call) => call[0] === ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
+        );
+        expect(memoCall?.[1]).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
       });
     });
   });

@@ -47,13 +47,24 @@ const flatTreeCaches = new WeakMap<Context['session'], LruCache<FlatTree>>();
  * `PARSED_OBJECT_MEMO_FRACTION`: the two caches hold different things and
  * compete only for process memory, not a shared accounting ledger.
  */
-const FLAT_TREE_CACHE_FRACTION = 0.0625;
+export const FLAT_TREE_CACHE_FRACTION = 0.0625;
+
+/**
+ * Entry-count ceiling on the number of DISTINCT `(rootTreeOid, maxDepth)`
+ * trees this cache holds — independent of `MAX_FLAT_TREE_ENTRIES`, which
+ * bounds the entries WITHIN one tree. Mirrors the parsed-object memo and the
+ * commit-graph header cache's own caps.
+ */
+export const FLAT_TREE_CACHE_MAX_ENTRIES = 65_536;
 
 function flatTreeCacheFor(ctx: Context): LruCache<FlatTree> | undefined {
   if (!deltaBaseCachingEnabled(ctx)) return undefined;
   const existing = flatTreeCaches.get(ctx.session);
   if (existing !== undefined) return existing;
-  const created = createLruCache<FlatTree>(ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION);
+  const created = createLruCache<FlatTree>(
+    ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
+    FLAT_TREE_CACHE_MAX_ENTRIES,
+  );
   flatTreeCaches.set(ctx.session, created);
   return created;
 }
@@ -71,18 +82,35 @@ function flatTreeCacheKey(rootTreeOid: ObjectId, maxDepth: number): string {
 }
 
 /**
+ * V8's own baseline retained footprint for an empty `FlatTree`/`Map` pair —
+ * applied once regardless of entry count, so a genuinely empty tree (HEAD at
+ * the empty-tree commit) still sizes to a positive, meaningful value with no
+ * separate floor needed.
+ */
+const FLAT_TREE_BASE_OVERHEAD_BYTES = 48;
+
+/**
+ * Fixed per-entry overhead the raw path+oid character counts alone don't
+ * account for: the `Map`'s own entry node, the `FlatTreeEntry` wrapper
+ * object (including its `FileMode` field), and each string's own object
+ * header — `string.length` is character count, not retained bytes.
+ */
+const FLAT_TREE_ENTRY_OVERHEAD_BYTES = 110;
+
+/**
  * Approximate retained footprint of a `FlatTree`: path length plus oid
  * length per entry (mirrors `parsedObjectByteSize`'s string-length proxy for
- * a value's heap cost). Floored at 1: `LruCache.set` throws on
- * `byteSize <= 0`, and a genuinely empty tree (HEAD at the empty-tree commit)
- * is still worth caching.
+ * a value's heap cost) plus the fixed overheads above. The base term alone
+ * guarantees a positive result, so `LruCache.set`'s `byteSize <= 0` guard is
+ * unreachable from here by construction, not by a floor this function adds
+ * itself.
  */
-function flatTreeByteSize(tree: FlatTree): number {
-  let total = 0;
+export function flatTreeByteSize(tree: FlatTree): number {
+  let total = FLAT_TREE_BASE_OVERHEAD_BYTES;
   for (const [path, entry] of tree.entries) {
-    total += path.length + entry.id.length;
+    total += path.length + entry.id.length + FLAT_TREE_ENTRY_OVERHEAD_BYTES;
   }
-  return Math.max(1, total);
+  return total;
 }
 
 export const readHeadTree = async (ctx: Context): Promise<FlatTree | undefined> => {
