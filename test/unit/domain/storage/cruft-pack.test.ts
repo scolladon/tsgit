@@ -344,15 +344,21 @@ describe('cruft-pack', () => {
     describe('Given a file below the header size', () => {
       describe('When parsing an empty file', () => {
         it('Then it refuses with size', () => {
+          // Arrange
+          const bytes = new Uint8Array(0);
+
           // Act & Assert
-          expectRefusal(() => parseCruftMtimes(new Uint8Array(0), []), 'size', 'too small');
+          expectRefusal(() => parseCruftMtimes(bytes, []), 'size', 'too small');
         });
       });
 
       describe('When parsing an 11-byte file', () => {
         it('Then it refuses with size', () => {
+          // Arrange
+          const bytes = new Uint8Array(11);
+
           // Act & Assert
-          expectRefusal(() => parseCruftMtimes(new Uint8Array(11), []), 'size', 'too small');
+          expectRefusal(() => parseCruftMtimes(bytes, []), 'size', 'too small');
         });
       });
     });
