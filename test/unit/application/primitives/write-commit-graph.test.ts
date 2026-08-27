@@ -5,6 +5,7 @@ import {
   commitGraphPath,
   commonGitDir,
   reflogPath,
+  shallowFilePath,
 } from '../../../../src/application/primitives/path-layout.js';
 import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -49,11 +50,55 @@ async function pointRef(ctx: Context, name: string, id: ObjectId): Promise<void>
 }
 
 describe('writeCommitGraph', () => {
+  describe('Given a repository with no commits', () => {
+    describe('When writeCommitGraph runs', () => {
+      it('Then no file is written — pinned against git 2.55.0', async () => {
+        // Arrange — `git commit-graph write --reachable` on an empty
+        // repository exits 0 and writes NO `objects/info/commit-graph`.
+        const ctx = await buildSeededContext();
+        const gitDir = commonGitDir(ctx);
+
+        // Act
+        const result = await writeCommitGraph(ctx);
+
+        // Assert
+        expect(result.commitCount).toBe(0);
+        expect(await ctx.fs.exists(commitGraphPath(gitDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a shallow repository with a reachable commit', () => {
+    describe('When writeCommitGraph runs', () => {
+      it('Then no file is written — pinned against git 2.55.0', async () => {
+        // Arrange — `git commit-graph write --reachable` on a shallow
+        // clone exits 0 and writes NO `objects/info/commit-graph`: a
+        // shallow boundary makes the generation-number invariant unsound.
+        const ctx = await buildSeededContext();
+        const gitDir = commonGitDir(ctx);
+        const commitId = await rootCommit(ctx, AUTHOR.timestamp, 'root');
+        await pointRef(ctx, 'refs/heads/main', commitId);
+        await ctx.fs.writeUtf8(shallowFilePath(gitDir), `${commitId}\n`);
+
+        // Act
+        const result = await writeCommitGraph(ctx);
+
+        // Assert
+        expect(result.commitCount).toBe(0);
+        expect(await ctx.fs.exists(commitGraphPath(gitDir))).toBe(false);
+      });
+    });
+  });
+
   describe('Given an existing commit-graph.lock', () => {
     describe('When writeCommitGraph is called', () => {
       it('Then the write refuses and the existing graph is untouched', async () => {
-        // Arrange
+        // Arrange — a reachable commit, so the write actually reaches the
+        // lock acquisition rather than short-circuiting on an empty commit
+        // set (see "Given a repository with no commits" above).
         const ctx = await buildSeededContext();
+        const commitId = await rootCommit(ctx, AUTHOR.timestamp, 'root');
+        await pointRef(ctx, 'refs/heads/main', commitId);
         const gitDir = commonGitDir(ctx);
         const existing = new TextEncoder().encode('not a real graph');
         await ctx.fs.write(commitGraphPath(gitDir), existing);

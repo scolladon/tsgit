@@ -20,6 +20,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { enumerateRefs } from './enumerate-refs.js';
+import { isShallowRepository } from './internal/shallow-set.js';
 import { commitGraphPath, commonGitDir } from './path-layout.js';
 import { resolveRef } from './resolve-ref.js';
 import { walkCommits } from './walk-commits.js';
@@ -68,9 +69,22 @@ async function collectCommits(
   return commits;
 }
 
+/**
+ * No file is written for a repository with no commits, or a shallow one —
+ * pinned against git 2.55.0 (`git commit-graph write --reachable`, both
+ * exit 0 with no `objects/info/commit-graph` produced): an empty commit
+ * set encodes nothing worth a file, and a shallow boundary makes the
+ * generation-number invariant the graph format itself relies on unsound
+ * (a shallow commit's true depth from its full history is unknown). This
+ * is checked BEFORE the walk, not after, since a shallow repository never
+ * needs one.
+ */
 export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphResult> {
+  if (await isShallowRepository(ctx)) return { commitCount: 0 };
+
   const roots = await commitGraphRoots(ctx);
   const commits = await collectCommits(ctx, roots);
+  if (commits.length === 0) return { commitCount: 0 };
 
   const bytes = serializeCommitGraph(commits, ctx.hashConfig);
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
