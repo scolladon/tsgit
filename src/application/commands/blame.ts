@@ -323,7 +323,7 @@ const applyParentResolution = (
       blobId: suspect.blobId,
       entries: remaining,
       lines: suspect.lines,
-      oidChain: suspect.oidChain,
+      oidChain: resolved.oidChain,
       commitData: resolved.commitData,
     });
     return [];
@@ -391,7 +391,12 @@ const offsets = (count: number): ReadonlyArray<number> =>
   Array.from({ length: count }, (_, index) => index);
 
 type ResolvedParent =
-  | { readonly kind: 'treesame'; readonly sourcePath: FilePath; readonly commitData: CommitData }
+  | {
+      readonly kind: 'treesame';
+      readonly sourcePath: FilePath;
+      readonly commitData: CommitData;
+      readonly oidChain: ReadonlyArray<ObjectId>;
+    }
   | {
       readonly kind: 'changed';
       readonly blob: Uint8Array;
@@ -424,10 +429,15 @@ const resolveInParent = async (
     pathSegments(suspect.path),
     suspect.oidChain,
   );
-  if (resolution === 'treesame') {
-    return { kind: 'treesame', sourcePath: suspect.path, commitData };
+  if (resolution?.kind === 'treesame') {
+    return {
+      kind: 'treesame',
+      sourcePath: suspect.path,
+      commitData,
+      oidChain: resolution.oidChain,
+    };
   }
-  if (resolution !== undefined && isBlameableEntry(resolution.entry)) {
+  if (resolution?.kind === 'changed' && isBlameableEntry(resolution.entry)) {
     const blob = (await readBlob(ctx, resolution.entry.id)).content;
     return {
       kind: 'changed',

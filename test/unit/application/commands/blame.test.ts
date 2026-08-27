@@ -493,6 +493,63 @@ describe("Given a parent that differs from the child only outside the blamed pat
   });
 });
 
+describe('Given a grandparent that shares a subtree with the parent but the child does not', () => {
+  describe('When the file is blamed across three generations', () => {
+    it("Then the grandparent's resolution reuses the parent's own accurate chain, matching one level higher than the child's chain would", async () => {
+      // Arrange — a/b/c.txt never changes across c0→c1→c2. a/ itself is
+      // byte-identical between c0 and c1 (only z.txt differs there), but
+      // DIFFERS between c1 and c2 (a/other.txt changes at c2). The suspect
+      // scheduled at c1 (a TREESAME hop from c2, matching two levels down at
+      // a/b/) must carry c1's OWN root/a-level oids, not c2's stale ones, or
+      // resolving c0 (c1's parent) re-descends into a/ a second time to find
+      // a match that was already available one level higher.
+      const ctx = await seed();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/other.txt`, 'same\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/b/c.txt`, 'x\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'Z0\n');
+      await add(ctx, ['a/other.txt', 'a/b/c.txt', 'z.txt']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c0',
+        author: ident('c0', clock),
+        committer: ident('c0', clock),
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'Z1\n');
+      await add(ctx, ['z.txt']);
+      clock += 60;
+      const c1 = await commit(ctx, {
+        message: 'c1',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      const c1aEntry = await findTreeEntry(ctx, c1.tree, 'a');
+      if (c1aEntry === undefined) throw new Error('test setup: a missing from c1');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/other.txt`, 'different\n');
+      await add(ctx, ['a/other.txt']);
+      clock += 60;
+      const c2 = await commit(ctx, {
+        message: 'c2',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+      const readObjectSpy = vi.spyOn(readObjectMod, 'readObject');
+      const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
+
+      // Act
+      await blame(ctx, 'a/b/c.txt', { rev: c2.id });
+
+      // Assert — a/'s shared oid (identical in c0 and c1) is read as an
+      // object exactly once (resolving c1 against c2, where a/ genuinely
+      // differs and a real descent into a/ is required); resolving c0
+      // against c1's stored chain matches it at the entry level instead of
+      // reading it again to redescend.
+      expect(objectReadsOf(c1aEntry.id, readObjectSpy, readRawObjectSpy)).toBe(1);
+      readObjectSpy.mockRestore();
+      readRawObjectSpy.mockRestore();
+    });
+  });
+});
+
 describe('Given a suspect whose blob is unchanged across three generations', () => {
   describe('When the file is blamed', () => {
     it('Then the blob is split once', async () => {

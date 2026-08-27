@@ -619,45 +619,51 @@ describe('findTreeEntryChain', () => {
 describe('descendMatchingTreeChain', () => {
   describe("Given a parent root oid identical to the child chain's root", () => {
     describe('When descendMatchingTreeChain compares them', () => {
-      it("Then returns 'treesame' without reading any tree", async () => {
+      it("Then returns 'treesame' with the child's own chain, without reading any tree", async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const rootId = 'f'.repeat(40) as ObjectId;
+        const childChain = [rootId, ARBITRARY_OID];
 
         // Act
-        const result = await descendMatchingTreeChain(ctx, rootId, ['a'], [rootId, ARBITRARY_OID]);
+        const result = await descendMatchingTreeChain(ctx, rootId, ['a'], childChain);
 
         // Assert
-        expect(result).toBe('treesame');
+        expect(result).toEqual({ kind: 'treesame', oidChain: childChain });
       });
     });
   });
 
   describe('Given a parent whose subtree at the second level matches the child chain', () => {
     describe('When descendMatchingTreeChain descends', () => {
-      it("Then returns 'treesame' after reading only the differing root level", async () => {
-        // Arrange
+      it("Then returns 'treesame' with THIS root's own (differing) level 0 spliced onto the child's matching tail", async () => {
+        // Arrange — parentRootId and childRootId are different oids (distinct
+        // tree objects with the same single child entry), but the shared
+        // subtree they both point at, and its leaf, are identical.
         const ctx = await buildSeededContext();
+        const leafId = await writeObject(ctx, blobOf(2));
         const sharedSubId = await writeTree(ctx, [
-          { mode: FILE_MODE.REGULAR, name: 'c', id: await writeObject(ctx, blobOf(2)) },
+          { mode: FILE_MODE.REGULAR, name: 'c', id: leafId },
         ]);
         const childRootId = await writeTree(ctx, [
           { mode: FILE_MODE.DIRECTORY, name: 'a', id: sharedSubId },
+          { mode: FILE_MODE.REGULAR, name: 'only-in-child', id: leafId },
         ]);
         const parentRootId = await writeTree(ctx, [
           { mode: FILE_MODE.DIRECTORY, name: 'a', id: sharedSubId },
         ]);
+        const childChain = [childRootId, sharedSubId, leafId];
 
         // Act
-        const result = await descendMatchingTreeChain(
-          ctx,
-          parentRootId,
-          ['a', 'c'],
-          [childRootId, sharedSubId, await writeObject(ctx, blobOf(2))],
-        );
+        const result = await descendMatchingTreeChain(ctx, parentRootId, ['a', 'c'], childChain);
 
-        // Assert
-        expect(result).toBe('treesame');
+        // Assert — level 0 is THIS root (parentRootId, genuinely different
+        // from childRootId), levels 1-2 are the child's own (guaranteed
+        // identical) tail, not re-derived.
+        expect(result).toEqual({
+          kind: 'treesame',
+          oidChain: [parentRootId, sharedSubId, leafId],
+        });
       });
     });
   });
@@ -677,12 +683,11 @@ describe('descendMatchingTreeChain', () => {
         const result = await descendMatchingTreeChain(ctx, parentRootId, ['file'], unrelatedChain);
 
         // Assert
-        expect(result).not.toBe('treesame');
-        expect(result).not.toBeUndefined();
-        if (result !== 'treesame' && result !== undefined) {
-          expect(result.entry.id).toBe(leafId);
-          expect(result.oidChain).toEqual([parentRootId, leafId]);
-        }
+        expect(result).toEqual({
+          kind: 'changed',
+          entry: { mode: FILE_MODE.REGULAR, name: 'file', id: leafId },
+          oidChain: [parentRootId, leafId],
+        });
       });
     });
   });

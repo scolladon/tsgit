@@ -103,34 +103,49 @@ export const findTreeEntryChain = async (
   return { entry, oidChain: chain };
 };
 
+/** Either a TREESAME verdict (path unchanged from `rootId` down — no leaf
+ *  entry needed, the caller already has the child's) or the resolved leaf,
+ *  each carrying the oid chain a further ancestor can short-circuit against. */
+export type TreeChainMatch =
+  | { readonly kind: 'treesame'; readonly oidChain: ReadonlyArray<ObjectId> }
+  | {
+      readonly kind: 'changed';
+      readonly entry: TreeEntry;
+      readonly oidChain: ReadonlyArray<ObjectId>;
+    };
+
 /**
  * The per-level oid short-circuit: descend `segments` from `rootId`, but
  * bail the instant a visited level's oid equals the same position in
  * `childChain` — that level, and everything below it, is byte-identical to
- * the child's. Returns the ACCURATE chain up to (and including) the level
- * the match was found at, spliced with `childChain`'s remaining (guaranteed
- * identical) tail, so a caller scheduling this result carries a chain a
- * grandparent can short-circuit against too — not the child's chain wholesale
- * (whose earlier levels differ from this root by construction: the descent
- * only reached level k because levels before it did NOT match).
+ * the child's. The returned TREESAME chain is `rootId`'s OWN accurate levels
+ * up to (and including) the level the match was found at, spliced with
+ * `childChain`'s remaining (guaranteed identical) tail — not `childChain`
+ * wholesale, whose earlier levels differ from this root by construction
+ * (the descent only reached level k because levels before it did NOT
+ * match). Carrying the accurate splice lets a further ancestor's own
+ * short-circuit compare against real values at every level, instead of
+ * paying for tree reads down to level k again before its own match can fire.
  */
 export const descendMatchingTreeChain = async (
   ctx: Context,
   rootId: ObjectId,
   segments: ReadonlyArray<string>,
   childChain: ReadonlyArray<ObjectId>,
-): Promise<'treesame' | TreeChainDescent | undefined> => {
-  if (rootId === childChain[0]) return 'treesame';
+): Promise<TreeChainMatch | undefined> => {
+  if (rootId === childChain[0]) return { kind: 'treesame', oidChain: childChain };
   let entry = await scanRootLevel(ctx, rootId, segments[0] as string);
   const chain: ObjectId[] = [rootId];
   for (let i = 0; entry !== undefined; i += 1) {
     chain.push(entry.id);
-    if (entry.id === childChain[chain.length - 1]) return 'treesame';
+    if (entry.id === childChain[chain.length - 1]) {
+      return { kind: 'treesame', oidChain: [...chain, ...childChain.slice(chain.length)] };
+    }
     if (i + 1 >= segments.length) break;
     entry = await descendOneLevel(ctx, entry.id, segments[i + 1] as string);
   }
   if (entry === undefined) return undefined;
-  return { entry, oidChain: chain };
+  return { kind: 'changed', entry, oidChain: chain };
 };
 
 /** Read `rootId`'s raw object bytes and scan for `name` — `unexpectedObjectType`
