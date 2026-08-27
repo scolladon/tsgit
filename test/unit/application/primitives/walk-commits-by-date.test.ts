@@ -480,32 +480,78 @@ describe('walkCommitsByDate', () => {
     });
   });
 
-  describe('Given a corrupted loose object and default verifyHash', () => {
+  describe('Given a loose file whose bytes belong to a different commit and the default', () => {
     describe('When walkCommitsByDate is iterated', () => {
-      it('Then throws OBJECT_HASH_MISMATCH', async () => {
-        // Arrange — kills the `verifyHash ?? true` default → false mutant.
+      it('Then the impostor commit is yielded (unverified by default)', async () => {
+        // Arrange — kills the `verifyHash ?? false` BooleanLiteral mutant to
+        // `true`.
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
-        const commitId = await createCommit(ctx, {
+        const commitA = await createCommit(ctx, {
           tree: treeId,
           parents: [],
           author: AUTHOR,
           committer: AUTHOR,
           message: 'original',
         });
+        const commitB = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          message: 'impostor',
+        });
         const { computeLooseObjectPath } = await import(
           '../../../../src/domain/storage/loose-path.js'
         );
-        const bogus = new TextEncoder().encode('commit 3\0xyz');
-        const compressed = await ctx.compressor.deflate(bogus);
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitId)}`,
-          compressed,
+        const aPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
+        const bPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
+        await ctx.fs.write(aPath, await ctx.fs.read(bPath));
+
+        // Act
+        const commits = await collect(walkCommitsByDate(ctx, { from: [commitA] }));
+
+        // Assert
+        expect(commits[0]?.data.message).toMatch(/impostor/);
+      });
+    });
+  });
+
+  describe('Given verifyHash=true and a loose file whose bytes belong to a different commit', () => {
+    describe('When walkCommitsByDate is iterated', () => {
+      it('Then throws OBJECT_HASH_MISMATCH', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const commitA = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'original',
+        });
+        const commitB = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          message: 'impostor',
+        });
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
         );
+        const aPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
+        const bPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
+        await ctx.fs.write(aPath, await ctx.fs.read(bPath));
 
         // Act & Assert
         try {
-          for await (const _ of walkCommitsByDate(ctx, { from: [commitId] })) void _;
+          for await (const _ of walkCommitsByDate(ctx, {
+            from: [commitA],
+            verifyHash: true,
+          })) {
+            void _;
+          }
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');

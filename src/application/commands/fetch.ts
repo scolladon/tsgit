@@ -275,8 +275,6 @@ const deriveHaves = async (ctx: Context, remoteName: string): Promise<ReadonlyAr
   for await (const commit of walkCommits(ctx, {
     from: cappedSeeds,
     ignoreMissing: true,
-    // Stryker disable next-line BooleanLiteral: equivalent — `deriveHaves` only ever walks self-consistent loose commits, so flipping `verifyHash` to `true` verifies a hash that always matches.
-    verifyHash: false,
   })) {
     if (seen.has(commit.id)) continue;
     seen.add(commit.id);

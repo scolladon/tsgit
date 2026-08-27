@@ -825,6 +825,57 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given a delta-cache hit', () => {
+      describe('When resolveObjectBytes is called with verifyHash=false', () => {
+        it('Then no hash is computed', async () => {
+          // Arrange — the sync fast path must not pay for a hash it never uses.
+          const ctx = await buildSeededContext();
+          const fakeId = 'd'.repeat(40) as ObjectId;
+          const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+          ctx.deltaCache.set(fakeId, rawBytes, rawBytes.length);
+          const registry = createPackRegistry(ctx);
+          const hashSpy = vi.spyOn(ctx.hash, 'hashHex');
+
+          // Act
+          const result = await resolveObjectBytes(ctx, registry, fakeId, false);
+
+          // Assert
+          expect(result).toEqual(rawBytes);
+          expect(hashSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe('Given a delta-cache hit and a signal that aborts before the read returns', () => {
+      describe('When resolveObjectBytes is called with verifyHash=false', () => {
+        it('Then it rejects with OPERATION_ABORTED', async () => {
+          // Arrange — verifyHash=false means the cache-hit arm no longer awaits
+          // a hash, so it must poll for abort explicitly at the same point
+          // instead, or a signal raised in flight would go unobserved.
+          const controller = new AbortController();
+          const ctx = await buildSeededContext({ signal: controller.signal });
+          const fakeId = 'd'.repeat(40) as ObjectId;
+          const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+          ctx.deltaCache.set(fakeId, rawBytes, rawBytes.length);
+          const registry = createPackRegistry(ctx);
+          vi.spyOn(ctx.deltaCache, 'get').mockImplementationOnce(() => {
+            controller.abort();
+            return rawBytes;
+          });
+
+          // Act
+          try {
+            await resolveObjectBytes(ctx, registry, fakeId, false);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
+          }
+        });
+      });
+    });
+
     describe('Given an empty deltaCache and a seeded loose blob', () => {
       describe('When resolveObject is called', () => {
         it('Then resolves via the loose path unchanged', async () => {

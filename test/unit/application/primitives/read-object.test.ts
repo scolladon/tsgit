@@ -45,7 +45,36 @@ describe('readObject', () => {
     });
   });
 
-  describe('Given a corrupted loose file and verifyHash default true', () => {
+  describe('Given a corrupted loose file and the default', () => {
+    describe('When readObject is called', () => {
+      it('Then it returns the bytes', async () => {
+        // Arrange
+        // Kills the `options?.verifyHash ?? false` BooleanLiteral mutant to
+        // `true`: the default must stay unverified, or a corrupt object would
+        // be refused instead of served, matching canonical git's unverified
+        // cat-file/log/show reads.
+        const ctx = await buildSeededContext();
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        const result = await readObject(ctx, fakeId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given verifyHash=true on the same corrupted file', () => {
     describe('When readObject is called', () => {
       it('Then throws OBJECT_HASH_MISMATCH', async () => {
         // Arrange
@@ -63,37 +92,12 @@ describe('readObject', () => {
 
         // Act
         try {
-          await readObject(ctx, fakeId);
+          await readObject(ctx, fakeId, { verifyHash: true });
           // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
         }
-      });
-    });
-  });
-
-  describe('Given verifyHash=false on the same corrupted file', () => {
-    describe('When readObject is called', () => {
-      it('Then returns the bytes', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const fakeId = 'a'.repeat(40) as ObjectId;
-        const { computeLooseObjectPath } = await import(
-          '../../../../src/domain/storage/loose-path.js'
-        );
-        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
-        const compressed = await ctx.compressor.deflate(rawBytes);
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
-          compressed,
-        );
-
-        // Act
-        const result = await readObject(ctx, fakeId, { verifyHash: false });
-
-        // Assert
-        expect(result.type).toBe('blob');
       });
     });
   });
@@ -511,7 +515,35 @@ describe('readRawObject', () => {
     });
   });
 
-  describe('Given a corrupted loose file and verifyHash default true', () => {
+  describe('Given a corrupted loose file and the default', () => {
+    describe('When readRawObject is called', () => {
+      it('Then it returns the unverified raw content', async () => {
+        // Arrange
+        // Kills the `options?.verifyHash ?? false` BooleanLiteral mutant to
+        // `true`: the default must stay unverified.
+        const ctx = await buildSeededContext();
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        const result = await readRawObject(ctx, fakeId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(new TextDecoder().decode(result.content)).toBe('xyz');
+      });
+    });
+  });
+
+  describe('Given verifyHash=true on the same corrupted file', () => {
     describe('When readRawObject is called', () => {
       it('Then throws OBJECT_HASH_MISMATCH with expected/actual', async () => {
         // Arrange
@@ -529,7 +561,7 @@ describe('readRawObject', () => {
 
         // Act
         try {
-          await readRawObject(ctx, fakeId);
+          await readRawObject(ctx, fakeId, { verifyHash: true });
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -541,32 +573,6 @@ describe('readRawObject', () => {
             expect(data.actual).toBe(actualHash);
           }
         }
-      });
-    });
-  });
-
-  describe('Given verifyHash=false on the same corrupted file', () => {
-    describe('When readRawObject is called', () => {
-      it('Then returns the unverified raw content', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const fakeId = 'a'.repeat(40) as ObjectId;
-        const { computeLooseObjectPath } = await import(
-          '../../../../src/domain/storage/loose-path.js'
-        );
-        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
-        const compressed = await ctx.compressor.deflate(rawBytes);
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
-          compressed,
-        );
-
-        // Act
-        const result = await readRawObject(ctx, fakeId, { verifyHash: false });
-
-        // Assert
-        expect(result.type).toBe('blob');
-        expect(new TextDecoder().decode(result.content)).toBe('xyz');
       });
     });
   });
@@ -871,7 +877,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
 
         // Act — a non-OBJECT_NOT_FOUND error is rethrown untouched.
         try {
-          await readObject(ctx, fakeId);
+          await readObject(ctx, fakeId, { verifyHash: true });
           // Assert
           expect.unreachable();
         } catch (error) {

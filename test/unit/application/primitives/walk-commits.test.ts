@@ -343,38 +343,81 @@ describe('walkCommits', () => {
     });
   });
 
-  describe('Given a corrupted loose object and default verifyHash', () => {
+  describe('Given a loose file whose bytes belong to a different commit and the default', () => {
     describe('When walkCommits is iterated', () => {
-      it('Then throws OBJECT_HASH_MISMATCH', async () => {
+      it('Then the impostor commit is yielded (unverified by default)', async () => {
         // Arrange
-        // Kills the `options.verifyHash ?? true` BooleanLiteral mutant to `false`:
-        // default must be true, otherwise a hash-mismatched object would be yielded
-        // silently.
+        // Kills the `options.verifyHash ?? false` BooleanLiteral mutant to
+        // `true`: the default must stay unverified, or the impostor bytes
+        // would be refused instead of yielded.
         const ctx = await buildSeededContext();
-        // Build a valid commit, then overwrite its loose file with different content.
         const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
         const treeId = await writeObject(ctx, tree);
-        const commitId = await createCommit(ctx, {
+        const commitA = await createCommit(ctx, {
           tree: treeId,
           parents: [],
           author: AUTHOR,
           committer: AUTHOR,
           message: 'original',
         });
-        // Now corrupt the commit's loose file.
+        const commitB = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          message: 'impostor',
+        });
+        // Overwrite commitA's loose file with commitB's bytes.
         const { computeLooseObjectPath } = await import(
           '../../../../src/domain/storage/loose-path.js'
         );
-        const bogus = new TextEncoder().encode('commit 3\0xyz');
-        const compressed = await ctx.compressor.deflate(bogus);
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitId)}`,
-          compressed,
+        const bPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
+        const aPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
+        const bBytes = await ctx.fs.read(bPath);
+        await ctx.fs.write(aPath, bBytes);
+
+        // Act
+        const commits = await collect(walkCommits(ctx, { from: [commitA] }));
+
+        // Assert
+        expect(commits.length).toBeGreaterThanOrEqual(1);
+        expect(commits[0]?.data.message).toMatch(/impostor/);
+      });
+    });
+  });
+
+  describe('Given verifyHash=true and a loose file whose bytes belong to a different commit', () => {
+    describe('When walkCommits is iterated', () => {
+      it('Then throws OBJECT_HASH_MISMATCH', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, tree);
+        const commitA = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'original',
+        });
+        const commitB = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          message: 'impostor',
+        });
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
         );
+        const bPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
+        const aPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
+        const bBytes = await ctx.fs.read(bPath);
+        await ctx.fs.write(aPath, bBytes);
 
         // Act + Assert
         try {
-          for await (const _ of walkCommits(ctx, { from: [commitId] })) void _;
+          for await (const _ of walkCommits(ctx, { from: [commitA], verifyHash: true })) void _;
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');

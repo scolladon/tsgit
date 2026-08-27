@@ -144,7 +144,7 @@ const buildResult = (
 
 const resolveExternalBase = async (ctx: Context, baseOid: ObjectId) => {
   try {
-    const obj = await readObject(ctx, baseOid);
+    const obj = await readObject(ctx, baseOid, { verifyHash: true });
     const raw = serializeObject(obj, ctx.hashConfig);
     const { contentOffset } = parseHeader(raw);
     return { type: obj.type, content: raw.subarray(contentOffset) };
@@ -177,7 +177,7 @@ const findMissingPrerequisites = async (
 
 const isMissingObject = async (ctx: Context, oid: ObjectId): Promise<boolean> => {
   try {
-    await readObject(ctx, oid);
+    await readObject(ctx, oid, { verifyHash: true });
     return false;
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return true;

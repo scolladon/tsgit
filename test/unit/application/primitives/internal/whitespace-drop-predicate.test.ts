@@ -591,8 +591,11 @@ describe('isWhitespaceOnlyModify', () => {
 
   describe('Given a corrupted loose blob resolved buffered', () => {
     describe('When isWhitespaceOnlyModify is called at the default gate', () => {
-      it('Then throws objectHashMismatch', async () => {
-        // Arrange
+      it('Then it compares the unverified bytes without throwing', async () => {
+        // Arrange — `openBlobSource` has no `verifyHash` knob reachable from
+        // this predicate, so it always runs at the ambient default (off);
+        // both sides read the SAME corrupted loose file, so the comparison
+        // sees identical (if wrong) bytes on both sides.
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, enc.encode('original\n'));
         const corruptContent = enc.encode('CORRUPTED\n');
@@ -605,19 +608,11 @@ describe('isWhitespaceOnlyModify', () => {
         await ctx.fs.write(loosePath, compressed);
         const change = changeFor(id, id);
 
-        // Act + Assert
-        try {
-          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(TsgitError);
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
-          if (data.code === 'OBJECT_HASH_MISMATCH') {
-            expect(data.expected).toBe(id);
-            expect(data.actual).not.toBe(id);
-          }
-        }
+        // Act
+        const result = await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
+
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

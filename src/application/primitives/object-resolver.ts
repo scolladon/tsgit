@@ -227,18 +227,27 @@ export async function looseCompressedBytes(
   return readLooseCompressed(ctx, id);
 }
 
+/**
+ * The unverified arm skips the hash entirely (F15's sync fast path for a
+ * delta-cache hit), so it carries its OWN abort poll rather than relying on
+ * the one between hash and compare below — omitting it would let a cache-hot
+ * read return without ever observing an abort raised while this call was in
+ * flight, unlike every other branch.
+ */
 async function verifyAndReturn(
   ctx: Context,
   id: ObjectId,
   bytes: Uint8Array,
   verifyHash: boolean,
 ): Promise<Uint8Array> {
-  if (verifyHash) {
-    const actual = (await ctx.hash.hashHex(bytes)) as ObjectId;
+  if (!verifyHash) {
     checkAborted(ctx);
-    if (actual !== id) {
-      throw objectHashMismatch(id, actual);
-    }
+    return bytes;
+  }
+  const actual = (await ctx.hash.hashHex(bytes)) as ObjectId;
+  checkAborted(ctx);
+  if (actual !== id) {
+    throw objectHashMismatch(id, actual);
   }
   return bytes;
 }

@@ -77,7 +77,7 @@ export async function openBlobSource(
   maxBufferedBytes: number,
   options?: StreamBlobOptions,
 ): Promise<BlobSource> {
-  const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? true };
+  const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? false };
 
   checkAborted(ctx);
   // Same store-setup gate as resolveObjectBytes: a structurally

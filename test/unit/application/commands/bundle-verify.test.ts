@@ -339,6 +339,42 @@ describe('bundleVerify', () => {
     });
   });
 
+  // ── prerequisite hash verification (bundle verify opts in explicitly) ────
+
+  describe('Given a range bundle whose prerequisite object is present but corrupt', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then it refuses (bundle verify opts into hash verification)', async () => {
+        // Arrange — build a two-commit repo, create a range bundle so commit1
+        // is a prerequisite, then corrupt its stored loose bytes.
+        const { ctx, commit1 } = await buildTwoCommitRepo();
+        const createResult = await bundleCreate(ctx, {
+          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+        });
+        await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
+        // F2.3 also populates the delta cache when `bundleCreate` reads
+        // commit1's loose bytes above; drop that entry so the corrupted loose
+        // file below is actually read instead of being served from cache.
+        ctx.deltaCache.delete(commit1);
+        const prereqLoosePath = `${ctx.layout.gitDir}/objects/${commit1.slice(0, 2)}/${commit1.slice(2)}`;
+        const bogus = enc.encode('commit 3\0xyz');
+        const compressed = await ctx.compressor.deflate(bogus);
+        await ctx.fs.write(prereqLoosePath, compressed);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
+      });
+    });
+  });
+
   // ── full pack parse (corrupt pack) ────────────────────────────────────────
 
   describe('Given bundle bytes with a flipped byte in the pack body', () => {

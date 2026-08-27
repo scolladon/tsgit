@@ -136,7 +136,7 @@ export async function readObject(
   id: ObjectId,
   options?: ReadObjectOptions,
 ): Promise<GitObject> {
-  const verifyHash = options?.verifyHash ?? true;
+  const verifyHash = options?.verifyHash ?? false;
   const registry = getPackRegistry(ctx);
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObject(ctx, registry, id, verifyHash, options?.maxBytes),
@@ -148,7 +148,7 @@ export async function readRawObject(
   id: ObjectId,
   options?: ReadObjectOptions,
 ): Promise<RawObject> {
-  const verifyHash = options?.verifyHash ?? true;
+  const verifyHash = options?.verifyHash ?? false;
   const registry = getPackRegistry(ctx);
   return withLazyFetchRetry(ctx, id, registry, async () =>
     splitObject(await resolveObjectBytes(ctx, registry, id, verifyHash, options?.maxBytes)),

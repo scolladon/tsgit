@@ -84,7 +84,7 @@ export async function* commitDateWalk(
   options: CommitDateWalkOptions,
 ): AsyncIterable<DateWalkStep> {
   const shallow = await resolveShallow(ctx, options.shallow);
-  const verifyHash = options.verifyHash ?? true;
+  const verifyHash = options.verifyHash ?? false;
   const ignoreMissing = options.ignoreMissing ?? false;
   // `seen` already prevents any re-read, so the reader's missing-memo is inert
   // here; it satisfies the shared contract without a second set.

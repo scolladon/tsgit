@@ -429,7 +429,7 @@ describe('openBlobSource', () => {
 
         // Act + Assert
         try {
-          await openBlobSource(ctx, wrongId, MAX_BUFFERED_BLOB_BYTES);
+          await openBlobSource(ctx, wrongId, MAX_BUFFERED_BLOB_BYTES, { verifyHash: true });
           expect.unreachable();
         } catch (error) {
           expect(error).toBeInstanceOf(TsgitError);
@@ -445,7 +445,37 @@ describe('openBlobSource', () => {
   });
 
   describe('Given a corrupted loose object resolved buffered', () => {
-    describe('When openBlobSource is called with verifyHash default (true)', () => {
+    describe('When openBlobSource is called with the default', () => {
+      it('Then it returns the corrupt bytes (unverified by default)', async () => {
+        // Arrange
+        // Kills the `options?.verifyHash ?? false` BooleanLiteral mutant to
+        // `true`: the default must stay unverified, or corrupt bytes would be
+        // refused instead of returned.
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('original content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const corruptContent = ENC.encode('CORRUPTED content');
+        const corruptBytes = looseFormatBytes('blob', corruptContent);
+        const compressed = await ctx.compressor.deflate(corruptBytes);
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        await ctx.fs.write(loosePath, compressed);
+
+        // Act
+        const result = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(result.kind).toBe('bytes');
+        if (result.kind === 'bytes') {
+          expect(result.content).toEqual(corruptContent);
+        }
+      });
+    });
+
+    describe('When openBlobSource is called with verifyHash true', () => {
       it('Then throws objectHashMismatch before returning (eager verification)', async () => {
         // Arrange
         const blob: Blob = {
@@ -462,7 +492,7 @@ describe('openBlobSource', () => {
 
         // Act + Assert
         try {
-          await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+          await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, { verifyHash: true });
           expect.unreachable();
         } catch (error) {
           expect(error).toBeInstanceOf(TsgitError);
@@ -475,9 +505,11 @@ describe('openBlobSource', () => {
         }
       });
     });
+  });
 
-    describe('When openBlobSource is called with verifyHash false', () => {
-      it('Then resolves without throwing (opt-out)', async () => {
+  describe('Given a corrupted loose object resolved streamed (gate at 0)', () => {
+    describe('When the returned stream is drained with the default', () => {
+      it('Then it yields the corrupt bytes (unverified by default)', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -493,21 +525,18 @@ describe('openBlobSource', () => {
         await ctx.fs.write(loosePath, compressed);
 
         // Act
-        const result = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, {
-          verifyHash: false,
-        });
+        const result = await openBlobSource(ctx, id, 0);
 
         // Assert
-        expect(result.kind).toBe('bytes');
-        if (result.kind === 'bytes') {
-          expect(result.content).toEqual(corruptContent);
+        expect(result.kind).toBe('stream');
+        if (result.kind === 'stream') {
+          const drained = await collect(result.stream);
+          expect(drained).toEqual(corruptContent);
         }
       });
     });
-  });
 
-  describe('Given a corrupted loose object resolved streamed (gate at 0)', () => {
-    describe('When the returned stream is drained', () => {
+    describe('When the returned stream is drained with verifyHash true', () => {
       it('Then throws objectHashMismatch lazily, on first drain', async () => {
         // Arrange
         const blob: Blob = {
@@ -523,7 +552,7 @@ describe('openBlobSource', () => {
         await ctx.fs.write(loosePath, compressed);
 
         // Act — resolves fine; the stream itself is not yet drained
-        const result = await openBlobSource(ctx, id, 0);
+        const result = await openBlobSource(ctx, id, 0, { verifyHash: true });
 
         // Assert
         expect(result.kind).toBe('stream');

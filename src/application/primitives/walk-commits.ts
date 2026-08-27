@@ -39,7 +39,7 @@ interface WalkSession {
 async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Promise<WalkSession> {
   const order = options.order ?? 'topo';
   const ignoreMissing = options.ignoreMissing ?? false;
-  const verifyHash = options.verifyHash ?? true;
+  const verifyHash = options.verifyHash ?? false;
   const shallow = await resolveShallow(ctx, options.shallow);
   const state: WalkState = {
     queue: [...options.from],
