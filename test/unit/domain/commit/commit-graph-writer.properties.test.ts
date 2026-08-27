@@ -34,22 +34,22 @@ describe('serializeCommitGraph properties', () => {
             const hashConfig = hashVersion === 1 ? SHA1_CONFIG : SHA256_CONFIG;
 
             const bytes = serializeCommitGraph(commits, hashConfig);
-            const sut = parseCommitGraphLayer(bytes);
+            const result = parseCommitGraphLayer(bytes);
 
-            expect(sut.hashVersion).toBe(hashVersion);
-            expect(sut.commitCount).toBe(commits.length);
-            expect(sut.numBaseGraphs).toBe(0);
+            expect(result.hashVersion).toBe(hashVersion);
+            expect(result.commitCount).toBe(commits.length);
+            expect(result.numBaseGraphs).toBe(0);
 
             for (const commit of commits) {
-              const localPos = positionOf(sut, commit.id);
+              const localPos = positionOf(result, commit.id);
               expect(localPos).not.toBeUndefined();
-              const data = commitDataAt(sut, localPos!);
+              const data = commitDataAt(result, localPos!);
 
               expect(data.rootTree).toBe(commit.rootTree);
               expect(data.committerDate).toBe(commit.committerDate);
 
-              const expectedParentPositions = commit.parents.map((id) => positionOf(sut, id)!);
-              expect(readParentPositions(sut, localPos!)).toEqual(expectedParentPositions);
+              const expectedParentPositions = commit.parents.map((id) => positionOf(result, id)!);
+              expect(readParentPositions(result, localPos!)).toEqual(expectedParentPositions);
             }
           }),
           { numRuns: 200 },

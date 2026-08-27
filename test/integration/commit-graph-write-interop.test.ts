@@ -187,7 +187,7 @@ function expectGitVerifiesSilently(dir: string): void {
 }
 
 describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
-  describe('Given a linear history built with real git', () => {
+  describe('Given a linear history built with real git, When tsgit writes the commit-graph', () => {
     let baseDir: string;
 
     beforeAll(async () => {
@@ -210,7 +210,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 
-  describe('Given a two-parent merge history built with real git', () => {
+  describe('Given a two-parent merge history built with real git, When tsgit writes the commit-graph', () => {
     let baseDir: string;
 
     beforeAll(async () => {
@@ -233,7 +233,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 
-  describe('Given a four-parent octopus merge built with real git', () => {
+  describe('Given a four-parent octopus merge built with real git, When tsgit writes the commit-graph', () => {
     let baseDir: string;
 
     beforeAll(async () => {
@@ -258,7 +258,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 
-  describe('Given a --object-format=sha256 repository built with real git', () => {
+  describe('Given a --object-format=sha256 repository built with real git, When tsgit writes the commit-graph', () => {
     let baseDir: string;
 
     beforeAll(async () => {
@@ -282,7 +282,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 
-  describe('Given a SHA-1 chain whose corrected-date offset overflows 0x7fffffff', () => {
+  describe('Given a SHA-1 chain whose corrected-date offset overflows 0x7fffffff, When tsgit writes the commit-graph', () => {
     let baseDir: string;
 
     beforeAll(async () => {
@@ -307,7 +307,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 
-  describe('Given a SHA-256 chain whose corrected-date offset overflows 0x7fffffff', () => {
+  describe('Given a SHA-256 chain whose corrected-date offset overflows 0x7fffffff, When tsgit writes the commit-graph', () => {
     let baseDir: string;
 
     beforeAll(async () => {
@@ -332,7 +332,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 
-  describe("Given a repo with a commit reachable only from a deleted branch's reflog", () => {
+  describe("Given a repo with a commit reachable only from a deleted branch's reflog, When tsgit writes the commit-graph", () => {
     let repo: ReflogOnlyRepo;
 
     beforeAll(async () => {
