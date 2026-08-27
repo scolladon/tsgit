@@ -47,7 +47,7 @@ interface IndexCacheEntry {
 // reference is mutable so test code can swap in a fresh WeakMap and
 // guarantee isolation between cases that re-use the same session — mirrors
 // `config-read.ts`'s own reset story.
-let cache: WeakMap<Context['session'], IndexCacheEntry> = new WeakMap();
+const cache: WeakMap<Context['session'], IndexCacheEntry> = new WeakMap();
 
 const keyFrom = (stat: FileStat): IndexCacheKey => ({
   size: stat.size,
@@ -177,9 +177,4 @@ export async function readIndex(ctx: Context): Promise<GitIndex> {
  */
 export const invalidateIndexCache = (ctx: Context): void => {
   cache.delete(ctx.session);
-};
-
-/** @internal — test-only cache reset between cases. */
-export const __resetIndexCacheForTests = (): void => {
-  cache = new WeakMap();
 };
