@@ -563,6 +563,46 @@ describe('maintenance', () => {
     });
   });
 
+  describe("Given a commit reachable only from a linked worktree's detached HEAD", () => {
+    describe('When gc runs with a cutoff that would otherwise destroy it', () => {
+      it('Then it survives — matching git rooting reachability across every worktree', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const wtBlobId = await writeLooseBlob(ctx, 'worktree-only');
+        const wtTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.REGULAR, name: 'wt.txt', id: wtBlobId }],
+        });
+        const wtCommitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: wtTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'worktree-only',
+            extraHeaders: [],
+          },
+        });
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${wtCommitId}\n`);
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt1/.git\n');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        await expect(readObject(ctx, wtCommitId)).resolves.toMatchObject({ type: 'commit' });
+        await expect(readObject(ctx, wtTreeId)).resolves.toMatchObject({ type: 'tree' });
+        await expect(readObject(ctx, wtBlobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // mtime provenance
   // ---------------------------------------------------------------------

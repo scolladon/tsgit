@@ -3,9 +3,13 @@ import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/inde
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
+import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
+import { errorDataCode } from '../../../primitives/internal/error-data-code.js';
+import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
+import { commonGitDir } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
 import { listReflogs, readReflog } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
@@ -280,22 +284,84 @@ export async function collectRoots(
   return { roots, missingEntryPoint, sawAbsentRefTarget };
 }
 
+/** Strip a trailing `/.git` from `dir`; absent means `dir` itself — the same
+ *  "gitdir file to working-tree path" rule `listWorktrees` uses. */
+const GIT_SUFFIX = '/.git';
+const stripGitSuffix = (dir: string): string =>
+  dir.endsWith(GIT_SUFFIX) ? dir.slice(0, -GIT_SUFFIX.length) : dir;
+
+function isMissingGitdirFile(error: unknown): boolean {
+  return errorDataCode(error) === 'FILE_NOT_FOUND';
+}
+
+/**
+ * Roots one linked worktree's own retention state: its HEAD, its
+ * per-worktree refs (`refs/bisect/…`, `refs/worktree/…`, `refs/rewritten/…`
+ * — whatever `enumerateRefs` resolves through that worktree's own admin
+ * dir), and its own index — git's `other_head_refs()` plus a per-worktree
+ * index walk. A worktree whose `gitdir` pointer is gone (prunable, `git
+ * worktree prune`'s job, not gc's) contributes nothing.
+ */
+async function addOneWorktreeRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  id: string,
+  adminDir: string,
+): Promise<void> {
+  let gitdirPointer: string;
+  try {
+    gitdirPointer = resolveWorktreePath(
+      adminDir,
+      (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim(),
+    );
+  } catch (err) {
+    if (isMissingGitdirFile(err)) return;
+    throw err;
+  }
+  const worktreePath = stripGitSuffix(gitdirPointer);
+  const worktreeCtx = deriveWorktreeContext(ctx, id, worktreePath);
+  await addRefRoots(worktreeCtx, roots);
+  await addIndexRoots(worktreeCtx, roots);
+}
+
+/**
+ * Roots every OTHER (linked) worktree registered under
+ * `${commonGitDir}/worktrees/*` — the main worktree's own HEAD/refs/index
+ * are already covered by `collectRetentionRoots`'s own calls against `ctx`
+ * itself. Pinned against git 2.55.0: `git gc --prune=now` keeps an object
+ * reachable ONLY from a linked worktree's own (possibly detached) HEAD —
+ * without this, gc would cruft-then-destroy a subgraph another worktree is
+ * actively using.
+ */
+async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
+  const root = `${commonGitDir(ctx)}/worktrees`;
+  if (!(await ctx.fs.exists(root))) return;
+  for (const entry of await ctx.fs.readdir(root)) {
+    if (!entry.isDirectory) continue;
+    await addOneWorktreeRoots(ctx, roots, entry.name, `${root}/${entry.name}`);
+  }
+}
+
 /**
  * Retention roots for `maintenance`'s `gc` task (Pin H): every resolvable
- * ref (HEAD included), every reflog old/new oid, and the index — stage-0
- * entries plus its cache-tree, when present. Unlike `collectRoots`, this
- * takes no pre-built object universe: gc is discovering the loose/cruft
- * candidate set the reachability walk will need, not consuming a finished
- * enumeration, so a universe would be the wrong cost shape here. Every
- * collector therefore runs unbounded — an unresolvable ref, cache-tree
- * entry or reflog simply roots nothing, the same tolerance `collectRoots`'s
- * own try/catch blocks already apply; gc has nothing analogous to fsck's
- * corruption report to raise from a miss.
+ * ref (HEAD included), every reflog old/new oid, the index — stage-0
+ * entries plus its cache-tree, when present — and every OTHER worktree's
+ * own HEAD, per-worktree refs and index (`addOtherWorktreeRoots`), matching
+ * git rooting reachability across every worktree, not just the one gc is
+ * invoked from. Unlike `collectRoots`, this takes no pre-built object
+ * universe: gc is discovering the loose/cruft candidate set the
+ * reachability walk will need, not consuming a finished enumeration, so a
+ * universe would be the wrong cost shape here. Every collector runs
+ * unbounded — an unresolvable ref, cache-tree entry or reflog simply roots
+ * nothing, the same tolerance `collectRoots`'s own try/catch blocks already
+ * apply; gc has nothing analogous to fsck's corruption report to raise
+ * from a miss.
  */
 export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<ObjectId>> {
   const roots = new Set<ObjectId>();
   await addRefRoots(ctx, roots);
   await addReflogRoots(ctx, roots);
   await addIndexRoots(ctx, roots);
+  await addOtherWorktreeRoots(ctx, roots);
   return roots;
 }

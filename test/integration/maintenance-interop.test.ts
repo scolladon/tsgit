@@ -1007,4 +1007,42 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       await disposeTwin(twin);
     });
   });
+
+  describe('Given a linked worktree holding a commit reachable only from its own detached HEAD, When gc runs on both twins', () => {
+    let baseDir: string;
+    let wtCommitId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('worktree-retention');
+      const c0 = await addCommit(baseDir, 'c0');
+      const c1 = await addCommit(baseDir, 'wt-only');
+      wtCommitId = c1;
+      // `main` moves back to c0 — c1 (and its tree/blob) is now reachable
+      // ONLY through the linked worktree's own detached HEAD, never through
+      // any ref or reflog in the main checkout.
+      git(baseDir, 'reset', '-q', '--hard', c0);
+      git(baseDir, 'worktree', 'add', '--detach', '-q', 'wt1', c1);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it("Then both tools keep it — gc roots every worktree's own HEAD, not just the one it runs from", async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'worktree-retention');
+
+      // Act — the twins' `.git/worktrees/wt1/gitdir` pointer still names the
+      // ORIGINAL `baseDir/wt1` path (a plain recursive copy doesn't rewrite
+      // it, and real git's own gc doesn't need it resolvable either — it
+      // reads `.git/worktrees/wt1/HEAD` directly), so this deliberately runs
+      // WITHOUT `git worktree repair` on either twin.
+      await runBothGc(twin, ['gc.pruneExpire=now']);
+
+      // Assert
+      expect(catFileExists(twin.peerDir, wtCommitId)).toBe(true);
+      expect(catFileExists(twin.oursDir, wtCommitId)).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
 });
