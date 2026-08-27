@@ -16,7 +16,7 @@ import type { BlameEntry } from '../../domain/blame/types.js';
 import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js';
-import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
+import { diffPresplitLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
@@ -101,19 +101,20 @@ export interface BlameResult {
 }
 
 /**
- * A suspect (commit, path) with its blob and the lines still blamed on it.
- * `lines` is the blob split once and carried forward — a TREESAME hop reuses
- * the same array, and a changed hop reuses the diff's own split rather than
- * re-splitting. `oidChain` is `[rootTree, subtree…, blob]` for `path` in
- * `commit`, letting an ancestor's resolution stop at the first level whose
- * oid matches (git's content-addressing: an equal oid means byte-identical
- * content below it). `commitData` is this suspect's own commit, already read
- * by whoever discovered it — never re-read when the suspect is processed.
+ * A suspect (commit, path) with the lines still blamed on it. `lines` is the
+ * blob split once and carried forward — a TREESAME hop reuses the same
+ * array, and a changed hop reuses the diff's own split rather than
+ * re-splitting; no raw blob bytes are kept once `lines` exists, since every
+ * consumer (the diff, finalization) reads lines, never bytes. `oidChain` is
+ * `[rootTree, subtree…, blob]` for `path` in `commit`, letting an ancestor's
+ * resolution stop at the first level whose oid matches (git's
+ * content-addressing: an equal oid means byte-identical content below it).
+ * `commitData` is this suspect's own commit, already read by whoever
+ * discovered it — never re-read when the suspect is processed.
  */
 interface Suspect {
   readonly commit: ObjectId;
   readonly path: FilePath;
-  readonly blob: Uint8Array;
   readonly blobId: ObjectId;
   readonly entries: ReadonlyArray<BlameEntry>;
   readonly lines: ReadonlyArray<Uint8Array>;
@@ -185,31 +186,32 @@ const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath):
   const head = await resolveCommitIsh(sb.ctx, DEFAULT_REV);
   const data = await readCommitData(sb.ctx, head);
   const workingBlob = await readWorkingFile(sb.ctx, workDir, path);
-  const count = splitLines(workingBlob).length;
+  const workingLines = splitLines(workingBlob);
   // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty working file; without the guard the zero-count entry flows through splitAgainstParent/finalize and yields no lines, the same empty result (mirrors the committed-rev seed guard below)
-  if (count === 0) return;
-  const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
+  if (workingLines.length === 0) return;
+  const whole: ReadonlyArray<BlameEntry> = [
+    { finalStart: 0, count: workingLines.length, sourceStart: 0 },
+  ];
   const resolved = await findTreeEntryChain(sb.ctx, data.tree, pathSegments(path));
   if (resolved !== undefined && isBlameableEntry(resolved.entry)) {
     const headContent = (await readBlob(sb.ctx, resolved.entry.id)).content;
-    const diff = diffLines(headContent, workingBlob);
+    const diff = diffPresplitLines(splitLines(headContent), workingLines);
     const { passed, kept } = splitAgainstParent(whole, diff);
     schedule(sb, {
       commit: head,
       path,
-      blob: headContent,
       blobId: resolved.entry.id,
       entries: passed,
       lines: diff.oursLines,
       oidChain: resolved.oidChain,
       commitData: data,
     });
-    finalizeUncommitted(sb, path, workingBlob, kept, { commit: head, path });
+    finalizeUncommitted(sb, path, workingLines, kept, { commit: head, path });
     return;
   }
   const index = await readIndex(sb.ctx);
   if (index.entries.some((entry) => entry.path === path)) {
-    finalizeUncommitted(sb, path, workingBlob, whole, undefined);
+    finalizeUncommitted(sb, path, workingLines, whole, undefined);
     return;
   }
   throw pathNotInTree(DEFAULT_REV, path);
@@ -233,11 +235,10 @@ const readWorkingFile = async (
 const finalizeUncommitted = (
   sb: Scoreboard,
   path: FilePath,
-  blob: Uint8Array,
+  lines: ReadonlyArray<Uint8Array>,
   entries: ReadonlyArray<BlameEntry>,
   previous: BlameLine['previous'],
 ): void => {
-  const lines = splitLines(blob);
   for (const entry of entries) {
     for (const offset of offsets(entry.count)) {
       sb.finalized.push({ committed: false, ...baseLine(entry, offset, lines, path, previous) });
@@ -278,7 +279,6 @@ const seed = async (
   schedule(sb, {
     commit,
     path,
-    blob,
     blobId: resolved.entry.id,
     entries: [{ finalStart: 0, count: lines.length, sourceStart: 0 }],
     lines,
@@ -320,7 +320,6 @@ const applyParentResolution = (
     schedule(sb, {
       commit: parent,
       path: resolved.sourcePath,
-      blob: suspect.blob,
       blobId: suspect.blobId,
       entries: remaining,
       lines: suspect.lines,
@@ -329,12 +328,13 @@ const applyParentResolution = (
     });
     return [];
   }
-  const diff = diffLines(resolved.blob, suspect.blob);
+  // `suspect.lines` is already split (carried from whoever scheduled this
+  // suspect); only `resolved.blob` — freshly read this hop — needs it.
+  const diff = diffPresplitLines(splitLines(resolved.blob), suspect.lines);
   const { passed, kept } = splitAgainstParent(remaining, diff);
   schedule(sb, {
     commit: parent,
     path: resolved.sourcePath,
-    blob: resolved.blob,
     blobId: resolved.blobId,
     entries: passed,
     lines: diff.oursLines,

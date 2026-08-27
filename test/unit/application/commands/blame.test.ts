@@ -515,6 +515,33 @@ describe('Given a suspect whose blob is unchanged across three generations', () 
   });
 });
 
+describe('Given a two-commit history where the parent hop actually changes the file', () => {
+  describe('When the file is blamed', () => {
+    it('Then the changed-parent hop diffs via diffPresplitLines, passing the carried suspect.lines as theirsLines unchanged', async () => {
+      // Arrange — c1 introduces f.txt, c2 modifies it: the c1 hop diffs c1's
+      // freshly-split blob against c2's ALREADY-split suspect.lines, by
+      // reference, rather than handing diffLines raw bytes to re-split.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'a\nb-mod\n');
+      const diffLinesSpy = vi.spyOn(lineDiffMod, 'diffLines');
+      const diffPresplitLinesSpy = vi.spyOn(lineDiffMod, 'diffPresplitLines');
+
+      // Act
+      await blame(ctx, 'f.txt', { rev: c2 });
+
+      // Assert
+      expect(diffLinesSpy).not.toHaveBeenCalled();
+      expect(diffPresplitLinesSpy).toHaveBeenCalledTimes(1);
+      const [oursLines, theirsLines] = diffPresplitLinesSpy.mock.calls[0]!;
+      expect(theirsLines).toEqual(lineDiffMod.splitLines(new TextEncoder().encode('a\nb-mod\n')));
+      expect(oursLines).toEqual(lineDiffMod.splitLines(new TextEncoder().encode('a\nb\n')));
+      diffLinesSpy.mockRestore();
+      diffPresplitLinesSpy.mockRestore();
+    });
+  });
+});
+
 describe('Given a merge commit with two parents', () => {
   describe('When the merge tip is blamed', () => {
     it('Then each parent commit object is read once', async () => {
