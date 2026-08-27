@@ -700,6 +700,27 @@ describe('Given a commit whose `tree` field points at a non-tree object', () => 
   });
 });
 
+describe('Given a blamed line living inside an otherwise-large blob', () => {
+  describe('When the file is blamed', () => {
+    it("Then a finalized line's content does not retain the whole inflated blob buffer", async () => {
+      // Arrange — one real line, padded with many throwaway lines so the
+      // blob is large; only the first line survives to be blamed.
+      const ctx = await seed();
+      const padding = Array.from({ length: 500 }, (_, i) => `pad${i}\n`).join('');
+      await commitFile(ctx, 'c1', 'f.txt', `real\n${padding}`);
+
+      // Act
+      const result = await blame(ctx, 'f.txt');
+      const content = result.lines[0]!.content;
+
+      // Assert — a copy's own backing buffer is exactly its own length; a
+      // subarray view into the original (much larger) blob would report the
+      // blob's full byte length instead.
+      expect(content.buffer.byteLength).toBe(content.byteLength);
+    });
+  });
+});
+
 describe('Given a rename of a file inside a subdirectory', () => {
   describe('When blaming it under the new nested name', () => {
     it('Then the rename is followed across the subtree to the originating commit', async () => {

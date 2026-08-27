@@ -380,7 +380,10 @@ const baseLine = (
   sourceLine: entry.sourceStart + offset + 1,
   sourcePath,
   ...(previous !== undefined ? { previous } : {}),
-  content: lines[entry.sourceStart + offset] as Uint8Array,
+  // A copy, not the split's subarray VIEW — `sb.finalized` lives for the
+  // whole blame run, so one surviving line would otherwise pin its commit's
+  // entire inflated blob buffer for the run's duration.
+  content: (lines[entry.sourceStart + offset] as Uint8Array).slice(),
 });
 
 /** `[0, 1, …, count-1]` — a range with no mutable index to invert into a hang. */
