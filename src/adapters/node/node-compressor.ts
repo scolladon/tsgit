@@ -5,7 +5,6 @@ import {
   deflateRaw as deflateRawCallback,
   deflateRawSync,
   deflateSync,
-  inflate as inflateCallback,
   inflateSync,
 } from 'node:zlib';
 import { compressFailed, decompressFailed } from '../../domain/index.js';
@@ -13,7 +12,6 @@ import type { Compressor, InflateStreamResult } from '../../ports/compressor.js'
 
 const deflateAsync = promisify(deflateCallback);
 const deflateRawAsync = promisify(deflateRawCallback);
-const inflateAsync = promisify(inflateCallback);
 
 /** @internal Exported so we can exercise the non-Error fallback branch under unit tests. */
 export function describeError(err: unknown): string {
@@ -30,10 +28,12 @@ const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
  * Below this size, dispatching to Node's callback zlib API costs more than it
  * saves: the hop to the libuv threadpool and back is fixed overhead that a
  * sub-millisecond `*Sync` call doesn't have. Above it, the callback API's
- * threadpool dispatch lets concurrent calls (bounded by `limitFor(ctx,
- * 'cpuBound')` at the call sites that pool this work) genuinely overlap
- * instead of serializing on the one JS thread the way a promise-wrapped sync
- * call does.
+ * threadpool dispatch lets concurrent calls genuinely overlap instead of
+ * serializing on the one JS thread the way a promise-wrapped sync call does.
+ *
+ * This gate applies to `deflate`/`deflateRaw` ONLY. `inflate` stays on
+ * `inflateSync` at every size — see the measured table below, where
+ * decompression never crosses over in the measured range.
  *
  * MEASURED, not derived — A/B at concurrency 4 (`min(cores, threadpoolWidth)`
  * on the measuring machine: 11 cores, default `UV_THREADPOOL_SIZE`=4), 64
@@ -50,11 +50,8 @@ const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
  * calls beat four serialized sync calls well before 16 KiB, and the win only
  * grows at 64 KiB. `inflate` never crosses over in this range: decompression
  * is cheap enough per byte that dispatch overhead still dominates at 64 KiB,
- * costing a small, bounded (~1-1.5 ms per call, not growing with size here)
- * regression on the decompress path. 16 KiB is chosen over 64 KiB so the
- * (larger, better-established) `deflate` win reaches a bigger share of
- * real payloads, accepting the disclosed `inflate` trade-off rather than
- * deferring it to a size class few objects ever reach.
+ * costing a bounded (~1-1.5 ms per call, not growing with size here)
+ * regression — which is why `inflate` does not gate on this threshold at all.
  */
 export const CALLBACK_DISPATCH_THRESHOLD_BYTES = 16 * 1024;
 
@@ -80,8 +77,10 @@ export class NodeCompressor implements Compressor {
 
   /** Above the threshold, dispatch through Node's callback zlib API (libuv
    *  threadpool, genuine overlap); at or below it, the sync API's dispatch
-   *  overhead outweighs any parallelism it could offer. See
-   *  `CALLBACK_DISPATCH_THRESHOLD_BYTES` for the measured table. */
+   *  overhead outweighs any parallelism it could offer. Consulted by
+   *  `deflate`/`deflateRaw` only — `inflate` never crosses over (see
+   *  `CALLBACK_DISPATCH_THRESHOLD_BYTES` for the measured table) and always
+   *  stays on `inflateSync`. */
   private usesCallbackDispatch(data: Uint8Array): boolean {
     return data.length > CALLBACK_DISPATCH_THRESHOLD_BYTES;
   }
@@ -118,11 +117,12 @@ export class NodeCompressor implements Compressor {
     }
   };
 
+  // Always synchronous: decompression is cheap enough per byte that the
+  // libuv threadpool hop never pays off in the measured range — see
+  // CALLBACK_DISPATCH_THRESHOLD_BYTES. Unlike deflate/deflateRaw, inflate
+  // does not gate on payload size.
   inflate = async (data: Uint8Array): Promise<Uint8Array> => {
     try {
-      if (this.usesCallbackDispatch(data)) {
-        return new Uint8Array(await inflateAsync(data, { maxOutputLength: this.maxInflatedBytes }));
-      }
       return new Uint8Array(inflateSync(data, { maxOutputLength: this.maxInflatedBytes }));
     } catch (err) {
       throw decompressFailed(describeError(err));

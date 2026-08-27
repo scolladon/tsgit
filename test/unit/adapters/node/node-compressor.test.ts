@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { promisify } from 'node:util';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CALLBACK_DISPATCH_THRESHOLD_BYTES,
@@ -799,7 +800,7 @@ describe('NodeCompressor', () => {
       });
 
       describe('When inflate runs on a payload exactly at the threshold', () => {
-        it('Then the synchronous path is used (the boundary is strictly greater-than)', async () => {
+        it('Then the synchronous path is used', async () => {
           // Arrange
           const sut = new NodeCompressor();
           const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES);
@@ -814,8 +815,10 @@ describe('NodeCompressor', () => {
       });
 
       describe('When inflate runs on a payload above the threshold', () => {
-        it('Then the callback path is used, not the synchronous path', async () => {
-          // Arrange
+        it('Then the synchronous path is still used — inflate never dispatches to the callback binding', async () => {
+          // Arrange — inflate is cheap enough per byte that the threadpool hop
+          // never pays off in the measured range (see CALLBACK_DISPATCH_THRESHOLD_BYTES);
+          // only deflate/deflateRaw gate on size.
           const sut = new NodeCompressor();
           const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
 
@@ -823,21 +826,38 @@ describe('NodeCompressor', () => {
           await sut.inflate(data).catch(() => undefined);
 
           // Assert
-          expect(inflateCallbackSpy).toHaveBeenCalledTimes(1);
-          expect(inflateSyncSpy).not.toHaveBeenCalled();
+          expect(inflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(inflateCallbackSpy).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('When inflate runs on a payload far above the threshold', () => {
+        it('Then the synchronous path is used regardless of size — no crossover exists for inflate', async () => {
+          // Arrange — several multiples of the threshold; proves this is not a
+          // narrowly-missed boundary but a size-independent guarantee.
+          const sut = new NodeCompressor();
+          const data = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES * 8);
+
+          // Act
+          await sut.inflate(data).catch(() => undefined);
+
+          // Assert
+          expect(inflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(inflateCallbackSpy).not.toHaveBeenCalled();
         });
       });
     });
 
     describe('Given a payload above the threshold that inflates past the instance cap', () => {
       describe('When inflate runs', () => {
-        it('Then it refuses with DECOMPRESS_FAILED — the cap holds exactly as it does on the synchronous path', async () => {
-          // Arrange — poorly compressible so the compressed buffer itself
-          // (the argument `inflate` gates on) lands above the dispatch threshold.
+        it('Then it refuses with DECOMPRESS_FAILED — the cap holds on the synchronous path even for a large compressed buffer', async () => {
+          // Arrange — poorly compressible so the compressed buffer itself is
+          // well above CALLBACK_DISPATCH_THRESHOLD_BYTES; inflate must still
+          // stay on the synchronous path (see the size-gate describe above).
           const sut = new NodeCompressor({ maxInflatedBytes: 4 });
           const payload = new Uint8Array(randomBytes(32 * 1024));
           const deflated = await sut.deflate(payload);
-          deflateCallbackSpy.mockClear();
+          inflateSyncSpy.mockClear();
 
           // Act
           let caught: unknown;
@@ -847,8 +867,9 @@ describe('NodeCompressor', () => {
             caught = err;
           }
 
-          // Assert — the callback path was genuinely the one exercised
-          expect(inflateCallbackSpy).toHaveBeenCalledTimes(1);
+          // Assert — the synchronous path was genuinely the one exercised
+          expect(inflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(inflateCallbackSpy).not.toHaveBeenCalled();
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
         });
@@ -879,8 +900,9 @@ describe('NodeCompressor', () => {
       });
 
       describe('When inflate runs on a payload above the threshold', () => {
-        it('Then the error surfaces as DECOMPRESS_FAILED — the same shape as the synchronous path', async () => {
-          // Arrange
+        it('Then the error surfaces as DECOMPRESS_FAILED via the synchronous path', async () => {
+          // Arrange — inflate never dispatches to the callback binding, so a
+          // large-but-bogus input must still fail through inflateSync.
           const sut = new NodeCompressor();
           const bogus = { length: CALLBACK_DISPATCH_THRESHOLD_BYTES + 1 } as unknown as Uint8Array;
 
@@ -893,9 +915,61 @@ describe('NodeCompressor', () => {
           }
 
           // Assert
-          expect(inflateCallbackSpy).toHaveBeenCalledTimes(1);
+          expect(inflateSyncSpy).toHaveBeenCalledTimes(1);
+          expect(inflateCallbackSpy).not.toHaveBeenCalled();
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        });
+      });
+    });
+
+    describe('Given a payload just below and just above the deflate size threshold', () => {
+      describe('When deflating at a fixed level via NodeCompressor, compared against the OTHER dispatch arm computed directly through node:zlib', () => {
+        it('Then output is byte-identical across the sync/callback split', async () => {
+          // Arrange — proves the size gate is purely a dispatch decision: the
+          // arm NodeCompressor didn't take, computed directly, must match the
+          // arm it did take.
+          const sut = new NodeCompressor();
+          const level = 6;
+          const below = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES);
+          const above = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
+          for (let i = 0; i < below.length; i += 1) below[i] = i & 0xff;
+          for (let i = 0; i < above.length; i += 1) above[i] = i & 0xff;
+          const rawDeflateAsync = promisify(zlib.deflate);
+
+          // Act — production path: below uses sync, above uses callback.
+          const belowViaSut = await sut.deflate(below, level);
+          const aboveViaSut = await sut.deflate(above, level);
+          // Oracle: the arm NOT taken in production, computed directly.
+          const belowViaOtherArm = new Uint8Array(await rawDeflateAsync(below, { level }));
+          const aboveViaOtherArm = new Uint8Array(zlib.deflateSync(above, { level }));
+
+          // Assert
+          expect(belowViaSut).toEqual(belowViaOtherArm);
+          expect(aboveViaSut).toEqual(aboveViaOtherArm);
+        });
+      });
+
+      describe('When deflateRaw at a fixed level via NodeCompressor, compared against the OTHER dispatch arm computed directly through node:zlib', () => {
+        it('Then output is byte-identical across the sync/callback split', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const level = 6;
+          const below = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES);
+          const above = new Uint8Array(CALLBACK_DISPATCH_THRESHOLD_BYTES + 1);
+          for (let i = 0; i < below.length; i += 1) below[i] = i & 0xff;
+          for (let i = 0; i < above.length; i += 1) above[i] = i & 0xff;
+          const rawDeflateRawAsync = promisify(zlib.deflateRaw);
+
+          // Act
+          const belowViaSut = await sut.deflateRaw(below, level);
+          const aboveViaSut = await sut.deflateRaw(above, level);
+          const belowViaOtherArm = new Uint8Array(await rawDeflateRawAsync(below, { level }));
+          const aboveViaOtherArm = new Uint8Array(zlib.deflateRawSync(above, { level }));
+
+          // Assert
+          expect(belowViaSut).toEqual(belowViaOtherArm);
+          expect(aboveViaSut).toEqual(aboveViaOtherArm);
         });
       });
     });
