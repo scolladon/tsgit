@@ -44,7 +44,7 @@ export const descendTreePath = async (
  * callers that need one (`descendTreePath`) wrap the `undefined` case.
  *
  * The root level is already-parsed (either handed in, or fetched through
- * `readTree`'s ref/peel resolution) and scanned via `findEntry` on its
+ * `readTree`'s ref/peel resolution) and scanned by a linear find over its
  * decoded entries. Every level past the root descends over raw bytes
  * (`descendOneLevel`) — no `Tree` and no `TreeEntry[]` gets built for a
  * directory just to keep the one entry the path actually needs.
@@ -56,15 +56,12 @@ export const findTreeEntry = async (
 ): Promise<TreeEntry | undefined> => {
   const segments = path.split('/');
   const rootTree = typeof root === 'string' ? await readTree(ctx, root) : root;
-  let entry = findEntry(rootTree, segments[0] as string);
+  let entry = rootTree.entries.find((candidate) => candidate.name === segments[0]);
   for (let i = 1; i < segments.length && entry !== undefined; i += 1) {
     entry = await descendOneLevel(ctx, entry.id, segments[i] as string);
   }
   return entry;
 };
-
-const findEntry = (tree: Tree, name: string): TreeEntry | undefined =>
-  tree.entries.find((candidate) => candidate.name === name);
 
 /** The leaf entry a chain descent reached, plus the per-level oid chain
  *  `[rootId, subtree…, leafId]` walked to reach it — `blame`'s TREESAME
@@ -76,32 +73,6 @@ export interface TreeChainDescent {
   readonly entry: TreeEntry;
   readonly oidChain: ReadonlyArray<ObjectId>;
 }
-
-/**
- * Full chain descent from a tree oid through `segments`, byte-scanning every
- * level including the root (unlike `findTreeEntry`, whose root branch reads
- * an already-resolved `Tree`). The root is asserted to be a tree —
- * `unexpectedObjectType` otherwise, the same refusal `readTree`'s own
- * peel-chain would raise — since a caller reaching here already knows the
- * oid is meant to BE a tree (a commit's own `tree` field, never something
- * needing ref/commit/tag peeling); an intermediate segment that turns out
- * not to be a tree stays a `PATH_NOT_IN_TREE`-shaped `undefined`, unchanged.
- */
-export const findTreeEntryChain = async (
-  ctx: Context,
-  rootId: ObjectId,
-  segments: ReadonlyArray<string>,
-): Promise<TreeChainDescent | undefined> => {
-  let entry = await scanRootLevel(ctx, rootId, segments[0] as string);
-  const chain: ObjectId[] = [rootId];
-  for (let i = 1; i < segments.length && entry !== undefined; i += 1) {
-    chain.push(entry.id);
-    entry = await descendOneLevel(ctx, entry.id, segments[i] as string);
-  }
-  if (entry === undefined) return undefined;
-  chain.push(entry.id);
-  return { entry, oidChain: chain };
-};
 
 /** Either a TREESAME verdict (path unchanged from `rootId` down — no leaf
  *  entry needed, the caller already has the child's) or the resolved leaf,
@@ -139,13 +110,31 @@ export const descendMatchingTreeChain = async (
   for (let i = 0; entry !== undefined; i += 1) {
     chain.push(entry.id);
     if (entry.id === childChain[chain.length - 1]) {
-      return { kind: 'treesame', oidChain: [...chain, ...childChain.slice(chain.length)] };
+      return { kind: 'treesame', oidChain: chain.concat(childChain.slice(chain.length)) };
     }
     if (i + 1 >= segments.length) break;
     entry = await descendOneLevel(ctx, entry.id, segments[i + 1] as string);
   }
   if (entry === undefined) return undefined;
   return { kind: 'changed', entry, oidChain: chain };
+};
+
+/**
+ * Full chain descent from a tree oid through `segments`, byte-scanning every
+ * level including the root (unlike `findTreeEntry`, whose root branch reads
+ * an already-resolved `Tree`). A thin `descendMatchingTreeChain` call with no
+ * child chain to match against — an empty `childChain` can never equal a
+ * real oid at any level, so the short-circuit never fires and the descent
+ * always runs to the leaf, `unexpectedObjectType` if the root isn't a tree,
+ * the same refusal `readTree`'s own peel-chain would raise.
+ */
+export const findTreeEntryChain = async (
+  ctx: Context,
+  rootId: ObjectId,
+  segments: ReadonlyArray<string>,
+): Promise<TreeChainDescent | undefined> => {
+  const result = await descendMatchingTreeChain(ctx, rootId, segments, []);
+  return result?.kind === 'changed' ? result : undefined;
 };
 
 /** Read `rootId`'s raw object bytes and scan for `name` — `unexpectedObjectType`
@@ -199,7 +188,7 @@ const scanRawTreeFor = (
 ): TreeEntry | undefined => {
   const cursor = openTreeCursor(content, hash);
   const target = encode(name);
-  const seenNames = new Map<number, NameSpan[]>();
+  const seenNames: NameSpan[] = [];
   let matched: TreeEntry | undefined;
   while (!cursor.done) {
     matched = scanEntry(cursor, seenNames, target) ?? matched;
@@ -209,14 +198,11 @@ const scanRawTreeFor = (
 };
 
 /** One entry's raw name bytes within a directory's shared content buffer. */
-interface NameSpan {
-  readonly start: number;
-  readonly end: number;
-}
+type NameSpan = readonly [start: number, end: number];
 
 const scanEntry = (
   cursor: TreeCursor,
-  seenNames: Map<number, NameSpan[]>,
+  seenNames: NameSpan[],
   target: Uint8Array,
 ): TreeEntry | undefined => {
   const mode = cursorMode(cursor);
@@ -224,9 +210,10 @@ const scanEntry = (
   if (isInvalidEntryNameBytes(cursor.buf, nameStart, nameEnd)) {
     throw invalidTreeEntry(cursor.offset, `invalid entry name: ${cursorName(cursor)}`);
   }
-  if (isDuplicateName(cursor, seenNames)) {
+  if (seenNames.some(([s, e]) => cursorNameEquals(cursor, cursor.buf.subarray(s, e)))) {
     throw invalidTreeEntry(cursor.offset, `duplicate entry name: ${cursorName(cursor)}`);
   }
+  seenNames.push([nameStart, nameEnd]);
   if (!cursorNameEquals(cursor, target)) return undefined;
   return { mode, name: cursorName(cursor), id: cursorOid(cursor) };
 };
@@ -242,62 +229,15 @@ const scanEntry = (
  * without it, matching git's own `diff-tree`, which does not validate name
  * shape during a diff walk.
  */
+const DOT = 0x2e;
+const SLASH = 0x2f;
+
 const isInvalidEntryNameBytes = (buf: Uint8Array, start: number, end: number): boolean => {
   const length = end - start;
   if (length === 1) return buf[start] === DOT;
   if (length === 2) return buf[start] === DOT && buf[start + 1] === DOT;
-  return containsByte(buf, start, end, SLASH);
-};
-
-const DOT = 0x2e;
-const SLASH = 0x2f;
-
-const containsByte = (buf: Uint8Array, start: number, end: number, target: number): boolean => {
   for (let i = start; i < end; i++) {
-    if (buf[i] === target) return true;
+    if (buf[i] === SLASH) return true;
   }
   return false;
-};
-
-/**
- * Records `cursor`'s name in `seenNames`, keyed on an FNV-1a fingerprint of
- * its raw bytes rather than the decoded string, and reports whether an
- * EXACT byte-for-byte duplicate was already seen in this directory. A
- * fingerprint collision between two DIFFERENT names is possible (FNV-1a is
- * not collision-free) but never a false positive: every name sharing a
- * fingerprint bucket is byte-compared before a match is trusted — the
- * fingerprint is a difference filter, never itself the verdict.
- */
-const isDuplicateName = (cursor: TreeCursor, seenNames: Map<number, NameSpan[]>): boolean => {
-  const { buf, nameStart, nameEnd } = cursor;
-  const fingerprint = fingerprintSpan(buf, nameStart, nameEnd);
-  const bucket = seenNames.get(fingerprint);
-  if (bucket === undefined) {
-    seenNames.set(fingerprint, [{ start: nameStart, end: nameEnd }]);
-    return false;
-  }
-  if (bucket.some((span) => sameSpan(buf, span, nameStart, nameEnd))) return true;
-  bucket.push({ start: nameStart, end: nameEnd });
-  return false;
-};
-
-const sameSpan = (buf: Uint8Array, a: NameSpan, start: number, end: number): boolean => {
-  const length = a.end - a.start;
-  if (length !== end - start) return false;
-  for (let i = 0; i < length; i++) {
-    if (buf[a.start + i] !== buf[start + i]) return false;
-  }
-  return true;
-};
-
-const FNV_OFFSET_BASIS = 0x811c9dc5;
-const FNV_PRIME = 0x01000193;
-
-const fingerprintSpan = (buf: Uint8Array, start: number, end: number): number => {
-  let hash = FNV_OFFSET_BASIS;
-  for (let i = start; i < end; i++) {
-    hash ^= buf[i]!;
-    hash = Math.imul(hash, FNV_PRIME);
-  }
-  return hash >>> 0;
 };
