@@ -805,6 +805,53 @@ describe('Given a rename of a file inside a subdirectory', () => {
   });
 });
 
+describe('Given a rename whose source path is unchanged across a further ancestor', () => {
+  describe('When blaming past the rename to that ancestor', () => {
+    it("Then the line still blames to the root commit — the rename hop's chain is usable for a further short-circuit", async () => {
+      // Arrange — c0 introduces dir/a.txt and other.txt; c1 touches only
+      // other.txt (dir/ untouched, so dir/'s oid is identical in c0 and c1);
+      // c2 renames dir/a.txt to dir/b.txt with no content change. Blaming
+      // dir/b.txt from c2 must follow the rename to dir/a.txt, then keep
+      // walking past c1 (TREESAME on dir/) all the way to c0.
+      const ctx = await seed();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir/a.txt`, 'x\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/other.txt`, '0\n');
+      await add(ctx, ['dir/a.txt', 'other.txt']);
+      clock += 60;
+      const c0 = (
+        await commit(ctx, {
+          message: 'c0',
+          author: ident('c0', clock),
+          committer: ident('c0', clock),
+        })
+      ).id;
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/other.txt`, '1\n');
+      await add(ctx, ['other.txt']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c1',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      await mv(ctx, ['dir/a.txt'], 'dir/b.txt');
+      clock += 60;
+      await commit(ctx, {
+        message: 'c2',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+
+      // Act
+      const result = await blame(ctx, 'dir/b.txt');
+
+      // Assert
+      expect(committedLines(result).map((l) => l.commit)).toEqual([c0]);
+      expect(committedLines(result)[0]!.boundary).toBe(true);
+      expect(result.lines[0]!.sourcePath).toBe('dir/a.txt');
+    });
+  });
+});
+
 describe('Given a commit that renames two files at once', () => {
   describe('When blaming each renamed file', () => {
     it('Then each follows to its own source, not the other rename', async () => {

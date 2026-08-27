@@ -29,6 +29,7 @@ import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   descendMatchingTreeChain,
   findTreeEntryChain,
+  type TreeChainDescent,
 } from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -115,6 +116,10 @@ export interface BlameResult {
 interface Suspect {
   readonly commit: ObjectId;
   readonly path: FilePath;
+  /** `path.split('/')`, computed once at schedule time — every parent this
+   *  suspect is resolved against (one per generation on a linear history,
+   *  more on a merge) reuses it instead of re-splitting the same path. */
+  readonly pathSegments: ReadonlyArray<string>;
   readonly blobId: ObjectId;
   readonly entries: ReadonlyArray<BlameEntry>;
   readonly lines: ReadonlyArray<Uint8Array>;
@@ -192,7 +197,8 @@ const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath):
   const whole: ReadonlyArray<BlameEntry> = [
     { finalStart: 0, count: workingLines.length, sourceStart: 0 },
   ];
-  const resolved = await findTreeEntryChain(sb.ctx, data.tree, pathSegments(path));
+  const segments = pathSegments(path);
+  const resolved = await findTreeEntryChain(sb.ctx, data.tree, segments);
   if (resolved !== undefined && isBlameableEntry(resolved.entry)) {
     const headContent = (await readBlob(sb.ctx, resolved.entry.id)).content;
     const diff = diffPresplitLines(splitLines(headContent), workingLines);
@@ -200,6 +206,7 @@ const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath):
     schedule(sb, {
       commit: head,
       path,
+      pathSegments: segments,
       blobId: resolved.entry.id,
       entries: passed,
       lines: diff.oursLines,
@@ -270,7 +277,8 @@ const seed = async (
   rev: string,
 ): Promise<void> => {
   const data = await readCommitData(sb.ctx, commit);
-  const resolved = await findTreeEntryChain(sb.ctx, data.tree, pathSegments(path));
+  const segments = pathSegments(path);
+  const resolved = await findTreeEntryChain(sb.ctx, data.tree, segments);
   if (resolved === undefined || !isBlameableEntry(resolved.entry)) throw pathNotInTree(rev, path);
   const blob = (await readBlob(sb.ctx, resolved.entry.id)).content;
   const lines = splitLines(blob);
@@ -279,6 +287,7 @@ const seed = async (
   schedule(sb, {
     commit,
     path,
+    pathSegments: segments,
     blobId: resolved.entry.id,
     entries: [{ finalStart: 0, count: lines.length, sourceStart: 0 }],
     lines,
@@ -320,6 +329,7 @@ const applyParentResolution = (
     schedule(sb, {
       commit: parent,
       path: resolved.sourcePath,
+      pathSegments: resolved.pathSegments,
       blobId: suspect.blobId,
       entries: remaining,
       lines: suspect.lines,
@@ -335,6 +345,7 @@ const applyParentResolution = (
   schedule(sb, {
     commit: parent,
     path: resolved.sourcePath,
+    pathSegments: resolved.pathSegments,
     blobId: resolved.blobId,
     entries: passed,
     lines: diff.oursLines,
@@ -394,6 +405,7 @@ type ResolvedParent =
   | {
       readonly kind: 'treesame';
       readonly sourcePath: FilePath;
+      readonly pathSegments: ReadonlyArray<string>;
       readonly commitData: CommitData;
       readonly oidChain: ReadonlyArray<ObjectId>;
     }
@@ -402,6 +414,7 @@ type ResolvedParent =
       readonly blob: Uint8Array;
       readonly blobId: ObjectId;
       readonly sourcePath: FilePath;
+      readonly pathSegments: ReadonlyArray<string>;
       readonly oidChain: ReadonlyArray<ObjectId>;
       readonly commitData: CommitData;
     };
@@ -426,13 +439,14 @@ const resolveInParent = async (
   const resolution = await descendMatchingTreeChain(
     ctx,
     commitData.tree,
-    pathSegments(suspect.path),
+    suspect.pathSegments,
     suspect.oidChain,
   );
   if (resolution?.kind === 'treesame') {
     return {
       kind: 'treesame',
       sourcePath: suspect.path,
+      pathSegments: suspect.pathSegments,
       commitData,
       oidChain: resolution.oidChain,
     };
@@ -444,47 +458,59 @@ const resolveInParent = async (
       blob,
       blobId: resolution.entry.id,
       sourcePath: suspect.path,
+      pathSegments: suspect.pathSegments,
       oidChain: resolution.oidChain,
       commitData,
     };
   }
   const renamed = await renamedSource(ctx, commitData.tree, childTree, suspect.path);
   if (renamed === undefined) return undefined;
-  const renamedChain = await findTreeEntryChain(
-    ctx,
-    commitData.tree,
-    pathSegments(renamed.sourcePath),
-  );
-  if (renamedChain === undefined) return undefined;
-  const blob = (await readBlob(ctx, renamed.blobId)).content;
+  const blob = (await readBlob(ctx, renamed.chain.entry.id)).content;
   return {
     kind: 'changed',
     blob,
-    blobId: renamed.blobId,
+    blobId: renamed.chain.entry.id,
     sourcePath: renamed.sourcePath,
-    oidChain: renamedChain.oidChain,
+    pathSegments: renamed.pathSegments,
+    oidChain: renamed.chain.oidChain,
     commitData,
   };
 };
 
 /**
- * When `path` is absent from the parent, locate the file it was renamed from.
- * Reuses the shared exact-content rename detector — a pure `git mv` is followed,
- * a rename-with-edit in the same commit is not (treated as a fresh introduction).
+ * When `path` is absent from the parent, locate the file it was renamed from
+ * and its chain in ONE descent — not `diffTrees` followed by a second,
+ * independent re-descent for the same path. Reuses the shared exact-content
+ * rename detector — a pure `git mv` is followed, a rename-with-edit in the
+ * same commit is not (treated as a fresh introduction).
  */
 const renamedSource = async (
   ctx: Context,
   parentTree: ObjectId,
   childTree: ObjectId,
   path: FilePath,
-): Promise<{ readonly sourcePath: FilePath; readonly blobId: ObjectId } | undefined> => {
+): Promise<
+  | {
+      readonly sourcePath: FilePath;
+      readonly pathSegments: ReadonlyArray<string>;
+      readonly chain: TreeChainDescent;
+    }
+  | undefined
+> => {
   const diff = await diffTrees(ctx, parentTree, childTree, {
     recursive: true,
     detectRenames: true,
   });
   for (const change of diff.changes) {
     if (change.type === 'rename' && change.newPath === path) {
-      return { sourcePath: change.oldPath, blobId: change.oldId };
+      const segments = pathSegments(change.oldPath);
+      const chain = await findTreeEntryChain(ctx, parentTree, segments);
+      // Stryker disable next-line ConditionalExpression: equivalent — diffTrees
+      // just confirmed change.oldPath resolves to change.oldId inside this exact
+      // parentTree; re-descending the identical path from the identical root
+      // cannot fail, so this guard is unreachable, not a real fallback
+      if (chain === undefined) return undefined;
+      return { sourcePath: change.oldPath, pathSegments: segments, chain };
     }
   }
   return undefined;
