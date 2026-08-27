@@ -421,9 +421,11 @@ function loadPack(
   // `resolveOffsetTable` call already warns once for that fault when it
   // runs, and this memo has no independent finding to report. An
   // out-of-range STORED VALUE is different — `buildOffsetTable`'s lazy
-  // successor discovers that lazily, per query, and does not warn at all, so
-  // this memo's own silent fallback here is this pack's only signal a
-  // `fsck` pass, not a log line, is expected to surface it.
+  // successor discovers that lazily, on the first query that probes it, and
+  // now DOES warn once (the whole pack degrades to the sorted fallback at
+  // that point, not just the one query), so this memo's own silent fallback
+  // here is a second, independent path to the same degraded state — the
+  // `fsck` pass remains the authority for surfacing it as a finding.
   const packPositionsMemo = createPromiseMemo(async (): Promise<Uint32Array> => {
     const index = await indexMemo.get();
     const load = await revIndexMemo.get();

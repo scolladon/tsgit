@@ -39,9 +39,34 @@ interface LazyOffsetTable {
   readonly objectCount: number;
   readonly packFileSize: number;
   readonly trailerStart: number;
+  /** Fires at most once for this table — the first time a query proves the
+   *  `.rev` unusable and the pack degrades to the sorted fallback. Captured
+   *  at construction (`resolveOffsetTable` has `ctx`/`name`; the lookup path
+   *  below does not) so degrading needs no extra parameters threaded through
+   *  every caller of `nextOffsetForEntry`. */
+  readonly warnDegraded: () => void;
 }
 
 export type PackOffsetTable = SortedOffsetTable | LazyOffsetTable;
+
+/**
+ * The sorted fallback a `LazyOffsetTable` degrades to, built at most once per
+ * table (i.e. per pack per generation — a fresh table object per generation
+ * naturally drops the old entry once unreferenced). A single out-of-range
+ * `.rev` value degrades the PACK, not just the one query that discovered it:
+ * every later query against the same table reuses this cached table and
+ * never re-attempts the lazy `.rev` lookup at all.
+ */
+const degradedFallbacks = new WeakMap<LazyOffsetTable, Float64Array>();
+
+function degradeToSorted(table: LazyOffsetTable): Float64Array {
+  const cached = degradedFallbacks.get(table);
+  if (cached !== undefined) return cached;
+  table.warnDegraded();
+  const sortedOffsets = buildSortedTable(table.index);
+  degradedFallbacks.set(table, sortedOffsets);
+  return sortedOffsets;
+}
 
 /**
  * The comparator-free fallback: read every offset directly into a
@@ -86,6 +111,14 @@ export async function resolveOffsetTable(
       objectCount: index.objectCount,
       packFileSize,
       trailerStart,
+      warnDegraded: () => {
+        ctx.logger?.warn?.(
+          'packRegistry: pack reverse index degraded mid-read, falling back to sorted offsets',
+          {
+            rev: `${name}.rev`,
+          },
+        );
+      },
     };
   }
   if (load.kind === 'refused') {
@@ -160,17 +193,21 @@ function locatePackPosition(
 }
 
 function successorFromLazy(table: LazyOffsetTable, offset: number): number {
+  const alreadyDegraded = degradedFallbacks.get(table);
+  if (alreadyDegraded !== undefined) {
+    return successorFromSorted(alreadyDegraded, table.trailerStart, offset);
+  }
   const { index, rev, objectCount, trailerStart } = table;
   const rank = locatePackPosition(index, rev, objectCount, offset);
   if (rank === 'degraded') {
-    return successorFromSorted(buildSortedTable(index), trailerStart, offset);
+    return successorFromSorted(degradeToSorted(table), trailerStart, offset);
   }
   if (rank >= objectCount) {
     throw invalidPackIndex('offset not in pack index: corrupt index');
   }
   const foundOffset = offsetAtPackPosition(index, rev, rank);
   if (foundOffset === undefined) {
-    return successorFromSorted(buildSortedTable(index), trailerStart, offset);
+    return successorFromSorted(degradeToSorted(table), trailerStart, offset);
   }
   if (foundOffset !== offset) {
     throw invalidPackIndex('offset not in pack index: corrupt index');
@@ -180,7 +217,7 @@ function successorFromLazy(table: LazyOffsetTable, offset: number): number {
   }
   const nextOffset = offsetAtPackPosition(index, rev, rank + 1);
   if (nextOffset === undefined) {
-    return successorFromSorted(buildSortedTable(index), trailerStart, offset);
+    return successorFromSorted(degradeToSorted(table), trailerStart, offset);
   }
   return nextOffset;
 }

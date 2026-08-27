@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ArtefactLoad } from '../../../../../src/application/primitives/internal/pack-artefact-source.js';
 import {
   nextOffsetForEntry,
@@ -20,6 +20,15 @@ import {
   buildTestIndex,
   type TestIndexEntry,
 } from '../../../domain/storage/arbitraries.js';
+
+vi.mock('../../../../../src/domain/storage/index.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../../src/domain/storage/index.js')>();
+  return { ...actual, entryOffsetsF64: vi.fn(actual.entryOffsetsF64) };
+});
+
+const storage = await import('../../../../../src/domain/storage/index.js');
+const entryOffsetsF64Spy = vi.mocked(storage.entryOffsetsF64);
 
 const DIGEST_LENGTH = 20;
 
@@ -68,6 +77,77 @@ const refusedLoad = async (): Promise<ArtefactLoad<PackRevIndex>> => ({
 
 const contextWith = (warn: ReturnType<typeof vi.fn>): Context =>
   ({ logger: { warn } }) as unknown as Context;
+
+describe('nextOffsetForEntry — degrade sticks to the pack, not the query', () => {
+  beforeEach(() => {
+    entryOffsetsF64Spy.mockClear();
+  });
+
+  describe('Given a pack whose .rev holds an out-of-range position, queried repeatedly', () => {
+    describe('When nextOffsetForEntry runs several times, including for positions the .rev answers correctly', () => {
+      it('Then the sorted fallback is built exactly once, not once per query', async () => {
+        // Arrange — position 0's stored index position (4) names no object of
+        // this 4-entry index; positions 1-3 are individually correct, but the
+        // pack degrades as a whole on the first bad probe.
+        const offsets = [12, 50, 90, 140];
+        const index = buildIndex(offsets);
+        const rev = buildRev([offsets.length, 1, 2, 3]);
+        const table = await resolveOffsetTable(
+          contextWith(vi.fn()),
+          'pack-sticky',
+          index,
+          usableLoad(rev),
+          220,
+          200,
+        );
+        const sut = nextOffsetForEntry;
+
+        // Act — five queries against the same degraded table.
+        const results = [
+          sut(table, 12),
+          sut(table, 50),
+          sut(table, 90),
+          sut(table, 12),
+          sut(table, 50),
+        ];
+
+        // Assert — every answer is still correct via the cached fallback…
+        expect(results).toEqual([50, 90, 140, 50, 90]);
+        // …but entryOffsetsF64 — the O(N) pass inside the fallback build —
+        // ran exactly once across all five queries, not five times.
+        expect(entryOffsetsF64Spy).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('When nextOffsetForEntry runs several times', () => {
+      it('Then the degrade warning fires exactly once, not once per query', async () => {
+        // Arrange
+        const offsets = [12, 50, 90, 140];
+        const index = buildIndex(offsets);
+        const rev = buildRev([offsets.length, 1, 2, 3]);
+        const warn = vi.fn();
+        const table = await resolveOffsetTable(
+          contextWith(warn),
+          'pack-sticky-warn',
+          index,
+          usableLoad(rev),
+          220,
+          200,
+        );
+        const sut = nextOffsetForEntry;
+
+        // Act
+        sut(table, 12);
+        sut(table, 50);
+        sut(table, 90);
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]?.[1]).toMatchObject({ rev: 'pack-sticky-warn.rev' });
+      });
+    });
+  });
+});
 
 describe('resolveOffsetTable', () => {
   describe('Given a pack with a usable .rev', () => {
