@@ -378,6 +378,7 @@ export interface Repository {
   readonly grep: BindCtx<typeof commands.grep>;
   readonly init: BindCtx<typeof commands.init>;
   readonly log: BindCtx<typeof commands.log>;
+  readonly maintenance: BindCtx<typeof commands.maintenance>;
   /** Nested `repo.merge.{run,continue,abort}` namespace. */
   readonly merge: commands.MergeNamespace;
   readonly mv: BindCtx<typeof commands.mv>;
@@ -822,6 +823,10 @@ export const openRepository = async (
       guard();
       return commands.log(ctx, logOpts);
     }) as Repository['log'],
+    maintenance: ((maintenanceOpts) => {
+      guard();
+      return commands.maintenance(ctx, maintenanceOpts);
+    }) as Repository['maintenance'],
     merge: commands.bindMergeNamespace(ctx, guard),
     mv: ((sources, destination, mvOpts) => {
       guard();

@@ -339,6 +339,16 @@
         "default": "./dist/cjs/commands/log.cjs"
       }
     },
+    "./commands/maintenance": {
+      "import": {
+        "types": "./dist/types/commands/maintenance.d.ts",
+        "default": "./dist/esm/commands/maintenance.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/maintenance.d.cts",
+        "default": "./dist/cjs/commands/maintenance.cjs"
+      }
+    },
     "./commands/merge": {
       "import": {
         "types": "./dist/types/commands/merge.d.ts",
