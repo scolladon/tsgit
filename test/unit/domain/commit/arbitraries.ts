@@ -5,6 +5,11 @@ import {
   NO_PARENT,
   OCTOPUS_FLAG,
 } from '../../../../src/domain/commit/commit-graph.js';
+import {
+  type CommitGraphWriterCommit,
+  hashLengthFor,
+  setUint64BE,
+} from '../../../../src/domain/commit/commit-graph-writer.js';
 import { compareBytes, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import { arbObjectId } from '../objects/arbitraries.js';
@@ -33,17 +38,6 @@ export interface CommitGraphLayerModel {
   readonly includeGenerationData: boolean;
 }
 
-function hashLengthFor(hashVersion: 1 | 2): number {
-  return hashVersion === 1 ? 20 : 32;
-}
-
-function setUint64BE(view: DataView, offset: number, value: number): void {
-  const high = Math.floor(value / 0x100000000);
-  const low = value % 0x100000000;
-  view.setUint32(offset, high);
-  view.setUint32(offset + 4, low);
-}
-
 interface EdgePlan {
   readonly entries: readonly number[];
   readonly startByCommit: ReadonlyArray<number | undefined>;
@@ -68,9 +62,14 @@ function planEdgeChunk(commits: ReadonlyArray<CommitGraphCommitModel>): EdgePlan
 }
 
 /**
- * Test-only encoder for the `commit-graph` on-disk format (Pin D). Production code never
- * writes this format — `commit-graph` generation is out of scope — so the encoder lives
- * beside the arbitraries it serves, giving `parseCommitGraphLayer` a round-trip oracle.
+ * Test-only encoder for the `commit-graph` on-disk format (Pin D). Production
+ * code DOES write this format now (`serializeCommitGraph`,
+ * `src/domain/commit/commit-graph-writer.ts`), but that writer only ever
+ * emits a valid, causally-consistent commit DAG — it cannot reach every byte
+ * layout the READER must still tolerate or reject (out-of-order positions,
+ * self-referencing parents, an EDGE-less octopus, …). This encoder stays
+ * beside the arbitraries it serves, fuzzing `parseCommitGraphLayer` directly
+ * over the full space of well-formed files, not just the writer's own output.
  */
 export function buildCommitGraphBytes(model: CommitGraphLayerModel): Uint8Array {
   const hashLength = hashLengthFor(model.hashVersion);
@@ -267,6 +266,66 @@ export function arbCommitGraphLayerModel(): fc.Arbitrary<CommitGraphLayerModel> 
             includeGenerationData: r.includeGenerationData,
           };
         });
+    }),
+  );
+}
+
+/** A causally-consistent commit DAG, paired with the hash width it was generated for. */
+export interface CommitGraphWriterDag {
+  readonly hashVersion: 1 | 2;
+  readonly commits: readonly CommitGraphWriterCommit[];
+}
+
+/**
+ * An arbitrary, CAUSALLY-CONSISTENT commit DAG for `serializeCommitGraph`'s
+ * round-trip property. `arbCommitGraphLayerModel`'s `parentPositions` are
+ * unconstrained integers — fine for fuzzing the READER's byte-level decode,
+ * where any in-range position is a legal (if unrealistic) file, but a real
+ * commit's parents can only be its own ancestors. This generator reuses the
+ * same building blocks (`arbObjectId`, a `parentPositionsList`-shaped
+ * candidate array) but FILTERS each commit's candidates to strictly earlier
+ * positions — acyclic by construction, and naturally producing multiple
+ * roots (any commit whose filtered candidate list is empty) and octopus
+ * merges (three or more surviving candidates) across a run.
+ *
+ * `committerDate` is bounded well under both writer refusal ceilings
+ * (`MAX_COMMITTER_DATE`, `MAX_GENERATION_OFFSET`) so every generated DAG
+ * round-trips — the refusal paths get their own dedicated example tests.
+ */
+export function arbCommitGraphWriterDag(): fc.Arbitrary<CommitGraphWriterDag> {
+  return fc.constantFrom<1 | 2>(1, 2).chain((hashVersion) =>
+    fc.integer({ min: 1, max: 8 }).chain((commitCount) => {
+      const hexLength = hashLengthFor(hashVersion) === 20 ? 40 : 64;
+      return fc
+        .record({
+          ids: fc.uniqueArray(arbObjectId(hexLength), {
+            minLength: commitCount,
+            maxLength: commitCount,
+          }),
+          rootTrees: fc.array(arbObjectId(hexLength), {
+            minLength: commitCount,
+            maxLength: commitCount,
+          }),
+          committerDates: fc.array(fc.integer({ min: 0, max: 1_000_000_000 }), {
+            minLength: commitCount,
+            maxLength: commitCount,
+          }),
+          parentCandidateLists: fc.array(
+            fc.uniqueArray(fc.integer({ min: 0, max: commitCount - 1 }), { maxLength: 4 }),
+            { minLength: commitCount, maxLength: commitCount },
+          ),
+        })
+        .map(({ ids, rootTrees, committerDates, parentCandidateLists }) => ({
+          hashVersion,
+          commits: ids.map((id, i) => ({
+            id,
+            rootTree: rootTrees[i]!,
+            committerDate: committerDates[i]!,
+            parents: parentCandidateLists[i]!.filter((position) => position < i).map(
+              (position) => ids[position]!,
+            ),
+          })),
+        }));
     }),
   );
 }

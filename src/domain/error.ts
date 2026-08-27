@@ -36,7 +36,7 @@ export type ApplicationError =
   | { readonly code: 'OPERATION_ABORTED' }
   | {
       readonly code: 'RESOURCE_LOCKED';
-      readonly resource: 'index' | 'ref';
+      readonly resource: 'index' | 'ref' | 'commit-graph';
       readonly path: string;
       readonly mtimeMs?: number;
     }
@@ -231,6 +231,10 @@ function extractDetail(data: TsgitErrorData): string {
     case 'INVALID_COMMIT_GRAPH_HEADER':
     case 'INVALID_COMMIT_GRAPH_CHUNK':
       return data.reason;
+    case 'COMMIT_GRAPH_DATE_TOO_LARGE':
+      return `commit ${data.id} has committer date ${data.committerDate}, exceeding the commit-graph limit of ${data.limit}`;
+    case 'COMMIT_GRAPH_GENERATION_OVERFLOW':
+      return `commit ${data.id} has a corrected-date offset of ${data.offset}, exceeding the commit-graph limit of ${data.limit}`;
     case 'FILE_NOT_FOUND':
       return `file not found: ${basename(data.path)}`;
     case 'FILE_EXISTS':
