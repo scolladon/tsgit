@@ -12,6 +12,20 @@ import {
 
 const NS_PER_SECOND = 1_000_000_000n;
 
+/**
+ * Raw on-disk size above which a parsed `GitIndex` is never retained in the
+ * session-lifetime cache — read, verified and parsed fresh on every call
+ * instead. `parseIndex`'s output runs 3-5x the raw byte count (per-entry
+ * objects, decoded paths, oid hex strings), so caching a file up to
+ * `MAX_INDEX_BYTES` (256 MiB) could retain the better part of a gigabyte for
+ * as long as the Context lives, for a file large enough that a repeat read
+ * is not the common case this cache exists to serve. An over-threshold file
+ * still reads and parses correctly — it is simply never cached — mirroring
+ * the FlatTree cache's own "accept the drop, document it" posture for an
+ * over-cap tree.
+ */
+const INDEX_CACHE_MAX_RAW_BYTES = 32 * 1024 * 1024;
+
 const indexMtimeFrom = (stat: FileStat): { seconds: number; nanoseconds: number } => ({
   seconds: Math.floor(stat.mtimeMs / 1000),
   nanoseconds: stat.mtimeNs === undefined ? 0 : Number(stat.mtimeNs % NS_PER_SECOND),
@@ -137,15 +151,19 @@ const loadIndex = async (ctx: Context, path: string, stat: FileStat): Promise<Gi
  * Read `.git/index`, memoised per session and keyed on the file's own
  * `(size, mtimeMs, mtimeNs, ino)` — following `config-read.ts`'s precedent. A
  * second call whose stat matches the cached key joins the cached parse
- * instead of re-reading, re-verifying and re-parsing the whole file.
+ * instead of re-reading, re-verifying and re-parsing the whole file. Above
+ * {@link INDEX_CACHE_MAX_RAW_BYTES}, the cache is bypassed entirely — every
+ * call re-reads, re-verifies and re-parses — so a very large index does not
+ * pin a multi-hundred-megabyte parsed structure for the Context's lifetime.
  *
- * Three independent guards keep this correct: the stat-key comparison
- * catches a change to the on-disk file (this process or an external one);
- * the trailer fallback catches a same-tick external rewrite that a
- * nanosecond-blind stat tuple cannot distinguish from no change at all; and
- * `invalidateIndexCache` — called from the index-lock commit path — drops
- * the entry unconditionally the moment THIS process writes a new index, so
- * neither of the read-side checks needs to run at all for our own commits.
+ * Three independent guards keep the cached path correct: the stat-key
+ * comparison catches a change to the on-disk file (this process or an
+ * external one); the trailer fallback catches a same-tick external rewrite
+ * that a nanosecond-blind stat tuple cannot distinguish from no change at
+ * all; and `invalidateIndexCache` — called from the index-lock commit path —
+ * drops the entry unconditionally the moment THIS process writes a new
+ * index, so neither of the read-side checks needs to run at all for our own
+ * commits.
  */
 export async function readIndex(ctx: Context): Promise<GitIndex> {
   const path = indexPath(ctx.layout.gitDir);
@@ -156,6 +174,9 @@ export async function readIndex(ctx: Context): Promise<GitIndex> {
   const stat = await ctx.fs.stat(path);
   if (exceedsMaxIndexBytes(stat.size)) {
     throw invalidIndexHeader(REASON_INDEX_EXCEEDS_MAX);
+  }
+  if (stat.size > INDEX_CACHE_MAX_RAW_BYTES) {
+    return loadIndex(ctx, path, stat);
   }
   const key = keyFrom(stat);
   const cached = cache.get(ctx.session);

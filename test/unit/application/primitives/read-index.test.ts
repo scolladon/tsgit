@@ -360,6 +360,45 @@ describe('readIndex', () => {
     });
   });
 
+  describe('Given a stat size above the caching threshold but under the 256 MiB hard cap', () => {
+    describe('When readIndex is called twice with the index unchanged', () => {
+      it('Then the file is read and re-parsed on both calls — never cached above the threshold', async () => {
+        // Arrange — a small, valid index file on disk (so the real read/parse/
+        // verify still succeeds), but `stat` is wrapped to report a size just
+        // above the caching threshold: large enough that a session-lifetime
+        // cache would retain a 3-5x-parsed blowup of it for no benefit, small
+        // enough that it is still a valid, readable index (not the 256 MiB
+        // hard refusal this file's other test already covers).
+        // A defined, matching `mtimeNs` on both calls keeps the stat-key
+        // comparison non-racy (see `isRacyMatch`), so the cache decision
+        // below is driven purely by the size threshold this test targets —
+        // not by the unrelated trailer-fallback path a racy match would
+        // otherwise route through.
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const { ctx, count } = trackRead(base);
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (p: string) => {
+              const s = await ctx.fs.stat(p);
+              return { ...s, size: 32 * 1024 * 1024 + 1, mtimeNs: 0n };
+            },
+          },
+        };
+
+        // Act
+        const first = await readIndex(wrapped);
+        const second = await readIndex(wrapped);
+
+        // Assert
+        expect(count()).toBe(2);
+        expect(second).toEqual(first);
+      });
+    });
+  });
+
   describe('Given two readIndex calls on one Context with the index unchanged', () => {
     describe('When readIndex is called', () => {
       it('Then the file is read once', async () => {
