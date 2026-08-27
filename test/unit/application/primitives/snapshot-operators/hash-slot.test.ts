@@ -58,8 +58,8 @@ describe('hashSlot — concurrency default', () => {
   describe('Given opts.concurrency is set', () => {
     describe('When hashSlot runs', () => {
       it('Then it wins over the derived bound', async () => {
-        // Arrange — the derived floor for cpuBound is 1; an explicit
-        // concurrency of 3 must still be honoured over that floor.
+        // Arrange — the derived floor for ioBound is 4; an explicit
+        // concurrency of 3 must still be honoured under that floor.
         const probe = makeProbe();
         const gate = makeGate();
         const rows = Array.from({ length: 6 }, (_unused, i) => probedRow(`p${i}`, probe, gate));
@@ -80,8 +80,10 @@ describe('hashSlot — concurrency default', () => {
 
   describe('Given opts.concurrency is absent', () => {
     describe('When hashSlot runs', () => {
-      it('Then the derived bound is used', async () => {
-        // Arrange
+      it('Then the ioBound derived bound is used, not cpuBound', async () => {
+        // Arrange — hashSlot's work is a file read + hash (I/O-bound, like
+        // load-blob's sibling operator), so it must float with ioBound's
+        // wider floor (4) rather than cpuBound's serial floor (1).
         const probe = makeProbe();
         const gate = makeGate();
         const rows = Array.from({ length: 6 }, (_unused, i) => probedRow(`p${i}`, probe, gate));
@@ -95,7 +97,8 @@ describe('hashSlot — concurrency default', () => {
         await consumer;
 
         // Assert
-        expect(peakWhileBlocked).toBe(defaultLimitFor('cpuBound'));
+        expect(peakWhileBlocked).toBe(defaultLimitFor('ioBound'));
+        expect(peakWhileBlocked).not.toBe(defaultLimitFor('cpuBound'));
       });
     });
   });

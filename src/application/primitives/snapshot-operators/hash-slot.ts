@@ -23,7 +23,10 @@ type SlotKeyedRow = { readonly path: FilePath };
  */
 export const hashSlot = <R extends SlotKeyedRow>(slot: string, opts: HashSlotOptions = {}) =>
   async function* (source: AsyncIterable<R>): AsyncIterable<R> {
-    const concurrency = opts.concurrency ?? defaultLimitFor('cpuBound');
+    // ioBound, not cpuBound: `hash()` reads a working-tree file (I/O-bound),
+    // matching the sibling load-blob.ts operator. cpuBound's derived floor
+    // is 1 (serial) with no Context to consult; ioBound's is 4.
+    const concurrency = opts.concurrency ?? defaultLimitFor('ioBound');
     type Pending = { readonly row: R; readonly task: Promise<unknown> };
     const inflight: Pending[] = [];
 
