@@ -542,7 +542,7 @@ describe('Given a grandparent that shares a subtree with the parent but the chil
       // object exactly once (resolving c1 against c2, where a/ genuinely
       // differs and a real descent into a/ is required); resolving c0
       // against c1's stored chain matches it at the entry level instead of
-      // reading it again to redescend.
+      // reading it again to descend a second time.
       expect(objectReadsOf(c1aEntry.id, readObjectSpy, readRawObjectSpy)).toBe(1);
       readObjectSpy.mockRestore();
       readRawObjectSpy.mockRestore();

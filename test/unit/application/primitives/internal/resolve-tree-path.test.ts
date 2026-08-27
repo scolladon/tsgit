@@ -591,7 +591,7 @@ describe('findTreeEntryChain', () => {
   });
 
   describe('Given a root tree with a non-UTF-8 entry name', () => {
-    describe('When findTreeEntryChain searches using the lossily-decoded replacement character', () => {
+    describe('When findTreeEntryChain searches using the lossy-decoded replacement character', () => {
       it('Then it does not match — the root is compared by raw bytes, not by a lossy decode', async () => {
         // Arrange — a lone continuation byte (0x80) is invalid UTF-8 on its
         // own and decodes to U+FFFD; a decoded-string root comparison would
