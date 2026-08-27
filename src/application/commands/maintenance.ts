@@ -146,8 +146,9 @@ const GC_NOT_RUN: GcResult = {
 
 /**
  * `auto: true` consults `gc.auto` (git default 6700; `0` disables the
- * gate — the threshold check never declines). `auto` absent/false always
- * runs, mirroring explicit `git gc` ignoring `gc.auto` entirely.
+ * automatic gc entirely — pinned against git 2.55.0: `gc.auto=0` plus
+ * `git gc --auto` runs nothing, at any loose count). `auto` absent/false
+ * always runs, mirroring explicit `git gc` ignoring `gc.auto` entirely.
  */
 async function shouldDeclineForAuto(
   ctx: Context,
@@ -157,7 +158,7 @@ async function shouldDeclineForAuto(
   if (auto !== true) return false;
   await assertValidGcAutoConfig(ctx);
   const threshold = (await readConfig(ctx)).gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD;
-  if (threshold === 0) return false;
+  if (threshold === 0) return true;
   return looseCount <= threshold;
 }
 

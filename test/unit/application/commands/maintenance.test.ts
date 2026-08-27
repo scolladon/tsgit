@@ -387,16 +387,56 @@ describe('maintenance', () => {
   describe('Given auto: true and a loose count above gc.auto', () => {
     describe('When maintenance runs the gc task', () => {
       it('Then it runs', async () => {
-        // Arrange
+        // Arrange — seedOneCommit alone leaves exactly 3 loose objects
+        // (blob, tree, commit), above a threshold of 1.
         const ctx = await seedOneCommit();
-        await appendConfig(ctx, '\n[gc]\n\tauto = 0\n');
+        await appendConfig(ctx, '\n[gc]\n\tauto = 1\n');
         const sut = maintenance;
 
-        // Act — gc.auto=0 disables the gate, so gc always runs.
+        // Act
         const result = await sut(ctx, { tasks: ['gc'], auto: true });
 
         // Assert
         expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe('Given auto: true and gc.auto=0, with a loose count that would otherwise run', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc declines — gc.auto=0 disables the automatic gate entirely', async () => {
+        // Arrange — pinned against git 2.55.0: `gc.auto=0` plus
+        // `git gc --auto` runs nothing, regardless of the loose count.
+        const ctx = await seedOneCommit();
+        await writeLooseBlob(ctx, 'garbage');
+        await appendConfig(ctx, '\n[gc]\n\tauto = 0\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksRun).toEqual([]);
+        expect(result.packId).toBeUndefined();
+        expect(result.packsBefore).toBe(result.packsAfter);
+      });
+    });
+  });
+
+  describe('Given auto: true and gc.auto equal to the loose count (the boundary)', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc declines — the `<=` boundary evaluates to decline', async () => {
+        // Arrange — seedOneCommit alone leaves exactly 3 loose objects.
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tauto = 3\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksRun).toEqual([]);
+        expect(result.packId).toBeUndefined();
       });
     });
   });
