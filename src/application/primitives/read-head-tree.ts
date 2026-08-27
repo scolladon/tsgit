@@ -9,14 +9,74 @@
  *
  * Pure with respect to the working tree — only reads git objects (via
  * `resolveRef` / `readObject` / `flattenTree`).
+ *
+ * Result is memoised behind a byte-capped `LruCache` keyed `(rootTreeOid,
+ * maxDepth)` — trees are immutable, so re-reading the same HEAD under the
+ * same `core.maxTreeDepth` never needs a fresh descent.
  */
 import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
+import type { ObjectId } from '../../domain/objects/index.js';
+import { createLruCache, type LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { flattenTree } from './flatten-tree.js';
+import { resolveFlattenBounds } from './internal/flatten-raw.js';
 import { readObject } from './read-object.js';
 import { resolveRef } from './resolve-ref.js';
+
+/**
+ * Keyed on `ctx.deltaCache` — not `ctx` itself — mirroring
+ * `object-resolver.ts`'s `parsedObjectMemos`: every `Context` derived from
+ * the same `openRepository()`/`createXContext()` call shares the SAME
+ * `deltaCache` object by reference, so the cache survives every
+ * spread-derivation this codebase does, while a `Context`-keyed WeakMap
+ * would miss on each fresh spread.
+ */
+const flatTreeCaches = new WeakMap<Context['deltaCache'], LruCache<FlatTree>>();
+
+/**
+ * Share of `ctx.deltaCache`'s own byte budget this cache gets, as an
+ * independent allocation — mirrors `object-resolver.ts`'s
+ * `PARSED_OBJECT_MEMO_FRACTION`: the two caches hold different things and
+ * compete only for process memory, not a shared accounting ledger.
+ */
+const FLAT_TREE_CACHE_FRACTION = 0.0625;
+
+function flatTreeCacheFor(ctx: Context): LruCache<FlatTree> {
+  const existing = flatTreeCaches.get(ctx.deltaCache);
+  if (existing !== undefined) return existing;
+  const created = createLruCache<FlatTree>(ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION);
+  flatTreeCaches.set(ctx.deltaCache, created);
+  return created;
+}
+
+/**
+ * `maxDepth` is IN the key: `resolveFlattenBounds` re-resolves
+ * `core.maxTreeDepth` on every call, so a `FlatTree` cached under one depth
+ * is not valid under another — keying on the oid alone would silently alias
+ * a tree built under a stale depth. That makes correctness across a
+ * `core.maxTreeDepth` change structural, with no config-invalidation
+ * coupling needed.
+ */
+function flatTreeCacheKey(rootTreeOid: ObjectId, maxDepth: number): string {
+  return `${rootTreeOid}:${maxDepth}`;
+}
+
+/**
+ * Approximate retained footprint of a `FlatTree`: path length plus oid
+ * length per entry (mirrors `parsedObjectByteSize`'s string-length proxy for
+ * a value's heap cost). Floored at 1: `LruCache.set` throws on
+ * `byteSize <= 0`, and a genuinely empty tree (HEAD at the empty-tree commit)
+ * is still worth caching.
+ */
+function flatTreeByteSize(tree: FlatTree): number {
+  let total = 0;
+  for (const [path, entry] of tree.entries) {
+    total += path.length + entry.id.length;
+  }
+  return Math.max(1, total);
+}
 
 export const readHeadTree = async (ctx: Context): Promise<FlatTree | undefined> => {
   const commitId = await resolveRef(ctx, 'HEAD').catch((err: unknown) => {
@@ -28,5 +88,12 @@ export const readHeadTree = async (ctx: Context): Promise<FlatTree | undefined> 
   if (commit.type !== 'commit') {
     throw unexpectedObjectType('commit', commit.type, commitId);
   }
-  return flattenTree(ctx, commit.data.tree);
+  const { maxDepth } = await resolveFlattenBounds(ctx);
+  const cache = flatTreeCacheFor(ctx);
+  const key = flatTreeCacheKey(commit.data.tree, maxDepth);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const tree = await flattenTree(ctx, commit.data.tree);
+  cache.set(key, tree, flatTreeByteSize(tree));
+  return tree;
 };
