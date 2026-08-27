@@ -852,50 +852,48 @@ async function* asyncByteDrip(bytes: Uint8Array): AsyncIterable<Uint8Array> {
   }
 }
 
-const timeByteDrip = async (frame: Uint8Array): Promise<number> => {
-  const start = performance.now();
-  await collect(decodePktStream(asyncByteDrip(frame)));
-  return performance.now() - start;
-};
-
-/** Best-of-N: the minimum of several repetitions is the least
- *  noise-affected sample — it filters out one-off JIT warm-up and GC-pause
- *  spikes without needing a separate, hard-to-size warm-up phase. */
-const bestOfByteDrip = async (frame: Uint8Array, reps: number): Promise<number> => {
-  let best = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < reps; i += 1) {
-    best = Math.min(best, await timeByteDrip(frame));
-  }
-  return best;
-};
-
 describe('decodePktStream — linear-time accumulation (byte-drip)', () => {
-  describe('Given a maximal-size pkt-line vs. a quarter-size one, both delivered one byte at a time', () => {
-    describe('When the best-of-several decode time is compared between the two', () => {
-      it('Then it scales roughly with size, not with size squared', async () => {
+  describe('Given a maximal-size pkt-line delivered one byte at a time', () => {
+    describe('When the bytes copied into the internal accumulator are counted', () => {
+      it('Then total copied bytes scale with size, not size squared', async () => {
         // Arrange — a naive concat-then-slice accumulator copies the ENTIRE
-        // pending tail on every delivered byte, so byte-dripping a frame of
-        // size n costs O(n²): re-copying a growing tail on every single
-        // byte. Comparing elapsed time at two sizes (self-normalising
-        // against ambient CPU load / coverage instrumentation, unlike a
-        // fixed wall-clock ceiling) tells linear from quadratic apart: a 4×
-        // size increase costs ~4× the time under O(n), ~16× under O(n²).
-        // Measured repeatedly (best-of-3): this implementation's ratio
-        // sits at ~4, the naive one's at ~8 — 6 sits at the midpoint,
-        // comfortably clear of both.
-        const REPS = 3;
-        const quarter = new Uint8Array(Math.floor(MAX_PKT_LINE_PAYLOAD / 4));
-        const full = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
-        const quarterFrame = encodePktLine(quarter);
-        const fullFrame = encodePktLine(full);
-        const ratioCeiling = 6;
+        // pending tail on every delivered byte (`Uint8Array.prototype.set`
+        // is the primitive both that and this accumulator copy through),
+        // so byte-dripping an n-byte frame costs O(n²) total copied bytes —
+        // for n = MAX_PKT_LINE_PAYLOAD that's ~65 520 vs ~4.3 BILLION.
+        // Counting the actual work sidesteps wall-clock timing entirely —
+        // a duration-based assertion is provably unreliable here: measured
+        // under a fully-loaded CI run (every other suite's coverage
+        // instrumentation competing for the same cores), a wall-clock
+        // ratio between two sizes swung far past a ceiling that looked
+        // generous in isolation. Byte-counting has no such dependency on
+        // ambient system load.
+        const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+        const frame = encodePktLine(payload);
+        let bytesCopied = 0;
+        const originalSet = Uint8Array.prototype.set;
+        const patchedSet = function patchedSet(
+          this: Uint8Array,
+          source: ArrayLike<number>,
+          offset?: number,
+        ): void {
+          bytesCopied += source.length;
+          originalSet.call(this, source, offset);
+        };
+        Uint8Array.prototype.set = patchedSet;
 
         // Act
-        const quarterMs = await bestOfByteDrip(quarterFrame, REPS);
-        const fullMs = await bestOfByteDrip(fullFrame, REPS);
+        let result: PktLine[];
+        try {
+          result = await collect(decodePktStream(asyncByteDrip(frame)));
+        } finally {
+          Uint8Array.prototype.set = originalSet;
+        }
 
-        // Assert
-        expect(fullMs / quarterMs).toBeLessThan(ratioCeiling);
+        // Assert — 10x the frame size stays far above ANY plausible linear
+        // constant factor, yet is dwarfed by the quadratic byte count.
+        expect(result).toHaveLength(1);
+        expect(bytesCopied).toBeLessThan(frame.byteLength * 10);
       });
     });
   });
