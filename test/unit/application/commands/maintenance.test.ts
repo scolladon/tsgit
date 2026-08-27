@@ -1765,7 +1765,7 @@ describe('maintenance', () => {
   // Consolidation — promisor packs
   // ---------------------------------------------------------------------
 
-  describe('Given the same oid loose AND inside a .promisor-marked pack', () => {
+  describe('Given the same UNREACHABLE oid loose AND inside a .promisor-marked pack', () => {
     describe('When gc runs', () => {
       it('Then the promisor class wins: the new promisor pack carries it, the new normal pack does not, and its loose copy is unlinked', async () => {
         // Arrange
@@ -1843,6 +1843,64 @@ describe('maintenance', () => {
           caught = error;
         }
         expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a reachable object living only inside a .promisor-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then it is packed into BOTH the new normal pack and the new promisor pack — matching git', async () => {
+        // Arrange — index-reachable (no commit needed) and NOT loose: the
+        // object's only home before gc is the promisor-marked pack.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const content = 'reachable-promisor-only';
+        const blobId = await writeLooseBlob(ctx, content);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/staged.txt`, content);
+        await add(ctx, ['staged.txt']);
+        await writePromisorPack(ctx, 'reachable-dup-promisor', [content]);
+        await ctx.fs.rm(looseObjectPath(commonGitDir(ctx), blobId));
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — git's own gc does not exclude promisor membership from
+        // the normal pack the way it excludes `.keep`: a reachable object
+        // duplicates into both.
+        expect(result.packId).toBeDefined();
+        expect(result.promisorPackId).toBeDefined();
+        const normalOids = await packMemberOids(ctx, result.packId as string);
+        const promisorOids = await packMemberOids(ctx, result.promisorPackId as string);
+        expect(normalOids.has(blobId)).toBe(true);
+        expect(promisorOids.has(blobId)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a second gc on a REACHABLE promisor set unchanged since the last run', () => {
+    describe('When gc runs again', () => {
+      it('Then both the normal pack sha and the promisor pack sha stay identical', async () => {
+        // Arrange — Pin W's no-op boundary, over the duplicated set: a
+        // repeat run over an unchanged reachable promisor object must
+        // reproduce the same sha for BOTH packs it now lives in.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const content = 'repeat-duplicate-seed';
+        const blobId = await writeLooseBlob(ctx, content);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/staged.txt`, content);
+        await add(ctx, ['staged.txt']);
+        await writePromisorPack(ctx, 'repeat-duplicate', [content]);
+        await ctx.fs.rm(looseObjectPath(commonGitDir(ctx), blobId));
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+        expect(first.promisorPackId).toBeDefined();
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.packId).toBe(first.packId);
+        expect(second.promisorPackId).toBe(first.promisorPackId);
       });
     });
   });

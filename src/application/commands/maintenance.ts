@@ -6,10 +6,13 @@
  * maintenance happens, and only the tasks it names run.
  *
  * Ships two tasks. `commit-graph` writes `objects/info/commit-graph`.
- * `gc` consolidates every pack it owns, by class: reachable objects — loose
- * AND already packed — repack into one new normal pack; every promisor
- * object repacks whole into one new promisor pack, never merged with the
- * normal one (merging would tell a later reader that lazily-fetched objects
+ * `gc` consolidates every pack it owns, by class: reachable objects — loose,
+ * already packed, or living in a promisor pack — repack into one new normal
+ * pack; every promisor object ALSO repacks whole into one new promisor
+ * pack, so a reachable one duplicates into both (git does the same — it is
+ * not a `.keep`-style exclusion from the normal pack), while an unreachable
+ * one stays exclusive to the promisor pack; the two are never MERGED into a
+ * single pack (that would tell a later reader that lazily-fetched objects
  * are already present locally); and unreachable, non-promisor objects route
  * through git's cruft-pack lifecycle wherever they lived. Superseded packs
  * and every sibling artefact are retired; an existing multi-pack-index
@@ -228,15 +231,30 @@ async function collectNormalPackData(
 
 /**
  * Step 4's widened partition: `owned` gains every NORMAL pack's oids
- * (consolidation's whole contribution); `keptOids` and `ownedPromisor` are
- * subtracted from BOTH output sets — an oid can be loose (or in a normal
- * pack) *and* inside a kept or promisor pack at once, and either class wins
- * over the normal/cruft outcome the loose or normal-pack copy alone would
- * produce. Kept objects are never repacked and never crufted (Pin V);
- * promisor objects are repacked into their own class (`toPromisorPack`,
- * computed separately — it is the WHOLE promisor set, not an intersection
- * with `owned`) and are excluded here only so their loose or normal-pack
- * duplicate never re-enters the normal or cruft pack.
+ * (consolidation's whole contribution); `keptOids` is subtracted from BOTH
+ * output sets — Pin V's total exclusion, an oid inside a kept pack is never
+ * repacked and never crufted, even when it is ALSO loose or in a normal
+ * pack.
+ *
+ * `ownedPromisor` is a DIFFERENT kind of overlap. Pinned against git 2.55.0
+ * (mktemp probe, `.promisor`-marked pack containing already-packed reachable
+ * content, a further reachable commit added, `git gc` run): a REACHABLE
+ * promisor-pack object is packed into BOTH the rebuilt promisor pack AND the
+ * ordinary "all reachable" pack — git does not treat promisor membership as
+ * an exclusion from the normal pack the way it treats `.keep`. So a
+ * reachable promisor oid is pushed into `toNormalPack` here (whether it
+ * reaches this function via `owned`'s loose/normal-pack route, or via
+ * `ownedPromisor` alone for an object that lives ONLY in a promisor pack —
+ * the second loop below, since `owned` never gains a promisor pack's own
+ * oids). An UNREACHABLE promisor oid is the one case `ownedPromisor` still
+ * excludes: it must never reach `cruftCandidates`, because a cruft pack
+ * cannot carry the `.promisor` marker and moving it there would announce a
+ * lazily-fetchable object as fully present locally — the same correctness
+ * break merging the two packs would be. `toPromisorPack` (computed
+ * separately) is unconditionally the WHOLE promisor set regardless of
+ * reachability, so a reachable promisor oid is the one class this partition
+ * deliberately does NOT keep disjoint across its outputs — `toNormalPack`
+ * and `toPromisorPack` intersect exactly on it, by design.
  */
 function partitionOwned(
   owned: ReadonlySet<ObjectId>,
@@ -250,9 +268,32 @@ function partitionOwned(
   const toNormalPack: ObjectId[] = [];
   const cruftCandidates: ObjectId[] = [];
   for (const id of owned) {
-    if (keptOids.has(id) || ownedPromisor.has(id)) continue;
+    if (keptOids.has(id)) continue;
+    if (ownedPromisor.has(id)) {
+      // Overlap: also loose or in a normal pack. Reachable duplicates into
+      // the normal pack too (git does); unreachable stays out of cruft —
+      // the promisor pack is its only home either way.
+      if (reachable.has(id)) toNormalPack.push(id);
+      continue;
+    }
     (reachable.has(id) ? toNormalPack : cruftCandidates).push(id);
   }
+  // A reachable object living ONLY in a promisor pack (never loose, never
+  // in a normal pack) never visits the loop above — `owned` carries no
+  // promisor-pack oids of its own. `!owned.has(id)` is what stops this from
+  // double-pushing an id the loop already handled via the overlap branch.
+  for (const id of ownedPromisor) {
+    if (!keptOids.has(id) && reachable.has(id) && !owned.has(id)) toNormalPack.push(id);
+  }
+  // `buildPack` writes entries in ARRAY order and does not sort them itself
+  // (only the `.idx`/`.rev` writers do) — so an oid duplicating in via the
+  // second loop above lands at the END on the run that first discovers it,
+  // but at its sorted position on every LATER run once it is also a member
+  // of `owned` (via the normal pack `collectNormalPackData` just read,
+  // itself oid-sorted). Left unsorted, that shift alone would change the
+  // normal pack's sha on the very next run, breaking Pin W's no-op
+  // boundary for no reason a caller could observe as a real content change.
+  toNormalPack.sort();
   return { toNormalPack, cruftCandidates };
 }
 
@@ -653,10 +694,15 @@ async function runGcTask(
   // locally" flag per object, so an unreachable member can only be carried
   // forward (never crufted — a cruft pack cannot carry the `.promisor`
   // marker — and never destroyed by the expiry cutoff, which never sees it).
-  // Verdict pinned against git 2.55.0: an unreachable object living only
-  // inside a `.promisor`-marked pack is retained in the rebuilt promisor
-  // pack (never crufted, never dropped) by real `git gc` too — the design's
-  // "retain" default needed no correction.
+  // Two verdicts pinned against git 2.55.0 (mktemp probes, scrubbed env):
+  // (1) an UNREACHABLE object living only inside a `.promisor`-marked pack
+  // is retained in the rebuilt promisor pack (never crufted, never
+  // dropped) — the design's "retain" default needed no correction. (2) a
+  // REACHABLE promisor-pack object is packed into BOTH the rebuilt
+  // promisor pack (here) AND the ordinary normal pack (`partitionOwned`
+  // above) — git does not exclude promisor membership from the normal
+  // pack the way it excludes `.keep`, so `toNormalPack` and this set
+  // deliberately intersect on every reachable promisor oid.
   const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor];
 
   const mtimes = await computeCruftMtimes(

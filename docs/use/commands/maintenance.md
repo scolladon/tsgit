@@ -8,16 +8,18 @@ tasks it names run.
 
 Ships two tasks. `commit-graph` writes `objects/info/commit-graph`
 byte-identical to `git commit-graph write --reachable` for the same commit
-set. `gc` consolidates every pack it owns, by class: **all** reachable,
-non-promisor objects — loose *and* already packed — repack into one fresh
-normal pack; every promisor object repacks whole into one fresh promisor
-pack, never merged with the normal one; and unreachable, non-promisor
-objects route through git's cruft-pack lifecycle wherever they lived: recent
-unreachable objects survive in a cruft pack carrying a `.mtimes` age
-sidecar; objects aged past `gc.pruneExpire` are destroyed outright.
-**`gc` is the first tsgit command that can permanently destroy data** — read
-the expiry section below before relying on it. `*.keep`-marked packs are
-git's own escape hatch from all of this — see below.
+set. `gc` consolidates every pack it owns, by class: **all** reachable
+objects — loose, already packed, or living in a promisor pack — repack into
+one fresh normal pack; every promisor object *additionally* repacks whole
+into one fresh promisor pack (a reachable one duplicates into both — see
+"Object placement by file class" below — never merged into a single pack);
+and unreachable, non-promisor objects route through git's cruft-pack
+lifecycle wherever they lived: recent unreachable objects survive in a cruft
+pack carrying a `.mtimes` age sidecar; objects aged past `gc.pruneExpire` are
+destroyed outright. **`gc` is the first tsgit command that can permanently
+destroy data** — read the expiry section below before relying on it.
+`*.keep`-marked packs are git's own escape hatch from all of this — see
+below.
 
 ## Signature
 
@@ -93,26 +95,30 @@ interface MaintenanceResult {
      rewritten, not deleted, and its objects are neither duplicated into the
      new pack nor migrated to the cruft pack even when unreachable. This is
      the caller's escape hatch from every rule below.
-   - `.promisor` → a **second, disjoint consolidation class**: every
-     promisor object repacks whole into **one** freshly written promisor
-     pack (`promisorPackId`), reachability irrelevant, and is **never**
-     merged with the normal pack — a partial clone's lazily-fetchable
-     objects must never read as fully present locally.
+   - `.promisor` → a **second consolidation class**, not an exclusion:
+     every promisor object — reachable or not — repacks whole into **one**
+     freshly written promisor pack (`promisorPackId`). A *reachable*
+     promisor object is **also** repacked into the normal pack (step 3) —
+     git duplicates it rather than excluding it, unlike `.keep` — while an
+     *unreachable* one stays exclusive to the promisor pack, never crufted.
+     The two output packs are still never **merged** into one: a partial
+     clone's lazily-fetchable objects must never read as fully present
+     locally through a single combined pack.
    - `.mtimes` → the existing **cruft** pack, governed by step 4 below.
    - anything else → **normal**, consolidated by step 3.
-3. **Reachable, non-promisor objects** — loose *and* already packed, across
-   every normal pack — repack into **one** freshly written normal pack
-   (`packId`). Every superseded normal pack and its siblings
-   (`.idx`/`.pack`/`.rev`/`.bitmap`) are deleted. No pack is written when
-   nothing is reachable outside kept and promisor packs (`packId:
-   undefined`), never an empty one — and there is deliberately **no**
-   "already consolidated, skip it" shortcut: even a single unchanged pack is
-   rewritten on every run (same sha, since the packer is deterministic),
-   because a pack's own file mtime is the age an object carries the moment
-   it later becomes unreachable — a skipped rewrite would silently
-   stale-date that clock. The promisor pack (previous bullet) is rewritten
-   on the identical no-skip schedule, and its superseded siblings — now
-   including `.promisor` — are deleted the same way.
+3. **Reachable objects** — loose, already packed, or living in a promisor
+   pack — repack into **one** freshly written normal pack (`packId`). Every
+   superseded normal pack and its siblings (`.idx`/`.pack`/`.rev`/`.bitmap`)
+   are deleted. No pack is written when nothing is reachable outside kept
+   packs (`packId: undefined`), never an empty one — and there is
+   deliberately **no** "already consolidated, skip it" shortcut: even a
+   single unchanged pack is rewritten on every run (same sha, since the
+   packer is deterministic), because a pack's own file mtime is the age an
+   object carries the moment it later becomes unreachable — a skipped
+   rewrite would silently stale-date that clock. The promisor pack (previous
+   bullet) is rewritten on the identical no-skip schedule, and its
+   superseded siblings — now including `.promisor` — are deleted the same
+   way.
 4. **Unreachable objects** go through the cruft-pack lifecycle
    (`gc.cruftPacks`, default `true`), regardless of whether they came from a
    loose file or a pack being consolidated away:
@@ -173,7 +179,11 @@ interface MaintenanceResult {
   clone with no garbage reports `packId` and `promisorPackId` set,
   `cruftPackId` undefined; a repository whose only pack is `*.keep`-marked
   reports all three `undefined` — that is not an error, just nothing to
-  consolidate.
+  consolidate. `packId` and `promisorPackId` being set together is the
+  **common** partial-clone case, not a contradiction: a reachable promisor
+  object counts toward both packs at once (see the placement table below),
+  so `packId`'s object count is never a clean complement of
+  `promisorPackId`'s.
 
 ### Object placement by file class
 
@@ -184,7 +194,8 @@ interface MaintenanceResult {
 | unreachable, at or past the cutoff | **destroyed** |
 | in a normal pack, since become unreachable | migrates to the cruft pack, carrying its SOURCE pack's mtime |
 | anything inside a `*.keep` pack | untouched — never repacked, never crufted, never duplicated |
-| anything inside a `.promisor` pack, reachable or not | the one new promisor pack, marker carried; never merged with the normal pack, never crufted, never destroyed |
+| **reachable**, inside a `.promisor` pack | **both** the new normal pack and the new promisor pack — git duplicates it rather than excluding it |
+| **unreachable**, inside a `.promisor` pack | only the new promisor pack, marker carried; never crufted, never destroyed |
 
 ### The size trade
 

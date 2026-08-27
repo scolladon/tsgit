@@ -33,4 +33,9 @@ and ordering rules as normal packs. `*.keep` exclusion is unchanged.
 
 Object placement under gc reaches total parity with default git across all four file
 classes (normal, cruft, promisor, kept). The interop table's promisor rows assert
-parity instead of a recorded divergence.
+parity instead of a recorded divergence. Parity includes duplication: a **reachable**
+promisor-pack object is repacked into both the promisor pack and the normal pack,
+pinned against git 2.55.0 — promisor membership is not a `.keep`-style exclusion from
+the normal pack. An **unreachable** promisor-pack object stays exclusive to the
+promisor pack (never crufted, never destroyed), per the retain-direction pin this ADR
+already recorded.

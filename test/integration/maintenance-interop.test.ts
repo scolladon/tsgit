@@ -173,6 +173,24 @@ async function readOursPackOids(ctx: Context, packId: ObjectId): Promise<Readonl
   return new Set(allObjectIds(index));
 }
 
+/** Every `.pack` file under `dir` whose contents include `oid`, read via
+ *  `git verify-pack -v` — the only way to attribute a raw oid to a SPECIFIC
+ *  pack among several, needed to prove git itself duplicates a reachable
+ *  promisor-pack object into more than one pack. */
+async function peerPackNamesContaining(dir: string, oid: string): Promise<ReadonlyArray<string>> {
+  const packDir = path.join(dir, '.git', 'objects', 'pack');
+  const idxFiles = (await readdir(packDir)).filter((name) => name.endsWith('.idx'));
+  const hits: string[] = [];
+  for (const idx of idxFiles) {
+    const out = execFileSync('git', ['-C', dir, 'verify-pack', '-v', path.join(packDir, idx)], {
+      encoding: 'utf8',
+      env: runGitEnv(),
+    });
+    if (out.includes(oid)) hits.push(idx.replace(/\.idx$/, '.pack'));
+  }
+  return hits;
+}
+
 /**
  * Builds a pack from exactly `oids` via `git pack-objects` and marks it with
  * `suffix` (`.promisor`, `.keep`, …) — the same manual-construction shape
@@ -870,7 +888,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       await rm(baseDir, { recursive: true, force: true });
     });
 
-    it('Then exactly two new packs exist: every promisor oid in the promisor pack, none in the normal pack, and the old promisor pack is gone', async () => {
+    it('Then exactly two new packs exist and the reachable promisor oid is duplicated into BOTH', async () => {
       // Arrange
       const twin = await makeTwin(baseDir, 'promisor-rebuild');
 
@@ -879,24 +897,40 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
 
       // Assert — placement parity, asserted by oid membership, never by a
       // pack count alone: a count passes an implementation that writes two
-      // packs with the wrong objects in them.
+      // packs with the wrong objects in them. Pinned against git 2.55.0: a
+      // REACHABLE promisor-pack object duplicates into the ordinary pack
+      // too — promisor membership is not a normal-pack exclusion the way
+      // `.keep` is.
       expect(result.promisorPackId).toBeDefined();
       expect(result.packId).toBeDefined();
       const promisorOids = await readOursPackOids(ctx, result.promisorPackId as ObjectId);
       const normalOids = await readOursPackOids(ctx, result.packId as ObjectId);
       expect(promisorOids.has(promisorOid as ObjectId)).toBe(true);
-      expect(normalOids.has(promisorOid as ObjectId)).toBe(false);
+      expect(normalOids.has(promisorOid as ObjectId)).toBe(true);
 
+      // tsgit's own retirement is deterministic (its packer is base-only,
+      // never delta, so a 3-object rebuild cannot coincidentally reproduce
+      // git's differently-encoded original bytes/sha) — the old pack name
+      // is reliably gone on this side.
       const oursEntries = await packDirEntries(twin.oursDir);
       expect(oursEntries.filter((n) => n.endsWith('.pack')).length).toBe(2);
       expect(oursEntries).not.toContain(oldPromisorPackName);
       expect(oursEntries.some((n) => n.endsWith('.promisor'))).toBe(true);
 
-      // Peer parity: git also produces exactly two packs, the old one gone.
+      // Peer parity: git also produces exactly two packs, carrying the SAME
+      // duplication — the oid attributes to both. Not asserted here: which
+      // NAME the promisor pack lands under. git's own delta/window search is
+      // thread-scheduling-sensitive under system load, so a fresh rebuild of
+      // this fixture's tiny 3-object set can occasionally reproduce the
+      // ORIGINAL pack's exact bytes/sha (observed directly: pack count still
+      // 2, the pre-existing name still present, `.promisor` still on it, the
+      // oid still duplicated into the sibling normal pack) — a legitimate
+      // git behavior this suite does not control, not a divergence to chase.
       const peerEntries = await packDirEntries(twin.peerDir);
       expect(peerEntries.filter((n) => n.endsWith('.pack')).length).toBe(2);
-      expect(peerEntries).not.toContain(oldPromisorPackName);
       expect(peerEntries.some((n) => n.endsWith('.promisor'))).toBe(true);
+      const peerPacksWithOid = await peerPackNamesContaining(twin.peerDir, promisorOid);
+      expect(peerPacksWithOid.length).toBe(2);
       await disposeTwin(twin);
     });
   });
