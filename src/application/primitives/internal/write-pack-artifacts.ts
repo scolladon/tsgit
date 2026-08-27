@@ -13,9 +13,11 @@
  * value leaves the pack directory untouched — see `writeReverseIndex`.
  */
 import { hexToBytes } from '../../../domain/objects/encoding.js';
+import type { ObjectId } from '../../../domain/objects/index.js';
 import {
   type PackIndexWriterEntry,
   type SortedEntry,
+  serializeCruftMtimes,
   serializePackIndex,
   serializePackRevIndex,
   sortPackIndexEntries,
@@ -68,6 +70,33 @@ export const buildRev = async (
   bytes.set(digest, trailerStart);
   return bytes;
 };
+
+/**
+ * Assembles a cruft pack's `.mtimes` sidecar bytes: `serializeCruftMtimes`
+ * reserves the trailer's self-checksum region zeroed; this fills it in
+ * place, the same body/trailer split `buildRev` uses for `.rev` (Pin P
+ * confirms the digest covers the pack-checksum field identically).
+ */
+export const buildCruftMtimes = async (
+  ctx: Context,
+  entries: ReadonlyArray<PackIndexWriterEntry>,
+  packSha: string,
+  mtimeOf: (oid: ObjectId) => number,
+  presorted?: ReadonlyArray<SortedEntry>,
+): Promise<Uint8Array> => {
+  const packChecksum = hexToBytes(packSha);
+  const bytes = serializeCruftMtimes(entries, packChecksum, mtimeOf, presorted);
+  // Same one-width-source rule buildRev documents: the trailer offset comes
+  // from the width the serializer actually sized the file with.
+  const trailerStart = bytes.length - packChecksum.length;
+  const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
+  bytes.set(digest, trailerStart);
+  return bytes;
+};
+
+/** The cruft pack's mtime sidecar path — a plain sibling, `pack-<sha>.mtimes`. */
+export const cruftMtimesFilePath = (packDir: string, packSha: string): string =>
+  `${packDir}/pack-${packSha}.mtimes`;
 
 const WRITE_REVERSE_INDEX_KEY = 'writeReverseIndex'; // the finders lower-case their key list
 

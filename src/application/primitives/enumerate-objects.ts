@@ -1,6 +1,7 @@
 import type { ObjectId } from '../../domain/objects/index.js';
 import { allObjectIds } from '../../domain/storage/pack-index.js';
 import type { Context } from '../../ports/context.js';
+import { boundedMapFor } from './internal/concurrency.js';
 import type { RegisteredPack } from './pack-registry.js';
 import { commonGitDir, objectsDir } from './path-layout.js';
 import { getPackRegistry } from './read-object.js';
@@ -38,17 +39,36 @@ export async function enumerateObjects(
   return [...ids].sort();
 }
 
+/** One fanout prefix's loose object ids — the unit `collectLooseObjectIds`
+ *  fans out across the `ioBound` pool, since each is an independent
+ *  `exists`-then-`readdir` round trip against its own directory. */
+async function collectPrefixObjectIds(
+  ctx: Context,
+  gitDir: string,
+  prefix: string,
+): Promise<ReadonlyArray<ObjectId>> {
+  const dir = objectsDir(gitDir, prefix);
+  if (!(await ctx.fs.exists(dir))) return [];
+  const entries = await ctx.fs.readdir(dir);
+  const ids: ObjectId[] = [];
+  for (const entry of entries) {
+    if (entry.isFile) ids.push(`${prefix}${entry.name}` as ObjectId);
+  }
+  return ids;
+}
+
+/**
+ * Up to 256 fanout directories, each its own `exists`-then-`readdir` round
+ * trip — fanned out across the `ioBound` pool rather than walked serially,
+ * since none of the 256 probes depends on another's result.
+ */
 async function collectLooseObjectIds(ctx: Context, ids: Set<ObjectId>): Promise<void> {
   const gitDir = commonGitDir(ctx);
-  for (const prefix of HEX_PREFIXES) {
-    const dir = objectsDir(gitDir, prefix);
-    if (!(await ctx.fs.exists(dir))) continue;
-    const entries = await ctx.fs.readdir(dir);
-    for (const entry of entries) {
-      if (entry.isFile) {
-        ids.add(`${prefix}${entry.name}` as ObjectId);
-      }
-    }
+  const perPrefix = await boundedMapFor(ctx, 'ioBound', HEX_PREFIXES, (prefix) =>
+    collectPrefixObjectIds(ctx, gitDir, prefix),
+  );
+  for (const prefixIds of perPrefix) {
+    for (const id of prefixIds) ids.add(id);
   }
 }
 

@@ -5,11 +5,12 @@
  * files backend, orphaned `*.ref` / `*.temp` reftable tables on the other.
  *
  * git removes unreferenced reftable tables only during `pack-refs --all` /
- * `gc`; tsgit has neither `gc` nor `prune`, so a crash between writing a
- * merged table and swapping `tables.list` would otherwise leak that file
- * forever. Cleanup lives here — the same place and the same moment git
- * performs it — so tsgit is faithful in mechanism and location, not merely
- * in effect. `packRefs` packs refs; it deletes no objects, so
+ * `gc`; tsgit's `gc` task touches objects only (never refs, reflogs or the
+ * index — see `maintenance.ts`), so a crash between writing a merged table
+ * and swapping `tables.list` would otherwise leak that file forever.
+ * Cleanup lives here — the same place and the same moment git performs it
+ * for the ref backend — so tsgit is faithful in mechanism and location, not
+ * merely in effect. `packRefs` packs refs; it deletes no objects, so
  * `extensions.preciousObjects` is unaffected and still honoured by
  * construction.
  *

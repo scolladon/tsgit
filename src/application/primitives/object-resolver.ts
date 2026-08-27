@@ -119,6 +119,21 @@ function parsedObjectMemoFor(ctx: Context): LruCache<MemoisedObject> | undefined
 }
 
 /**
+ * Drops `id` from the parsed-commit/tag memo, if one exists for this
+ * session — the counterpart `ctx.deltaCache.delete` does not reach, since
+ * this memo lives outside `deltaCache`'s own byte budget. Neither cache has
+ * a generation concept: nothing normally deletes an object, so nothing
+ * normally needed to forget one. `maintenance`'s `gc` task is the first
+ * caller that does, and it calls this for every oid it destroys — an
+ * un-invalidated HIT here would let a destroyed commit or tag keep reading
+ * back successfully forever, which is exactly the guarantee gc's expiry
+ * cutoff exists to break.
+ */
+export function forgetParsedObjectMemo(ctx: Context, id: ObjectId): void {
+  parsedObjectMemos.get(ctx.session)?.delete(id);
+}
+
+/**
  * Approximate retained footprint of a parsed commit/tag: the sum of its
  * unbounded-length fields — the message, an armored gpg/ssh signature, and
  * any extra header's key+value (a `mergetag` header can embed a whole

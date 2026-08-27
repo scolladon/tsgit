@@ -15,9 +15,14 @@
  * derivations that keep the session rather than missing on every spread.
  *
  * Invalidation is local, not the (currently unwired) generation counter:
- * `writeObject` records the written oid into a present cached set (writes
- * only ever ADD a loose object — tsgit never prunes them), so no re-readdir
- * is forced on read/write-interleaved flows; an unprobed prefix stays lazy.
+ * `writeObject` records the written oid into a present cached set — a write
+ * only ever ADDS a member, so no re-readdir is forced on read/write-
+ * interleaved flows; an unprobed prefix stays lazy. Pruning is the opposite
+ * shape: `maintenance`'s `gc` task is tsgit's own pruner now, and it drops
+ * the whole prefix's cached set via `forgetLooseOidPrefix` for every prefix
+ * it unlinks from — the same escape hatch that already tolerated an
+ * EXTERNAL pruner (a concurrent `git gc`) removing a loose file out from
+ * under a cached HIT.
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -63,20 +68,22 @@ export async function probeLooseOid(ctx: Context, id: ObjectId): Promise<boolean
 
 /**
  * Record a just-written loose object into its prefix's cached set. A write
- * only ever adds a member (tsgit never prunes loose objects), so inserting
- * beats dropping the whole set — dropping would force an O(dir) re-readdir
- * on the next same-prefix probe in read/write-interleaved flows. An
- * unprobed prefix has no set yet and stays lazy. Call after a loose object
- * is written under this Context.
+ * only ever adds a member, so inserting beats dropping the whole set —
+ * dropping would force an O(dir) re-readdir on the next same-prefix probe
+ * in read/write-interleaved flows. An unprobed prefix has no set yet and
+ * stays lazy. Call after a loose object is written under this Context.
+ * `forgetLooseOidPrefix` (below) is the removal counterpart a pruner calls.
  */
 export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
   fanoutCache.get(ctx.session)?.get(prefixOf(id))?.add(suffixOf(id));
 }
 
 /**
- * Drop the cached set for `id`'s prefix entirely. Called when a cached HIT
- * turns out stale (the file vanished under us — an external pruner such as
- * `git gc` removed it), so the next probe re-reads the directory.
+ * Drop the cached set for `id`'s prefix entirely. Called by `maintenance`'s
+ * `gc` task for every prefix it unlinks a loose object from, and also when
+ * a cached HIT turns out stale (the file vanished under us — an external
+ * pruner such as a concurrent `git gc` removed it), so the next probe
+ * re-reads the directory.
  */
 export function forgetLooseOidPrefix(ctx: Context, id: ObjectId): void {
   fanoutCache.get(ctx.session)?.delete(prefixOf(id));

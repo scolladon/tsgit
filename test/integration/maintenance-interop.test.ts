@@ -1,0 +1,579 @@
+/**
+ * Cross-tool interop — the `gc` task's loose-object lifecycle. "tsgit on
+ * one, real git on its clone" is the shape every row uses: each scenario
+ * builds ONE repository with real git, copies it into two independent
+ * twins, then runs `git gc` on one and tsgit's `maintenance` on the other.
+ *
+ * Pack-internal byte layout is NOT compared (tsgit's packer is non-delta;
+ * git's is not — both are valid, and the design explicitly excludes pack
+ * bytes from the faithfulness surface). What IS compared: which objects
+ * live in which file class, the `.mtimes` sidecar's own bytes, file naming
+ * and siblings, refusal conditions, and the expiry arithmetic.
+ *
+ * @proves
+ *   surface:        gc
+ *   bucket:         cross-tool-interop
+ *   unique:         tsgit's cruft-pack lifecycle agrees with `git gc` on object placement, `.mtimes` bytes and the expiry boundary
+ *   interopSurface: gc
+ */
+import { execFileSync } from 'node:child_process';
+import { cp, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { maintenance } from '../../src/application/commands/maintenance.js';
+import { commonGitDir, packsDir } from '../../src/application/primitives/path-layout.js';
+import { TsgitError } from '../../src/domain/error.js';
+import type { ObjectId } from '../../src/domain/objects/index.js';
+import { parseCruftMtimes, parsePackIndex } from '../../src/domain/storage/index.js';
+import { allObjectIds } from '../../src/domain/storage/pack-index.js';
+import type { Context } from '../../src/ports/context.js';
+import {
+  disableAutoMaintenance,
+  GIT_AVAILABLE,
+  git,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
+
+const SETUP_TIMEOUT = 60_000;
+
+const tmpDir = (slug: string): Promise<string> =>
+  mkdtemp(path.join(os.tmpdir(), `tsgit-gc-${slug}-`));
+
+async function initRepo(slug: string, extraInitArgs: readonly string[] = []): Promise<string> {
+  const dir = await tmpDir(slug);
+  git(dir, 'init', '-q', '-b', 'main', ...extraInitArgs);
+  git(dir, 'config', 'user.name', 'A U Thor');
+  git(dir, 'config', 'user.email', 'author@example.com');
+  git(dir, 'config', 'commit.gpgsign', 'false');
+  disableAutoMaintenance(dir);
+  return dir;
+}
+
+async function addCommit(dir: string, name: string): Promise<string> {
+  await writeFile(path.join(dir, `${name}.txt`), `${name}\n`);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-q', '-m', name);
+  return git(dir, 'rev-parse', 'HEAD').trim();
+}
+
+/** `git hash-object -w --stdin` — an unreferenced loose blob, the cruft
+ *  candidate every scenario needs. */
+function writeLooseBlobGit(dir: string, content: string): string {
+  const out = execFileSync('git', ['-C', dir, 'hash-object', '-w', '--stdin'], {
+    input: content,
+    encoding: 'utf8',
+    env: runGitEnv(),
+  });
+  return out.trim();
+}
+
+const looseGitPath = (dir: string, oid: string): string =>
+  path.join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2));
+
+async function forceMtime(filePath: string, epochSeconds: number): Promise<void> {
+  const date = new Date(epochSeconds * 1000);
+  await utimes(filePath, date, date);
+}
+
+interface Twin {
+  readonly peerDir: string;
+  readonly oursDir: string;
+}
+
+async function makeTwin(baseDir: string, slug: string): Promise<Twin> {
+  const peerDir = await tmpDir(`${slug}-peer`);
+  const oursDir = await tmpDir(`${slug}-ours`);
+  // `preserveTimestamps` is load-bearing: mtime is the cruft lifecycle's own
+  // provenance signal, and a plain copy resets it to "now" on both twins,
+  // silently destroying every forced-mtime fixture upstream of this call.
+  await cp(baseDir, peerDir, { recursive: true, preserveTimestamps: true });
+  await cp(baseDir, oursDir, { recursive: true, preserveTimestamps: true });
+  return { peerDir, oursDir };
+}
+
+async function disposeTwin(twin: Twin): Promise<void> {
+  await rm(twin.peerDir, { recursive: true, force: true });
+  await rm(twin.oursDir, { recursive: true, force: true });
+}
+
+async function runOursGc(
+  oursDir: string,
+  algorithm: 'sha1' | 'sha256' = 'sha1',
+): Promise<{ readonly ctx: Context; readonly result: Awaited<ReturnType<typeof maintenance>> }> {
+  const ctx = createNodeContext({ workDir: oursDir, algorithm });
+  const result = await maintenance(ctx, { tasks: ['gc'] });
+  return { ctx, result };
+}
+
+const runPeerGc = (dir: string, extraConfig: readonly string[] = []): void => {
+  const configArgs = extraConfig.flatMap((kv) => ['-c', kv]);
+  git(dir, ...configArgs, 'gc');
+};
+
+/**
+ * Appends `gc.<key>=<value>` pairs (the same `-c gc.key=value` shape
+ * `runPeerGc`'s `extraConfig` takes) to `oursDir`'s own `.git/config` —
+ * `-c` has no tsgit equivalent, so parity requires writing the setting into
+ * the file tsgit actually reads.
+ */
+async function setOursGcConfig(oursDir: string, extraConfig: readonly string[]): Promise<void> {
+  if (extraConfig.length === 0) return;
+  const configPath = path.join(oursDir, '.git', 'config');
+  const existing = await readFile(configPath, 'utf8');
+  const body = extraConfig
+    .map((kv) => kv.slice('gc.'.length))
+    .map((entry) => {
+      const eq = entry.indexOf('=');
+      return `\t${entry.slice(0, eq)} = ${entry.slice(eq + 1)}\n`;
+    })
+    .join('');
+  await writeFile(configPath, `${existing}\n[gc]\n${body}`);
+}
+
+/** Runs `git gc` on the peer and tsgit's `maintenance` gc task on `ours`,
+ *  with the identical `gc.*` config applied to both. */
+async function runBothGc(
+  twin: Twin,
+  extraConfig: readonly string[] = [],
+  algorithm: 'sha1' | 'sha256' = 'sha1',
+): Promise<{ readonly ctx: Context; readonly result: Awaited<ReturnType<typeof maintenance>> }> {
+  runPeerGc(twin.peerDir, extraConfig);
+  await setOursGcConfig(twin.oursDir, extraConfig);
+  return runOursGc(twin.oursDir, algorithm);
+}
+
+function catFileExists(dir: string, oid: string): boolean {
+  return tryRunGitWithExit(['-C', dir, 'cat-file', '-e', oid]).exitCode === 0;
+}
+
+async function packDirEntries(dir: string): Promise<ReadonlyArray<string>> {
+  return readdir(path.join(dir, '.git', 'objects', 'pack'));
+}
+
+async function readOursMtimesMap(
+  ctx: Context,
+  cruftPackId: ObjectId,
+): Promise<ReadonlyMap<ObjectId, number>> {
+  const dir = packsDir(commonGitDir(ctx));
+  const idxBytes = await readFile(`${dir}/pack-${cruftPackId}.idx`);
+  const index = parsePackIndex(new Uint8Array(idxBytes), ctx.hashConfig.digestLength);
+  const oidsInIndexOrder = allObjectIds(index);
+  const mtimesBytes = await readFile(`${dir}/pack-${cruftPackId}.mtimes`);
+  return parseCruftMtimes(new Uint8Array(mtimesBytes), oidsInIndexOrder);
+}
+
+describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
+  describe('Given a reachable commit and one unreachable, fresh loose blob, When gc runs on both twins', () => {
+    let baseDir: string;
+    let danglingId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('creation');
+      await addCommit(baseDir, 'c0');
+      danglingId = writeLooseBlobGit(baseDir, 'dangling');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools park it in a cruft pack: readable, fsck-dangling, counted in-pack', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'creation');
+      const { result } = await runBothGc(twin);
+
+      // Assert
+      expect(result.cruftPackId).toBeDefined();
+      expect(catFileExists(twin.peerDir, danglingId)).toBe(true);
+      expect(catFileExists(twin.oursDir, danglingId)).toBe(true);
+      const peerFsck = git(twin.peerDir, 'fsck');
+      const oursFsck = git(twin.oursDir, 'fsck');
+      expect(peerFsck).toContain(`dangling blob ${danglingId}`);
+      expect(oursFsck).toContain(`dangling blob ${danglingId}`);
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(oursEntries.some((n) => n.endsWith('.mtimes'))).toBe(true);
+      expect(oursEntries.some((n) => n.endsWith('.bitmap'))).toBe(false);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given the same forced mtime on the same unreachable blob on both twins, When gc runs on both', () => {
+    let baseDir: string;
+    let blobId: string;
+    const FORCED_MTIME = 1_780_000_000;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('mtimes-format');
+      await addCommit(baseDir, 'c0');
+      blobId = writeLooseBlobGit(baseDir, 'aged-dangler');
+      await forceMtime(looseGitPath(baseDir, blobId), FORCED_MTIME);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then the .mtimes sidecar records the identical mtime on both sides, in the same header/body/trailer shape', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'mtimes-format');
+      const { ctx, result } = await runBothGc(twin, ['gc.pruneExpire=never']);
+
+      // Act
+      const peerEntries = await packDirEntries(twin.peerDir);
+      const peerCruftName = peerEntries.find((n) => n.endsWith('.mtimes'));
+      expect(peerCruftName).toBeDefined();
+      const peerSha = (peerCruftName as string).slice('pack-'.length, -'.mtimes'.length);
+      const peerIdxBytes = await readFile(
+        path.join(twin.peerDir, '.git', 'objects', 'pack', `pack-${peerSha}.idx`),
+      );
+      const peerIndex = parsePackIndex(new Uint8Array(peerIdxBytes), 20);
+      const peerOidsInOrder = allObjectIds(peerIndex);
+      const peerMtimesBytes = await readFile(
+        path.join(twin.peerDir, '.git', 'objects', 'pack', `pack-${peerSha}.mtimes`),
+      );
+      const peerMtimes = parseCruftMtimes(new Uint8Array(peerMtimesBytes), peerOidsInOrder);
+
+      const oursMtimes = await readOursMtimesMap(ctx, result.cruftPackId as ObjectId);
+
+      // Assert — same magic-derived structure (both parse successfully) and
+      // the identical recorded mtime for the identical object.
+      expect(peerMtimes.get(blobId as ObjectId)).toBe(FORCED_MTIME);
+      expect(oursMtimes.get(blobId as ObjectId)).toBe(FORCED_MTIME);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given three unreachable blobs at cutoff-1, cutoff and cutoff+1, When gc runs at that cutoff on both twins', () => {
+    let baseDir: string;
+    let below: string;
+    let atCutoff: string;
+    let above: string;
+    const CUTOFF = 1_787_500_000;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('boundary');
+      await addCommit(baseDir, 'c0');
+      below = writeLooseBlobGit(baseDir, 'below');
+      atCutoff = writeLooseBlobGit(baseDir, 'at-cutoff');
+      above = writeLooseBlobGit(baseDir, 'above');
+      await forceMtime(looseGitPath(baseDir, below), CUTOFF - 1);
+      await forceMtime(looseGitPath(baseDir, atCutoff), CUTOFF);
+      await forceMtime(looseGitPath(baseDir, above), CUTOFF + 1);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools destroy at and below the cutoff and keep only above it', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'boundary');
+      await runBothGc(twin, [`gc.pruneExpire=@${CUTOFF}`]);
+
+      // Assert
+      for (const dir of [twin.peerDir, twin.oursDir]) {
+        expect(catFileExists(dir, below)).toBe(false);
+        expect(catFileExists(dir, atCutoff)).toBe(false);
+        expect(catFileExists(dir, above)).toBe(true);
+      }
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given gc.pruneExpire=never with an aged unreachable blob, When gc runs on both twins', () => {
+    let baseDir: string;
+    let blobId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('prune-never');
+      await addCommit(baseDir, 'c0');
+      blobId = writeLooseBlobGit(baseDir, 'ancient');
+      await forceMtime(looseGitPath(baseDir, blobId), 1);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep it forever in a cruft pack', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'prune-never');
+      const { result } = await runBothGc(twin, ['gc.pruneExpire=never']);
+
+      // Assert
+      expect(catFileExists(twin.peerDir, blobId)).toBe(true);
+      expect(catFileExists(twin.oursDir, blobId)).toBe(true);
+      expect(result.cruftPackId).toBeDefined();
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given gc.pruneExpire=now with a freshly-written unreachable blob, When gc runs on both twins', () => {
+    let baseDir: string;
+    let blobId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('prune-now');
+      await addCommit(baseDir, 'c0');
+      blobId = writeLooseBlobGit(baseDir, 'fresh-but-doomed');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools destroy it outright, with no cruft pack at all', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'prune-now');
+      const { result } = await runBothGc(twin, ['gc.pruneExpire=now']);
+
+      // Assert
+      expect(catFileExists(twin.peerDir, blobId)).toBe(false);
+      expect(catFileExists(twin.oursDir, blobId)).toBe(false);
+      expect(result.cruftPackId).toBeUndefined();
+      const peerEntries = await packDirEntries(twin.peerDir);
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(peerEntries.some((n) => n.endsWith('.mtimes'))).toBe(false);
+      expect(oursEntries.some((n) => n.endsWith('.mtimes'))).toBe(false);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given an existing cruft pack, When new unreachable garbage appears before a second gc', () => {
+    let baseDir: string;
+    let genOneId: string;
+    let genTwoId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('rewrite');
+      await addCommit(baseDir, 'c0');
+      genOneId = writeLooseBlobGit(baseDir, 'gen1');
+      await forceMtime(looseGitPath(baseDir, genOneId), 1_900_000_000);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools rewrite the cruft pack under a new sha, carrying gen1 and adding gen2', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'rewrite');
+      await runBothGc(twin, ['gc.pruneExpire=never']);
+      const peerFirstEntries = await packDirEntries(twin.peerDir);
+      const oursFirstEntries = await packDirEntries(twin.oursDir);
+      const peerFirstCruft = peerFirstEntries.find((n) => n.endsWith('.mtimes'));
+      const oursFirstCruft = oursFirstEntries.find((n) => n.endsWith('.mtimes'));
+
+      // Act
+      genTwoId = writeLooseBlobGit(twin.peerDir, 'gen2');
+      writeLooseBlobGit(twin.oursDir, 'gen2');
+      await forceMtime(looseGitPath(twin.peerDir, genTwoId), 1_950_000_000);
+      await forceMtime(looseGitPath(twin.oursDir, genTwoId), 1_950_000_000);
+      const { result: second } = await runBothGc(twin, ['gc.pruneExpire=never']);
+      const peerSecondEntries = await packDirEntries(twin.peerDir);
+      const peerSecondCruft = peerSecondEntries.find((n) => n.endsWith('.mtimes'));
+
+      // Assert — both rewrote under a new name, both carry both generations.
+      expect(peerSecondCruft).not.toBe(peerFirstCruft);
+      expect(`pack-${second.cruftPackId}.mtimes`).not.toBe(oursFirstCruft);
+      expect(catFileExists(twin.peerDir, genOneId)).toBe(true);
+      expect(catFileExists(twin.peerDir, genTwoId)).toBe(true);
+      expect(catFileExists(twin.oursDir, genOneId)).toBe(true);
+      expect(catFileExists(twin.oursDir, genTwoId)).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given an unreachable object crufted by gc, When it is made reachable before the next gc', () => {
+    let baseDir: string;
+    let blobId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('resurrection');
+      await addCommit(baseDir, 'c0');
+      blobId = writeLooseBlobGit(baseDir, 'resurrected');
+      await forceMtime(looseGitPath(baseDir, blobId), 1_900_000_000);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools drop the cruft pack and keep the object only in a normal pack', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'resurrection');
+      // `gc.packRefs=false`: a blob-headed branch is unusual but not
+      // malformed (exactly what Pin H's own probe constructs) — git's
+      // `pack-refs` sub-step refuses it outright, a divergence from the
+      // cruft lifecycle this row is pinning, so it is turned off on both.
+      await runBothGc(twin, ['gc.pruneExpire=never', 'gc.packRefs=false']);
+
+      // Act — a plain ref-file write, bypassing `update-ref`'s commit-only
+      // type check.
+      await writeFile(path.join(twin.peerDir, '.git', 'refs', 'heads', 'keep'), `${blobId}\n`);
+      await writeFile(path.join(twin.oursDir, '.git', 'refs', 'heads', 'keep'), `${blobId}\n`);
+      const { result: second } = await runBothGc(twin, [
+        'gc.pruneExpire=never',
+        'gc.packRefs=false',
+      ]);
+
+      // Assert
+      expect(second.cruftPackId).toBeUndefined();
+      const peerEntries = await packDirEntries(twin.peerDir);
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(peerEntries.some((n) => n.endsWith('.mtimes'))).toBe(false);
+      expect(oursEntries.some((n) => n.endsWith('.mtimes'))).toBe(false);
+      expect(catFileExists(twin.peerDir, blobId)).toBe(true);
+      expect(catFileExists(twin.oursDir, blobId)).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given an index-only blob and a reflog-only commit, When gc runs on both twins', () => {
+    let baseDir: string;
+    let stagedId: string;
+    let reflogOnlyId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('retention-roots');
+      await addCommit(baseDir, 'c0');
+      await writeFile(path.join(baseDir, 'staged.txt'), 'staged-only\n');
+      git(baseDir, 'add', 'staged.txt');
+      stagedId = git(baseDir, 'rev-parse', ':staged.txt').trim();
+      git(baseDir, 'checkout', '-q', '-b', 'gone');
+      reflogOnlyId = await addCommit(baseDir, 'gone-commit');
+      git(baseDir, 'checkout', '-q', 'main');
+      git(baseDir, 'branch', '-D', 'gone');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep the index-only blob and the reflog-only commit reachable', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'retention-roots');
+      await runBothGc(twin);
+
+      // Assert
+      expect(catFileExists(twin.peerDir, stagedId)).toBe(true);
+      expect(catFileExists(twin.oursDir, stagedId)).toBe(true);
+      expect(catFileExists(twin.peerDir, reflogOnlyId)).toBe(true);
+      expect(catFileExists(twin.oursDir, reflogOnlyId)).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe("Given a repository with refs and a reflog, When tsgit's gc runs", () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('no-ref-mutation');
+      await addCommit(baseDir, 'c0');
+      writeLooseBlobGit(baseDir, 'garbage');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it("Then tsgit's gc leaves refs and reflogs byte-identical, unlike git's own pack-refs side effect", async () => {
+      // Arrange
+      const oursDir = await tmpDir('no-ref-mutation-ours');
+      await cp(baseDir, oursDir, { recursive: true });
+      const refPath = path.join(oursDir, '.git', 'refs', 'heads', 'main');
+      const reflogPath = path.join(oursDir, '.git', 'logs', 'refs', 'heads', 'main');
+      const refBefore = await readFile(refPath);
+      const reflogBefore = await readFile(reflogPath);
+
+      // Act
+      await runOursGc(oursDir);
+
+      // Assert — the loose ref and reflog files are untouched.
+      expect(Buffer.compare(refBefore, await readFile(refPath))).toBe(0);
+      expect(Buffer.compare(reflogBefore, await readFile(reflogPath))).toBe(0);
+      await rm(oursDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('Given a --object-format=sha256 repository with an unreachable blob, When gc runs on both twins', () => {
+    let baseDir: string;
+    let blobId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('sha256', ['--object-format=sha256']);
+      await addCommit(baseDir, 'c0');
+      blobId = writeLooseBlobGit(baseDir, 'sha256-dangler');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then the cruft sidecar uses hash id 2 with 32-byte trailers on both tools', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'sha256');
+      const { ctx, result } = await runBothGc(twin, ['gc.pruneExpire=never'], 'sha256');
+
+      // Assert
+      expect(result.cruftPackId).toBeDefined();
+      expect(catFileExists(twin.peerDir, blobId)).toBe(true);
+      expect(catFileExists(twin.oursDir, blobId)).toBe(true);
+      const dir = packsDir(commonGitDir(ctx));
+      const mtimesBytes = await readFile(`${dir}/pack-${result.cruftPackId}.mtimes`);
+      expect(mtimesBytes.length).toBe(12 + 4 * 1 + 32 + 32);
+      const view = new DataView(mtimesBytes.buffer, mtimesBytes.byteOffset, mtimesBytes.byteLength);
+      expect(view.getUint32(8)).toBe(2);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given an unparseable gc.pruneExpire value, When gc runs on both twins', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('malformed-expiry');
+      await addCommit(baseDir, 'c0');
+      writeLooseBlobGit(baseDir, 'irrelevant');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools refuse rather than silently defaulting the cutoff', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'malformed-expiry');
+      const peerResult = tryRunGitWithExit([
+        '-C',
+        twin.peerDir,
+        '-c',
+        'gc.pruneExpire=not-a-date',
+        'gc',
+      ]);
+
+      // Act
+      let oursCaught: unknown;
+      try {
+        const ctx = createNodeContext({ workDir: twin.oursDir });
+        await writeFile(
+          path.join(twin.oursDir, '.git', 'config'),
+          (await readFile(path.join(twin.oursDir, '.git', 'config'), 'utf8')) +
+            '\n[gc]\n\tpruneExpire = not-a-date\n',
+        );
+        await maintenance(ctx, { tasks: ['gc'] });
+      } catch (error) {
+        oursCaught = error;
+      }
+
+      // Assert — both refuse; git with a non-zero exit, tsgit with a typed error.
+      expect(peerResult.exitCode).not.toBe(0);
+      expect(oursCaught).toBeInstanceOf(TsgitError);
+      expect((oursCaught as TsgitError).data.code).toBe('CONFIG_BAD_DATE_VALUE');
+      await disposeTwin(twin);
+    });
+  });
+});

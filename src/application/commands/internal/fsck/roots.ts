@@ -77,11 +77,16 @@ async function probePresence(ctx: Context, id: ObjectId): Promise<boolean | unde
  * resolved to an oid ABSENT from the universe — git probes such a target
  * against the promisor machinery (`is_promisor_object`), so the caller's
  * promisor-config gate must fire for it even though it roots nothing.
+ *
+ * `universe` is optional: omitted, every resolved ref target is added
+ * unconditionally and the "absent target" verdict never fires — the shape
+ * `collectRetentionRoots` needs (gc has no pre-built object universe to
+ * bound against; unlike `collectRoots`, it never reports corruption).
  */
 async function addRefRoots(
   ctx: Context,
   roots: Set<ObjectId>,
-  universe: ReadonlySet<ObjectId>,
+  universe?: ReadonlySet<ObjectId>,
 ): Promise<boolean> {
   const refNames = await enumerateRefs(ctx);
   let sawAbsentTarget = false;
@@ -92,7 +97,7 @@ async function addRefRoots(
       // Only add to roots if the OID is present in the universe.
       // Absent OIDs are reported as bad-ref(badRefOid) by the refs-verify pass
       // and must NOT be added to roots (would produce spurious 'missing' findings).
-      if (universe.has(id)) roots.add(id);
+      if (universe === undefined || universe.has(id)) roots.add(id);
       else sawAbsentTarget = true;
     } catch {
       // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
@@ -151,7 +156,7 @@ async function walkCacheTree(
   ctx: Context,
   root: CacheTreeEntry,
   roots: Set<ObjectId>,
-  universe: ReadonlySet<ObjectId>,
+  universe?: ReadonlySet<ObjectId>,
 ): Promise<boolean> {
   const stack: CacheTreeEntry[] = [root];
   let unresolved = false;
@@ -171,8 +176,9 @@ async function walkCacheTree(
       // it whatever the probe could or could not say about its route.
       // Rooting an oid the probe refused invents nothing: `buildReachableSet`
       // records no out-edge for an object whose cache entry is null, so no
-      // broken edge and no missing id can follow from it.
-      if (universe.has(entry.id)) roots.add(entry.id);
+      // broken edge and no missing id can follow from it. `universe`
+      // omitted (gc's unbounded callers) roots every resolvable entry.
+      if (universe === undefined || universe.has(entry.id)) roots.add(entry.id);
     }
     for (const child of entry.children) stack.push(child);
   }
@@ -219,7 +225,7 @@ function cacheTreeOf(ctx: Context, index: GitIndex): CacheTreeEntry | undefined 
 async function addIndexRoots(
   ctx: Context,
   roots: Set<ObjectId>,
-  universe: ReadonlySet<ObjectId>,
+  universe?: ReadonlySet<ObjectId>,
 ): Promise<boolean> {
   const index = await readIndexIfIntact(ctx);
   if (index === undefined) return false;
@@ -272,4 +278,24 @@ export async function collectRoots(
   const missingEntryPoint =
     opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : false;
   return { roots, missingEntryPoint, sawAbsentRefTarget };
+}
+
+/**
+ * Retention roots for `maintenance`'s `gc` task (Pin H): every resolvable
+ * ref (HEAD included), every reflog old/new oid, and the index — stage-0
+ * entries plus its cache-tree, when present. Unlike `collectRoots`, this
+ * takes no pre-built object universe: gc is discovering the loose/cruft
+ * candidate set the reachability walk will need, not consuming a finished
+ * enumeration, so a universe would be the wrong cost shape here. Every
+ * collector therefore runs unbounded — an unresolvable ref, cache-tree
+ * entry or reflog simply roots nothing, the same tolerance `collectRoots`'s
+ * own try/catch blocks already apply; gc has nothing analogous to fsck's
+ * corruption report to raise from a miss.
+ */
+export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<ObjectId>> {
+  const roots = new Set<ObjectId>();
+  await addRefRoots(ctx, roots);
+  await addReflogRoots(ctx, roots);
+  await addIndexRoots(ctx, roots);
+  return roots;
 }
