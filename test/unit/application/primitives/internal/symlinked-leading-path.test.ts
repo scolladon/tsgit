@@ -455,6 +455,43 @@ describe('createLeadingPathScanner', () => {
     });
   });
 
+  describe('Given two concurrent unlink calls sharing the same symlinked prefix, started before either classification settles', () => {
+    describe('When unlinkSymlinkedLeadingComponent is called twice on one scanner without awaiting the first', () => {
+      it('Then the symlink is removed exactly once and both callers resolve without throwing', async () => {
+        // Arrange — a parallel delete wave and write wave sharing one
+        // scanner can both reach the unlink step for the same leading
+        // prefix before either has removed it; without single-flighting the
+        // unlink itself (not just the classification), the second caller's
+        // `rm` throws FILE_NOT_FOUND on the already-removed symlink.
+        const ctx = createMemoryContext();
+        const dirPath = `${ctx.layout.workDir}/dir`;
+        await ctx.fs.symlink('/outside-the-repo', dirPath);
+        const rmSpy: string[] = [];
+        const fs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'rm') {
+              return async (p: string) => {
+                rmSpy.push(p);
+                return Reflect.get(target, 'rm', receiver).call(target, p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const sut = createLeadingPathScanner({ ...ctx, fs });
+
+        // Act — both calls start before either's classify/rm has resolved.
+        await Promise.all([
+          sut.unlinkSymlinkedLeadingComponent(path('dir/a.txt')),
+          sut.unlinkSymlinkedLeadingComponent(path('dir/b.txt')),
+        ]);
+
+        // Assert — single-flight: exactly one rm call serves both callers.
+        expect(rmSpy).toEqual([dirPath]);
+      });
+    });
+  });
+
   describe('Given two concurrent probes of the same prefix, started before either lstat settles', () => {
     describe('When hasSymlinkedLeadingPath is called twice on one scanner without awaiting the first', () => {
       it('Then the prefix is lstat-ed exactly once — the second call joins the first in flight', async () => {
