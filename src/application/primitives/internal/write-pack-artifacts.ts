@@ -106,8 +106,14 @@ interface ArtifactPaths {
   readonly revPath: string;
 }
 
+/** The on-disk path for a pack keyed by its trailer SHA — shared by every
+ *  writer of `.pack` bytes so quarantine-rename callers (fetch-pack) and
+ *  from-scratch writers (pack-objects) agree on the exact same name. */
+export const packFilePath = (packDir: string, packSha: string): string =>
+  `${packDir}/pack-${packSha}.pack`;
+
 const artifactPaths = (packDir: string, packSha: string): ArtifactPaths => ({
-  packPath: `${packDir}/pack-${packSha}.pack`,
+  packPath: packFilePath(packDir, packSha),
   idxPath: `${packDir}/pack-${packSha}.idx`,
   promisorPath: `${packDir}/pack-${packSha}.promisor`,
   revPath: `${packDir}/pack-${packSha}.rev`,
@@ -129,27 +135,32 @@ const writeRevArtifact = async (
   await ctx.fs.writeExclusive(path, revBytes);
 };
 
+export interface WritePackSiblingArtifactsInput {
+  readonly packDir: string;
+  readonly entries: ReadonlyArray<PackIndexWriterEntry>;
+  readonly packSha: string;
+  readonly promisor: boolean;
+}
+
 /**
- * Writes a pack's sibling artefacts in git's own order: `.pack`, `.idx`, an
- * optional `.promisor` sentinel immediately after, then — unless
- * `pack.writeReverseIndex` refuses it — the `.rev` last. `.rev` last is
- * load-bearing: `pack-registry.ts` keys pack discovery on the `.pack`/`.idx`
- * pair, so a concurrent reader that observes the pair before the `.rev`
- * lands simply takes the absent-artefact arm — the same state git itself
- * leaves behind under `pack.writeReverseIndex=false`.
+ * Shared tail once `wantRev` is already resolved — `.idx`, an optional
+ * `.promisor` sentinel, then `.rev` last if it isn't refused (see
+ * `writePackArtifacts`'s docstring for why `.rev` is ordered last). Kept
+ * separate from `writePackSiblingArtifacts` so `writePackArtifacts` can
+ * resolve the gate BEFORE writing `.pack` — a refused config value must
+ * leave the pack directory untouched, not just the `.idx`/`.rev` pair.
  */
-export const writePackArtifacts = async (
+const writeSiblingsGiven = async (
   ctx: Context,
-  input: WritePackArtifactsInput,
+  input: WritePackSiblingArtifactsInput,
+  wantRev: boolean,
 ): Promise<WrittenPackArtifacts> => {
-  const wantRev = await writeReverseIndex(ctx);
   const paths = artifactPaths(input.packDir, input.packSha);
   await ctx.fs.mkdir(input.packDir);
   // One oid sort per pack write, shared by the `.idx` and `.rev` serializers —
   // the sort is the most expensive step of either artefact's assembly.
   const sorted = sortPackIndexEntries(input.entries);
   const idxBytes = await buildIdx(ctx, input.entries, input.packSha, sorted);
-  await ctx.fs.writeExclusive(paths.packPath, input.packBytes);
   await ctx.fs.writeExclusive(paths.idxPath, idxBytes);
   if (input.promisor) await writeEmptySentinel(ctx, paths.promisorPath);
   if (wantRev) await writeRevArtifact(ctx, paths.revPath, input.entries, input.packSha, sorted);
@@ -160,4 +171,38 @@ export const writePackArtifacts = async (
     indexBytes: idxBytes.length,
     packSha: input.packSha,
   };
+};
+
+/**
+ * Writes a pack's SIBLING artefacts only — `.idx`, an optional `.promisor`
+ * sentinel, then — unless `pack.writeReverseIndex` refuses it — `.rev` last.
+ * The `.pack` file itself is assumed already in place under `packFilePath`;
+ * a caller that quarantines and renames its own pack bytes (fetch-pack)
+ * reuses this instead of `writePackArtifacts`, which would re-write a
+ * `.pack` that already exists and fail with `FILE_EXISTS`.
+ */
+export const writePackSiblingArtifacts = async (
+  ctx: Context,
+  input: WritePackSiblingArtifactsInput,
+): Promise<WrittenPackArtifacts> => writeSiblingsGiven(ctx, input, await writeReverseIndex(ctx));
+
+/**
+ * Writes a pack's `.pack` bytes followed by its sibling artefacts, in git's
+ * own order: `.pack`, `.idx`, an optional `.promisor` sentinel immediately
+ * after, then — unless `pack.writeReverseIndex` refuses it — the `.rev`
+ * last. `.rev` last is load-bearing: `pack-registry.ts` keys pack discovery
+ * on the `.pack`/`.idx` pair, so a concurrent reader that observes the pair
+ * before the `.rev` lands simply takes the absent-artefact arm — the same
+ * state git itself leaves behind under `pack.writeReverseIndex=false`. The
+ * gate is resolved before ANY write, `.pack` included, so a refused config
+ * value leaves the pack directory untouched.
+ */
+export const writePackArtifacts = async (
+  ctx: Context,
+  input: WritePackArtifactsInput,
+): Promise<WrittenPackArtifacts> => {
+  const wantRev = await writeReverseIndex(ctx);
+  const packPath = packFilePath(input.packDir, input.packSha);
+  await ctx.fs.writeExclusive(packPath, input.packBytes);
+  return writeSiblingsGiven(ctx, input, wantRev);
 };

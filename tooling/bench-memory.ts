@@ -3,8 +3,16 @@
  * RSS/heap memory probe for allocation-heavy read paths.
  *
  *   npm run bench:memory                             # delta-chain + commit-walk-header-cache
+ *                                                     # + fsck object cache + clone quarantine
  *   TSGIT_BENCH_LARGE=1 npm run bench:memory          # + large-pack spread workload
  *   TSGIT_BENCH_HEADER_CACHE=1 npm run bench:memory   # + above-cap header-cache eviction workload
+ *
+ * The clone-quarantine workload clones the same fixture shape at two pack
+ * sizes differing >= 4x through a deterministic, in-process `git-http-backend`
+ * transport (see `buildDeterministicTransport`), so peak RSS can be compared
+ * side by side: streaming the received pack into quarantine (rather than
+ * buffering it whole) should keep that peak bounded independently of pack
+ * size, unlike the old buffer-then-concat drain.
  *
  * Runs under `node --expose-gc --experimental-strip-types` so it can force a
  * GC before each baseline reading (stable before/after comparisons). Like
@@ -15,13 +23,16 @@
  * artifact (`reports/benchmarks/memory.{json,md}`) alongside — never merged
  * into `bench-summarize.ts`'s timing summary, which only knows wall-clock numbers.
  */
-import { execFile } from 'node:child_process';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { access, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import type { ObjectId } from '../src/domain/objects/index.ts';
+import type { HttpRequest, HttpResponse, HttpTransport } from '../src/ports/http-transport.ts';
 import {
   DELTA_CHAIN_FIXTURE,
   ensureScaledFixture,
@@ -32,6 +43,7 @@ import {
   SMALL_FAT_BLOB_FIXTURE,
   SMALL_FIXTURE,
 } from '../test/bench/support/fixture-generator.ts';
+import { findGitHttpBackend } from '../test/bench/support/http-backend-server.ts';
 
 /** The compiled entry — the source tree is unreachable from a strip-only runtime. */
 type OpenRepository = typeof import('../src/index.node.ts').openRepository;
@@ -317,6 +329,274 @@ const runFsckObjectCacheWorkload = async (
   return toReport(`fsck-object-cache-${spec.label}`, before, peak, after);
 };
 
+// Two pack sizes differing >= 4x — the R17 oracle for clone's quarantine
+// streaming: peak RSS should be bounded independently of pack size, not
+// scale with it the way the old whole-pack buffer-then-concat drain did.
+//
+// Both stay well under 64 KiB. A real HTTP client's own internal stream
+// buffering (Node's readable highWaterMark defaults to 64 KiB) coalesces
+// bytes into delivered chunks the source's own chunking cannot control, and
+// a pack whose single sideband pkt-line already approaches that width can
+// trip a pre-existing pkt-line-decoder limit unrelated to this change (a
+// delivered chunk larger than the decoder's one-pkt-line accumulator is
+// rejected even when the pkt-line it completes is well-formed and small).
+// Staying under that ceiling keeps this workload deterministic; the decoder
+// limit itself is out of scope here.
+const CLONE_SMALL_BLOB_BYTES = 12_000;
+const CLONE_LARGE_BLOB_BYTES = 60_000;
+
+// Every chunk `buildDeterministicTransport`'s response hands to the client
+// is at most this many bytes, regardless of pack size — the explicit control
+// a real HTTP stack does not give this workload (see the sizes above).
+const TRANSPORT_CHUNK_BYTES = 8192;
+
+interface ClonePackFixture {
+  readonly bareDir: string;
+  readonly packBytes: number;
+}
+
+/** One random, low-entropy-resistant blob committed to a bare repo under
+ *  `root/<label>.git` — random content keeps the on-disk pack size tracking
+ *  the source content size instead of collapsing under deflate. */
+const buildClonePackFixture = async (
+  root: string,
+  label: string,
+  blobBytes: number,
+): Promise<ClonePackFixture> => {
+  const workDir = path.join(root, `${label}-work`);
+  const bareDir = path.join(root, `${label}.git`);
+  const env = gitEnv();
+  await execFileAsync('git', ['init', '-q', workDir], { env });
+  await writeFile(path.join(workDir, 'blob.bin'), randomBytes(blobBytes));
+  await execFileAsync('git', ['-C', workDir, 'add', 'blob.bin'], { env });
+  await execFileAsync(
+    'git',
+    [
+      '-C',
+      workDir,
+      '-c',
+      'user.email=bench@example.com',
+      '-c',
+      'user.name=bench',
+      'commit',
+      '-q',
+      '-m',
+      'seed',
+    ],
+    { env },
+  );
+  await execFileAsync('git', ['clone', '-q', '--bare', workDir, bareDir], { env });
+  // A same-filesystem local clone hardlinks the source's LOOSE objects
+  // rather than packing them, so `objects/pack/` would otherwise be empty —
+  // `repack -a -d` forces exactly one on-disk pack regardless of that
+  // clone-local optimization, which `git-http-backend`'s advertised pack
+  // transfer needs to have something to serve.
+  await execFileAsync('git', ['-C', bareDir, 'repack', '-q', '-a', '-d'], { env });
+  const packDir = path.join(bareDir, 'objects', 'pack');
+  const packFile = (await readdir(packDir)).find((name) => name.endsWith('.pack'));
+  const packBytes = packFile === undefined ? 0 : (await stat(path.join(packDir, packFile))).size;
+  return { bareDir, packBytes };
+};
+
+const findHeaderSeparator = (buf: Buffer): number => {
+  for (let i = 0; i < buf.length - 1; i += 1) {
+    if (buf[i] === 0x0a && buf[i + 1] === 0x0a) return i;
+    if (
+      i < buf.length - 3 &&
+      buf[i] === 0x0d &&
+      buf[i + 1] === 0x0a &&
+      buf[i + 2] === 0x0d &&
+      buf[i + 3] === 0x0a
+    ) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+interface CgiResult {
+  readonly statusCode: number;
+  readonly headers: Record<string, string>;
+  readonly body: Buffer;
+}
+
+interface CgiStatusAndHeaders {
+  readonly statusCode: number;
+  readonly headers: Record<string, string>;
+}
+
+/** Parses `Status:`/other CGI response headers into `{ statusCode, headers }`
+ *  — split out of `runGitHttpBackendCgi`'s `close` handler purely to keep
+ *  that handler's own cognitive complexity low. */
+const parseCgiHeaders = (headerBuf: Buffer): CgiStatusAndHeaders => {
+  const headers: Record<string, string> = {};
+  let statusCode = 200;
+  for (const line of headerBuf.toString('utf8').split(/\r?\n/)) {
+    if (line.length === 0) continue;
+    const colon = line.indexOf(':');
+    if (colon < 0) continue;
+    const key = line.slice(0, colon).trim();
+    const value = line.slice(colon + 1).trim();
+    if (key.toLowerCase() === 'status') {
+      const parsed = Number.parseInt(value.split(' ', 1)[0] ?? '200', 10);
+      if (Number.isFinite(parsed)) statusCode = parsed;
+      continue;
+    }
+    headers[key.toLowerCase()] = value;
+  }
+  return { statusCode, headers };
+};
+
+/** Splits a raw CGI response into its header block and body, or `undefined`
+ *  when no header/body separator is found. */
+const splitCgiResponse = (raw: Buffer): { headerBuf: Buffer; body: Buffer } | undefined => {
+  const sep = findHeaderSeparator(raw);
+  if (sep < 0) return undefined;
+  return {
+    headerBuf: raw.subarray(0, sep),
+    body: raw.subarray(sep + (raw[sep] === 0x0d ? 4 : 2)),
+  };
+};
+
+/** Runs one `git-http-backend` CGI request directly (no listening HTTP
+ *  server, no socket) — the caller frames the raw output as an
+ *  `HttpResponse` with its own explicit, bounded chunking. */
+const runGitHttpBackendCgi = async (
+  backendPath: string,
+  projectRoot: string,
+  req: HttpRequest,
+): Promise<CgiResult> => {
+  const url = new URL(req.url);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH_INFO: url.pathname,
+    QUERY_STRING: url.search.replace(/^\?/, ''),
+    REQUEST_METHOD: req.method,
+    GIT_PROJECT_ROOT: projectRoot,
+    GIT_HTTP_EXPORT_ALL: '1',
+    CONTENT_TYPE: req.headers['content-type'] ?? '',
+    CONTENT_LENGTH: String(req.body?.byteLength ?? 0),
+    REMOTE_ADDR: '127.0.0.1',
+  };
+  return new Promise<CgiResult>((resolve, reject) => {
+    const child = spawn(backendPath, [], { env });
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(req.body === undefined ? undefined : Buffer.from(req.body));
+    const chunks: Buffer[] = [];
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => process.stderr.write(chunk));
+    child.on('error', reject);
+    child.on('close', () => {
+      const split = splitCgiResponse(Buffer.concat(chunks));
+      if (split === undefined) {
+        reject(new Error('git-http-backend CGI response missing header separator'));
+        return;
+      }
+      resolve({ ...parseCgiHeaders(split.headerBuf), body: split.body });
+    });
+  });
+};
+
+/** Frames `buffer` as a `ReadableStream` whose enqueues are always
+ *  `TRANSPORT_CHUNK_BYTES` or smaller — see the pack-size constants' comment
+ *  for why this workload does not rely on a real HTTP stack's own chunking. */
+const chunkedBodyStream = (buffer: Buffer): ReadableStream<Uint8Array> =>
+  new ReadableStream({
+    start(controller) {
+      for (let offset = 0; offset < buffer.length; offset += TRANSPORT_CHUNK_BYTES) {
+        controller.enqueue(buffer.subarray(offset, offset + TRANSPORT_CHUNK_BYTES));
+      }
+      controller.close();
+    },
+  });
+
+/** A deterministic, in-process `HttpTransport`: spawns `git-http-backend`
+ *  directly per request instead of going through a listening `http.Server`
+ *  and a real socket — no network stack between server and client left to
+ *  rebuffer the response in ways this workload cannot control. */
+const buildDeterministicTransport = (backendPath: string, projectRoot: string): HttpTransport => ({
+  request: async (req: HttpRequest): Promise<HttpResponse> => {
+    const result = await runGitHttpBackendCgi(backendPath, projectRoot, req);
+    return {
+      statusCode: result.statusCode,
+      headers: result.headers,
+      body: chunkedBodyStream(result.body),
+    };
+  },
+});
+
+/** Peak RSS for one `openRepository → repo.clone → repo.dispose` cycle
+ *  against the deterministic transport, labelled with the source pack size
+ *  so the two readings can be compared directly in the report. */
+const runOneCloneMeasurement = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+  transport: HttpTransport,
+  label: string,
+  packBytes: number,
+): Promise<WorkloadReport> => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), `tsgit-bench-clone-dst-${label}-`));
+  const url = `http://bench.invalid/${label}.git`;
+  const before = gcBaseline(gc);
+  let peak = before;
+  const poll = setInterval(() => {
+    peak = maxSample(peak, sampleMemory());
+  }, PEAK_POLL_INTERVAL_MS);
+  try {
+    const repo = await openRepository({
+      cwd,
+      allowInsecureHttp: true,
+      transport,
+      config: {
+        allowInsecure: true,
+        allowPrivateNetworks: true,
+        dnsResolver: async () => ['127.0.0.1'],
+      },
+    });
+    try {
+      await repo.clone({ url });
+      peak = maxSample(peak, sampleMemory());
+    } finally {
+      await repo.dispose();
+    }
+  } finally {
+    clearInterval(poll);
+    await rm(cwd, { recursive: true, force: true });
+  }
+  const after = gcBaseline(gc);
+  return toReport(`clone-quarantine-${label}-pack-${packBytes}B`, before, peak, after);
+};
+
+/**
+ * Clones the same two fixtures at pack sizes differing >= 4x through a
+ * deterministic in-process transport, reporting peak RSS for each. Skips
+ * gracefully (no report entries, no failure) when `git-http-backend` is not
+ * on `$PATH` — this script must not take the whole memory report down over
+ * an environment that lacks it.
+ */
+const runCloneWorkload = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+): Promise<ReadonlyArray<WorkloadReport>> => {
+  const backendPath = findGitHttpBackend();
+  if (backendPath === undefined) {
+    process.stderr.write('skipping clone-quarantine workload: git-http-backend not on $PATH\n');
+    return [];
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-clone-src-'));
+  try {
+    const small = await buildClonePackFixture(root, 'small', CLONE_SMALL_BLOB_BYTES);
+    const large = await buildClonePackFixture(root, 'large', CLONE_LARGE_BLOB_BYTES);
+    const transport = buildDeterministicTransport(backendPath, root);
+    return [
+      await runOneCloneMeasurement(gc, openRepository, transport, 'small', small.packBytes),
+      await runOneCloneMeasurement(gc, openRepository, transport, 'large', large.packBytes),
+    ];
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
 const toMarkdownRow = (report: WorkloadReport): string =>
   `| ${report.workload} | ${report.rss.before} | ${report.rss.peak} | ${report.rss.after} | ` +
   `${report.heapUsed.before} | ${report.heapUsed.peak} | ${report.heapUsed.after} |`;
@@ -348,6 +628,7 @@ const main = async (): Promise<void> => {
     reports.push(await runHeaderCacheWorkload(gc, openRepository));
     reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FIXTURE));
     reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FAT_BLOB_FIXTURE));
+    reports.push(...(await runCloneWorkload(gc, openRepository)));
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
       reports.push(await runLargePackWorkload(gc, openRepository));
     }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { negotiatePackBytes } from '../../../../src/application/commands/internal/fetch-negotiation.js';
 import {
@@ -8,7 +8,7 @@ import {
   walkPackEntries,
 } from '../../../../src/application/primitives/fetch-pack.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/index.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
@@ -186,6 +186,28 @@ const withConfig = (ctx: MemCtx, patch: Partial<NonNullable<MemCtx['config']>>):
 
 const withMaxResponseBytes = (ctx: MemCtx, max: number): MemCtx =>
   withConfig(ctx, { maxResponseBytes: max });
+
+const withFsPatch = (ctx: MemCtx, patch: Partial<MemCtx['fs']>): MemCtx =>
+  ({ ...ctx, fs: { ...ctx.fs, ...patch } }) as MemCtx;
+
+/** Reframes a Context onto an `fs` that omits `atomicRename` — the browser
+ *  adapter's own shape — while sharing the same underlying memory
+ *  filesystem instance. */
+const withoutAtomicRename = (ctx: MemCtx): MemCtx => {
+  const { atomicRename: _atomicRename, ...rest } = ctx.fs;
+  return { ...ctx, fs: rest } as MemCtx;
+};
+
+const packDir = (ctx: MemCtx): string => `${ctx.layout.gitDir}/objects/pack`;
+
+const tmpPackNames = async (ctx: MemCtx): Promise<ReadonlyArray<string>> => {
+  const dir = packDir(ctx);
+  // A cap failure can reject before the pack directory is ever created —
+  // no directory trivially means no leftover tmp file.
+  if (!(await ctx.fs.exists(dir))) return [];
+  const entries = await ctx.fs.readdir(dir);
+  return entries.filter((e) => e.name.startsWith('tmp_pack_')).map((e) => e.name);
+};
 
 const computeBlobId = async (
   ctx: ReturnType<typeof createMemoryContext>,
@@ -1836,6 +1858,251 @@ describe('fetchPack', () => {
           expect(result.shallow).toEqual([shallowOid]);
           expect(result.unshallow).toEqual([unshallowOid]);
         });
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// pack quarantine — streamed receive, incremental trailer hash, verify-then-
+// rename, best-effort cleanup on a handled failure
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pack quarantine', () => {
+  describe('Given a pack split into several sideband-1 frames', () => {
+    describe('When fetchPack drains it into quarantine', () => {
+      it('Then bytes reach the quarantine file as they arrive, not after full buffering', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'x'.repeat(20_000));
+        const chunkSizes: number[] = [];
+        const ctx = withFsPatch(baseCtx, {
+          writeStream: async (path: string, source: AsyncIterable<Uint8Array>): Promise<void> => {
+            async function* tap(): AsyncGenerator<Uint8Array> {
+              for await (const chunk of source) {
+                chunkSizes.push(chunk.byteLength);
+                yield chunk;
+              }
+            }
+            await baseCtx.fs.writeStream(path, tap());
+          },
+        });
+        // Highly repetitive content deflates to far fewer bytes than its
+        // source length, so the frame size is derived from the ACTUAL
+        // compressed pack size (never a fixed guess) to guarantee several
+        // frames regardless of the compression ratio.
+        const body = buildMultiChunkSidebandBody(
+          packBytes,
+          Math.max(8, Math.floor(packBytes.length / 5)),
+        );
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — several chunks pulled through the SAME writeStream call,
+        // never one pre-materialised whole-pack buffer.
+        expect(result.objectCount).toBe(1);
+        expect(chunkSizes.length).toBeGreaterThan(1);
+      });
+    });
+  });
+
+  describe('Given a stream whose trailer does not match', () => {
+    describe('When fetchPack drains it into quarantine', () => {
+      it('Then it refuses and no pack-<sha>.pack (or leftover tmp file) exists afterward', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'corrupt me\n');
+        const corrupted = packBytes.slice();
+        corrupted[corrupted.length - 1] = (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+        const body = buildUploadPackResponseBody({ packBytes: corrupted, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — verify-before-rename: the quarantine file never got promoted.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const entries = await ctx.fs.readdir(packDir(ctx));
+        expect(entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a successful stream', () => {
+    describe('When fetchPack drains it into quarantine', () => {
+      it('Then the temp file is renamed to pack-<sha>.pack and the .idx and .rev siblings are written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'rename me\n');
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(result.packPath).toBe(`${packDir(ctx)}/pack-${result.packSha}.pack`);
+        expect(await ctx.fs.exists(result.packPath)).toBe(true);
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+        const entries = await ctx.fs.readdir(packDir(ctx));
+        expect(entries.some((e) => e.name === `pack-${result.packSha}.rev`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an adapter without atomicRename', () => {
+    describe('When fetchPack promotes the quarantined pack', () => {
+      it('Then the plain rename path is used', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const ctx = withoutAtomicRename(baseCtx);
+        const renameSpy = vi.spyOn(ctx.fs, 'rename');
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'no atomic rename\n');
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(renameSpy).toHaveBeenCalledOnce();
+        expect(renameSpy).toHaveBeenCalledWith(
+          expect.stringContaining('tmp_pack_'),
+          result.packPath,
+        );
+      });
+    });
+  });
+
+  describe('Given a handled failure mid-stream (the response exceeds maxResponseBytes)', () => {
+    describe('When fetchPack drains it into quarantine', () => {
+      it('Then the temp file is removed', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'too big for the cap\n');
+        const ctx = withMaxResponseBytes(baseCtx, packBytes.length - 1);
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('PACK_TOO_LARGE');
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given the quarantine file is already gone when cleanup runs', () => {
+    describe('When fetchPack fails on a corrupted trailer', () => {
+      it('Then FILE_NOT_FOUND from the cleanup is swallowed and the original error surfaces', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'gone already\n');
+        const corrupted = packBytes.slice();
+        corrupted[corrupted.length - 1] = (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+        const ctx = withFsPatch(baseCtx, {
+          rm: async (path: string) => {
+            throw fileNotFound(path);
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes: corrupted, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the ORIGINAL trailer-mismatch error surfaces, not a
+        // secondary error from the cleanup's own FILE_NOT_FOUND.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('INVALID_PACK_HEADER');
+        expect(data.reason).toContain('trailer');
+      });
+    });
+  });
+
+  describe('Given cleanup fails with something other than FILE_NOT_FOUND', () => {
+    describe('When fetchPack fails on a corrupted trailer', () => {
+      it('Then the cleanup failure rethrows instead of being swallowed', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'permission trouble\n');
+        const corrupted = packBytes.slice();
+        corrupted[corrupted.length - 1] = (corrupted[corrupted.length - 1] ?? 0) ^ 0xff;
+        const ctx = withFsPatch(baseCtx, {
+          rm: async (path: string) => {
+            throw permissionDenied(path);
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes: corrupted, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the cleanup's own failure surfaces rather than being
+        // silently dropped or masked by the original trailer-mismatch error.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
       });
     });
   });

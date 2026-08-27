@@ -49,6 +49,16 @@ const asyncBytes = async function* (chunks: ReadonlyArray<Uint8Array>): AsyncIte
   for (const chunk of chunks) yield chunk;
 };
 
+/** Drains a `PackDownload.packBody` for assertion — production code never
+ *  does this itself (it streams straight to quarantine), but a test that
+ *  only wants to confirm which bytes the negotiator handed back needs the
+ *  whole thing materialised once. */
+const drainPackBody = async (packBody: AsyncIterable<Uint8Array>): Promise<Uint8Array> => {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of packBody) chunks.push(chunk);
+  return concatBytes(...chunks);
+};
+
 const responseStream = (bytes: Uint8Array): Promise<AsyncIterable<PktLine>> =>
   Promise.resolve(decodePktStream(asyncBytes([bytes]), { v2: true }));
 
@@ -428,7 +438,7 @@ describe('negotiateDiscovery', () => {
 describe('negotiatePackBytes', () => {
   describe('Given version 2 and a want/have set', () => {
     describe('When negotiatePackBytes dispatches', () => {
-      it('Then it builds the v2 fetch request and drains the pack', async () => {
+      it('Then it builds the v2 fetch request and returns the undrained pack body', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const exchangeResponse = concatBytes(
@@ -443,7 +453,7 @@ describe('negotiatePackBytes', () => {
 
         // Assert
         expect(await decodeRequest(session)).toContain('command=fetch');
-        expect(DECODER.decode(result.packBytes)).toBe('PACK-DATA');
+        expect(DECODER.decode(await drainPackBody(result.packBody))).toBe('PACK-DATA');
       });
     });
   });
@@ -462,8 +472,12 @@ describe('negotiatePackBytes', () => {
         );
         const session = stubSession({ discoveryBody: FLUSH, exchangeResponse });
 
-        // Act
-        await negotiatePackBytes(ctx, session, 2, baseInput);
+        // Act — the sideband-2 text is discovered as a side effect of
+        // iterating the multiplexed stream, which `negotiatePackBytes`
+        // itself no longer does (draining is `fetchPack`'s job now), so the
+        // test drains the returned, still-undrained `packBody` itself.
+        const result = await negotiatePackBytes(ctx, session, 2, baseInput);
+        await drainPackBody(result.packBody);
 
         // Assert
         const textUpdates = events.filter(
@@ -542,7 +556,7 @@ describe('negotiatePackBytes', () => {
 
   describe('Given version 1 and a want/have set', () => {
     describe('When negotiatePackBytes dispatches', () => {
-      it('Then it builds the v1 upload-pack request and drains the pack', async () => {
+      it('Then it builds the v1 upload-pack request and returns the undrained pack body', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const exchangeResponse = concatBytes(pktBytes('NAK\n'), pktBytes('PACK-DATA'));
@@ -555,7 +569,7 @@ describe('negotiatePackBytes', () => {
         const request = await decodeRequest(session);
         expect(request).toContain(`want ${OID_A}`);
         expect(request).not.toContain('command=fetch');
-        expect(DECODER.decode(result.packBytes)).toBe('PACK-DATA');
+        expect(DECODER.decode(await drainPackBody(result.packBody))).toBe('PACK-DATA');
       });
     });
   });

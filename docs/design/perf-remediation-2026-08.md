@@ -180,6 +180,35 @@ Git streams the received pack into `objects/pack/tmp_pack_<6 mkstemp chars>` and
 git does not clean up on a hard kill. F8's quarantine design is therefore faithfulness-positive
 and inherits the same "a hard kill may leave a temp file" posture.
 
+**Pin B, continued — the *handled*-failure case (ADR-728's owed probe).** Pin B only covered a
+hard kill of the *client*. Killing `git-upload-pack` (the *server* side) mid-stream instead —
+via an `ext::` transport wrapper that throttles the server's stdout so its own pipe backs up and
+`kill -9` lands while `objects/pack/tmp_pack_XXXXXX` is mid-write (observed at 131 029 bytes) —
+produces a client-detected, *handled* failure:
+
+```text
+$ git clone "ext::<throttled upload-pack wrapper>" dst
+fetch-pack: unexpected disconnect while reading sideband packet
+fatal: early EOF
+fatal: fetch-pack: invalid index-pack output
+$ echo $?
+128
+$ ls dst
+ls: dst: No such file or directory
+```
+
+On this handled path git's `clone` removes the **entire destination it was creating** — not just
+the temp pack — so `tmp_pack_XXXXXX` does not survive, but as a side effect of clone's own
+top-level cleanup rather than a targeted unlink inside the pack-receive step. This confirms
+(rather than falsifies) ADR-728's option (b): git does not want stray pack debris left behind
+after an error it could detect, which is exactly what a best-effort `tmp_pack_*` unlink inside
+`fetchPack` gives every caller — `clone`'s own top-level `rmRecursive(gitDir)` catch (pre-existing,
+`clone.ts`) already nukes everything on a fresh-clone failure regardless, so the two mechanisms
+overlap harmlessly there; for `fetch`/`pull` against an **existing** repository, where wiping the
+whole `.git` on failure is never correct, `fetchPack`'s own scoped unlink is the only cleanup that
+runs, and this pin is the evidence that git prefers that outcome. No implementation change follows
+from this pin — it confirms the already-chosen posture.
+
 ### Pin C — commit-graph writing is byte-deterministic, and `gc` produces exactly it
 
 ```text

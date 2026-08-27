@@ -2,10 +2,13 @@
  * pack-fetch primitive. Shared between clone (12.1) and the
  * forthcoming fetch (12.2) / push (12.3) commands.
  *
- * Performs the `git-upload-pack` POST, drains the side-banded response into
- * an in-memory buffer (bounded by `config.maxResponseBytes`), verifies the
- * pack trailer SHA, walks the entries to compute their crc32/offset/oid, and
- * writes `pack-<sha>.pack` + `pack-<sha>.idx` under `.git/objects/pack/`.
+ * Performs the `git-upload-pack` POST and streams the side-banded response
+ * straight to a quarantine file (`objects/pack/tmp_pack_<random>`), bounded
+ * by `config.maxResponseBytes` and hashed incrementally as bytes arrive —
+ * the whole pack is never held in memory at once. Once the trailer verifies
+ * against the incrementally-computed digest, the quarantine file is renamed
+ * to `pack-<sha>.pack` and its `.idx`/`.rev` siblings are written — exactly
+ * git's own on-disk shape for a received pack.
  *
  * Out of scope here (handled by callers): URL validation, capability
  * negotiation, ref-update propagation.
@@ -24,7 +27,8 @@ import {
   parsePackHeader,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { writePackArtifacts } from './internal/write-pack-artifacts.js';
+import { errorDataCode } from './internal/error-data-code.js';
+import { packFilePath, writePackSiblingArtifacts } from './internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { refreshPackRegistry } from './read-object.js';
 
@@ -44,6 +48,10 @@ const TEXT_ENCODER = new TextEncoder();
 const PACK_HEADER_BYTES = 12;
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 const PROGRESS_TICK_BYTES = 65_536;
+/** git's own quarantine prefix: `objects/pack/tmp_pack_<6 random chars>`. */
+const TMP_PACK_PREFIX = 'tmp_pack_';
+const TMP_PACK_SUFFIX_LENGTH = 6;
+const TMP_PACK_SUFFIX_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 /**
  * Default cap on the pack body size, applied when `ctx.config?.maxResponseBytes`
  * is not set. Matches the bound documented in.
@@ -100,7 +108,9 @@ export interface FetchPackResult {
 }
 
 export interface PackDownload {
-  readonly packBytes: Uint8Array;
+  /** The raw sideband pack body, not yet drained — the receive side streams
+   *  it straight to a quarantine file rather than buffering it. */
+  readonly packBody: AsyncIterable<Uint8Array>;
   readonly shallow: ReadonlyArray<ObjectId>;
   readonly unshallow: ReadonlyArray<ObjectId>;
 }
@@ -121,13 +131,6 @@ export const fetchPack = async (
   ctx.progress.start(input.progressOp);
   try {
     const download = await downloadPack(ctx, negotiatePackBytes, input);
-    // git-upload-pack returns a zero-byte body when the client's `have` set
-    // already covers every wanted oid. This is a legitimate protocol state
-    // (the server has nothing to send), not an error. Surface it as an
-    // empty result so the caller can advance refs and return cleanly.
-    if (download.packBytes.length === 0) {
-      return emptyPackResult(download.shallow, download.unshallow);
-    }
     return await materializePack(ctx, download, input);
   } finally {
     ctx.progress.end(input.progressOp);
@@ -147,30 +150,40 @@ const emptyPackResult = (
 });
 
 /**
- * Post-download tail: verify the trailer, walk entries, then either suppress
- * or write the pack/idx artifacts. Split out of `fetchPack` so the negotiated
- * response can be fully verified (trailer + entry walk) before deciding
- * whether it is empty — a malformed pack that merely *looks* empty (bad
- * trailer, truncated entries) must still throw, never be silently dropped.
+ * Post-download tail: stream the pack into quarantine, verify the trailer,
+ * walk entries, then either suppress or promote it (rename + sibling
+ * artefacts). Split out of `fetchPack` so the negotiated response can be
+ * fully verified (trailer + entry walk) before deciding whether it is
+ * empty — a malformed pack that merely *looks* empty (bad trailer,
+ * truncated entries) must still throw, never be silently dropped.
  */
 const materializePack = async (
   ctx: Context,
   download: PackDownload,
   input: FetchPackInput,
 ): Promise<FetchPackResult> => {
-  const packSha = await verifyPackTrailer(download.packBytes, ctx);
-  const entries = await walkPackEntries(ctx, download.packBytes);
-  // A verified pack can legitimately carry zero entries (e.g. the negotiated
-  // response round-tripped a pack rather than a zero-byte body). Suppress
-  // writing pack/idx artifacts for it, same as the zero-byte-body guard above.
-  if (entries.length === 0) {
+  const packDir = packsDir(commonGitDir(ctx));
+  const receipt = await receivePackToQuarantine(ctx, input, packDir, download.packBody);
+  // git-upload-pack returns a zero-byte body when the client's `have` set
+  // already covers every wanted oid. This is a legitimate protocol state
+  // (the server has nothing to send), not an error. Surface it as an
+  // empty result so the caller can advance refs and return cleanly.
+  if (receipt.totalBytes === 0) {
     return emptyPackResult(download.shallow, download.unshallow);
   }
-  const written = await writePackArtifacts(ctx, {
-    packDir: packsDir(commonGitDir(ctx)),
-    packBytes: download.packBytes,
+  const entries = await walkQuarantinedEntries(ctx, receipt.tmpPath, receipt.totalBytes);
+  // A verified pack can legitimately carry zero entries (e.g. the negotiated
+  // response round-tripped a pack rather than a zero-byte body). Suppress
+  // promoting it, same as the zero-byte-body guard above.
+  if (entries.length === 0) {
+    await removeQuarantineFileIfPresent(ctx, receipt.tmpPath);
+    return emptyPackResult(download.shallow, download.unshallow);
+  }
+  await renamePackIntoPlace(ctx, receipt.tmpPath, packFilePath(packDir, receipt.packSha));
+  const written = await writePackSiblingArtifacts(ctx, {
+    packDir,
     entries,
-    packSha,
+    packSha: receipt.packSha,
     promisor: input.promisor === true,
   });
   // Drop the per-Context pack-registry cache so reads through this same
@@ -186,6 +199,24 @@ const materializePack = async (
   };
 };
 
+/** Reads the quarantined pack back from disk (it was never resident in
+ *  memory during receive) and walks its entries, reusing `walkPackEntries`
+ *  unchanged. Failures here mean the body is malformed even though its
+ *  trailer verified, so the quarantine file is cleaned up before rethrow. */
+const walkQuarantinedEntries = async (
+  ctx: Context,
+  tmpPath: string,
+  totalBytes: number,
+): Promise<ReadonlyArray<WalkedEntry>> => {
+  const packBytes = await ctx.fs.readSlice(tmpPath, 0, totalBytes);
+  try {
+    return await walkPackEntries(ctx, packBytes);
+  } catch (err) {
+    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    throw err;
+  }
+};
+
 /**
  * Thin adapter boundary: `fetchPack` stays version-agnostic, the injected
  * `negotiatePackBytes` (bound to a wire version + transport session by the
@@ -197,39 +228,147 @@ const downloadPack = async (
   input: FetchPackInput,
 ): Promise<PackDownload> => negotiatePackBytes(ctx, input);
 
-export const drainPackBodyBounded = async (
+/** Random 6-character suffix in git's own `tmp_pack_XXXXXX` shape. Not
+ *  security-sensitive (the containing directory is already trusted), so
+ *  `Math.random` matches this codebase's other non-cryptographic tokens
+ *  (e.g. `reftable-transaction.ts`'s lock retry jitter). */
+const randomTmpPackName = (): string => {
+  let suffix = '';
+  for (let i = 0; i < TMP_PACK_SUFFIX_LENGTH; i += 1) {
+    suffix += TMP_PACK_SUFFIX_ALPHABET[Math.floor(Math.random() * TMP_PACK_SUFFIX_ALPHABET.length)];
+  }
+  return `${TMP_PACK_PREFIX}${suffix}`;
+};
+
+const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+};
+
+/**
+ * Best-effort removal of a quarantine file: `ctx.fs.rm` is not idempotent
+ * (it throws `FILE_NOT_FOUND` on a missing path), so a cleanup racing an
+ * already-completed rename — or a second cleanup attempt — must swallow
+ * exactly that code and rethrow everything else. A blanket `catch {}` would
+ * hide a real fault (e.g. permission denied) behind a silent no-op.
+ *
+ * Empirically confirmed: killing the *server* side of a real clone mid-stream
+ * (a handled failure on the client, not a hard kill) never leaves a stray
+ * temp pack behind — git's own clone command removes the whole destination
+ * it was creating on that path. This unlink gives the same "no stray pack
+ * debris after a handled failure" outcome for callers (fetch/pull against an
+ * existing repository) where wiping the whole repo on failure would be wrong.
+ */
+const removeQuarantineFileIfPresent = async (ctx: Context, path: string): Promise<void> => {
+  try {
+    await ctx.fs.rm(path);
+  } catch (err) {
+    if (errorDataCode(err) === 'FILE_NOT_FOUND') return;
+    throw err;
+  }
+};
+
+/** Renames a verified quarantine file into its final `pack-<sha>.pack`
+ *  name, preferring the platform's atomic replace when available and
+ *  falling back to plain `rename` where it is not (OPFS). */
+const renamePackIntoPlace = async (
+  ctx: Context,
+  tmpPath: string,
+  finalPath: string,
+): Promise<void> => {
+  const rename = ctx.fs.atomicRename ?? ctx.fs.rename;
+  await rename(tmpPath, finalPath);
+};
+
+interface QuarantineReceipt {
+  readonly tmpPath: string;
+  /** Total bytes streamed. Zero means a legitimate empty pack body — no
+   *  quarantine file survives this case, matching the pre-streaming
+   *  zero-byte-body guard. */
+  readonly totalBytes: number;
+  /** Empty when `totalBytes` is zero (there is no trailer to hash). */
+  readonly packSha: string;
+}
+
+/**
+ * Streams `source` straight into `objects/pack/tmp_pack_<random>`, hashing
+ * the trailer incrementally as bytes arrive — the whole pack is never held
+ * in memory at once. The last `ctx.hash.digestLength` bytes are withheld
+ * from the hasher behind a small sliding tail buffer until the stream ends
+ * (only then is it known which bytes are the trailer rather than body), so
+ * the retained state stays bounded by one chunk plus the digest width,
+ * never by the pack's total size. Verification happens here, against the
+ * incrementally-computed digest, before the caller ever sees a path to
+ * rename — "the trailer-verify-before-trust refusal must fire before any
+ * object becomes readable".
+ */
+const receivePackToQuarantine = async (
   ctx: Context,
   input: FetchPackInput,
+  packDir: string,
   source: AsyncIterable<Uint8Array>,
-): Promise<Uint8Array> => {
+): Promise<QuarantineReceipt> => {
   const cap = ctx.config?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-  const chunks: Uint8Array[] = [];
+  const trailerLen = ctx.hash.digestLength;
+  const hasher = ctx.hash.createHasher();
+  const tmpPath = `${packDir}/${randomTmpPackName()}`;
   let total = 0;
   let lastTick = 0;
-  for await (const chunk of source) {
-    if (total + chunk.byteLength > cap) {
-      throw packTooLargeBytes(cap);
-    }
-    chunks.push(chunk);
-    total += chunk.byteLength;
-    if (total - lastTick >= PROGRESS_TICK_BYTES) {
-      ctx.progress.update(input.progressOp, total);
-      lastTick = total;
+  let tail: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+
+  async function* tee(): AsyncGenerator<Uint8Array> {
+    for await (const chunk of source) {
+      total += chunk.byteLength;
+      if (total > cap) throw packTooLargeBytes(cap);
+      const combined = concatBytes(tail, chunk);
+      if (combined.length > trailerLen) {
+        const boundary = combined.length - trailerLen;
+        hasher.update(combined.subarray(0, boundary));
+        tail = combined.slice(boundary);
+      } else {
+        tail = combined;
+      }
+      if (total - lastTick >= PROGRESS_TICK_BYTES) {
+        ctx.progress.update(input.progressOp, total);
+        lastTick = total;
+      }
+      yield chunk;
     }
   }
+
+  try {
+    await ctx.fs.writeStream(tmpPath, tee());
+  } catch (err) {
+    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    throw err;
+  }
+
   // Stryker disable next-line ConditionalExpression: equivalent — when `total === 0` no chunk was consumed so `lastTick` is also 0, making `tailUnticked` false; forcing `sawProgress` true cannot change the AND result.
   const sawProgress = total !== 0;
   const tailUnticked = total !== lastTick;
   if (sawProgress && tailUnticked) {
     ctx.progress.update(input.progressOp, total);
   }
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.byteLength;
+
+  if (total === 0) {
+    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    return { tmpPath, totalBytes: 0, packSha: '' };
   }
-  return out;
+  if (total < PACK_HEADER_BYTES + trailerLen) {
+    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    throw invalidPackHeader('trailer mismatch: pack too short for header + trailer');
+  }
+
+  const expectedHex = await hasher.digestHex();
+  const actualHex = bytesToHex(tail);
+  if (expectedHex !== actualHex) {
+    await removeQuarantineFileIfPresent(ctx, tmpPath);
+    throw invalidPackHeader(`trailer mismatch: expected ${expectedHex}, got ${actualHex}`);
+  }
+
+  return { tmpPath, totalBytes: total, packSha: expectedHex };
 };
 
 /**

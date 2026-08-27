@@ -11,9 +11,10 @@
  * need to see it as the first item their own iteration produces.
  *
  * `negotiatePackBytes` performs the actual pack exchange once the version is
- * known, sharing the same bounded-drain step (`drainPackBodyBounded`) on
- * both legs so the v1 leg's byte-cap/progress behaviour is unchanged from
- * before this module existed.
+ * known. Both legs hand their raw, undrained `packBody` straight to the
+ * shared `PackDownload` shape — draining (bounded, hashed incrementally,
+ * streamed to quarantine) is `fetchPack`'s job, not this seam's, so neither
+ * leg buffers the pack before `fetchPack` ever sees it.
  */
 import { sanitize } from '../../../domain/commands/error.js';
 import type { Advertisement, PktLine } from '../../../domain/protocol/index.js';
@@ -33,7 +34,6 @@ import {
 import { consumeServiceHeaderFlush } from '../../../domain/protocol/upload-pack.js';
 import type { Context } from '../../../ports/context.js';
 import {
-  drainPackBodyBounded,
   type FetchPackInput,
   hasSideBand,
   type PackDownload,
@@ -181,8 +181,7 @@ const negotiateV2PackBytes = async (
     // see negotiateV1PackBytes's onProgress for the full rationale.
     onProgress: (text) => ctx.progress.update(input.progressOp, 0, undefined, sanitize(text)),
   });
-  const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
-  return { packBytes, shallow: parsed.shallow, unshallow: parsed.unshallow };
+  return { packBody: parsed.packBody, shallow: parsed.shallow, unshallow: parsed.unshallow };
 };
 
 const negotiateV1PackBytes = async (
@@ -213,8 +212,7 @@ const negotiateV1PackBytes = async (
     // Stryker disable next-line ConditionalExpression: equivalent — `parseUploadPackResponse` treats `expectShallow: true` identically on a non-shallow stream (the NAK pkt is pushed back and processed as the non-shallow path).
     expectShallow: input.depth !== undefined,
   });
-  const packBytes = await drainPackBodyBounded(ctx, input, parsed.packBody);
-  return { packBytes, shallow: parsed.shallow, unshallow: parsed.unshallow };
+  return { packBody: parsed.packBody, shallow: parsed.shallow, unshallow: parsed.unshallow };
 };
 
 /**
