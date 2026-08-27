@@ -263,6 +263,27 @@ describe('parseReflogLine', () => {
       });
     });
   });
+
+  describe('Given a malformed identity in a reflog line', () => {
+    describe('When parsing', () => {
+      it('Then it throws a TsgitError, not a bare Error', () => {
+        // Arrange — `parseIdentity` rejects this: no angle-bracketed email.
+        const line = `${OID_A} ${OID_B} no-brackets 1716240000 +0000\tx`;
+
+        // Act
+        let result: unknown;
+        try {
+          parseReflogLine(line, 40);
+        } catch (error) {
+          result = error;
+        }
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect((result as TsgitError).data.code).toBe('INVALID_REFLOG_ENTRY');
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

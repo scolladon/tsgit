@@ -1,6 +1,6 @@
 import { unsupportedOperation, workdirRace } from '../../../domain/error.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
-import { ObjectId } from '../../../domain/objects/object-id.js';
+import { invalidObjectId, isOid, type ObjectId } from '../../../domain/objects/index.js';
 import type { WorkdirEntryRow, WorkdirStat } from '../../../domain/snapshot/index.js';
 import type { Context, FileStat } from '../../../ports/index.js';
 import { joinPath } from '../internal/join-working-tree-path.js';
@@ -40,7 +40,14 @@ const computeBlobHash = async (ctx: Context, bytes: Uint8Array): Promise<ObjectI
   combined.set(header, 0);
   combined.set(bytes, header.length);
   const hex = await ctx.hash.hashHex(combined);
-  return ObjectId.from(hex);
+  // Trusted path: `hex` is tsgit's own hash output, checked against the
+  // repository's declared algorithm with a single `RegExp.test` — the same
+  // shape `serializeAndHash` uses for its own written-id width check —
+  // rather than re-scanned digit-by-digit as untrusted input would be.
+  if (!isOid(hex, ctx.hashConfig)) {
+    throw invalidObjectId(hex);
+  }
+  return hex as ObjectId;
 };
 
 const readSymlinkBytes = async (ctx: Context, absPath: string): Promise<Uint8Array> => {

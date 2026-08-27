@@ -91,7 +91,7 @@ function parseRequiredTagFields(lines: ReadonlyArray<string>): {
   if (!lines[0]!.startsWith('object ')) {
     throw invalidTag('first line must be object');
   }
-  const object = ObjectIdFactory.from(lines[0]!.slice(7));
+  const object = ObjectIdFactory.fromTrustedHex(lines[0]!.slice(7));
 
   if (lines.length < 2 || !lines[1]!.startsWith('type ')) {
     throw invalidTag('second line must be type');

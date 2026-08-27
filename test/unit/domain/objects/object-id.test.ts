@@ -155,6 +155,84 @@ describe('object-id', () => {
     });
   });
 
+  describe('ObjectId.fromTrustedHex', () => {
+    describe('Given a 40-char or 64-char hex string', () => {
+      describe('When calling ObjectId.fromTrustedHex', () => {
+        it.each([
+          { hex: 'a'.repeat(40), label: '40-char' },
+          { hex: 'b'.repeat(64), label: '64-char' },
+        ])('Then returns branded ObjectId for the $label hex string', ({ hex }) => {
+          // Arrange & Act
+          const result = ObjectId.fromTrustedHex(hex);
+
+          // Assert
+          expect(result).toBe(hex);
+        });
+      });
+    });
+
+    describe('Given a hex string of the wrong width', () => {
+      describe('When calling ObjectId.fromTrustedHex', () => {
+        it.each([
+          { hex: 'a'.repeat(39), label: 'a 39-char (one under SHA-1 width) string' },
+          { hex: 'a'.repeat(41), label: 'a 41-char (one over SHA-1 width) string' },
+          { hex: 'a'.repeat(63), label: 'a 63-char (one under SHA-256 width) string' },
+          { hex: 'a'.repeat(65), label: 'a 65-char (one over SHA-256 width) string' },
+          { hex: '', label: 'an empty string' },
+        ])('Then throws INVALID_OBJECT_ID for $label', ({ hex }) => {
+          // Arrange
+          const sut = ObjectId.fromTrustedHex;
+
+          // Act + Assert
+          try {
+            sut(hex);
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            expect((error as TsgitError).data).toEqual({
+              code: 'INVALID_OBJECT_ID',
+              value: hex,
+            });
+          }
+        });
+      });
+    });
+
+    describe('Given a 40-char string containing non-hex characters', () => {
+      describe('When calling ObjectId.fromTrustedHex', () => {
+        it('Then it is accepted (the digit-class scan is skipped, width only is checked)', () => {
+          // Arrange
+          const hex = `zz${'a'.repeat(38)}`;
+
+          // Act
+          const result = ObjectId.fromTrustedHex(hex);
+
+          // Assert
+          expect(result).toBe(hex);
+        });
+
+        it('Then it never scans the hex (charCodeAt is not called)', () => {
+          // Arrange — the digit-class validator's only observable primitive is
+          // String.prototype.charCodeAt: a fromTrustedHex that delegated to
+          // ObjectId.from would scan 40 code units and trip this spy.
+          const sut = ObjectId.fromTrustedHex;
+          const hex = 'a'.repeat(40);
+          const charCodeAtSpy = vi.spyOn(String.prototype, 'charCodeAt');
+
+          try {
+            // Act
+            sut(hex);
+
+            // Assert
+            expect(charCodeAtSpy).not.toHaveBeenCalled();
+          } finally {
+            charCodeAtSpy.mockRestore();
+          }
+        });
+      });
+    });
+  });
+
   describe('ObjectId.fromRaw', () => {
     describe('Given a 20-byte or 32-byte Uint8Array', () => {
       describe('When calling ObjectId.fromRaw', () => {
