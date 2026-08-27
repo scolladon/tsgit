@@ -2,6 +2,7 @@ import { TsgitError } from '../../../domain/error.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
 import type { Context } from '../../../ports/context.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
+import { invalidateIndexCache } from '../read-index.js';
 
 interface AcquireOptions {
   /** Injectable clock — defaults to `Date.now`. Tests override to simulate stale/skewed locks. */
@@ -135,6 +136,10 @@ const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock 
       await ctx.fs.write(lockPath, bytes);
       await ctx.fs.rename(lockPath, indexFile);
       committed = true;
+      // Drop the cached readIndex entry unconditionally — a same-tick write
+      // can have a stat identical to what was cached, and the cache must
+      // never serve a stale read of our own commit.
+      invalidateIndexCache(ctx);
     },
   };
 };

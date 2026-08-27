@@ -1684,6 +1684,110 @@ describe('add', () => {
     });
   });
 
+  describe('Given N new files staged via a walk and an ioBound bucket of 2', () => {
+    describe('When add runs', () => {
+      it('Then at most 2 stagings are in flight at once', async () => {
+        // Arrange
+        const base = await seedFreshRepo({
+          'a.txt': 'a',
+          'b.txt': 'b',
+          'c.txt': 'c',
+          'd.txt': 'd',
+        });
+        let inFlight = 0;
+        let max = 0;
+        const baseLstat = base.fs.lstat;
+        // A macrotask tick per lstat gives the (much cheaper) walk time to
+        // dispatch every entry before any one staging settles — without it,
+        // the walk-then-stage pipeline finishes file N before the walker
+        // even discovers file N+1, masking the pool's real width.
+        const trackingFs = new Proxy(base.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (path: string) => {
+                inFlight += 1;
+                if (inFlight > max) max = inFlight;
+                try {
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                  return await baseLstat(path);
+                } finally {
+                  inFlight -= 1;
+                }
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const limited = { ...base, fs: trackingFs, concurrency: { cpuBound: 1, ioBound: 2 } };
+
+        // Act
+        await add(limited, [], { all: true });
+
+        // Assert
+        expect(max).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a hostile path mid-walk while a sibling file is still being staged', () => {
+    describe('When add runs', () => {
+      it('Then the pool drains the sibling before the error propagates, and no index commit happens', async () => {
+        // Arrange — the sibling's re-lstat blocks until the hostile path's own
+        // re-lstat has fired (guaranteeing the sibling is still in flight when
+        // the abort happens); it only resumes and finishes staging from
+        // there. `stageWalkedEntries` must await every dispatched task before
+        // the recorded error can propagate, so 'sibling-staged' can only
+        // precede 'add-rejected' if the drain genuinely happened first.
+        const ctx = await seedFreshRepo({ 'hostile.txt': 'h', 'sibling.txt': 's' });
+        const events: string[] = [];
+        let releaseSibling: (() => void) | undefined;
+        const siblingGate = new Promise<void>((resolve) => {
+          releaseSibling = resolve;
+        });
+        const baseLstat = ctx.fs.lstat;
+        const racingCtx = {
+          ...ctx,
+          fs: new Proxy(ctx.fs, {
+            get(target, prop, receiver) {
+              if (prop === 'lstat') {
+                return async (path: string) => {
+                  const real = await baseLstat(path);
+                  if (path.endsWith('/hostile.txt')) {
+                    releaseSibling?.();
+                    return { ...real, isSymbolicLink: true, isFile: false };
+                  }
+                  if (path.endsWith('/sibling.txt')) {
+                    await siblingGate;
+                    events.push('sibling-staged');
+                  }
+                  return real;
+                };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(racingCtx, [], { all: true });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+          events.push('add-rejected');
+        }
+
+        // Assert
+        expect(events).toEqual(['sibling-staged', 'add-rejected']);
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        const after = await readIndex(ctx);
+        expect(after.entries).toEqual([]);
+      });
+    });
+  });
+
   describe('Given multiple unsorted modified and removed files', () => {
     describe('When add({ all: true })', () => {
       it('Then modified and removed are each independently sorted', async () => {

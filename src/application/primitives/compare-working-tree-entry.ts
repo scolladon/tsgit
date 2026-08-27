@@ -18,11 +18,6 @@
  * `compareWorkingTreeDelta` accepts an optional index-file mtime (the racy-guard
  * reference point for the `ie_match_stat` stat-cache short-circuit). Only
  * `status` supplies it; every other consumer keeps reading and hashing.
- *
- * It also accepts an optional {@link WorkingTreeStatMap}, consulted before
- * issuing `lstat` and populated on a successful sample. Only `status` supplies
- * it, sharing one instance with its untracked-pass walk; every other consumer
- * omits it and issues its own `lstat` exactly as before.
  */
 import { isSameKind } from '../../domain/diff/mode-kind.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
@@ -36,7 +31,6 @@ import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
 import { runFilterDriver } from './run-filter-driver.js';
 
@@ -134,15 +128,10 @@ export const compareWorkingTreeDelta = async (
   entry: IndexEntry,
   provider?: AttributeProvider,
   indexMtime?: IndexMtime,
-  stats?: WorkingTreeStatMap,
 ): Promise<WorkingTreeDelta> => {
   const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
-  const sampled = stats?.sampled(entry.path);
-  const stat = sampled ?? (await ctx.fs.lstat(absPath).catch(() => undefined));
+  const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { status: 'absent' };
-  // Record only the freshly-lstat'd arm — a sample already pulled from the
-  // map is already there; re-recording it is a guaranteed-redundant Map.set.
-  if (sampled === undefined) stats?.record(entry.path, stat);
   const worktreeMode = deriveWorkingMode(stat);
   const settled = statOnlyVerdict(entry, stat, worktreeMode, indexMtime);
   if (settled !== undefined) return settled;

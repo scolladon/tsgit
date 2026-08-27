@@ -19,15 +19,12 @@ import {
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
   maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
-import {
-  createWorkingTreeStatMap,
-  type WorkingTreeStatMap,
-} from '../primitives/internal/working-tree-stat-map.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -154,20 +151,14 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     // runner is wired. When absent, the provider is undefined and every
     // compareWorkingTreeDelta call takes the raw-bytes path (R11 guard).
     const provider = await maybeBuildAttributeProvider(ctx);
-    // One stat map per status invocation, shared between the tracked pass
-    // (records what it samples) and the untracked pass's walk (consults it
-    // before issuing its own lstat) — see WorkingTreeStatMap. Created here,
-    // passed explicitly down both call paths, unreachable once status returns.
-    const stats = createWorkingTreeStatMap();
     const workingMap = await scanWorkingTree(
       ctx,
       grouped.staged,
       tracker,
       provider,
       index.indexMtime,
-      stats,
     );
-    const untracked = await scanUntracked(ctx, trackedPaths, stats);
+    const untracked = await scanUntracked(ctx, trackedPaths);
     const headTree = await readHeadTree(ctx);
     const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
     const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);
@@ -187,8 +178,10 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
  * re-application so smudged-then-unmodified files report unchanged (F1). The
  * optional `indexMtime` (the `.git/index` file's own mtime) arms the
  * stat-cache short-circuit in `compareWorkingTreeDelta` — `status` is the
- * only consumer that supplies it today. `stats` is the shared per-invocation
- * map: this pass records every sample it takes.
+ * only consumer that supplies it today. The comparisons fan out through the
+ * `ioBound` bucket: each `lstat`+optional-hash is independent per path, and
+ * `boundedMap`'s completion-order-independent result array is safe here
+ * because every entry is keyed by its own unique path.
  */
 const scanWorkingTree = async (
   ctx: Context,
@@ -196,37 +189,36 @@ const scanWorkingTree = async (
   tracker: GranularityTracker,
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
-  stats: WorkingTreeStatMap,
 ): Promise<Map<FilePath, WorkingTreeDelta>> => {
+  const results = await boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
+    const delta = entry.flags.skipWorktree
+      ? undefined
+      : await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
+    tracker.tick();
+    return delta === undefined ? undefined : ([entry.path, delta] as const);
+  });
   const map = new Map<FilePath, WorkingTreeDelta>();
-  await Promise.all(
-    stage0.map(async (entry) => {
-      if (!entry.flags.skipWorktree)
-        map.set(entry.path, await compareWorkingTreeDelta(ctx, entry, provider, indexMtime, stats));
-      tracker.tick();
-    }),
-  );
+  for (const result of results) {
+    if (result !== undefined) map.set(...result);
+  }
   return map;
 };
 
 /**
  * Untracked pass: walk the working tree (gitignore-filtered) and collect every
  * path not tracked (stage-0 or unmerged). Tracked-but-ignored entries stay
- * tracked; the ignore filter affects untracked emission only. `stats` is the
- * shared per-invocation map also populated by the tracked pass
- * (`scanWorkingTree`): threading it through here guarantees at most one
- * `lstat` sample per path across both passes — a guarantee this pass never
- * itself cashes in, since it destructures only `path` from each walk entry
- * and never reads a leaf's stat.
+ * tracked; the ignore filter affects untracked emission only. The walk stays
+ * sequential (a stateful ignore stack, and its emission order is a pinned
+ * contract) — this pass never reads a leaf's stat at all, destructuring only
+ * `path` from each walk entry, so it pays zero `lstat`s regardless.
  */
 const scanUntracked = async (
   ctx: Context,
   trackedPaths: ReadonlySet<FilePath>,
-  stats: WorkingTreeStatMap,
 ): Promise<FilePath[]> => {
   const ignore = await buildRepoIgnorePredicate(ctx);
   const untracked: FilePath[] = [];
-  for await (const { path } of walkWorkingTree(ctx, { ignore, stats })) {
+  for await (const { path } of walkWorkingTree(ctx, { ignore })) {
     if (!trackedPaths.has(path)) untracked.push(path);
   }
   return untracked.sort(comparePaths);
@@ -337,31 +329,26 @@ const conflictStage = (entry: IndexEntry): BlobSide => ({ id: entry.id, mode: en
  * absent from the working-tree pass and its mode is read here — `lstat`-derived
  * only, since git does no content hash for `mW`. The result is byte-ordered by
  * path: `groupUnmergedEntries` preserves the order of the index (whose entries
- * are required to be byte-sorted, a git index invariant) and `Promise.all`
- * preserves that array order.
- *
- * Deliberately outside the shared stat map: an unmerged path has no stage-0
- * entry, so its key can never collide with one the tracked pass records —
- * wiring it in could not add a single dedup hit, only untracked complexity.
+ * are required to be byte-sorted, a git index invariant), and fanning the
+ * per-path `lstat`s through the `ioBound` bucket does not disturb that —
+ * `boundedMap` returns results in INPUT order regardless of completion order.
  */
 const buildUnmergedEntries = (
   ctx: Context,
   groups: ReadonlyMap<FilePath, UnmergedEntryGroup>,
   workDir: string,
 ): Promise<UnmergedEntry[]> =>
-  Promise.all(
-    [...groups].map(async ([path, group]) => {
-      const worktreeMode = await readWorktreeMode(ctx, workDir, path);
-      return {
-        kind: classifyUnmerged(group),
-        path,
-        ...(group.stage1 && { base: conflictStage(group.stage1) }),
-        ...(group.stage2 && { ours: conflictStage(group.stage2) }),
-        ...(group.stage3 && { theirs: conflictStage(group.stage3) }),
-        ...(worktreeMode !== undefined && { worktree: { mode: worktreeMode } }),
-      };
-    }),
-  );
+  boundedMapFor(ctx, 'ioBound', [...groups], async ([path, group]) => {
+    const worktreeMode = await readWorktreeMode(ctx, workDir, path);
+    return {
+      kind: classifyUnmerged(group),
+      path,
+      ...(group.stage1 && { base: conflictStage(group.stage1) }),
+      ...(group.stage2 && { ours: conflictStage(group.stage2) }),
+      ...(group.stage3 && { theirs: conflictStage(group.stage3) }),
+      ...(worktreeMode !== undefined && { worktree: { mode: worktreeMode } }),
+    };
+  });
 
 /** The conflicted file's on-disk git mode, or `undefined` when it is absent. */
 const readWorktreeMode = async (

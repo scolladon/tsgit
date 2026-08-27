@@ -1,11 +1,49 @@
 import { describe, expect, it } from 'vitest';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
   serializeIndexFixture,
   serializeIndexFixtureAsync,
 } from './fixtures.js';
+
+const FAKE_OBJECT_ID = 'a'.repeat(40) as ObjectId;
+
+/** Counts `ctx.fs.read` calls, proving whether a `readIndex` call was a cache hit or a miss. */
+const trackRead = (ctx: Context): { readonly ctx: Context; readonly count: () => number } => {
+  const baseRead = ctx.fs.read;
+  let calls = 0;
+  const wrappedFs = {
+    ...ctx.fs,
+    read: async (path: string) => {
+      calls += 1;
+      return baseRead(path);
+    },
+  };
+  return { ctx: { ...ctx, fs: wrappedFs }, count: () => calls };
+};
+
+const seedEmptyIndex = async (ctx: Context): Promise<void> => {
+  const bytes = await serializeIndexFixtureAsync(
+    { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) },
+    ctx,
+  );
+  await ctx.fs.write('/repo/.git/index', bytes);
+};
+
+/** Wraps `ctx.fs.stat` so every call returns the frozen stat, simulating a filesystem with no nanosecond precision colliding on a same-tick write. */
+const withFrozenStat = (
+  ctx: Context,
+  pinned: Awaited<ReturnType<Context['fs']['stat']>>,
+): Context => ({
+  ...ctx,
+  fs: { ...ctx.fs, stat: async () => pinned },
+});
 
 describe('readIndex', () => {
   describe('Given no index file', () => {
@@ -317,6 +355,242 @@ describe('readIndex', () => {
           const msg = (error as TsgitError).message;
           expect(msg).toMatch(/exceeds 256 MiB/);
         }
+      });
+    });
+  });
+
+  describe('Given two readIndex calls on one Context with the index unchanged', () => {
+    describe('When readIndex is called', () => {
+      it('Then the file is read once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const { ctx, count } = trackRead(base);
+
+        // Act
+        const first = await readIndex(ctx);
+        const second = await readIndex(ctx);
+
+        // Assert
+        expect(count()).toBe(1);
+        expect(second).toEqual(first);
+      });
+    });
+  });
+
+  describe('Given the index size changed between two readIndex calls', () => {
+    describe('When readIndex is called', () => {
+      it('Then it is re-read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const realStat = await base.fs.stat('/repo/.git/index');
+        const { ctx, count } = trackRead(base);
+        await readIndex(ctx);
+        const grown = {
+          ...ctx,
+          fs: { ...ctx.fs, stat: async () => ({ ...realStat, size: realStat.size + 1 }) },
+        };
+
+        // Act
+        await readIndex(grown);
+
+        // Assert
+        expect(count()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given mtimeMs changed between two readIndex calls', () => {
+    describe('When readIndex is called', () => {
+      it('Then it is re-read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const realStat = await base.fs.stat('/repo/.git/index');
+        const { ctx, count } = trackRead(base);
+        await readIndex(ctx);
+        const touched = {
+          ...ctx,
+          fs: { ...ctx.fs, stat: async () => ({ ...realStat, mtimeMs: realStat.mtimeMs + 1 }) },
+        };
+
+        // Act
+        await readIndex(touched);
+
+        // Assert
+        expect(count()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given mtimeNs changed between two readIndex calls', () => {
+    describe('When readIndex is called', () => {
+      it('Then it is re-read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const realStat = await base.fs.stat('/repo/.git/index');
+        const { ctx, count } = trackRead(base);
+        const firstStat = { ...realStat, mtimeNs: 1n };
+        const first = { ...ctx, fs: { ...ctx.fs, stat: async () => firstStat } };
+        await readIndex(first);
+        const second = {
+          ...ctx,
+          fs: { ...ctx.fs, stat: async () => ({ ...firstStat, mtimeNs: 2n }) },
+        };
+
+        // Act
+        await readIndex(second);
+
+        // Assert
+        expect(count()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given ino changed between two readIndex calls', () => {
+    describe('When readIndex is called', () => {
+      it('Then it is re-read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const realStat = await base.fs.stat('/repo/.git/index');
+        const { ctx, count } = trackRead(base);
+        const firstStat = { ...realStat, ino: 7 };
+        const first = { ...ctx, fs: { ...ctx.fs, stat: async () => firstStat } };
+        await readIndex(first);
+        const second = { ...ctx, fs: { ...ctx.fs, stat: async () => ({ ...firstStat, ino: 8 }) } };
+
+        // Act
+        await readIndex(second);
+
+        // Assert
+        expect(count()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given the stat key collides across two calls (no nanosecond precision) and the file content genuinely changed', () => {
+    describe('When readIndex is called again', () => {
+      it('Then the trailer mismatch is detected and the file is re-read', async () => {
+        // Arrange — freeze `stat` so the key looks identical on both calls
+        // (mtimeNs undefined, exactly the memory adapter's shape); the on-disk
+        // bytes are genuinely swapped in between via a raw write (an external
+        // actor, not the lock-commit path).
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const frozenStat = await base.fs.stat('/repo/.git/index');
+        const { ctx, count } = trackRead(withFrozenStat(base, frozenStat));
+        const first = await readIndex(ctx);
+        const entry = indexEntryFromStat(
+          frozenStat,
+          FILE_MODE.REGULAR,
+          FAKE_OBJECT_ID,
+          'a.txt' as FilePath,
+        );
+        const bytes = await serializeIndexFixtureAsync(
+          { version: 2, entries: [entry], extensions: [], trailerSha: new Uint8Array(0) },
+          base,
+        );
+        await base.fs.write('/repo/.git/index', bytes);
+
+        // Act
+        const second = await readIndex(ctx);
+
+        // Assert
+        expect(count()).toBe(2);
+        expect(first.entries).toEqual([]);
+        expect(second.entries.map((e) => e.path)).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given the stat key collides across two calls (no nanosecond precision) and the file content is unchanged', () => {
+    describe('When readIndex is called again', () => {
+      it('Then the trailer still matches and the cached parse is reused', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const frozenStat = await base.fs.stat('/repo/.git/index');
+        const { ctx, count } = trackRead(withFrozenStat(base, frozenStat));
+        await readIndex(ctx);
+
+        // Act
+        await readIndex(ctx);
+
+        // Assert — one real read plus one trailer-fallback `readSlice`
+        // verification, never a second full read.
+        expect(count()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given an index written through the lock commit path, with BOTH the stat key and the trailer read pinned identical across both reads', () => {
+    describe('When readIndex is called again', () => {
+      it('Then the next readIndex sees it — invalidation, not the stat/trailer safety nets, drives the re-read', async () => {
+        // Arrange — `ctx` (pinned-stat, pinned-trailer wrapper) is the SAME
+        // identity used for both reads and the lock/commit: the cache is
+        // keyed on Context identity (matching config-read.ts's precedent),
+        // so read and write must share one object for invalidation to be
+        // observable at all. Pinning `readSlice` too defeats the racy-stat
+        // trailer fallback, which would otherwise independently notice the
+        // content changed and mask a missing `invalidateIndexCache` call.
+        const seeded = await buildSeededContext();
+        await seedEmptyIndex(seeded);
+        const pinnedStat = await seeded.fs.stat('/repo/.git/index');
+        const trailerSize = seeded.hashConfig.digestLength;
+        const pinnedTrailer = await seeded.fs.readSlice(
+          '/repo/.git/index',
+          pinnedStat.size - trailerSize,
+          trailerSize,
+        );
+        const ctx: Context = {
+          ...seeded,
+          fs: { ...seeded.fs, stat: async () => pinnedStat, readSlice: async () => pinnedTrailer },
+        };
+        const before = await readIndex(ctx);
+        const entry = indexEntryFromStat(
+          pinnedStat,
+          FILE_MODE.REGULAR,
+          FAKE_OBJECT_ID,
+          'a.txt' as FilePath,
+        );
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([entry]);
+
+        // Act
+        const after = await readIndex(ctx);
+
+        // Assert
+        expect(before.entries).toEqual([]);
+        expect(after.entries.map((e) => e.path)).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given a first readIndex call caches a valid index, then the file is replaced with a truncated one', () => {
+    describe('When readIndex is called again', () => {
+      it('Then the trailer check still refuses before parsing (integrity-first survives caching)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedEmptyIndex(ctx);
+        await readIndex(ctx);
+        await ctx.fs.write('/repo/.git/index', new Uint8Array([0, 0, 0, 0, 0]));
+
+        // Act
+        let caught: unknown;
+        try {
+          await readIndex(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
+        expect((caught as TsgitError).message).toMatch(/shorter than/);
       });
     });
   });

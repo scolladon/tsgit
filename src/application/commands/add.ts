@@ -30,6 +30,7 @@ import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/opera
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { limiterFor } from '../primitives/internal/concurrency.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -210,6 +211,66 @@ const lstatOrMissing = async (
   }
 };
 
+/**
+ * Fans every walked entry's `stageFromStat` work through an `ioBound` pool
+ * while the walk itself (`walkWorkingTree`) stays a plain sequential
+ * `for await` — the walker's ignore stack is stateful and its emission
+ * order is a pinned contract; only the per-entry I/O that follows a yield is
+ * safe to run concurrently. Staging is path-keyed and every caller sorts
+ * `added`/`modified` afterwards, so completion order carries no meaning.
+ *
+ * A rejection (a hostile-path abort, or the walk itself throwing) is
+ * recorded rather than propagated immediately: every already-dispatched
+ * task is drained (awaited to settlement, never left dangling) before the
+ * recorded error surfaces, so the index is never committed while a pooled
+ * write may still be in flight.
+ */
+const stageWalkedEntries = async (
+  ctx: Context,
+  walk: AsyncIterable<WalkWorkingTreeEntry>,
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+  seen: Set<FilePath>,
+  provider: AttributeProvider | undefined,
+  indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
+): Promise<WalkOutcome[]> => {
+  const limiter = limiterFor(ctx, 'ioBound');
+  const outcomes: WalkOutcome[] = [];
+  const pending: Promise<void>[] = [];
+  let firstError: { readonly error: unknown } | undefined;
+  const dispatch = (walkEntry: WalkWorkingTreeEntry): void => {
+    pending.push(
+      limiter
+        .run(() =>
+          processWalkEntry(
+            ctx,
+            walkEntry,
+            existing,
+            seen,
+            provider,
+            indexMtime,
+            ensurePromisorConfigValid,
+          ),
+        )
+        .then(
+          (outcome) => {
+            if (outcome !== undefined) outcomes.push(outcome);
+          },
+          (error: unknown) => {
+            firstError ??= { error };
+          },
+        ),
+    );
+  };
+  try {
+    for await (const walkEntry of walk) dispatch(walkEntry);
+  } finally {
+    await Promise.all(pending);
+  }
+  if (firstError !== undefined) throw firstError.error;
+  return outcomes;
+};
+
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
 // out) and the user's pathspec on top. Directories are NOT pruned by
 // the pathspec (a pattern like `*.ts` matches leaves, not dirs); only
@@ -232,25 +293,24 @@ const addByPathspec = async (
   try {
     const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
+    const seen = new Set<FilePath>();
+    const outcomes = await stageWalkedEntries(
+      ctx,
+      walkWorkingTree(ctx, { ignore: combinedIgnore }),
+      existing,
+      seen,
+      provider,
+      indexMtime,
+      ensurePromisorConfigValid,
+    );
     const matched: FilePath[] = [];
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
-    const seen = new Set<FilePath>();
-    for await (const walkEntry of walkWorkingTree(ctx, { ignore: combinedIgnore })) {
-      const result = await processWalkEntry(
-        ctx,
-        walkEntry,
-        existing,
-        seen,
-        provider,
-        indexMtime,
-        ensurePromisorConfigValid,
-      );
-      if (result === undefined) continue;
-      matched.push(result.path);
-      newEntries.set(result.path, result.entry);
-      if (result.kind === 'added') added.push(result.path);
-      else if (result.kind === 'modified') modified.push(result.path);
+    for (const outcome of outcomes) {
+      matched.push(outcome.path);
+      newEntries.set(outcome.path, outcome.entry);
+      if (outcome.kind === 'added') added.push(outcome.path);
+      else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
     enforceLiteralMustMatch(literalMustMatch, matched);
     added.sort();
@@ -284,20 +344,19 @@ export const addAll = async (
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
-    for await (const walkEntry of walkWorkingTree(ctx, { ignore })) {
-      const result = await processWalkEntry(
-        ctx,
-        walkEntry,
-        existing,
-        seen,
-        provider,
-        indexMtime,
-        ensurePromisorConfigValid,
-      );
-      if (result === undefined) continue;
-      newEntries.set(result.path, result.entry);
-      if (result.kind === 'added') added.push(result.path);
-      else if (result.kind === 'modified') modified.push(result.path);
+    const outcomes = await stageWalkedEntries(
+      ctx,
+      walkWorkingTree(ctx, { ignore }),
+      existing,
+      seen,
+      provider,
+      indexMtime,
+      ensurePromisorConfigValid,
+    );
+    for (const outcome of outcomes) {
+      newEntries.set(outcome.path, outcome.entry);
+      if (outcome.kind === 'added') added.push(outcome.path);
+      else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
     const removed = await collectRemovedPaths(existing, seen, ignore);
     for (const path of removed) newEntries.delete(path);

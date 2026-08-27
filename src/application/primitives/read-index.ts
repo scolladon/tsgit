@@ -17,16 +17,83 @@ const indexMtimeFrom = (stat: FileStat): { seconds: number; nanoseconds: number 
   nanoseconds: stat.mtimeNs === undefined ? 0 : Number(stat.mtimeNs % NS_PER_SECOND),
 });
 
-export async function readIndex(ctx: Context): Promise<GitIndex> {
-  const path = indexPath(ctx.layout.gitDir);
-  if (!(await ctx.fs.exists(path))) {
-    return { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) };
+/**
+ * The cache validity key: every field that would move if a writer (this
+ * process or an external one) replaced `.git/index`. `mtimeNs` AND `ino` are
+ * both required, not just `mtimeMs` — a second-resolution filesystem cannot
+ * otherwise distinguish two writes landing in the same clock tick.
+ */
+interface IndexCacheKey {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly mtimeNs: bigint | undefined;
+  readonly ino: number;
+}
+
+interface IndexCacheEntry {
+  readonly key: IndexCacheKey;
+  readonly index: Promise<GitIndex>;
+}
+
+// Cache reference is mutable so test code can swap in a fresh WeakMap and
+// guarantee isolation between cases that re-use the same Context identity —
+// mirrors `config-read.ts`'s own reset story.
+let cache: WeakMap<Context, IndexCacheEntry> = new WeakMap();
+
+const keyFrom = (stat: FileStat): IndexCacheKey => ({
+  size: stat.size,
+  mtimeMs: stat.mtimeMs,
+  mtimeNs: stat.mtimeNs,
+  ino: stat.ino,
+});
+
+const sameKey = (a: IndexCacheKey, b: IndexCacheKey): boolean =>
+  a.size === b.size && a.mtimeMs === b.mtimeMs && a.mtimeNs === b.mtimeNs && a.ino === b.ino;
+
+/**
+ * A stat match is racy — and cannot be trusted on its own — when either
+ * snapshot lacks nanosecond precision (undefined `mtimeNs`): two writes
+ * inside the same millisecond then produce identical stat tuples. The
+ * snapshot-resolver cache one layer up (`caching-index-resolver.ts`) faces
+ * the identical problem and resolves it the same way, below.
+ */
+const isRacyMatch = (a: IndexCacheKey, b: IndexCacheKey): boolean =>
+  a.mtimeNs === undefined || b.mtimeNs === undefined;
+
+const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
   }
-  // Pre-check against stat to reject oversized files before allocating.
-  const stat = await ctx.fs.stat(path);
-  if (exceedsMaxIndexBytes(stat.size)) {
-    throw invalidIndexHeader(REASON_INDEX_EXCEEDS_MAX);
-  }
+  return true;
+};
+
+/**
+ * Trailer fallback for a racy stat match: the trailer bytes are the only
+ * discriminant left against a same-tick external rewrite that happens to
+ * reuse the exact stat tuple. One `readSlice` of the digest length —
+ * negligible next to a full re-parse.
+ */
+const trailerStillMatches = async (
+  ctx: Context,
+  path: string,
+  stat: FileStat,
+  cachedIndex: Promise<GitIndex>,
+): Promise<boolean> => {
+  const cached = await cachedIndex;
+  const trailerSize = cached.trailerSha.length;
+  if (trailerSize === 0 || stat.size < trailerSize) return false;
+  const trailer = await ctx.fs.readSlice(path, stat.size - trailerSize, trailerSize);
+  return bytesEqual(trailer, cached.trailerSha);
+};
+
+/**
+ * Read, verify and parse `.git/index` off disk — the full cost `readIndex`
+ * pays on a cache miss. Unchanged from before caching existed: integrity
+ * (trailer checksum) is verified BEFORE `parseIndex` runs, so a malformed
+ * payload can never leak parser state through an error message.
+ */
+const loadIndex = async (ctx: Context, path: string, stat: FileStat): Promise<GitIndex> => {
   const bytes = await ctx.fs.read(path);
   // Post-check against the actual read size — defeats TOCTOU where a concurrent
   // writer grows the file between stat and read.
@@ -55,4 +122,55 @@ export async function readIndex(ctx: Context): Promise<GitIndex> {
     ...parseIndex(bytes, ctx.hashConfig.digestLength),
     indexMtime: indexMtimeFrom(stat),
   };
+};
+
+/**
+ * Read `.git/index`, memoised per `Context` and keyed on the file's own
+ * `(size, mtimeMs, mtimeNs, ino)` — following `config-read.ts`'s precedent. A
+ * second call whose stat matches the cached key joins the cached parse
+ * instead of re-reading, re-verifying and re-parsing the whole file.
+ *
+ * Three independent guards keep this correct: the stat-key comparison
+ * catches a change to the on-disk file (this process or an external one);
+ * the trailer fallback catches a same-tick external rewrite that a
+ * nanosecond-blind stat tuple cannot distinguish from no change at all; and
+ * `invalidateIndexCache` — called from the index-lock commit path — drops
+ * the entry unconditionally the moment THIS process writes a new index, so
+ * neither of the read-side checks needs to run at all for our own commits.
+ */
+export async function readIndex(ctx: Context): Promise<GitIndex> {
+  const path = indexPath(ctx.layout.gitDir);
+  if (!(await ctx.fs.exists(path))) {
+    return { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) };
+  }
+  // Pre-check against stat to reject oversized files before allocating.
+  const stat = await ctx.fs.stat(path);
+  if (exceedsMaxIndexBytes(stat.size)) {
+    throw invalidIndexHeader(REASON_INDEX_EXCEEDS_MAX);
+  }
+  const key = keyFrom(stat);
+  const cached = cache.get(ctx);
+  if (cached !== undefined && sameKey(cached.key, key)) {
+    const trusted =
+      !isRacyMatch(cached.key, key) || (await trailerStillMatches(ctx, path, stat, cached.index));
+    if (trusted) return cached.index;
+  }
+  const index = loadIndex(ctx, path, stat);
+  cache.set(ctx, { key, index });
+  return index;
 }
+
+/**
+ * Drop the cached `readIndex` entry for a single `Context` — called from the
+ * index-lock commit path (`internal/index-lock.ts`) immediately after a
+ * successful write, so the next `readIndex` on this Context always sees the
+ * commit regardless of stat granularity.
+ */
+export const invalidateIndexCache = (ctx: Context): void => {
+  cache.delete(ctx);
+};
+
+/** @internal — test-only cache reset between cases. */
+export const __resetIndexCacheForTests = (): void => {
+  cache = new WeakMap();
+};

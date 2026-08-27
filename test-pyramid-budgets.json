@@ -164,8 +164,7 @@
         "createLineDigestScanner",
         "createLineDigestFold",
         "trackedNodeContext",
-        "createLeadingPathScanner",
-        "createWorkingTreeStatMap"
+        "createLeadingPathScanner"
       ]
     },
     "integrationProof": {
