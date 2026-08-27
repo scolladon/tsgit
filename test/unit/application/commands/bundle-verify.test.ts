@@ -953,6 +953,38 @@ describe('bundleVerify', () => {
     });
   });
 
+  describe('Given a SHA-256 bundle with no prerequisites and an instrumented deltaCache', () => {
+    describe('When bundleVerify adopts the algorithm and keeps the session', () => {
+      it('Then no oid-keyed cache holds an entry at the moment the algorithm is adopted', async () => {
+        // Arrange — the assertion that licenses `deriveContext`'s
+        // `keepSessionAcrossHashChange` at this call site: the only path
+        // that reaches a real algorithm swap is a mismatch with ZERO
+        // prerequisites (any mismatch WITH prerequisites already refuses in
+        // `assertPrerequisiteAlgorithmMatches`, before this point), and a
+        // zero-prerequisite bundle never resolves an external base — so the
+        // repository's own deltaCache is never touched at all.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const base = await initRepo();
+        await base.fs.write(BUNDLE_PATH, created.bytes);
+        let touched = 0;
+        const trackingDeltaCache = new Proxy(base.deltaCache, {
+          get(target, prop, receiver) {
+            if (prop === 'get' || prop === 'set') touched += 1;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const sha1Ctx: Context = { ...base, deltaCache: trackingDeltaCache };
+
+        // Act
+        await bundleVerify(sha1Ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(touched).toBe(0);
+      });
+    });
+  });
+
   describe('Given a cross-format bundle and a hash service that cannot switch algorithms', () => {
     describe('When bundleVerify is called', () => {
       it("Then it refuses rather than silently framing the pack at the repository's width", async () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -369,6 +370,47 @@ describe('readIndex', () => {
 
         // Act
         const first = await readIndex(ctx);
+        const second = await readIndex(ctx);
+
+        // Assert
+        expect(count()).toBe(1);
+        expect(second).toEqual(first);
+      });
+    });
+  });
+
+  describe('Given the index parsed once through the opening Context', () => {
+    describe('When readIndex is called through a Context derived by deriveContext (same session)', () => {
+      it('Then the derived Context hits the shared cache — the file is read once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const { ctx, count } = trackRead(base);
+        const derived = deriveContext(ctx, {});
+
+        // Act
+        const first = await readIndex(ctx);
+        const second = await readIndex(derived);
+
+        // Assert
+        expect(derived.session).toBe(ctx.session);
+        expect(count()).toBe(1);
+        expect(second).toEqual(first);
+      });
+    });
+  });
+
+  describe('Given the index parsed once through a Context derived by deriveContext (same session)', () => {
+    describe('When readIndex is called through the opening Context', () => {
+      it('Then the opening Context hits the shared cache — the file is read once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const { ctx, count } = trackRead(base);
+        const derived = deriveContext(ctx, { deltaCache: ctx.deltaCache });
+
+        // Act
+        const first = await readIndex(derived);
         const second = await readIndex(ctx);
 
         // Assert

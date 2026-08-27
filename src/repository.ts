@@ -21,11 +21,12 @@ import { unsupportedOperation } from './domain/error.js';
 import { configFor } from './domain/objects/hash-config.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
-import type {
-  Context,
-  RepositoryConfig,
-  RepositoryFormatRefusal,
-  RepositoryLayout,
+import {
+  type Context,
+  createSession,
+  type RepositoryConfig,
+  type RepositoryFormatRefusal,
+  type RepositoryLayout,
 } from './ports/context.js';
 import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
@@ -672,6 +673,7 @@ export const openRepository = async (
       concurrency: fallback.concurrency,
     }),
     promisor,
+    session: createSession(),
   });
   promisorCtx = ctx;
 

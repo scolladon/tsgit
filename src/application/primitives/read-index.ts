@@ -35,10 +35,19 @@ interface IndexCacheEntry {
   readonly index: Promise<GitIndex>;
 }
 
-// Cache reference is mutable so test code can swap in a fresh WeakMap and
-// guarantee isolation between cases that re-use the same Context identity —
-// mirrors `config-read.ts`'s own reset story.
-let cache: WeakMap<Context, IndexCacheEntry> = new WeakMap();
+// Keyed on `ctx.session` — not `ctx` itself — so a Context derived from the
+// same repository-open shares this cache instead of missing on every
+// spread-derivation, mirroring `config-read.ts`. Safe to share PURELY by
+// session despite `.git/index` being per-worktree (`indexPath` reads
+// `ctx.layout.gitDir`, which differs across worktrees): the entry's own
+// `(size, mtimeMs, mtimeNs, ino)` key self-validates on every read, so a
+// worktree switch (different file, different inode) is a correctly-detected
+// cache MISS, never a wrong-file hit — at worst, interleaved worktree reads
+// evict each other's entry, a perf cost, never a correctness one. Cache
+// reference is mutable so test code can swap in a fresh WeakMap and
+// guarantee isolation between cases that re-use the same session — mirrors
+// `config-read.ts`'s own reset story.
+let cache: WeakMap<Context['session'], IndexCacheEntry> = new WeakMap();
 
 const keyFrom = (stat: FileStat): IndexCacheKey => ({
   size: stat.size,
@@ -125,7 +134,7 @@ const loadIndex = async (ctx: Context, path: string, stat: FileStat): Promise<Gi
 };
 
 /**
- * Read `.git/index`, memoised per `Context` and keyed on the file's own
+ * Read `.git/index`, memoised per session and keyed on the file's own
  * `(size, mtimeMs, mtimeNs, ino)` — following `config-read.ts`'s precedent. A
  * second call whose stat matches the cached key joins the cached parse
  * instead of re-reading, re-verifying and re-parsing the whole file.
@@ -149,25 +158,25 @@ export async function readIndex(ctx: Context): Promise<GitIndex> {
     throw invalidIndexHeader(REASON_INDEX_EXCEEDS_MAX);
   }
   const key = keyFrom(stat);
-  const cached = cache.get(ctx);
+  const cached = cache.get(ctx.session);
   if (cached !== undefined && sameKey(cached.key, key)) {
     const trusted =
       !isRacyMatch(cached.key, key) || (await trailerStillMatches(ctx, path, stat, cached.index));
     if (trusted) return cached.index;
   }
   const index = loadIndex(ctx, path, stat);
-  cache.set(ctx, { key, index });
+  cache.set(ctx.session, { key, index });
   return index;
 }
 
 /**
- * Drop the cached `readIndex` entry for a single `Context` — called from the
+ * Drop the cached `readIndex` entry for the session — called from the
  * index-lock commit path (`internal/index-lock.ts`) immediately after a
- * successful write, so the next `readIndex` on this Context always sees the
+ * successful write, so the next `readIndex` on this session always sees the
  * commit regardless of stat granularity.
  */
 export const invalidateIndexCache = (ctx: Context): void => {
-  cache.delete(ctx);
+  cache.delete(ctx.session);
 };
 
 /** @internal — test-only cache reset between cases. */

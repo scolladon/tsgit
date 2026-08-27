@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { listWorktrees } from '../../../../src/application/primitives/list-worktrees.js';
-import { reftableDir } from '../../../../src/application/primitives/path-layout.js';
+import {
+  commonGitDir,
+  packedRefsPath,
+  reftableDir,
+} from '../../../../src/application/primitives/path-layout.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -635,6 +639,54 @@ describe('listWorktrees', () => {
           '/repo/wts/alpha',
           '/repo/wts/zebra',
         ]);
+      });
+    });
+  });
+
+  describe('Given a files-backed repository with several linked worktrees sharing one packed branch', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the common ref store is built once, not once per worktree (files backend)', async () => {
+        // Arrange — 3 linked worktrees, each with its OWN symbolic HEAD (a
+        // necessarily fresh per-worktree read) pointing at the SAME shared
+        // `refs/heads/main`, packed at the common dir. Before the fix, each
+        // worktree's own derived Context called `getRefStore` again for
+        // that shared lookup, so the packed-refs file was re-parsed once
+        // per worktree; `listWorktrees` now derives ONE main-rooted Context
+        // and threads it through every worktree's shared-ref resolution.
+        const ctx = await buildSeededContext({
+          packedRefs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        await seedAdmin(ctx, { id: 'one', path: '/repo/wts/one', head: 'ref: refs/heads/main' });
+        await seedAdmin(ctx, { id: 'two', path: '/repo/wts/two', head: 'ref: refs/heads/main' });
+        await seedAdmin(ctx, {
+          id: 'three',
+          path: '/repo/wts/three',
+          head: 'ref: refs/heads/main',
+        });
+        const commonPackedRefs = packedRefsPath(commonGitDir(ctx));
+        const readUtf8Calls: string[] = [];
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string) => {
+              readUtf8Calls.push(path);
+              return originalReadUtf8(path);
+            },
+          },
+        };
+
+        // Act
+        const result = await listWorktrees(instrumented);
+
+        // Assert — one read of the shared packed-refs file across the main
+        // entry and all 3 linked worktrees' shared-ref resolution, instead
+        // of one per worktree (4 total).
+        expect(result).toHaveLength(4);
+        expect(result.every((entry) => entry.branch === 'refs/heads/main')).toBe(true);
+        expect(readUtf8Calls.filter((p) => p === commonPackedRefs)).toHaveLength(1);
       });
     });
   });

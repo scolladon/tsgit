@@ -58,20 +58,20 @@ const EMPTY_TREE_BYTES = new TextEncoder().encode('tree 0\0');
  * reconstructing an object the bytes already proved identical, never a
  * safety check.
  *
- * Keyed on `ctx.deltaCache` — not `ctx` itself — mirroring
- * `load-reftable-stack.ts`'s `stackCache`: every `Context` derived from the
- * same `openRepository()`/`createXContext()` call shares the SAME
- * `deltaCache` object by reference, so the memo survives every
- * spread-derivation this codebase does, while a `Context`-keyed WeakMap
- * would miss on each fresh spread (e.g. fsck's audit Context, which swaps
- * in its OWN zero-budget `deltaCache` and therefore, by construction, gets
- * its own zero-capacity memo that never retains an entry). "Per-session"
- * naming lands with the session token; until then this is per-Context, like
- * every other cache here.
+ * Keyed on `ctx.session` — not `ctx` itself — so the memo survives every
+ * spread-derivation this codebase does (a worktree or submodule Context,
+ * `listWorktrees`'s per-worktree Contexts, …), sharing one memo per
+ * repository instead of missing on every fresh spread.
+ *
+ * fsck's audit Context shares the session (it isolates only `deltaCache`),
+ * so keying on session ALONE would let it read and populate this memo from
+ * the very object-byte state it exists to bypass. `deltaBaseCachingEnabled`
+ * (below) is the gate that keeps it out: a zero-budget `deltaCache` disables
+ * this memo too, exactly as it disables the offset-keyed delta-base cache.
  */
 type MemoisedObject = Commit | Tag;
 
-const parsedObjectMemos = new WeakMap<Context['deltaCache'], LruCache<MemoisedObject>>();
+const parsedObjectMemos = new WeakMap<Context['session'], LruCache<MemoisedObject>>();
 
 /**
  * Share of `ctx.deltaCache`'s own byte budget the parsed-object memo gets,
@@ -107,13 +107,14 @@ const parsedObjectMemos = new WeakMap<Context['deltaCache'], LruCache<MemoisedOb
  */
 export const PARSED_OBJECT_MEMO_FRACTION = 0.0625;
 
-function parsedObjectMemoFor(ctx: Context): LruCache<MemoisedObject> {
-  const existing = parsedObjectMemos.get(ctx.deltaCache);
+function parsedObjectMemoFor(ctx: Context): LruCache<MemoisedObject> | undefined {
+  if (!deltaBaseCachingEnabled(ctx)) return undefined;
+  const existing = parsedObjectMemos.get(ctx.session);
   if (existing !== undefined) return existing;
   const created = createLruCache<MemoisedObject>(
     ctx.deltaCache.maxSize * PARSED_OBJECT_MEMO_FRACTION,
   );
-  parsedObjectMemos.set(ctx.deltaCache, created);
+  parsedObjectMemos.set(ctx.session, created);
   return created;
 }
 
@@ -192,11 +193,11 @@ export async function resolveObject(
 ): Promise<GitObject> {
   const bytes = await resolveObjectBytes(ctx, registry, id, verifyHash, maxBytes);
   const memo = parsedObjectMemoFor(ctx);
-  const memoised = memo.get(id);
+  const memoised = memo?.get(id);
   if (memoised !== undefined) return memoised;
   const parsed = parseObject(id, bytes, ctx.hashConfig);
   if (parsed.type === 'commit' || parsed.type === 'tag') {
-    memo.set(id, parsed, parsedObjectByteSize(parsed.data));
+    memo?.set(id, parsed, parsedObjectByteSize(parsed.data));
   }
   return parsed;
 }
@@ -630,17 +631,22 @@ function cacheEntry(cache: LruCache<Uint8Array>, id: ObjectId, bytes: Uint8Array
 
 /**
  * fsck's audit Context swaps in a zero-budget `deltaCache`
- * (`createNoDeltaCache()`, `maxSize: 0`) while still sharing the ordinary
- * registry via `adoptPackRegistry` — a second registry would double the scan
- * and duplicate every persistent pack handle. That means the offset-keyed
- * cache below is reachable through BOTH Contexts even though it is sized
- * once, at registry creation, from whichever Context created it first (almost
- * always the real one, not the audit view). Per-Context disablement can only
- * be honoured by checking THIS call's own budget, so a zero-budget Context
- * never probes or populates it — the store-only guarantee `fsck` needs, not
- * just a memory-budget preference.
+ * (`createNoDeltaCache()`, `maxSize: 0`) while keeping the same session as
+ * the opening Context, so it still shares the ordinary pack registry — a
+ * second registry would double the scan and duplicate every persistent pack
+ * handle. That means the offset-keyed cache below is reachable through BOTH
+ * Contexts even though it is sized once, at registry creation, from
+ * whichever Context created it first (almost always the real one, not the
+ * audit view). Per-Context disablement can only be honoured by checking
+ * THIS call's own budget, so a zero-budget Context never probes or populates
+ * it — the store-only guarantee `fsck` needs, not just a memory-budget
+ * preference.
+ *
+ * Exported for `read-head-tree.ts`'s `flatTreeCaches`, which needs the SAME
+ * gate for the same reason: a flattened tree is derived from object bytes,
+ * and fsck's audit Context shares the session that memo now keys on.
  */
-function deltaBaseCachingEnabled(ctx: Context): boolean {
+export function deltaBaseCachingEnabled(ctx: Context): boolean {
   return ctx.deltaCache.maxSize > 0;
 }
 

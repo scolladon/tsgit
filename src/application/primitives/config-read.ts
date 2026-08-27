@@ -151,10 +151,47 @@ interface ConfigCacheEntry {
   readonly source: string;
 }
 
-// Cache reference is mutable so test code can swap in a fresh WeakMap and
-// guarantee isolation between cases that re-use the same Context identity
-// (the WeakMap itself can't be iterated, so a true reset requires replacement).
-let cache: WeakMap<Context, Promise<ConfigCacheEntry>> = new WeakMap();
+interface CachedConfigEntry {
+  readonly promise: Promise<ConfigCacheEntry>;
+  readonly mtimeKey: string;
+}
+
+/** Sentinel `mtimeKey` for "the config file does not exist" — distinct from
+ *  any real `mtimeMs:size` pair, so a file that is CREATED between two calls
+ *  is never mistaken for the absent state it replaces. */
+const CONFIG_ABSENT_MTIME_KEY = 'absent';
+
+/**
+ * `${mtimeMs}:${size}` for `path`, or {@link CONFIG_ABSENT_MTIME_KEY} when it
+ * does not exist — mirrors `ref-store.ts`'s `loadPackedRefs` and
+ * `load-reftable-stack.ts`'s own mtime-keyed invalidation. Keying the cache
+ * on session alone (below) shares it across every Context derived from the
+ * same repository-open, INCLUDING a plain `{ ...ctx, x }` spread that never
+ * goes through `deriveContext` — so a raw `ctx.fs.writeUtf8` past the config
+ * writers' `invalidateConfigCache` call (the pattern most tests use to seed
+ * config) must still be observed on the next read. A stat-based check is
+ * what makes that safe without giving up the cross-derivation sharing this
+ * cache exists for.
+ */
+async function configMtimeKey(ctx: Context, path: string): Promise<string> {
+  try {
+    const stat = await ctx.fs.stat(path);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') {
+      return CONFIG_ABSENT_MTIME_KEY;
+    }
+    throw err;
+  }
+}
+
+// Keyed on `ctx.session` — not `ctx` itself — so every Context derived from
+// the same repository-open shares one parse instead of missing on every
+// spread-derivation. Cache reference is mutable so test code can swap in a
+// fresh WeakMap and guarantee isolation between cases that re-use the same
+// session (the WeakMap itself can't be iterated, so a true reset requires
+// replacement).
+let cache: WeakMap<Context['session'], CachedConfigEntry> = new WeakMap();
 
 /**
  * The operational gate-verdict memo `internal/repo-state.ts` populates via
@@ -164,24 +201,37 @@ let cache: WeakMap<Context, Promise<ConfigCacheEntry>> = new WeakMap();
  * above, and the reverse import would cycle. The verdict shape (`FilePath`)
  * is the only thing this module knows about it; `compute` — supplied by the
  * caller — is what actually builds one.
+ *
+ * Keyed on `ctx.session` — not `ctx` itself — for the same reason as `cache`
+ * above, and for a correctness reason specific to this memo: the verdict is
+ * DERIVED FROM the parse `cache`'s content (`computeGateVerdict` calls
+ * `assertEagerConfigValid`, which reads the cached tokens), so the two must
+ * share exactly one invalidation domain. Keying this memo on `ctx` while
+ * `cache` keys on `ctx.session` would let a config write observed through a
+ * DERIVED Context (same session, different object) refresh the shared parse
+ * cache while leaving the ORIGINAL Context's verdict entry stale — a
+ * mid-session config edit that should flip the gate to refuse would instead
+ * keep passing through the original Context, since `invalidateConfigCache`
+ * only ever drops the caller's own key.
  */
-let gateVerdictCache: WeakMap<Context, Promise<FilePath>> = new WeakMap();
+let gateVerdictCache: WeakMap<Context['session'], Promise<FilePath>> = new WeakMap();
 
 /**
- * Get-or-populate the per-Context gate-verdict memo: a second call with the
- * same, unchanged `ctx` joins the promise the first call started rather than
- * re-running `compute`. `invalidateConfigCache` (below) drops this memo
- * alongside its own, so a config write observed through that invalidator is
- * observed here too.
+ * Get-or-populate the per-session gate-verdict memo: a second call sharing
+ * the same, unchanged session joins the promise the first call started
+ * rather than re-running `compute`. `invalidateConfigCache` (below) drops
+ * this memo alongside its own, so a config write observed through that
+ * invalidator — from ANY Context sharing the session, not just the one that
+ * first populated the memo — is observed here too.
  */
 export const memoizeGateVerdict = (
   ctx: Context,
   compute: (ctx: Context) => Promise<FilePath>,
 ): Promise<FilePath> => {
-  const existing = gateVerdictCache.get(ctx);
+  const existing = gateVerdictCache.get(ctx.session);
   if (existing !== undefined) return existing;
   const pending = compute(ctx);
-  gateVerdictCache.set(ctx, pending);
+  gateVerdictCache.set(ctx.session, pending);
   return pending;
 };
 
@@ -193,25 +243,42 @@ export const memoizeGateVerdict = (
  * erroring — mirroring `readConfig`'s long-standing "missing local file is
  * empty config" contract, now extended to every scope.
  *
- * The cache is keyed on `Context` identity; a new context (e.g., after a write
- * that re-creates the repo) gets a fresh read. Concurrent calls share the same
- * in-flight promise (per-context single-flight).
+ * The cache is keyed on `ctx.session`, with mtime+size staleness detection
+ * on top (see `configMtimeKey`) — a fresh session gets a fresh read; a
+ * write observed through any Context sharing the session invalidates it for
+ * every other. Concurrent calls share the same in-flight promise
+ * (single-flight per session).
  */
 export const readConfig = (ctx: Context): Promise<ParsedConfig> =>
   readConfigEntry(ctx).then((entry) => entry.parsed);
 
 /**
- * The cache accessor: returns the per-`Context` `ConfigCacheEntry` promise,
+ * The cache accessor: returns the per-session `ConfigCacheEntry` promise,
  * single-flight (concurrent calls share the same in-flight read). Both
- * `readConfig` (`.parsed`) and the valueless finders (`.tokens`) consume it, so
- * the file is read and tokenized at most once per context until invalidated.
+ * `readConfig` (`.parsed`) and the valueless finders (`.tokens`) consume it,
+ * so the file is read and tokenized at most once per session until the
+ * config file's own mtime+size change or `invalidateConfigCache` runs.
+ *
+ * The mtime check and the cache lookup/populate are a single `await`-free
+ * span: two concurrent calls that both miss the mtime-keyed cache each stat
+ * the file, but whichever resumes first populates the cache atomically
+ * before the other can observe it, so only one ever starts `loadConfigEntry`
+ * — the single-flight guarantee holds despite the added stat.
  */
-const readConfigEntry = (ctx: Context): Promise<ConfigCacheEntry> => {
-  const existing = cache.get(ctx);
-  if (existing !== undefined) return existing;
-  const pending = loadConfigEntry(ctx);
-  cache.set(ctx, pending);
-  return pending;
+const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
+  // The trust gate refuses before any I/O — not even a stat — so an
+  // untrusted layout is recomputed fresh every call (cheap: no fs access)
+  // rather than consulting or populating the cache below.
+  if (layoutFailsTrustGate(ctx.layout)) return loadConfigEntry(ctx);
+  const path = `${commonGitDir(ctx)}/config`;
+  const mtimeKey = await configMtimeKey(ctx, path);
+  const cached = cache.get(ctx.session);
+  if (cached !== undefined && cached.mtimeKey === mtimeKey) {
+    return cached.promise;
+  }
+  const promise = loadConfigEntry(ctx);
+  cache.set(ctx.session, { promise, mtimeKey });
+  return promise;
 };
 
 /**
@@ -225,17 +292,19 @@ export const __resetConfigCacheForTests = (): void => {
 };
 
 /**
- * Drop the cached `readConfig` entry for a single `Context`, AND the
- * gate-verdict memo `internal/repo-state.ts` populates via
- * `memoizeGateVerdict` (owned here — see that export's docstring for why).
- * This does NOT drop the per-scope sections cache
- * (`config-scoped-read.ts`'s `invalidateScopedConfigCache`) — that cache is
- * invalidated independently; every config writer that needs it calls both
- * (see `update-config.ts` and `update-config-sections.ts`).
+ * Drop the cached `readConfig` entry for the session, AND the gate-verdict
+ * memo `internal/repo-state.ts` populates via `memoizeGateVerdict` (owned
+ * here — see that export's docstring for why) — both session-keyed, so a
+ * call through ANY Context sharing `ctx.session` drops the entry every
+ * OTHER Context in that session would otherwise keep serving stale. This
+ * does NOT drop the per-scope sections cache (`config-scoped-read.ts`'s
+ * `invalidateScopedConfigCache`) — that cache is invalidated independently;
+ * every config writer that needs it calls both (see `update-config.ts` and
+ * `update-config-sections.ts`).
  */
 export const invalidateConfigCache = (ctx: Context): void => {
-  cache.delete(ctx);
-  gateVerdictCache.delete(ctx);
+  cache.delete(ctx.session);
+  gateVerdictCache.delete(ctx.session);
 };
 
 /**

@@ -8,62 +8,55 @@ import { createPackRegistry, type PackRegistry } from './pack-registry.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
- * Per-Context registry cache. Keyed by the Context instance so that a long-running
- * walk (walkCommits, walkTree) reuses the parsed .idx files across thousands of
- * object reads instead of re-scanning the pack directory each time.
+ * Per-session registry cache. Keyed by `ctx.session` (not the Context
+ * instance itself) so that every Context derived from the same
+ * `openRepository()`/`createXContext()` call — a long-running walk
+ * (walkCommits, walkTree), or a same-repository derivation such as fsck's
+ * audit view — reuses the parsed .idx files across thousands of object reads
+ * instead of re-scanning the pack directory each time.
  */
-const registryCache = new WeakMap<Context, PackRegistry>();
+const registryCache = new WeakMap<Context['session'], PackRegistry>();
 
 /**
- * Per-Context in-flight lazy-fetch map. Concurrent reads of the same missing
+ * Per-session in-flight lazy-fetch map. Concurrent reads of the same missing
  * object share a single promisor fetch instead of each issuing its own.
  */
-const inflightCache = new WeakMap<Context, Map<string, Promise<boolean>>>();
+const inflightCache = new WeakMap<Context['session'], Map<string, Promise<boolean>>>();
 
 export function getPackRegistry(ctx: Context): PackRegistry {
-  let registry = registryCache.get(ctx);
+  let registry = registryCache.get(ctx.session);
   if (registry === undefined) {
     registry = createPackRegistry(ctx);
-    registryCache.set(ctx, registry);
+    registryCache.set(ctx.session, registry);
   }
   return registry;
 }
 
 /**
- * Alias `from`'s pack registry onto a derived Context, so a caller that
- * shadows one Context field (fsck's cache-bypassing audit view) still shares
- * the SAME single-flight registry — a second registry would double the scan,
- * split the generation memos and duplicate every persistent pack handle.
- */
-export function adoptPackRegistry(from: Context, to: Context): void {
-  registryCache.set(to, getPackRegistry(from));
-}
-
-/**
- * Drop the per-Context pack-registry's cached `.idx` scan so the next read
+ * Drop the per-session pack-registry's cached `.idx` scan so the next read
  * re-scans `objects/pack/`. MUST be called after a pack is written into a live
  * Context (e.g. `fetchPack`), otherwise objects delivered by that pack are
  * invisible to subsequent reads through the same handle — the failure `pull`
  * exposed when its `merge` step could not see freshly-fetched commits.
  */
 export function refreshPackRegistry(ctx: Context): void {
-  registryCache.get(ctx)?.refresh();
+  registryCache.get(ctx.session)?.refresh();
 }
 
 /**
  * Close every persistent per-pack handle the registry opened for this
- * Context. Does NOT create a registry if none exists — a repo that never
+ * session. Does NOT create a registry if none exists — a repo that never
  * touched a pack disposes without scanning `objects/pack/`.
  */
 export async function disposePackRegistry(ctx: Context): Promise<void> {
-  await registryCache.get(ctx)?.dispose();
+  await registryCache.get(ctx.session)?.dispose();
 }
 
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {
-  let inflight = inflightCache.get(ctx);
+  let inflight = inflightCache.get(ctx.session);
   if (inflight === undefined) {
     inflight = new Map();
-    inflightCache.set(ctx, inflight);
+    inflightCache.set(ctx.session, inflight);
   }
   return inflight;
 }

@@ -22,18 +22,24 @@ import { createLruCache, type LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { flattenTree } from './flatten-tree.js';
 import { resolveFlattenBounds } from './internal/flatten-raw.js';
+import { deltaBaseCachingEnabled } from './object-resolver.js';
 import { readObject } from './read-object.js';
 import { resolveRef } from './resolve-ref.js';
 
 /**
- * Keyed on `ctx.deltaCache` — not `ctx` itself — mirroring
+ * Keyed on `ctx.session` — not `ctx` itself — mirroring
  * `object-resolver.ts`'s `parsedObjectMemos`: every `Context` derived from
- * the same `openRepository()`/`createXContext()` call shares the SAME
- * `deltaCache` object by reference, so the cache survives every
- * spread-derivation this codebase does, while a `Context`-keyed WeakMap
- * would miss on each fresh spread.
+ * the same `openRepository()`/`createXContext()` call shares the session, so
+ * the cache survives every spread-derivation this codebase does instead of
+ * missing on every fresh spread.
+ *
+ * Gated by {@link deltaBaseCachingEnabled}, the same object-byte-cache
+ * enablement check `object-resolver.ts` uses: fsck's audit Context shares
+ * the session but carries a zero-budget `deltaCache`, and a flattened tree
+ * is derived from object bytes, so it must not be served from — or written
+ * into — a memo the audit shares with the opening Context.
  */
-const flatTreeCaches = new WeakMap<Context['deltaCache'], LruCache<FlatTree>>();
+const flatTreeCaches = new WeakMap<Context['session'], LruCache<FlatTree>>();
 
 /**
  * Share of `ctx.deltaCache`'s own byte budget this cache gets, as an
@@ -43,11 +49,12 @@ const flatTreeCaches = new WeakMap<Context['deltaCache'], LruCache<FlatTree>>();
  */
 const FLAT_TREE_CACHE_FRACTION = 0.0625;
 
-function flatTreeCacheFor(ctx: Context): LruCache<FlatTree> {
-  const existing = flatTreeCaches.get(ctx.deltaCache);
+function flatTreeCacheFor(ctx: Context): LruCache<FlatTree> | undefined {
+  if (!deltaBaseCachingEnabled(ctx)) return undefined;
+  const existing = flatTreeCaches.get(ctx.session);
   if (existing !== undefined) return existing;
   const created = createLruCache<FlatTree>(ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION);
-  flatTreeCaches.set(ctx.deltaCache, created);
+  flatTreeCaches.set(ctx.session, created);
   return created;
 }
 
@@ -91,9 +98,9 @@ export const readHeadTree = async (ctx: Context): Promise<FlatTree | undefined> 
   const { maxDepth } = await resolveFlattenBounds(ctx);
   const cache = flatTreeCacheFor(ctx);
   const key = flatTreeCacheKey(commit.data.tree, maxDepth);
-  const cached = cache.get(key);
+  const cached = cache?.get(key);
   if (cached !== undefined) return cached;
   const tree = await flattenTree(ctx, commit.data.tree);
-  cache.set(key, tree, flatTreeByteSize(tree));
+  cache?.set(key, tree, flatTreeByteSize(tree));
   return tree;
 };

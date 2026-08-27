@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -371,6 +372,117 @@ describe('readObject', () => {
 
         // Assert — at most one readdir on the pack dir (cache is honored).
         expect(readdirCount).toBeLessThanOrEqual(1);
+      });
+    });
+  });
+
+  describe('Given a pack registry populated through the opening Context', () => {
+    describe('When read through a Context derived by deriveContext (same session)', () => {
+      it('Then the derived Context hits the shared registry (readdir runs at most once)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
+        const missingId = 'f'.repeat(40) as ObjectId;
+        try {
+          await readObject(ctx, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
+        }
+        // No fields change — a no-op derivation still keeps the session,
+        // and (unlike the other tests here) leaves `fs` identical too, so a
+        // spy on the SHARED object observes calls made through either.
+        const derived = deriveContext(ctx, {});
+        const spy = vi.spyOn(ctx.fs, 'readdir');
+
+        // Act
+        try {
+          await readObject(derived, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected.
+        }
+
+        // Assert — session unchanged ⇒ same registry, no re-scan.
+        expect(derived.session).toBe(ctx.session);
+        expect(spy).not.toHaveBeenCalledWith('/repo/.git/objects/pack');
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a pack registry populated through a Context derived by deriveContext (same session)', () => {
+    describe('When read through the opening Context', () => {
+      it('Then the opening Context hits the shared registry (readdir runs at most once)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
+        const derived = deriveContext(ctx, { deltaCache: ctx.deltaCache });
+        const missingId = 'f'.repeat(40) as ObjectId;
+        try {
+          await readObject(derived, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
+        }
+        let readdirCount = 0;
+        const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === '/repo/.git/objects/pack') readdirCount += 1;
+              return originalReaddir(path);
+            },
+          },
+        };
+
+        // Act
+        try {
+          await readObject(instrumented, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected.
+        }
+
+        // Assert
+        expect(readdirCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a Context whose session was minted fresh by a repository-boundary derivation', () => {
+    describe('When read through it', () => {
+      it('Then the pack registry is NOT shared with the opening Context (readdir runs again)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
+        const missingId = 'f'.repeat(40) as ObjectId;
+        try {
+          await readObject(ctx, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
+        }
+        let readdirCount = 0;
+        const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
+        const fresh = deriveContext(ctx, {
+          layout: { ...ctx.layout, gitDir: '/elsewhere/.git' },
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === '/elsewhere/.git/objects/pack') readdirCount += 1;
+              return originalReaddir('/repo/.git/objects/pack');
+            },
+          },
+        });
+
+        // Act
+        try {
+          await readObject(fresh, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected.
+        }
+
+        // Assert — a fresh session starts the registry cache cold.
+        expect(fresh.session).not.toBe(ctx.session);
+        expect(readdirCount).toBe(1);
       });
     });
   });

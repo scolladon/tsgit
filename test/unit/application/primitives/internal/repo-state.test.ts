@@ -113,6 +113,36 @@ describe('primitives/internal/repo-state', () => {
     });
   });
 
+  describe('Given a config write through a Context derived from the one already gate-checked (same session)', () => {
+    describe('When the ORIGINAL Context runs assertOperationalRepository again', () => {
+      it('Then it refuses on the newly-written bad value — the gate-verdict memo is session-keyed, not Context-keyed', async () => {
+        // Arrange — the hazard this test pins: `gateVerdictCache` used to key
+        // on `ctx` identity while the parse `cache` it is DERIVED FROM keys
+        // on `ctx.session`. A write through a derived Context (same session,
+        // different object — exactly the shape `updateCoreConfig` receives
+        // here) would then refresh the shared parse cache while leaving the
+        // ORIGINAL Context's own verdict entry stale, letting a
+        // now-refusing repository keep passing through the original ctx.
+        const ctx = await seededCtx();
+        await assertOperationalRepository(ctx);
+        const derived: Context = { ...ctx };
+        expect(derived.session).toBe(ctx.session);
+        await updateCoreConfig(derived, { sparseCheckout: 'bogus' });
+
+        // Act
+        const caught = await catchTsgitError(() => assertOperationalRepository(ctx));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.sparsecheckout',
+          value: 'bogus',
+        });
+      });
+    });
+  });
+
   describe('Given HEAD is deleted between two commands', () => {
     describe('When the second command runs assertOperationalRepository', () => {
       it('Then it refuses NOT_A_REPOSITORY', async () => {

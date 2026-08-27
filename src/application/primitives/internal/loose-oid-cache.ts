@@ -3,11 +3,16 @@
  * mechanism). Amortises the per-object loose-existence probe on packed
  * walks: instead of an `exists`/`realpath` round trip per object, the
  * fanout dir (`objects/xx`, ≤256 of them) is `readdir`'d lazily at most
- * once per `Context`, then membership is a `Set` lookup. A miss short-
+ * once per session, then membership is a `Set` lookup. A miss short-
  * circuits the caller with NO filesystem call — loose-first precedence is
  * unaffected because a membership HIT still routes through `ctx.fs.read`
  * (the containment gate and corrupt-loose inflate-error surfacing are
  * unchanged).
+ *
+ * Keyed on `ctx.session`, not `ctx` itself — the fanout dir lives under
+ * `commonGitDir(ctx)`, identical across every Context derived from the same
+ * repository-open, so this cache is shared across worktree/submodule/audit
+ * derivations that keep the session rather than missing on every spread.
  *
  * Invalidation is local, not the (currently unwired) generation counter:
  * `writeObject` records the written oid into a present cached set (writes
@@ -19,7 +24,7 @@ import type { Context } from '../../../ports/context.js';
 import { commonGitDir, objectsDir } from '../path-layout.js';
 import { errorDataCode } from './error-data-code.js';
 
-const fanoutCache = new WeakMap<Context, Map<string, Set<string>>>();
+const fanoutCache = new WeakMap<Context['session'], Map<string, Set<string>>>();
 
 const prefixOf = (id: ObjectId): string => id.slice(0, 2);
 const suffixOf = (id: ObjectId): string => id.slice(2);
@@ -30,10 +35,10 @@ function isMissingFanoutDir(error: unknown): boolean {
 }
 
 async function loadFanoutSet(ctx: Context, prefix: string): Promise<Set<string>> {
-  let byPrefix = fanoutCache.get(ctx);
+  let byPrefix = fanoutCache.get(ctx.session);
   if (byPrefix === undefined) {
     byPrefix = new Map();
-    fanoutCache.set(ctx, byPrefix);
+    fanoutCache.set(ctx.session, byPrefix);
   }
   const cached = byPrefix.get(prefix);
   if (cached !== undefined) return cached;
@@ -65,7 +70,7 @@ export async function probeLooseOid(ctx: Context, id: ObjectId): Promise<boolean
  * is written under this Context.
  */
 export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
-  fanoutCache.get(ctx)?.get(prefixOf(id))?.add(suffixOf(id));
+  fanoutCache.get(ctx.session)?.get(prefixOf(id))?.add(suffixOf(id));
 }
 
 /**
@@ -74,5 +79,5 @@ export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
  * `git gc` removed it), so the next probe re-reads the directory.
  */
 export function forgetLooseOidPrefix(ctx: Context, id: ObjectId): void {
-  fanoutCache.get(ctx)?.delete(prefixOf(id));
+  fanoutCache.get(ctx.session)?.delete(prefixOf(id));
 }

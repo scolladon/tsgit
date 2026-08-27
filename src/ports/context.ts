@@ -165,6 +165,32 @@ export interface RepositoryConfig {
   readonly maxDnsResults?: number;
 }
 
+/**
+ * Opaque per-repository cache-identity anchor. Every identity-keyed cache
+ * under `src/application/primitives` keys on `Context['session']` instead of
+ * `Context` itself, so a Context derived through `deriveContext`
+ * (`src/application/primitives/derive-context.ts` — the ONLY derivation path)
+ * keeps every one of those caches as long as the derivation keeps the same
+ * session: two Context objects sharing a session are the SAME cache identity,
+ * no matter how many other fields a spread swaps. This closes the
+ * "write via a spread Context, read via the original → intermittent
+ * OBJECT_NOT_FOUND" bug family structurally, in place of the informal
+ * `deltaCache`-as-identity-anchor trick `load-reftable-stack.ts` used before
+ * this field existed.
+ *
+ * Internal and opaque by contract, not by type-level enforcement: never
+ * exported from the package entry point, never documented as constructible.
+ * An embedder has no reason to build one, and a public constructor would let
+ * a caller forge cache identity — so the only two sites that ever create one
+ * are `createContext` (below) and `deriveContext`.
+ */
+export type Session = Readonly<Record<never, never>>;
+
+/** A fresh, frozen, empty session token — a new cache-identity anchor. */
+export function createSession(): Session {
+  return Object.freeze({});
+}
+
 export interface Context {
   readonly fs: FileSystem;
   readonly hash: HashService;
@@ -187,6 +213,11 @@ export interface Context {
   readonly hashConfig: HashConfig;
   /** Shared delta-base LRU cache; consumed by primitives' iterative delta walker. */
   readonly deltaCache: LruCache<Uint8Array>;
+  /**
+   * This Context's cache-identity anchor — internal and opaque, never
+   * constructible outside `createContext`/`deriveContext`.
+   */
+  readonly session: Session;
   /**
    * Resolved concurrency policy for this host, derived from machine facts by
    * the composition root. Absent means "unknown" — consumers resolve it via
@@ -256,5 +287,9 @@ export interface CreateContextParts {
 
 /** Assemble a frozen Context from its constituent ports + layout. */
 export function createContext(parts: CreateContextParts): Context {
-  return Object.freeze({ ...parts, cwd: parts.cwd ?? parts.layout.workDir ?? parts.layout.gitDir });
+  return Object.freeze({
+    ...parts,
+    cwd: parts.cwd ?? parts.layout.workDir ?? parts.layout.gitDir,
+    session: createSession(),
+  });
 }

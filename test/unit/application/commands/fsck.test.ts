@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { loadShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import {
   commonGitDir,
   looseObjectPath,
@@ -6840,9 +6841,9 @@ describe('Given fsck audit reads through the shared registry with createNoDeltaC
       // touches the shared mid level from two different objects, exactly the
       // shape that would populate the offset-keyed cache on an ordinary
       // read. fsck's audit Context swaps in a zero-budget deltaCache while
-      // still sharing the ordinary registry (adoptPackRegistry) — the new
-      // cache must honour that same zero budget, not just the audit
-      // Context's own (unused) deltaCache.
+      // still sharing the session — and, through it, the ordinary registry
+      // — with the opening Context, so the new cache must honour that same
+      // zero budget, not just the audit Context's own (unused) deltaCache.
       const ctx = await initBareCtx();
       const baseContent = enc.encode('shared base content');
       const midContent = enc.encode('shared mid content');
@@ -6859,6 +6860,66 @@ describe('Given fsck audit reads through the shared registry with createNoDeltaC
       // Assert
       const registry = getPackRegistry(ctx);
       expect(registry.deltaBaseCache.entryCount).toBe(0);
+    });
+  });
+});
+
+describe('Given a loose blob a prior read has NOT yet cached', () => {
+  describe('When fsck reads it during the audit', () => {
+    it('Then the opening Context’s own object-byte cache is never populated', async () => {
+      // Arrange — the audit's own decode never touches `ctx.deltaCache`
+      // (it reads through a zero-budget one instead), so a lookup against
+      // the REAL cache after fsck runs must still miss.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: enc.encode('never cached by fsck'),
+      });
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'f', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      await fsck(ctx);
+
+      // Assert
+      expect(ctx.deltaCache.get(blobId)).toBeUndefined();
+    });
+  });
+});
+
+describe('Given the opening Context already loaded its shallow-boundary set', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit reuses it — the shallow file is not re-read', async () => {
+      // Arrange — the deliberate narrowing under a session token: fsck
+      // isolates only `deltaCache`, so a commonDir-anchored cache like the
+      // shallow set — already warm on `ctx` — is shared with the audit
+      // Context rather than reloaded.
+      const ctx = await initBareCtx();
+      await loadShallowSet(ctx);
+      const shallowPath = `${commonGitDir(ctx)}/shallow`;
+      let reads = 0;
+      const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+      const instrumented: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          readUtf8: async (path: string) => {
+            if (path === shallowPath) reads += 1;
+            return originalReadUtf8(path);
+          },
+        },
+      };
+
+      // Act
+      await fsck(instrumented);
+
+      // Assert
+      expect(reads).toBe(0);
     });
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import {
   loadReftableStack,
   parseTablesList,
@@ -467,7 +468,7 @@ describe('load-reftable-stack', () => {
   describe('Given more distinct reftableDirs visited than the stack memo retains', () => {
     describe('When the least-recently-used one is revisited', () => {
       it('Then it reloads from disk rather than staying permanently cached', async () => {
-        // Arrange — one Context (one `deltaCache` identity) visiting more
+        // Arrange — one Context (one session identity) visiting more
         // distinct stack directories than the memo's entry cap, the shape a
         // long-running process cycling through many worktrees over its
         // lifetime produces. Before this fix nothing ever evicted an entry,
@@ -505,8 +506,8 @@ describe('load-reftable-stack', () => {
   describe('Given two independent Contexts sharing the identical reftableDir path and an identical tables.list stat', () => {
     describe('When each loads its own stack', () => {
       it('Then loadReftableStack returns each Context’s own stack, never the other’s', async () => {
-        // Arrange — the memo is keyed on Context identity (`ctx.deltaCache`),
-        // never on the path string alone: `createMemoryContext()` defaults
+        // Arrange — the memo is keyed on `ctx.session`, never on the path
+        // string alone: `createMemoryContext()` defaults
         // every instance to the SAME gitDir, so both Contexts share the
         // identical `reftableDir`, and forcing their `tables.list` stats to
         // report an identical mtime+size closes off that guard too — the
@@ -534,6 +535,73 @@ describe('load-reftable-stack', () => {
         expect(stackA.lookup(RefName.from('refs/heads/b'))).toBeUndefined();
         expect(stackB.lookup(RefName.from('refs/heads/b'))).toBeDefined();
         expect(stackB.lookup(RefName.from('refs/heads/a'))).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a stack loaded through the opening Context', () => {
+    describe('When loaded again through a Context derived by deriveContext (same session)', () => {
+      it('Then the derived Context hits the shared memo (tables.list is read once)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/a', id: oid(0xaa) });
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: table }]);
+        await loadReftableStack(ctx, dir);
+        const derived = deriveContext(ctx, {});
+        const readSpy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const stack = await loadReftableStack(derived, dir);
+
+        // Assert
+        expect(derived.session).toBe(ctx.session);
+        expect(stack.lookup(RefName.from('refs/heads/a'))).toBeDefined();
+        expect(readSpy).not.toHaveBeenCalledWith(`${dir}/tables.list`);
+      });
+    });
+  });
+
+  describe('Given a stack loaded through a Context derived by deriveContext (same session)', () => {
+    describe('When loaded again through the opening Context', () => {
+      it('Then the opening Context hits the shared memo (tables.list is read once)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/a', id: oid(0xaa) });
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: table }]);
+        const derived = deriveContext(ctx, { deltaCache: ctx.deltaCache });
+        await loadReftableStack(derived, dir);
+        const readSpy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const stack = await loadReftableStack(ctx, dir);
+
+        // Assert
+        expect(stack.lookup(RefName.from('refs/heads/a'))).toBeDefined();
+        expect(readSpy).not.toHaveBeenCalledWith(`${dir}/tables.list`);
+      });
+    });
+  });
+
+  describe('Given a stack loaded through the opening Context', () => {
+    describe('When loaded again through a Context minted a fresh session by a repository-boundary derivation', () => {
+      it('Then the fresh Context does NOT share the memo (tables.list is read again)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/a', id: oid(0xaa) });
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: table }]);
+        await loadReftableStack(ctx, dir);
+        const fresh = deriveContext(ctx, { layout: { ...ctx.layout, gitDir: '/elsewhere/.git' } });
+        const readSpy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await loadReftableStack(fresh, dir);
+
+        // Assert
+        expect(fresh.session).not.toBe(ctx.session);
+        expect(readSpy).toHaveBeenCalledWith(`${dir}/tables.list`);
       });
     });
   });
