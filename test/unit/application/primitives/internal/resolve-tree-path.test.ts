@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   descendMatchingTreeChain,
   descendTreePath,
@@ -11,6 +11,7 @@ import { TsgitError } from '../../../../../src/domain/error.js';
 import { encode, hexToBytes } from '../../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { Blob, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
+import * as treeCursorMod from '../../../../../src/domain/objects/tree-cursor.js';
 import { buildSeededContext, writeRawObjectBytes } from '../fixtures.js';
 
 const blobOf = (byte: number): Blob => ({
@@ -353,6 +354,36 @@ describe('findTreeEntry', () => {
         // Assert
         expect(result?.name).toBe('ab');
         expect(result?.id).toBe(abId);
+      });
+    });
+  });
+
+  describe('Given a raw-scanned directory with several valid, non-duplicate entries', () => {
+    describe('When findTreeEntry searches for one of them', () => {
+      it('Then decodes at most the matched entry — every other sibling is compared as raw bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const cursorNameSpy = vi.spyOn(treeCursorMod, 'cursorName');
+        const dirId = await writeTree(ctx, [
+          { mode: FILE_MODE.REGULAR, name: 'a', id: await writeObject(ctx, blobOf(1)) },
+          { mode: FILE_MODE.REGULAR, name: 'b', id: await writeObject(ctx, blobOf(2)) },
+          { mode: FILE_MODE.REGULAR, name: 'c', id: await writeObject(ctx, blobOf(3)) },
+          { mode: FILE_MODE.REGULAR, name: 'ab.txt', id: await writeObject(ctx, blobOf(4)) },
+          { mode: FILE_MODE.REGULAR, name: 'ab', id: await writeObject(ctx, blobOf(5)) },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
+        ]);
+        cursorNameSpy.mockClear();
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'dir/ab');
+
+        // Assert — one decode, for the matched 'ab' entry; the other four
+        // siblings never need a string at all.
+        expect(result?.name).toBe('ab');
+        expect(cursorNameSpy).toHaveBeenCalledTimes(1);
+        cursorNameSpy.mockRestore();
       });
     });
   });

@@ -170,6 +170,12 @@ const descendOneLevel = async (
  * that has nothing to do with `name`. Mode is validated eagerly per entry
  * (`cursorMode`) for the same reason — a malformed sibling mode refuses
  * immediately rather than only when that sibling is later visited.
+ *
+ * The duplicate-name and shape checks below run on raw bytes, not decoded
+ * strings — `cursorName` (a `TextDecoder` call) is deliberately deferred
+ * until an entry actually needs a string: it matched `name`, or it's on a
+ * refusal's message. A directory of N entries searched for one name decodes
+ * at most one of them on the common, refusal-free path.
  */
 const scanRawTreeFor = (
   content: Uint8Array,
@@ -178,7 +184,7 @@ const scanRawTreeFor = (
 ): TreeEntry | undefined => {
   const cursor = openTreeCursor(content, hash);
   const target = encode(name);
-  const seenNames = new Set<string>();
+  const seenNames = new Map<number, NameSpan[]>();
   let matched: TreeEntry | undefined;
   while (!cursor.done) {
     matched = scanEntry(cursor, seenNames, target) ?? matched;
@@ -187,22 +193,27 @@ const scanRawTreeFor = (
   return matched;
 };
 
+/** One entry's raw name bytes within a directory's shared content buffer. */
+interface NameSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
 const scanEntry = (
   cursor: TreeCursor,
-  seenNames: Set<string>,
+  seenNames: Map<number, NameSpan[]>,
   target: Uint8Array,
 ): TreeEntry | undefined => {
   const mode = cursorMode(cursor);
-  const entryName = cursorName(cursor);
-  if (isInvalidEntryName(entryName)) {
-    throw invalidTreeEntry(cursor.offset, `invalid entry name: ${entryName}`);
+  const { nameStart, nameEnd } = cursor;
+  if (isInvalidEntryNameBytes(cursor.buf, nameStart, nameEnd)) {
+    throw invalidTreeEntry(cursor.offset, `invalid entry name: ${cursorName(cursor)}`);
   }
-  if (seenNames.has(entryName)) {
-    throw invalidTreeEntry(cursor.offset, `duplicate entry name: ${entryName}`);
+  if (isDuplicateName(cursor, seenNames)) {
+    throw invalidTreeEntry(cursor.offset, `duplicate entry name: ${cursorName(cursor)}`);
   }
-  seenNames.add(entryName);
   if (!cursorNameEquals(cursor, target)) return undefined;
-  return { mode, name: entryName, id: cursorOid(cursor) };
+  return { mode, name: cursorName(cursor), id: cursorOid(cursor) };
 };
 
 /**
@@ -210,11 +221,68 @@ const scanEntry = (
  * '.' || name === '..' || name.includes('/')` (tree.ts) — the empty case is
  * already refused structurally by the cursor's own null-terminator scan
  * (`tree-cursor.ts`'s `scanName`) before a caller ever observes the entry,
- * so only the remaining three shape checks are repeated here, on the
- * cursor's already-decoded name. This check is deliberately NOT shared
- * inside `TreeCursor` itself: the raw merge-join diff (`raw-tree-diff.ts`)
- * streams a diff over on-disk order without it, matching git's own
- * `diff-tree`, which does not validate name shape during a diff walk.
+ * so only the remaining three shape checks are repeated here, on raw bytes.
+ * This check is deliberately NOT shared inside `TreeCursor` itself: the raw
+ * merge-join diff (`raw-tree-diff.ts`) streams a diff over on-disk order
+ * without it, matching git's own `diff-tree`, which does not validate name
+ * shape during a diff walk.
  */
-const isInvalidEntryName = (name: string): boolean =>
-  name === '.' || name === '..' || name.includes('/');
+const isInvalidEntryNameBytes = (buf: Uint8Array, start: number, end: number): boolean => {
+  const length = end - start;
+  if (length === 1) return buf[start] === DOT;
+  if (length === 2) return buf[start] === DOT && buf[start + 1] === DOT;
+  return containsByte(buf, start, end, SLASH);
+};
+
+const DOT = 0x2e;
+const SLASH = 0x2f;
+
+const containsByte = (buf: Uint8Array, start: number, end: number, target: number): boolean => {
+  for (let i = start; i < end; i++) {
+    if (buf[i] === target) return true;
+  }
+  return false;
+};
+
+/**
+ * Records `cursor`'s name in `seenNames`, keyed on an FNV-1a fingerprint of
+ * its raw bytes rather than the decoded string, and reports whether an
+ * EXACT byte-for-byte duplicate was already seen in this directory. A
+ * fingerprint collision between two DIFFERENT names is possible (FNV-1a is
+ * not collision-free) but never a false positive: every name sharing a
+ * fingerprint bucket is byte-compared before a match is trusted — the
+ * fingerprint is a difference filter, never itself the verdict.
+ */
+const isDuplicateName = (cursor: TreeCursor, seenNames: Map<number, NameSpan[]>): boolean => {
+  const { buf, nameStart, nameEnd } = cursor;
+  const fingerprint = fingerprintSpan(buf, nameStart, nameEnd);
+  const bucket = seenNames.get(fingerprint);
+  if (bucket === undefined) {
+    seenNames.set(fingerprint, [{ start: nameStart, end: nameEnd }]);
+    return false;
+  }
+  if (bucket.some((span) => sameSpan(buf, span, nameStart, nameEnd))) return true;
+  bucket.push({ start: nameStart, end: nameEnd });
+  return false;
+};
+
+const sameSpan = (buf: Uint8Array, a: NameSpan, start: number, end: number): boolean => {
+  const length = a.end - a.start;
+  if (length !== end - start) return false;
+  for (let i = 0; i < length; i++) {
+    if (buf[a.start + i] !== buf[start + i]) return false;
+  }
+  return true;
+};
+
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+
+const fingerprintSpan = (buf: Uint8Array, start: number, end: number): number => {
+  let hash = FNV_OFFSET_BASIS;
+  for (let i = start; i < end; i++) {
+    hash ^= buf[i]!;
+    hash = Math.imul(hash, FNV_PRIME);
+  }
+  return hash >>> 0;
+};
