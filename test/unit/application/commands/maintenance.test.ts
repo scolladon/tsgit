@@ -34,6 +34,7 @@ import {
   type MaintenanceTask,
   maintenance,
 } from '../../../../src/application/commands/maintenance.js';
+import * as cruftPackLifecycleMod from '../../../../src/application/primitives/internal/cruft-pack-lifecycle.js';
 import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
   commonGitDir,
@@ -702,6 +703,40 @@ describe('maintenance', () => {
         // (1_999_999_999), even though the fresh loose mtime (1e9) would not.
         expect(result.cruftObjectsRetained).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a cruft candidate whose mtime source lookup is synthetically emptied', () => {
+    describe('When gc runs', () => {
+      it('Then it throws rather than silently destroying the object', async () => {
+        // Arrange — `computeCruftMtimes` guarantees every candidate a mtime
+        // by construction; this fixture breaks that invariant directly to
+        // pin the fail-safe, since no REAL code path can produce a missing
+        // entry without a bug elsewhere.
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'invariant-broken');
+        const spy = vi
+          .spyOn(cruftPackLifecycleMod, 'computeCruftMtimes')
+          .mockImplementation(async (_ctx, candidates) => {
+            return new Map(candidates.map((id) => [id, undefined as unknown as number]));
+          });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        spy.mockRestore();
+
+        // Assert — the object was never deleted.
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toContain('gc invariant violated');
+        expect(await isLoose(ctx, blobId)).toBe(true);
       });
     });
   });

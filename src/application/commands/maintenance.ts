@@ -298,6 +298,22 @@ function partitionOwned(
   return { toNormalPack, cruftCandidates };
 }
 
+/**
+ * `computeCruftMtimes` guarantees every cruft candidate has at least one
+ * mtime source by construction (loose lstat, carried sidecar entry, or a
+ * superseded normal pack's own lstat) — a miss here means that invariant
+ * broke elsewhere. Fail loud rather than silently: `undefined > cutoff` is
+ * `false`, so a swallowed miss would route straight into `doomed` and
+ * destroy an object gc never actually aged.
+ */
+function mtimeOrThrow(mtimes: ReadonlyMap<ObjectId, number>, id: ObjectId): number {
+  const mtime = mtimes.get(id);
+  if (mtime === undefined) {
+    throw new Error(`gc invariant violated: no mtime recorded for cruft candidate ${id}`);
+  }
+  return mtime;
+}
+
 function partitionByCutoff(
   candidates: ReadonlyArray<ObjectId>,
   mtimes: ReadonlyMap<ObjectId, number>,
@@ -306,7 +322,7 @@ function partitionByCutoff(
   const survivors: ObjectId[] = [];
   const doomed: ObjectId[] = [];
   for (const id of candidates) {
-    const mtime = mtimes.get(id) as number;
+    const mtime = mtimeOrThrow(mtimes, id);
     (mtime > cutoff ? survivors : doomed).push(id);
   }
   return { survivors, doomed };
@@ -433,7 +449,7 @@ async function buildAndWriteCruftPack(
     entries: indexEntriesFor(survivors, pack.entries),
     packBytes: pack.bytes,
     packSha: pack.sha,
-    mtimeOf: (id) => mtimes.get(id) as number,
+    mtimeOf: (id) => mtimeOrThrow(mtimes, id),
   });
   return written.packSha as ObjectId;
 }
