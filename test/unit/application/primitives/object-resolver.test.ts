@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
+  PARSED_OBJECT_MEMO_FRACTION,
   resolveObject,
   resolveObjectBytes,
 } from '../../../../src/application/primitives/object-resolver.js';
@@ -14,6 +15,7 @@ import {
 } from '../../../../src/application/primitives/pack-registry.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
+import * as gitObjectMod from '../../../../src/domain/objects/index.js';
 import { type Blob, EMPTY_TREE_OID, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   createLruCache,
@@ -2484,6 +2486,219 @@ describe('object-resolver', () => {
         // Assert — base resolved unverified; the delta reconstructs the target.
         expect(result.type).toBe('blob');
         expect((result as Blob).content).toEqual(targetContent);
+      });
+    });
+  });
+
+  describe('parsed-object memo (byte-capped commit/tag memo)', () => {
+    const IDENTITY = {
+      name: 'Test',
+      email: 'test@example.com',
+      timestamp: 1_700_000_000,
+      timezoneOffset: '+0000',
+    } as const;
+
+    async function writeCommitWithMessage(ctx: Context, message: string): Promise<ObjectId> {
+      return writeObject(ctx, {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree: EMPTY_TREE_OID,
+          parents: [],
+          author: IDENTITY,
+          committer: IDENTITY,
+          message,
+          extraHeaders: [],
+        },
+      });
+    }
+
+    async function writeTagWithMessage(
+      ctx: Context,
+      targetId: ObjectId,
+      tagName: string,
+      message: string,
+    ): Promise<ObjectId> {
+      return writeObject(ctx, {
+        type: 'tag',
+        id: '' as ObjectId,
+        data: {
+          object: targetId,
+          objectType: 'commit',
+          tagName,
+          tagger: IDENTITY,
+          message,
+          extraHeaders: [],
+        },
+      });
+    }
+
+    // `gitObjectMod.parseObject` is a module-namespace export shared by every
+    // test in this describe — Vitest's ESM `vi.spyOn`/`mockRestore` cycle
+    // does not reliably zero `.mock.calls` between successive spy/restore
+    // pairs on the SAME property, so every assertion below counts calls
+    // made SINCE a captured baseline rather than trusting an absolute total.
+    function parseCallsSince(spy: ReturnType<typeof vi.spyOn>, baseline: number): number {
+      return spy.mock.calls.length - baseline;
+    }
+
+    describe('Given a commit read twice on one Context', () => {
+      describe('When the second read runs', () => {
+        it('Then it is not re-parsed', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const commitId = await writeCommitWithMessage(ctx, 'memo hit commit');
+          const registry = createPackRegistry(ctx);
+          const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
+          const baseline = parseSpy.mock.calls.length;
+
+          // Act
+          const first = await resolveObject(ctx, registry, commitId, false);
+          const second = await resolveObject(ctx, registry, commitId, false);
+
+          // Assert
+          expect(second).toEqual(first);
+          expect(parseCallsSince(parseSpy, baseline)).toBe(1);
+          parseSpy.mockRestore();
+        });
+      });
+    });
+
+    describe('Given a tag read twice on one Context', () => {
+      describe('When the second read runs', () => {
+        it('Then it is not re-parsed', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const commitId = await writeCommitWithMessage(ctx, 'tag target');
+          const tagId = await writeTagWithMessage(ctx, commitId, 'v1', 'memo hit tag');
+          const registry = createPackRegistry(ctx);
+          const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
+          const baseline = parseSpy.mock.calls.length;
+
+          // Act
+          const first = await resolveObject(ctx, registry, tagId, false);
+          const second = await resolveObject(ctx, registry, tagId, false);
+
+          // Assert
+          expect(second).toEqual(first);
+          expect(parseCallsSince(parseSpy, baseline)).toBe(1);
+          parseSpy.mockRestore();
+        });
+      });
+    });
+
+    describe('Given a commit larger than the memo byte cap', () => {
+      describe('When it is read twice', () => {
+        it('Then it is not cached and both reads still succeed', async () => {
+          // Arrange — a 1-byte deltaCache budget floors the memo's own cap
+          // below any real message, so this entry is always over-cap.
+          const ctx = createMemoryContext({ deltaCacheMaxBytes: 1 });
+          const message = 'a message long enough to exceed a near-zero memo cap';
+          const commitId = await writeCommitWithMessage(ctx, message);
+          const registry = createPackRegistry(ctx);
+          const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
+          const baseline = parseSpy.mock.calls.length;
+
+          // Act
+          const first = await resolveObject(ctx, registry, commitId, false);
+          const second = await resolveObject(ctx, registry, commitId, false);
+
+          // Assert — never cached, so every read re-parses.
+          expect(second).toEqual(first);
+          expect(parseCallsSince(parseSpy, baseline)).toBe(2);
+          parseSpy.mockRestore();
+        });
+      });
+    });
+
+    describe('Given a commit whose parsed size computes to zero', () => {
+      describe('When it is read twice', () => {
+        it('Then the sizer floors at 1, set does not throw, and the second read hits the memo', async () => {
+          // Arrange — an empty message, no gpg signature and no extra headers
+          // is a real, valid commit (`git commit --allow-empty-message`)
+          // whose unbounded-field footprint sums to exactly 0.
+          const ctx = await buildSeededContext();
+          const commitId = await writeCommitWithMessage(ctx, '');
+          const registry = createPackRegistry(ctx);
+          const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
+          const baseline = parseSpy.mock.calls.length;
+
+          // Act
+          const first = await resolveObject(ctx, registry, commitId, false);
+          const second = await resolveObject(ctx, registry, commitId, false);
+
+          // Assert — no throw reached this line, and the floor kept the
+          // entry genuinely cached rather than silently dropping it.
+          expect(second).toEqual(first);
+          expect(parseCallsSince(parseSpy, baseline)).toBe(1);
+          parseSpy.mockRestore();
+        });
+      });
+    });
+
+    describe('Given entries exceeding the memo cap', () => {
+      describe('When a fourth commit is read after the first is touched again', () => {
+        it('Then the least-recently-used entry is evicted, not the oldest-inserted one', async () => {
+          // Arrange — cap fits exactly three 10-byte messages: A, B, C fill
+          // it exactly (no eviction yet). Re-reading A promotes it to MRU,
+          // leaving B — untouched since its own insert — as the LRU tail.
+          // A plain FIFO would evict A on the next insert (oldest inserted);
+          // an LRU evicts B instead (least recently touched).
+          const cap = 30;
+          const ctx = createMemoryContext({
+            deltaCacheMaxBytes: cap / PARSED_OBJECT_MEMO_FRACTION,
+          });
+          const commitA = await writeCommitWithMessage(ctx, 'AAAAAAAAAA');
+          const commitB = await writeCommitWithMessage(ctx, 'BBBBBBBBBB');
+          const commitC = await writeCommitWithMessage(ctx, 'CCCCCCCCCC');
+          const commitD = await writeCommitWithMessage(ctx, 'DDDDDDDDDD');
+          const registry = createPackRegistry(ctx);
+          const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
+          const baseline = parseSpy.mock.calls.length;
+
+          // Act + Assert — interleave reads and check the running parse count.
+          await resolveObject(ctx, registry, commitA, false);
+          expect(parseCallsSince(parseSpy, baseline)).toBe(1);
+          await resolveObject(ctx, registry, commitB, false);
+          expect(parseCallsSince(parseSpy, baseline)).toBe(2);
+          await resolveObject(ctx, registry, commitC, false);
+          expect(parseCallsSince(parseSpy, baseline)).toBe(3);
+          await resolveObject(ctx, registry, commitA, false); // promote A to MRU
+          expect(parseCallsSince(parseSpy, baseline)).toBe(3);
+          await resolveObject(ctx, registry, commitD, false); // evicts B, not A
+          expect(parseCallsSince(parseSpy, baseline)).toBe(4);
+          await resolveObject(ctx, registry, commitB, false); // B was evicted
+          expect(parseCallsSince(parseSpy, baseline)).toBe(5);
+          await resolveObject(ctx, registry, commitA, false); // A survived
+          expect(parseCallsSince(parseSpy, baseline)).toBe(5);
+          parseSpy.mockRestore();
+        });
+      });
+    });
+
+    describe("Given a Context whose deltaCache has a zero byte budget (fsck's audit shape)", () => {
+      describe('When the same commit is read twice', () => {
+        it('Then it is re-parsed every time, never memoised', async () => {
+          // Arrange — mirrors fsck's own audit Context: a distinct,
+          // zero-budget deltaCache swapped onto an otherwise-normal Context.
+          const ctx = await buildSeededContext();
+          const commitId = await writeCommitWithMessage(ctx, 'audit isolation');
+          const auditCtx: Context = Object.freeze({
+            ...ctx,
+            deltaCache: createLruCache<Uint8Array>(0),
+          });
+          const registry = createPackRegistry(ctx);
+          const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
+          const baseline = parseSpy.mock.calls.length;
+
+          // Act
+          await resolveObject(auditCtx, registry, commitId, false);
+          await resolveObject(auditCtx, registry, commitId, false);
+
+          // Assert
+          expect(parseCallsSince(parseSpy, baseline)).toBe(2);
+          parseSpy.mockRestore();
+        });
       });
     });
   });

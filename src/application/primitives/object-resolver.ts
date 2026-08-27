@@ -6,17 +6,20 @@ import { operationAborted, TsgitError } from '../../domain/error.js';
 import { encode } from '../../domain/objects/encoding.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
+  type Commit,
   emptyTreeOid,
   type GitObject,
   type ObjectId,
   parseHeader,
   parseObject,
   serializeObject,
+  type Tag,
 } from '../../domain/objects/index.js';
 import { MAX_DELTA_CHAIN_DEPTH } from '../../domain/storage/delta.js';
 import { deltaChainTooDeep, invalidPackIndex } from '../../domain/storage/error.js';
 import {
   applyDelta,
+  createLruCache,
   type LruCache,
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
@@ -43,6 +46,102 @@ import { commonGitDir, looseObjectPath } from './path-layout.js';
  * ONLY the empty tree — the empty blob is not virtual and still misses.
  */
 const EMPTY_TREE_BYTES = new TextEncoder().encode('tree 0\0');
+
+/**
+ * Parsed-commit-and-tag memo. `resolveObject` re-parses on every read
+ * even when `resolveObjectBytes` already served the raw bytes from
+ * `ctx.deltaCache` — the memo skips that redundant re-parse for the two
+ * object types whose parse cost is non-trivial (blob/tree already return
+ * near-raw data from `parseObject`). It sits strictly AFTER
+ * `resolveObjectBytes`, so every verifyHash/maxBytes check that call already
+ * performs still fires on every read: the memo only ever skips
+ * reconstructing an object the bytes already proved identical, never a
+ * safety check.
+ *
+ * Keyed on `ctx.deltaCache` — not `ctx` itself — mirroring
+ * `load-reftable-stack.ts`'s `stackCache`: every `Context` derived from the
+ * same `openRepository()`/`createXContext()` call shares the SAME
+ * `deltaCache` object by reference, so the memo survives every
+ * spread-derivation this codebase does, while a `Context`-keyed WeakMap
+ * would miss on each fresh spread (e.g. fsck's audit Context, which swaps
+ * in its OWN zero-budget `deltaCache` and therefore, by construction, gets
+ * its own zero-capacity memo that never retains an entry). "Per-session"
+ * naming lands with the session token; until then this is per-Context, like
+ * every other cache here.
+ */
+type MemoisedObject = Commit | Tag;
+
+const parsedObjectMemos = new WeakMap<Context['deltaCache'], LruCache<MemoisedObject>>();
+
+/**
+ * Share of `ctx.deltaCache`'s own byte budget the parsed-object memo gets,
+ * as an independent allocation (not carved out of the byte cache itself —
+ * the two caches hold different things and compete only for process
+ * memory/cache locality, not a shared accounting ledger).
+ *
+ * A/B-measured (`log`/`show`/`describe`/`blame`'s medium-fixture scenarios,
+ * plus `loose-read`'s two scenarios to price the shared budget) at 1/16,
+ * 1/8 and 1/4 of the 16 MiB default. Absolute means, ms, memo disabled
+ * (fraction 0) vs each candidate:
+ *
+ * | scenario                | disabled | 1/16  | 1/8   | 1/4   |
+ * |-------------------------|---------:|------:|------:|------:|
+ * | log (medium, 5000)      |   18.30  |  7.80 |  8.11 |  8.22 |
+ * | log via commit-graph    |   18.09  |  7.65 |  7.86 |  7.71 |
+ * | show (medium)           |    0.324 | 0.271 | 0.275 | 0.275 |
+ * | describe (medium)       |    0.761 | 0.536 | 0.535 | 0.531 |
+ * | blame (deep, 500)       |    2.766 | 1.386 | 1.390 | 1.379 |
+ * | loose-read (fresh repo) |    0.491 | 0.479 | 0.483 | 0.476 |
+ * | loose-read (reused)     |  0.0007  |0.0007 |0.0007 |0.0007 |
+ *
+ * Enabling the memo at all is the win (>2x on `log`/`log`-via-graph/`blame`,
+ * ~15-30% on `show`/`describe`); the three fractions land within each
+ * other's noise band on this fixture, because the memo's footprint here
+ * (message-only, per {@link parsedObjectByteSize}) is tiny next to any of
+ * the three caps — none of them evict mid-walk. `loose-read` (blob-only,
+ * never touches this memo) is flat across every fraction, confirming no
+ * interference with the existing loose-read byte cache that shares
+ * `ctx.deltaCache`'s budget. 1/16 wins outright on the dominant `log`
+ * scenario and claims the least share of the shared budget, so it is the
+ * one that ships.
+ */
+export const PARSED_OBJECT_MEMO_FRACTION = 0.0625;
+
+function parsedObjectMemoFor(ctx: Context): LruCache<MemoisedObject> {
+  const existing = parsedObjectMemos.get(ctx.deltaCache);
+  if (existing !== undefined) return existing;
+  const created = createLruCache<MemoisedObject>(
+    ctx.deltaCache.maxSize * PARSED_OBJECT_MEMO_FRACTION,
+  );
+  parsedObjectMemos.set(ctx.deltaCache, created);
+  return created;
+}
+
+/**
+ * Approximate retained footprint of a parsed commit/tag: the sum of its
+ * unbounded-length fields — the message, an armored gpg/ssh signature, and
+ * any extra header's key+value (a `mergetag` header can embed a whole
+ * nested tag object). Fixed-size fields (the tree/object oid, parent oids,
+ * identity name/email/timestamp/timezone) are deliberately excluded: they
+ * vary by tens of bytes at most, while the fields counted here vary by
+ * orders of magnitude — the same reason a byte cap beats an entry cap for
+ * this memo. Floored at 1: `LruCache.set` throws on `byteSize <= 0`, and a
+ * commit with an empty message, no signature and no extra headers is a
+ * real, valid object (e.g. `git commit --allow-empty-message`), not an
+ * edge case worth special-casing away.
+ */
+function parsedObjectByteSize(data: {
+  readonly message: string;
+  readonly gpgSignature?: string;
+  readonly extraHeaders: ReadonlyArray<{ readonly key: string; readonly value: string }>;
+}): number {
+  const extraHeaderBytes = data.extraHeaders.reduce(
+    (sum, header) => sum + header.key.length + header.value.length,
+    0,
+  );
+  const signatureBytes = data.gpgSignature?.length ?? 0;
+  return Math.max(1, data.message.length + signatureBytes + extraHeaderBytes);
+}
 
 export async function resolveObjectBytes(
   ctx: Context,
@@ -92,7 +191,14 @@ export async function resolveObject(
   maxBytes?: number,
 ): Promise<GitObject> {
   const bytes = await resolveObjectBytes(ctx, registry, id, verifyHash, maxBytes);
-  return parseObject(id, bytes, ctx.hashConfig);
+  const memo = parsedObjectMemoFor(ctx);
+  const memoised = memo.get(id);
+  if (memoised !== undefined) return memoised;
+  const parsed = parseObject(id, bytes, ctx.hashConfig);
+  if (parsed.type === 'commit' || parsed.type === 'tag') {
+    memo.set(id, parsed, parsedObjectByteSize(parsed.data));
+  }
+  return parsed;
 }
 
 /**
