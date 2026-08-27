@@ -5,6 +5,10 @@
  * ISO absolute forms are interpreted in the host's local timezone, constructed
  * from calendar components — matching git, which never uses a UTC date-only
  * parse. Relative forms are timezone-agnostic (a delta from `now`).
+ *
+ * `@<epoch>` is an absolute unix-seconds literal — git's `approxidate()`
+ * accepts it everywhere a date expression is read, not only for expiry, so
+ * it belongs here rather than in a caller-specific wrapper.
  */
 
 const SECONDS_PER_UNIT: Readonly<Record<string, number>> = {
@@ -20,6 +24,7 @@ const SECONDS_PER_UNIT: Readonly<Record<string, number>> = {
 
 const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}):(\d{2}))?$/;
 const RELATIVE_RE = /^(\d+)[ .]([a-z]+?)s?(?:[ .]ago)?$/;
+const EPOCH_RE = /^@(\d+)$/;
 const DAY_SECONDS = 86_400;
 
 /** Resolve an approximate-date string to unix seconds. `undefined` = unparseable. */
@@ -27,7 +32,13 @@ export function parseApproxidate(text: string, now: number): number | undefined 
   const normalized = text.trim().toLowerCase();
   if (normalized === 'now') return now;
   if (normalized === 'yesterday') return now - DAY_SECONDS;
-  return parseIso(normalized) ?? parseRelative(normalized, now);
+  return parseEpoch(normalized) ?? parseIso(normalized) ?? parseRelative(normalized, now);
+}
+
+function parseEpoch(text: string): number | undefined {
+  const match = EPOCH_RE.exec(text);
+  if (match === null) return undefined;
+  return Number(match[1]);
 }
 
 function parseIso(text: string): number | undefined {

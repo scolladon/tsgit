@@ -48,6 +48,47 @@ describe('parseApproxidate', () => {
     });
   });
 
+  describe('epoch form', () => {
+    describe('Given an @<epoch> date string', () => {
+      describe('When parsing', () => {
+        it.each([
+          { input: '@1779710400', expected: NOW, label: 'returns the literal epoch verbatim' },
+          { input: '@0', expected: 0, label: 'accepts the unix-epoch boundary' },
+          {
+            input: '  @1779710400  ',
+            expected: NOW,
+            label: 'surrounding whitespace is trimmed before matching',
+          },
+        ])('Then $label', ({ input, expected }) => {
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given a malformed @-prefixed string', () => {
+      describe('When parsing', () => {
+        it.each([
+          { input: '@', label: 'the bare @ sigil with no digits' },
+          { input: '@abc', label: 'non-digit characters after @' },
+          {
+            input: 'x@1779710400',
+            label: 'leading text before the @ sigil (anchored to the start)',
+          },
+        ])('Then returns undefined for $label', ({ input }) => {
+          // Arrange & Act
+          const result = parseApproxidate(input, NOW);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
   describe('ISO absolute forms', () => {
     describe('Given a valid ISO date or datetime string', () => {
       describe('When parsing', () => {

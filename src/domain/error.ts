@@ -223,6 +223,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'INVALID_MULTI_PACK_INDEX':
     case 'INVALID_PACK_REV_INDEX':
     case 'INVALID_PACK_BITMAP':
+    case 'INVALID_CRUFT_MTIMES':
     case 'INVALID_REF':
     case 'INVALID_PACKED_REFS':
     case 'INVALID_REFTABLE':
@@ -497,6 +498,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `bad boolean config value '${data.value}' for '${data.key}' in file ${data.source}`;
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
       return `invalid value for '${data.key}' in file ${data.source}`;
+    case 'CONFIG_BAD_DATE_VALUE':
+      return `bad date config value '${data.value}'`;
     case 'CONFIG_INVALID_ENUM_VALUE':
       return `invalid value for '${data.key}': '${data.value}' in file ${data.source} at line ${data.line}`;
     case 'CONFIG_BAD_ZLIB_LEVEL':

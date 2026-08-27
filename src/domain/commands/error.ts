@@ -185,6 +185,7 @@ export type CommandError =
       readonly source: string;
       readonly value: string;
     }
+  | { readonly code: 'CONFIG_BAD_DATE_VALUE'; readonly value: string }
   | {
       readonly code: 'CONFIG_INVALID_ENUM_VALUE';
       readonly key: string;
@@ -637,6 +638,15 @@ export const configBadBooleanLiteral = (key: string, source: string, value: stri
     source,
     value: sanitizeForDisplay(value),
   });
+
+/**
+ * A date-expression config value (`gc.pruneExpire`) fails the supported
+ * grammar (`never`, `now`, `@<epoch>`, ISO-8601, `<n>.<unit>.ago`). Carries
+ * only the offending value — the caller resolves this from a plain string,
+ * not a config-file token, so there is no key/source/line to report.
+ */
+export const configBadDateValue = (value: string): TsgitError =>
+  new TsgitError({ code: 'CONFIG_BAD_DATE_VALUE', value: sanitizeForDisplay(value) });
 
 /**
  * A string-typed config key restricted to a fixed, case-sensitive set of

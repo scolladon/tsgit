@@ -1,3 +1,4 @@
+import { configBadNumericValue } from '../../domain/commands/error.js';
 import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
 import {
   GIT_C_INT_MAX,
@@ -113,6 +114,18 @@ export interface ParsedConfig {
   readonly tag?: { readonly gpgSign?: boolean };
   /** `pack.writeReverseIndex` — write a sibling `.rev` beside each pack index. git defaults to true. */
   readonly pack?: { readonly writeReverseIndex?: boolean };
+  /**
+   * `[gc]` — maintenance's `gc` task settings. `auto` (git default `6700`) is
+   * consulted only under `auto: true`; `pruneExpire` (git default
+   * `2.weeks.ago`) is the raw config string, resolved by `expiryCutoff`;
+   * `cruftPacks` (git default `true`) routes surviving unreachable objects
+   * to a cruft pack rather than loose files.
+   */
+  readonly gc?: {
+    readonly auto?: number;
+    readonly pruneExpire?: string;
+    readonly cruftPacks?: boolean;
+  };
   readonly push?: {
     /** `push.gpgSign` — sign push certificates: `true`/`false`, or `if-asked` (server-requested). */
     readonly gpgSign?: 'true' | 'false' | 'if-asked';
@@ -518,6 +531,57 @@ export const findFirstInvalidCompression = async (
   return undefined;
 };
 
+const GC_AUTO_KEY = 'auto';
+
+/** One invalid `gc.auto` entry returned by `findFirstInvalidGcAuto`. */
+export interface InvalidGcAutoEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly value: string;
+  readonly reason: 'invalid unit' | 'out of range';
+}
+
+/**
+ * Cold-path detection: walk the cached `[gc]` (subsectionless) tokens in
+ * file order and return the FIRST `auto` entry whose value fails git's
+ * integer grammar or the C `int` range. Returns `undefined` when the key is
+ * absent or its first entry is valid. Runs ONLY on a command's refusal
+ * path — `readConfig` stays lenient and merges an invalid `gc.auto` as
+ * absent (see `mergeGc`).
+ */
+export const findFirstInvalidGcAuto = async (
+  ctx: Context,
+): Promise<InvalidGcAutoEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'gc', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    if (token.key.toLowerCase() !== GC_AUTO_KEY) continue;
+    const parsed = parseGitInt(token.value);
+    if (parsed.ok && parsed.value >= GIT_C_INT_MIN && parsed.value <= GIT_C_INT_MAX) continue;
+    const reason = parsed.ok ? 'out of range' : parsed.reason;
+    return { key: `gc.${GC_AUTO_KEY}`, source: path, value: token.value ?? '', reason };
+  }
+  return undefined;
+};
+
+/**
+ * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when `gc.auto` holds a value git's
+ * integer grammar refuses — the integer sibling of `assertValidBooleanConfig`,
+ * same eager-gate posture `pack.writeReverseIndex` established: a refused
+ * value must never be silently read back as absent-and-defaulted.
+ */
+export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
+  const found = await findFirstInvalidGcAuto(ctx);
+  if (found !== undefined) {
+    throw configBadNumericValue(found.key, found.source, found.value, found.reason);
+  }
+};
+
 const MAX_TREE_DEPTH_KEY = 'maxtreedepth';
 
 /** One invalid `core.maxTreeDepth` entry returned by `findLastInvalidMaxTreeDepth`. */
@@ -602,6 +666,7 @@ interface MutableParsedConfig {
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
   pack?: { writeReverseIndex?: boolean };
+  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 }
@@ -641,6 +706,8 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergeTag(acc, sec);
   } else if (section === 'pack') {
     mergePack(acc, sec);
+  } else if (section === 'gc') {
+    mergeGc(acc, sec);
   } else if (section === 'push') {
     mergePush(acc, sec);
   } else if (section === 'gpg') {
@@ -1020,6 +1087,49 @@ const mergePack = (acc: { pack?: { writeReverseIndex?: boolean } }, sec: IniSect
   }
 };
 
+type MutableGc = { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+
+const applyGcAutoEntry = (gc: MutableGc, value: string | null): MutableGc | undefined => {
+  const parsed = parseGitInt(value);
+  if (!parsed.ok || parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) return undefined;
+  return { ...gc, auto: parsed.value };
+};
+
+/**
+ * Apply one `[gc]` entry. Returns the updated accumulator, or `undefined`
+ * when the key is not recognised or its value fails validation — the same
+ * shape `applyCoreEntry` uses, so a malformed sibling never blocks a
+ * well-formed key from being merged. `readConfig` stays total/lenient here —
+ * the eager refusal for `gc.auto` lives in `assertValidGcAutoConfig`,
+ * `gc.cruftPacks`'s in `assertValidBooleanConfig`, and `gc.pruneExpire`'s
+ * grammar in `expiryCutoff`, mirroring `pack.writeReverseIndex`'s split
+ * between a lenient merge and a separate refusal gate.
+ */
+const applyGcEntry = (
+  gc: MutableGc,
+  lowered: string,
+  value: string | null,
+): MutableGc | undefined => {
+  if (lowered === 'auto') return applyGcAutoEntry(gc, value);
+  if (lowered === 'pruneexpire') {
+    // String-typed field: skip null (valueless key treated as absent).
+    // Grammar validated downstream by expiryCutoff — readConfig stays lenient.
+    return value === null ? undefined : { ...gc, pruneExpire: value };
+  }
+  if (lowered === 'cruftpacks') {
+    const parsed = parseGitBoolean(value);
+    return parsed.ok ? { ...gc, cruftPacks: parsed.value } : undefined;
+  }
+  return undefined;
+};
+
+const mergeGc = (acc: { gc?: MutableGc }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    const next = applyGcEntry(acc.gc ?? {}, key.toLowerCase(), value);
+    if (next !== undefined) acc.gc = next;
+  }
+};
+
 // `if-asked` is a third state beyond git's boolean values, checked ahead of the
 // standard boolean parse. A refusal there leaves the field absent (`undefined`).
 const parsePushGpgSign = (value: string | null): 'true' | 'false' | 'if-asked' | undefined => {
@@ -1151,6 +1261,7 @@ type FinalizeOut = {
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
   pack?: { writeReverseIndex?: boolean };
+  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 };
@@ -1189,6 +1300,7 @@ const finalizeScalarBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void
   if (acc.commit !== undefined) out.commit = acc.commit;
   if (acc.tag !== undefined) out.tag = acc.tag;
   if (acc.pack !== undefined) out.pack = acc.pack;
+  if (acc.gc !== undefined) out.gc = acc.gc;
   if (acc.push !== undefined) out.push = acc.push;
   if (acc.gpg !== undefined) out.gpg = acc.gpg;
 };
@@ -1230,6 +1342,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     commit?: { gpgSign?: boolean };
     tag?: { gpgSign?: boolean };
     pack?: { writeReverseIndex?: boolean };
+    gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
     push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
     gpg?: MutableGpg;
   } = {};

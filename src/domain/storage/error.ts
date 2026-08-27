@@ -25,6 +25,14 @@ export type MidxCheck =
 export type RevIndexCheck = 'size' | 'signature' | 'version' | 'hash-id';
 
 /**
+ * The parse gate that refused a cruft pack's `.mtimes` sidecar — a closed
+ * discriminant, same shape and reason as `RevIndexCheck`, plus `'count'`
+ * (the body's object count disagrees with the sibling `.idx`) and
+ * `'checksum'` (a caller-verified self-checksum mismatch).
+ */
+export type CruftMtimesCheck = 'size' | 'signature' | 'version' | 'hash-id' | 'count' | 'checksum';
+
+/**
  * The parse gate that refused a pack (or midx) bitmap, or one of its EWAH
  * streams — a closed discriminant, same shape and reason as `MidxCheck`.
  * `'stream'` is the only member raised so far (the EWAH decoder); the other
@@ -56,6 +64,11 @@ export type StorageError =
       readonly code: 'INVALID_PACK_BITMAP';
       readonly reason: string;
       readonly check: BitmapCheck;
+    }
+  | {
+      readonly code: 'INVALID_CRUFT_MTIMES';
+      readonly reason: string;
+      readonly check: CruftMtimesCheck;
     };
 
 export const invalidPackHeader = (reason: string): TsgitError =>
@@ -81,3 +94,6 @@ export const invalidPackRevIndex = (check: RevIndexCheck, reason: string): Tsgit
 
 export const invalidPackBitmap = (check: BitmapCheck, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PACK_BITMAP', check, reason });
+
+export const invalidCruftMtimes = (check: CruftMtimesCheck, reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_CRUFT_MTIMES', check, reason });

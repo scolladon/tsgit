@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
+  assertValidGcAutoConfig,
   type ConfigToken,
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
+  findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidPushGpgSign,
   findFirstValuelessEntry,
@@ -27,6 +29,7 @@ import {
   invalidateScopedConfigCache,
   readConfigSections,
 } from '../../../../src/application/primitives/config-scoped-read.js';
+import { assertValidBooleanConfig } from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
 import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -6456,6 +6459,292 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [gc] auto = 12000', () => {
+    describe('When readConfig', () => {
+      it('Then gc.auto is 12000', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 12000\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBe(12000);
+      });
+    });
+  });
+
+  describe('Given [gc] auto = 0', () => {
+    describe('When readConfig', () => {
+      it('Then gc.auto is 0 — the disable-every-heuristic value, not a falsy absence', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 0\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBe(0);
+      });
+    });
+  });
+
+  describe('Given [gc] auto is malformed', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it returns the entry with reason invalid unit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.key).toBe('gc.auto');
+        expect(result?.value).toBe('abc');
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+
+    describe('When assertValidGcAutoConfig', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying key/source/value/reason', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidGcAutoConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code === 'CONFIG_BAD_NUMERIC_VALUE') {
+          expect(data.key).toBe('gc.auto');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+          expect(data.source).toMatch(/\/config$/);
+        }
+      });
+    });
+  });
+
+  describe('Given [gc] auto beyond the C int range', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it returns the entry with reason out of range', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 99999999999999999999\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given no [gc] section', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+
+    describe('When assertValidGcAutoConfig', () => {
+      it('Then it resolves (no throw)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act + Assert
+        await assertValidGcAutoConfig(ctx);
+      });
+    });
+
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] auto under a [GC] block in a different case', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it reports the entry, because [GC] is [gc]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[GC]\n  auto = abc\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.key).toBe('gc.auto');
+      });
+    });
+  });
+
+  describe('Given [gc] pruneExpire = 30.days.ago', () => {
+    describe('When readConfig', () => {
+      it('Then gc.pruneExpire carries the raw string, unvalidated and with no default applied', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  pruneExpire = 30.days.ago\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.pruneExpire).toBe('30.days.ago');
+      });
+    });
+  });
+
+  describe('Given [gc] pruneExpire is valueless', () => {
+    describe('When readConfig', () => {
+      it('Then gc.pruneExpire is absent — a valueless key is treated as absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  pruneExpire\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.pruneExpire).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] cruftPacks = false', () => {
+    describe('When readConfig', () => {
+      it('Then gc.cruftPacks is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  cruftPacks = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.cruftPacks).toBe(false);
+      });
+    });
+  });
+
+  describe('Given [gc] cruftPacks is malformed', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  cruftPacks = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+
+    describe('When assertValidBooleanConfig is called for the gc section', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE carrying key/source/value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  cruftPacks = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidBooleanConfig(ctx, 'gc', undefined, ['cruftpacks']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        if (data.code === 'CONFIG_BAD_BOOLEAN_VALUE') {
+          expect(data.key).toBe('gc.cruftpacks');
+          expect(data.value).toBe('maybe');
+        }
+      });
+    });
+  });
+
+  describe('Given a malformed [gc] auto alongside a well-formed cruftPacks', () => {
+    describe('When readConfig', () => {
+      it('Then cruftPacks is set while auto stays absent — each key merges independently', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n  cruftPacks = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBeUndefined();
+        expect(result.gc?.cruftPacks).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a [gc] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined — the key guard only matches auto/pruneExpire/cruftPacks', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  reflogExpire = 90\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a config with a [push] gpgSign value', () => {
     describe('When readConfig', () => {
       it.each([
@@ -6856,6 +7145,11 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           config: '[pack]\n\twriteReverseIndex = maybe\n',
           label: 'pack.writeReverseIndex (the whole pack bucket stays absent)',
           read: (result: Awaited<ReturnType<typeof readConfig>>) => result.pack,
+        },
+        {
+          config: '[gc]\n\tcruftPacks = maybe\n',
+          label: 'gc.cruftPacks (the whole gc bucket stays absent)',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) => result.gc,
         },
       ])('Then $label is absent, not a guessed default', async ({ config, read }) => {
         // Arrange

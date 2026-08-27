@@ -104,6 +104,8 @@ interface ArtifactPaths {
   readonly idxPath: string;
   readonly promisorPath: string;
   readonly revPath: string;
+  /** The cruft pack's mtime sidecar — a plain sibling, `pack-<sha>.mtimes`. */
+  readonly mtimesPath: string;
 }
 
 /** The on-disk path for a pack keyed by its trailer SHA — shared by every
@@ -117,6 +119,7 @@ const artifactPaths = (packDir: string, packSha: string): ArtifactPaths => ({
   idxPath: `${packDir}/pack-${packSha}.idx`,
   promisorPath: `${packDir}/pack-${packSha}.promisor`,
   revPath: `${packDir}/pack-${packSha}.rev`,
+  mtimesPath: `${packDir}/pack-${packSha}.mtimes`,
 });
 
 // A promisor pack vouches for the objects it references but omits; the

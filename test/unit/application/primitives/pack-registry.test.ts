@@ -2680,6 +2680,73 @@ describe('PackRegistry.dispose', () => {
   });
 });
 
+describe('PackRegistry.settleRefresh', () => {
+  describe('Given a refresh with outgoing handles', () => {
+    describe('When settleRefresh is awaited', () => {
+      it('Then every outgoing handle is closed, without disposing the registry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'settle-refresh-drains', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('s') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        // Delay the handle's close by a real turn so a settleRefresh() that
+        // fails to drain refresh's fire-and-forget close batch observes it
+        // still outstanding.
+        const slowClose = {
+          ...ledger.ctx,
+          fs: {
+            ...ledger.ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ledger.ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                close: async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(slowClose);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        registry.refresh();
+        await registry.settleRefresh();
+
+        // Assert
+        expect(ledger.outstanding()).toBe(0);
+        expect(ledger.closes()).toBe(1);
+
+        // Assert — the registry is still usable, unlike after dispose()
+        const packsAfterRefresh = await registry.all();
+        expect(packsAfterRefresh).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a registry that never scanned', () => {
+    describe('When settleRefresh is awaited', () => {
+      it('Then it resolves without triggering a readdir or a close', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
+
+        // Act
+        await registry.settleRefresh();
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.closes()).toBe(0);
+      });
+    });
+  });
+});
+
 describe('PackRegistry.refresh — after dispose', () => {
   describe('Given a disposed registry whose pack was read once', () => {
     describe('When refresh() then all() then readSlice run', () => {

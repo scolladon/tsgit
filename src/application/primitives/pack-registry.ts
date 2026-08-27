@@ -233,6 +233,14 @@ export interface PackRegistry {
    *  re-lists the pack directory — used after a lazy-fetch writes a new pack,
    *  which may ship a new midx as well as new packs. */
   refresh(): void;
+  /**
+   * Await every handle close a prior `refresh()` parked for background
+   * completion, without disposing the registry. A caller about to unlink a
+   * retired pack must drain first: on Windows an open `FileHandle` may
+   * refuse the unlink outright, and on every platform an unlinked-but-open
+   * pack keeps its bytes allocated until the fd closes.
+   */
+  settleRefresh(): Promise<void>;
   /** Close every loaded pack's persistent handle. Idempotent; a registry
    *  that never scanned the pack directory disposes without touching `fs`. */
   dispose(): Promise<void>;
@@ -847,6 +855,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
         ),
       );
     },
+    settleRefresh: drainPendingCloses,
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
       const generation = await currentGeneration();
       const midx = generation.midx;

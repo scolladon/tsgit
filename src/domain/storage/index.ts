@@ -3,12 +3,21 @@ export type { BitmapEntryHeader, PackBitmap } from './bitmap.js';
 export { bitmapEntryHeaders, parsePackBitmap } from './bitmap.js';
 // CRC-32
 export { crc32 } from './crc32.js';
+// Cruft pack .mtimes sidecar
+export { CRUFT_MTIMES_MAGIC, parseCruftMtimes, serializeCruftMtimes } from './cruft-pack.js';
 // Delta
 export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction } from './delta.js';
 export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
 // Errors
-export type { BitmapCheck, MidxCheck, RevIndexCheck, StorageError } from './error.js';
+export type {
+  BitmapCheck,
+  CruftMtimesCheck,
+  MidxCheck,
+  RevIndexCheck,
+  StorageError,
+} from './error.js';
 export {
+  invalidCruftMtimes,
   invalidDelta,
   invalidMultiPackIndex,
   invalidPackBitmap,
