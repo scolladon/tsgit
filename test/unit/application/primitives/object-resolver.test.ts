@@ -29,8 +29,17 @@ vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
   return { ...actual, createLruCache: vi.fn(actual.createLruCache) };
 });
 
+vi.mock('../../../../src/application/primitives/pack-registry.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../../../../src/application/primitives/pack-registry.js')
+    >();
+  return { ...actual, deltaBaseCacheKey: vi.fn(actual.deltaBaseCacheKey) };
+});
+
 const storage = await import('../../../../src/domain/storage/index.js');
 const createLruCacheSpy = vi.mocked(storage.createLruCache);
+const deltaBaseCacheKeySpy = vi.mocked(deltaBaseCacheKey);
 const {
   createLruCache,
   encodeOfsDistance,
@@ -1569,6 +1578,34 @@ describe('object-resolver', () => {
           // Assert
           expect((result as Blob).content).toEqual(content);
           expect(registry.deltaBaseCache.entryCount).toBe(0);
+        });
+      });
+    });
+
+    describe('Given an OFS_DELTA chain of two levels (base -> mid -> tip)', () => {
+      describe('When resolveObject resolves the tip', () => {
+        it("Then each level's cache key is computed once — probed and reused for the write, not recomputed", async () => {
+          // Arrange — 3 levels touch the offset-keyed cache: the base (probed
+          // then, since deltas.length > 0, cache-written under a freshly
+          // computed key) plus mid and tip (each probed once, then their
+          // SAME probe key reused for the write). A double-computation per
+          // delta level would total 6 calls (3 probes + 3 writes); reuse
+          // brings it to 4 (3 probes + 1 fresh write for the base alone).
+          const ctx = await buildSeededContext();
+          const ids = await writeSyntheticPack(ctx, 'pack-key-reuse', [
+            { kind: 'base', type: 'blob', content: ENC.encode('base') },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('mid') },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: ENC.encode('tip') },
+          ]);
+          const tipId = ids[2]! as ObjectId;
+          const registry = createPackRegistry(ctx);
+          deltaBaseCacheKeySpy.mockClear();
+
+          // Act
+          await resolveObject(ctx, registry, tipId, false);
+
+          // Assert
+          expect(deltaBaseCacheKeySpy).toHaveBeenCalledTimes(4);
         });
       });
     });

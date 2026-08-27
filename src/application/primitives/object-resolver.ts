@@ -59,9 +59,12 @@ const EMPTY_TREE_BYTES = new TextEncoder().encode('tree 0\0');
  * safety check.
  *
  * Keyed on `ctx.session` — not `ctx` itself — so the memo survives every
- * spread-derivation this codebase does (a worktree or submodule Context,
+ * spread-derivation this codebase does (a worktree Context,
  * `listWorktrees`'s per-worktree Contexts, …), sharing one memo per
- * repository instead of missing on every fresh spread.
+ * repository instead of missing on every fresh spread. A submodule Context
+ * is NOT one of these: its common dir genuinely differs (a different
+ * repository), so `deriveContext` mints it a fresh session and this memo
+ * starts cold, exactly as intended.
  *
  * fsck's audit Context shares the session (it isolates only `deltaCache`),
  * so keying on session ALONE would let it read and populate this memo from
@@ -415,6 +418,10 @@ interface DeltaStep {
   /** Offset this step's entry was found at — the key `resolvePackChain`
    *  caches this level's reconstructed content under. */
   readonly offset: number;
+  /** The `deltaBaseCacheKey(packName, offset)` string already built to probe
+   *  this level — carried forward so `resolvePackChain`'s later cache write
+   *  for this same offset reuses it instead of rebuilding an identical key. */
+  readonly probeKey: string;
 }
 
 interface Phase1Result {
@@ -454,10 +461,14 @@ async function collectDeltaChain(
 
   for (;;) {
     checkAborted(ctx);
+    // Built once per level and carried on the pushed `DeltaStep` below, so a
+    // probe miss that becomes a delta level never rebuilds this same key for
+    // `resolvePackChain`'s later cache write.
+    const probeKey = deltaBaseCacheKey(currentHit.pack.name, currentHit.offset);
     // Probe BEFORE descending: a level cached by an earlier chain (this
     // offset reached as someone else's intermediate) short-circuits the
     // whole rest of the walk exactly as reaching a real base entry would.
-    const cached = probeDeltaBaseCache(ctx, registry, currentHit, targetId, maxBytes);
+    const cached = probeDeltaBaseCache(ctx, registry, probeKey, targetId, maxBytes);
     if (cached !== undefined) {
       // The hit resumes from partway down the chain — depth so far (levels
       // actually walked) plus whatever the cached entry itself still has
@@ -492,13 +503,18 @@ async function collectDeltaChain(
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
       const baseOffset = ofsDeltaBaseOffset(targetId, currentHit.offset, header.baseDistance);
-      deltas.push({ instructions, resolvedBaseId: undefined, offset: currentHit.offset });
+      deltas.push({ instructions, resolvedBaseId: undefined, offset: currentHit.offset, probeKey });
       currentHit = { pack: currentHit.pack, offset: baseOffset };
       continue;
     }
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {
       const refDeltaBaseId = header.baseId;
-      deltas.push({ instructions, resolvedBaseId: refDeltaBaseId, offset: currentHit.offset });
+      deltas.push({
+        instructions,
+        resolvedBaseId: refDeltaBaseId,
+        offset: currentHit.offset,
+        probeKey,
+      });
       // Cap propagates into the REF_DELTA base resolution so an oversized
       // base never inflates fully. The cap applies to the BASE object now,
       // not just the delta's target — tightens the OBJECT_TOO_LARGE
@@ -538,9 +554,18 @@ export async function resolvePackChain(
   // Only a real delta chain populates the offset-keyed cache: a single
   // non-delta base entry (deltas.length === 0) is never a delta target and
   // never a future chain's intermediate, so caching it under its own offset
-  // would only ever be a wasted entry.
-  if (phase1.deltas.length > 0) {
-    cacheDeltaBase(ctx, registry, hit.pack.name, phase1.baseOffset, phase1.baseType, current, 0);
+  // would only ever be a wasted entry. The base never went through the probe
+  // above (only `DeltaStep`s did), so its key is built fresh here — the one
+  // key this function still computes rather than reuses.
+  if (phase1.deltas.length > 0 && phase1.baseOffset !== undefined) {
+    cacheDeltaBase(
+      ctx,
+      registry,
+      deltaBaseCacheKey(hit.pack.name, phase1.baseOffset),
+      phase1.baseType,
+      current,
+      0,
+    );
   }
   for (let i = phase1.deltas.length - 1; i >= 0; i -= 1) {
     const step = phase1.deltas[i];
@@ -550,7 +575,7 @@ export async function resolvePackChain(
     // 1 for the level closest to the base (i === deltas.length - 1), up to
     // deltas.length for the target's own level (i === 0).
     const chainDepth = phase1.deltas.length - i;
-    cacheDeltaBase(ctx, registry, hit.pack.name, step.offset, phase1.baseType, current, chainDepth);
+    cacheDeltaBase(ctx, registry, step.probeKey, phase1.baseType, current, chainDepth);
   }
   // Post-apply cap on the reconstructed object (delta resolution is the only
   // place a payload can grow beyond what the base entry declared). The check
@@ -725,16 +750,20 @@ export function deltaBaseCachingEnabled(ctx: Context): boolean {
  * The `collectDeltaChain` loop's probe, extracted so the loop body stays
  * flat: a hit enforces the same size cap a freshly-read base entry would,
  * so a warm chain cannot bypass a cap a cold one would have rejected at.
+ * Takes the already-built key rather than `(packName, offset)` — the
+ * caller needs that same key again if this probe misses and the level goes
+ * on to become a `DeltaStep` (see `DeltaStep.probeKey`), so it is built once
+ * and passed in rather than rebuilt here.
  */
 function probeDeltaBaseCache(
   ctx: Context,
   registry: PackRegistry,
-  hit: PackLookupHit,
+  key: string,
   targetId: ObjectId,
   maxBytes: number | undefined,
 ): DeltaBaseCacheEntry | undefined {
   if (!deltaBaseCachingEnabled(ctx)) return undefined;
-  const cached = registry.deltaBaseCache.get(deltaBaseCacheKey(hit.pack.name, hit.offset));
+  const cached = registry.deltaBaseCache.get(key);
   if (cached === undefined) return undefined;
   enforcePackBaseCap(targetId, cached.content.length, maxBytes);
   return cached;
@@ -755,24 +784,22 @@ function deltaBaseCacheEntrySize(content: Uint8Array): number {
 }
 
 /**
- * Populate one delta-chain level's offset-keyed entry. `offset` is
- * `undefined` for a level that came from a cache hit (already cached) or a
- * REF_DELTA base (resolved by id, not by this pack's offset) — both no-op
- * here rather than re-deriving an offset that doesn't apply.
+ * Populate one delta-chain level's offset-keyed entry, under an
+ * already-built key — a `DeltaStep`'s own `probeKey` for a delta level, or a
+ * freshly-built one for the base (which was never pushed as a `DeltaStep`
+ * and so never had a key built for it before now). Callers skip this
+ * entirely for a level with no key at all: one that came from a cache hit
+ * (already cached) or a REF_DELTA base (resolved by id, not by this pack's
+ * offset).
  */
 function cacheDeltaBase(
   ctx: Context,
   registry: PackRegistry,
-  packName: string,
-  offset: number | undefined,
+  key: string,
   type: PackEntryHeader['type'],
   content: Uint8Array,
   chainDepth: number,
 ): void {
-  if (offset === undefined || !deltaBaseCachingEnabled(ctx)) return;
-  registry.deltaBaseCache.set(
-    deltaBaseCacheKey(packName, offset),
-    { type, content, chainDepth },
-    deltaBaseCacheEntrySize(content),
-  );
+  if (!deltaBaseCachingEnabled(ctx)) return;
+  registry.deltaBaseCache.set(key, { type, content, chainDepth }, deltaBaseCacheEntrySize(content));
 }
