@@ -355,30 +355,40 @@ describe('findTreeEntry', () => {
     });
   });
 
-  describe("Given a raw-scanned directory holding an entry literally named '..'", () => {
-    describe('When the path descends into it', () => {
-      it('Then it refuses with the invalid-entry-name reason, matching the parsed-root refusal', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const content = rawEntry('100644', '..');
-        const dirId = await writeRawObjectBytes(ctx, 'tree', content);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+  describe('Given a shape-invalid sibling entry in a raw-scanned directory', () => {
+    describe('When another entry in the same directory is resolved', () => {
+      it.each([
+        { label: "'.'", name: '.' },
+        { label: "'..'", name: '..' },
+        { label: "an embedded '/' ('a/b')", name: 'a/b' },
+      ])(
+        'Then $label refuses eagerly with the invalid-entry-name reason, matching the parsed-root refusal',
+        async ({ name }) => {
+          // Arrange — the invalid entry sits alongside a valid, differently-
+          // named 'good' entry the query actually targets: the full-directory
+          // scan (needed for the duplicate-name refusal) sees it regardless
+          // of what is being searched for.
+          const ctx = await buildSeededContext();
+          const content = concatBytes(rawEntry('100644', name), rawEntry('100644', 'good'));
+          const dirId = await writeRawObjectBytes(ctx, 'tree', content);
+          const rootId = await writeTree(ctx, [
+            { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
+          ]);
 
-        // Act / Assert
-        try {
-          await findTreeEntry(ctx, rootId, 'dir/..');
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(TsgitError);
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('INVALID_TREE_ENTRY');
-          if (data.code === 'INVALID_TREE_ENTRY') {
-            expect(data.reason).toBe('invalid entry name: ..');
+          // Act / Assert
+          try {
+            await findTreeEntry(ctx, rootId, 'dir/good');
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_TREE_ENTRY');
+            if (data.code === 'INVALID_TREE_ENTRY') {
+              expect(data.reason).toBe(`invalid entry name: ${name}`);
+            }
           }
-        }
-      });
+        },
+      );
     });
   });
 

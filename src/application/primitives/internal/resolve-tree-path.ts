@@ -114,6 +114,9 @@ const scanEntry = (
 ): TreeEntry | undefined => {
   const mode = cursorMode(cursor);
   const entryName = cursorName(cursor);
+  if (isInvalidEntryName(entryName)) {
+    throw invalidTreeEntry(cursor.offset, `invalid entry name: ${entryName}`);
+  }
   if (seenNames.has(entryName)) {
     throw invalidTreeEntry(cursor.offset, `duplicate entry name: ${entryName}`);
   }
@@ -121,3 +124,17 @@ const scanEntry = (
   if (!cursorNameEquals(cursor, target)) return undefined;
   return { mode, name: entryName, id: cursorOid(cursor) };
 };
+
+/**
+ * Byte-cursor counterpart to `parseTreeContent`'s `name === '' || name ===
+ * '.' || name === '..' || name.includes('/')` (tree.ts) — the empty case is
+ * already refused structurally by the cursor's own null-terminator scan
+ * (`tree-cursor.ts`'s `scanName`) before a caller ever observes the entry,
+ * so only the remaining three shape checks are repeated here, on the
+ * cursor's already-decoded name. This check is deliberately NOT shared
+ * inside `TreeCursor` itself: the raw merge-join diff (`raw-tree-diff.ts`)
+ * streams a diff over on-disk order without it, matching git's own
+ * `diff-tree`, which does not validate name shape during a diff walk.
+ */
+const isInvalidEntryName = (name: string): boolean =>
+  name === '.' || name === '..' || name.includes('/');

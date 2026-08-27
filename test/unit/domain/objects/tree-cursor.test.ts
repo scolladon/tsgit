@@ -191,75 +191,15 @@ describe('tree-cursor', () => {
 
     describe('Given an entry with an empty name', () => {
       describe('When opening a cursor over it', () => {
-        it("Then throws INVALID_TREE_ENTRY 'invalid entry name: ' at offset 0", () => {
+        it("Then throws INVALID_TREE_ENTRY 'empty filename' at offset 0", () => {
           // Arrange
           const buf = concatBytes(encode('100644 \0'), hexToBytes(OID_HEX_20_A));
 
           // Act & Assert
           expectInvalidTreeEntry(() => openTreeCursor(buf, SHA1_CONFIG), {
             offset: 0,
-            reason: 'invalid entry name: ',
+            reason: 'empty filename',
           });
-        });
-      });
-    });
-
-    describe("Given an entry named '.'", () => {
-      describe('When opening a cursor over it', () => {
-        it("Then throws INVALID_TREE_ENTRY 'invalid entry name: .' at offset 0", () => {
-          // Arrange
-          const buf = entryBytes('100644', '.');
-
-          // Act & Assert
-          expectInvalidTreeEntry(() => openTreeCursor(buf, SHA1_CONFIG), {
-            offset: 0,
-            reason: 'invalid entry name: .',
-          });
-        });
-      });
-    });
-
-    describe("Given an entry named '..'", () => {
-      describe('When opening a cursor over it', () => {
-        it("Then throws INVALID_TREE_ENTRY 'invalid entry name: ..' at offset 0", () => {
-          // Arrange
-          const buf = entryBytes('100644', '..');
-
-          // Act & Assert
-          expectInvalidTreeEntry(() => openTreeCursor(buf, SHA1_CONFIG), {
-            offset: 0,
-            reason: 'invalid entry name: ..',
-          });
-        });
-      });
-    });
-
-    describe('Given an entry whose name contains an embedded slash', () => {
-      describe('When opening a cursor over it', () => {
-        it("Then throws INVALID_TREE_ENTRY 'invalid entry name: a/b' at offset 0", () => {
-          // Arrange
-          const buf = entryBytes('100644', 'a/b');
-
-          // Act & Assert
-          expectInvalidTreeEntry(() => openTreeCursor(buf, SHA1_CONFIG), {
-            offset: 0,
-            reason: 'invalid entry name: a/b',
-          });
-        });
-      });
-    });
-
-    describe("Given a name that is a two-dot PREFIX rather than exactly '..' (e.g. '..x')", () => {
-      describe('When opening a cursor over it', () => {
-        it('Then does not refuse — only the exact two-byte name is invalid', () => {
-          // Arrange
-          const buf = entryBytes('100644', '..x');
-
-          // Act
-          const cursor = openTreeCursor(buf, SHA1_CONFIG);
-
-          // Assert
-          expect(cursorName(cursor)).toBe('..x');
         });
       });
     });

@@ -103,16 +103,19 @@ describe('findTreeEntry properties', () => {
       it('Then it resolves exactly the paths the parsed-tree descent resolves', async () => {
         // Arrange + Act + Assert
         await fc.assert(
-          fc.asyncProperty(treePathShapeArb(), treePathArb(), async (shape, path) => {
-            const ctx = await buildSeededContext();
-            const rootEntries = await materialize(ctx, shape);
-            const rootId = await writeTree(ctx, rootEntries);
+          fc.asyncProperty(
+            treePathShapeArb().chain((shape) => fc.tuple(fc.constant(shape), treePathArb(shape))),
+            async ([shape, path]) => {
+              const ctx = await buildSeededContext();
+              const rootEntries = await materialize(ctx, shape);
+              const rootId = await writeTree(ctx, rootEntries);
 
-            const production = await findTreeEntry(ctx, rootId, path);
-            const oracle = await findTreeEntryOracle(ctx, rootId, path);
+              const production = await findTreeEntry(ctx, rootId, path);
+              const oracle = await findTreeEntryOracle(ctx, rootId, path);
 
-            expect(production).toEqual(oracle);
-          }),
+              expect(production).toEqual(oracle);
+            },
+          ),
           { numRuns: 100 },
         );
       });

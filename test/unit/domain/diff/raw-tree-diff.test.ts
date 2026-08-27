@@ -453,7 +453,7 @@ describe('diffRawTrees', () => {
 
   describe('Given malformed bytes on the new side', () => {
     describe('When diffRawTrees is called', () => {
-      it("Then throws INVALID_TREE_ENTRY 'invalid entry name: ' at offset 0", () => {
+      it("Then throws INVALID_TREE_ENTRY 'empty filename' at offset 0", () => {
         // Arrange
         const oldContent = canonicalContent([entry('a.txt', FILE_MODE.REGULAR, ID_A)]);
         const newContent = concatBytes(encode('100644 \0'), hexToBytes(ID_A));
@@ -461,7 +461,7 @@ describe('diffRawTrees', () => {
         // Act & Assert
         expectInvalidTreeEntry(() => diffRawTrees(oldContent, newContent, SHA1_CONFIG), {
           offset: 0,
-          reason: 'invalid entry name: ',
+          reason: 'empty filename',
         });
       });
     });

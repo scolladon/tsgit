@@ -89,36 +89,9 @@ function scanName(c: TreeCursor): void {
   const nameStart = c.modeEnd + 1;
   const nameEnd = indexOf(c.buf, NUL, nameStart);
   if (nameEnd === -1) throw invalidTreeEntry(c.offset, 'missing null after name');
-  if (isInvalidEntryName(c.buf, nameStart, nameEnd)) {
-    const name = decode(c.buf.subarray(nameStart, nameEnd));
-    throw invalidTreeEntry(c.offset, `invalid entry name: ${name}`);
-  }
+  if (nameEnd === nameStart) throw invalidTreeEntry(c.offset, 'empty filename');
   c.nameStart = nameStart;
   c.nameEnd = nameEnd;
-}
-
-// Byte-level counterpart to `parseTreeContent`'s `name === '' || name === '.'
-// || name === '..' || name.includes('/')` (tree.ts) — same four cases,
-// checked without decoding on the accepted path (decoding happens only to
-// build the thrown error's message). `.`/`..` are recognised by exact byte
-// length + value rather than decoding, since ASCII '.' can never be part of
-// a longer multi-byte UTF-8 sequence, so a byte-level check and a decoded
-// check agree for every input.
-const DOT = 0x2e;
-
-function isInvalidEntryName(buf: Uint8Array, start: number, end: number): boolean {
-  const length = end - start;
-  if (length === 0) return true;
-  if (length === 1) return buf[start] === DOT;
-  if (length === 2) return buf[start] === DOT && buf[start + 1] === DOT;
-  return containsSlash(buf, start, end);
-}
-
-function containsSlash(buf: Uint8Array, start: number, end: number): boolean {
-  for (let i = start; i < end; i++) {
-    if (buf[i] === VIRTUAL_SLASH) return true;
-  }
-  return false;
 }
 
 function scanOid(c: TreeCursor): void {
