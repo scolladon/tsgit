@@ -34,6 +34,7 @@ import {
   type MaintenanceTask,
   maintenance,
 } from '../../../../src/application/commands/maintenance.js';
+import * as enumerateObjectsMod from '../../../../src/application/primitives/enumerate-objects.js';
 import * as cruftPackLifecycleMod from '../../../../src/application/primitives/internal/cruft-pack-lifecycle.js';
 import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
@@ -47,6 +48,7 @@ import {
   readObject,
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
+import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -328,9 +330,13 @@ describe('maintenance', () => {
 
   describe('Given tasks: ["commit-graph", "gc"], against a repository with one commit', () => {
     describe('When maintenance runs', () => {
-      it('Then both tasks run and tasksRun echoes both', async () => {
-        // Arrange
+      it('Then both tasks run, tasksRun echoes both, and commit-graph runs before gc — pinned against git 2.55.0', async () => {
+        // Arrange — `git maintenance run` executes requested tasks in the
+        // order they were REQUESTED (GIT_TRACE=1 probe, both orderings),
+        // not a fixed internal priority.
         const ctx = await seedOneCommit();
+        const enumerateSpy = vi.spyOn(enumerateObjectsMod, 'enumerateObjects');
+        const writeGraphSpy = vi.spyOn(writeCommitGraphMod, 'writeCommitGraph');
         const sut = maintenance;
 
         // Act
@@ -339,6 +345,37 @@ describe('maintenance', () => {
         // Assert
         expect(result.tasksRun).toEqual(['commit-graph', 'gc']);
         expect(result.commitGraphWritten).toBe(true);
+
+        const graphOrder = Math.min(...writeGraphSpy.mock.invocationCallOrder);
+        const gcOrder = Math.min(...enumerateSpy.mock.invocationCallOrder);
+        enumerateSpy.mockRestore();
+        writeGraphSpy.mockRestore();
+        expect(graphOrder).toBeLessThan(gcOrder);
+      });
+    });
+  });
+
+  describe('Given tasks: ["gc", "commit-graph"] — the REVERSE order', () => {
+    describe('When maintenance runs', () => {
+      it('Then gc runs before commit-graph, matching the requested order — pinned against git 2.55.0', async () => {
+        // Arrange — `git maintenance run` executes requested tasks in the
+        // order they were REQUESTED (GIT_TRACE=1 probe, both orderings),
+        // not a fixed internal priority.
+        const ctx = await seedOneCommit();
+        const enumerateSpy = vi.spyOn(enumerateObjectsMod, 'enumerateObjects');
+        const writeGraphSpy = vi.spyOn(writeCommitGraphMod, 'writeCommitGraph');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc', 'commit-graph'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc', 'commit-graph']);
+        const gcOrder = Math.min(...enumerateSpy.mock.invocationCallOrder);
+        const graphOrder = Math.min(...writeGraphSpy.mock.invocationCallOrder);
+        enumerateSpy.mockRestore();
+        writeGraphSpy.mockRestore();
+        expect(gcOrder).toBeLessThan(graphOrder);
       });
     });
   });
@@ -1709,6 +1746,56 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a pack retirement following the post-write verify and prune-packable scan', () => {
+    describe('When gc runs', () => {
+      it("Then refresh drains that scan's own handles before settleRefresh, ahead of any pack unlink", async () => {
+        // Arrange — force a normal-pack retirement on the second run, so
+        // this run's own step-8 verify loop and step-9 `packedAnywhere`
+        // scan open pack-read handles that must be drained before the
+        // superseded pack's files are unlinked (Windows-unlink safety).
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+
+        const registry = getPackRegistry(ctx);
+        const lookupSpy = vi.spyOn(registry, 'lookup');
+        const refreshSpy = vi.spyOn(registry, 'refresh');
+        const settleSpy = vi.spyOn(registry, 'settleRefresh');
+        const rmSpy = vi.spyOn(ctx.fs, 'rm');
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.packsRetired).toBeGreaterThan(0);
+        const lastLookupOrder = Math.max(-1, ...lookupSpy.mock.invocationCallOrder);
+        const drainOrders = refreshSpy.mock.invocationCallOrder.filter(
+          (order) => order > lastLookupOrder,
+        );
+        expect(drainOrders.length).toBeGreaterThan(0);
+        const drainOrder = Math.min(...drainOrders);
+        const settleOrder = Math.min(...settleSpy.mock.invocationCallOrder);
+        expect(settleOrder).toBeGreaterThan(drainOrder);
+        // Only the RETIRED (first) pack's own unlinks — a fresh pack's
+        // stale-sibling cleanup in the quarantine writer also touches
+        // `/pack-` paths, but under the NEW sha and long before step 8.
+        const retiredPackUnlinkOrders = rmSpy.mock.calls
+          .map((call, i) => ({ path: call[0] as string, order: rmSpy.mock.invocationCallOrder[i] }))
+          .filter(
+            (entry): entry is { readonly path: string; readonly order: number } =>
+              entry.order !== undefined && entry.path.includes(`pack-${first.packId}`),
+          )
+          .map((entry) => entry.order);
+        expect(retiredPackUnlinkOrders.length).toBeGreaterThan(0);
+        expect(Math.min(...retiredPackUnlinkOrders)).toBeGreaterThan(settleOrder);
+      });
+    });
+  });
+
   describe('Given a superseded normal pack with a .bitmap sibling', () => {
     describe('When gc consolidates it away', () => {
       it('Then the bitmap is deleted with it and no orphan is left', async () => {
@@ -1753,6 +1840,40 @@ describe('maintenance', () => {
 
         // Assert
         expect(await ctx.fs.exists(multiPackIndexPath(packDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming a pack gc retires, timing-sensitive', () => {
+    describe('When gc runs', () => {
+      it("Then the midx is expired BEFORE that pack's own files are unlinked", async () => {
+        // Arrange — a midx surviving even briefly past its first named
+        // pack's removal is a dangling reference; the expiry must land
+        // strictly before the first unlink of that pack's own files.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        const midxPath = multiPackIndexPath(packDir);
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const rmSpy = vi.spyOn(ctx.fs, 'rm');
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const orderOf = (path: string): number | undefined => {
+          const index = rmSpy.mock.calls.findIndex((call) => call[0] === path);
+          return index === -1 ? undefined : rmSpy.mock.invocationCallOrder[index];
+        };
+        const midxOrder = orderOf(midxPath);
+        const packIdxOrder = orderOf(`${packDir}/pack-${first.packId}.idx`);
+        expect(midxOrder).toBeDefined();
+        expect(packIdxOrder).toBeDefined();
+        expect(midxOrder as number).toBeLessThan(packIdxOrder as number);
       });
     });
   });
@@ -2320,6 +2441,34 @@ describe('maintenance', () => {
         expect(second.promisorPackId).toBe(first.promisorPackId);
         const packDir = packDirOf(ctx);
         expect(await ctx.fs.exists(`${packDir}/pack-${second.promisorPackId}.promisor`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two promisor packs discovered in opposite orders across two otherwise-identical repositories', () => {
+    describe('When gc runs on each', () => {
+      it('Then the rebuilt promisor pack is byte-identical regardless of discovery order', async () => {
+        // Arrange — identical final object SET, opposite pack-write (hence
+        // discovery) order; `toPromisorPack` must sort before packing or
+        // the two runs assemble their entries in different array order and
+        // produce different shas for the same content (Pin W).
+        const ctxA = await seedOneCommit();
+        await writePromisorPack(ctxA, 'promisor-order-p1', ['sort-stability-p1']);
+        await writePromisorPack(ctxA, 'promisor-order-p2', ['sort-stability-p2']);
+
+        const ctxB = await seedOneCommit();
+        await writePromisorPack(ctxB, 'promisor-order-p2', ['sort-stability-p2']);
+        await writePromisorPack(ctxB, 'promisor-order-p1', ['sort-stability-p1']);
+        const sut = maintenance;
+
+        // Act
+        const resultA = await sut(ctxA, { tasks: ['gc'] });
+        const resultB = await sut(ctxB, { tasks: ['gc'] });
+
+        // Assert
+        expect(resultA.promisorPackId).toBeDefined();
+        expect(resultB.promisorPackId).toBeDefined();
+        expect(resultA.promisorPackId).toBe(resultB.promisorPackId);
       });
     });
   });

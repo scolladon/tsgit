@@ -552,14 +552,19 @@ async function retirePromisorPack(ctx: Context, packDir: string, packSha: string
 
 /**
  * Steps 9b/10/10b/10c: retires every superseded pack this run decided on —
- * normal, cruft and promisor alike. Steps 6/6b/step-verify already read
- * every reachable/surviving/promisor object OUT of the packs retired here —
- * their handles are guaranteed live, so the drain must complete before the
- * first unlink. A no-op, no drain at all, when nothing needs retiring.
+ * normal, cruft and promisor alike. Step 8's verify loop and step 9's
+ * `packedAnywhere` both open FRESH read handles against the generation
+ * `refreshPackRegistry` started at the top of step 8 — handles a bare
+ * `settleRefresh()` would not drain, since it only awaits the close of
+ * whatever generation the LAST `refresh()` already ended. `refresh()` here
+ * ends THAT generation (the one verify/packedAnywhere just read through)
+ * before `settleRefresh()` awaits its handles closing, so every unlink
+ * below is guaranteed to run against fully-closed files (Windows-unlink
+ * safety) rather than racing a still-open one.
  */
 async function retireSupersededPacks(
   ctx: Context,
-  registry: Pick<PackRegistry, 'settleRefresh'>,
+  registry: Pick<PackRegistry, 'refresh' | 'settleRefresh'>,
   packDir: string,
   normalPacksToRetire: ReadonlyArray<RegisteredPack>,
   cruftShasToRetire: ReadonlyArray<string>,
@@ -572,6 +577,7 @@ async function retireSupersededPacks(
   ) {
     return;
   }
+  registry.refresh();
   await registry.settleRefresh();
   for (const pack of normalPacksToRetire) {
     await retireNormalPack(ctx, packDir, pack.name.slice('pack-'.length));
@@ -722,7 +728,14 @@ async function runGcTask(
   // above) — git does not exclude promisor membership from the normal
   // pack the way it excludes `.keep`, so `toNormalPack` and this set
   // deliberately intersect on every reachable promisor oid.
-  const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor];
+  //
+  // Sorted for the SAME reason `partitionOwned` sorts `toNormalPack` (Pin
+  // W): `unionOids` appends each promisor pack's own oid list in
+  // CLASSIFICATION order, not merged-sorted, so consolidating more than one
+  // promisor pack would otherwise churn `buildPack`'s array-order entries —
+  // and with it the promisor pack's sha — on every run whose pack-discovery
+  // order happens to differ, even though the object SET never changed.
+  const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor].sort();
 
   const mtimes = await computeCruftMtimes(
     ctx,
@@ -798,6 +811,19 @@ async function runGcTask(
     (pack) => pack.name !== promisorPack.reusedExistingName,
   );
 
+  // A multi-pack-index naming any pack about to be retired must be expired
+  // BEFORE that pack's own unlink — a midx surviving even briefly past its
+  // first named pack's removal is a reader-visible dangling reference,
+  // exactly the window `retireNormalPack`/`retireCruftPack`/
+  // `retirePromisorPack`'s own "`.idx` first" ordering exists to avoid one
+  // level up.
+  const retiredIdxNames = new Set<string>([
+    ...normalPacksToRetire.map((pack) => `${pack.name}.idx`),
+    ...cruftShasToRetire.map((sha) => `pack-${sha}.idx`),
+    ...promisorPacksToRetire.map((pack) => `${pack.name}.idx`),
+  ]);
+  await expireMidxIfNeeded(ctx, packDir, retiredIdxNames);
+
   await retireSupersededPacks(
     ctx,
     registry,
@@ -806,13 +832,6 @@ async function runGcTask(
     cruftShasToRetire,
     promisorPacksToRetire,
   );
-
-  const retiredIdxNames = new Set<string>([
-    ...normalPacksToRetire.map((pack) => `${pack.name}.idx`),
-    ...cruftShasToRetire.map((sha) => `pack-${sha}.idx`),
-    ...promisorPacksToRetire.map((pack) => `${pack.name}.idx`),
-  ]);
-  await expireMidxIfNeeded(ctx, packDir, retiredIdxNames);
 
   // --- step 11: invalidate, refresh, packBytesAfter ---
   refreshPackRegistry(ctx);
@@ -847,6 +866,20 @@ async function runGcTask(
   };
 }
 
+/** `tasks` with later duplicates dropped, first occurrence's position kept —
+ *  the shape `maintenance`'s task loop needs to run each requested task
+ *  exactly once, in the order it was FIRST requested. */
+function orderedUniqueTasks(tasks: ReadonlyArray<MaintenanceTask>): ReadonlyArray<MaintenanceTask> {
+  const seen = new Set<MaintenanceTask>();
+  const ordered: MaintenanceTask[] = [];
+  for (const task of tasks) {
+    if (seen.has(task)) continue;
+    seen.add(task);
+    ordered.push(task);
+  }
+  return ordered;
+}
+
 export const maintenance = async (
   ctx: Context,
   opts: MaintenanceOptions,
@@ -854,19 +887,31 @@ export const maintenance = async (
   await assertOperationalRepository(ctx);
   validateTasks(opts.tasks);
 
-  const runsCommitGraph = opts.tasks.includes('commit-graph');
-  const runsGc = opts.tasks.includes('gc');
-
-  const commitGraphOutcome = runsCommitGraph
-    ? await runCommitGraphTask(ctx)
-    : { commitGraphWritten: false, commitsInGraph: 0 };
-  const gcOutcome = runsGc
-    ? await runGcTask(ctx, { auto: opts.auto })
-    : { ran: false, result: GC_NOT_RUN };
-
+  // Pinned against git 2.55.0 (`GIT_TRACE=1 git maintenance run --task=…
+  // --task=…`, both orderings): `git maintenance run` executes requested
+  // tasks in the order they were REQUESTED, not a fixed internal priority —
+  // `--task=commit-graph --task=gc` runs commit-graph first;
+  // `--task=gc --task=commit-graph` runs gc first. Mirrored here rather
+  // than hard-coding either task first.
+  let commitGraphOutcome: Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'> = {
+    commitGraphWritten: false,
+    commitsInGraph: 0,
+  };
+  let gcOutcome: { readonly ran: boolean; readonly result: GcResult } = {
+    ran: false,
+    result: GC_NOT_RUN,
+  };
   const tasksRun: MaintenanceTask[] = [];
-  if (runsCommitGraph) tasksRun.push('commit-graph');
-  if (gcOutcome.ran) tasksRun.push('gc');
+
+  for (const task of orderedUniqueTasks(opts.tasks)) {
+    if (task === 'commit-graph') {
+      commitGraphOutcome = await runCommitGraphTask(ctx);
+      tasksRun.push('commit-graph');
+      continue;
+    }
+    gcOutcome = await runGcTask(ctx, { auto: opts.auto });
+    if (gcOutcome.ran) tasksRun.push('gc');
+  }
 
   return { tasksRun, ...commitGraphOutcome, ...gcOutcome.result };
 };
