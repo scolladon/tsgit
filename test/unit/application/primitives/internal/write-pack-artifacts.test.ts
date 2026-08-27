@@ -8,6 +8,7 @@ import {
   buildIdx,
   buildRev,
   writePackArtifacts,
+  writePackArtifactsViaQuarantine,
 } from '../../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type { PackIndexWriterEntry } from '../../../../../src/domain/storage/index.js';
@@ -341,6 +342,42 @@ describe('writePackArtifacts', () => {
         // Assert
         const revBytes = await ctx.fs.read(`${dir}/pack-${PACK_SHA}.rev`);
         expect(revBytes.length).toBe(52);
+      });
+    });
+  });
+});
+
+describe('writePackArtifactsViaQuarantine', () => {
+  describe('Given promisor: true rewriting the SAME sha a prior call already wrote', () => {
+    describe('When writePackArtifactsViaQuarantine runs a second time', () => {
+      it('Then it succeeds rather than refusing FILE_EXISTS, and .promisor is still present', async () => {
+        // Arrange — the no-op boundary (Pin W): a repeat build over an
+        // unchanged oid set reproduces the identical sha, so the second
+        // call's `.promisor` write finds its own sentinel from the FIRST
+        // call already sitting at that exact path.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: true,
+        });
+
+        // Act
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: true,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.promisor`)).toBe(true);
       });
     });
   });

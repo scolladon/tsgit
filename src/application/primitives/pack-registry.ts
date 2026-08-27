@@ -314,8 +314,9 @@ export interface PackFileClassification {
    *  not rewritten, not deleted; its objects are neither duplicated into the
    *  new pack nor migrated to the cruft pack, even when unreachable. */
   readonly kept: ReadonlyArray<RegisteredPack>;
-  /** `.promisor`-marked. A second consolidation class in a later part; here,
-   *  excluded exactly as a kept pack is — a temporary, conservative posture. */
+  /** `.promisor`-marked — a second, disjoint consolidation class. Every
+   *  promisor object repacks whole into one new promisor pack, never merged
+   *  with the normal one; it is not an exclusion the way a kept pack is. */
   readonly promisor: ReadonlyArray<RegisteredPack>;
   /** `.mtimes`-marked — the existing cruft pack, owned by the cruft
    *  lifecycle, never by consolidation. */

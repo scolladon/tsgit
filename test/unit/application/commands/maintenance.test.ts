@@ -34,6 +34,7 @@ import {
   type MaintenanceTask,
   maintenance,
 } from '../../../../src/application/commands/maintenance.js';
+import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
   commonGitDir,
   looseObjectPath,
@@ -188,6 +189,27 @@ async function seedDoomedBlob(ctx: Context, content: string): Promise<ObjectId> 
 
 const severDoomedBranch = (ctx: Context): Promise<void> =>
   ctx.fs.rm(`${ctx.layout.gitDir}/refs/heads/doomed`);
+
+/** Writes a synthetic pack of one blob per given content and marks it
+ *  `.promisor` — the fixture every promisor-consolidation test builds on.
+ *  Returns each blob's oid, in the same order as `contents`. */
+async function writePromisorPack(
+  ctx: Context,
+  name: string,
+  contents: ReadonlyArray<string>,
+): Promise<ReadonlyArray<ObjectId>> {
+  const ids = await writeSyntheticPack(
+    ctx,
+    name,
+    contents.map((content) => ({
+      kind: 'base' as const,
+      type: 'blob' as const,
+      content: enc.encode(content),
+    })),
+  );
+  await ctx.fs.write(`${packDirOf(ctx)}/pack-${name}.promisor`, new Uint8Array(0));
+  return ids as ReadonlyArray<ObjectId>;
+}
 
 describe('maintenance', () => {
   describe('Given tasks: []', () => {
@@ -1154,6 +1176,7 @@ describe('maintenance', () => {
             'cruftObjectsRetained',
             'cruftObjectsExpired',
             'cruftPackId',
+            'promisorPackId',
             'packsRetired',
             'packBytesBefore',
             'packBytesAfter',
@@ -1734,6 +1757,391 @@ describe('maintenance', () => {
         // Assert
         expect(events[0]).toBe('settleRefresh');
         expect(events.length).toBeGreaterThan(1);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Consolidation — promisor packs
+  // ---------------------------------------------------------------------
+
+  describe('Given the same oid loose AND inside a .promisor-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then the promisor class wins: the new promisor pack carries it, the new normal pack does not, and its loose copy is unlinked', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const overlapId = await writeLooseBlob(ctx, 'overlap-loose-and-promisor');
+        await writePromisorPack(ctx, 'overlap-promisor', ['overlap-loose-and-promisor']);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.promisorPackId).toBeDefined();
+        const promisorOids = await packMemberOids(ctx, result.promisorPackId as string);
+        expect(promisorOids.has(overlapId)).toBe(true);
+        if (result.packId !== undefined) {
+          const normalOids = await packMemberOids(ctx, result.packId);
+          expect(normalOids.has(overlapId)).toBe(false);
+        }
+        expect(await isLoose(ctx, overlapId)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an unreachable object living only inside a .promisor-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then it lands in the new promisor pack and never in the cruft pack', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const [unreachableId] = await writePromisorPack(ctx, 'unreachable-promisor', [
+          'unreachable-promisor-seed',
+        ]);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.promisorPackId).toBeDefined();
+        const promisorOids = await packMemberOids(ctx, result.promisorPackId as string);
+        expect(promisorOids.has(unreachableId as ObjectId)).toBe(true);
+        if (result.cruftPackId !== undefined) {
+          const cruftOids = await packMemberOids(ctx, result.cruftPackId);
+          expect(cruftOids.has(unreachableId as ObjectId)).toBe(false);
+        }
+      });
+    });
+  });
+
+  describe('Given a cutoff that would destroy any other unreachable object, with an unreachable promisor object also present', () => {
+    describe('When gc runs', () => {
+      it('Then the promisor object survives while the ordinary unreachable object is destroyed', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const [promisorId] = await writePromisorPack(ctx, 'survives-cutoff', [
+          'survives-cutoff-seed',
+        ]);
+        const controlId = await writeLooseBlob(ctx, 'destroyed-by-cutoff');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        await expect(readObject(ctx, promisorId as ObjectId)).resolves.toMatchObject({
+          type: 'blob',
+        });
+        expect(result.promisorPackId).toBeDefined();
+        let caught: unknown;
+        try {
+          await readObject(ctx, controlId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a repository with no promisor packs at all', () => {
+    describe('When gc runs', () => {
+      it('Then no .promisor file is written anywhere', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const packDir = packDirOf(ctx);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+        const entries = await ctx.fs.readdir(packDir);
+
+        // Assert
+        expect(result.promisorPackId).toBeUndefined();
+        expect(entries.some((entry) => entry.name.endsWith('.promisor'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a partial clone whose non-promisor half is entirely .keep-marked', () => {
+    describe('When gc runs', () => {
+      it('Then a promisor pack is written and no normal pack is', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const packDir = packDirOf(ctx);
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
+        await writePromisorPack(ctx, 'keep-half-promisor', ['keep-half-promisor-seed']);
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.promisorPackId).toBeDefined();
+        expect(second.packId).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given both a normal-pack-worthy reachable object and a promisor pack input in the same run', () => {
+    describe('When gc runs', () => {
+      it('Then writePackArtifactsViaQuarantine is called with promisor: false for the normal pack and promisor: true for the promisor pack', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        await writePromisorPack(ctx, 'spy-promisor', ['spy-promisor-seed']);
+        const spy = vi.spyOn(writePackArtifactsMod, 'writePackArtifactsViaQuarantine');
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+        const promisorFlags = spy.mock.calls.map((call) => call[1].promisor);
+        spy.mockRestore();
+
+        // Assert
+        expect(promisorFlags).toContain(false);
+        expect(promisorFlags).toContain(true);
+      });
+    });
+  });
+
+  describe('Given a promisor-pack retirement interrupted right after the .idx unlink', () => {
+    describe('When the fault propagates', () => {
+      it('Then the half-retired pack is invisible to createPackRegistry and its .promisor sidecar is still present', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const packDir = packDirOf(ctx);
+        await writePromisorPack(ctx, 'fault-p1', ['fault-promisor-seed']);
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.promisorPackId).toBeDefined();
+        const firstPromisorSha = first.promisorPackId as string;
+        // Widen the promisor set so the second gc supersedes the first
+        // promisor pack under a new sha — otherwise the no-op boundary
+        // reproduces the identical sha and nothing is retired.
+        await writePromisorPack(ctx, 'fault-p2', ['fault-promisor-seed-2']);
+
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        let idxUnlinked = false;
+        let faultInjected = false;
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path === `${packDir}/pack-${firstPromisorSha}.idx` && !idxUnlinked) {
+            idxUnlinked = true;
+            return originalRm(path);
+          }
+          if (idxUnlinked && !faultInjected) {
+            faultInjected = true;
+            throw new Error('injected-fault');
+          }
+          return originalRm(path);
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+        } catch (error) {
+          caught = error;
+        }
+        rmSpy.mockRestore();
+
+        // Assert
+        expect(caught).toBeDefined();
+        expect(idxUnlinked).toBe(true);
+        refreshPackRegistry(ctx);
+        const registeredNames = (await getPackRegistry(ctx).all()).map((p) => p.name);
+        expect(registeredNames).not.toContain(`pack-${firstPromisorSha}`);
+        expect(await ctx.fs.exists(`${packDir}/pack-${firstPromisorSha}.promisor`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a pack carrying both .keep and .promisor', () => {
+    describe('When gc runs', () => {
+      it('Then .keep wins: the pack is untouched and contributes nothing to the new promisor pack', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const packDir = packDirOf(ctx);
+        await writePromisorPack(ctx, 'kept-and-promisor', ['kept-and-promisor-seed']);
+        await ctx.fs.write(`${packDir}/pack-kept-and-promisor.keep`, new Uint8Array(0));
+        const before = await ctx.fs.read(`${packDir}/pack-kept-and-promisor.pack`);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+        const after = await ctx.fs.read(`${packDir}/pack-kept-and-promisor.pack`);
+
+        // Assert
+        expect(result.promisorPackId).toBeUndefined();
+        expect(Buffer.compare(Buffer.from(before), Buffer.from(after))).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a .keep-and-.promisor-marked pack alongside a plain .promisor-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then the kept pack is untouched but the other promisor pack is still consolidated', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const packDir = packDirOf(ctx);
+        await writePromisorPack(ctx, 'kept-twin-a', ['kept-twin-a-seed']);
+        await ctx.fs.write(`${packDir}/pack-kept-twin-a.keep`, new Uint8Array(0));
+        const [consolidatedId] = await writePromisorPack(ctx, 'kept-twin-b', ['kept-twin-b-seed']);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.promisorPackId).toBeDefined();
+        const promisorOids = await packMemberOids(ctx, result.promisorPackId as string);
+        expect(promisorOids.has(consolidatedId as ObjectId)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-kept-twin-a.pack`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-kept-twin-b.pack`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an ordinary repository with no promisor packs', () => {
+    describe('When gc runs', () => {
+      it('Then promisorPackId is undefined', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.promisorPackId).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a partial-clone-shaped repository with a promisor pack', () => {
+    describe('When gc runs', () => {
+      it("Then promisorPackId equals the new promisor pack's sha", async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        await writePromisorPack(ctx, 'shape-check', ['shape-check-seed']);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.promisorPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        expect(await ctx.fs.exists(`${packDir}/pack-${result.promisorPackId}.promisor`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a second gc on a promisor set unchanged since the last run', () => {
+    describe('When gc runs again', () => {
+      it('Then the same promisor pack sha keeps being produced, with .promisor still present', async () => {
+        // Arrange — the no-op boundary (Pin W) applied to the promisor
+        // class: a repeat run over an unchanged set reproduces the exact
+        // same sha, so the rewrite must tolerate a `.promisor` sentinel
+        // already sitting at that name from the prior run.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        await writePromisorPack(ctx, 'no-op-boundary', ['no-op-boundary-seed']);
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.promisorPackId).toBeDefined();
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.promisorPackId).toBe(first.promisorPackId);
+        const packDir = packDirOf(ctx);
+        expect(await ctx.fs.exists(`${packDir}/pack-${second.promisorPackId}.promisor`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given retirable packs across the normal, cruft AND promisor classes in the same run', () => {
+    describe('When gc runs', () => {
+      it('Then packsRetired spans all three retirable classes', async () => {
+        // Arrange — one gc seeds one retirable pack per the normal and
+        // cruft classes; the promisor class gets its first-ever pack only
+        // at the widening step below, so it retires exactly once too (a
+        // promisor pack already consolidated by this same first gc would
+        // need a SECOND widening of its own to retire, muddying the count).
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const doomedBlobId = await writeLooseBlob(ctx, 'cruft-seed');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), doomedBlobId), 1_900_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+        expect(first.cruftPackId).toBeDefined();
+
+        // Act — force every class to rewrite under a new sha: a new
+        // reachable commit (normal), a new aged unreachable blob (cruft),
+        // and the first-ever promisor pack (promisor).
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const newCruftBlobId = await writeLooseBlob(ctx, 'cruft-seed-2');
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), newCruftBlobId), 1_900_000_000);
+        await writePromisorPack(ctx, 'retire-p1', ['promisor-retire-seed']);
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.packsRetired).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a partial-clone-shaped repository with a promisor pack, a normal pack and nothing else', () => {
+    describe('When gc runs', () => {
+      it('Then packsAfter is 2, not 1 — the presence of a partial clone must not collapse away', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        await writePromisorPack(ctx, 'steady-state', ['promisor-steady-state']);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packsAfter).toBe(2);
+        expect(result.packId).toBeDefined();
+        expect(result.promisorPackId).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming a promisor pack gc retires', () => {
+    describe('When gc runs', () => {
+      it('Then the multi-pack-index is deleted', async () => {
+        // Arrange — the promisor pack must be consolidated (and its object
+        // bytes cached) by a FIRST gc before the midx names it: naming a
+        // never-yet-read promisor pack directly would route its object read
+        // through the midx's own (structurally invalid, zero-entry) claim
+        // instead of the ordinary per-pack .idx scan.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const packDir = packDirOf(ctx);
+        await writePromisorPack(ctx, 'midx-promisor', ['midx-promisor-seed']);
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.promisorPackId).toBeDefined();
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.promisorPackId}.idx`]);
+        // Widen the promisor set so the second gc actually supersedes it.
+        await writePromisorPack(ctx, 'midx-promisor-2', ['midx-promisor-seed-2']);
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(multiPackIndexPath(packDir))).toBe(false);
       });
     });
   });

@@ -4,7 +4,7 @@ subjects:
 ---
 # 732 — gc consolidates existing packs
 
-- **Status:** accepted
+- **Status:** accepted · **Refined by:** ADR-733
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-17 clarification) · **Supersedes/Refines:** refines ADR-731 (adds the consolidation half of default gc)
 

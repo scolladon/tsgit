@@ -7,14 +7,16 @@ subjects:
 # 724 — `maintenance` command with commit-graph write and gc-lite
 
 > Superseded by [ADR-731](731-gc-uses-cruft-packs.md) for the gc task's prune-loose
-> semantics (replaced by git's cruft-pack lifecycle) and by
+> semantics (replaced by git's cruft-pack lifecycle), by
 > [ADR-732](732-gc-consolidates-existing-packs.md) for consolidating pre-existing
-> packs (this ADR's "pack loose objects … prune the packed loose objects" bullet is
-> what consolidation rewrites). The command, explicit-only invocation, the
-> commit-graph task, the structured result shape, the midx/`.rev` constraints and the
-> Tier-1 surface gates are carried forward unchanged.
+> packs, and by [ADR-733](733-gc-repacks-promisor-objects-separately.md) for
+> consolidating promisor packs in their own class (this ADR's "pack loose objects …
+> prune the packed loose objects" bullet is what all three rewrite, one file class at
+> a time). The command, explicit-only invocation, the commit-graph task, the
+> structured result shape, the midx/`.rev` constraints and the Tier-1 surface gates
+> are carried forward unchanged.
 
-- **Status:** superseded by ADR-731 (prune semantics) and ADR-732 (pack consolidation); the command and commit-graph task stand
+- **Status:** superseded by ADR-731 (prune semantics), ADR-732 (pack consolidation) and ADR-733 (promisor consolidation); the command and commit-graph task stand
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-2) · **Supersedes/Refines:** un-parks the gc/repack/prune backlog entry (docs/BACKLOG.md)
 

@@ -8,9 +8,11 @@ tasks it names run.
 
 Ships two tasks. `commit-graph` writes `objects/info/commit-graph`
 byte-identical to `git commit-graph write --reachable` for the same commit
-set. `gc` consolidates every pack it owns: **all** reachable objects — loose
-*and* already packed — repack into one fresh normal pack, and unreachable
-ones route through git's cruft-pack lifecycle wherever they lived: recent
+set. `gc` consolidates every pack it owns, by class: **all** reachable,
+non-promisor objects — loose *and* already packed — repack into one fresh
+normal pack; every promisor object repacks whole into one fresh promisor
+pack, never merged with the normal one; and unreachable, non-promisor
+objects route through git's cruft-pack lifecycle wherever they lived: recent
 unreachable objects survive in a cruft pack carrying a `.mtimes` age
 sidecar; objects aged past `gc.pruneExpire` are destroyed outright.
 **`gc` is the first tsgit command that can permanently destroy data** — read
@@ -49,7 +51,10 @@ interface MaintenanceResult {
   readonly cruftObjectsExpired: number;
   /** The cruft pack's sha, or `undefined` when no cruft pack exists afterward. */
   readonly cruftPackId: string | undefined;
-  /** Superseded packs deleted by this call — normal and cruft combined. */
+  /** The promisor pack's sha, or `undefined` when no promisor object is
+   *  owned before or after this run — the common, non-partial-clone case. */
+  readonly promisorPackId: string | undefined;
+  /** Superseded packs deleted by this call — normal, cruft and promisor combined. */
   readonly packsRetired: number;
   /** Summed `.pack` bytes in `objects/pack/` before the call. */
   readonly packBytesBefore: number;
@@ -88,21 +93,26 @@ interface MaintenanceResult {
      rewritten, not deleted, and its objects are neither duplicated into the
      new pack nor migrated to the cruft pack even when unreachable. This is
      the caller's escape hatch from every rule below.
-   - `.promisor` → excluded here too, as a temporary, conservative posture
-     (a partial-clone repository's promisor packs are left untouched; a
-     later capability consolidates them in their own right).
+   - `.promisor` → a **second, disjoint consolidation class**: every
+     promisor object repacks whole into **one** freshly written promisor
+     pack (`promisorPackId`), reachability irrelevant, and is **never**
+     merged with the normal pack — a partial clone's lazily-fetchable
+     objects must never read as fully present locally.
    - `.mtimes` → the existing **cruft** pack, governed by step 4 below.
    - anything else → **normal**, consolidated by step 3.
-3. **Reachable objects** — loose *and* already packed, across every normal
-   pack — repack into **one** freshly written normal pack (`packId`). Every
-   superseded normal pack and its siblings (`.idx`/`.pack`/`.rev`/`.bitmap`)
-   are deleted. No pack is written when nothing is reachable outside kept
-   packs (`packId: undefined`), never an empty one — and there is
-   deliberately **no** "already consolidated, skip it" shortcut: even a
-   single unchanged pack is rewritten on every run (same sha, since the
-   packer is deterministic), because a pack's own file mtime is the age an
-   object carries the moment it later becomes unreachable — a skipped
-   rewrite would silently stale-date that clock.
+3. **Reachable, non-promisor objects** — loose *and* already packed, across
+   every normal pack — repack into **one** freshly written normal pack
+   (`packId`). Every superseded normal pack and its siblings
+   (`.idx`/`.pack`/`.rev`/`.bitmap`) are deleted. No pack is written when
+   nothing is reachable outside kept and promisor packs (`packId:
+   undefined`), never an empty one — and there is deliberately **no**
+   "already consolidated, skip it" shortcut: even a single unchanged pack is
+   rewritten on every run (same sha, since the packer is deterministic),
+   because a pack's own file mtime is the age an object carries the moment
+   it later becomes unreachable — a skipped rewrite would silently
+   stale-date that clock. The promisor pack (previous bullet) is rewritten
+   on the identical no-skip schedule, and its superseded siblings — now
+   including `.promisor` — are deleted the same way.
 4. **Unreachable objects** go through the cruft-pack lifecycle
    (`gc.cruftPacks`, default `true`), regardless of whether they came from a
    loose file or a pack being consolidated away:
@@ -151,12 +161,19 @@ interface MaintenanceResult {
 | `cruftObjectsRetained` | objects carried forward from the previous cruft pack, ages intact |
 | `cruftObjectsExpired` | objects **destroyed** by the expiry cutoff — the one count that means data left the repository forever |
 | `cruftPackId` | the cruft pack's sha, or `undefined` when none exists afterward |
-| `packsRetired` | superseded packs deleted this run, normal and cruft combined — `packsAfter − packsBefore` cannot express this, since consolidating five packs into one and consolidating two into one both read `−1` |
+| `promisorPackId` | the promisor pack's sha, or `undefined` when no promisor object is owned before or after this run |
+| `packsRetired` | superseded packs deleted this run, normal, cruft and promisor combined — `packsAfter − packsBefore` cannot express this, since consolidating five packs into one and consolidating two into one both read `−1` |
 | `packBytesBefore` / `packBytesAfter` | summed `.pack` bytes in `objects/pack/`, before and after — the denominator and numerator of the size trade below |
 
 - **No rendered text.** Every field is a count, a boolean, an enum member or
   an object id; a caller composing a summary line ("packed 42 objects into 1
   pack") does so itself.
+- **Three pack ids, read as one set.** An ordinary repository reports
+  `packId` set and `cruftPackId`/`promisorPackId` `undefined`; a partial
+  clone with no garbage reports `packId` and `promisorPackId` set,
+  `cruftPackId` undefined; a repository whose only pack is `*.keep`-marked
+  reports all three `undefined` — that is not an error, just nothing to
+  consolidate.
 
 ### Object placement by file class
 
@@ -167,6 +184,7 @@ interface MaintenanceResult {
 | unreachable, at or past the cutoff | **destroyed** |
 | in a normal pack, since become unreachable | migrates to the cruft pack, carrying its SOURCE pack's mtime |
 | anything inside a `*.keep` pack | untouched — never repacked, never crufted, never duplicated |
+| anything inside a `.promisor` pack, reachable or not | the one new promisor pack, marker carried; never merged with the normal pack, never crufted, never destroyed |
 
 ### The size trade
 
@@ -221,4 +239,5 @@ await repo.maintenance({ tasks: ['bogus' as never] }); // throws INVALID_OPTION
 - Related commands: [`packObjects`](pack-objects.md), [`packRefs`](pack-refs.md)
 - ADRs: [724](../../adr/724-maintenance-command-with-commit-graph-and-gc-lite.md),
   [731](../../adr/731-gc-uses-cruft-packs.md),
-  [732](../../adr/732-gc-consolidates-existing-packs.md)
+  [732](../../adr/732-gc-consolidates-existing-packs.md),
+  [733](../../adr/733-gc-repacks-promisor-objects-separately.md)

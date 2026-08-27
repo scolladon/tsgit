@@ -206,7 +206,7 @@
   {
     "name": "Command (maintenance)",
     "path": "dist/esm/commands/maintenance.js",
-    "limit": "2.5 kB",
+    "limit": "2.75 kB",
     "gzip": true
   },
   {

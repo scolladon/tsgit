@@ -314,7 +314,14 @@ export const writePackArtifactsViaQuarantine = async (
   await renameIntoPlace(ctx, tmpPackPath, paths.packPath);
   await renameIntoPlace(ctx, tmpIdxPath, paths.idxPath);
 
-  if (input.promisor) await writeEmptySentinel(ctx, paths.promisorPath);
+  if (input.promisor) {
+    // A same-sha rewrite (Pin W's no-op boundary, promisor class included)
+    // finds its own sentinel from the PRIOR run still in place at this exact
+    // path — `writeExclusive` alone would refuse with `FILE_EXISTS`, exactly
+    // as the `.rev` write below tolerates the same shape of stale sibling.
+    await rmTolerant(ctx, paths.promisorPath);
+    await writeEmptySentinel(ctx, paths.promisorPath);
+  }
   if (wantRev) {
     await rmTolerant(ctx, paths.revPath);
     await writeRevArtifact(ctx, paths.revPath, input.entries, input.packSha, sorted);

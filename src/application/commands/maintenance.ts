@@ -6,14 +6,15 @@
  * maintenance happens, and only the tasks it names run.
  *
  * Ships two tasks. `commit-graph` writes `objects/info/commit-graph`.
- * `gc` consolidates every pack it owns: reachable objects — loose AND
- * already packed — repack into one new normal pack, and unreachable ones
- * route through git's cruft-pack lifecycle wherever they lived. Superseded
- * packs and every sibling artefact are retired; an existing multi-pack-index
- * naming any of them is expired. `*.keep`-marked packs are excluded
- * entirely, as git excludes them; `.promisor`-marked packs are excluded
- * here too, as a temporary, conservative posture a later task replaces with
- * full parity.
+ * `gc` consolidates every pack it owns, by class: reachable objects — loose
+ * AND already packed — repack into one new normal pack; every promisor
+ * object repacks whole into one new promisor pack, never merged with the
+ * normal one (merging would tell a later reader that lazily-fetched objects
+ * are already present locally); and unreachable, non-promisor objects route
+ * through git's cruft-pack lifecycle wherever they lived. Superseded packs
+ * and every sibling artefact are retired; an existing multi-pack-index
+ * naming any of them is expired. `*.keep`-marked packs are the only total
+ * exclusion, exactly as git excludes them.
  */
 import { invalidOption } from '../../domain/commands/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
@@ -90,7 +91,10 @@ export interface MaintenanceResult {
   readonly cruftObjectsExpired: number;
   /** The cruft pack's sha, or `undefined` when no cruft pack exists afterward. */
   readonly cruftPackId: ObjectId | undefined;
-  /** Superseded packs deleted by this call — normal and cruft combined. */
+  /** The promisor pack's sha, or `undefined` when no promisor object is
+   *  owned before or after this run — the common, non-partial-clone case. */
+  readonly promisorPackId: ObjectId | undefined;
+  /** Superseded packs deleted by this call — normal, cruft and promisor combined. */
   readonly packsRetired: number;
   /** Summed `.pack` bytes in `objects/pack/` before the call — the
    *  denominator for observing consolidation's size trade. */
@@ -131,6 +135,7 @@ const GC_NOT_RUN: GcResult = {
   cruftObjectsRetained: 0,
   cruftObjectsExpired: 0,
   cruftPackId: undefined,
+  promisorPackId: undefined,
   packsRetired: 0,
   packBytesBefore: 0,
   packBytesAfter: 0,
@@ -223,15 +228,21 @@ async function collectNormalPackData(
 
 /**
  * Step 4's widened partition: `owned` gains every NORMAL pack's oids
- * (consolidation's whole contribution); `keptOids` is subtracted from BOTH
- * output sets — Pin V's second probe is why the cruft side needs it too: a
- * kept pack's unreachable objects are never crufted, only its reachable
- * ones are never repacked.
+ * (consolidation's whole contribution); `keptOids` and `ownedPromisor` are
+ * subtracted from BOTH output sets — an oid can be loose (or in a normal
+ * pack) *and* inside a kept or promisor pack at once, and either class wins
+ * over the normal/cruft outcome the loose or normal-pack copy alone would
+ * produce. Kept objects are never repacked and never crufted (Pin V);
+ * promisor objects are repacked into their own class (`toPromisorPack`,
+ * computed separately — it is the WHOLE promisor set, not an intersection
+ * with `owned`) and are excluded here only so their loose or normal-pack
+ * duplicate never re-enters the normal or cruft pack.
  */
 function partitionOwned(
   owned: ReadonlySet<ObjectId>,
   reachable: ReadonlySet<ObjectId>,
   keptOids: ReadonlySet<ObjectId>,
+  ownedPromisor: ReadonlySet<ObjectId>,
 ): {
   readonly toNormalPack: ReadonlyArray<ObjectId>;
   readonly cruftCandidates: ReadonlyArray<ObjectId>;
@@ -239,7 +250,7 @@ function partitionOwned(
   const toNormalPack: ObjectId[] = [];
   const cruftCandidates: ObjectId[] = [];
   for (const id of owned) {
-    if (keptOids.has(id)) continue;
+    if (keptOids.has(id) || ownedPromisor.has(id)) continue;
     (reachable.has(id) ? toNormalPack : cruftCandidates).push(id);
   }
   return { toNormalPack, cruftCandidates };
@@ -311,6 +322,48 @@ async function buildAndWriteNormalPack(
       ? 'normal'
       : 'none';
   return { packId: written.packSha as ObjectId, reuse };
+}
+
+interface PromisorPackOutcome {
+  readonly packId: ObjectId | undefined;
+  /** Set when this run's build reproduced an EXISTING promisor pack's name
+   *  byte-for-byte (the promisor set is unchanged since the last run) — that
+   *  pack must NOT appear in the retirement list, since it now IS the fresh
+   *  promisor pack. */
+  readonly reusedExistingName: string | undefined;
+}
+
+/**
+ * Step 6b: builds and writes the promisor pack from `toPromisorPack` — the
+ * WHOLE union of every promisor pack's own oids, reachability irrelevant.
+ * Skipped entirely (`packId: undefined`) when `oids` is empty — every
+ * repository that is not a partial clone. Otherwise ALWAYS writes fresh, via
+ * `writePackArtifactsViaQuarantine`, for the same no-skip reason step 6's
+ * normal pack never short-circuits: a repeat run over an unchanged promisor
+ * set reproduces the same sha (Pin W's boundary, one class over), and the
+ * quarantine writer is what lets that same-name rewrite land without a
+ * `FILE_EXISTS` refusal.
+ */
+async function buildAndWritePromisorPack(
+  ctx: Context,
+  packDir: string,
+  oids: ReadonlyArray<ObjectId>,
+  existingPromisorNames: ReadonlySet<string>,
+): Promise<PromisorPackOutcome> {
+  if (oids.length === 0) return { packId: undefined, reusedExistingName: undefined };
+  const pack = await buildPack(ctx, { oids });
+  const written = await writePackArtifactsViaQuarantine(ctx, {
+    packDir,
+    packBytes: pack.bytes,
+    entries: indexEntriesFor(oids, pack.entries),
+    packSha: pack.sha,
+    promisor: true,
+  });
+  const writtenName = `pack-${written.packSha}`;
+  return {
+    packId: written.packSha as ObjectId,
+    reusedExistingName: existingPromisorNames.has(writtenName) ? writtenName : undefined,
+  };
 }
 
 /**
@@ -424,11 +477,27 @@ async function retireNormalPack(ctx: Context, packDir: string, packSha: string):
 }
 
 /**
- * Steps 9b/10/10b: retires every superseded pack this run decided on, cruft
- * and normal alike. Steps 6/6b/step-verify already read every
- * reachable/surviving object OUT of the packs retired here — their handles
- * are guaranteed live, so the drain must complete before the first unlink.
- * A no-op, no drain at all, when nothing needs retiring.
+ * Retires a superseded PROMISOR pack's siblings (step 10c) — `.idx` FIRST,
+ * the same reader-visibility rule step 10b uses, then `.pack`/`.rev`/
+ * `.bitmap`, and `.promisor` LAST of all: a pack findable without its marker
+ * reads as an ordinary normal pack, and a later gc would merge its objects
+ * into the normal pack — the one outcome consolidation may never produce —
+ * so the marker must outlive the `.idx` that makes the pack findable at all.
+ */
+async function retirePromisorPack(ctx: Context, packDir: string, packSha: string): Promise<void> {
+  await rmTolerant(ctx, `${packDir}/pack-${packSha}.idx`);
+  await rmTolerant(ctx, packFilePath(packDir, packSha));
+  await rmTolerant(ctx, `${packDir}/pack-${packSha}.rev`);
+  await rmTolerant(ctx, `${packDir}/pack-${packSha}.bitmap`);
+  await rmTolerant(ctx, `${packDir}/pack-${packSha}.promisor`);
+}
+
+/**
+ * Steps 9b/10/10b/10c: retires every superseded pack this run decided on —
+ * normal, cruft and promisor alike. Steps 6/6b/step-verify already read
+ * every reachable/surviving/promisor object OUT of the packs retired here —
+ * their handles are guaranteed live, so the drain must complete before the
+ * first unlink. A no-op, no drain at all, when nothing needs retiring.
  */
 async function retireSupersededPacks(
   ctx: Context,
@@ -436,14 +505,24 @@ async function retireSupersededPacks(
   packDir: string,
   normalPacksToRetire: ReadonlyArray<RegisteredPack>,
   cruftShasToRetire: ReadonlyArray<string>,
+  promisorPacksToRetire: ReadonlyArray<RegisteredPack>,
 ): Promise<void> {
-  if (normalPacksToRetire.length === 0 && cruftShasToRetire.length === 0) return;
+  if (
+    normalPacksToRetire.length === 0 &&
+    cruftShasToRetire.length === 0 &&
+    promisorPacksToRetire.length === 0
+  ) {
+    return;
+  }
   await registry.settleRefresh();
   for (const pack of normalPacksToRetire) {
     await retireNormalPack(ctx, packDir, pack.name.slice('pack-'.length));
   }
   for (const sha of cruftShasToRetire) {
     await retireCruftPack(ctx, packDir, sha);
+  }
+  for (const pack of promisorPacksToRetire) {
+    await retirePromisorPack(ctx, packDir, pack.name.slice('pack-'.length));
   }
 }
 
@@ -547,8 +626,10 @@ async function runGcTask(
   const statByName = await lstatPacks(ctx, allPacksBefore);
   const packBytesBefore = sumPackBytes([...statByName.values()]);
   const existingNormalNames = new Set(classification.normal.map((pack) => pack.name));
+  const existingPromisorNames = new Set(classification.promisor.map((pack) => pack.name));
 
   const keptOids = await unionOids(classification.kept);
+  const ownedPromisor = await unionOids(classification.promisor);
   const { oids: normalOids, mtimeOf: normalPackMtimeOf } = await collectNormalPackData(
     classification.normal,
     statByName,
@@ -561,7 +642,22 @@ async function runGcTask(
   // --- step 3/4: retention roots, reachability, the widened partition ---
   const owned = new Set<ObjectId>([...looseSet, ...existingCruft.mtimes.keys(), ...normalOids]);
   const reachable = await computeReachableSet(ctx);
-  const { toNormalPack, cruftCandidates } = partitionOwned(owned, reachable, keptOids);
+  const { toNormalPack, cruftCandidates } = partitionOwned(
+    owned,
+    reachable,
+    keptOids,
+    ownedPromisor,
+  );
+  // toPromisorPack is the WHOLE promisor set, never intersected with
+  // `reachable`: a promisor pack has no way to carry a "still needed
+  // locally" flag per object, so an unreachable member can only be carried
+  // forward (never crufted — a cruft pack cannot carry the `.promisor`
+  // marker — and never destroyed by the expiry cutoff, which never sees it).
+  // Verdict pinned against git 2.55.0: an unreachable object living only
+  // inside a `.promisor`-marked pack is retained in the rebuilt promisor
+  // pack (never crufted, never dropped) by real `git gc` too — the design's
+  // "retain" default needed no correction.
+  const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor];
 
   const mtimes = await computeCruftMtimes(
     ctx,
@@ -581,6 +677,12 @@ async function runGcTask(
     existingCruftShas,
     existingNormalNames,
   );
+  const promisorPack = await buildAndWritePromisorPack(
+    ctx,
+    packDir,
+    toPromisorPack,
+    existingPromisorNames,
+  );
   const cruftOutcome = await applyCruftOutcome(
     ctx,
     packDir,
@@ -593,7 +695,7 @@ async function runGcTask(
 
   // --- step 8: refresh, then verify every object just packed ---
   refreshPackRegistry(ctx);
-  const verifyTargets = [...toNormalPack, ...survivors];
+  const verifyTargets = [...toNormalPack, ...toPromisorPack, ...survivors];
   await boundedMapFor(ctx, 'ioBound', verifyTargets, (id) =>
     readObject(ctx, id, { verifyHash: true }),
   );
@@ -614,7 +716,7 @@ async function runGcTask(
     forgetParsedObjectMemo(ctx, id);
   }
 
-  // --- steps 9b/10/10b: retire every superseded pack, cruft and normal ---
+  // --- steps 9b/10/10b/10c: retire every superseded pack, cruft, normal and promisor ---
   const reusedCruftSha = normalPack.reuse === 'cruft' ? (normalPack.packId as string) : undefined;
   if (reusedCruftSha !== undefined) {
     await declassifyCruftPack(ctx, packDir, reusedCruftSha);
@@ -627,12 +729,23 @@ async function runGcTask(
   const cruftShasToRetire = existingCruft.packShas.filter(
     (sha) => sha !== cruftOutcome.cruftPackId && sha !== reusedCruftSha,
   );
+  const promisorPacksToRetire = classification.promisor.filter(
+    (pack) => pack.name !== promisorPack.reusedExistingName,
+  );
 
-  await retireSupersededPacks(ctx, registry, packDir, normalPacksToRetire, cruftShasToRetire);
+  await retireSupersededPacks(
+    ctx,
+    registry,
+    packDir,
+    normalPacksToRetire,
+    cruftShasToRetire,
+    promisorPacksToRetire,
+  );
 
   const retiredIdxNames = new Set<string>([
     ...normalPacksToRetire.map((pack) => `${pack.name}.idx`),
     ...cruftShasToRetire.map((sha) => `pack-${sha}.idx`),
+    ...promisorPacksToRetire.map((pack) => `${pack.name}.idx`),
   ]);
   await expireMidxIfNeeded(ctx, packDir, retiredIdxNames);
 
@@ -660,7 +773,9 @@ async function runGcTask(
       cruftObjectsRetained,
       cruftObjectsExpired: doomed.length,
       cruftPackId: cruftOutcome.cruftPackId,
-      packsRetired: normalPacksToRetire.length + cruftShasToRetire.length,
+      promisorPackId: promisorPack.packId,
+      packsRetired:
+        normalPacksToRetire.length + cruftShasToRetire.length + promisorPacksToRetire.length,
       packBytesBefore,
       packBytesAfter,
     },

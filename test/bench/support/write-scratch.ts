@@ -55,6 +55,23 @@ export const buildCommitScratch = async (): Promise<ScratchRepo> => {
   return scratch;
 };
 
+/**
+ * `fileCount` freshly committed small files, all loose (never packed) — the
+ * reachable-loose-object shape `maintenance`'s `gc` task repacks on a plain
+ * (non-partial-clone) repository. One flat commit, not `fileCount` separate
+ * ones: gc's cost is driven by object count, not commit-graph depth.
+ */
+export const buildManyLooseObjectsScratch = async (fileCount: number): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
+  const { cwd, repo } = scratch;
+  for (let i = 0; i < fileCount; i += 1) {
+    await writeFile(path.join(cwd, `f${i.toString().padStart(6, '0')}.txt`), `payload ${i}\n`);
+  }
+  await repo.add([], { all: true });
+  await repo.commit({ message: 'seed', author: SCRATCH_AUTHOR, committer: SCRATCH_AUTHOR });
+  return scratch;
+};
+
 /** Writes unstaged working-tree files, ready for the measured `add --all` call. */
 export const buildAddScratch = async (): Promise<ScratchRepo> => {
   const scratch = await newScratch();

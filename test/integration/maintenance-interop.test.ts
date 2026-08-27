@@ -165,6 +165,37 @@ async function readOursMtimesMap(
   return parseCruftMtimes(new Uint8Array(mtimesBytes), oidsInIndexOrder);
 }
 
+/** Every oid a tsgit-written pack carries, straight off its own `.idx`. */
+async function readOursPackOids(ctx: Context, packId: ObjectId): Promise<ReadonlySet<ObjectId>> {
+  const dir = packsDir(commonGitDir(ctx));
+  const idxBytes = await readFile(`${dir}/pack-${packId}.idx`);
+  const index = parsePackIndex(new Uint8Array(idxBytes), ctx.hashConfig.digestLength);
+  return new Set(allObjectIds(index));
+}
+
+/**
+ * Builds a pack from exactly `oids` via `git pack-objects` and marks it with
+ * `suffix` (`.promisor`, `.keep`, …) — the same manual-construction shape
+ * the existing `*.keep` fixture above uses, and the one Pin Z itself was
+ * pinned with: real `git gc` keys a pack's class off its sibling MARKER
+ * FILE alone, never off remote/partial-clone config, so a bare `.promisor`
+ * touch reproduces a partial clone's placement rules without the protocol
+ * negotiation a real `--filter=blob:none` clone would need.
+ */
+async function buildMarkedPack(
+  dir: string,
+  oids: ReadonlyArray<string>,
+  suffix: string,
+): Promise<string> {
+  const packSha = execFileSync(
+    'git',
+    ['-C', dir, 'pack-objects', '--non-empty', path.join(dir, '.git', 'objects', 'pack', 'pack')],
+    { input: `${oids.join('\n')}\n`, encoding: 'utf8', env: runGitEnv() },
+  ).trim();
+  await writeFile(path.join(dir, '.git', 'objects', 'pack', `pack-${packSha}${suffix}`), '');
+  return packSha;
+}
+
 describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
   describe('Given a reachable commit and one unreachable, fresh loose blob, When gc runs on both twins', () => {
     let baseDir: string;
@@ -802,6 +833,143 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         .catch(() => true);
       expect(peerMidxGone).toBe(true);
       expect(oursMidxGone).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Promisor packs — consolidated in their own class, never merged
+  // ---------------------------------------------------------------------
+
+  describe('Given a partial-clone-shaped repository — a .promisor-marked pack, a normal pack and loose content, When gc runs on both twins', () => {
+    let baseDir: string;
+    let oldPromisorPackName: string;
+    let promisorOid: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('promisor-rebuild');
+      // p0's commit+tree+blob repacked together (Pin Z's own setup) — a
+      // multi-object pack, not a single blob: tsgit's base-only packer and
+      // git's own can otherwise reproduce byte-identical output for a
+      // trivial one-object pack, which would make the "old pack gone"
+      // assertion below pass or fail on a coincidence rather than the
+      // property under test.
+      promisorOid = await addCommit(baseDir, 'p0');
+      git(baseDir, 'repack', '-q', '-d');
+      const packDir = path.join(baseDir, '.git', 'objects', 'pack');
+      const packFile = (await readdir(packDir)).find((name) => name.endsWith('.pack'));
+      if (packFile === undefined) {
+        throw new Error('promisor-rebuild fixture: repack produced no pack');
+      }
+      oldPromisorPackName = packFile;
+      await writeFile(path.join(packDir, packFile.replace(/\.pack$/, '.promisor')), '');
+      await addCommit(baseDir, 'p1'); // more reachable content, left loose
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then exactly two new packs exist: every promisor oid in the promisor pack, none in the normal pack, and the old promisor pack is gone', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'promisor-rebuild');
+
+      // Act
+      const { ctx, result } = await runBothGc(twin);
+
+      // Assert — placement parity, asserted by oid membership, never by a
+      // pack count alone: a count passes an implementation that writes two
+      // packs with the wrong objects in them.
+      expect(result.promisorPackId).toBeDefined();
+      expect(result.packId).toBeDefined();
+      const promisorOids = await readOursPackOids(ctx, result.promisorPackId as ObjectId);
+      const normalOids = await readOursPackOids(ctx, result.packId as ObjectId);
+      expect(promisorOids.has(promisorOid as ObjectId)).toBe(true);
+      expect(normalOids.has(promisorOid as ObjectId)).toBe(false);
+
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(oursEntries.filter((n) => n.endsWith('.pack')).length).toBe(2);
+      expect(oursEntries).not.toContain(oldPromisorPackName);
+      expect(oursEntries.some((n) => n.endsWith('.promisor'))).toBe(true);
+
+      // Peer parity: git also produces exactly two packs, the old one gone.
+      const peerEntries = await packDirEntries(twin.peerDir);
+      expect(peerEntries.filter((n) => n.endsWith('.pack')).length).toBe(2);
+      expect(peerEntries).not.toContain(oldPromisorPackName);
+      expect(peerEntries.some((n) => n.endsWith('.promisor'))).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given a pack carrying both .keep and .promisor markers, When gc runs on both twins', () => {
+    let baseDir: string;
+    let keptPackName: string;
+    let keptOid: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('keep-over-promisor');
+      await addCommit(baseDir, 'c0');
+      keptOid = writeLooseBlobGit(baseDir, 'kept-and-promisor');
+      const packSha = await buildMarkedPack(baseDir, [keptOid], '.keep');
+      await writeFile(
+        path.join(baseDir, '.git', 'objects', 'pack', `pack-${packSha}.promisor`),
+        '',
+      );
+      keptPackName = `pack-${packSha}.pack`;
+      await addCommit(baseDir, 'c1');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then .keep wins on both tools: the pack survives byte-identical and contributes no promisor output', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'keep-over-promisor');
+      const keptPackPath = path.join(twin.oursDir, '.git', 'objects', 'pack', keptPackName);
+      const keptBytesBefore = await readFile(keptPackPath);
+
+      // Act
+      const { result } = await runBothGc(twin);
+      const keptBytesAfter = await readFile(keptPackPath);
+
+      // Assert
+      expect(Buffer.compare(keptBytesBefore, keptBytesAfter)).toBe(0);
+      expect(result.promisorPackId).toBeUndefined();
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(oursEntries).toContain(keptPackName);
+      expect(oursEntries.some((n) => n.endsWith('.mtimes'))).toBe(false);
+      const peerEntries = await packDirEntries(twin.peerDir);
+      expect(peerEntries).toContain(keptPackName);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given an ordinary repository with no promisor packs, When gc runs on both twins', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('no-promisor-output');
+      await addCommit(baseDir, 'c0');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then neither tool writes any .promisor artefact', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'no-promisor-output');
+
+      // Act
+      const { result } = await runBothGc(twin);
+
+      // Assert
+      expect(result.promisorPackId).toBeUndefined();
+      const peerEntries = await packDirEntries(twin.peerDir);
+      const oursEntries = await packDirEntries(twin.oursDir);
+      expect(peerEntries.some((n) => n.endsWith('.promisor'))).toBe(false);
+      expect(oursEntries.some((n) => n.endsWith('.promisor'))).toBe(false);
       await disposeTwin(twin);
     });
   });
