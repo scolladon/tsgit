@@ -8,6 +8,7 @@ import {
   MemoryHookRunner,
   MemoryHttpTransport,
 } from '../../../src/adapters/memory/index.js';
+import { readConfig } from '../../../src/application/primitives/config-read.js';
 import { readConfigSections } from '../../../src/application/primitives/config-scoped-read.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
@@ -635,6 +636,48 @@ describe('openRepository — dispose state machine', () => {
           const data = (err as TsgitError).data;
           expect(data.code).toBe('REPOSITORY_DISPOSED');
         }
+      });
+    });
+  });
+});
+
+describe('openRepository — dispose cache hygiene', () => {
+  describe('Given a repo whose deltaCache holds an entry', () => {
+    describe('When dispose runs', () => {
+      it('Then deltaCache is cleared (currentSize and entryCount both drop to zero)', async () => {
+        // Arrange — a pooling server disposing an idle repo must reclaim
+        // this memory, not keep it pinned while the handle stays reachable.
+        const sut = await open();
+        sut.ctx.deltaCache.set('some-key', new Uint8Array([1, 2, 3]), 3);
+        expect(sut.ctx.deltaCache.currentSize).toBeGreaterThan(0);
+
+        // Act
+        await sut.dispose();
+
+        // Assert
+        expect(sut.ctx.deltaCache.currentSize).toBe(0);
+        expect(sut.ctx.deltaCache.entryCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a repo whose config-read cache was warmed before dispose', () => {
+    describe('When dispose runs and readConfig is called again on the same ctx', () => {
+      it('Then the cache re-reads instead of serving the pre-dispose entry — forgetSessionCaches dropped it', async () => {
+        // Arrange — calls the primitive directly (not through a bound
+        // facade method), since bound methods refuse outright once disposed;
+        // this isolates the cache-hygiene effect from the dispose guard.
+        const sut = await open();
+        await sut.ctx.fs.writeUtf8(`${sut.ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+        await readConfig(sut.ctx);
+        const spy = vi.spyOn(sut.ctx.fs, 'readUtf8');
+
+        // Act
+        await sut.dispose();
+        await readConfig(sut.ctx);
+
+        // Assert
+        expect(spy).toHaveBeenCalled();
       });
     });
   });

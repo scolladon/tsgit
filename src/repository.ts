@@ -8,6 +8,8 @@ import { createRawTreeResolver } from './adapters/snapshot-resolvers/raw-tree-re
 import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/single-flight-index-resolver.js';
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
+import { invalidateShallowSet } from './application/primitives/internal/shallow-set.js';
+import { invalidateIndexCache } from './application/primitives/read-index.js';
 import { disposePackRegistry } from './application/primitives/read-object.js';
 import {
   createSnapshotFactory,
@@ -568,6 +570,26 @@ const hashForAlgorithm = (service: HashService, algorithm: 'sha1' | 'sha256'): H
   return switched;
 };
 
+/**
+ * Drop every session-keyed identity cache this module can reach WITHOUT
+ * reading through `ctx.fs` (dispose has already begun tearing adapters
+ * down) — the config parse cache, the scoped-sections cache it delegates to
+ * (see `invalidateConfigCache`'s own docstring), the shallow-set memo, and
+ * the parsed-index cache. `ctx.deltaCache` is cleared by the caller
+ * directly (it lives ON `ctx`, not behind one of this module's own
+ * `WeakMap<Context['session'], …>`s), and every OTHER session-keyed cache
+ * in the codebase (the pack registry's parsed-object memo, the commit-graph
+ * header cache, the reftable stack cache, …) stays reachable through the
+ * `WeakMap` alone once this handle is unreferenced — this function exists to
+ * shrink retained memory for a pooling server that disposes idle repos
+ * while still holding the handle, not to guarantee zero retention.
+ */
+const forgetSessionCaches = (ctx: Context): void => {
+  primitives.invalidateConfigCache(ctx);
+  invalidateShallowSet(ctx);
+  invalidateIndexCache(ctx);
+};
+
 export const openRepository = async (
   opts: OpenRepositoryOptions,
   fallback: RuntimeFallback,
@@ -726,10 +748,14 @@ export const openRepository = async (
       });
       // Pack handles are FileHandles owned by ctx.fs — close them before the
       // fs adapter itself is torn down.
-      // A failing pack-handle close must never skip adapter teardown.
+      // A failing pack-handle close must never skip adapter teardown or
+      // cache release — a pooling server disposing an idle repo must
+      // reclaim this memory even when pack-handle teardown itself faults.
       try {
         await disposePackRegistry(ctx);
       } finally {
+        ctx.deltaCache.clear();
+        forgetSessionCaches(ctx);
         await disposeAdapters(ctx);
       }
       state = 'DISPOSED';
