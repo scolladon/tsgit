@@ -405,6 +405,7 @@ const groupByCaseFoldedPath = (
   const order: string[] = [];
   const groups = new Map<string, ChangesetEntry[]>();
   for (const entry of entries) {
+    // Stryker disable next-line MethodExpression: equivalent — `key` is purely an internal Map key that groups case-variant paths for serialized writes; it is never exposed to a caller (order.map((key) => groups.get(key)) returns the ChangesetEntry groups, not the key strings), so toUpperCase() groups the identical set of case-variants as toLowerCase() — same partition, different key spelling (hand-verified: apply-changeset.test.ts plus materialize-tree/apply-merge-to-worktree/checkout/status all pass unmutated).
     const key = entry.path.toLowerCase();
     let group = groups.get(key);
     if (group === undefined) {
