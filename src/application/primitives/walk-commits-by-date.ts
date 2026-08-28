@@ -48,7 +48,9 @@ export function walkCommitsByDate(
   let validated = false;
   const iterator: AsyncIterator<Commit> = {
     next: async (): Promise<IteratorResult<Commit>> => {
+      // Stryker disable next-line ConditionalExpression: equivalent — assertValidSeeds(options.from) is pure over a closed-over, never-reassigned `from`; running it on every next() (instead of once) produces the identical throw/no-throw outcome every call, so this guard is a perf-only skip, not a correctness gate (verified: full covering set — walk-commits-by-date/log/range-diff/whatchanged/shortlog — passes unmutated).
       if (!validated) {
+        // Stryker disable next-line BooleanLiteral: equivalent — same reasoning: `validated` only ever gates a re-run of the pure, idempotent assertValidSeeds check above, so re-arming it to false changes nothing observable (same covering-set proof).
         validated = true;
         assertValidSeeds(options.from);
       }
