@@ -391,6 +391,7 @@ async function collectDeltaChain(
     depth += 1;
     assertChainDepthWithinCap(externalDepth + depth);
     const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
+    // Stryker disable next-line CallExpression: equivalent — this pre-apply cap is a documented perf-only optimisation (see enforcePackDeltaPreApplyCap's own docstring): removing the call leaves the POST-apply cap in resolvePackChainWithDepth (current.length > maxBytes) to throw the identical OBJECT_TOO_LARGE, just after the wasted apply+allocation instead of before it (full covering set — object-resolver, read-object, stream-blob, blob-source, fsck, pack-registry — passes unmutated).
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
@@ -601,6 +602,7 @@ async function resolveBaseForRefDelta(
   // Resolve the base object (may recurse into another chain) and strip its header
   // to obtain content + type for delta application.
   const cached = ctx.deltaCache.get(baseId);
+  // Stryker disable next-line BlockStatement: equivalent — a perf-only shortcut: skipping this early return falls through to resolveObjectBytesWithDepth(baseId, ...), whose OWN ctx.deltaCache.get(baseId) hit (the same cache, same key) applies the identical enforceCachedCap and returns the identical bytes with chainDepth 0 via verifyAndReturn(verifyHash=false) — byte-for-byte the same result, one extra function-call hop (object-resolver.test.ts's full suite passes unmutated).
   if (cached !== undefined) {
     // Cache stores raw loose-format (header+content). An earlier uncapped
     // read may have admitted an oversized object; enforce the cap here

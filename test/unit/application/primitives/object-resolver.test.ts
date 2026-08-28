@@ -909,6 +909,225 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given a signal that aborts while probing loose-object presence (a miss)', () => {
+      describe('When resolveObjectBytesWithDepth would otherwise proceed to the pack registry', () => {
+        it('Then it throws OPERATION_ABORTED before ever calling registry.lookup', async () => {
+          // Arrange — abort from inside the loose-presence probe's own
+          // readdir call, so the abort lands strictly between the loose
+          // miss and the pack lookup.
+          const controller = new AbortController();
+          const ctx = await buildSeededContext({ signal: controller.signal });
+          const fakeId = 'e'.repeat(40) as ObjectId;
+          const baseReaddir = ctx.fs.readdir.bind(ctx.fs);
+          const abortingCtx: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readdir: (async (path: string) => {
+                controller.abort();
+                return baseReaddir(path);
+              }) as typeof ctx.fs.readdir,
+            },
+          };
+          const registry = createPackRegistry(abortingCtx);
+          const lookupSpy = vi.spyOn(registry, 'lookup');
+
+          // Act
+          let caught: unknown;
+          try {
+            await resolveObjectBytesWithDepth(abortingCtx, registry, fakeId, false, undefined, 0);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+          expect(lookupSpy).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe('Given a signal that aborts during the pack registry lookup itself', () => {
+      describe('When resolveObjectBytesWithDepth would otherwise proceed to resolve the pack chain', () => {
+        it('Then it throws OPERATION_ABORTED before resolving the chain — collectDeltaChain never even reads the offset table', async () => {
+          // Arrange — offsetTable() is the very FIRST thing
+          // resolvePackChainWithDepth's collectDeltaChain does, ahead of
+          // even that function's OWN internal checkAborted (inside its
+          // probe loop) — so "never called" proves THIS checkAborted, not
+          // the inner one, is what caught the abort.
+          const controller = new AbortController();
+          const ctx = await buildSeededContext({ signal: controller.signal });
+          const content = new TextEncoder().encode('abort-before-chain');
+          const [id] = await writeSyntheticPack(ctx, 'abort-lookup', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const registry = createPackRegistry(ctx);
+          const baseLookup = registry.lookup.bind(registry);
+          let offsetTableSpy: RegisteredPack['offsetTable'] | undefined;
+          vi.spyOn(registry, 'lookup').mockImplementationOnce(async (oid) => {
+            controller.abort();
+            const hit = await baseLookup(oid);
+            if (hit === undefined) return hit;
+            const spy = vi.fn(hit.pack.offsetTable.bind(hit.pack));
+            offsetTableSpy = spy;
+            return { ...hit, pack: { ...hit.pack, offsetTable: spy } };
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await resolveObjectBytesWithDepth(ctx, registry, id as ObjectId, false, undefined, 0);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(offsetTableSpy).not.toHaveBeenCalled();
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        });
+      });
+    });
+
+    describe('Given a signal that aborts while reading the pack chain bytes, with hash verification requested', () => {
+      describe('When resolveObjectBytesWithDepth would otherwise proceed to verifyAndReturn', () => {
+        it('Then it throws OPERATION_ABORTED before ever hashing the resolved bytes', async () => {
+          // Arrange — verifyHash=true so verifyAndReturn's OWN checkAborted
+          // sits AFTER its hashHex call, not before; with verifyHash=false
+          // that inner check would fire at verifyAndReturn's very first
+          // statement, making it indistinguishable from THIS checkAborted
+          // (nothing observable happens between them). hashHex therefore
+          // being uncalled proves THIS site caught the abort.
+          const controller = new AbortController();
+          const ctx = await buildSeededContext({ signal: controller.signal });
+          const content = new TextEncoder().encode('abort-after-chain');
+          const [id] = await writeSyntheticPack(ctx, 'abort-chain', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const registry = createPackRegistry(ctx);
+          const baseLookup = registry.lookup.bind(registry);
+          vi.spyOn(registry, 'lookup').mockImplementationOnce(async (oid) => {
+            const hit = await baseLookup(oid);
+            if (hit === undefined) return hit;
+            const baseReadSlice = hit.pack.readSlice.bind(hit.pack);
+            return {
+              ...hit,
+              pack: {
+                ...hit.pack,
+                readSlice: async (offset: number, length: number) => {
+                  controller.abort();
+                  return baseReadSlice(offset, length);
+                },
+              },
+            };
+          });
+          const hashSpy = vi.spyOn(ctx.hash, 'hashHex');
+
+          // Act
+          let caught: unknown;
+          try {
+            await resolveObjectBytesWithDepth(ctx, registry, id as ObjectId, true, undefined, 0);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(hashSpy).not.toHaveBeenCalled();
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        });
+      });
+    });
+
+    describe('Given a loose object and a signal that aborts once its hash has been computed', () => {
+      describe('When resolveObjectBytesWithDepth is called with verifyHash=true', () => {
+        it('Then it rejects with OPERATION_ABORTED even though the computed hash matches', async () => {
+          // Arrange — the hash matches (real bytes, real id), so nothing
+          // BUT this checkAborted stands between a successful hashHex and a
+          // normal, successful return.
+          const controller = new AbortController();
+          const ctx = await buildSeededContext({ signal: controller.signal });
+          const content = new TextEncoder().encode('hash me then abort');
+          const id = await writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+          const registry = createPackRegistry(ctx);
+          const baseHashHex = ctx.hash.hashHex.bind(ctx.hash);
+          vi.spyOn(ctx.hash, 'hashHex').mockImplementationOnce(async (data) => {
+            const result = await baseHashHex(data);
+            controller.abort();
+            return result;
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await resolveObjectBytesWithDepth(ctx, registry, id, true, undefined, 0);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        });
+      });
+    });
+
+    describe('Given a signal that aborts while reading the FIRST level of a multi-level OFS_DELTA chain', () => {
+      describe('When resolveObjectBytesWithDepth would otherwise keep walking toward the base', () => {
+        it('Then it stops after that one level — the walk never reads a second level', async () => {
+          // Arrange — collectDeltaChain's own per-level checkAborted (at the
+          // TOP of its loop) is what must stop the walk before a second
+          // readSlice call; readSlice's own call count is the only way to
+          // observe that the SECOND level was never even reached.
+          const controller = new AbortController();
+          const ctx = await buildSeededContext({ signal: controller.signal });
+          let content = new TextEncoder().encode('multi-level-base');
+          const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content }];
+          for (let i = 0; i < 4; i += 1) {
+            content = new TextEncoder().encode(`multi-level-${i}`);
+            entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: content });
+          }
+          const ids = await writeSyntheticPack(ctx, 'multi-level-abort', entries);
+          const id = ids.at(-1) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          const baseLookup = registry.lookup.bind(registry);
+          let readSliceSpy: RegisteredPack['readSlice'] | undefined;
+          vi.spyOn(registry, 'lookup').mockImplementationOnce(async (oid) => {
+            const hit = await baseLookup(oid);
+            if (hit === undefined) return hit;
+            const baseReadSlice = hit.pack.readSlice.bind(hit.pack);
+            let calls = 0;
+            const spy = vi.fn(async (offset: number, length: number) => {
+              calls += 1;
+              if (calls === 1) controller.abort();
+              return baseReadSlice(offset, length);
+            });
+            readSliceSpy = spy;
+            return { ...hit, pack: { ...hit.pack, readSlice: spy } };
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await resolveObjectBytesWithDepth(ctx, registry, id, false, undefined, 0);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+          expect(readSliceSpy).toHaveBeenCalledTimes(1);
+        });
+      });
+    });
+
     describe('Given an empty deltaCache and a seeded loose blob', () => {
       describe('When resolveObject is called', () => {
         it('Then resolves via the loose path unchanged', async () => {
@@ -2388,6 +2607,35 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given a 45-level OFS_DELTA chain fully resolved cold, caching every intermediate level along the way', () => {
+    describe('When the shallowest delta (one level off the base) is resolved next', () => {
+      it("Then it succeeds — a re-cached intermediate level must carry ITS OWN true depth, not the target level's", async () => {
+        // Arrange — resolving the tip caches every one of the 45
+        // intermediate levels under its own pack offset. The level closest
+        // to the base (one hop off it) is genuinely depth 1; a caching loop
+        // that mislabels it with (something related to) the target's own
+        // depth instead would make a later direct read of THIS shallow
+        // level wrongly appear to have accumulated the full chain's depth.
+        const ctx = await buildSeededContext();
+        const baseContent = new TextEncoder().encode('base');
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
+        for (let i = 0; i < 45; i += 1) {
+          const target = new TextEncoder().encode(`shallow-after-deep-${i}`);
+          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
+        }
+        const ids = await writeSyntheticPack(ctx, 'shallow-after-deep', entries);
+        const registry = createPackRegistry(ctx);
+        await resolveObject(ctx, registry, ids.at(-1) as ObjectId, false);
+
+        // Act
+        const result = await resolveObject(ctx, registry, ids[1] as ObjectId, false);
+
+        // Assert
+        expect(result.type).toBe('blob');
+      });
+    });
+  });
+
   describe('Given a pack whose chain crosses a REF_DELTA hop into a second chain', () => {
     describe('When the cumulative depth exceeds MAX_DELTA_CHAIN_DEPTH even though each segment is within it', () => {
       it('Then the read refuses with the DELTA_CHAIN_TOO_DEEP error data', async () => {
@@ -2601,6 +2849,136 @@ describe('object-resolver', () => {
           expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
         }
         expect(data.depth).toBe(56);
+      });
+    });
+  });
+
+  describe('Given a REF_DELTA base whose OWN chain resumed from a warm intermediate cache entry (nonzero baseChainDepth)', () => {
+    describe('When the REF hop base is resolved for the first time via the hop itself, then enough further levels are stacked to exceed the cap only under its TRUE combined depth', () => {
+      it('Then the cross-hop read still refuses with DELTA_CHAIN_TOO_DEEP — a resumed base must report its walked-plus-resumed depth, not just the levels it walked', async () => {
+        // Arrange — pack A: base + 20 OFS deltas (positions 1..20). Position
+        // 10 is warmed FIRST (cold, baseChainDepth 0, depth 10 cached) —
+        // this is an INTERMEDIATE position, never the tip. Pack B's
+        // REF_DELTA then targets A's tip (position 20) for the FIRST time:
+        // resolving it resumes from position 10's cache (baseChainDepth 10,
+        // 10 freshly-walked levels), so A's tip's true depth is 20 — but
+        // this is the very return value under test. 35 more OFS levels on
+        // top of B's REF hop push the TRUE total (20 + 35 = 55) over the
+        // cap; a return value that drops the resumed baseChainDepth instead
+        // of adding it would report A's tip at depth 0, letting B's tip
+        // wrongly resolve at an apparent depth of 35.
+        const ctx = await buildSeededContext();
+        let aContent = ENC.encode('hop-resume-a-base');
+        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
+        for (let i = 0; i < 20; i += 1) {
+          aContent = ENC.encode(`hop-resume-a-${i}`);
+          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
+        }
+        const aIds = await writeSyntheticPack(ctx, 'hop-resume-a', aEntries);
+        const aPosition10Id = aIds[10]! as ObjectId;
+        const aTipId = aIds.at(-1)!;
+
+        const bEntries: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId: aTipId,
+            baseUncompressed: aContent,
+            targetContent: ENC.encode('hop-resume-b-0'),
+          },
+        ];
+        let bContent = ENC.encode('hop-resume-b-0');
+        for (let i = 0; i < 35; i += 1) {
+          bContent = ENC.encode(`hop-resume-b-${i + 1}`);
+          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bContent });
+        }
+        const bIds = await writeSyntheticPack(ctx, 'hop-resume-b', bEntries);
+        const bTipId = bIds.at(-1)! as ObjectId;
+        const registry = createPackRegistry(ctx);
+
+        // Act — warm A's position 10 (intermediate, not the tip), then
+        // resolve B's tip, which resolves A's tip for the first time as its
+        // REF_DELTA base.
+        await resolveObject(ctx, registry, aPosition10Id, false);
+        let caught: unknown;
+        try {
+          await resolveObject(ctx, registry, bTipId, false);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
+          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
+        }
+      });
+    });
+  });
+
+  describe('Given a REF_DELTA entry whose OWN resolved chain depth (a resumed base plus itself) was cached, then extended further', () => {
+    describe('When the extended tip resumes from that offset-keyed cache entry', () => {
+      it('Then the true cumulative depth is still enforced — the cached REF-hop entry must report walked-plus-resumed depth on its OWN base, not just its own single hop', async () => {
+        // Arrange — pack A: base + 11 OFS deltas; warm position 1 (cold,
+        // depth 1), then resolve the tip (position 11), which resumes from
+        // position 1 (10 fresh levels + baseChainDepth 1 = true depth 11).
+        // Pack B: entry 0 is a REF_DELTA into A's tip; entries 1..40 stack
+        // 40 more OFS levels on top. Resolving entry 0 DIRECTLY caches ITS
+        // OWN offset-keyed entry using A's returned chainDepth as its base
+        // — if that return drops the resumed depth instead of adding it,
+        // entry 0's own cached depth undercounts by exactly A's
+        // baseChainDepth. Resolving B's tip afterwards then resumes from
+        // entry 0's (possibly undercounted) cache entry.
+        const ctx = await buildSeededContext();
+        let aContent = ENC.encode('return-a-base');
+        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
+        for (let i = 0; i < 11; i += 1) {
+          aContent = ENC.encode(`return-a-${i}`);
+          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
+        }
+        const aIds = await writeSyntheticPack(ctx, 'return-a', aEntries);
+        const aPosition1Id = aIds[1]! as ObjectId;
+        const aTipId = aIds.at(-1)!;
+
+        const bEntries: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId: aTipId,
+            baseUncompressed: aContent,
+            targetContent: ENC.encode('return-b-0'),
+          },
+        ];
+        let bContent = ENC.encode('return-b-0');
+        for (let i = 0; i < 40; i += 1) {
+          bContent = ENC.encode(`return-b-${i + 1}`);
+          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bContent });
+        }
+        const bIds = await writeSyntheticPack(ctx, 'return-b', bEntries);
+        const bEntry0Id = bIds[0]! as ObjectId;
+        const bTipId = bIds.at(-1)! as ObjectId;
+        const registry = createPackRegistry(ctx);
+
+        // Act — warm A's position 1 (intermediate, not the tip): A's tip is
+        // resolved for the first time below, as bEntry0's own REF_DELTA
+        // base, so it goes through the full resolvePackChainWithDepth
+        // return path rather than an id-keyed bytes-cache shortcut.
+        await resolveObject(ctx, registry, aPosition1Id, false);
+        await resolveObject(ctx, registry, bEntry0Id, false);
+        let caught: unknown;
+        try {
+          await resolveObject(ctx, registry, bTipId, false);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
+          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
+        }
       });
     });
   });
