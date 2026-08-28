@@ -32,7 +32,7 @@ import {
 import { assertValidBooleanConfig } from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
 import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type { Context, RepositoryFormatRefusal } from '../../../../src/ports/context.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
@@ -1145,6 +1145,41 @@ describe('primitives/config-read', () => {
         expect(first.core?.bare).toBe(true);
         expect(second.core?.bare).toBe(false);
         expect(statSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given the coalesced stat rejects with an error the caller already catches', () => {
+    describe('When one macrotask has passed', () => {
+      it('Then no unhandledRejection is ever raised — the .finally()-derived promise is marked handled independently of the caller', async () => {
+        // Arrange — a non-FILE_NOT_FOUND stat failure (configMtimeKey only
+        // tolerates that one code) propagates through the in-flight memo's
+        // own `.finally()`, which returns a SEPARATE promise from the one
+        // the caller awaits; that separate promise needs its own handler or
+        // it surfaces as an unhandled rejection independent of the caller's.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        vi.spyOn(ctx.fs, 'stat').mockRejectedValueOnce(
+          notADirectory(`${ctx.layout.gitDir}/config`),
+        );
+        let unhandled = false;
+        const onUnhandledRejection = (): void => {
+          unhandled = true;
+        };
+        process.on('unhandledRejection', onUnhandledRejection);
+
+        try {
+          // Act
+          const caught = await readConfig(ctx).catch((err: unknown) => err);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect(unhandled).toBe(false);
+        } finally {
+          process.removeListener('unhandledRejection', onUnhandledRejection);
+        }
       });
     });
   });

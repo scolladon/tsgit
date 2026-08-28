@@ -218,9 +218,18 @@ function coalescedMtimeKey(ctx: Context, path: string): Promise<string> {
   if (existing !== undefined) return existing;
   const pending = configMtimeKey(ctx, path);
   inflightMtimeKey.set(ctx.session, pending);
-  pending.finally(() => {
-    if (inflightMtimeKey.get(ctx.session) === pending) inflightMtimeKey.delete(ctx.session);
-  });
+  // `.finally()` returns its OWN promise, which rejects independently of
+  // `pending` when `pending` rejects — the caller below observes and
+  // handles `pending`'s own rejection via the returned value, but this
+  // derived one is otherwise never awaited or caught, so it would surface
+  // as a SECOND, unhandled rejection for the exact same fault. The no-op
+  // `.catch()` marks only this derived promise as handled; it changes
+  // nothing about what the caller sees.
+  pending
+    .finally(() => {
+      if (inflightMtimeKey.get(ctx.session) === pending) inflightMtimeKey.delete(ctx.session);
+    })
+    .catch(() => {});
   return pending;
 }
 

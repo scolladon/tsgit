@@ -240,7 +240,6 @@ describe('walkCommitsByDate', () => {
           iterator = iterable[Symbol.asyncIterator]();
         } catch {
           expect.unreachable('Symbol.asyncIterator() must not throw synchronously');
-          return;
         }
 
         // Assert — the rejection surfaces from the first next() instead.
