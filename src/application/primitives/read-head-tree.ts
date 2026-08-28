@@ -22,7 +22,7 @@ import { createLruCache, type LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { flattenTree } from './flatten-tree.js';
 import { resolveFlattenBounds } from './internal/flatten-raw.js';
-import { deltaBaseCachingEnabled } from './object-resolver.js';
+import { deltaBaseCachingEnabled } from './internal/object-caches.js';
 import { readObject } from './read-object.js';
 import { resolveRef } from './resolve-ref.js';
 

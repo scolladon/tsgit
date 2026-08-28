@@ -4,6 +4,8 @@ import {
   PARSED_OBJECT_MEMO_FRACTION,
   PARSED_OBJECT_MEMO_MAX_ENTRIES,
   parsedObjectByteSize,
+} from '../../../../src/application/primitives/internal/object-caches.js';
+import {
   resolveObject,
   resolveObjectBytes,
 } from '../../../../src/application/primitives/object-resolver.js';

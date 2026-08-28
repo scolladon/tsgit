@@ -29,11 +29,11 @@ import {
 } from '../../primitives/internal/cruft-pack-lifecycle.js';
 import { errorDataCode } from '../../primitives/internal/error-data-code.js';
 import { forgetLooseOidPrefix } from '../../primitives/internal/loose-oid-cache.js';
+import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
 import {
   packFilePath,
   writePackArtifactsViaQuarantine,
 } from '../../primitives/internal/write-pack-artifacts.js';
-import { forgetParsedObjectMemo } from '../../primitives/object-resolver.js';
 import {
   classifyPackFiles,
   type PackRegistry,
