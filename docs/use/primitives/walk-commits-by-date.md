@@ -17,7 +17,7 @@ interface WalkCommitsByDateOptions {
   readonly until?: ReadonlyArray<ObjectId>;   // excluded boundaries
   readonly shallow?: ReadonlySet<ObjectId>;   // yielded, but parents not walked
   readonly ignoreMissing?: boolean;           // skip a missing object instead of throwing
-  readonly verifyHash?: boolean;              // default true
+  readonly verifyHash?: boolean;              // default false (ADR-718)
 }
 ```
 

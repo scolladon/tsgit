@@ -5,7 +5,7 @@ Read any git object by id. The single chokepoint for loose / packed / promisor r
 ## Signature
 
 ```ts
-repo.primitives.readObject(id: ObjectId, options?: { maxBytes?: number }): Promise<GitObject>;
+repo.primitives.readObject(id: ObjectId, options?: { maxBytes?: number; verifyHash?: boolean }): Promise<GitObject>;
 
 type GitObject = Blob | Tree | Commit | Tag;
 ```
@@ -15,6 +15,7 @@ type GitObject = Blob | Tree | Commit | Tag;
 - **Resolution order:** loose object → packed object (via fanout binary search) → promisor lazy-fetch.
 - **Delta resolution:** packed objects with `OBJ_REF_DELTA` / `OBJ_OFS_DELTA` are resolved against the LRU base cache.
 - **`maxBytes`:** caps the parsed payload size. Loose objects cap at the post-inflate header parse; pack base entries cap pre-inflate via the declared header size; delta-resolved entries cap post-apply.
+- **`verifyHash`:** defaults to **`false`** — matching canonical git, an ordinary read does not re-hash the object on every access (ADR-718). Pass `{ verifyHash: true }` to hash the returned bytes and verify them against `id`, throwing `OBJECT_HASH_MISMATCH` on a mismatch. Corruption detection otherwise lives in `fsck` and `bundle verify`.
 - **Concurrent reads** of the same missing oid share one in-flight promisor fetch.
 
 ## Example

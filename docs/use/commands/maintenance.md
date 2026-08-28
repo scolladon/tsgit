@@ -88,7 +88,14 @@ interface MaintenanceResult {
 1. **Reachability.** Roots are every resolvable ref plus `HEAD`, the index,
    and every reflog — wider than `commit-graph`'s refs-only root set,
    matching git's own `gc`. A commit reachable only from a deleted branch's
-   reflog, or a blob staged but never committed, survives.
+   reflog, or a blob staged but never committed, survives. Rooting spans
+   every worktree, not just the one `gc` runs from: the main worktree's own
+   HEAD/reflog/index and every linked worktree's own are each rooted too, so
+   an object reachable only from another worktree's (possibly detached) HEAD
+   is never crufted out from under it. A malformed reflog line is skipped —
+   the file's other, valid entries still root — but a genuine I/O fault
+   (permission denied, `EMFILE`) aborts the run rather than silently rooting
+   nothing.
 2. **Every pack `gc` owns is classified** by its sibling markers before
    anything is written — the SAME rule git applies:
    - `*.keep` → **kept**, totally excluded: not read for repacking, not
