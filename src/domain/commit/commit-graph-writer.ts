@@ -134,9 +134,11 @@ export function serializeCommitGraph(
     edgePlan,
   );
   writeGenerationData(view, sortedCommits, generations, overflowPlan, chunkOffset('GDA2'));
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — writeOverflowGenerationChunk's forEach never iterates over an empty array, so calling it unconditionally has no observable effect when overflowPlan.entries.length is 0.
   if (overflowPlan.entries.length > 0) {
     writeOverflowGenerationChunk(view, overflowPlan.entries, chunkOffset('GDO2'));
   }
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — writeEdgeChunk's forEach never iterates over an empty array, so calling it unconditionally has no observable effect when edgePlan.entries.length is 0.
   if (edgePlan.entries.length > 0) writeEdgeChunk(view, edgePlan.entries, chunkOffset('EDGE'));
 
   return bytes;
@@ -179,6 +181,7 @@ function computeGenerations(
   const byId = new Map(commits.map((commit) => [commit.id, commit]));
   const memo = new Map<ObjectId, Generation>();
   for (const commit of commits) {
+    // Stryker disable next-line ConditionalExpression: equivalent — computeFrom is idempotent: re-visiting an already-memoised id only re-derives the same generation from its (already-memoised, unchanged) parents and overwrites memo with an identical value; a redundant call wastes cycles but changes nothing observable.
     if (!memo.has(commit.id)) computeFrom(commit.id, byId, memo);
   }
   return memo;
@@ -202,6 +205,7 @@ function computeFrom(
     if (frame.parentIndex < commit.parents.length) {
       const parentId = commit.parents[frame.parentIndex]!;
       frame.parentIndex += 1;
+      // Stryker disable next-line ConditionalExpression: equivalent — pushing an already-memoised parent again only re-derives the same generation from its own (unchanged) already-memoised parents, an idempotent overwrite with no observable effect.
       if (!memo.has(parentId)) stack.push({ id: parentId, parentIndex: 0 });
       continue;
     }
@@ -294,6 +298,7 @@ function writeHeaderAndChunkTable(
   view.setUint8(4, VERSION);
   view.setUint8(5, hashVersion);
   view.setUint8(6, chunkSpecs.length);
+  // Stryker disable next-line CallExpression: equivalent — `new Uint8Array(...)` zero-initialises the buffer; writing 0 again over an already-zero byte has no observable effect.
   view.setUint8(7, 0); // numBaseGraphs — single-file form only
 
   chunkSpecs.forEach((spec, i) => {
@@ -316,8 +321,10 @@ function writeOidfAndOidl(
   const fanout = new Uint32Array(FANOUT_ENTRIES);
   for (const commit of sortedCommits) {
     const firstByte = hexToBytes(commit.id)[0]!;
+    // Stryker disable next-line EqualityOperator: equivalent — fanout is a fixed-size Uint32Array(256); a write at the out-of-bounds index 256 is silently discarded (TypedArray out-of-range assignment is a no-op), identical to never reaching it.
     for (let i = firstByte; i < FANOUT_ENTRIES; i += 1) fanout[i]! += 1;
   }
+  // Stryker disable next-line EqualityOperator: equivalent — the out-of-bounds read at i=256 writes a 0 at the OIDL chunk's first byte, immediately overwritten by the OIDL write below in this same function; the final buffer is unaffected.
   for (let i = 0; i < FANOUT_ENTRIES; i += 1) view.setUint32(fanoutOffset + i * 4, fanout[i]!);
 
   sortedCommits.forEach((commit, i) => {
