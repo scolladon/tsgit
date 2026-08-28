@@ -353,9 +353,29 @@ describe('readHeadTree', () => {
         createLruCacheSpy.mockClear();
         await commitOneFile(ctx);
         await readHeadTree(ctx);
-        const memoCallIndex = createLruCacheSpy.mock.calls.findIndex(
-          (call) => call[1] === FLAT_TREE_CACHE_MAX_ENTRIES,
+        // THREE distinct caches share this exact 65_536 entry cap by design
+        // (each module's own doc cross-references the others): the pack
+        // registry's delta-base cache (`pack-registry.ts`, constructed
+        // EAGERLY the moment `readObject` first calls `getPackRegistry`,
+        // before it ever resolves the object), object-resolver's
+        // parsed-object memo (populated resolving that same commit), and
+        // read-head-tree's own flat-tree cache. A bare `findIndex` on
+        // `call[1]` grabs whichever spawns FIRST — the delta-base cache,
+        // never the flat-tree one. The flat-tree cache is always the LAST
+        // of the three: `flatTreeCacheFor` is only ever called, within
+        // `readHeadTree`, after the HEAD commit read that triggers the
+        // other two. Asserting the count pins that structural ordering
+        // instead of silently trusting it, and picks the LAST match rather
+        // than the first.
+        const matchingCallIndexes = createLruCacheSpy.mock.calls.reduce<number[]>(
+          (acc, call, index) => {
+            if (call[1] === FLAT_TREE_CACHE_MAX_ENTRIES) acc.push(index);
+            return acc;
+          },
+          [],
         );
+        expect(matchingCallIndexes).toHaveLength(3);
+        const memoCallIndex = matchingCallIndexes.at(-1) as number;
         const cache = createLruCacheSpy.mock.results[memoCallIndex]?.value as LruCache<FlatTree>;
         const dummy: FlatTree = { entries: new Map() };
 
