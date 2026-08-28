@@ -17,12 +17,16 @@ const fallbackHash = {} as HashService;
 const fallbackCompressor = {} as Compressor;
 const fallbackTransport = {} as HttpTransport;
 
+// `runtime: 'node'` — the one runtime whose fallback adapter is branded
+// first-party (its own containment already equals the layout's root set).
+// Tests that specifically exercise the memory-runtime carve-out build their
+// own fallback with `runtime: 'memory'` instead.
 const fallback = {
   fs: fallbackFs,
   hash: fallbackHash,
   compressor: fallbackCompressor,
   transport: fallbackTransport,
-  runtime: 'memory' as const,
+  runtime: 'node' as const,
 };
 
 describe('composeAdapters — fallback only', () => {
@@ -209,7 +213,7 @@ describe('composeAdapters — first-party provenance brand', () => {
           hash: fallbackHash,
           compressor: fallbackCompressor,
           transport: fallbackTransport,
-          runtime: 'memory' as const,
+          runtime: 'node' as const,
         };
         const unrelatedFs = {} as FileSystem;
 
@@ -235,6 +239,29 @@ describe('composeAdapters — first-party provenance brand', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a memory-runtime fallback and no user override for fs', () => {
+    describe('When composeAdapters runs', () => {
+      it('Then the composed fs is NOT branded first-party — MemoryFileSystem is single-rooted, independent of the layout, so the wrapper must stay the containment authority', () => {
+        // Arrange — a fresh fallback so branding this fs cannot leak into
+        // any other test's assertions.
+        const memoryFallbackFs = {} as FileSystem;
+        const memoryFallback = {
+          fs: memoryFallbackFs,
+          hash: fallbackHash,
+          compressor: fallbackCompressor,
+          transport: fallbackTransport,
+          runtime: 'memory' as const,
+        };
+
+        // Act
+        const result = composeAdapters({}, memoryFallback);
+
+        // Assert
+        expect(isFirstPartyFs(result.fs)).toBe(false);
       });
     });
   });

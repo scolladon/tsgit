@@ -50,3 +50,15 @@ A verdict-identity property test over the containment predicate becomes the gate
 containment is a tsgit security property, not a git behaviour). The three Stryker
 equivalence proofs inside `wrap-fs-validator.ts` are re-proved against the new predicate
 structure. `worktreeFs` is memoised by root set as a rider.
+
+**Amendment (2026-08-28):** the "branded adapter's own containment equals the layout's
+root set" premise held for `NodeFileSystem` (constructed at exactly
+`layoutRootsOf(layout)` by the node shim) but not for `MemoryFileSystem`, which
+`index.default.ts` always constructs at a FIXED root (`DEFAULT_WORK_DIR`) independent of
+the layout it is paired with — a bare layout whose `gitDir` sits outside that fixed root
+widened the branded read surface past the layout, a real containment escape. `composeAdapters`
+now brands only `runtime: 'node'`; `runtime: 'memory'` (and `'browser'`, unverified either
+way in this pass) stay on the wrapper's own read guard until their adapters are given the
+same layout-rooted, multi-root construction `NodeFileSystem` already has. Any future adapter
+seeking this brand must be constructed at exactly `layoutRootsOf(layout)`, matching node's
+shape, not a fixed or caller-independent root.

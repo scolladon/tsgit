@@ -1130,16 +1130,18 @@ describe('openRepository — worktreeFs capability', () => {
     });
 
     describe('When accessing a path outside the worktree-scoped fs roots', () => {
-      it('Then it is refused with PERMISSION_DENIED — the default fs is branded first-party, so the adapter is the sole read-containment authority (not the wrapper, and not PATHSPEC_OUTSIDE_REPO)', async () => {
-        // Arrange
+      it('Then it is refused with PATHSPEC_OUTSIDE_REPO — the default (memory-runtime) fs is NOT branded first-party, so the wrapper stays the read-containment authority', async () => {
+        // Arrange — MemoryFileSystem is single-rooted independently of the
+        // layout, so unlike node it cannot license skipping the wrapper's
+        // own read guard.
         const sut = await open();
         const worktreeFs = worktreeScopedFs(sut, '/repo/wt');
 
-        // Act — the adapter itself refuses; the wrapper no longer guards this read.
+        // Act
         const code = await rejectionCode(() => worktreeFs.read('/outside/secret'));
 
         // Assert
-        expect(code).toBe('PERMISSION_DENIED');
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
 
@@ -1276,15 +1278,14 @@ describe('openRepository — layout.commonDir plumbing', () => {
       });
     });
 
-    describe('When reading that SAME path through the default (branded) fs', () => {
-      it("Then the read now reaches the adapter — the adapter is the sole read-containment authority, and here its own construction root ('/root') is wider than the layout roots the wrapper used to narrow to, so the read resolves (and fails on the missing file, not on containment)", async () => {
+    describe('When reading that SAME path through the default (memory-runtime) fs', () => {
+      it("Then it STILL throws PATHSPEC_OUTSIDE_REPO — memory is never branded, so the wrapper narrows to the layout's own roots ('/root/repo', '/root/common') regardless of the adapter's own wider construction root ('/root')", async () => {
         // Arrange — this fixture deliberately constructs the memory adapter at
-        // a WIDER root ('/root') than the layout's own roots ('/root/repo',
-        // '/root/common') specifically to isolate what the wrapper used to add
-        // on top of the raw adapter. The real Node/Memory runtime shims never
-        // construct a RuntimeFallback this way — they always root the adapter
-        // at exactly layoutRootsOf(layout) — so this widening cannot arise
-        // outside a fixture built like this one.
+        // a WIDER root ('/root') than the layout's own roots to prove the
+        // wrapper — not the adapter — is the containment authority for
+        // memory. The real memory runtime shim never constructs a
+        // RuntimeFallback this way; this fixture exists to make the
+        // authority observable.
         const fs = new MemoryFileSystem({ rootDir: '/root' });
         const fallback = commonDirFallback(fs);
         const sut = await openRepository({ cwd: '/root/repo' }, fallback);
@@ -1292,10 +1293,9 @@ describe('openRepository — layout.commonDir plumbing', () => {
         // Act
         const code = await rejectionCode(() => sut.ctx.fs.read('/root/outside/secret'));
 
-        // Assert — FILE_NOT_FOUND, not a containment refusal: the adapter's
-        // own root already covers '/root/outside', so the read is admitted
-        // and only then fails because no such file exists.
-        expect(code).toBe('FILE_NOT_FOUND');
+        // Assert — the wrapper refuses before the adapter's own (wider) root
+        // is ever consulted.
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
   });
@@ -1325,18 +1325,21 @@ describe('openRepository — config-scope allowlist', () => {
         },
         {
           path: '/Stryker/was/here',
-          expectedCode: 'PERMISSION_DENIED',
+          expectedCode: 'PATHSPEC_OUTSIDE_REPO',
           label:
-            'a non-config absolute path is rejected by the adapter — the allowlist (wrapper-only) never even runs for this branded, default fs',
+            'a non-config absolute path is rejected by the WRAPPER — memory is never branded, so its allowlist runs for the default fs too, and this path is in neither the allowlist nor the layout roots',
         },
       ])('Then $label', async ({ path, expectedCode }) => {
         // Arrange
         const sut = await open();
 
-        // Act — the default fs is branded first-party, so the adapter is the sole
-        // read-containment authority: PERMISSION_DENIED means the path is outside
-        // the adapter's own roots, full stop. The wrapper's allowlist plays no part
-        // in any of these four cases for this fs.
+        // Act — memory is never branded first-party, so the wrapper's own
+        // guard (allowlist + roots) runs first for every one of these four
+        // paths. The three real config-scope paths are IN the allowlist, so
+        // they still reach the adapter — whose own root ('/repo') then
+        // rejects them, unchanged from before. The fourth path is in
+        // neither the allowlist nor the roots, so the wrapper itself now
+        // refuses it before the adapter is ever consulted.
         const code = await rejectionCode(() => sut.ctx.fs.read(path));
 
         // Assert
@@ -1383,21 +1386,21 @@ describe('openRepository — config-scope allowlist', () => {
       });
     });
 
-    describe('When accessing the unavailable home config scope through the branded (default) fs', () => {
-      it('Then it does not reach real home-config content — no path in the allowlist admitted it, and the adapter resolves the relative probe under its own root, missing', async () => {
+    describe('When accessing the unavailable home config scope through the default (memory-runtime) fs', () => {
+      it('Then the wrapper rejects it with PATHSPEC_OUTSIDE_REPO — no path in the allowlist admitted it, and memory is never branded so the wrapper guards this read too', async () => {
         // Arrange
         const sut = await openUnavailable();
 
-        // Act — an unconditional home push would have admitted this stringified
-        // scope into the wrapper's allowlist; the default fs is branded, so the
-        // wrapper (and its allowlist) plays no part in this read at all. The
-        // adapter treats the relative-shaped probe as relative to its own root
-        // ('/repo'), so it fails on the missing file, not on containment — either
-        // way, no real home-config content is ever reached.
+        // Act — an unconditional home push would have admitted this
+        // stringified scope into the wrapper's allowlist; it did not, and
+        // the relative-shaped probe 'undefined/.gitconfig' is not contained
+        // in any layout root either, so the wrapper refuses it before the
+        // adapter is ever consulted. No real home-config content is ever
+        // reached.
         const code = await rejectionCode(() => sut.ctx.fs.read('undefined/.gitconfig'));
 
         // Assert
-        expect(code).toBe('FILE_NOT_FOUND');
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
 
@@ -1415,8 +1418,8 @@ describe('openRepository — config-scope allowlist', () => {
       });
     });
 
-    describe('When accessing the unavailable XDG config scope through the branded (default) fs', () => {
-      it('Then it does not reach real XDG-config content — same reasoning as the home scope above', async () => {
+    describe('When accessing the unavailable XDG config scope through the default (memory-runtime) fs', () => {
+      it('Then the wrapper rejects it with PATHSPEC_OUTSIDE_REPO — same reasoning as the home scope above', async () => {
         // Arrange
         const sut = await openUnavailable();
 
@@ -1424,7 +1427,7 @@ describe('openRepository — config-scope allowlist', () => {
         const code = await rejectionCode(() => sut.ctx.fs.read('undefined/git/config'));
 
         // Assert
-        expect(code).toBe('FILE_NOT_FOUND');
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
 
@@ -1608,20 +1611,20 @@ describe('openRepository — object algorithm resolution', () => {
   });
 });
 
-describe('openRepository — branded read containment single-authority', () => {
-  describe('Given the default (branded) fs and an in-repo read path containing a `..` segment that collapses back inside the roots', () => {
+describe('openRepository — memory-runtime read containment stays wrapper-authoritative', () => {
+  describe('Given the default (memory-runtime) fs and an in-repo read path containing a `..` segment that collapses back inside the roots', () => {
     describe('When the path is read', () => {
-      it('Then it is accepted — the adapter collapses `..` before checking containment; the wrapper (skipped on reads) would have refused any `..` segment outright', async () => {
+      it("Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — memory is never branded, so the wrapper guards this read and refuses any `..` segment outright, before the adapter's own collapsing logic ever runs", async () => {
         // Arrange
         const sut = await open();
         await sut.ctx.fs.mkdir('/repo/sub');
         await sut.ctx.fs.writeUtf8('/repo/target.txt', 'collapsed-and-contained');
 
         // Act
-        const result = await sut.ctx.fs.readUtf8('/repo/sub/../target.txt');
+        const code = await rejectionCode(() => sut.ctx.fs.readUtf8('/repo/sub/../target.txt'));
 
         // Assert
-        expect(result).toBe('collapsed-and-contained');
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
   });
@@ -1644,9 +1647,9 @@ describe('openRepository — branded read containment single-authority', () => {
     });
   });
 
-  describe('Given the default (branded) fs and a write to the same `..`-collapsing-inside path', () => {
+  describe('Given the default (memory-runtime) fs and a write to the same `..`-collapsing-inside path', () => {
     describe('When the write runs', () => {
-      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — writes keep both layers, unaffected by the read-only skip', async () => {
+      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — writes always take the wrapper guard, branding or not', async () => {
         // Arrange
         const sut = await open();
         await sut.ctx.fs.mkdir('/repo/sub');
@@ -1662,13 +1665,15 @@ describe('openRepository — branded read containment single-authority', () => {
     });
   });
 
-  describe('Given the default (branded) fs and a config-scope path (home/XDG/system)', () => {
+  describe('Given the default (memory-runtime) fs and a config-scope path (home/XDG/system)', () => {
     describe('When the config primitive reads the global scope', () => {
-      it('Then it resolves to an empty array, not a throw — the adapter refusal is caught exactly like a missing file', async () => {
+      it('Then it resolves to an empty array, not a throw — the wrapper allowlist admits the path, and the adapter refusal beyond it is caught exactly like a missing file', async () => {
         // Arrange — MemoryFileSystem defaults home to /home/user, outside the
-        // repository roots, so the branded adapter (sole read authority) refuses
-        // it with PERMISSION_DENIED; the config primitive already tolerates
-        // that code alongside FILE_NOT_FOUND.
+        // repository roots. The wrapper's allowlist admits this exact
+        // config-scope path (computeConfigScopePaths), so the read reaches
+        // the adapter — whose own root ('/repo') then refuses it with
+        // PERMISSION_DENIED; the config primitive already tolerates that
+        // code alongside FILE_NOT_FOUND.
         const sut = await open();
 
         // Act

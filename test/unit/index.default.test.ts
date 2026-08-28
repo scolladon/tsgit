@@ -139,6 +139,31 @@ describe('memory shim — openRepository', () => {
     });
   });
 
+  describe("Given a bare repository whose gitDir narrows the layout root below the memory adapter's own fixed /repo root", () => {
+    describe('When reading a path that sits under /repo but outside every layout root', () => {
+      it('Then it is refused with PATHSPEC_OUTSIDE_REPO — the wrapper, not the single-rooted memory adapter, is the containment authority', async () => {
+        // Arrange — MemoryFileSystem is always constructed at a fixed
+        // '/repo' root regardless of gitDir, so a bare layout confined to
+        // '/repo/x.git' is narrower than the adapter's own root. Before this
+        // fix, that gap let a read into a sibling directory under '/repo'
+        // through — wider than the layout, PATHSPEC_OUTSIDE_REPO on main.
+        const sut = await openRepository({ gitDir: '/repo/x.git', bare: true });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.ctx.fs.read('/repo/other/secret');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
   describe('Given an explicit gitDir', () => {
     describe('When openRepository runs', () => {
       it('Then layout.gitDir reflects it, not the /repo/.git default', async () => {
