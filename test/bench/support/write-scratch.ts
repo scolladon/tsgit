@@ -81,6 +81,32 @@ export const buildAddScratch = async (): Promise<ScratchRepo> => {
 };
 
 /**
+ * Many unstaged files spread across nested directories — the shape where
+ * `add --all`'s bounded hashing/staging pool actually overlaps work. The
+ * two-file scratch above is dominated by repository open + scratch build, so
+ * pool wins are invisible there; this fixture puts enough independent
+ * hash-and-write units on the pool for the concurrency to show in the
+ * measured call.
+ */
+export const buildAddManyScratch = async (fileCount: number): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
+  const { cwd } = scratch;
+  const dirCount = 8;
+  for (let dir = 0; dir < dirCount; dir += 1) {
+    await mkdir(path.join(cwd, `dir${dir}`, 'nested'), { recursive: true });
+  }
+  for (let i = 0; i < fileCount; i += 1) {
+    const dir = `dir${i % dirCount}`;
+    const leaf = i % 2 === 0 ? dir : path.join(dir, 'nested');
+    await writeFile(
+      path.join(cwd, leaf, `f${i.toString().padStart(4, '0')}.txt`),
+      `payload ${i}\n`.repeat(8),
+    );
+  }
+  return scratch;
+};
+
+/**
  * Two branches diverging by one disjoint-file commit each (root → side edits
  * `b.txt`, main edits `a.txt`), HEAD left on `main` — ready for the measured
  * `merge.run({ rev: 'side' })` call to produce a true (non-fast-forward) merge.
