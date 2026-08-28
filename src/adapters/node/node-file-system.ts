@@ -1058,6 +1058,7 @@ export class NodeFileSystem implements FileSystem {
     // `resolve()` for either reason, so POSIX always takes the fast path;
     // Windows takes it only when the path is already native-separator.
     const absolute = toAbsolute(path, this.rootDir, this.pathPolicy);
+    // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — this is a perf-only skip-the-allocating-resolve() prefilter, not a correctness gate: when it wrongly stays false, resolveWrite's downstream path (realpathForCreation → either an OS-level fsOps.realpath, which resolves ".." itself for any path that genuinely exists, or realpathNearestExisting's own `policy.join(real, remaining)`, which is Node's path.join and therefore normalises — collapsing ".." — regardless) reaches the identical canonical `real` either way; the windowsSyntax operand is also unreachable on this posixPolicy-only CI (always false). Hand-verified: forcing the whole condition false, flipping the outer `||` to `&&`, and forcing each operand false in turn all leave the full covering set (node-file-system, node-file-system-injected, index.node) green.
     const needsResolve =
       absolute.indexOf('..') !== -1 || (this.pathPolicy.windowsSyntax && absolute.includes('/'));
     const resolved = needsResolve ? this.pathPolicy.resolve(absolute) : absolute;
