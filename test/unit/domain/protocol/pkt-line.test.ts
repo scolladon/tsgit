@@ -935,4 +935,42 @@ describe('decodePktStream — buffer-ownership safety', () => {
       });
     });
   });
+
+  describe('Given frames that drain from the internal pending-tail accumulator', () => {
+    describe('When a later chunk compacts the accumulator over an already-yielded frame', () => {
+      it('Then every payload survives the compaction intact', async () => {
+        // Arrange — split three frames so A and B complete INSIDE the
+        // internal accumulator (chunk 1 leaves A incomplete, forcing the
+        // buffering path) while C's opening bytes arrive in the same chunk:
+        // draining A and B then compacts C's fragment to the accumulator's
+        // front, overwriting the very bytes A and B were parsed from. A
+        // payload aliasing the accumulator instead of owning a copy would
+        // read back as C's bytes after that compaction.
+        const frameA = encodePktLine(new Uint8Array(100).fill(0x61));
+        const frameB = encodePktLine(new Uint8Array(50).fill(0x62));
+        const frameC = encodePktLine(new Uint8Array(200).fill(0x63));
+        const stitched = new Uint8Array(frameA.byteLength + frameB.byteLength + frameC.byteLength);
+        stitched.set(frameA, 0);
+        stitched.set(frameB, frameA.byteLength);
+        stitched.set(frameC, frameA.byteLength + frameB.byteLength);
+        const splitOne = 50; // mid-A: forces A into the accumulator
+        const splitTwo = frameA.byteLength + frameB.byteLength + 30; // mid-C: compaction moves C's fragment over A's bytes
+        async function* threeChunkSource(): AsyncIterable<Uint8Array> {
+          yield stitched.subarray(0, splitOne);
+          yield stitched.subarray(splitOne, splitTwo);
+          yield stitched.subarray(splitTwo);
+        }
+
+        // Act
+        const result = await collect(decodePktStream(threeChunkSource()));
+
+        // Assert
+        expect(result).toEqual([
+          { kind: 'data', payload: new Uint8Array(100).fill(0x61) },
+          { kind: 'data', payload: new Uint8Array(50).fill(0x62) },
+          { kind: 'data', payload: new Uint8Array(200).fill(0x63) },
+        ]);
+      });
+    });
+  });
 });
