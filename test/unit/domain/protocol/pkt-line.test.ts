@@ -826,6 +826,55 @@ describe('decodePktStream — declared length vs delivered chunk size', () => {
       });
     });
   });
+
+  describe('Given a chunk that fills the accumulator to capacity, drains down to a small tail, and STILL has one byte left over', () => {
+    describe('When decoded', () => {
+      it("Then the second top-up within the same chunk takes only the bytes truly remaining — never a mutant's inflated (length + offset) count", async () => {
+        // Arrange — chunk1 leaves a 3-byte partial header. chunk2 completes
+        // it, then packs the accumulator with an odd-sized frame (breaking
+        // 4-byte alignment) plus enough empty frames to fill the
+        // accumulator to EXACTLY capacity on the first top-up, leaving a
+        // 3-byte partial header as the new tail. chunk2 then carries
+        // exactly ONE more byte, completing that tail into one final
+        // empty-payload frame — a SECOND top-up within this same `accept`
+        // call, now with a nonzero `chunkOffset`. The correct take is
+        // `chunk.byteLength - chunkOffset` (1 byte); `+ chunkOffset`
+        // instead computes a huge, wrong take that `Math.min` clamps to
+        // `room`, claiming the WHOLE remaining capacity was filled with
+        // fresh data when only one real byte was copied — the rest is
+        // stale bytes left over from the frames already drained this round.
+        const chunk1 = bytesOf('000');
+        const oddFrame = concat(bytesOf('0005'), bytesOf('Z')); // 5 bytes, breaks 4-byte alignment
+        const emptyFrame = bytesOf('0004');
+        const frameCount = 16_377;
+        const padding = new Uint8Array(frameCount * emptyFrame.byteLength);
+        for (let i = 0; i < frameCount; i += 1) {
+          padding.set(emptyFrame, i * emptyFrame.byteLength);
+        }
+        const chunk2 = concat(
+          bytesOf('4'), // completes chunk1's "000" into "0004" (frame 0)
+          oddFrame,
+          padding,
+          bytesOf('000'), // 3-byte partial header — lands exactly at capacity
+          bytesOf('4'), // completes it into one final "0004" — the lone extra byte
+        );
+
+        // Act
+        const result = await collect(decodePktStream(asyncOf([chunk1, chunk2])));
+
+        // Assert — every frame parses cleanly with no leftover; a mutant
+        // that over-counts the final top-up either throws PKT_TRUNCATED
+        // (stale garbage read as an incomplete header) or never reaches
+        // this assertion at all.
+        expect(result).toHaveLength(2 + frameCount + 1);
+        expect(result[0]).toEqual({ kind: 'data', payload: new Uint8Array(0) });
+        expect(result[1]).toEqual({ kind: 'data', payload: bytesOf('Z') });
+        for (let i = 0; i < frameCount + 1; i += 1) {
+          expect(result[2 + i]).toEqual({ kind: 'data', payload: new Uint8Array(0) });
+        }
+      });
+    });
+  });
 });
 
 describe('decodePktStream — case-insensitive length parse', () => {

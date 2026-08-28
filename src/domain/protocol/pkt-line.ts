@@ -192,6 +192,7 @@ class PktBuffer {
   *accept(chunk: Uint8Array, v2: boolean): Generator<PktLine, void, unknown> {
     let chunkOffset = 0;
     while (chunkOffset < chunk.byteLength) {
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — `this.used` only ever grows via `Math.min`-bounded additions or resets to a `byteLength` difference, so it can never go negative; forcing this branch when `this.used === 0` only routes the first top-up through `this.buf` instead of parsing `chunk` directly — `drainFrames` reads either buffer identically, and every byte of `chunk` still ends up copied into `this.buf` exactly once, in order (now, or via the trailing-leftover copy below) — same yielded frames, same final `used`.
       if (this.used > 0) {
         // A pending tail exists — top it up with only as much of `chunk` as
         // fits the buffer's remaining capacity (never more; a single frame
@@ -211,6 +212,7 @@ class PktBuffer {
       // for any complete frame it contains.
       const consumed = yield* drainFrames(chunk, chunk.byteLength, v2, chunkOffset);
       chunkOffset = consumed;
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — `drainFrames` returns an offset within `[chunkOffset, chunk.byteLength]` by construction (`classify` only advances `consume` up to `available`), so `chunkOffset <= chunk.byteLength` always holds; forcing this branch true at the `===` boundary computes `leftover = 0`, `.set()`s an empty slice, and reassigns `chunkOffset` to its own unchanged value — a genuine no-op.
       if (chunkOffset < chunk.byteLength) {
         // A trailing incomplete frame remains — buffer just that slice.
         const leftover = chunk.byteLength - chunkOffset;
