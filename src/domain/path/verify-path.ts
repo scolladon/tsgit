@@ -98,6 +98,7 @@ const ASCII_MAX = 0x7f;
  * change what the FIRST character is.
  */
 const isObviouslyNotAnAlias = (component: string): boolean => {
+  // Stryker disable next-line BooleanLiteral: equivalent — an empty component can never equal DOTGIT/NTFS_SHORT_NAME either way; isDotGitAlias('') is false whether this fast path fires or falls through to matchAliasPart('') (verified: 'empty component' case in verify-path.test.ts passes unmutated).
   if (component.length === 0) return false;
   const first = component.charCodeAt(0);
   if (first === ASCII_DOT || first === ASCII_UPPER_G || first === ASCII_LOWER_G) return false;
