@@ -66,12 +66,15 @@ export async function resolveObjectBytes(
  * walk a delta chain, so each reports depth 0; a pack hit threads
  * `externalDepth` into `resolvePackChain` (bounding the cap early, and any
  * further REF_DELTA recursion beneath it) and surfaces the chain's true
- * depth back out. `resolveBaseForRefDelta` calls this directly — never the
+ * depth back out. Exported so `resolveObject` (below) and `readRawObject`
+ * (read-object.ts) can call it directly with `externalDepth` 0 — skipping
+ * the thin `resolveObjectBytes` wrapper's extra async hop on the hottest
+ * read path. `resolveBaseForRefDelta` also calls this directly — never the
  * public `resolveObjectBytes` — so a REF_DELTA's base resolves with the
  * accumulated depth of the chain that reached it, and its own true depth
  * comes back out for the caching loop to record accurately.
  */
-async function resolveObjectBytesWithDepth(
+export async function resolveObjectBytesWithDepth(
   ctx: Context,
   registry: PackRegistry,
   id: ObjectId,
@@ -122,7 +125,7 @@ export async function resolveObject(
   verifyHash: boolean,
   maxBytes?: number,
 ): Promise<GitObject> {
-  const bytes = await resolveObjectBytes(ctx, registry, id, verifyHash, maxBytes);
+  const { bytes } = await resolveObjectBytesWithDepth(ctx, registry, id, verifyHash, maxBytes, 0);
   const memo = parsedObjectMemoFor(ctx);
   const memoised = memo?.get(id);
   if (memoised !== undefined) return memoised;
@@ -307,19 +310,24 @@ interface Phase1Result {
    * For a REF_DELTA's resolved base, this is the base object's OWN true
    * chain depth — `resolveBaseForRefDelta` surfaces
    * `deltas.length + baseChainDepth` from the inner `resolvePackChain` that
-   * reconstructed it (via `resolveObjectBytesWithDepth`'s `externalDepth`
-   * thread, so a chain nested behind the REF hop is bounded by the SAME cap
-   * the outer walk enforces, not resolved unbounded first and checked after).
-   * `collectDeltaChain`'s REF_DELTA arm asserts
-   * `externalDepth + depth + base.chainDepth` against the cap before
-   * returning it here, so `MAX_DELTA_CHAIN_DEPTH` bounds a chain's true
-   * length once it crosses a REF_DELTA hop, not just each segment in
-   * isolation.
+   * reconstructed it. The cross-hop bound comes ENTIRELY from threading
+   * `externalDepth` down into that inner `collectDeltaChain` call (via
+   * `resolveObjectBytesWithDepth`): every terminator of the inner walk —
+   * the per-level delta check, a cache-hit resumption, a nested REF_DELTA
+   * hop — already asserts `externalDepth + depth [+ chainDepth]` against
+   * the cap one frame down, before the base's bytes ever come back up here.
+   * So `MAX_DELTA_CHAIN_DEPTH` bounds a chain's true length once it crosses
+   * a REF_DELTA hop, not just each segment in isolation, without this level
+   * needing to re-check the combined sum itself.
    *
    * One honest residual: a base served from the id-keyed `ctx.deltaCache`
    * (see `resolveBaseForRefDelta`'s own cache check) reports depth 0 even
    * when the object was originally delta-resolved — that cache stores raw
-   * bytes only, never the depth they were reconstructed at.
+   * bytes only, never the depth they were reconstructed at. Consequence: a
+   * chain that refuses cold (every hop walked and counted) can resolve warm
+   * once an inner object populates that cache first — the cap still bounds
+   * the recursion and I/O THIS walk performs, just not the reconstructed
+   * chain's true length once a warm hit reports 0.
    */
   readonly baseChainDepth: number;
 }
@@ -425,11 +433,6 @@ async function collectDeltaChain(
         maxBytes,
         externalDepth + depth,
       );
-      // The base may itself have been a delta chain (in this pack, another
-      // pack, or behind a further REF hop) — its own true depth
-      // (`base.chainDepth`) adds onto everything walked so far before the
-      // combined total is checked against the cap.
-      assertChainDepthWithinCap(externalDepth + depth + base.chainDepth);
       return {
         deltas,
         baseContent: base.content,
@@ -616,7 +619,11 @@ async function resolveBaseForRefDelta(
     // before returning bytes that bypass the regular read path. This
     // id-keyed cache holds bytes only, never the depth they were
     // reconstructed at, so a base served from here is honestly reported at
-    // depth 0 even when it was originally delta-resolved.
+    // depth 0 even when it was originally delta-resolved. Consequence: a
+    // chain whose base warms this cache first can admit a REF hop a cold
+    // read of the same chain would refuse — the cap still bounds the
+    // recursion and work THIS walk performs, just not the reconstructed
+    // chain's true length once this hit reports 0.
     enforceCachedCap(baseId, cached, maxBytes);
     return { ...splitHeader(cached, baseId), chainDepth: 0 };
   }
@@ -624,6 +631,14 @@ async function resolveBaseForRefDelta(
   // base is applied to a delta, never returned to a caller as a parsed
   // object, and this walk needs the base's own true chain depth back out —
   // `externalDepth` bounds it against the SAME cap the outer walk enforces.
+  // Deliberately skips the parse/re-serialize round-trip `resolveObject` +
+  // `serializeObject` used to impose: delta application binds the base's
+  // TRUE raw bytes, matching git — a base that would not survive that
+  // round-trip now deltas correctly against its real bytes, and a
+  // structurally malformed base no longer surfaces a parse error here
+  // (also git's behaviour). `resolveObjectBytesWithDepth`'s own arms
+  // (loose read, pack chain reconstruction) already cache the resolved
+  // bytes under `baseId` — re-caching them here would be redundant.
   const resolved = await resolveObjectBytesWithDepth(
     ctx,
     registry,
@@ -632,7 +647,6 @@ async function resolveBaseForRefDelta(
     maxBytes,
     externalDepth,
   );
-  cacheEntry(ctx.deltaCache, baseId, resolved.bytes);
   return { ...splitHeader(resolved.bytes, baseId), chainDepth: resolved.chainDepth };
 }
 

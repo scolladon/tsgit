@@ -2423,7 +2423,12 @@ describe('object-resolver', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
+          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
+        }
+        expect(data.depth).toBe(51);
       });
     });
   });
@@ -2471,7 +2476,12 @@ describe('object-resolver', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+        if (data.code !== 'DELTA_CHAIN_TOO_DEEP') {
+          expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
+        }
+        expect(data.depth).toBe(51);
       });
     });
   });
@@ -2577,6 +2587,74 @@ describe('object-resolver', () => {
           expect.fail(`expected DELTA_CHAIN_TOO_DEEP, got ${data.code}`);
         }
         expect(data.depth).toBe(56);
+      });
+    });
+  });
+
+  describe('Given a REF_DELTA chain whose true cumulative depth exceeds the cap when resolved cold', () => {
+    describe('When the REF hop base is resolved directly first — warming the id-keyed delta cache — and the same tip is resolved again', () => {
+      it('Then the cold read refuses but the warm read admits the identical chain, since the id-keyed cache reports depth 0', async () => {
+        // Arrange — the same two-pack REF_DELTA fixture as the cross-hop
+        // refusal test above: pack A (base + 30 OFS deltas, tip depth 30)
+        // and pack B (a REF_DELTA into A's tip, plus 25 more OFS deltas).
+        // The true combined depth exceeds MAX_DELTA_CHAIN_DEPTH, so a cold
+        // read of B's tip refuses. Resolving A's tip DIRECTLY afterwards
+        // populates the id-keyed `ctx.deltaCache` for it — a cache that
+        // reports depth 0 for any hit, per the documented residual in
+        // `resolveBaseForRefDelta` and `Phase1Result.baseChainDepth`. A
+        // second read of the SAME tip then resumes the REF hop from that
+        // warm entry and — despite the chain's true length being unchanged
+        // — succeeds, because the id-keyed hit undercounts. The cap still
+        // bounded the recursion and I/O each read performed; it did not
+        // bound the reconstructed chain's true length once warm.
+        const ctx = await buildSeededContext();
+        let aContent = ENC.encode('cache-consequence-a-base');
+        const aEntries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: aContent }];
+        for (let i = 0; i < 30; i += 1) {
+          aContent = ENC.encode(`cache-consequence-a-${i}`);
+          aEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: aContent });
+        }
+        const aIds = await writeSyntheticPack(ctx, 'cache-consequence-a', aEntries);
+        const aTipId = aIds.at(-1)! as ObjectId;
+
+        const bEntries: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId: aTipId,
+            baseUncompressed: aContent,
+            targetContent: ENC.encode('cache-consequence-b-0'),
+          },
+        ];
+        let bTipContent = ENC.encode('cache-consequence-b-0');
+        for (let i = 0; i < 25; i += 1) {
+          bTipContent = ENC.encode(`cache-consequence-b-${i + 1}`);
+          bEntries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: bTipContent });
+        }
+        const bIds = await writeSyntheticPack(ctx, 'cache-consequence-b', bEntries);
+        const bTipId = bIds.at(-1)! as ObjectId;
+        const registry = createPackRegistry(ctx);
+
+        // Act — cold read of the tip: nothing has warmed A's id-cache yet.
+        let coldCaught: unknown;
+        try {
+          await resolveObject(ctx, registry, bTipId, false);
+        } catch (error) {
+          coldCaught = error;
+        }
+
+        // Resolve A's tip directly — populates the id-keyed ctx.deltaCache
+        // for aTipId with its raw bytes; that cache reports chainDepth 0.
+        await resolveObject(ctx, registry, aTipId, false);
+
+        // A second read of the SAME tip resumes the REF hop from that warm
+        // cache entry instead of walking pack A's chain again.
+        const warmResult = await resolveObject(ctx, registry, bTipId, false);
+
+        // Assert
+        expect(coldCaught).toBeInstanceOf(TsgitError);
+        expect((coldCaught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+        expect(warmResult.type).toBe('blob');
+        expect((warmResult as Blob).content).toEqual(bTipContent);
       });
     });
   });

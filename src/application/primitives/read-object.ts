@@ -3,7 +3,7 @@ import { splitObject } from '../../domain/objects/git-object.js';
 import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
-import { resolveObject, resolveObjectBytes } from './object-resolver.js';
+import { resolveObject, resolveObjectBytesWithDepth } from './object-resolver.js';
 import { createPackRegistry, type PackRegistry } from './pack-registry.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
 
@@ -143,7 +143,15 @@ export async function readRawObject(
 ): Promise<RawObject> {
   const verifyHash = options?.verifyHash ?? false;
   const registry = getPackRegistry(ctx);
-  return withLazyFetchRetry(ctx, id, registry, async () =>
-    splitObject(await resolveObjectBytes(ctx, registry, id, verifyHash, options?.maxBytes)),
-  );
+  return withLazyFetchRetry(ctx, id, registry, async () => {
+    const resolved = await resolveObjectBytesWithDepth(
+      ctx,
+      registry,
+      id,
+      verifyHash,
+      options?.maxBytes,
+      0,
+    );
+    return splitObject(resolved.bytes);
+  });
 }
