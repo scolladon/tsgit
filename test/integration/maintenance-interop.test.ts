@@ -1082,14 +1082,20 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     beforeAll(async () => {
       baseDir = await initRepo('worktree-reflog-retention');
       const c0 = await addCommit(baseDir, 'c0');
-      // A linked worktree on its own branch, one commit ahead of c0.
-      git(baseDir, 'worktree', 'add', '-q', 'wt1', '-b', 'wt1', c0);
+      // A linked worktree, DETACHED at c0 — no branch ref, so every HEAD
+      // movement records ONLY in `.git/worktrees/wt1/logs/HEAD` (per-worktree,
+      // admin-dir-local). A branch checkout (`-b wt1`) would instead log to
+      // the SHARED `logs/refs/heads/wt1` under the common dir — a channel
+      // `ctx`'s own top-level reflog scan already walks regardless of this
+      // row, which would root the commit for the WRONG reason and leave this
+      // row unable to prove the worktree-scoped reflog path is load-bearing.
+      git(baseDir, 'worktree', 'add', '--detach', '-q', 'wt1', c0);
       const wtDir = path.join(baseDir, 'wt1');
       wtCommitId = await addCommit(wtDir, 'wt-reflog-only');
-      // wt1's own branch moves back to c0 — the commit (and its tree/blob)
-      // is now reachable ONLY through wt1's own HEAD reflog (a discarded
-      // `oldId`), never through any ref, and never through the main
-      // checkout's own reflog either.
+      // wt1's own detached HEAD moves back to c0 — the commit (and its
+      // tree/blob) is now reachable ONLY through wt1's own HEAD reflog (a
+      // discarded `oldId`), never through any ref, and never through the
+      // main checkout's own reflog nor any shared commonDir reflog either.
       git(wtDir, 'reset', '-q', '--hard', c0);
     }, SETUP_TIMEOUT);
 

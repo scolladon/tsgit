@@ -50,6 +50,7 @@ import {
   readObject,
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
+import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
@@ -980,6 +981,80 @@ describe('maintenance', () => {
         // Assert
         expect(result.packId).toBeDefined();
         await expect(readObject(ctx, orphanCommitId)).resolves.toMatchObject({ type: 'commit' });
+      });
+    });
+  });
+
+  describe('Given a malformed line and a valid orphan-rooting entry in the SAME reflog file', () => {
+    describe('When gc runs', () => {
+      it('Then it does not discard the whole file — the valid entry still roots the orphan', async () => {
+        // Arrange — pinned against git 2.55.0: `git gc --prune=now` keeps an
+        // object reachable only through a valid entry that shares its OWN
+        // reflog FILE with a garbage line (`for_each_reflog_ent` skips the
+        // bad line and keeps going; it does not discard the rest of the
+        // file the way tsgit's old all-or-nothing `parseReflog` did).
+        const ctx = await seedOneCommit();
+        const orphanTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [],
+        });
+        const orphanCommitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: orphanTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'orphan-same-file',
+            extraHeaders: [],
+          },
+        });
+        const currentHead = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/logs/HEAD`,
+          'this is not a valid reflog line at all\n' +
+            `${orphanCommitId} ${currentHead} Ada <ada@example.com> 1700000000 +0000\treset: moving to ${currentHead}\n`,
+        );
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+        await expect(readObject(ctx, orphanCommitId)).resolves.toMatchObject({ type: 'commit' });
+      });
+    });
+  });
+
+  describe('Given a reflog file past the size cap during the retention-root scan', () => {
+    describe('When gc runs', () => {
+      it('Then it aborts rather than silently rooting nothing and destroying the subgraph', async () => {
+        // Arrange — git has no such cap; this is tsgit's own internal-
+        // consistency guard. It must be a LOUD abort, never a silent
+        // "rooted nothing" that then lets gc destroy whatever the
+        // oversized file would have rooted.
+        const ctx = await seedOneCommit();
+        const oversized = 'x'.repeat(MAX_REFLOG_BYTES + 1);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, oversized);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFLOG_ENTRY');
+        expect((await getPackRegistry(ctx).all()).length).toBe(0);
       });
     });
   });

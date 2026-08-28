@@ -1,8 +1,11 @@
 import { TsgitError } from '../../../../domain/error.js';
 import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
-import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
+import { invalidReflogEntry } from '../../../../domain/reflog/error.js';
+import type { ReflogEntry } from '../../../../domain/reflog/reflog-entry.js';
+import { parseReflogLenient } from '../../../../domain/reflog/reflog-format.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
@@ -10,12 +13,15 @@ import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { errorDataCode } from '../../../primitives/internal/error-data-code.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
-import { commonGitDir } from '../../../primitives/path-layout.js';
+import { commonGitDir, perWorktreeRefDir, reflogPath } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
 import { listReflogs, readReflog } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
+import { MAX_REFLOG_BYTES } from '../../../primitives/types.js';
 import { objectIsPresent } from './object-presence.js';
 import type { FsckOptions } from './types.js';
+
+const HEAD_REF = 'HEAD' as RefName;
 
 const CACHE_TREE_SIGNATURE = 'TREE';
 
@@ -138,43 +144,68 @@ async function addRefRoots(
 }
 
 /**
- * The one reflog-read verdict gc's strict mode tolerates: `INVALID_REFLOG_ENTRY`
- * — a reflog file whose bytes do not parse as a reflog (a malformed line, or
- * `readReflog`'s own size cap), the reflog analogue of `isTolerableRefFault`'s
- * "this isn't a ref" verdicts. Pinned against git 2.55.0: `git reflog show`
- * on a reflog with a garbage line skips that line and lists the valid entries
- * around it (exit 0), and `git gc --prune=now` still succeeds — a malformed
- * reflog is not the I/O fault gc's strict rethrow exists to guard against.
+ * Root `entries` into `roots` — the zero oid is the "no object" sentinel git
+ * writes for creation events (first reflog entry of any ref) and is not a
+ * real object reference, so it is never treated as a reachability root.
+ * Shared by every reflog-rooting path (current-ctx and per-worktree alike).
  */
-function isTolerableReflogFault(err: unknown): boolean {
-  return errorDataCode(err) === 'INVALID_REFLOG_ENTRY';
+function addReflogEntryRoots(
+  roots: Set<ObjectId>,
+  entries: ReadonlyArray<ReflogEntry>,
+  zero: ObjectId,
+): void {
+  for (const entry of entries) {
+    if (entry.oldId !== zero) roots.add(entry.oldId);
+    if (entry.newId !== zero) roots.add(entry.newId);
+  }
 }
 
 /**
- * `strict` (gc-only) rethrows every reflog-read fault EXCEPT
- * `isTolerableReflogFault`'s "this doesn't parse as a reflog" verdict:
- * `readReflog` already tolerates an absent file internally (returns `[]`),
- * so a fault surfacing here is either that parse-shaped verdict or a
- * genuine I/O fault (EACCES/EIO/EMFILE) — only the latter means the read
- * never happened and must abort the run rather than silently root nothing.
- * `collectRoots`/fsck (non-strict) already tolerates everything here, same
- * as before.
+ * `ref`'s reflog entries for gc's retention scan, tolerating a malformed
+ * LINE — skipped, never discarding the file's OTHER valid entries the way
+ * `readReflog`'s own strict `parseReflog` does (pinned against git 2.55.0:
+ * `git gc --prune=now` keeps an object reachable only from a valid entry
+ * that shares a reflog file with a garbage line). The size cap is enforced
+ * here directly, same limit and same error `readReflog` throws, because
+ * bypassing `readReflog`'s all-or-nothing parse for line-grained tolerance
+ * also bypasses the cap check bundled inside it — and that cap must NOT be
+ * tolerated: an over-cap reflog silently rooting nothing would be the exact
+ * silent-data-loss shape gc's strict mode exists to refuse, so this throws
+ * (uncaught by anything in this module) and aborts the run instead. An
+ * absent file contributes no entries, matching `readReflog`.
+ */
+async function readReflogLenient(ctx: Context, ref: RefName): Promise<ReadonlyArray<ReflogEntry>> {
+  const path = reflogPath(perWorktreeRefDir(ctx, ref), ref);
+  if (!(await ctx.fs.exists(path))) return [];
+  const stat = await ctx.fs.stat(path);
+  if (stat.size > MAX_REFLOG_BYTES) {
+    throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
+  }
+  return parseReflogLenient(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
+}
+
+/**
+ * `strict` (gc-only) reads every reflog LINE-grained-leniently
+ * (`readReflogLenient`) and never tolerates a fault: a malformed line is
+ * already absorbed inside that read (never raised as an exception here), so
+ * anything that DOES throw — the size cap, or a genuine I/O fault
+ * (EACCES/EIO/EMFILE) — means the read never (fully) happened and must
+ * abort the run rather than silently root nothing. `collectRoots`/fsck
+ * (non-strict) keeps `readReflog`'s own strict all-or-nothing parse and
+ * tolerates everything here, same as before — a malformed reflog is not
+ * gc's problem to solve for a caller that never asked for retention.
  */
 async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boolean): Promise<void> {
   const reflogNames = await listReflogs(ctx);
   const zero = zeroOid(ctx.hashConfig);
   await boundedMapFor(ctx, 'ioBound', reflogNames, async (ref) => {
+    if (strict === true) {
+      addReflogEntryRoots(roots, await readReflogLenient(ctx, ref), zero);
+      return;
+    }
     try {
-      const entries = await readReflog(ctx, ref);
-      for (const entry of entries) {
-        // The zero oid is the "no object" sentinel git writes for creation
-        // events (first reflog entry of any ref). It is not a real object
-        // reference and must never be treated as a reachability root.
-        if (entry.oldId !== zero) roots.add(entry.oldId);
-        if (entry.newId !== zero) roots.add(entry.newId);
-      }
-    } catch (err) {
-      if (strict === true && !isTolerableReflogFault(err)) throw err;
+      addReflogEntryRoots(roots, await readReflog(ctx, ref), zero);
+    } catch {
       // Unreadable reflog — tolerated
     }
   });
@@ -346,19 +377,42 @@ function isMissingGitdirFile(error: unknown): boolean {
 }
 
 /**
- * Roots one linked worktree's own retention state: its HEAD, its
- * per-worktree refs (`refs/bisect/…`, `refs/worktree/…`, `refs/rewritten/…`
- * — whatever `enumerateRefs` resolves through that worktree's own admin
- * dir), its own HEAD reflog, and its own index — git's `other_head_refs()`
- * plus a per-worktree index walk. A worktree whose `gitdir` pointer is gone
+ * Roots a NON-CURRENT worktree's own retention state: its HEAD, its own
+ * HEAD reflog, and its own index — exactly (and ONLY) what git's
+ * `other_head_refs()` roots for a worktree gc is not currently running
+ * from. Measured against git 2.55.0, both directions: a non-current
+ * worktree's OTHER per-worktree refs (`refs/bisect/…`, `refs/worktree/…`,
+ * `refs/rewritten/…`) and THEIR reflogs are PRUNED — only `logs/HEAD`
+ * survives past the current HEAD ref itself; the same names root normally
+ * when gc runs FROM that worktree (already covered by
+ * `collectRetentionRoots`'s own direct calls against `ctx`, which this
+ * function is never invoked for). Reading only `${adminDir}/HEAD` and
+ * `${adminDir}/logs/HEAD` — never the full `enumerateRefs`/`listReflogs`
+ * walk `addRefRoots`/`addReflogRoots` do for the CURRENT worktree — also
+ * removes the redundant shared-commonDir re-walk a full walk would repeat
+ * per worktree: only `adminDir`-rooted paths are ever touched here. Shared
+ * by `addOneWorktreeRoots` (a linked worktree) and `addMainWorktreeRoots`
+ * (the main worktree, exactly as "non-current" as any other from a linked
+ * worktree's perspective).
+ */
+async function addNonCurrentWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
+  try {
+    roots.add(await resolveRef(ctx, HEAD_REF, { peel: false }));
+  } catch (err) {
+    if (!isTolerableRefFault(err)) throw err;
+    // Unborn/dangling/malformed HEAD — tolerated, same as addRefRoots.
+  }
+  addReflogEntryRoots(roots, await readReflogLenient(ctx, HEAD_REF), zeroOid(ctx.hashConfig));
+  await addIndexRoots(ctx, roots);
+}
+
+/**
+ * Roots one linked worktree's own retention state (`addNonCurrentWorktreeRoots`,
+ * scoped to HEAD/logs/HEAD/index — see that function's own doc for what git
+ * roots and what it prunes). A worktree whose `gitdir` pointer is gone
  * (prunable, `git worktree prune`'s job, not gc's) contributes nothing; any
  * OTHER fault reading it rethrows, the same strict policy
- * `addRefRoots`/`addReflogRoots`/`addIndexRoots` already apply to everything
- * they read. Pinned against git 2.55.0: `git gc --prune=now` keeps an object
- * reachable ONLY from a linked worktree's own HEAD reflog, symmetric with
- * the HEAD-itself case above — a discarded `oldId` this worktree's own
- * `reset`/`checkout` history recorded is exactly as much a retention root as
- * its current HEAD.
+ * `addNonCurrentWorktreeRoots` already applies to everything it reads.
  */
 async function addOneWorktreeRoots(
   ctx: Context,
@@ -378,9 +432,7 @@ async function addOneWorktreeRoots(
   }
   const worktreePath = stripGitSuffix(gitdirPointer);
   const worktreeCtx = deriveWorktreeContext(ctx, id, worktreePath);
-  await addRefRoots(worktreeCtx, roots, undefined, true);
-  await addReflogRoots(worktreeCtx, roots, true);
-  await addIndexRoots(worktreeCtx, roots);
+  await addNonCurrentWorktreeRoots(worktreeCtx, roots);
 }
 
 /** Whether `ctx` IS the main worktree — its own `gitDir` doubles as the
@@ -392,41 +444,44 @@ function isMainWorktreeCtx(ctx: Context): boolean {
 }
 
 /**
- * Roots the MAIN worktree's own HEAD, per-worktree refs, HEAD reflog and
- * index — covered for free when gc runs FROM the main worktree (`ctx` IS
- * already that worktree, so `collectRetentionRoots`'s own direct calls
- * against `ctx` handle it), but otherwise unreachable from anything else
- * this module calls: `addOtherWorktreeRoots` only enumerates
- * `${commonDir}/worktrees/*`, a registry the main worktree predates and is
- * never a member of. Builds a Context whose `gitDir` IS `commonDir` (the
- * main worktree's own admin-dir convention) via `deriveContext` rather than
- * `deriveWorktreeContext` — the latter always nests under `worktrees/<id>`,
- * which is exactly the shape the main worktree does NOT have; nothing this
- * function calls reads `ctx.layout.workDir`, so the parent's own value
- * (irrelevant here) is left untouched. `ctx.fs` needs no changes either:
- * `commonDir` is already inside its containment roots (every admin file
- * this walk reads already lives there for the CURRENT worktree's own shared
- * reads). Pinned against git 2.55.0: `git gc --prune=now` invoked from a
- * linked worktree still roots a commit reachable only from the main
- * worktree's own detached HEAD.
+ * Roots the MAIN worktree's own retention state (`addNonCurrentWorktreeRoots`
+ * — HEAD, its own HEAD reflog, and its own index) — covered for free when
+ * gc runs FROM the main worktree (`ctx` IS already that worktree, so
+ * `collectRetentionRoots`'s own direct calls against `ctx` handle it), but
+ * otherwise unreachable from anything else this module calls:
+ * `addOtherWorktreeRoots` only enumerates `${commonDir}/worktrees/*`, a
+ * registry the main worktree predates and is never a member of. Builds a
+ * Context whose `gitDir` IS `commonDir` (the main worktree's own admin-dir
+ * convention) via `deriveContext` rather than `deriveWorktreeContext` — the
+ * latter always nests under `worktrees/<id>`, which is exactly the shape
+ * the main worktree does NOT have; nothing this function calls reads
+ * `ctx.layout.workDir`, so the parent's own value (irrelevant here) is left
+ * untouched. `promisor`/`hooks`/`command` are dropped before deriving —
+ * mirroring `deriveWorktreeContext` — since all three close over the
+ * PARENT Context and would fire against the parent's gitdir if ever invoked
+ * while `mainCtx` is in hand. `ctx.fs` needs no changes either: `commonDir`
+ * is already inside its containment roots (every admin file this walk reads
+ * already lives there for the CURRENT worktree's own shared reads). Pinned
+ * against git 2.55.0: `git gc --prune=now` invoked from a linked worktree
+ * still roots a commit reachable only from the main worktree's own detached
+ * HEAD.
  */
 async function addMainWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   if (isMainWorktreeCtx(ctx)) return;
-  const mainCtx = deriveContext(ctx, {
+  const { promisor: _promisor, hooks: _hooks, command: _command, ...rest } = ctx;
+  const mainCtx = deriveContext(rest, {
     layout: Object.freeze({ ...ctx.layout, gitDir: commonGitDir(ctx) }),
   });
-  await addRefRoots(mainCtx, roots, undefined, true);
-  await addReflogRoots(mainCtx, roots, true);
-  await addIndexRoots(mainCtx, roots);
+  await addNonCurrentWorktreeRoots(mainCtx, roots);
 }
 
 /**
  * Roots every OTHER (linked) worktree registered under
- * `${commonGitDir}/worktrees/*` — the main worktree's own HEAD/refs/index
- * are `addMainWorktreeRoots`'s job, and whichever worktree `ctx` itself IS
- * (its own admin dir may itself be listed here) is skipped: covered already
- * by `collectRetentionRoots`'s direct calls against `ctx`, re-walking it
- * here would only be a wasted, redundant read. Pinned against git 2.55.0:
+ * `${commonGitDir}/worktrees/*` — the main worktree's own state is
+ * `addMainWorktreeRoots`'s job, and whichever worktree `ctx` itself IS (its
+ * own admin dir may itself be listed here) is skipped: covered already by
+ * `collectRetentionRoots`'s direct calls against `ctx`, re-walking it here
+ * would only be a wasted, redundant read. Pinned against git 2.55.0:
  * `git gc --prune=now` keeps an object reachable ONLY from a linked
  * worktree's own (possibly detached) HEAD — without this, gc would
  * cruft-then-destroy a subgraph another worktree is actively using.
@@ -446,13 +501,12 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
  * Retention roots for `maintenance`'s `gc` task (Pin H): every resolvable
  * ref (HEAD included), every reflog old/new oid, the index — stage-0
  * entries plus its cache-tree, when present — the MAIN worktree's own state
- * (`addMainWorktreeRoots`) and every OTHER worktree's own HEAD, per-worktree
- * refs and index (`addOtherWorktreeRoots`), matching git rooting
- * reachability across every worktree regardless of which one gc is invoked
- * from. Unlike `collectRoots`, this takes no pre-built object universe: gc
- * is discovering the loose/cruft candidate set the reachability walk will
- * need, not consuming a finished enumeration, so a universe would be the
- * wrong cost shape here.
+ * (`addMainWorktreeRoots`) and every OTHER worktree's own state
+ * (`addOtherWorktreeRoots`), matching git rooting reachability across every
+ * worktree regardless of which one gc is invoked from. Unlike `collectRoots`,
+ * this takes no pre-built object universe: gc is discovering the
+ * loose/cruft candidate set the reachability walk will need, not consuming
+ * a finished enumeration, so a universe would be the wrong cost shape here.
  *
  * Every collector runs in STRICT mode (see `isTolerableRefFault`): a ref or
  * reflog that genuinely isn't one roots nothing, exactly as `collectRoots`
