@@ -138,11 +138,27 @@ async function addRefRoots(
 }
 
 /**
- * `strict` (gc-only) rethrows every reflog-read fault: `readReflog` already
- * tolerates an absent file internally (returns `[]`), so anything that
- * surfaces here is a genuine parse or I/O fault, never a "this isn't a
- * reflog" verdict the way an unborn ref is — there is nothing left to
- * tolerate once strict.
+ * The one reflog-read verdict gc's strict mode tolerates: `INVALID_REFLOG_ENTRY`
+ * — a reflog file whose bytes do not parse as a reflog (a malformed line, or
+ * `readReflog`'s own size cap), the reflog analogue of `isTolerableRefFault`'s
+ * "this isn't a ref" verdicts. Pinned against git 2.55.0: `git reflog show`
+ * on a reflog with a garbage line skips that line and lists the valid entries
+ * around it (exit 0), and `git gc --prune=now` still succeeds — a malformed
+ * reflog is not the I/O fault gc's strict rethrow exists to guard against.
+ */
+function isTolerableReflogFault(err: unknown): boolean {
+  return errorDataCode(err) === 'INVALID_REFLOG_ENTRY';
+}
+
+/**
+ * `strict` (gc-only) rethrows every reflog-read fault EXCEPT
+ * `isTolerableReflogFault`'s "this doesn't parse as a reflog" verdict:
+ * `readReflog` already tolerates an absent file internally (returns `[]`),
+ * so a fault surfacing here is either that parse-shaped verdict or a
+ * genuine I/O fault (EACCES/EIO/EMFILE) — only the latter means the read
+ * never happened and must abort the run rather than silently root nothing.
+ * `collectRoots`/fsck (non-strict) already tolerates everything here, same
+ * as before.
  */
 async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boolean): Promise<void> {
   const reflogNames = await listReflogs(ctx);
@@ -158,7 +174,7 @@ async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boole
         if (entry.newId !== zero) roots.add(entry.newId);
       }
     } catch (err) {
-      if (strict === true) throw err;
+      if (strict === true && !isTolerableReflogFault(err)) throw err;
       // Unreadable reflog — tolerated
     }
   });

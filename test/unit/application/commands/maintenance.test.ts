@@ -930,6 +930,91 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a malformed line in one reflog and a valid orphan-rooting entry in another', () => {
+    describe('When gc runs', () => {
+      it('Then it does not crash and still roots the valid entries', async () => {
+        // Arrange — git itself skips a malformed reflog line and roots the
+        // valid entries around it (pinned against git 2.55.0: `git reflog
+        // show` on a reflog with a garbage first line lists only the valid
+        // entries, exit 0; `git gc --prune=now` still succeeds and keeps
+        // what those valid entries root). The orphan commit is rooted ONLY
+        // through `refs/heads/other`'s own reflog; `refs/heads/bad`'s
+        // reflog is unparseable but must not crash the whole run nor
+        // withhold `other`'s root.
+        const ctx = await seedOneCommit();
+        const orphanTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [],
+        });
+        const orphanCommitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: orphanTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'orphan-via-reflog',
+            extraHeaders: [],
+          },
+        });
+        const currentHead = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/other`, `${currentHead}\n`);
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/other`,
+          `${orphanCommitId} ${currentHead} Ada <ada@example.com> 1700000000 +0000\treset: moving to ${currentHead}\n`,
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/bad`, `${currentHead}\n`);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/bad`,
+          'this is not a valid reflog line at all\n',
+        );
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+        await expect(readObject(ctx, orphanCommitId)).resolves.toMatchObject({ type: 'commit' });
+      });
+    });
+  });
+
+  describe('Given a genuine EACCES fault reading one reflog during the retention-root scan', () => {
+    describe('When gc runs', () => {
+      it('Then it aborts rather than silently rooting nothing and destroying the subgraph', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === reflogPath) throw eacces;
+          return originalReadUtf8(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — a genuine I/O fault still aborts even though a
+        // parse-shaped reflog fault is now tolerated.
+        expect(caught).toBe(eacces);
+        expect((await getPackRegistry(ctx).all()).length).toBe(0);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Expiry boundary — strict `>`
   // ---------------------------------------------------------------------
