@@ -673,5 +673,19 @@ describe('commit-graph', () => {
         });
       });
     });
+
+    describe('Given a GDA2 overflow entry whose GDO2 index is exactly one past the last valid entry', () => {
+      describe('When reading commit data', () => {
+        it('Then throws INVALID_COMMIT_GRAPH_CHUNK — the range check is exclusive at the boundary', () => {
+          // Arrange — overflowModel's GDO2 chunk holds exactly one entry
+          // (index 0), so index 1 is the tightest possible out-of-range case.
+          const bytes = corruptGda2Index(buildCommitGraphBytes(overflowModel()), 1, 1);
+          const layer = parseCommitGraphLayer(bytes);
+
+          // Act & Assert
+          expectThrows(() => commitDataAt(layer, 1), 'INVALID_COMMIT_GRAPH_CHUNK', 'out of range');
+        });
+      });
+    });
   });
 });
