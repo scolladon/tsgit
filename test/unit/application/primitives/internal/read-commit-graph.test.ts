@@ -663,6 +663,35 @@ describe('read-commit-graph', () => {
           expect(secondHeader).toBeUndefined();
         });
       });
+
+      describe('When a DIFFERENT, structurally-clean commit is looked up right after', () => {
+        it('Then it ALSO comes back absent — the whole graph degrades, not just the failing entry', async () => {
+          // Arrange — d0 is parentless: its own lookup never touches the
+          // corrupt EDGE chunk at all, so it can only come back absent here
+          // if the FIRST call's degrade actually poisoned the cached graph
+          // object itself, rather than the graph staying cached (structurally
+          // intact from d0's point of view) for a would-be-clean second read.
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const d0 = await makeCommit(ctx, tree, [], 1, 'd0');
+          const d1 = await makeCommit(ctx, tree, [], 2, 'd1');
+          const d2 = await makeCommit(ctx, tree, [], 3, 'd2');
+          const d3 = await makeCommit(ctx, tree, [d0.id, d1.id, d2.id], 4, 'd3');
+          await writeCommitGraph(ctx, [[d0, d1, d2, d3]]);
+          const gitDir = commonGitDir(ctx);
+          const graphPath = commitGraphPath(gitDir);
+          const original = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, renameChunkRowId(original, 'EDGE', 'ZZZZ'));
+
+          // Act
+          const header = await commitHeader(ctx, d3.id);
+          const cleanHeader = await commitHeader(ctx, d0.id);
+
+          // Assert
+          expect(header).toBeUndefined();
+          expect(cleanHeader).toBeUndefined();
+        });
+      });
     });
 
     describe('Given a single-file graph whose OIDF chunk table entry causes a genuine RangeError while parsing', () => {
