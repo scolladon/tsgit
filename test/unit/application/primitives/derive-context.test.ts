@@ -56,6 +56,37 @@ describe('deriveContext', () => {
     });
   });
 
+  describe('Given a derivation that changes only the hash service (hashConfig untouched)', () => {
+    describe('When deriveContext runs', () => {
+      it('Then the session is fresh', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sha256Hash = { ...ctx.hash, algorithm: 'sha256' } as HashService;
+
+        // Act
+        const derived = deriveContext(ctx, { hash: sha256Hash });
+
+        // Assert
+        expect(derived.session).not.toBe(ctx.session);
+      });
+    });
+  });
+
+  describe('Given a derivation that changes only hashConfig (hash service untouched)', () => {
+    describe('When deriveContext runs', () => {
+      it('Then the session is fresh', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const derived = deriveContext(ctx, { hashConfig: SHA256_CONFIG });
+
+        // Assert
+        expect(derived.session).not.toBe(ctx.session);
+      });
+    });
+  });
+
   describe('Given a derivation that changes the hash algorithm', () => {
     describe('When deriveContext runs without an override', () => {
       it('Then the session is fresh', () => {
