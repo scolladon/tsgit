@@ -49,30 +49,17 @@ import { commonGitDir, looseObjectPath } from './path-layout.js';
  */
 const EMPTY_TREE_BYTES = new TextEncoder().encode('tree 0\0');
 
-export async function resolveObjectBytes(
-  ctx: Context,
-  registry: PackRegistry,
-  id: ObjectId,
-  verifyHash: boolean,
-  maxBytes?: number,
-): Promise<Uint8Array> {
-  const resolved = await resolveObjectBytesWithDepth(ctx, registry, id, verifyHash, maxBytes, 0);
-  return resolved.bytes;
-}
-
 /**
- * Depth-aware core `resolveObjectBytes` delegates to (with `externalDepth`
- * 0). Mirrors the same arms — empty-tree / deltaCache hit / loose read never
- * walk a delta chain, so each reports depth 0; a pack hit threads
- * `externalDepth` into `resolvePackChain` (bounding the cap early, and any
- * further REF_DELTA recursion beneath it) and surfaces the chain's true
- * depth back out. Exported so `resolveObject` (below) and `readRawObject`
- * (read-object.ts) can call it directly with `externalDepth` 0 — skipping
- * the thin `resolveObjectBytes` wrapper's extra async hop on the hottest
- * read path. `resolveBaseForRefDelta` also calls this directly — never the
- * public `resolveObjectBytes` — so a REF_DELTA's base resolves with the
- * accumulated depth of the chain that reached it, and its own true depth
- * comes back out for the caching loop to record accurately.
+ * Depth-aware object-bytes resolution — the single entry point for every
+ * caller. The arms mirror the read model: empty-tree / deltaCache hit /
+ * loose read never walk a delta chain, so each reports depth 0; a pack hit
+ * threads `externalDepth` into `resolvePackChain` (bounding the cap early,
+ * and any further REF_DELTA recursion beneath it) and surfaces the chain's
+ * true depth back out. `resolveObject` (below) and `readRawObject`
+ * (read-object.ts) call it with `externalDepth` 0 on the hottest read path;
+ * `resolveBaseForRefDelta` calls it with the accumulated depth of the chain
+ * that reached the base, and the base's own true depth comes back out for
+ * the caching loop to record accurately.
  */
 export async function resolveObjectBytesWithDepth(
   ctx: Context,
@@ -484,11 +471,12 @@ async function resolvePackChainWithDepth(
 ): Promise<{ bytes: Uint8Array; chainDepth: number }> {
   const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes, externalDepth);
 
-  // Apply deltas bottom-up. The REF_DELTA terminator already cached its base
-  // (by id) in `resolveBaseForRefDelta`; every OFS/REF level here is cached
-  // too, now by (pack, offset) — the fix for the gap the old comment
-  // documented: mid-chain intermediates have no known ObjectId, so a REF's
-  // own id-keyed cache could only ever hold a chain's tip.
+  // Apply deltas bottom-up. A REF_DELTA terminator's base was cached (by id)
+  // inside `resolveObjectBytesWithDepth`'s own loose/pack arms as it was
+  // resolved; every OFS/REF level here is cached too, now by (pack, offset) —
+  // the fix for the gap the old comment documented: mid-chain intermediates
+  // have no known ObjectId, so a REF's own id-keyed cache could only ever
+  // hold a chain's tip.
   let current = phase1.baseContent;
   // Only a real delta chain populates the offset-keyed cache: a single
   // non-delta base entry (deltas.length === 0) is never a delta target and
@@ -657,9 +645,10 @@ function splitHeader(
   content: Uint8Array;
   type: PackEntryHeader['type'];
 } {
-  // Cache bytes come from our own resolvePackChain / resolveObjectBytes
-  // paths, which always produce `<type> <size>\0...`. If those invariants
-  // ever break, treat it as a missing object rather than silently mis-typing.
+  // Cache bytes come from our own resolvePackChainWithDepth /
+  // resolveObjectBytesWithDepth paths, which always produce
+  // `<type> <size>\0...`. If those invariants ever break, treat it as a
+  // missing object rather than silently mis-typing.
   const nulIdx = bytes.indexOf(0);
   // Stryker disable next-line EqualityOperator: equivalent — at the only differing input (`nulIdx === 0`) the fall-through path finds no space (`space === -1`) and throws the identical OBJECT_NOT_FOUND.
   if (nulIdx < 0) {

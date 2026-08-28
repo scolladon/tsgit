@@ -7,7 +7,7 @@ import {
 } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
   resolveObject,
-  resolveObjectBytes,
+  resolveObjectBytesWithDepth,
 } from '../../../../src/application/primitives/object-resolver.js';
 import {
   createPackRegistry,
@@ -852,7 +852,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a delta-cache hit', () => {
-      describe('When resolveObjectBytes is called with verifyHash=false', () => {
+      describe('When resolveObjectBytesWithDepth is called with verifyHash=false', () => {
         it('Then no hash is computed', async () => {
           // Arrange — the sync fast path must not pay for a hash it never uses.
           const ctx = await buildSeededContext();
@@ -863,7 +863,14 @@ describe('object-resolver', () => {
           const hashSpy = vi.spyOn(ctx.hash, 'hashHex');
 
           // Act
-          const result = await resolveObjectBytes(ctx, registry, fakeId, false);
+          const { bytes: result } = await resolveObjectBytesWithDepth(
+            ctx,
+            registry,
+            fakeId,
+            false,
+            undefined,
+            0,
+          );
 
           // Assert
           expect(result).toEqual(rawBytes);
@@ -873,7 +880,7 @@ describe('object-resolver', () => {
     });
 
     describe('Given a delta-cache hit and a signal that aborts before the read returns', () => {
-      describe('When resolveObjectBytes is called with verifyHash=false', () => {
+      describe('When resolveObjectBytesWithDepth is called with verifyHash=false', () => {
         it('Then it rejects with OPERATION_ABORTED', async () => {
           // Arrange — verifyHash=false means the cache-hit arm no longer awaits
           // a hash, so it must poll for abort explicitly at the same point
@@ -891,7 +898,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObjectBytes(ctx, registry, fakeId, false);
+            await resolveObjectBytesWithDepth(ctx, registry, fakeId, false, undefined, 0);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -1201,7 +1208,7 @@ describe('object-resolver', () => {
 
           // Assert — one readdir per DISTINCT touched prefix, never per object
           // or per read; the old per-object exists/realpath probe is gone.
-          // exists() never fires at all: resolveObjectBytes's assertLoadable
+          // exists() never fires at all: resolveObjectBytesWithDepth's assertLoadable
           // gate is now the multi-pack-index load alone, and the pack
           // directory's own `exists` presence check moved behind the
           // deferred scan, which a loose HIT never forces.
@@ -1418,7 +1425,7 @@ describe('object-resolver', () => {
         it('Then the cached type is reused without re-splitting the header', async () => {
           // Arrange — base type 'tree' (not 'blob'): a hit that re-derived
           // (or defaulted) the type instead of reusing the cached one would
-          // fail this. resolveObjectBytes is used so the reconstructed
+          // fail this. resolveObjectBytesWithDepth is used so the reconstructed
           // target need not be a structurally valid tree body.
           const ctx = await buildSeededContext();
           const midContent = ENC.encode('tree-typed mid content');
@@ -1433,10 +1440,17 @@ describe('object-resolver', () => {
           const tip1Id = ids[2]! as ObjectId;
           const tip2Id = ids[3]! as ObjectId;
           const registry = createPackRegistry(ctx);
-          await resolveObjectBytes(ctx, registry, tip1Id, false);
+          await resolveObjectBytesWithDepth(ctx, registry, tip1Id, false, undefined, 0);
 
           // Act
-          const bytes = await resolveObjectBytes(ctx, registry, tip2Id, false);
+          const { bytes } = await resolveObjectBytesWithDepth(
+            ctx,
+            registry,
+            tip2Id,
+            false,
+            undefined,
+            0,
+          );
 
           // Assert — header carries the propagated 'tree' type.
           const header = new TextDecoder().decode(bytes.subarray(0, bytes.indexOf(0)));
