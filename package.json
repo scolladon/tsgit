@@ -1380,6 +1380,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.11",
     "wireit": "0.14.13",
-    "wrangler": "4.127.0"
+    "wrangler": "4.127.1"
   }
 }
