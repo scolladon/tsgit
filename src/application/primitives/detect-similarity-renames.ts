@@ -404,7 +404,9 @@ export async function hydrateAndFingerprint(
 ): Promise<FingerprintPair> {
   const dstIds = adds.map((a) => a.newId);
   const combined = await hydrateIds(ctx, [...allSrcIds, ...dstIds]);
+  // Stryker disable next-line MethodExpression: equivalent — the store is content-addressed (id implies content), so buildFingerprintMap below only ever looks up ids explicitly passed to it (allSrcIds / adds' newIds); whether srcBytesById/dstBytesById is built from the sliced subset or the full combined array, every looked-up id resolves to the same bytes (full covering set — detect-similarity-renames ×2, diff-trees, diff — passes unmutated with both slices removed).
   const srcEntries = combined.slice(0, allSrcIds.length);
+  // Stryker disable next-line MethodExpression: equivalent — same reasoning as srcEntries above.
   const dstEntries = combined.slice(allSrcIds.length);
   const srcBytesById = new Map<ObjectId, Uint8Array>(srcEntries.map((e) => [e.id, e.bytes]));
   const dstBytesById = new Map<ObjectId, Uint8Array>(dstEntries.map((e) => [e.id, e.bytes]));
