@@ -382,6 +382,85 @@ describe('writePackArtifactsViaQuarantine', () => {
     });
   });
 
+  describe('Given a normal (non-colliding) quarantine write', () => {
+    describe('When writePackArtifactsViaQuarantine claims its tmp names', () => {
+      it('Then both claimed names match the tmp_pack_/tmp_idx_ + 6-char alphabet shape exactly', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+        const claimedPaths: string[] = [];
+        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        const spy = vi
+          .spyOn(ctx.fs, 'writeExclusive')
+          .mockImplementation(async (path: string, data: Uint8Array) => {
+            claimedPaths.push(path);
+            return originalWriteExclusive(path, data);
+          });
+
+        // Act
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: false,
+        });
+        spy.mockRestore();
+
+        // Assert — exactly `tmp_pack_`/`tmp_idx_` + 6 alphabet characters,
+        // no more, no fewer: a mutant that drops the suffix loop,
+        // off-by-ones it, or corrupts the random index (division instead of
+        // multiplication) all break this exact shape.
+        const tmpPaths = claimedPaths.filter((p) => p.includes('/tmp_'));
+        expect(tmpPaths).toHaveLength(2);
+        expect(tmpPaths.some((p) => /\/tmp_pack_[A-Za-z0-9]{6}$/.test(p))).toBe(true);
+        expect(tmpPaths.some((p) => /\/tmp_idx_[A-Za-z0-9]{6}$/.test(p))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the stale .rev removal fails with something other than FILE_NOT_FOUND', () => {
+    describe('When writePackArtifactsViaQuarantine runs', () => {
+      it('Then the PERMISSION_DENIED failure propagates rather than being swallowed as tolerable absence', async () => {
+        // Arrange — `rmTolerant` must rethrow every code except
+        // FILE_NOT_FOUND; a mutant that always treats the removal as
+        // tolerable would swallow this and proceed to write `.rev` as if
+        // nothing were wrong.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+        const revPath = `${dir}/pack-${PACK_SHA}.rev`;
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const spy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path === revPath) throw new TsgitError({ code: 'PERMISSION_DENIED', path });
+          return originalRm(path);
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, {
+            packDir: dir,
+            packBytes: PACK_BYTES,
+            entries,
+            packSha: PACK_SHA,
+            promisor: false,
+          });
+        } catch (error) {
+          caught = error;
+        }
+        spy.mockRestore();
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
   describe('Given the tmp .idx write fails after the tmp .pack already landed', () => {
     describe('When writePackArtifactsViaQuarantine runs', () => {
       it('Then no tmp_pack_*/tmp_idx_* debris is left behind', async () => {
@@ -466,6 +545,91 @@ describe('writePackArtifactsViaQuarantine', () => {
         expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.pack`)).toBe(true);
         const remaining = (await ctx.fs.readdir(dir)).map((e) => e.name);
         expect(remaining.some((name) => name.startsWith('tmp_idx_'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given both renames succeed', () => {
+    describe('When writePackArtifactsViaQuarantine finishes', () => {
+      it('Then the cleanup finally block never re-attempts an rm on either already-renamed tmp path', async () => {
+        // Arrange — `renamed.pack`/`renamed.idx` must actually record the
+        // successful rename; a mutant that leaves either flag false (or
+        // ignores it entirely) makes the `finally` block redundantly call
+        // `rm` on a path that no longer exists.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+        const rmCalls: string[] = [];
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          rmCalls.push(path);
+          return originalRm(path);
+        });
+
+        // Act
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: false,
+        });
+        rmSpy.mockRestore();
+
+        // Assert — no rm call ever targets a `tmp_pack_*`/`tmp_idx_*` path;
+        // both were already renamed away.
+        expect(rmCalls.some((p) => p.includes('/tmp_pack_'))).toBe(false);
+        expect(rmCalls.some((p) => p.includes('/tmp_idx_'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given no [pack] section in config', () => {
+    describe('When writePackArtifactsViaQuarantine runs', () => {
+      it('Then .rev is written alongside .pack/.idx (the default gate)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+
+        // Act
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: false,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.rev`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given pack.writeReverseIndex = false', () => {
+    describe('When writePackArtifactsViaQuarantine runs', () => {
+      it('Then .rev is suppressed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[pack]\n\twriteReverseIndex = false\n');
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+
+        // Act
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: false,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.rev`)).toBe(false);
       });
     });
   });
