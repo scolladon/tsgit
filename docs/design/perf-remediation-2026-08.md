@@ -2436,7 +2436,7 @@ confirmed against real bytes:
 | `EDGE` | variable, **size unvalidated** by the reader | optional `:106` |
 | `BASE` | **not emitted** (`numBaseGraphs = 0`) | `readBaseGraphHashes :177-201` |
 | the two changed-path Bloom chunks | **not emitted** — they appear only under `--changed-paths` (Pin C) and tsgit's reader does not parse them | out of scope |
-| `GDO2` | **must not be emitted** — see the refusal below | `:307-312` |
+| `GDO2` | emitted when a corrected-date offset overflows `GDA2`'s 31-bit field — see below (ADR-734) | `:311-337` |
 
 **The CDAT entry, byte for byte** (`commitDataAt :242-262`), at
 `_commitDataOffset + localPos × (hashLength + 16)`:
@@ -2452,27 +2452,28 @@ confirmed against real bytes:
 
 The reader's decode is `committerDate = (genWord & 0x3) * 2^32 + dateWord` and
 `generationV1 = genWord >>> 2` (`:254-255`) — a **34-bit** committer date and a 30-bit topological
-generation. The writer is the exact inverse, and a repository with a committer date ≥ 2³⁴ is the
-one input that cannot be encoded; refuse it rather than truncate.
+generation. The writer is the exact inverse, and git never refuses a committer date past the
+34-bit ceiling: it computes the same split unconditionally and the top bits silently wrap mod 2³⁴
+(measured: `git commit-graph write` on such a date exits 0, and only `git commit-graph verify`
+later flags the mismatch), so the writer matches that wrap rather than refusing the input.
 
-`generationV1` is the topological level: `0` for a root commit, `1 + max(parents' level)`
-otherwise. `GDA2` holds `correctedCommitDate − committerDate` per commit as a u32, where
-`correctedCommitDate = max(committerDate, 1 + max(parents' correctedCommitDate))` — the reader
-recomposes it as `committerDate + raw` (`resolveGeneration :314`).
+`generationV1` is the topological level: **`1` for a root commit** — git's own convention, not
+`0` — and `1 + max(parents' level)` otherwise (confirmed empirically: a 3-commit linear chain's
+tip carries genWord `12` = level 3 × 4, not level 2 × 4). `GDA2` holds `correctedCommitDate −
+committerDate` per commit as a u32, where `correctedCommitDate = max(committerDate, 1 +
+max(parents' correctedCommitDate))` — the reader recomposes it as `committerDate + raw`
+(`resolveGeneration :314`).
 
-**The GDO2 refusal, and the pin it still owes.** When the offset exceeds `0x7fffffff`, git sets
-`GENERATION_OVERFLOW_FLAG` and puts the true value in a `GDO2` overflow chunk. tsgit's reader does
-**not** parse `GDO2` — it silently degrades to `generationV1` (`:307-312`), and there is no
-`CHUNK_ID_GDO2` constant. A writer that emitted `GDO2` would therefore produce a file tsgit itself
-reads with reduced fidelity. **The design refuses instead**: if any corrected-date offset would
-overflow, the writer throws a typed refusal and writes nothing, leaving any existing graph intact.
-⚠️ **git's behaviour in that case is unpinned** — the skew probe failed on git's date parser
-(`fatal: invalid date format: 2500-01-01…`) so no overflow file was produced. Before the interop
-test claims parity here, the implementer must pin it: build a repo with a corrected-date offset
-past 2³¹ (use `GIT_COMMITTER_DATE=@<epoch>` seconds form, which the ISO parser rejected), run
-`git commit-graph write --reachable`, and record whether a `GDO2` chunk appears and what
-`numChunks` becomes. If git emits `GDO2`, the honest options are to parse it (a reader change) or
-to keep the refusal with an ADR line; **do not silently emit a chunk tsgit cannot read.**
+**`GDO2`, read and written (ADR-734).** When a corrected-date offset exceeds `0x7fffffff`, git
+sets `GENERATION_OVERFLOW_FLAG` on the `GDA2` entry and appends the true 64-bit offset to a
+`GDO2` overflow chunk. The implementer's first pass refused to write a graph needing `GDO2` (the
+reader didn't parse it either, so refusing kept both sides consistent but diverged from git on
+pathological far-future dates). ADR-734 replaced that refusal with full chunk parity: the reader
+decodes `GDO2` (`resolveGeneration`, `commit-graph.ts:311-337`) and the writer emits it
+byte-identically to `git commit-graph write --reachable` on the same overflow-inducing commit set
+(`writeOverflowGenerationChunk`, `commit-graph-writer.ts:388-396`). `numChunks` becomes 5 (or 6
+with an octopus merge's `EDGE`) whenever any commit's corrected-date offset overflows; refusals
+remain only for inputs git itself refuses.
 
 **The commit set is refs-only — and that is *not* gc's root set.** Pin O is decisive: a commit
 reachable only from a deleted branch's reflog is **absent** from the graph (`rev-list --all` = 1,
@@ -2639,12 +2640,19 @@ other step gains a branch.
    object lists** — that is the whole of consolidation, and it is what turns the old ⚠️ divergence
    row into a parity row: an object packed while reachable and since made unreachable is now in
    `cruftCandidates` and migrates. **The mtime `max` gained a third source**, the containing pack's
-   `lstat` from step 1b, which is Pin Q row 2 and Pin Y. **And ADR-733 added a second, disjoint
-   output partition** — `toPromisorPack` — subtracted out of both non-promisor sets, so a given oid
-   lands in **exactly one** of `toNormalPack`, `toPromisorPack` and `cruftCandidates`, never two.
-   That three-way disjointness is the property the interop and unit suites assert directly; it is
-   also what makes step 8's verify a partition of the repository rather than a re-read of parts of
-   it twice.
+   `lstat` from step 1b, which is Pin Q row 2 and Pin Y. **And ADR-733 added a second output
+   partition** — `toPromisorPack`, the whole promisor set regardless of reachability — but it is
+   **not** kept disjoint from `toNormalPack`: pinned against git 2.55.0 (a `.promisor`-marked pack
+   holding already-packed reachable content, a further reachable commit added, `git gc` run), a
+   REACHABLE promisor oid is packed into **both** the rebuilt promisor pack **and** the ordinary
+   reachable pack — git does not treat promisor membership as an exclusion from the normal pack the
+   way it treats `.keep`. Only `cruftCandidates` stays strictly disjoint from the other two: an
+   unreachable promisor oid must never reach it, because a cruft pack cannot carry the `.promisor`
+   marker and moving it there would announce a lazily-fetchable object as fully present locally —
+   the same correctness break merging the two packs would be. So a given oid lands in exactly one
+   of `toNormalPack` and `cruftCandidates` (mutually exclusive, as before), while `toPromisorPack`
+   deliberately intersects `toNormalPack` on its reachable members — that overlap, not a three-way
+   disjointness, is the property the interop and unit suites assert directly.
 
    **`toPromisorPack` is not intersected with `reachable`, and that is deliberate.** A promisor
    object that is unreachable cannot go to the cruft pack, because a cruft pack has no `.promisor`
@@ -2725,10 +2733,15 @@ other step gains a branch.
    `.rev` gate (`pack.writeReverseIndex`) applies identically, which is why Pin Z's git output shows
    `{idx,pack,promisor,rev}` on the new promisor pack.
 
-   **The new normal pack is never a promisor pack and vice versa**: step 4 subtracts `ownedPromisor`
-   out of `toNormalPack`, so `writePackArtifacts` is called with `promisor: false` at step 6 and
-   `promisor: true` at step 6b, over disjoint oid sets. That disjointness is the whole of Pin Z and
-   the one property no branch of DC-18 was ever allowed to break.
+   **The normal and promisor packs are never merged into one file, even though their oid sets can
+   overlap**: `writePackArtifacts` is called with `promisor: false` at step 6 and `promisor: true`
+   at step 6b, producing two distinct packs — but step 4 subtracts `ownedPromisor` out of
+   `toNormalPack` only for its **unreachable** members, so a reachable promisor oid rides both
+   output sets, by design (see above). That is exactly what Pin Z pins: git never folds promisor
+   and non-promisor objects into a single pack (that would tell a later reader a lazily-fetchable
+   object is already present locally), it just doesn't mind the same object appearing in both — the
+   one property no branch of DC-18 was ever allowed to break is the never-merged file boundary, not
+   oid-set disjointness.
 
    One inherited window is worth naming rather than discovering later: `writePackArtifacts` creates
    `.pack`, then `.idx`, then `.promisor`, so between the second and third writes the pack is
@@ -3119,9 +3132,10 @@ measures it. Pre-ADR-732 the dominant term was the loose scan; now it is `buildP
 reachable object in the repository**, each of which is inflated from its delta chain (a `cpuBound`
 read that may walk up to `--depth` bases) and re-deflated (`cpuBound` again). Pin W removes the
 escape: there is no "nothing changed, skip it" branch, so this is what **every** `gc` costs, not
-just the first. ADR-733 adds a second `buildPack` over a *disjoint* object set, so it widens the
-total work by the promisor half's share and adds no repeated work — the two builds partition the
-repository, they do not overlap it. That makes P1's `cpuBound` bound the one that matters here — a bound derived from
+just the first. ADR-733 adds a second `buildPack` over the promisor set, so it widens the total
+work by the promisor half's share — plus a small repeated slice, since a reachable promisor oid is
+read and re-deflated into **both** builds rather than partitioning the repository cleanly (the two
+sets are not disjoint; see §P9 above). That makes P1's `cpuBound` bound the one that matters here — a bound derived from
 `min(cores, threadpoolWidth)` rather than a constant is worth more in this task than anywhere else
 in the change, because the work is embarrassingly parallel per object and bounded by the same
 libuv pool zlib runs on.
@@ -3453,7 +3467,7 @@ fraction) and its entry-cap and sizer-omission fixes.
 | P6 | index cache hit/miss/invalidate keyed on `(size,mtimeMs,mtimeNs,ino)`; every syscall-count pin in the table above re-asserted through the new mechanism; FlatTree cache key incl. `maxDepth`; gitlink preservation | — | `status`/`add` interop suites unchanged; `git-parity-containment-interop` untouched | `status`, `status-dirty`, `add` |
 | P7 | wave ordering (deletes → dirs → children); pool drain on first throw before `lock.commit`; `checkDirty` refusal arrays byte-order-identical under a pool; quarantine rename + failure unlink; zlib threshold both sides | — | clone/fetch network interop (`test/integration/network/*`, real `git-http-backend`); `test/browser/decompression-stream.spec.ts` | **new** `checkout.bench.ts`; `clone-small-repo`; `bench-memory` clone workload at two pack sizes |
 | P8 | provenance brand in `composeAdapters`; verdict identity between wrapper and adapter over a path corpus; `deriveContext` preserving/renewing the session token per dimension; `listWorktrees` ref-store reuse count | **new** containment verdict-identity property (lens 2, ADR-485 already asks for one) | `git-parity-containment-interop`, `worktree-interop`, `linked-worktree-discovery-interop`, `ownership-trust-gate-interop` | `merge` (the `guard` frame), `status` |
-| P9 | **commit-graph writer**: chunk table layout, `numChunks` 4 vs 5 (octopus ⇒ `EDGE`), `OIDF` 1024-byte fanout, oid-sorted `OIDL` positions, `CDAT` field-by-field incl. the `(genWord & 3) << 32 \| dateWord` split, `GDA2` corrected-date offsets, `NO_PARENT` / `OCTOPUS_FLAG` encoding, SHA-1 **and** SHA-256 header, the GDO2-overflow **refusal**, the ≥2³⁴ committer-date refusal, lock-file contention on `commit-graph.lock`, refs-only root set. **gc**: `auto` gate on / off × `gc.auto` 0 / default / exceeded; the reachable-vs-unreachable partition; `prune-packable` unlink; unlink-after-verify ordering (a fault injected between write and prune must leave every object readable); `forgetLooseOidPrefix` called for every touched prefix; `ctx.fs.rm` `FILE_NOT_FOUND` narrowed and every other code rethrown; malformed `gc.auto` **and** malformed `gc.pruneExpire` refusals, each asserted on `.data` not on the error class; refs, reflogs and index byte-identical (R26); `MaintenanceResult` carries no rendered text. **cruft (ADR-731)**: `serializeCruftMtimes` header/body/trailer field-by-field incl. both hash widths and the `digestLength ∉ {20,32}` refusal; `.idx`-order (**not** offset-order) indexing, with a fixture whose mtimes are deliberately non-monotonic so an offset-indexed implementation fails; `parseCruftMtimes` on a count/`.idx` mismatch and on a bad self-checksum — **separate tests per guard**, since `if (A \|\| B) throw` needs each condition triggered alone; mtime provenance from loose `lstat` vs carried-forward sidecar entry, **and the `max` when both are present** (a lookup-with-fallback implementation must fail this test in both orderings — carried-newer and loose-newer); the expiry predicate at `cutoff−1` / `cutoff` / `cutoff+1` with an injected clock (the at-cutoff case is its own test — a StringLiteral/boundary mutant survives a two-sided test); `never` / `now` / `@epoch` / `<n>.<unit>.ago` cutoff derivation and the refusal for unsupported grammar; ms→s conversion at the seam; all four Pin S branches incl. the **byte-identical no-op**; the two-cruft-packs crash-recovery state; `.rev`+midx deletion on cruft retirement (R30); every cruft count in `MaintenanceResult` (R31). **consolidation (ADR-732)**: the step-1b classifier over the `fileNames` set — kept / promisor / cruft / normal, one test per class **and** one per pair that could be confused (a cruft pack is not a normal pack; a pack carrying both `.keep` and `.mtimes`; a pack carrying both `.keep` and `.promisor`, where `.keep` must win); `owned` excluding kept packs, asserted by *absence* of their oids from the new pack rather than by a count; the mtime `max` over **three** sources with all three present and each one newest in turn (Pins Q, Y) — a two-source implementation must fail; the empty-input branch writing **no** pack (Pin V) as its own test, distinct from the single-pack branch writing one (Pin W), because a guard collapsing them is exactly the mutant this pair kills; **no** short-circuit on an already-consolidated repo, asserted by a second `gc` still writing (Pin W); `.idx`-first unlink ordering with a fault injected after it, proving the half-retired pack is invisible to `createPackRegistry` and readable-through nowhere; `.bitmap` deleted with its pack and no orphan left; `packsRetired` / `packBytesBefore` / `packBytesAfter` (R32, R33) incl. `packBytesAfter > packBytesBefore` on a deltified fixture; `gc.cruftPacks=false` **loosening** survivors out of a superseded pack rather than dropping them (Pin AA) — its own test, since a skip-the-cruft-steps implementation passes every other case and destroys data in this one. **promisor (ADR-733)**: step 4's three-way partition asserted as *disjoint* — no oid in two of `toNormalPack` / `toPromisorPack` / `cruftCandidates`, with an overlap fixture where the same oid is loose **and** inside a promisor pack (the promisor class must win and the normal pack must not carry it); an **unreachable** promisor object landing in `toPromisorPack` and **not** in `cruftCandidates`, and surviving a cutoff that would destroy any other unreachable object — the test that fails a `reachable ∩ ownedPromisor` implementation; step 6b's empty-input branch (no promisor packs ⇒ no `.promisor` written anywhere) as its own test, independent of step 6's, because one guard serving both is exactly the mutant this pair kills; `writePackArtifacts` called with `promisor: true` at 6b and `promisor: false` at 6, asserted on the captured argument rather than on the resulting file list; step 10c's unlink set and its `.idx`-first / `.promisor`-last ordering, with a fault after the `.idx` proving the marker is still present; `promisorPackId` `undefined` on an ordinary repo and equal to the new pack's sha on a partial-clone-shaped one; `packsRetired` spanning all three retirable classes | serializer ↔ parser round-trip for the commit-graph writer over an arbitrary commit DAG — `parseCommitGraphLayer(serializeCommitGraph(dag)) ≡ dag` incl. octopus merges and multi-root DAGs (lens 1); `commit-graph-writer.properties.test.ts`, reusing `test/unit/domain/commit/arbitraries.ts`. **new** `cruft-pack.properties.test.ts` (R27, lens 1): `parseCruftMtimes(serializeCruftMtimes(x)) ≡ x` over arbitrary object counts, arbitrary `u32` mtime vectors and both hash widths; `numRuns` **200** (cheap round-trip tier); generators in the directory's `arbitraries.ts` | **new** `test/integration/maintenance-interop.test.ts` — every row of the "Faithfulness pins this part owes" table: commit-graph byte identity (linear / merge / **octopus**), SHA-256 header, `git commit-graph verify` exit 0, refs-only root set (Pin O), index-only + reflog-only retention (Pin H), ref/reflog immutability (Pin J), artefact siblings (Pins F, T), **cruft creation, `.mtimes` byte format against git's own sidecar, mtime provenance, the expiry boundary, `--prune=never` / `--prune=now` / `gc.cruftPacks=false` equivalences, all four existing-cruft branches, resurrection, `.rev`+midx deletion, SHA-256 cruft, the prune-expiry refusal** (Pins P–U), **plus the ADR-732 rows: consolidation placement (three packs + loose ⇒ one), packed-then-unreachable migrating with its source pack's mtime, `*.keep` survival and its empty-input boundary, the single-pack no-op boundary, the cruft no-op compared on bytes-not-inodes, deletion ordering under injected faults, `.bitmap` following its pack, `gc.cruftPacks=false` loosening and the directional size-trade row, **plus the ADR-733 rows: the promisor pack rebuilt-not-merged (two output packs, oid-membership asserted both ways), step 10c's retirement ordering under an injected fault, `.keep`-over-`.promisor` precedence, and the no-promisor-pack-no-promisor-output boundary** (Pins V–AA). Twin-repository comparison — tsgit on one, real git on its clone — is the shape for every placement row. One shared `beforeAll` repo, 60 s timeout, `GIT_*` scrubbed, `HOME` isolated, signing off | **new** `maintenance.bench.ts`: (1) commit-graph write over `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count; (2) `gc` over a few thousand **reachable** loose objects; (3) **repeat** `gc` over a few thousand **unreachable** loose objects plus an existing cruft pack; (4) **repeat** `gc` over `DELTA_CHAIN_FIXTURE` — the ADR-732 ceiling, where every object is inflated through a chain up to 43 deep and re-deflated as a base entry, and where Pin W's "no skip branch" makes that a **per-run** cost. Scenarios 3 and 4 are cost ceilings, not wins; scenario 4 reports **two** budgets — wall-clock ms *and* `packBytesAfter / packBytesBefore` (measured ×6.91 on this fixture) — neither of which is a gate (R33). Absolute wall-clock through P0.5's driver. Plus the **transitive** oracle — `log.bench.ts` must show the commit-graph fast path engaging on a tsgit-created repo after the write, i.e. F12's prefetcher stops being dead code |
+| P9 | **commit-graph writer**: chunk table layout, `numChunks` 4 vs 5 (octopus ⇒ `EDGE`), `OIDF` 1024-byte fanout, oid-sorted `OIDL` positions, `CDAT` field-by-field incl. the `(genWord & 3) << 32 \| dateWord` split, `GDA2` corrected-date offsets, `NO_PARENT` / `OCTOPUS_FLAG` encoding, SHA-1 **and** SHA-256 header, the `GDO2` overflow chunk read+write (ADR-734), the ≥2³⁴ committer-date wrap, lock-file contention on `commit-graph.lock`, refs-only root set. **gc**: `auto` gate on / off × `gc.auto` 0 / default / exceeded; the reachable-vs-unreachable partition; `prune-packable` unlink; unlink-after-verify ordering (a fault injected between write and prune must leave every object readable); `forgetLooseOidPrefix` called for every touched prefix; `ctx.fs.rm` `FILE_NOT_FOUND` narrowed and every other code rethrown; malformed `gc.auto` **and** malformed `gc.pruneExpire` refusals, each asserted on `.data` not on the error class; refs, reflogs and index byte-identical (R26); `MaintenanceResult` carries no rendered text. **cruft (ADR-731)**: `serializeCruftMtimes` header/body/trailer field-by-field incl. both hash widths and the `digestLength ∉ {20,32}` refusal; `.idx`-order (**not** offset-order) indexing, with a fixture whose mtimes are deliberately non-monotonic so an offset-indexed implementation fails; `parseCruftMtimes` on a count/`.idx` mismatch and on a bad self-checksum — **separate tests per guard**, since `if (A \|\| B) throw` needs each condition triggered alone; mtime provenance from loose `lstat` vs carried-forward sidecar entry, **and the `max` when both are present** (a lookup-with-fallback implementation must fail this test in both orderings — carried-newer and loose-newer); the expiry predicate at `cutoff−1` / `cutoff` / `cutoff+1` with an injected clock (the at-cutoff case is its own test — a StringLiteral/boundary mutant survives a two-sided test); `never` / `now` / `@epoch` / `<n>.<unit>.ago` cutoff derivation and the refusal for unsupported grammar; ms→s conversion at the seam; all four Pin S branches incl. the **byte-identical no-op**; the two-cruft-packs crash-recovery state; `.rev`+midx deletion on cruft retirement (R30); every cruft count in `MaintenanceResult` (R31). **consolidation (ADR-732)**: the step-1b classifier over the `fileNames` set — kept / promisor / cruft / normal, one test per class **and** one per pair that could be confused (a cruft pack is not a normal pack; a pack carrying both `.keep` and `.mtimes`; a pack carrying both `.keep` and `.promisor`, where `.keep` must win); `owned` excluding kept packs, asserted by *absence* of their oids from the new pack rather than by a count; the mtime `max` over **three** sources with all three present and each one newest in turn (Pins Q, Y) — a two-source implementation must fail; the empty-input branch writing **no** pack (Pin V) as its own test, distinct from the single-pack branch writing one (Pin W), because a guard collapsing them is exactly the mutant this pair kills; **no** short-circuit on an already-consolidated repo, asserted by a second `gc` still writing (Pin W); `.idx`-first unlink ordering with a fault injected after it, proving the half-retired pack is invisible to `createPackRegistry` and readable-through nowhere; `.bitmap` deleted with its pack and no orphan left; `packsRetired` / `packBytesBefore` / `packBytesAfter` (R32, R33) incl. `packBytesAfter > packBytesBefore` on a deltified fixture; `gc.cruftPacks=false` **loosening** survivors out of a superseded pack rather than dropping them (Pin AA) — its own test, since a skip-the-cruft-steps implementation passes every other case and destroys data in this one. **promisor (ADR-733)**: step 4's partition asserted as disjoint only between `cruftCandidates` and the other two — an unreachable promisor oid never reaches `cruftCandidates` — while `toNormalPack` and `toPromisorPack` are asserted to **overlap** on a reachable promisor oid, with an overlap fixture where the same oid is loose **and** inside a promisor pack (both output packs must carry it; the normal pack does not exclude it); an **unreachable** promisor object landing in `toPromisorPack` and **not** in `cruftCandidates`, and surviving a cutoff that would destroy any other unreachable object — the test that fails a `reachable ∩ ownedPromisor` implementation; step 6b's empty-input branch (no promisor packs ⇒ no `.promisor` written anywhere) as its own test, independent of step 6's, because one guard serving both is exactly the mutant this pair kills; `writePackArtifacts` called with `promisor: true` at 6b and `promisor: false` at 6, asserted on the captured argument rather than on the resulting file list; step 10c's unlink set and its `.idx`-first / `.promisor`-last ordering, with a fault after the `.idx` proving the marker is still present; `promisorPackId` `undefined` on an ordinary repo and equal to the new pack's sha on a partial-clone-shaped one; `packsRetired` spanning all three retirable classes | serializer ↔ parser round-trip for the commit-graph writer over an arbitrary commit DAG — `parseCommitGraphLayer(serializeCommitGraph(dag)) ≡ dag` incl. octopus merges and multi-root DAGs (lens 1); `commit-graph-writer.properties.test.ts`, reusing `test/unit/domain/commit/arbitraries.ts`. **new** `cruft-pack.properties.test.ts` (R27, lens 1): `parseCruftMtimes(serializeCruftMtimes(x)) ≡ x` over arbitrary object counts, arbitrary `u32` mtime vectors and both hash widths; `numRuns` **200** (cheap round-trip tier); generators in the directory's `arbitraries.ts` | **new** `test/integration/maintenance-interop.test.ts` — every row of the "Faithfulness pins this part owes" table: commit-graph byte identity (linear / merge / **octopus**), SHA-256 header, `git commit-graph verify` exit 0, refs-only root set (Pin O), index-only + reflog-only retention (Pin H), ref/reflog immutability (Pin J), artefact siblings (Pins F, T), **cruft creation, `.mtimes` byte format against git's own sidecar, mtime provenance, the expiry boundary, `--prune=never` / `--prune=now` / `gc.cruftPacks=false` equivalences, all four existing-cruft branches, resurrection, `.rev`+midx deletion, SHA-256 cruft, the prune-expiry refusal** (Pins P–U), **plus the ADR-732 rows: consolidation placement (three packs + loose ⇒ one), packed-then-unreachable migrating with its source pack's mtime, `*.keep` survival and its empty-input boundary, the single-pack no-op boundary, the cruft no-op compared on bytes-not-inodes, deletion ordering under injected faults, `.bitmap` following its pack, `gc.cruftPacks=false` loosening and the directional size-trade row, **plus the ADR-733 rows: the promisor pack rebuilt-not-merged (two output packs, oid-membership asserted both ways), step 10c's retirement ordering under an injected fault, `.keep`-over-`.promisor` precedence, and the no-promisor-pack-no-promisor-output boundary** (Pins V–AA). Twin-repository comparison — tsgit on one, real git on its clone — is the shape for every placement row. One shared `beforeAll` repo, 60 s timeout, `GIT_*` scrubbed, `HOME` isolated, signing off | **new** `maintenance.bench.ts`: (1) commit-graph write over `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count; (2) `gc` over a few thousand **reachable** loose objects; (3) **repeat** `gc` over a few thousand **unreachable** loose objects plus an existing cruft pack; (4) **repeat** `gc` over `DELTA_CHAIN_FIXTURE` — the ADR-732 ceiling, where every object is inflated through a chain up to 43 deep and re-deflated as a base entry, and where Pin W's "no skip branch" makes that a **per-run** cost. Scenarios 3 and 4 are cost ceilings, not wins; scenario 4 reports **two** budgets — wall-clock ms *and* `packBytesAfter / packBytesBefore` (measured ×6.91 on this fixture) — neither of which is a gate (R33). Absolute wall-clock through P0.5's driver. Plus the **transitive** oracle — `log.bench.ts` must show the commit-graph fast path engaging on a tsgit-created repo after the write, i.e. F12's prefetcher stops being dead code |
 
 ### Cross-cutting
 
@@ -3461,15 +3475,17 @@ fraction) and its entry-cap and sizer-omission fixes.
   about git. Every refusal-adjacent change (P3's `INVALID_PACK_INDEX` layering, P5's flip, P7's
   quarantine, P8's containment) and every new on-disk artefact (P9's commit-graph and pack)
   gets an interop pin or an explicit ADR line saying why not.
-- **Three pins are owed *by implementers*, not by this design**, and each blocks a parity claim
-  until it is run: git's behaviour on a **handled** clone failure (ADR-728 / P7); whether git
-  emits a **`GDO2`** chunk under corrected-date overflow (P9 task 1); and **what default `gc` does
-  with an *unreachable* object inside a `.promisor` pack** (ADR-733 / P9 task 2) — Pin Z's probe had
-  only reachable promisor objects, so it pins the rebuild but not the reachability filter. The probe
-  is Pin Z's setup with the promisor pack's objects made unreachable before `git gc`, asserting
-  whether they land in the new promisor pack, the cruft pack, or nowhere. §P9 takes the *retain*
-  direction meanwhile, which is the recoverable way to be wrong; a correction is one subtraction at
-  step 4. Record each matrix in this document when run. *(The cruft-pack sidecar layout is
+- **Two pins remain owed *by implementers*, not by this design**, and each blocks a parity claim
+  until it is run: git's behaviour on a **handled** clone failure (ADR-728 / P7); and **what
+  default `gc` does with an *unreachable* object inside a `.promisor` pack** (ADR-733 / P9 task 2)
+  — Pin Z's probe had only reachable promisor objects, so it pins the rebuild but not the
+  reachability filter. The probe is Pin Z's setup with the promisor pack's objects made unreachable
+  before `git gc`, asserting whether they land in the new promisor pack, the cruft pack, or
+  nowhere. §P9 takes the *retain* direction meanwhile, which is the recoverable way to be wrong; a
+  correction is one subtraction at step 4. **A third pin — whether git emits a `GDO2` chunk under
+  corrected-date overflow (P9 task 1) — has since run**: git 2.55.0 does emit it, and ADR-734 ships
+  read+write parity, retiring the refusal this design originally chose. Record each matrix in this
+  document when run. *(The cruft-pack sidecar layout is
   **discharged** by Pins P–U — format, ordering, mtime provenance, expiry arithmetic,
   existing-cruft lifecycle, naming and the SHA-256 variant. The consolidation lifecycle is
   **discharged** by Pins V–AA — `.keep` exclusion, the no-op boundary, live-observed
