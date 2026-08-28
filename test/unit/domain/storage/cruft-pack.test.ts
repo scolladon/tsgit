@@ -361,6 +361,19 @@ describe('cruft-pack', () => {
           expectRefusal(() => parseCruftMtimes(bytes, []), 'size', 'too small');
         });
       });
+
+      describe('When parsing a file exactly at the 12-byte header boundary', () => {
+        it('Then it proceeds past the size gate and refuses on signature instead', () => {
+          // Arrange — the `< CRUFT_HEADER_SIZE` boundary sits at exactly 12;
+          // an all-zero 12-byte buffer is long enough to read the header
+          // fields but the wrong signature, pinning that the size gate
+          // itself does NOT fire here.
+          const bytes = new Uint8Array(12);
+
+          // Act & Assert
+          expectRefusal(() => parseCruftMtimes(bytes, []), 'signature', 'signature');
+        });
+      });
     });
 
     describe('Given a sidecar with the 4th signature byte flipped', () => {
@@ -434,6 +447,31 @@ describe('cruft-pack', () => {
 
           // Act & Assert
           expectRefusal(() => parseCruftMtimes(bytes, oids), 'hash-id', 'hash id');
+        });
+      });
+    });
+
+    describe('Given a sidecar whose signature hex needs left-padding to 8 digits', () => {
+      describe('When parsing', () => {
+        it('Then the reported signature is zero-padded, not truncated', () => {
+          // Arrange
+          const entries = fourEntries();
+          const valid = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const bytes = pokeUint32(valid, 0, 1); // signature 0x00000001 -> hex '1' unpadded
+          const oids = entries.map((e) => e.id) as ObjectId[];
+
+          // Act
+          let caught: unknown;
+          try {
+            parseCruftMtimes(bytes, oids);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data as { reason: string };
+          expect(data.reason).toContain('got 0x00000001');
         });
       });
     });
