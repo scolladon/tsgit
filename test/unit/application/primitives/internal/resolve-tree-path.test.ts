@@ -394,6 +394,12 @@ describe('findTreeEntry', () => {
         { label: "'.'", name: '.' },
         { label: "'..'", name: '..' },
         { label: "an embedded '/' ('a/b')", name: 'a/b' },
+        { label: "a lone '/'", name: '/' },
+        { label: "'a/'", name: 'a/' },
+        { label: "'/a'", name: '/a' },
+        { label: "'//'", name: '//' },
+        { label: "'./'", name: './' },
+        { label: "'/.'", name: '/.' },
       ])(
         'Then $label refuses eagerly with the invalid-entry-name reason, matching the parsed-root refusal',
         async ({ name }) => {
@@ -422,6 +428,77 @@ describe('findTreeEntry', () => {
           }
         },
       );
+    });
+  });
+
+  describe('Given a shape-invalid entry at the tree ROOT (chain-descent scan)', () => {
+    describe('When findTreeEntryChain scans the root level', () => {
+      it.each([
+        { label: "'.'", name: '.' },
+        { label: "'..'", name: '..' },
+        { label: "an embedded '/' ('a/b')", name: 'a/b' },
+        { label: "a lone '/'", name: '/' },
+        { label: "'a/'", name: 'a/' },
+        { label: "'/a'", name: '/a' },
+        { label: "'//'", name: '//' },
+        { label: "'./'", name: './' },
+        { label: "'/.'", name: '/.' },
+      ])(
+        'Then $label refuses eagerly with the invalid-entry-name reason, at the root — not just an intermediate level',
+        async ({ name }) => {
+          // Arrange — `descendMatchingTreeChain`'s root-level scan
+          // (`scanRootLevel`) shares the same raw-cursor shape check as an
+          // intermediate level's `descendOneLevel`, but is a DIFFERENT call
+          // site — this pins the refusal fires there too.
+          const ctx = await buildSeededContext();
+          const content = concatBytes(rawEntry('100644', name), rawEntry('100644', 'good'));
+          const rootId = await writeRawObjectBytes(ctx, 'tree', content);
+
+          // Act / Assert
+          try {
+            await findTreeEntryChain(ctx, rootId, ['good']);
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_TREE_ENTRY');
+            if (data.code === 'INVALID_TREE_ENTRY') {
+              expect(data.reason).toBe(`invalid entry name: ${name}`);
+            }
+          }
+        },
+      );
+    });
+  });
+
+  describe('Given an empty-name sibling entry in a raw-scanned directory', () => {
+    describe('When another entry in the same directory is resolved', () => {
+      it("Then it refuses just as eagerly as the slash/dot cases — via the cursor scan's own null-terminator check, one step ahead of the shape check", async () => {
+        // Arrange — an empty name (mode + space + immediate NUL) is refused
+        // by `TreeCursor`'s own `scanName` before `isInvalidEntryNameBytes`
+        // ever runs (see that function's doc), with its own reason text —
+        // still `INVALID_TREE_ENTRY`, still eager, still matching
+        // `parseTreeContent`'s `name === ''` refusal at the system level.
+        const ctx = await buildSeededContext();
+        const content = concatBytes(rawEntry('100644', ''), rawEntry('100644', 'good'));
+        const dirId = await writeRawObjectBytes(ctx, 'tree', content);
+        const rootId = await writeTree(ctx, [
+          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
+        ]);
+
+        // Act / Assert
+        try {
+          await findTreeEntry(ctx, rootId, 'dir/good');
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_TREE_ENTRY');
+          if (data.code === 'INVALID_TREE_ENTRY') {
+            expect(data.reason).toBe('empty filename');
+          }
+        }
+      });
     });
   });
 

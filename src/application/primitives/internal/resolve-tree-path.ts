@@ -223,8 +223,12 @@ const scanEntry = (
  * '.' || name === '..' || name.includes('/')` (tree.ts) — the empty case is
  * already refused structurally by the cursor's own null-terminator scan
  * (`tree-cursor.ts`'s `scanName`) before a caller ever observes the entry,
- * so only the remaining three shape checks are repeated here, on raw bytes.
- * This check is deliberately NOT shared inside `TreeCursor` itself: the raw
+ * so only the remaining three shape checks are repeated here, on raw bytes:
+ * an exact `.` or `..`, or a `/` ANYWHERE in the name (a lone `/`, a leading
+ * or trailing `/` alongside other bytes, `//`, …) — the slash scan runs
+ * unconditionally, at every length, so a short name can never short-circuit
+ * past it the way an early `return` keyed on length alone once did. This
+ * check is deliberately NOT shared inside `TreeCursor` itself: the raw
  * merge-join diff (`raw-tree-diff.ts`) streams a diff over on-disk order
  * without it, matching git's own `diff-tree`, which does not validate name
  * shape during a diff walk.
@@ -234,8 +238,8 @@ const SLASH = 0x2f;
 
 const isInvalidEntryNameBytes = (buf: Uint8Array, start: number, end: number): boolean => {
   const length = end - start;
-  if (length === 1) return buf[start] === DOT;
-  if (length === 2) return buf[start] === DOT && buf[start + 1] === DOT;
+  if (length === 1 && buf[start] === DOT) return true;
+  if (length === 2 && buf[start] === DOT && buf[start + 1] === DOT) return true;
   for (let i = start; i < end; i++) {
     if (buf[i] === SLASH) return true;
   }
