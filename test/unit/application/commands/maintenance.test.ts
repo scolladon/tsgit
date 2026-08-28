@@ -951,7 +951,7 @@ describe('maintenance', () => {
         // Arrange — `addMainWorktreeRoots` must no-op when `ctx` already IS
         // the main worktree (covered by `collectRetentionRoots`'s own direct
         // calls); without the guard, HEAD would be resolved once more on
-        // top of the operational-repository precheck and `addRefRoots`'s
+        // top of the operational-repository pre-check and `addRefRoots`'s
         // own resolution (2 reads total on the real code path).
         const ctx = await seedOneCommit();
         const headPath = `${ctx.layout.gitDir}/HEAD`;
