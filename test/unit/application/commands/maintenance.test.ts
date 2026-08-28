@@ -1672,6 +1672,205 @@ describe('maintenance', () => {
   });
 
   // ---------------------------------------------------------------------
+  // Stale tmp_ litter removal
+  // ---------------------------------------------------------------------
+
+  describe('Given stale tmp_ litter in the objects root, a fanout dir, and objects/pack', () => {
+    describe('When gc runs', () => {
+      it('Then all three are removed', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const rootLitter = `${ctx.layout.gitDir}/objects/tmp_root_XXXXXX`;
+        const fanoutLitter = `${ctx.layout.gitDir}/objects/ab/tmp_obj_XXXXXX`;
+        const packLitter = `${packDirOf(ctx)}/tmp_pack_XXXXXX`;
+        await ctx.fs.write(rootLitter, new Uint8Array(0));
+        await ctx.fs.write(fanoutLitter, new Uint8Array(0));
+        await ctx.fs.write(packLitter, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(rootLitter, CUTOFF - 100);
+        forceMtimeSeconds(fanoutLitter, CUTOFF - 100);
+        forceMtimeSeconds(packLitter, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(rootLitter)).toBe(false);
+        expect(await ctx.fs.exists(fanoutLitter)).toBe(false);
+        expect(await ctx.fs.exists(packLitter)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tmp_ litter file newer than the cutoff', () => {
+    describe('When gc runs', () => {
+      it('Then it is kept', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_fresh`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, CUTOFF + 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a stale non-tmp_ file sitting in objects/pack', () => {
+    describe('When gc runs', () => {
+      it('Then it is kept regardless of age', async () => {
+        // Arrange — same fixture git's own probe pinned this against:
+        // only `tmp_`-prefixed names are ever candidates.
+        const ctx = await seedOneCommit();
+        const extraPath = `${packDirOf(ctx)}/old_extra_file`;
+        await ctx.fs.write(extraPath, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(extraPath, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(extraPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given gc.pruneExpire=never and an ancient tmp_ litter file', () => {
+    describe('When gc runs', () => {
+      it('Then nothing is removed', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_ancient`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, 1);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tmp_ litter file that vanishes before its own stat, a concurrent process racing gc', () => {
+    describe('When gc runs', () => {
+      it('Then it tolerates the race rather than failing the run', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_raced`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const { forceFailure } = installLstatOverrides(ctx);
+        forceFailure(litterPath, fileNotFound(litterPath));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe('Given a tmp_ litter file whose own stat fails with a non-FILE_NOT_FOUND fault', () => {
+    describe('When gc runs', () => {
+      it('Then it rethrows rather than swallowing the fault', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_eacces`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const { forceFailure } = installLstatOverrides(ctx);
+        forceFailure(litterPath, eacces);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(eacces);
+      });
+    });
+  });
+
+  describe('Given a repository a prior gc already fully consolidated, with a stale tmp_ litter file planted afterward', () => {
+    describe('When gc runs again', () => {
+      it('Then the litter is still removed even though repack and prune find nothing new to do', async () => {
+        // Arrange — the first gc call packs everything reachable and
+        // leaves nothing loose or unreachable; the second call's own
+        // repack/prune substeps have no new work, pinning that stale-
+        // litter removal is not conditioned on there being anything else
+        // to do — it runs on every gc invocation that proceeds at all.
+        const ctx = await seedOneCommit();
+        await maintenance(ctx, { tasks: ['gc'] });
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_after_consolidation`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(await ctx.fs.exists(litterPath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given auto: true, a loose count below gc.auto, and a stale tmp_ litter file', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then the litter survives — a declined run performs no cleanup, matching a declined `git gc --auto`', async () => {
+        // Arrange — pinned against git 2.55.0: a `git gc --auto` decline
+        // (loose count at or below `gc.auto`'s threshold) performs no work
+        // of any kind, tmp_ litter cleanup included.
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_declined`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, 1);
+        await appendConfig(ctx, '\n[gc]\n\tauto = 100\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksRun).toEqual([]);
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // Structural — no rendered text
   // ---------------------------------------------------------------------
 

@@ -17,7 +17,10 @@
  * through git's cruft-pack lifecycle wherever they lived. Superseded packs
  * and every sibling artefact are retired; an existing multi-pack-index
  * naming any of them is expired. `*.keep`-marked packs are the only total
- * exclusion, exactly as git excludes them.
+ * exclusion, exactly as git excludes them. `gc` also deletes stale
+ * `tmp_`-prefixed quarantine litter (`objects/`, its fanout dirs,
+ * `objects/pack/`) aged past `gc.pruneExpire` — but only on a run that
+ * actually proceeds past the `gc.auto` gate, never on a declined one.
  */
 import { invalidOption } from '../../domain/commands/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';

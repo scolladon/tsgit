@@ -17,7 +17,7 @@
  *   interopSurface: gc
  */
 import { execFileSync } from 'node:child_process';
-import { cp, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -78,6 +78,60 @@ const looseGitPath = (dir: string, oid: string): string =>
 async function forceMtime(filePath: string, epochSeconds: number): Promise<void> {
   const date = new Date(epochSeconds * 1000);
   await utimes(filePath, date, date);
+}
+
+/** `tmp_`-prefixed litter names planted in each of the three scan-scope
+ *  locations by `plantTempLitter` — a `stale`/`fresh` pair per location, so
+ *  a survivor-set comparison proves both the removal AND the age gate. */
+const TEMP_LITTER_NAMES = {
+  rootStale: 'tmp_root_stale',
+  rootFresh: 'tmp_root_fresh',
+  fanoutStale: 'tmp_obj_stale',
+  fanoutFresh: 'tmp_obj_fresh',
+  packStale: 'tmp_pack_stale',
+  packFresh: 'tmp_pack_fresh',
+} as const;
+
+/**
+ * Plants an identical stale+fresh `tmp_` litter pair in `objects/` root, the
+ * `ab/` fanout dir (created if the repo has no object with that prefix
+ * yet), and `objects/pack/` — the exact three scan-scope locations the gc
+ * task's removal step covers. `staleEpochSeconds` backdates only the
+ * `*Stale` names; the `*Fresh` names keep their real write-time mtime.
+ */
+async function plantTempLitter(dir: string, staleEpochSeconds: number): Promise<void> {
+  const objectsDir = path.join(dir, '.git', 'objects');
+  const fanoutDir = path.join(objectsDir, 'ab');
+  const packDir = path.join(objectsDir, 'pack');
+  await mkdir(fanoutDir, { recursive: true });
+  await mkdir(packDir, { recursive: true });
+  await writeFile(path.join(objectsDir, TEMP_LITTER_NAMES.rootStale), '');
+  await writeFile(path.join(objectsDir, TEMP_LITTER_NAMES.rootFresh), '');
+  await writeFile(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutStale), '');
+  await writeFile(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutFresh), '');
+  await writeFile(path.join(packDir, TEMP_LITTER_NAMES.packStale), '');
+  await writeFile(path.join(packDir, TEMP_LITTER_NAMES.packFresh), '');
+  await forceMtime(path.join(objectsDir, TEMP_LITTER_NAMES.rootStale), staleEpochSeconds);
+  await forceMtime(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutStale), staleEpochSeconds);
+  await forceMtime(path.join(packDir, TEMP_LITTER_NAMES.packStale), staleEpochSeconds);
+}
+
+/** Every `tmp_`-prefixed name still present across the three scan-scope
+ *  locations, sorted — real pack/idx/mtimes artefacts never start with
+ *  `tmp_`, so this reads as exactly the surviving litter regardless of
+ *  which tool (git or tsgit) produced the rest of `objects/pack/`. */
+async function tempLitterSurvivors(dir: string): Promise<ReadonlyArray<string>> {
+  const objectsDir = path.join(dir, '.git', 'objects');
+  const fanoutDir = path.join(objectsDir, 'ab');
+  const packDir = path.join(objectsDir, 'pack');
+  const [rootEntries, fanoutEntries, packEntries] = await Promise.all([
+    readdir(objectsDir),
+    readdir(fanoutDir),
+    readdir(packDir),
+  ]);
+  return [...rootEntries, ...fanoutEntries, ...packEntries]
+    .filter((name) => name.startsWith('tmp_'))
+    .sort();
 }
 
 interface Twin {
@@ -1171,6 +1225,73 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       // Assert
       expect(catFileExists(twin.peerDir, mainCommitId)).toBe(true);
       expect(catFileExists(twin.oursDir, mainCommitId)).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given stale and fresh tmp_ litter planted in objects root, a fanout dir, and objects/pack, When gc runs on both twins', () => {
+    let baseDir: string;
+    const STALE_EPOCH = 1_600_000_000; // far older than the default 2-week gc.pruneExpire cutoff
+
+    beforeAll(async () => {
+      baseDir = await initRepo('tmp-litter-default-cutoff');
+      await addCommit(baseDir, 'c0');
+      await plantTempLitter(baseDir, STALE_EPOCH);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools remove exactly the stale names and keep exactly the fresh ones', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'tmp-litter-default-cutoff');
+
+      // Act
+      await runBothGc(twin);
+
+      // Assert — identical survivor set on both twins, and it is exactly
+      // the three *Fresh names (the *Stale trio is gone from both).
+      const peerSurvivors = await tempLitterSurvivors(twin.peerDir);
+      const oursSurvivors = await tempLitterSurvivors(twin.oursDir);
+      const expectedSurvivors = [
+        TEMP_LITTER_NAMES.fanoutFresh,
+        TEMP_LITTER_NAMES.packFresh,
+        TEMP_LITTER_NAMES.rootFresh,
+      ].sort();
+      expect(peerSurvivors).toEqual(expectedSurvivors);
+      expect(oursSurvivors).toEqual(expectedSurvivors);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given gc.pruneExpire=never with stale and fresh tmp_ litter planted in all three locations, When gc runs on both twins', () => {
+    let baseDir: string;
+    const STALE_EPOCH = 1; // as old as a mtime can meaningfully be
+
+    beforeAll(async () => {
+      baseDir = await initRepo('tmp-litter-prune-never');
+      await addCommit(baseDir, 'c0');
+      await plantTempLitter(baseDir, STALE_EPOCH);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep every planted name — removal is disabled entirely', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'tmp-litter-prune-never');
+
+      // Act
+      await runBothGc(twin, ['gc.pruneExpire=never']);
+
+      // Assert — the full six-name set survives, identically, on both twins.
+      const peerSurvivors = await tempLitterSurvivors(twin.peerDir);
+      const oursSurvivors = await tempLitterSurvivors(twin.oursDir);
+      const expectedSurvivors = Object.values(TEMP_LITTER_NAMES).slice().sort();
+      expect(peerSurvivors).toEqual(expectedSurvivors);
+      expect(oursSurvivors).toEqual(expectedSurvivors);
       await disposeTwin(twin);
     });
   });
