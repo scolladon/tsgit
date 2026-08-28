@@ -189,6 +189,39 @@ describe('readHeadTree', () => {
     });
   });
 
+  describe('Given two Contexts sharing one session — one with caching disabled (zero deltaCache budget), one with a normal budget', () => {
+    describe('When the disabled Context reads first, then the enabled Context reads twice', () => {
+      it('Then the enabled Context still caches on its second read — the disabled read never poisons the shared cache slot', async () => {
+        // Arrange — mirrors fsck's audit Context: it shares ctx.session with
+        // the opening Context but carries a zero-budget deltaCache.
+        // deltaBaseCachingEnabled must gate flatTreeCacheFor off ENTIRELY for
+        // the disabled Context, never registering anything under the shared
+        // session — otherwise a permanently-zero-budget cache object would
+        // get memoised there and the enabled Context would inherit it,
+        // unable to ever cache.
+        const enabledCtx = createMemoryContext();
+        await commitOneFile(enabledCtx);
+        const disabledCtx = {
+          ...enabledCtx,
+          deltaCache: { ...enabledCtx.deltaCache, maxSize: 0 },
+        };
+        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+        const baseline = flattenSpy.mock.calls.length;
+
+        // Act
+        await readHeadTree(disabledCtx);
+        await readHeadTree(enabledCtx);
+        await readHeadTree(enabledCtx);
+
+        // Assert — the disabled read always re-flattens (1 call); the
+        // enabled Context's two reads flatten once then hit its own cache
+        // (1 more call) — 2 total, never 3.
+        expect(flattenCallsSince(flattenSpy, baseline)).toBe(2);
+        flattenSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given an empty HEAD tree', () => {
     describe('When readHeadTree runs twice', () => {
       it('Then the fixed base overhead keeps the size positive, set does not throw, and the second read hits the cache', async () => {
@@ -314,6 +347,27 @@ describe('readHeadTree', () => {
         expect(oneEntrySize - emptySize).toBeGreaterThan(rawCharacterCount);
       });
     });
+
+    describe('When path and oid lengths differ (oid longer than path)', () => {
+      it('Then the per-entry delta is path.length PLUS oid.length, not their difference', () => {
+        // Arrange — id (40 chars) far exceeds path (1 char): a `-` in place
+        // of the `+` between them would still land above the FLAT_TREE_
+        // ENTRY_OVERHEAD_BYTES floor, so this pins the exact delta rather
+        // than a loose lower bound.
+        const path = 'a' as FilePath;
+        const id = 'b'.repeat(40) as ObjectId;
+        const empty: FlatTree = { entries: new Map() };
+        const oneEntry: FlatTree = {
+          entries: new Map([[path, { id, mode: FILE_MODE.REGULAR }]]),
+        };
+
+        // Act
+        const delta = flatTreeByteSize(oneEntry) - flatTreeByteSize(empty);
+
+        // Assert — path.length(1) + id.length(40) + per-entry overhead(110)
+        expect(delta).toBe(path.length + id.length + 110);
+      });
+    });
   });
 
   describe('Given the flat-tree cache is created for the first time', () => {
@@ -333,6 +387,31 @@ describe('readHeadTree', () => {
           (call) => call[0] === ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
         );
         expect(memoCall?.[1]).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
+      });
+    });
+  });
+
+  describe('Given a deltaCache sized so a real one-entry tree fits the multiplied share but not a 16×-larger divided one', () => {
+    describe('When readHeadTree runs twice', () => {
+      it('Then it is not cached — the share is a FRACTION of the deltaCache budget, not a multiple of it', async () => {
+        // Arrange — 1000-byte deltaCache: the correct 1/16 share (62.5
+        // bytes) is far smaller than any real one-entry FlatTree (~200
+        // bytes), so real code never caches it. A 16×-inflated share
+        // (maxSize / FLAT_TREE_CACHE_FRACTION = 16000 bytes) would
+        // comfortably fit the same tree and wrongly cache it.
+        const ctx = createMemoryContext({ deltaCacheMaxBytes: 1000 });
+        await commitOneFile(ctx);
+        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+        const baseline = flattenSpy.mock.calls.length;
+
+        // Act
+        const first = await readHeadTree(ctx);
+        const second = await readHeadTree(ctx);
+
+        // Assert — never cached, so every read re-flattens.
+        expect(second).toEqual(first);
+        expect(flattenCallsSince(flattenSpy, baseline)).toBe(2);
+        flattenSpy.mockRestore();
       });
     });
   });
