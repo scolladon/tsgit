@@ -23,9 +23,11 @@ import {
   invalidPackHeader,
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
+  type PackHeader,
   parsePackEntryHeader,
   parsePackHeader,
 } from '../../domain/storage/index.js';
+import type { InflateStreamResult } from '../../ports/compressor.js';
 import type { Context } from '../../ports/context.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import { packFilePath, writePackSiblingArtifacts } from './internal/write-pack-artifacts.js';
@@ -207,17 +209,19 @@ const materializePack = async (
 };
 
 /** Reads the quarantined pack back from disk (it was never resident in
- *  memory during receive) and walks its entries, reusing `walkPackEntries`
- *  unchanged. Failures here mean the body is malformed even though its
- *  trailer verified, so the quarantine file is cleaned up before rethrow. */
+ *  memory during receive) and walks its entries through `diskPackByteSource`
+ *  — the same `inflateAllEntries`/`resolveAllEntries` pipeline `walkPackEntries`
+ *  uses, fed by bounded `readSlice` windows instead of one whole-pack buffer.
+ *  Failures here mean the body is malformed even though its trailer
+ *  verified, so the quarantine file is cleaned up before rethrow. */
 const walkQuarantinedEntries = async (
   ctx: Context,
   tmpPath: string,
   totalBytes: number,
 ): Promise<ReadonlyArray<WalkedEntry>> => {
   try {
-    const packBytes = await ctx.fs.readSlice(tmpPath, 0, totalBytes);
-    return await walkPackEntries(ctx, packBytes);
+    const pending = await inflateAllEntries(ctx, diskPackByteSource(ctx, tmpPath, totalBytes));
+    return await walkFromPending(ctx, pending);
   } catch (err) {
     // The read-back is inside this try alongside the walk itself — a
     // failure reading the just-written quarantine file back off disk must
@@ -472,12 +476,164 @@ interface ResolvedEntry {
   readonly offset: number;
 }
 
-export const walkPackEntries = async (
+/**
+ * Byte-source seam for `inflateAllEntries`' sequential entry walk: reads
+ * either an already-resident pack buffer (`inMemoryPackByteSource` — every
+ * existing `walkPackEntries` caller: `bundle-verify.ts`, in-memory fetch
+ * paths, unchanged) or the quarantined pack file on disk in bounded windows
+ * (`diskPackByteSource` — `walkQuarantinedEntries`). Both report entry data
+ * through this one shape so the walk loop below is written once and behaves
+ * identically over either source.
+ */
+interface PackByteSource {
+  readonly totalBytes: number;
+  /** Parses the 12-byte pack header. */
+  header(): Promise<PackHeader>;
+  /** Parses the entry header starting at `offset`. */
+  entryHeader(offset: number): Promise<PackEntryHeader>;
+  /**
+   * Inflates the zlib stream starting at `dataOffset`. `offset` (the
+   * entry's own start) is also given — the disk source anchors its read
+   * window there rather than at `dataOffset`, so the window that ends up
+   * satisfying inflation also covers the entry's header bytes, letting
+   * `entryCrc32` read the whole `[offset, entryEnd)` range back with no
+   * further I/O.
+   */
+  inflateEntry(offset: number, dataOffset: number): Promise<InflateStreamResult>;
+  /** CRC32 over the raw entry bytes `[offset, entryEnd)`. Always called
+   *  immediately after `inflateEntry` has resolved that same range. */
+  entryCrc32(offset: number, entryEnd: number): Promise<number>;
+}
+
+/** Wraps an already-resident pack buffer — the shape every existing
+ *  `walkPackEntries` caller already provides. No windowing: the buffer IS
+ *  the whole pack, exactly as before this change. */
+const inMemoryPackByteSource = (ctx: Context, packBytes: Uint8Array): PackByteSource => ({
+  totalBytes: packBytes.length,
+  header: async () => parsePackHeader(packBytes),
+  entryHeader: async (offset) => parsePackEntryHeader(packBytes, offset, ctx.hashConfig),
+  inflateEntry: async (_offset, dataOffset) => ctx.compressor.streamInflate(packBytes, dataOffset),
+  entryCrc32: async (offset, entryEnd) => crc32(packBytes.subarray(offset, entryEnd)),
+});
+
+/**
+ * Bounded read window for walking the quarantined pack back off disk
+ * (`diskPackByteSource`). The receive path streams the pack to the
+ * quarantine file without ever holding it whole in memory (see the module
+ * doc comment); reading it back for the entry walk must keep that same
+ * bound rather than reintroducing a whole-pack buffer. 256 KiB is large
+ * enough that a typical object's header plus compressed data (commits and
+ * trees run a few KB; most blobs too) is satisfied by a single `readSlice`
+ * call, small enough that RSS stays flat no matter how large the pack is.
+ * An entry whose compressed span exceeds the window still resolves
+ * correctly — `diskPackByteSource` doubles the window and retries, bounded
+ * by that ONE entry's own compressed span (never past `trailerStart`), so
+ * the peak single read is at most the largest single compressed entry in
+ * the pack, never the whole pack.
+ */
+export const DISK_WALK_WINDOW_BYTES = 256 * 1024;
+
+interface DiskWindow {
+  readonly start: number;
+  readonly bytes: Uint8Array;
+}
+
+/**
+ * Reads the quarantine file at `tmpPath` in bounded `DISK_WALK_WINDOW_BYTES`
+ * windows, sliding forward as `inflateAllEntries` walks entries in strictly
+ * increasing offset order (per the receive-path contract: header parse at
+ * `offset`, zlib stream from `dataOffset`, `bytesConsumed` advances to
+ * `entryEnd`). A window is reused across entries whenever the next entry's
+ * start already falls inside it — the common case, since most objects are
+ * far smaller than the window; it is fetched again — anchored fresh at that
+ * entry's own `offset`, doubling in size each retry — only when a header or
+ * a compressed stream turns out to straddle or exceed the window currently
+ * held. Growth is capped at `trailerStart`: a failure that persists once
+ * the window already reaches every byte the entry could legitimately span
+ * is a genuine parse/inflate error, not a sizing problem, and propagates.
+ */
+const diskPackByteSource = (ctx: Context, tmpPath: string, totalBytes: number): PackByteSource => {
+  const trailerStart = totalBytes - ctx.hash.digestLength;
+  let window: DiskWindow | undefined;
+
+  const fetchWindow = async (start: number, length: number): Promise<DiskWindow> => {
+    const bytes = await ctx.fs.readSlice(tmpPath, start, length);
+    const fresh: DiskWindow = { start, bytes };
+    window = fresh;
+    return fresh;
+  };
+
+  /** Reuses the held window when `anchor` already falls inside it; fetches
+   *  a fresh one, anchored at `anchor`, otherwise. Reuse never checks how
+   *  much room is left past `anchor` — that is `withGrowth`'s job below. */
+  const windowCovering = async (anchor: number): Promise<DiskWindow> => {
+    if (
+      window !== undefined &&
+      anchor >= window.start &&
+      anchor < window.start + window.bytes.length
+    ) {
+      return window;
+    }
+    const size = Math.min(DISK_WALK_WINDOW_BYTES, Math.max(0, trailerStart - anchor));
+    return fetchWindow(anchor, size);
+  };
+
+  const withGrowth = async <T>(
+    anchor: number,
+    attempt: (w: DiskWindow) => Promise<T> | T,
+  ): Promise<T> => {
+    let w = await windowCovering(anchor);
+    for (;;) {
+      try {
+        return await attempt(w);
+      } catch (err) {
+        if (w.start + w.bytes.length >= trailerStart) throw err;
+        const size = Math.min(w.bytes.length * 2, trailerStart - anchor);
+        w = await fetchWindow(anchor, size);
+      }
+    }
+  };
+
+  return {
+    totalBytes,
+    header: async () => parsePackHeader(await ctx.fs.readSlice(tmpPath, 0, PACK_HEADER_BYTES)),
+    entryHeader: (offset) =>
+      withGrowth(offset, (w) => {
+        // `parsePackEntryHeader` reports `dataOffset` as an index into the
+        // buffer it was handed — i.e. relative to `w.start`, not the pack's
+        // own absolute offsets. Every other seam in this file (and every
+        // caller of `entryHeader`) works in absolute offsets, so the shift
+        // back happens right here, once, at the window boundary.
+        const local = parsePackEntryHeader(w.bytes, offset - w.start, ctx.hashConfig);
+        return { ...local, dataOffset: local.dataOffset + w.start };
+      }),
+    inflateEntry: (offset, dataOffset) =>
+      withGrowth(offset, (w) => ctx.compressor.streamInflate(w.bytes, dataOffset - w.start)),
+    entryCrc32: async (offset, entryEnd) => {
+      // Invariant, not a defensive check: `inflateEntry` above always runs
+      // first for this same `offset` and leaves `window` set to whichever
+      // window its own successful `streamInflate` call used. That call
+      // cannot have consumed more bytes than it was handed, so that window
+      // necessarily spans through `entryEnd` already — no extra read.
+      const held = window as DiskWindow;
+      return crc32(held.bytes.subarray(offset - held.start, entryEnd - held.start));
+    },
+  };
+};
+
+/**
+ * Shared tail for both walk entry points: resolves deltas against the
+ * already-inflated pending entries, then sorts by offset before mapping
+ * down to the public `WalkedEntry` shape. Delta resolution
+ * (`resolveAllEntries`) holds every resolved entry's full content in memory
+ * at once — that residency is unrelated to the read-back windowing above
+ * and is out of scope here.
+ */
+const walkFromPending = async (
   ctx: Context,
-  packBytes: Uint8Array,
+  pending: ReadonlyArray<PendingEntry>,
   externalBaseResolver?: ExternalBaseResolver,
 ): Promise<ReadonlyArray<WalkedEntry>> => {
-  const pending = await inflateAllEntries(ctx, packBytes);
   const resolved = await resolveAllEntries(ctx, pending, externalBaseResolver);
   // The sort below only orders the WalkedEntry array; nothing observable
   // depends on that order — `objectCount` reads `.length`, and `buildIdx`
@@ -489,11 +645,20 @@ export const walkPackEntries = async (
   return ordered.map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
 };
 
-const inflateAllEntries = async (
+export const walkPackEntries = async (
   ctx: Context,
   packBytes: Uint8Array,
+  externalBaseResolver?: ExternalBaseResolver,
+): Promise<ReadonlyArray<WalkedEntry>> => {
+  const pending = await inflateAllEntries(ctx, inMemoryPackByteSource(ctx, packBytes));
+  return walkFromPending(ctx, pending, externalBaseResolver);
+};
+
+const inflateAllEntries = async (
+  ctx: Context,
+  source: PackByteSource,
 ): Promise<ReadonlyArray<PendingEntry>> => {
-  const header = parsePackHeader(packBytes);
+  const header = await source.header();
   const objectCountCap = ctx.config?.maxObjectsPerPack ?? DEFAULT_MAX_OBJECT_COUNT;
   if (header.objectCount > objectCountCap) {
     throw new TsgitError({
@@ -502,24 +667,28 @@ const inflateAllEntries = async (
       limit: objectCountCap,
     });
   }
-  const trailerStart = packBytes.length - ctx.hash.digestLength;
+  const trailerStart = source.totalBytes - ctx.hash.digestLength;
   const out: PendingEntry[] = [];
   let offset = PACK_HEADER_BYTES;
   for (let i = 0; i < header.objectCount; i += 1) {
-    const entryHeader = parsePackEntryHeader(packBytes, offset, ctx.hashConfig);
-    const inflate = await ctx.compressor.streamInflate(packBytes, entryHeader.dataOffset);
+    const entryHeader = await source.entryHeader(offset);
+    const inflate = await source.inflateEntry(offset, entryHeader.dataOffset);
     const entryEnd = entryHeader.dataOffset + inflate.bytesConsumed;
-    // Defence-in-depth guard. `verifyPackTrailer` already ran, so the final
-    // `digestLength` bytes are fixed as `sha(body)`; `streamInflate` reports
-    // the minimal valid zlib-stream length. An entry whose stream consumed
-    // bytes past `trailerStart` would require those SHA bytes to also be a
-    // valid zlib continuation — unreachable for any verifiable pack.
-    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — `entryEnd > trailerStart` is unreachable once `verifyPackTrailer` accepted the trailer; the throw cannot fire.
+    // Defence-in-depth guard. The trailer is always verified before either
+    // byte source above is ever walked — `verifyPackTrailer` for an
+    // in-memory buffer (`bundle-verify.ts`), `receivePackToQuarantine`'s
+    // incremental hash for the quarantine file — so the final
+    // `digestLength` bytes are fixed as `sha(body)` by the time this runs;
+    // `streamInflate` reports the minimal valid zlib-stream length. An
+    // entry whose stream consumed bytes past `trailerStart` would require
+    // those SHA bytes to also be a valid zlib continuation — unreachable
+    // for any verifiable pack.
+    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — `entryEnd > trailerStart` is unreachable once the trailer has been accepted; the throw cannot fire.
     if (entryEnd > trailerStart) {
       // Stryker disable next-line StringLiteral: equivalent — the guarded throw is unreachable (see above), so its message is never observed.
       throw invalidPackHeader('entry extends past pack trailer');
     }
-    const entryCrc = crc32(packBytes.subarray(offset, entryEnd));
+    const entryCrc = await source.entryCrc32(offset, entryEnd);
     out.push({ offset, header: entryHeader, inflated: inflate.output, crc32: entryCrc });
     offset = entryEnd;
   }

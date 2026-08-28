@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { negotiatePackBytes } from '../../../../src/application/commands/internal/fetch-negotiation.js';
 import {
+  DISK_WALK_WINDOW_BYTES,
   type ExternalBaseResolver,
   fetchPack,
   type NegotiatePackBytes,
@@ -17,7 +18,11 @@ import {
   type GitExchange,
 } from '../../../../src/domain/protocol/pkt-line.js';
 import { parsePackHeader } from '../../../../src/domain/storage/pack-entry.js';
-import { lookupPackIndex, parsePackIndex } from '../../../../src/domain/storage/pack-index.js';
+import {
+  lookupPackIndex,
+  lookupPackIndexPosition,
+  parsePackIndex,
+} from '../../../../src/domain/storage/pack-index.js';
 import { readableStreamToAsyncIterable } from '../../../../src/operators/readable-stream.js';
 import type {
   HttpRequest,
@@ -272,6 +277,26 @@ const reorderPackEntries = async (
   const out = new Uint8Array(body.length + trailerBytes.length);
   out.set(body, 0);
   out.set(trailerBytes, body.length);
+  return out;
+};
+
+/**
+ * Deterministic pseudo-random bytes (xorshift32) — deflate cannot meaningfully
+ * compress this, so a blob built from it produces a compressed pack entry
+ * whose size tracks `length` almost 1:1. Used to force an entry's compressed
+ * span past `DISK_WALK_WINDOW_BYTES` without depending on `Math.random`
+ * (deterministic, reproducible test fixtures).
+ */
+const pseudoRandomBytes = (length: number, seed: number): Uint8Array => {
+  let state = seed >>> 0 || 1;
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    out[i] = state & 0xff;
+  }
   return out;
 };
 
@@ -2218,6 +2243,195 @@ describe('pack quarantine', () => {
         expect(result.objectCount).toBe(1);
         const bytes = await ctx.fs.read(collidingPath);
         expect(new TextDecoder().decode(bytes)).toBe(sentinel);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// quarantine disk-backed entry walk — bounded readSlice windows instead of
+// one whole-pack buffer, exercised through the public fetchPack surface.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('quarantine disk-backed entry walk', () => {
+  describe('Given a pack with base + OFS_DELTA + REF_DELTA entries', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then the resulting id/crc32/offset set matches the in-memory walk exactly', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const baseContent = ENCODER.encode('disk-walk differential base content\n');
+        const baseId = await computeBlobId(ctx, baseContent);
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: ENCODER.encode('ofs target\n') },
+          {
+            kind: 'ref-delta',
+            baseId,
+            baseUncompressed: baseContent,
+            targetContent: ENCODER.encode('ref target\n'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const inMemory = await walkPackEntries(ctx, built.packBytes);
+        const body = buildUploadPackResponseBody({ packBytes: built.packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k', 'ofs-delta'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — every entry the in-memory walk found is present in the
+        // disk-walk-produced .idx at the same offset and crc32.
+        expect(inMemory).toHaveLength(3);
+        const idx = parsePackIndex(await ctx.fs.read(result.idxPath), 20);
+        expect(idx.objectCount).toBe(inMemory.length);
+        for (const entry of inMemory) {
+          const position = lookupPackIndexPosition(idx, entry.id as ObjectId);
+          expect(position).toBeDefined();
+          expect(lookupPackIndex(idx, entry.id as ObjectId)).toBe(entry.offset);
+          const crc32AtPosition = idx._view.getUint32(
+            idx.crc32TableOffset + (position as number) * 4,
+          );
+          expect(crc32AtPosition).toBe(entry.crc32);
+        }
+      });
+    });
+  });
+
+  describe('Given a pack larger than one read window (several entries, none individually bigger than the window)', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then no readSlice call requests the whole pack, and the documented window bound is the one actually enforced', async () => {
+        // Arrange — six 60 KB entries (360 KB total, no single entry anywhere
+        // near the window) so the pack is bigger than one window but no entry
+        // ever forces growth; this isolates the initial-window cap itself
+        // from the doubling-growth path (covered separately below).
+        const baseCtx = createMemoryContext();
+        const entries: EntrySpec[] = Array.from({ length: 6 }, (_, i) => ({
+          kind: 'base',
+          type: 'blob',
+          content: pseudoRandomBytes(60_000, 1000 + i),
+        }));
+        const built = await buildSyntheticPack(baseCtx, entries);
+        const requestedLengths: number[] = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            requestedLengths.push(length);
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — the walk never asks for `totalBytes` in one call; the
+        // documented constant itself shows up as an actual request (proving
+        // the cap is the term that wins, not merely "whatever bytes remained"),
+        // and no request ever exceeds it since no entry needed to grow.
+        expect(result.objectCount).toBe(6);
+        expect(requestedLengths.length).toBeGreaterThan(0);
+        expect(requestedLengths).not.toContain(built.packBytes.length);
+        expect(requestedLengths).toContain(DISK_WALK_WINDOW_BYTES);
+        expect(Math.max(...requestedLengths)).toBeLessThanOrEqual(DISK_WALK_WINDOW_BYTES);
+      });
+    });
+  });
+
+  describe('Given an entry whose zlib stream straddles a window boundary', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then it still inflates correctly by growing the window', async () => {
+        // Arrange — content sized off the production constant itself, so the
+        // split point tracks `DISK_WALK_WINDOW_BYTES` rather than a fixed number.
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 424_242);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        const requestedLengths: number[] = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            requestedLengths.push(length);
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        // A single sideband pkt-line payload caps at 65 516 bytes, well under
+        // this fixture's compressed size — split across frames like a real
+        // server would.
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — the object round-trips correctly even though its
+        // compressed span crossed a window boundary...
+        expect(result.objectCount).toBe(1);
+        const readBack = await readObject(ctx, built.ids[0] as ObjectId);
+        if (readBack.type !== 'blob') throw new Error('expected a blob');
+        expect(readBack.content).toEqual(bigContent);
+        // ...proven to be an actual GROWTH, not a lucky single unbounded read:
+        // an initial attempt at exactly the documented window size is present,
+        // followed by a larger retry that still stops short of the whole pack.
+        expect(requestedLengths).toContain(DISK_WALK_WINDOW_BYTES);
+        expect(Math.max(...requestedLengths)).toBeGreaterThan(DISK_WALK_WINDOW_BYTES);
+        expect(Math.max(...requestedLengths)).toBeLessThan(built.packBytes.length);
+      });
+    });
+  });
+
+  describe('Given a readSlice failure on a later window fetch (after the header and first window already succeeded)', () => {
+    describe('When fetchPack walks the quarantined entries', () => {
+      it('Then the temp file is still removed', async () => {
+        // Arrange — an entry too big for one window forces a THIRD readSlice
+        // call (header, initial window, grown window); failing exactly that
+        // one call proves cleanup fires from deep inside the growth retry
+        // loop, not only on the very first read (already covered above).
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 777);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        let callCount = 0;
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            callCount += 1;
+            if (callCount > 2) throw permissionDenied('windowed read-back');
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(callCount).toBeGreaterThan(2);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
       });
     });
   });
