@@ -403,7 +403,7 @@ function isMainWorktreeCtx(ctx: Context): boolean {
  * `deriveWorktreeContext` — the latter always nests under `worktrees/<id>`,
  * which is exactly the shape the main worktree does NOT have; nothing this
  * function calls reads `ctx.layout.workDir`, so the parent's own value
- * (irrelevant here) is left untouched. `ctx.fs` needs no rescoping either:
+ * (irrelevant here) is left untouched. `ctx.fs` needs no changes either:
  * `commonDir` is already inside its containment roots (every admin file
  * this walk reads already lives there for the CURRENT worktree's own shared
  * reads). Pinned against git 2.55.0: `git gc --prune=now` invoked from a

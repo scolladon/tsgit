@@ -1083,13 +1083,13 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       baseDir = await initRepo('worktree-reflog-retention');
       const c0 = await addCommit(baseDir, 'c0');
       // A linked worktree on its own branch, one commit ahead of c0.
-      git(baseDir, 'worktree', 'add', '-q', 'wt1', '-b', 'wtbranch', c0);
+      git(baseDir, 'worktree', 'add', '-q', 'wt1', '-b', 'wt1', c0);
       const wtDir = path.join(baseDir, 'wt1');
       wtCommitId = await addCommit(wtDir, 'wt-reflog-only');
-      // wtbranch moves back to c0 — the commit (and its tree/blob) is now
-      // reachable ONLY through wt1's own HEAD reflog (a discarded `oldId`),
-      // never through any ref, and never through the main checkout's own
-      // reflog either.
+      // wt1's own branch moves back to c0 — the commit (and its tree/blob)
+      // is now reachable ONLY through wt1's own HEAD reflog (a discarded
+      // `oldId`), never through any ref, and never through the main
+      // checkout's own reflog either.
       git(wtDir, 'reset', '-q', '--hard', c0);
     }, SETUP_TIMEOUT);
 
