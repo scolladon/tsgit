@@ -24,11 +24,16 @@ import {
 vi.mock('../../../../../src/domain/storage/index.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../../../../src/domain/storage/index.js')>();
-  return { ...actual, entryOffsetsF64: vi.fn(actual.entryOffsetsF64) };
+  return {
+    ...actual,
+    entryOffsetsF64: vi.fn(actual.entryOffsetsF64),
+    offsetAtPackPosition: vi.fn(actual.offsetAtPackPosition),
+  };
 });
 
 const storage = await import('../../../../../src/domain/storage/index.js');
 const entryOffsetsF64Spy = vi.mocked(storage.entryOffsetsF64);
+const offsetAtPackPositionSpy = vi.mocked(storage.offsetAtPackPosition);
 
 const DIGEST_LENGTH = 20;
 
@@ -119,6 +124,37 @@ describe('nextOffsetForEntry — degrade sticks to the pack, not the query', () 
       });
     });
 
+    describe('When nextOffsetForEntry is called again for an offset the .rev would answer correctly', () => {
+      it('Then it never re-attempts the lazy .rev lookup at all — offsetAtPackPosition is not called', async () => {
+        // Arrange — position 0 (offset 12) is the corrupt one; querying 12
+        // first degrades the whole table. Position 1 (offset 50) is
+        // individually correct, so a lazy retry for it would succeed
+        // silently — the only way to prove it is NOT retried is to watch
+        // offsetAtPackPosition itself.
+        const offsets = [12, 50, 90, 140];
+        const index = buildIndex(offsets);
+        const rev = buildRev([offsets.length, 1, 2, 3]);
+        const table = await resolveOffsetTable(
+          contextWith(vi.fn()),
+          'pack-cache-hit',
+          index,
+          usableLoad(rev),
+          220,
+          200,
+        );
+        const sut = nextOffsetForEntry;
+        sut(table, 12);
+        offsetAtPackPositionSpy.mockClear();
+
+        // Act
+        const result = sut(table, 50);
+
+        // Assert
+        expect(result).toBe(90);
+        expect(offsetAtPackPositionSpy).not.toHaveBeenCalled();
+      });
+    });
+
     describe('When nextOffsetForEntry runs several times', () => {
       it('Then the degrade warning fires exactly once, not once per query', async () => {
         // Arrange
@@ -143,6 +179,9 @@ describe('nextOffsetForEntry — degrade sticks to the pack, not the query', () 
 
         // Assert
         expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]?.[0]).toBe(
+          'packRegistry: pack reverse index degraded mid-read, falling back to sorted offsets',
+        );
         expect(warn.mock.calls[0]?.[1]).toMatchObject({ rev: 'pack-sticky-warn.rev' });
       });
     });
@@ -299,6 +338,46 @@ describe('nextOffsetForEntry — the lazy .rev-backed path', () => {
         // Assert
         expect(table.kind).toBe('lazy');
         expect(result).toBe(largeOffset);
+      });
+    });
+  });
+
+  describe('Given a lazy table and an offset beyond every stored entry', () => {
+    describe('When nextOffsetForEntry is called', () => {
+      it('Then it throws INVALID_PACK_INDEX (not INVALID_PACK_REV_INDEX) with reason "offset not in pack index: corrupt index"', async () => {
+        // Arrange — a well-formed, non-corrupt .rev; the search legitimately
+        // converges to rank === objectCount (one past the end) since 999
+        // exceeds every real offset. The out-of-range-rank guard must catch
+        // this itself: without it, offsetAtPackPosition's OWN internal
+        // revIndexPositionAt bounds check would throw a DIFFERENT error
+        // (INVALID_PACK_REV_INDEX, reason 'size') instead.
+        const index = buildIndex([10, 30, 50]);
+        const rev = buildRev([0, 1, 2]);
+        const table = await resolveOffsetTable(
+          contextWith(vi.fn()),
+          'pack-beyond',
+          index,
+          usableLoad(rev),
+          90,
+          70,
+        );
+        const sut = nextOffsetForEntry;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut(table, 999);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_INDEX');
+        if (data.code === 'INVALID_PACK_INDEX') {
+          expect(data.reason).toBe('offset not in pack index: corrupt index');
+        }
       });
     });
   });

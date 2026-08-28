@@ -206,6 +206,7 @@ function successorFromLazy(table: LazyOffsetTable, offset: number): number {
     throw invalidPackIndex('offset not in pack index: corrupt index');
   }
   const foundOffset = offsetAtPackPosition(index, rev, rank);
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — dead by construction: locatePackPosition only ever returns a rank < objectCount via `hi = mid` after `offsetAtPackPosition(index, rev, mid)` was ALREADY confirmed defined at that exact position (its `midOffset === undefined` check returns 'degraded' first); so this re-read at the same `rank` can never itself be undefined. Hand-verified: forcing the condition false, flipping `===`→`!==`, and emptying the block all leave the full covering set green (pack-offset-table ×2 incl. the .properties fast-check suite, fetch-pack, bitmap-binding, submodule-add/-update, pack-registry).
   if (foundOffset === undefined) {
     return successorFromSorted(degradeToSorted(table), trailerStart, offset);
   }
