@@ -1916,10 +1916,16 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a tmp_ litter file whose own stat fails with a non-FILE_NOT_FOUND fault', () => {
+  describe('Given a fanout tmp_obj_ litter file whose own lstat fails with a non-FILE_NOT_FOUND fault', () => {
     describe('When gc runs', () => {
-      it('Then it rethrows rather than swallowing the fault', async () => {
-        // Arrange
+      it('Then gc still succeeds and the file survives — the per-file handler is tolerant everywhere, not just at root/pack', async () => {
+        // Arrange — pinned against git 2.55.0: `chmod 0400` a fanout dir
+        // (readable, not searchable) plus a backdated tmp_obj_ litter file,
+        // then `git prune --expire=now` prints `error: Could not stat …` to
+        // stderr and exits 0, leaving the file in place. git's per-file
+        // handler (`prune_tmp_file`) is the SAME tolerant one at root,
+        // fanout and pack alike — only a fanout dir's own `opendir` is
+        // strict.
         const ctx = await seedOneCommit();
         const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_eacces`;
         await ctx.fs.write(litterPath, new Uint8Array(0));
@@ -1929,16 +1935,11 @@ describe('maintenance', () => {
         const sut = maintenance;
 
         // Act
-        let caught: unknown;
-        try {
-          await sut(ctx, { tasks: ['gc'] });
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
+        const result = await sut(ctx, { tasks: ['gc'] });
 
         // Assert
-        expect(caught).toBe(eacces);
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
       });
     });
   });
@@ -1961,6 +1962,37 @@ describe('maintenance', () => {
 
         // Assert
         expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe('Given the objects root readdir fails with EACCES and a stale fanout tmp_obj_ litter file is present', () => {
+    describe('When gc runs', () => {
+      it('Then gc still succeeds and the fanout file is still removed — fanout dirs are enumerated by construction, not from the root listing', async () => {
+        // Arrange — pinned against git 2.55.0: `chmod 0300 .git/objects`
+        // (searchable, not readable) still lets `git prune --expire=now`
+        // remove `objects/ab/tmp_obj_stale`; git's fanout walk enumerates
+        // 00..ff by construction and never needed the root listing to find
+        // it, so a failed root scan warns but leaves the fanout walk intact.
+        const ctx = await seedOneCommit();
+        const objectsRoot = `${commonGitDir(ctx)}/objects`;
+        const fanoutLitter = `${objectsRoot}/ab/tmp_obj_stale`;
+        await ctx.fs.write(fanoutLitter, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(fanoutLitter, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const { forceFailure } = installReaddirOverrides(ctx);
+        forceFailure(objectsRoot, eacces);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(await ctx.fs.exists(fanoutLitter)).toBe(false);
       });
     });
   });

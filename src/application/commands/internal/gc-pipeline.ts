@@ -101,12 +101,18 @@ const TEMP_FILE_PREFIX = 'tmp_';
  *  not gc's litter to remove there, even though the broader `tmp_` prefix
  *  is in scope at the root and in `objects/pack/`. */
 const FANOUT_TEMP_FILE_PREFIX = 'tmp_obj_';
-const FANOUT_DIR_NAME = /^[0-9a-f]{2}$/;
 
-/** Whether an individual candidate's own lstat/rm fault aborts the run
- *  (`'strict'`, fanout dirs) or is skipped silently (`'tolerant'`,
- *  root/pack) — see `removeIfStaleTempFile`. */
-type TempFileFaultPolicy = 'strict' | 'tolerant';
+/** Every two-hex-digit fanout name (`00`..`ff`) git's on-disk layout
+ *  reserves, enumerated BY CONSTRUCTION rather than discovered from the
+ *  `objects/` root's own listing — the same universe `enumerate-objects.ts`
+ *  walks for loose objects. A fanout dir's litter must still be scanned
+ *  when the root listing itself fails (`EACCES` there is tolerated, not
+ *  fatal — see `removeStaleTempFiles`); deriving the fanout set from that
+ *  listing would silently skip every fanout dir on exactly the run that
+ *  most needs the fallback. */
+const FANOUT_NAMES: ReadonlyArray<string> = Array.from({ length: 256 }, (_, i) =>
+  i.toString(16).padStart(2, '0'),
+);
 
 /** git's own quarantine naming for an in-progress loose-object, pack or
  *  cruft-artefact write — the same naming `isLooseObjectSuffix`
@@ -121,7 +127,8 @@ function isTempFileEntry(entry: DirEntry, prefix: string): boolean {
  *  `remove_temporary_files`, which warns to stderr and moves on rather than
  *  aborting; tsgit has no warning channel, so the location is silently
  *  skipped instead. Used for `objects/` root and `objects/pack/` only — a
- *  fanout dir keeps the stricter, ENOENT-only tolerance below. */
+ *  fanout dir's own `opendir` keeps the stricter, ENOENT-only tolerance
+ *  below (the one place git's own strictness actually lives). */
 async function readdirTolerant(ctx: Context, dir: string): Promise<ReadonlyArray<DirEntry>> {
   try {
     return await ctx.fs.readdir(dir);
@@ -143,11 +150,33 @@ async function listTempFileCandidatesTolerant(
     .map((entry) => `${dir}/${entry.name}`);
 }
 
+/** Whether `dir`'s own `readdir` fault means "nothing to enumerate here" —
+ *  tolerated the same way git's fanout walk tolerates ENOENT. A real
+ *  filesystem (node, browser) reports a missing directory as
+ *  `FILE_NOT_FOUND` directly (its `ENOENT` maps there, distinct from
+ *  `ENOTDIR`). tsgit's `readdir` port contract, though, only documents
+ *  `NOT_A_DIRECTORY`, and the in-memory adapter has no separate "doesn't
+ *  exist" outcome for `readdir` at all — it reports both "missing" and "a
+ *  plain file sits here instead of a directory" as `NOT_A_DIRECTORY`. A
+ *  `NOT_A_DIRECTORY` fault therefore falls back to `exists(dir)` to tell the
+ *  two apart: absent still tolerates (matches git's ENOENT tolerance); a
+ *  real file blocking the fanout name rethrows, exactly as git's `opendir`
+ *  hard-failing on a genuine ENOTDIR would. The fallback only ever runs on
+ *  that one fault, so the common 254-miss path (every real adapter's
+ *  `FILE_NOT_FOUND`) costs nothing extra. */
+async function isFanoutDirAbsent(ctx: Context, dir: string, error: unknown): Promise<boolean> {
+  const code = errorDataCode(error);
+  if (code === 'FILE_NOT_FOUND') return true;
+  if (code !== 'NOT_A_DIRECTORY') return false;
+  return !(await ctx.fs.exists(dir));
+}
+
 /** `prefix`-matching file paths sitting directly inside a FANOUT `dir` —
- *  tolerant only of `dir` itself being absent (an as-yet-unused fanout
- *  prefix, or one that vanished between the root listing that found it and
- *  this call); every other opendir/readdir fault rethrows, mirroring git's
- *  fanout walk hard-failing on anything but ENOENT. */
+ *  tolerant only of `dir` itself being absent (254 of the 256
+ *  by-construction names typically are — an as-yet-unused fanout prefix —
+ *  or one that vanished mid-scan); every other opendir/readdir fault
+ *  rethrows, mirroring git's fanout walk hard-failing on anything but
+ *  ENOENT — the one location git itself is strict. */
 async function listTempFileCandidatesStrict(
   ctx: Context,
   dir: string,
@@ -157,7 +186,7 @@ async function listTempFileCandidatesStrict(
   try {
     entries = await ctx.fs.readdir(dir);
   } catch (error) {
-    if (!isFileNotFound(error)) throw error;
+    if (!(await isFanoutDirAbsent(ctx, dir, error))) throw error;
     return [];
   }
   return entries
@@ -165,10 +194,10 @@ async function listTempFileCandidatesStrict(
     .map((entry) => `${dir}/${entry.name}`);
 }
 
-/** Idempotent, fault-swallowing single-file removal for the `'tolerant'`
- *  policy — unlike `rmTolerant`, ANY failure (not just a missing file) is
- *  absorbed here, since git's own root/pack cleanup warns and continues
- *  rather than aborting the run. */
+/** Idempotent, fault-swallowing single-file removal — unlike `rmTolerant`,
+ *  ANY failure (not just a missing file) is absorbed here, since git's own
+ *  per-file removal (`prune_tmp_file`) warns and continues rather than
+ *  aborting, uniformly at every location it runs. */
 async function rmSilently(ctx: Context, path: string): Promise<void> {
   try {
     await ctx.fs.rm(path);
@@ -179,46 +208,37 @@ async function rmSilently(ctx: Context, path: string): Promise<void> {
 
 /** Removes `path` when its own mtime is at or before `cutoff` — the same
  *  `mtime > cutoff` survival rule `partitionByCutoff` applies to cruft
- *  candidates. `faultPolicy` mirrors git's own split: `'tolerant'`
- *  (root/pack) absorbs ANY lstat/rm fault — vanished, `EACCES`, … — the
- *  same unconditional tolerance git's own per-file removal applies there;
- *  `'strict'` (fanout) still tolerates the file vanishing between the
- *  listing that found it and this call (a concurrent process finishing the
- *  very quarantine write this litter belonged to), but rethrows every
- *  other fault. */
-async function removeIfStaleTempFile(
-  ctx: Context,
-  path: string,
-  cutoff: number,
-  faultPolicy: TempFileFaultPolicy,
-): Promise<void> {
+ *  candidates. git's strictness never lives in the per-file handler: the
+ *  same `prune_tmp_file` runs at root, fanout and pack alike, and absorbs
+ *  ANY lstat/rm fault — vanished, `EACCES`, … — everywhere it runs. The
+ *  only strict gate in this whole scan is a fanout dir's own `opendir`
+ *  (`listTempFileCandidatesStrict`); a path reaching here has already
+ *  passed it. */
+async function removeIfStaleTempFile(ctx: Context, path: string, cutoff: number): Promise<void> {
   let stat: FileStat;
   try {
     stat = await ctx.fs.lstat(path);
-  } catch (error) {
-    if (faultPolicy === 'tolerant' || isFileNotFound(error)) return;
-    throw error;
+  } catch {
+    return;
   }
   const mtimeSeconds = Math.floor(stat.mtimeMs / 1000);
   if (mtimeSeconds > cutoff) return;
-  if (faultPolicy === 'tolerant') {
-    await rmSilently(ctx, path);
-    return;
-  }
-  await rmTolerant(ctx, path);
+  await rmSilently(ctx, path);
 }
 
 /**
  * Deletes stale quarantine litter from every location git itself writes it
- * to — `objects/` root, each existing fanout dir, and `objects/pack/` —
- * once this run has actually proceeded past the `gc.auto` gate (a decline
- * performs no cleanup of any kind, litter included). The scan-scope prefix
- * and fault tolerance both split by location: root and pack treat any
- * `tmp_`-prefixed file as a candidate and absorb any opendir/readdir/
- * lstat/rm fault along the way (no warning channel to mirror git's stderr);
- * a fanout dir only treats `tmp_obj_`-prefixed names as candidates, and its
- * own opendir/readdir still hard-fails on anything but the directory being
- * absent — git's fanout walk is the strict one.
+ * to — `objects/` root, every fanout dir, and `objects/pack/` — once this
+ * run has actually proceeded past the `gc.auto` gate (a decline performs no
+ * cleanup of any kind, litter included). git's OWN strictness lives at
+ * exactly one point: a fanout dir's `opendir` hard-fails on anything but
+ * ENOENT (`listTempFileCandidatesStrict`); everywhere else — root/pack
+ * `readdir`, and the per-file lstat/rm at every one of the three locations
+ * (`removeIfStaleTempFile`) — every fault is absorbed and the scan moves on
+ * (no warning channel to mirror git's stderr). Fanout dirs are enumerated
+ * BY CONSTRUCTION (`FANOUT_NAMES`, `00`..`ff`) rather than discovered from
+ * the root's own listing, so an `EACCES` reading `objects/` skips only the
+ * root's OWN `tmp_` candidates, never the fanout scan.
  *
  * Called from `runGcTask` after every pack write, verify, prune and
  * retirement step this run performs — the same position git's own
@@ -226,32 +246,33 @@ async function removeIfStaleTempFile(
  * strictly after `repack` has finished consolidating and retiring packs.
  * A run that never reaches that point (an aborted pack write, a repack
  * failure) leaves existing litter untouched, exactly as a failed `git gc`
- * does. `cutoff` is the identical `gc.pruneExpire`-derived value the
- * cruft-pack survival rule uses: `never` resolves to `-Infinity`, under
- * which every candidate would survive the age gate anyway, so the scan
- * itself is skipped rather than run for nothing.
+ * does. This run's OWN quarantine writes are already complete by the time
+ * the scan starts, so it can never race them into existence; the age gate
+ * is the sole remaining protection against a DIFFERENT, concurrently
+ * running process's own in-flight quarantine write — a fresh mtime keeps
+ * it on the "survivor" side of the cutoff. That protection does not hold
+ * at `gc.pruneExpire=now`: the cutoff resolves to the current second, and
+ * the survival rule's strict `mtime > cutoff` dooms a write landing in
+ * that same second — the identical exposure git carries at the same
+ * second-granularity boundary. `cutoff` is the identical `gc.pruneExpire`-
+ * derived value the cruft-pack survival rule uses: `never` resolves to
+ * `-Infinity`, under which every candidate would survive the age gate
+ * anyway, so the scan itself is skipped rather than run for nothing.
  */
 async function removeStaleTempFiles(ctx: Context, packDir: string, cutoff: number): Promise<void> {
   if (cutoff === Number.NEGATIVE_INFINITY) return;
 
   const objectsRoot = `${commonGitDir(ctx)}/objects`;
-  const rootEntries = await readdirTolerant(ctx, objectsRoot);
-  const rootCandidates = rootEntries
-    .filter((entry) => isTempFileEntry(entry, TEMP_FILE_PREFIX))
-    .map((entry) => `${objectsRoot}/${entry.name}`);
-  const fanoutDirs = rootEntries
-    .filter((entry) => entry.isDirectory && FANOUT_DIR_NAME.test(entry.name))
-    .map((entry) => `${objectsRoot}/${entry.name}`);
+  const rootCandidates = await listTempFileCandidatesTolerant(ctx, objectsRoot, TEMP_FILE_PREFIX);
   const packCandidates = await listTempFileCandidatesTolerant(ctx, packDir, TEMP_FILE_PREFIX);
+  const fanoutDirs = FANOUT_NAMES.map((name) => `${objectsRoot}/${name}`);
   const fanoutCandidateLists = await boundedMapFor(ctx, 'ioBound', fanoutDirs, (dir) =>
     listTempFileCandidatesStrict(ctx, dir, FANOUT_TEMP_FILE_PREFIX),
   );
 
-  await boundedMapFor(ctx, 'ioBound', [...rootCandidates, ...packCandidates], (path) =>
-    removeIfStaleTempFile(ctx, path, cutoff, 'tolerant'),
-  );
-  await boundedMapFor(ctx, 'ioBound', fanoutCandidateLists.flat(), (path) =>
-    removeIfStaleTempFile(ctx, path, cutoff, 'strict'),
+  const candidates = [...rootCandidates, ...packCandidates, ...fanoutCandidateLists.flat()];
+  await boundedMapFor(ctx, 'ioBound', candidates, (path) =>
+    removeIfStaleTempFile(ctx, path, cutoff),
   );
 }
 
