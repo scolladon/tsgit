@@ -240,6 +240,7 @@ const isInvalidEntryNameBytes = (buf: Uint8Array, start: number, end: number): b
   const length = end - start;
   if (length === 1 && buf[start] === DOT) return true;
   if (length === 2 && buf[start] === DOT && buf[start + 1] === DOT) return true;
+  // Stryker disable next-line EqualityOperator: equivalent — buf[end] is always the TreeCursor's NUL name-terminator (nameEnd = indexOf(buf, NUL, nameStart) in tree-cursor.ts), never SLASH, for any real caller; the extra iteration always compares NUL against SLASH and never changes the result (hand-verified: full covering set — resolve-tree-path ×2 incl. the .properties fast-check suite, blame, rev-parse, read-file-at — passes unmutated).
   for (let i = start; i < end; i++) {
     if (buf[i] === SLASH) return true;
   }

@@ -388,6 +388,34 @@ describe('findTreeEntry', () => {
     });
   });
 
+  describe('Given a directory containing names that merely start or end with a dot, or start with two dots', () => {
+    describe('When findTreeEntry searches for each of them individually', () => {
+      it.each([
+        { label: "'.gitmodules' (starts with one dot, length > 1)", name: '.gitmodules' },
+        { label: "'..cache' (starts with two dots, length > 2)", name: '..cache' },
+        { label: "'.x' (length 2, starts with a dot)", name: '.x' },
+        { label: "'a.' (length 2, ends with a dot)", name: 'a.' },
+      ])("Then $label resolves — it is not '.', '..', nor slash-bearing", async ({ name }) => {
+        // Arrange — each of these shares a byte with the '.'/'..' shape
+        // check (a leading dot, or a length-2 span) without actually being
+        // '.' or '..'; only the exact match should ever refuse.
+        const ctx = await buildSeededContext();
+        const fileId = await writeObject(ctx, blobOf(9));
+        const dirId = await writeTree(ctx, [{ mode: FILE_MODE.REGULAR, name, id: fileId }]);
+        const rootId = await writeTree(ctx, [
+          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
+        ]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, `dir/${name}`);
+
+        // Assert
+        expect(result?.name).toBe(name);
+        expect(result?.id).toBe(fileId);
+      });
+    });
+  });
+
   describe('Given a shape-invalid sibling entry in a raw-scanned directory', () => {
     describe('When another entry in the same directory is resolved', () => {
       it.each([
