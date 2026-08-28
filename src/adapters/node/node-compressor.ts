@@ -76,6 +76,23 @@ const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
  */
 export const CALLBACK_DISPATCH_THRESHOLD_BYTES = 16 * 1024;
 
+/**
+ * The reason `streamInflate` reports for a zlib stream that ends before its
+ * data does. Owned in-repo rather than passed through from node:zlib: node's
+ * own wording for this condition ("unexpected end of file") is node's to
+ * change at any point, but callers that classify `DECOMPRESS_FAILED` errors
+ * by reason (`fetch-pack.ts`'s window-growth retry) need a string this repo
+ * controls. Matches the zero-dependency decoder's wording for the identical
+ * condition (`inflateZlibMember`, `src/adapters/inflate.ts`) so both
+ * adapters report one reason regardless of which one decoded the stream.
+ */
+const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
+
+/** Whether `err` is node:zlib's own signal for "the stream ended before the
+ *  data did" — detected structurally via `code`, never via `message`, which
+ *  is the wording `TRUNCATED_STREAM_REASON` exists to stop depending on. */
+const isTruncatedStreamError = (err: NodeJS.ErrnoException): boolean => err.code === 'Z_BUF_ERROR';
+
 interface NodeCompressorOptions {
   /** Override the inflated-output cap. Tests use a small value to exercise the overflow branch. */
   readonly maxInflatedBytes?: number;
@@ -182,8 +199,10 @@ export class NodeCompressor implements Compressor {
         const output = concatUint8(chunks);
         resolve({ output, bytesConsumed: consumed });
       });
-      inflate.on('error', (err: Error) => {
-        reject(decompressFailed(err.message));
+      inflate.on('error', (err: NodeJS.ErrnoException) => {
+        reject(
+          decompressFailed(isTruncatedStreamError(err) ? TRUNCATED_STREAM_REASON : err.message),
+        );
       });
       // Write all available bytes; Node's inflate will stop at the zlib end
       // and any excess is left unread in the node stream's buffer.

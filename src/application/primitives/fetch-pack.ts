@@ -502,7 +502,7 @@ interface PackByteSource<TCrcContext = undefined> {
   /**
    * Inflates the zlib stream starting at `dataOffset`. `declaredSize` — the
    * entry header's own declared output length — is passed through so a
-   * source can bound the inflate to it; the disk source does, since every
+   * source can bound the inflate to it; every source does, since every
    * conformant entry inflates to exactly this many bytes, so the bound costs
    * nothing on a valid pack and stops a mismatched stream at the declared
    * size rather than the adapter's much larger default cap. `offset` (the
@@ -531,8 +531,8 @@ const inMemoryPackByteSource = (ctx: Context, packBytes: Uint8Array): PackByteSo
   totalBytes: packBytes.length,
   header: async () => parsePackHeader(packBytes),
   entryHeader: async (offset) => parsePackEntryHeader(packBytes, offset, ctx.hashConfig),
-  inflateEntry: async (_offset, dataOffset) => ({
-    result: await ctx.compressor.streamInflate(packBytes, dataOffset),
+  inflateEntry: async (_offset, dataOffset, declaredSize) => ({
+    result: await ctx.compressor.streamInflate(packBytes, dataOffset, declaredSize),
     crcContext: undefined,
   }),
   entryCrc32: async (offset, entryEnd) => crc32(packBytes.subarray(offset, entryEnd)),
@@ -575,26 +575,25 @@ const errorDataReason = (error: unknown): string | undefined => {
 };
 
 /**
- * Decompress failure messages that mean "the window ended before the
+ * The decompress failure reason that means "the window ended before the
  * entry's zlib stream did" — worth a bigger window. Every adapter's decoder
- * raises one of these two for premature end of input: the zero-dependency
- * decoder (memory/browser adapters, `inflateZlibMember`) and Node's zlib
- * binding (`Z_BUF_ERROR`) each use their own wording. Every other decode
- * failure (bad huffman codes, an out-of-range back-reference, a checksum
- * mismatch, the inflated-output safety cap) means the bytes already read
- * are already enough to prove the entry invalid — retrying would only redo
- * the same failing decode against a needlessly larger read, or, for the
- * safety cap, redo the very inflate work the cap exists to cut short.
- * These two messages are themselves ambiguous — a corrupted length or code
- * table can walk a decoder off the end of a genuinely well-sized window
- * exactly the way a real truncation does — but retrying stays bounded by
- * `trailerStart`, so the worst case is a few extra bounded re-reads, never
- * an unbounded one.
+ * is normalized to raise this exact reason for premature end of input: the
+ * zero-dependency decoder (memory/browser adapters, `inflateZlibMember`)
+ * raises it directly, and `NodeCompressor.streamInflate` classifies node:zlib's
+ * `Z_BUF_ERROR` structurally and re-emits this same string rather than the
+ * one node itself uses — node's wording is node's to change, not a contract
+ * this module can pin against. Every other decode failure (bad huffman
+ * codes, an out-of-range back-reference, a checksum mismatch, the
+ * inflated-output safety cap) means the bytes already read are already
+ * enough to prove the entry invalid — retrying would only redo the same
+ * failing decode against a needlessly larger read, or, for the safety cap,
+ * redo the very inflate work the cap exists to cut short. This reason is
+ * itself ambiguous — a corrupted length or code table can walk a decoder
+ * off the end of a genuinely well-sized window exactly the way a real
+ * truncation does — but retrying stays bounded by `trailerStart`, so the
+ * worst case is a few extra bounded re-reads, never an unbounded one.
  */
-const RETRYABLE_DECOMPRESS_REASONS: ReadonlySet<string> = new Set([
-  'unexpected end of deflate stream',
-  'unexpected end of file',
-]);
+const RETRYABLE_DECOMPRESS_REASON = 'unexpected end of deflate stream';
 
 /** Entry-header parse failures sharing this prefix (`decodeTypeAndSize`,
  *  `decodeOfsDistance`, the REF_DELTA base-id read — see `pack-entry.ts`)
@@ -613,6 +612,12 @@ const RETRYABLE_ENTRY_HEADER_REASON_PREFIX = 'unexpected end of';
 const isFreshDocumentedWindow = (w: DiskWindow, anchor: number, documented: number): boolean =>
   w.start === anchor && w.bytes.length === documented;
 
+/** Whether `w` was itself delivered by a fetch anchored exactly at `anchor`
+ *  — as opposed to a REUSED window carried over from an earlier, smaller
+ *  offset. Only a window satisfying this has a length that means anything
+ *  as a "what did the last fetch AT THIS ANCHOR deliver" baseline. */
+const isAnchoredHere = (w: DiskWindow, anchor: number): boolean => w.start === anchor;
+
 const isRetryableWindowFailure = (err: unknown): boolean => {
   const reason = errorDataReason(err);
   if (reason === undefined) return false;
@@ -620,7 +625,7 @@ const isRetryableWindowFailure = (err: unknown): boolean => {
     case 'INVALID_PACK_ENTRY':
       return reason.startsWith(RETRYABLE_ENTRY_HEADER_REASON_PREFIX);
     case 'DECOMPRESS_FAILED':
-      return RETRYABLE_DECOMPRESS_REASONS.has(reason);
+      return reason === RETRYABLE_DECOMPRESS_REASON;
     default:
       return false;
   }
@@ -711,6 +716,40 @@ const diskPackByteSource = (
     return fetchWindow(anchor, initialWindowSize(anchor));
   };
 
+  /**
+   * Given a retryable failure caught against `w`, fetches the next growth
+   * window and folds it into `withGrowth`'s running state — or rethrows
+   * `err` when growth cannot help: the failure isn't a sizing problem, the
+   * window already reaches `trailerStart`, or — the short-read-filesystem
+   * case (NFS/SMB/FUSE — NodeFileSystem.readSlice issues one non-looping
+   * handle.read) — the fetch delivered no more than the last one anchored
+   * HERE did. Growth is driven by the REQUESTED size (`rung`), but a
+   * short-read adapter can keep returning the same capped window forever
+   * regardless of how large `rung` grows; the exhaustion check above reads
+   * DELIVERED size, so it alone would never trip against such an adapter.
+   * `deliveredAtAnchor` is `undefined` only for the very first fetch
+   * anchored here (a REUSED window carries no baseline to compare against,
+   * so it can never fail this check) — see `isAnchoredHere`.
+   */
+  const growOrRethrow = async (
+    err: unknown,
+    w: DiskWindow,
+    anchor: number,
+    rung: number,
+    deliveredAtAnchor: number | undefined,
+  ): Promise<{
+    readonly w: DiskWindow;
+    readonly rung: number;
+    readonly deliveredAtAnchor: number;
+  }> => {
+    if (!isRetryableWindowFailure(err)) throw err;
+    if (w.start + w.bytes.length >= trailerStart) throw err;
+    const grownRung = nextRung(rung, anchor);
+    const grown = await fetchWindow(anchor, grownRung);
+    if (deliveredAtAnchor !== undefined && grown.bytes.length <= deliveredAtAnchor) throw err;
+    return { w: grown, rung: grownRung, deliveredAtAnchor: grown.bytes.length };
+  };
+
   const withGrowth = async <T>(
     anchor: number,
     attempt: (w: DiskWindow) => Promise<T> | T,
@@ -722,14 +761,24 @@ const diskPackByteSource = (
     // returns a fresh, documented-size window whenever it didn't reuse one
     // — in which case growth should double past it, not repeat it.
     let rung = isFreshDocumentedWindow(w, anchor, documented) ? documented : 0;
+    // `undefined` means "no delivery observed AT THIS ANCHOR yet" — a window
+    // REUSED from an earlier, smaller-offset anchor carries no baseline: its
+    // length reflects an unrelated fetch, not what a fetch anchored HERE
+    // delivers, so it must never fail the non-progress check in
+    // `growOrRethrow` (a coincidentally equal length there is not a stall,
+    // just two unrelated fetches both clamped to the same documented size).
+    let deliveredAtAnchor = isAnchoredHere(w, anchor) ? w.bytes.length : undefined;
     for (;;) {
       try {
         return await attempt(w);
       } catch (err) {
-        if (!isRetryableWindowFailure(err)) throw err;
-        if (w.start + w.bytes.length >= trailerStart) throw err;
-        rung = nextRung(rung, anchor);
-        w = await fetchWindow(anchor, rung);
+        ({ w, rung, deliveredAtAnchor } = await growOrRethrow(
+          err,
+          w,
+          anchor,
+          rung,
+          deliveredAtAnchor,
+        ));
       }
     }
   };

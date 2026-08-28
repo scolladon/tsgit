@@ -2465,6 +2465,65 @@ describe('quarantine disk-backed entry walk', () => {
     });
   });
 
+  describe('Given a filesystem whose readSlice caps every delivery at a fixed length below the requested growth', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then growth bails on non-progress instead of re-requesting identical bytes forever', async () => {
+        // Arrange — content forces the entry's compressed span well past a
+        // single capped window, so the first inflate attempt fails with a
+        // retryable reason. A short-read filesystem (NFS/SMB/FUSE-shaped —
+        // NodeFileSystem.readSlice issues a single non-looping handle.read)
+        // never delivers more than CAP bytes no matter how large the next
+        // window asks for, so a growth fetch that repeats the SAME delivered
+        // size must bail rather than loop. The call-count poison past
+        // POISON_AFTER_CALLS is a safety net bounding this test's own
+        // runtime if the non-progress guard is ever missing — it is not the
+        // behaviour under test, only insurance against an actual hang.
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 55_555);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        const CAP = 20_000;
+        const POISON_AFTER_CALLS = 8;
+        let readSliceCalls = 0;
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            readSliceCalls += 1;
+            if (readSliceCalls > POISON_AFTER_CALLS) {
+              throw permissionDenied('short-read filesystem exhausted');
+            }
+            const real = await baseCtx.fs.readSlice(path, offset, length);
+            return real.subarray(0, Math.min(real.length, CAP));
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the pending DECOMPRESS_FAILED surfaces well before the
+        // poison call, proving growth bailed on non-progress rather than
+        // spinning until an unrelated failure eventually stopped it.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('DECOMPRESS_FAILED');
+        expect(data.reason).toBe('unexpected end of deflate stream');
+        expect(readSliceCalls).toBeLessThan(POISON_AFTER_CALLS);
+      });
+    });
+  });
+
   describe('Given a pack spanning several windows with entries that never individually need growth (12 x 60 KB)', () => {
     describe('When fetchPack walks the quarantined pack from disk', () => {
       it('Then no readSlice call exceeds the documented window even though the walk crosses more than two window boundaries', async () => {
@@ -2669,6 +2728,88 @@ describe('quarantine disk-backed entry walk', () => {
         expect(data.code).toBe('DECOMPRESS_FAILED');
         expect(data.reason).toContain('safety cap');
         expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a quarantined pack entry with declared size 0 (an empty blob)', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then the entry resolves cleanly — the declared-size bound holds at its zero case, not merely by construction', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, '');
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        const result = await sut(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(result.objectCount).toBe(1);
+        const readBack = await readObject(ctx, blobId);
+        if (readBack.type !== 'blob') throw new Error('expected a blob');
+        expect(readBack.content).toEqual(new Uint8Array(0));
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// walkPackEntries — declared-size cap parity between the in-memory and disk
+// byte sources
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('walkPackEntries', () => {
+  describe('Given a pack entry whose zlib stream inflates past its declared header size', () => {
+    describe('When walkPackEntries walks it from an in-memory buffer', () => {
+      it('Then it refuses instead of inflating past the declared size — mirrors the disk-source refusal', async () => {
+        // Arrange — same construction as the disk-source "oversize-declare"
+        // pin in `quarantine disk-backed entry walk` above: declared size 5,
+        // but the zlib stream is a valid, complete encoding of 10 bytes. The
+        // in-memory source must bound `streamInflate` to the declared size
+        // exactly like the disk source does, or identical bytes are refused
+        // from disk and silently accepted in memory.
+        const ctx = createMemoryContext();
+        const header = new Uint8Array(12);
+        const dv = new DataView(header.buffer);
+        dv.setUint32(0, 0x5041434b);
+        dv.setUint32(4, 2);
+        dv.setUint32(8, 1);
+        const declaredSize = 5;
+        const actualPayload = ENCODER.encode('AAAAAAAAAA'); // 10 bytes, > declaredSize
+        const entryHeaderByte = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, declaredSize);
+        const zlibStream = await ctx.compressor.deflate(actualPayload);
+        const bodyBytes = new Uint8Array(
+          header.length + entryHeaderByte.length + zlibStream.length,
+        );
+        bodyBytes.set(header, 0);
+        bodyBytes.set(entryHeaderByte, header.length);
+        bodyBytes.set(zlibStream, header.length + entryHeaderByte.length);
+        const trailerHex = await ctx.hash.hashHex(bodyBytes);
+        const packBytes = new Uint8Array(bodyBytes.length + 20);
+        packBytes.set(bodyBytes, 0);
+        packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+        const sut = walkPackEntries;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, packBytes);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('DECOMPRESS_FAILED');
+        expect(data.reason).toContain('safety cap');
       });
     });
   });

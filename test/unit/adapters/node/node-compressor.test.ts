@@ -392,6 +392,38 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given a zlib stream truncated mid-stream (node:zlib reports Z_BUF_ERROR)', () => {
+      describe('When streamInflate runs', () => {
+        it('Then data.reason is the unified "unexpected end of deflate stream" — not node\'s own wording', async () => {
+          // Arrange — node:zlib's own wording ("unexpected end of file",
+          // verified on node v22.22.3) is owned by node, not this repo;
+          // fetch-pack's retry classifier must key on a reason this repo
+          // owns instead. Dropping the trailing bytes of a large-enough
+          // deflate stream reliably reproduces node's Z_BUF_ERROR.
+          const sut = new NodeCompressor();
+          const size = 5000;
+          const payload = new Uint8Array(size);
+          for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+          const deflated = await sut.deflate(payload);
+          const truncated = deflated.subarray(0, deflated.length - 5);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.streamInflate(truncated, 0);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          expect(data.reason).toBe('unexpected end of deflate stream');
+        });
+      });
+    });
+
     describe('Given oversized payload to inflate()', () => {
       describe('When inflate runs', () => {
         it('Then throws DECOMPRESS_FAILED (Node maxOutputLength enforced)', async () => {
