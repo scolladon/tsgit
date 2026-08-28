@@ -2331,6 +2331,46 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given an OFS_DELTA chain of length 60, warmed bottom-up in five successive 10-level steps', () => {
+    describe('When resolveObject finally reads the tip', () => {
+      it('Then it still throws DELTA_CHAIN_TOO_DEEP — a resumed cache hit must carry its OWN depth into every level it re-caches, not just the level it resumed at', async () => {
+        // Arrange — a 60-deep OFS chain (10 over the cap). Each of the five
+        // warm-up reads is, on its own, well within MAX_DELTA_CHAIN_DEPTH —
+        // resolving position 20 after position 10 only ever walks 10 fresh
+        // levels before hitting the position-10 cache entry. Only the
+        // COMPOUNDED total (10 → 20 → 30 → 40 → 50 → 60) exceeds the cap. A
+        // cache-hit resumption that drops its own resumed depth would let
+        // every successive warm step re-anchor its own re-cached levels at
+        // depth zero instead of inheriting what came before, letting the
+        // truly-60-deep tip slip through as if it were only 10 deep.
+        const ctx = await buildSeededContext();
+        const baseContent = new TextEncoder().encode('base');
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
+        for (let i = 0; i < 60; i += 1) {
+          const target = new TextEncoder().encode(`target-${i}`);
+          entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
+        }
+        const ids = await writeSyntheticPack(ctx, 'long-chain-successive-warm', entries);
+        const registry = createPackRegistry(ctx);
+
+        // Act — warm the cache bottom-up in five 10-level steps, then read the tip.
+        for (const position of [10, 20, 30, 40, 50]) {
+          await resolveObject(ctx, registry, ids[position] as ObjectId, false);
+        }
+        let caught: unknown;
+        try {
+          await resolveObject(ctx, registry, ids.at(-1) as ObjectId, false);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('DELTA_CHAIN_TOO_DEEP');
+      });
+    });
+  });
+
   describe('Given cached bytes with an unknown type name', () => {
     describe('When splitHeader runs typeNameToPackType', () => {
       it('Then throws OBJECT_NOT_FOUND', async () => {

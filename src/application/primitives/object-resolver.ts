@@ -435,6 +435,18 @@ interface Phase1Result {
    * or a loose object — no single `(pack, offset)` applies).
    */
   readonly baseOffset: number | undefined;
+  /**
+   * How deep the resumed base itself already sat below whatever chain
+   * reached it first — 0 for a freshly-read base entry or a REF_DELTA's
+   * resolved base (nothing beneath either one that this walk didn't just
+   * read), or `cached.chainDepth` when this level came from a delta-base
+   * cache hit (see `collectDeltaChain`'s probe). The caching loop in
+   * `resolvePackChain` adds this onto every level IT re-caches — without it,
+   * a chain resumed from a cache hit would recount its own newly-walked
+   * levels as if the resumed base sat at depth zero, undercounting by
+   * exactly the depth the cache hit skipped.
+   */
+  readonly baseChainDepth: number;
 }
 
 /** Extracted so both the per-level walk and a cache-hit resumption share one
@@ -475,7 +487,13 @@ async function collectDeltaChain(
       // beneath it, so a chain deeper than MAX_DELTA_CHAIN_DEPTH still
       // throws even though this walk never touched its lower levels.
       assertChainDepthWithinCap(depth + cached.chainDepth);
-      return { deltas, baseContent: cached.content, baseType: cached.type, baseOffset: undefined };
+      return {
+        deltas,
+        baseContent: cached.content,
+        baseType: cached.type,
+        baseOffset: undefined,
+        baseChainDepth: cached.chainDepth,
+      };
     }
     const nextOffset = nextOffsetForEntry(table, currentHit.offset);
     if (nextOffset > table.packFileSize) {
@@ -494,6 +512,7 @@ async function collectDeltaChain(
         baseContent: inflated,
         baseType: header.type,
         baseOffset: currentHit.offset,
+        baseChainDepth: 0,
       };
     }
     depth += 1;
@@ -520,7 +539,13 @@ async function collectDeltaChain(
       // not just the delta's target — tightens the OBJECT_TOO_LARGE
       // contract beyond what originally documented.
       const base = await resolveBaseForRefDelta(ctx, registry, refDeltaBaseId, maxBytes);
-      return { deltas, baseContent: base.content, baseType: base.type, baseOffset: undefined };
+      return {
+        deltas,
+        baseContent: base.content,
+        baseType: base.type,
+        baseOffset: undefined,
+        baseChainDepth: 0,
+      };
     }
     throw objectNotFound(targetId);
   }
@@ -573,8 +598,14 @@ export async function resolvePackChain(
     current = applyDelta(current, step.instructions);
     // How many delta applications lie between THIS level and the true base:
     // 1 for the level closest to the base (i === deltas.length - 1), up to
-    // deltas.length for the target's own level (i === 0).
-    const chainDepth = phase1.deltas.length - i;
+    // deltas.length for the target's own level (i === 0) — PLUS whatever
+    // depth the resumed base itself already carried (`baseChainDepth`,
+    // nonzero exactly when `phase1` resumed from a delta-base cache hit).
+    // Omitting that term would recount every level THIS walk re-caches as if
+    // the resumed base sat at depth zero, undercounting by exactly the depth
+    // the cache hit skipped — the gap a chain of successive warm reads
+    // compounds across.
+    const chainDepth = phase1.deltas.length - i + phase1.baseChainDepth;
     cacheDeltaBase(ctx, registry, step.probeKey, phase1.baseType, current, chainDepth);
   }
   // Post-apply cap on the reconstructed object (delta resolution is the only
