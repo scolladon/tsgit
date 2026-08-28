@@ -20,6 +20,21 @@ describe('expiryCutoff', () => {
     });
   });
 
+  describe('Given gc.pruneExpire is "never" with surrounding whitespace', () => {
+    describe('When resolving the cutoff', () => {
+      it('Then it still resolves to negative infinity — the value is trimmed first', () => {
+        // Arrange
+        const sut = expiryCutoff;
+
+        // Act
+        const result = sut('  never  ', { now: () => 1_787_755_416_000 });
+
+        // Assert
+        expect(result).toBe(Number.NEGATIVE_INFINITY);
+      });
+    });
+  });
+
   describe('Given gc.pruneExpire is "now"', () => {
     describe('When resolving the cutoff', () => {
       it('Then the cutoff equals the clock reading in seconds', () => {
