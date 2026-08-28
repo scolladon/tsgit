@@ -733,40 +733,54 @@ export const openRepository = async (
   let state: DisposeState = 'OPEN';
   let disposePromise: Promise<void> | undefined;
   const dispose = async (): Promise<void> => {
-    // Stryker disable next-line ConditionalExpression: equivalent — `state === 'DISPOSED'` implies `disposePromise` is already set (state only flips to DISPOSED inside the IIFE assigned to disposePromise), so the next guard returns the same resolved promise; removing this fast-path changes nothing observable.
+    // A repeat call short-circuits here even when the FIRST call's own
+    // disposePromise rejected (a faulted pack-handle close, cache release,
+    // or adapter teardown below) — dispose is best-effort teardown, so a
+    // fault on the first call must not wedge every later call into
+    // re-awaiting (and re-surfacing) that same rejected promise forever.
+    // The outer try/finally below guarantees `state` reaches 'DISPOSED'
+    // whether or not the teardown body threw, which is what makes this
+    // fast path reachable on the fault path too, not just the success one.
     if (state === 'DISPOSED') return;
     if (disposePromise !== undefined) return disposePromise;
     state = 'DISPOSING';
     controller.abort(); // synchronous abort — gates every bound method via ctx.signal.aborted
     disposePromise = (async () => {
-      // Macrotask boundary: lets queued I/O callbacks observe the abort and unwind
-      // via try/finally before adapters are torn down. setImmediate is preferred
-      // when available (Node); setTimeout(0) is the cross-runtime fallback.
-      await new Promise<void>((resolve) => {
-        if (typeof setImmediate === 'function') setImmediate(resolve);
-        else setTimeout(resolve, 0);
-      });
-      // Pack handles are FileHandles owned by ctx.fs — close them before the
-      // fs adapter itself is torn down.
-      // A failing pack-handle close must never skip adapter teardown or
-      // cache release — a pooling server disposing an idle repo must
-      // reclaim this memory even when pack-handle teardown itself faults.
-      // Cache release is nested in its OWN try/finally for the same reason:
-      // a sync throw from `deltaCache.clear()`/`forgetSessionCaches` must
-      // not skip `disposeAdapters` either — both cache release and adapter
-      // teardown run unconditionally, in that order, however either one
-      // faults.
       try {
-        await disposePackRegistry(ctx);
-      } finally {
+        // Macrotask boundary: lets queued I/O callbacks observe the abort and
+        // unwind via try/finally before adapters are torn down. setImmediate
+        // is preferred when available (Node); setTimeout(0) is the
+        // cross-runtime fallback.
+        await new Promise<void>((resolve) => {
+          if (typeof setImmediate === 'function') setImmediate(resolve);
+          else setTimeout(resolve, 0);
+        });
+        // Pack handles are FileHandles owned by ctx.fs — close them before the
+        // fs adapter itself is torn down.
+        // A failing pack-handle close must never skip adapter teardown or
+        // cache release — a pooling server disposing an idle repo must
+        // reclaim this memory even when pack-handle teardown itself faults.
+        // Cache release is nested in its OWN try/finally for the same reason:
+        // a sync throw from `deltaCache.clear()`/`forgetSessionCaches` must
+        // not skip `disposeAdapters` either — both cache release and adapter
+        // teardown run unconditionally, in that order, however either one
+        // faults.
         try {
-          ctx.deltaCache.clear();
-          forgetSessionCaches(ctx);
+          await disposePackRegistry(ctx);
         } finally {
-          await disposeAdapters(ctx);
+          try {
+            ctx.deltaCache.clear();
+            forgetSessionCaches(ctx);
+          } finally {
+            await disposeAdapters(ctx);
+          }
         }
+      } finally {
+        // Unconditional: a faulted teardown still reaches DISPOSED (the
+        // fault itself still propagates through this call's own rejected
+        // disposePromise — only a LATER call is spared re-surfacing it).
+        state = 'DISPOSED';
       }
-      state = 'DISPOSED';
     })();
     return disposePromise;
   };

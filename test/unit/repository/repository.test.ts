@@ -715,6 +715,30 @@ describe('openRepository — dispose cache hygiene', () => {
         expect(disposeCalls).toBe(1);
       });
     });
+
+    describe('When dispose is called again after that fault', () => {
+      it('Then it resolves without re-throwing — a faulted first call still reaches DISPOSED', async () => {
+        // Arrange — dispose is best-effort teardown: a fault the FIRST call
+        // already surfaced (asserted above) must not wedge every later call
+        // into re-awaiting the same rejected promise forever.
+        const fallback = makeFallback();
+        const boom = new Error('boom');
+        const throwingDeltaCache = {
+          ...fallback.deltaCache,
+          clear: () => {
+            throw boom;
+          },
+        };
+        const sut = await openRepository(
+          { cwd: '/repo', unsafeRawAdapters: true },
+          { ...fallback, deltaCache: throwingDeltaCache },
+        );
+        await sut.dispose().catch(() => undefined);
+
+        // Act / Assert
+        await expect(sut.dispose()).resolves.toBeUndefined();
+      });
+    });
   });
 });
 
