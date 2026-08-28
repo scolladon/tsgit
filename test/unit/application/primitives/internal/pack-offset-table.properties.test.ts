@@ -39,12 +39,17 @@ function arbPackLayout(): fc.Arbitrary<TestIndexEntry[]> {
 describe('pack successor lookup — lazy vs sorted equivalence', () => {
   describe('Given an arbitrary pack layout with a usable, correct .rev', () => {
     describe('When the successor of every entry is requested', () => {
-      it('Then the lazy .rev-backed path agrees with the sorted fallback path for every entry', async () => {
+      it('Then both the lazy .rev-backed path and the sorted fallback path agree with an independent successor oracle', async () => {
         await fc.assert(
           fc.asyncProperty(arbPackLayout(), async (entries) => {
-            // Arrange — two independently derived tables over the SAME index:
-            // one answers via a binary search through .idx+.rev, the other
-            // via a plain sort of the .idx's own offsets.
+            // Arrange — two tables over the SAME index, each forced onto a
+            // DIFFERENT arm by its `loadRevIndex` fixture: one answers via a
+            // binary search through .idx+.rev, the other via a plain sort of
+            // the .idx's own offsets. `usableLoad`/`absentLoad` are what pin
+            // which arm actually ran — resolveOffsetTable itself decides the
+            // arm from artefact presence, so without asserting `.kind` a
+            // degrade-to-sorted fallback inside the "lazy" path could pass
+            // this property while never exercising the lazy code at all.
             const index = parsePackIndex(buildTestIndex(entries), DIGEST_LENGTH);
             const correctBody = Array.from(packPositionMap(index));
             const revBytes = buildRevIndex({
@@ -80,11 +85,30 @@ describe('pack successor lookup — lazy vs sorted equivalence', () => {
               trailerStart,
             );
 
+            // Assert — each table took the arm its fixture forces.
+            expect(lazyTable.kind).toBe('lazy');
+            expect(sortedTable.kind).toBe('sorted');
+
+            // Independent oracle: the successor of an offset is the
+            // next-higher offset among the GENERATED entries (or
+            // trailerStart for the highest one), computed straight from
+            // `entries` — never through resolveOffsetTable/parsePackIndex,
+            // so it cannot share a bug with the SUT it is checking.
+            // arbPackLayout guarantees distinct offsets, so the rank lookup
+            // is unambiguous.
+            const ascendingOffsets = entries.map((e) => e.offset).sort((a, b) => a - b);
+            const independentSuccessor = (offset: number): number => {
+              const rank = ascendingOffsets.indexOf(offset);
+              return rank === ascendingOffsets.length - 1
+                ? trailerStart
+                : (ascendingOffsets[rank + 1] as number);
+            };
+
             // Act + Assert
             for (const entry of entries) {
-              expect(nextOffsetForEntry(lazyTable, entry.offset)).toBe(
-                nextOffsetForEntry(sortedTable, entry.offset),
-              );
+              const expected = independentSuccessor(entry.offset);
+              expect(nextOffsetForEntry(lazyTable, entry.offset)).toBe(expected);
+              expect(nextOffsetForEntry(sortedTable, entry.offset)).toBe(expected);
             }
           }),
           { numRuns: 100 },
