@@ -755,6 +755,256 @@ describe('maintenance', () => {
     });
   });
 
+  describe("Given a linked worktree whose gitdir pointer ends in '/.git'", () => {
+    describe('When gc runs the retention-root scan', () => {
+      it('Then the derived worktree Context is scoped to the path with the trailing /.git suffix stripped', async () => {
+        // Arrange — the worktreeFs capability is the only observable sink
+        // for the stripped path (nothing on the read path below it depends
+        // on workDir), so a spy on it is how the strip is pinned.
+        const ctx = await seedOneCommit();
+        const calls: Array<string | ReadonlyArray<string>> = [];
+        const ctxWithWorktreeFs = {
+          ...ctx,
+          worktreeFs: (p: string | ReadonlyArray<string>) => {
+            calls.push(p);
+            return ctx.fs;
+          },
+        };
+        const currentHead = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${currentHead}\n`);
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/strip-suffix-wt1/.git\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctxWithWorktreeFs, { tasks: ['gc'] });
+
+        // Assert
+        expect(calls).toContainEqual('/tmp/strip-suffix-wt1');
+        expect(calls).not.toContainEqual('/tmp/strip-suffix-wt1/.git');
+      });
+    });
+  });
+
+  describe('Given a linked worktree detached at an annotated tag', () => {
+    describe('When gc runs the retention-root scan with pruneExpire=now', () => {
+      it('Then the tag object itself survives — its own HEAD roots the tag oid, not the commit it peels to', async () => {
+        // Arrange — resolveRef is called with { peel: false }: the tag
+        // object oid itself is rooted, never the commit it points at. Were
+        // it peeled, the tag object would end up with no root at all and a
+        // pruneExpire=now cutoff would destroy it outright.
+        const ctx = await seedOneCommit();
+        const currentHead = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        const tagId = await writeObject(ctx, {
+          type: 'tag' as const,
+          id: '' as ObjectId,
+          data: {
+            object: currentHead as ObjectId,
+            objectType: 'commit',
+            tagName: 'wt-tag',
+            message: 'annotated tag',
+            extraHeaders: [],
+          },
+        });
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${tagId}\n`);
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-tag/.git\n');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        await expect(readObject(ctx, tagId)).resolves.toMatchObject({ type: 'tag' });
+      });
+    });
+  });
+
+  describe('Given a linked worktree registry entry whose gitdir admin file is missing (prunable)', () => {
+    describe('When gc runs the retention-root scan', () => {
+      it('Then it skips that worktree silently rather than treating a prunable entry as a fault', async () => {
+        // Arrange — `git worktree prune`'s job, not gc's: an admin dir whose
+        // `gitdir` pointer is gone contributes nothing and must not abort the run.
+        const ctx = await seedOneCommit();
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/worktrees/stale`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a linked worktree admin dir whose gitdir file read fails with a genuine I/O fault', () => {
+    describe('When gc runs the retention-root scan', () => {
+      it('Then the fault propagates rather than being swallowed as prunable', async () => {
+        // Arrange — only FILE_NOT_FOUND is a prunable-worktree signal; any
+        // OTHER fault means the read never happened and must abort the run.
+        const ctx = await seedOneCommit();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt-eacces`;
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-eacces/.git\n');
+        const gitdirPath = `${adminDir}/gitdir`;
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === gitdirPath) throw eacces;
+          return originalReadUtf8(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(eacces);
+      });
+    });
+  });
+
+  describe('Given a linked worktree with a genuinely malformed (empty) own-HEAD file', () => {
+    describe('When gc runs the retention-root scan', () => {
+      it('Then the malformed HEAD is tolerated and the run still succeeds', async () => {
+        // Arrange — an empty ref file parses to INVALID_REF, one of
+        // GC_TOLERATED_REF_CODES: addNonCurrentWorktreeRoots's own catch
+        // must tolerate it exactly like addRefRoots does.
+        const ctx = await seedOneCommit();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt-empty-head`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, '');
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-empty-head/.git\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose own-HEAD read fails with a genuine I/O fault', () => {
+    describe('When gc runs the retention-root scan', () => {
+      it('Then the fault propagates rather than being swallowed as a malformed ref', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt-head-eacces`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, 'deadbeef\n');
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-head-eacces/.git\n');
+        const headPath = `${adminDir}/HEAD`;
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === headPath) throw eacces;
+          return originalReadUtf8(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(eacces);
+      });
+    });
+  });
+
+  describe('Given gc runs from the main worktree itself', () => {
+    describe('When the retention-root scan considers the main-worktree walk', () => {
+      it('Then it skips the redundant walk — HEAD is read exactly once', async () => {
+        // Arrange — `addMainWorktreeRoots` must no-op when `ctx` already IS
+        // the main worktree (covered by `collectRetentionRoots`'s own direct
+        // calls); without the guard, HEAD would be resolved once more on
+        // top of the operational-repository precheck and `addRefRoots`'s
+        // own resolution (2 reads total on the real code path).
+        const ctx = await seedOneCommit();
+        const headPath = `${ctx.layout.gitDir}/HEAD`;
+        const headReadPaths: string[] = [];
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === headPath) headReadPaths.push(path);
+          return originalReadUtf8(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(headReadPaths.length).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a non-directory entry sitting in the worktrees registry', () => {
+    describe('When gc runs the retention-root scan', () => {
+      it('Then it is skipped without ever being read as a worktree admin dir', async () => {
+        // Arrange — only directories are worktree admin dirs; a stray file
+        // must never be walked as one.
+        const ctx = await seedOneCommit();
+        const strayFile = `${ctx.layout.gitDir}/worktrees/stray-file`;
+        await ctx.fs.writeUtf8(strayFile, 'not a worktree');
+        const readCalls: string[] = [];
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          readCalls.push(path);
+          return originalReadUtf8(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+        expect(readCalls).not.toContain(`${strayFile}/gitdir`);
+      });
+    });
+  });
+
+  describe('Given gc runs from a linked worktree whose own admin dir is listed in the registry', () => {
+    describe('When the retention-root scan enumerates other worktrees', () => {
+      it('Then it skips re-walking its own admin dir', async () => {
+        // Arrange — re-walking the CURRENT worktree via `addOneWorktreeRoots`
+        // would be a redundant read: `collectRetentionRoots`'s own direct
+        // calls against `ctx` already cover it.
+        const ctx = await seedOneCommit();
+        const wtCtx = deriveWorktreeContext(ctx, 'wt-self', '/tmp/self-worktree');
+        const selfGitdirPath = `${wtCtx.layout.gitDir}/gitdir`;
+        await ctx.fs.writeUtf8(selfGitdirPath, '/tmp/self-worktree/.git\n');
+        await ctx.fs.writeUtf8(`${wtCtx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const readCalls: string[] = [];
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          readCalls.push(path);
+          return originalReadUtf8(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        await sut(wtCtx, { tasks: ['gc'] });
+
+        // Assert
+        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(0);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // mtime provenance
   // ---------------------------------------------------------------------
@@ -950,6 +1200,25 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a genuinely malformed (empty) ref file during the retention-root scan', () => {
+    describe('When gc runs', () => {
+      it('Then it tolerates the malformed ref and still succeeds, same as non-strict collectRoots', async () => {
+        // Arrange — an empty ref file parses to INVALID_REF, one of
+        // GC_TOLERATED_REF_CODES: it genuinely is not a ref, so strict mode
+        // must tolerate it rather than aborting the whole run.
+        const ctx = await seedOneCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/empty`, '');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+      });
+    });
+  });
+
   describe('Given a malformed line in one reflog and a valid orphan-rooting entry in another', () => {
     describe('When gc runs', () => {
       it('Then it does not crash and still roots the valid entries', async () => {
@@ -1073,7 +1342,29 @@ describe('maintenance', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('INVALID_REFLOG_ENTRY');
+        expect((caught as TsgitError & { data: { reason: string } }).data.reason).toBe(
+          `reflog file exceeds ${MAX_REFLOG_BYTES} bytes`,
+        );
         expect((await getPackRegistry(ctx).all()).length).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a reflog file exactly at the size cap during the retention-root scan', () => {
+    describe('When gc runs', () => {
+      it('Then it does not abort — the cap is a strict greater-than boundary', async () => {
+        // Arrange — the cap check is `size > MAX_REFLOG_BYTES`; a file of
+        // exactly MAX_REFLOG_BYTES bytes must be read normally, not refused.
+        const ctx = await seedOneCommit();
+        const atCap = 'x'.repeat(MAX_REFLOG_BYTES);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, atCap);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — gc completed rather than refusing on the boundary size.
+        expect(result.packId).toBeDefined();
       });
     });
   });
