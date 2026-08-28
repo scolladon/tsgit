@@ -241,6 +241,50 @@ describe('enumerateObjects', () => {
     });
   });
 
+  describe('Given a fanout entry whose name is the right length but contains a non-hex character', () => {
+    describe('When enumerateObjects runs', () => {
+      it('Then it is excluded — right length alone is not sufficient', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blob('right-length-non-hex'));
+        const prefix = blobId.slice(0, 2);
+        const prefixDir = `${ctx.layout.gitDir}/objects/${prefix}`;
+        const suffixLength = blobId.length - 2;
+        const nonHexSuffix = 'g'.repeat(suffixLength);
+        await ctx.fs.write(`${prefixDir}/${nonHexSuffix}`, new Uint8Array(0));
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        expect(result).toContain(blobId);
+        expect(result).not.toContain(`${prefix}${nonHexSuffix}`);
+      });
+    });
+  });
+
+  describe('Given a fanout entry whose name is valid hex but the wrong length', () => {
+    describe('When enumerateObjects runs', () => {
+      it('Then it is excluded — hex-looking alone is not sufficient', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blob('wrong-length-hex'));
+        const prefix = blobId.slice(0, 2);
+        const prefixDir = `${ctx.layout.gitDir}/objects/${prefix}`;
+        const suffixLength = blobId.length - 2;
+        const shortHexSuffix = 'a'.repeat(suffixLength - 1);
+        await ctx.fs.write(`${prefixDir}/${shortHexSuffix}`, new Uint8Array(0));
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        expect(result).not.toContain(`${prefix}${shortHexSuffix}`);
+        expect(result.every((id) => id.length === blobId.length)).toBe(true);
+      });
+    });
+  });
+
   describe('Given an oid present both loose and in the header-refused pack', () => {
     describe('When enumerateObjects runs with accessiblePacksOnly: true', () => {
       it('Then that oid is still enumerated', async () => {
