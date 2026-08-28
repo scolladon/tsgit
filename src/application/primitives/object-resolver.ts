@@ -113,8 +113,11 @@ export const PARSED_OBJECT_MEMO_FRACTION = 0.0625;
 /**
  * Entry-count ceiling for the parsed-object memo, mirroring the commit-graph
  * header cache's own cap — a byte cap alone under-defends against a repo of
- * many small commits (short messages, no signature): the byte budget alone
- * could admit on the order of a million entries before ever filling.
+ * many small commits (short messages, no signature). At the DEFAULT
+ * `deltaCacheMaxBytes`, the byte budget itself binds first — it fills at
+ * roughly 4,000-5,000 short-message entries, well under this cap — so the
+ * entry-count check only becomes the binding constraint once a caller
+ * enlarges `deltaCacheMaxBytes` well past the default.
  */
 export const PARSED_OBJECT_MEMO_MAX_ENTRIES = 65_536;
 

@@ -15,6 +15,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import type { FlatTree } from '../../../../src/domain/diff/flat-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { LruCache } from '../../../../src/domain/storage/index.js';
 import { seedMaxTreeDepth } from './fixtures.js';
 
 vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
@@ -332,6 +333,40 @@ describe('readHeadTree', () => {
           (call) => call[0] === ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
         );
         expect(memoCall?.[1]).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
+      });
+    });
+  });
+
+  describe('Given a deltaCache sized so the byte budget never binds', () => {
+    describe('When more entries than FLAT_TREE_CACHE_MAX_ENTRIES are inserted', () => {
+      it('Then the entry cap itself evicts down to the cap, not the byte budget', async () => {
+        // Arrange — a deltaCache large enough that the cache's own byte
+        // share never binds at FLAT_TREE_CACHE_MAX_ENTRIES tiny entries;
+        // only the entry-count cap can be what evicts. Direct `.set()` calls
+        // on the cache itself (grabbed off the createLruCache spy's own
+        // return value) keep this fast — flattening
+        // FLAT_TREE_CACHE_MAX_ENTRIES + 1 distinct real HEAD trees would be
+        // impractical.
+        const ctx = createMemoryContext({
+          deltaCacheMaxBytes: FLAT_TREE_CACHE_MAX_ENTRIES * 100,
+        });
+        createLruCacheSpy.mockClear();
+        await commitOneFile(ctx);
+        await readHeadTree(ctx);
+        const memoCallIndex = createLruCacheSpy.mock.calls.findIndex(
+          (call) => call[1] === FLAT_TREE_CACHE_MAX_ENTRIES,
+        );
+        const cache = createLruCacheSpy.mock.results[memoCallIndex]?.value as LruCache<FlatTree>;
+        const dummy: FlatTree = { entries: new Map() };
+
+        // Act
+        for (let i = 0; i <= FLAT_TREE_CACHE_MAX_ENTRIES; i += 1) {
+          cache.set(`synthetic-${i}`, dummy, 1);
+        }
+
+        // Assert — capped at the entry count; the byte budget (far larger
+        // than FLAT_TREE_CACHE_MAX_ENTRIES tiny 1-byte entries) never bound.
+        expect(cache.entryCount).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
       });
     });
   });

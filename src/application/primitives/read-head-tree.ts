@@ -53,7 +53,11 @@ export const FLAT_TREE_CACHE_FRACTION = 0.0625;
  * Entry-count ceiling on the number of DISTINCT `(rootTreeOid, maxDepth)`
  * trees this cache holds — independent of `MAX_FLAT_TREE_ENTRIES`, which
  * bounds the entries WITHIN one tree. Mirrors the parsed-object memo and the
- * commit-graph header cache's own caps.
+ * commit-graph header cache's own caps. At the DEFAULT `deltaCacheMaxBytes`,
+ * the byte budget itself binds first (real `FlatTree`s are far from free —
+ * see {@link flatTreeByteSize}), so the entry-count check only becomes the
+ * binding constraint once a caller enlarges `deltaCacheMaxBytes` well past
+ * the default.
  */
 export const FLAT_TREE_CACHE_MAX_ENTRIES = 65_536;
 
