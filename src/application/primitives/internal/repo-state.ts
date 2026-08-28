@@ -99,7 +99,7 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   if (!(await hasUsableHead(ctx))) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
-  return assertDiscoveryAndRoot(ctx);
+  return await assertDiscoveryAndRoot(ctx);
 };
 
 /**
@@ -321,7 +321,7 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
   if (!(await hasUsableHead(ctx))) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
-  return memoizeGateVerdict(ctx, computeGateVerdict);
+  return await memoizeGateVerdict(ctx, computeGateVerdict);
 };
 
 /**

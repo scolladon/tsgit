@@ -53,7 +53,7 @@ export async function atomicWriteRef(
   refPath: string,
   content: Uint8Array,
 ): Promise<void> {
-  return atomicWriteFile(ctx, refPath, content, () => refLocked(refName));
+  return await atomicWriteFile(ctx, refPath, content, () => refLocked(refName));
 }
 
 function isFileExists(error: unknown): boolean {
