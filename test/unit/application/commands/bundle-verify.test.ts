@@ -790,6 +790,80 @@ describe('bundleVerify', () => {
     });
   });
 
+  describe('Given a bundle where the REF_DELTA base object exists on disk but its bytes do not hash to its own oid', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then throws OBJECT_HASH_MISMATCH — the external base resolver reads with verifyHash: true', async () => {
+        // Arrange — three objects: blobA (prerequisite, always readable),
+        // blobB (REF_DELTA base, its ORIGINAL content), and blobC (an
+        // unrelated object). blobB's loose file is then overwritten in
+        // place with blobC's raw stored bytes, so reading it back under
+        // blobB's own oid — with hash verification — must fail.
+        const ctx = await initRepo();
+
+        const prereqContent = enc.encode('prerequisite blob — always readable');
+        const prereqOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: prereqContent,
+        });
+
+        const baseContent = enc.encode('base blob for REF_DELTA — will be corrupted on disk');
+        const baseOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: baseContent,
+        });
+
+        const mismatchedContent = enc.encode('a completely different stored object');
+        const mismatchedOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: mismatchedContent,
+        });
+
+        const baseLoosePath = `${ctx.layout.gitDir}/objects/${baseOid.slice(0, 2)}/${baseOid.slice(2)}`;
+        const mismatchedLoosePath = `${ctx.layout.gitDir}/objects/${mismatchedOid.slice(0, 2)}/${mismatchedOid.slice(2)}`;
+        const mismatchedRawBytes = await ctx.fs.read(mismatchedLoosePath);
+        await ctx.fs.write(baseLoosePath, mismatchedRawBytes);
+
+        const targetContent = enc.encode('derived content');
+        const { packBytes, ids } = await buildSyntheticPack(ctx, [
+          {
+            kind: 'ref-delta',
+            baseId: baseOid as string,
+            baseUncompressed: baseContent,
+            targetContent,
+          } as EntrySpec,
+        ]);
+
+        const headerBytes = serializeBundleHeader({
+          version: 2,
+          hashAlgorithm: 'sha1',
+          prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
+          refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
+        });
+        const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+        bundleBytes.set(headerBytes, 0);
+        bundleBytes.set(packBytes, headerBytes.length);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — a mutant that reads the base without hash verification
+        // would silently accept blobC's bytes under blobB's oid instead.
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('OBJECT_HASH_MISMATCH');
+      });
+    });
+  });
+
   // ── memoized external-base resolver ────────────────────────────────────────
 
   describe('Given a bundle with two REF_DELTA entries sharing the same external base blob', () => {
@@ -981,6 +1055,36 @@ describe('bundleVerify', () => {
 
         // Assert
         expect(touched).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 bundle with no prerequisites and an instrumented session', () => {
+    describe('When bundleVerify adopts the algorithm', () => {
+      it('Then the derived pack context reuses the ORIGINAL session identity — `session` is read exactly twice (the spread copy, then the keep-session ternary), never minted fresh', async () => {
+        // Arrange — `deriveContext`'s `{ ...ctx, ...changes, session: freshSession ? createSession() : ctx.session }`
+        // reads `ctx.session` once via the object-spread copy and, ONLY when
+        // `keepSessionAcrossHashChange` licenses reuse, a second time via the
+        // ternary's `ctx.session` branch. A mutant that drops or falsifies
+        // that option forces `createSession()` instead, so the ternary never
+        // re-reads `ctx.session` — exactly one read instead of two.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const base = await initRepo();
+        await base.fs.write(BUNDLE_PATH, created.bytes);
+        let sessionReads = 0;
+        const trackingCtx: Context = new Proxy(base, {
+          get(target, prop, receiver) {
+            if (prop === 'session') sessionReads += 1;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act
+        await bundleVerify(trackingCtx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(sessionReads).toBe(2);
       });
     });
   });
