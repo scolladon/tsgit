@@ -15,6 +15,7 @@ interface CachedScopeEntry {
 
 /** Sentinel `mtimeKey` for "the scope's file does not exist" — mirrors
  *  `config-read.ts`'s `CONFIG_ABSENT_MTIME_KEY`. */
+// Stryker disable next-line StringLiteral: equivalent — a real mtimeKey is always `${mtimeMs}:${size}` (digits and a colon); '' can never collide with that shape any less than 'absent' does, so the literal sentinel text carries no observable behavior.
 const SCOPE_ABSENT_MTIME_KEY = 'absent';
 
 /**

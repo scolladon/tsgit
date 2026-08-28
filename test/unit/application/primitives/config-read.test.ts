@@ -3351,6 +3351,32 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
     });
   });
 
+  describe('Given fs.stat rejects with a TsgitError that is neither FILE_NOT_FOUND nor PERMISSION_DENIED, When readConfigSections reads a single scope', () => {
+    it('Then the error propagates rather than being read as an absent scope file', async () => {
+      // Arrange — the mtime-staleness stat, not the content read, is what
+      // `scopeFileMtimeKey` guards: only FILE_NOT_FOUND/PERMISSION_DENIED
+      // there mean "treat as absent"; anything else must still abort.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+      const boom = new TsgitError({ code: 'NOT_A_DIRECTORY', path: `${ctx.layout.gitDir}/config` });
+      vi.spyOn(ctx.fs, 'stat').mockRejectedValue(boom);
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await readConfigSections({ ctx, scope: 'local' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'NOT_A_DIRECTORY',
+        path: `${ctx.layout.gitDir}/config`,
+      });
+    });
+  });
+
   describe('Given a memory adapter whose system config path is unresolved, When readConfigSections merges every scope', () => {
     it('Then the system scope is silently skipped and the available scopes still surface', async () => {
       // Arrange — an empty system path makes resolveScopePath raise CONFIG_SYSTEM_PATH_UNRESOLVED.
