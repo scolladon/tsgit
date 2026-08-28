@@ -354,9 +354,13 @@ describe('rangeDiff', () => {
         });
         // Real repository plumbing (resolveCommit, walkCommitsByDate) precedes
         // hydration and spans a variable number of macrotask hops of its own
-        // before any gated call is even reached, so poll until the bound is
-        // hit rather than assuming a fixed number of ticks.
-        for (let attempt = 0; attempt < 200 && maxInFlight < ioBound; attempt++) {
+        // before any gated call is even reached — measured past 200 hops on
+        // some CI runner/node combinations — so poll against a wall-clock
+        // deadline rather than a tick count. The gate keeps the peak
+        // deterministic once calls start piling up; the deadline only bounds
+        // how long we wait for the plumbing to reach them.
+        const deadline = Date.now() + 10_000;
+        while (maxInFlight < ioBound && Date.now() < deadline) {
           await new Promise<void>((resolve) => setImmediate(resolve));
         }
         const peakWhileBlocked = maxInFlight;
