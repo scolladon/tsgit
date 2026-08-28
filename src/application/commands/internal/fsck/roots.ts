@@ -332,11 +332,16 @@ function isMissingGitdirFile(error: unknown): boolean {
  * Roots one linked worktree's own retention state: its HEAD, its
  * per-worktree refs (`refs/bisect/…`, `refs/worktree/…`, `refs/rewritten/…`
  * — whatever `enumerateRefs` resolves through that worktree's own admin
- * dir), and its own index — git's `other_head_refs()` plus a per-worktree
- * index walk. A worktree whose `gitdir` pointer is gone (prunable, `git
- * worktree prune`'s job, not gc's) contributes nothing; any OTHER fault
- * reading it rethrows, the same strict policy `addRefRoots`/`addIndexRoots`
- * already apply to everything they read.
+ * dir), its own HEAD reflog, and its own index — git's `other_head_refs()`
+ * plus a per-worktree index walk. A worktree whose `gitdir` pointer is gone
+ * (prunable, `git worktree prune`'s job, not gc's) contributes nothing; any
+ * OTHER fault reading it rethrows, the same strict policy
+ * `addRefRoots`/`addReflogRoots`/`addIndexRoots` already apply to everything
+ * they read. Pinned against git 2.55.0: `git gc --prune=now` keeps an object
+ * reachable ONLY from a linked worktree's own HEAD reflog, symmetric with
+ * the HEAD-itself case above — a discarded `oldId` this worktree's own
+ * `reset`/`checkout` history recorded is exactly as much a retention root as
+ * its current HEAD.
  */
 async function addOneWorktreeRoots(
   ctx: Context,
@@ -357,6 +362,7 @@ async function addOneWorktreeRoots(
   const worktreePath = stripGitSuffix(gitdirPointer);
   const worktreeCtx = deriveWorktreeContext(ctx, id, worktreePath);
   await addRefRoots(worktreeCtx, roots, undefined, true);
+  await addReflogRoots(worktreeCtx, roots, true);
   await addIndexRoots(worktreeCtx, roots);
 }
 

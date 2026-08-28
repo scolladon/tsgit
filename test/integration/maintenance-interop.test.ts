@@ -1073,4 +1073,40 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       await disposeTwin(twin);
     });
   });
+
+  describe('Given a linked worktree holding a commit reachable only from its own HEAD reflog, When gc runs on both twins', () => {
+    let baseDir: string;
+    let wtCommitId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('worktree-reflog-retention');
+      const c0 = await addCommit(baseDir, 'c0');
+      // A linked worktree on its own branch, one commit ahead of c0.
+      git(baseDir, 'worktree', 'add', '-q', 'wt1', '-b', 'wtbranch', c0);
+      const wtDir = path.join(baseDir, 'wt1');
+      wtCommitId = await addCommit(wtDir, 'wt-reflog-only');
+      // wtbranch moves back to c0 — the commit (and its tree/blob) is now
+      // reachable ONLY through wt1's own HEAD reflog (a discarded `oldId`),
+      // never through any ref, and never through the main checkout's own
+      // reflog either.
+      git(wtDir, 'reset', '-q', '--hard', c0);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it("Then both tools keep it — gc roots every worktree's own reflog, not just the current one", async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'worktree-reflog-retention');
+
+      // Act
+      await runBothGc(twin, ['gc.pruneExpire=now']);
+
+      // Assert
+      expect(catFileExists(twin.peerDir, wtCommitId)).toBe(true);
+      expect(catFileExists(twin.oursDir, wtCommitId)).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
 });

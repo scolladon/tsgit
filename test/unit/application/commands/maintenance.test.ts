@@ -642,6 +642,54 @@ describe('maintenance', () => {
     });
   });
 
+  describe("Given a commit reachable only from a linked worktree's own HEAD reflog", () => {
+    describe('When gc runs with a cutoff that would otherwise destroy it', () => {
+      it("Then it survives — gc roots every worktree's own reflog, not just the current one", async () => {
+        // Arrange — wt1's own HEAD points at the CURRENT tip (already
+        // reachable via refs/heads/main); only wt1's own HEAD reflog
+        // remembers the orphan commit as a discarded `oldId`.
+        const ctx = await seedOneCommit();
+        const wtBlobId = await writeLooseBlob(ctx, 'worktree-reflog-only');
+        const wtTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.REGULAR, name: 'wt.txt', id: wtBlobId }],
+        });
+        const wtCommitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: wtTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'worktree-reflog-only',
+            extraHeaders: [],
+          },
+        });
+        const currentHead = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${currentHead}\n`);
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt1-reflog/.git\n');
+        await ctx.fs.mkdir(`${adminDir}/logs`);
+        await ctx.fs.writeUtf8(
+          `${adminDir}/logs/HEAD`,
+          `${wtCommitId} ${currentHead} Ada <ada@example.com> 1700000000 +0000\treset: moving to ${currentHead}\n`,
+        );
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        await expect(readObject(ctx, wtCommitId)).resolves.toMatchObject({ type: 'commit' });
+        await expect(readObject(ctx, wtTreeId)).resolves.toMatchObject({ type: 'tree' });
+        await expect(readObject(ctx, wtBlobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // mtime provenance
   // ---------------------------------------------------------------------
