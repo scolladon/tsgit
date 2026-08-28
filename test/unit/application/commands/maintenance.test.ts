@@ -37,6 +37,7 @@ import {
 import * as enumerateObjectsMod from '../../../../src/application/primitives/enumerate-objects.js';
 import * as cruftPackLifecycleMod from '../../../../src/application/primitives/internal/cruft-pack-lifecycle.js';
 import { probeLooseOid } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
+import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
   commonGitDir,
@@ -686,6 +687,50 @@ describe('maintenance', () => {
         await expect(readObject(ctx, wtCommitId)).resolves.toMatchObject({ type: 'commit' });
         await expect(readObject(ctx, wtTreeId)).resolves.toMatchObject({ type: 'tree' });
         await expect(readObject(ctx, wtBlobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
+  describe('Given the main worktree holding a commit reachable only from its own detached HEAD', () => {
+    describe('When gc runs from a linked worktree Context', () => {
+      it('Then it survives — gc roots the main worktree regardless of which worktree it runs from', async () => {
+        // Arrange — the main worktree's own HEAD is overwritten directly (no
+        // command runs), so no reflog entry anywhere names the commit; only
+        // the raw HEAD value itself roots it.
+        const ctx = await seedOneCommit();
+        const mainBlobId = await writeLooseBlob(ctx, 'main-only');
+        const mainTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [{ mode: FILE_MODE.REGULAR, name: 'main.txt', id: mainBlobId }],
+        });
+        const mainCommitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: mainTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'main-only',
+            extraHeaders: [],
+          },
+        });
+        const currentHead = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${mainCommitId}\n`);
+        const wtAdminDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+        await ctx.fs.writeUtf8(`${wtAdminDir}/HEAD`, `${currentHead}\n`);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const wtCtx = deriveWorktreeContext(ctx, 'wt1', '/tmp/nonexistent-wt1-main-root');
+        const sut = maintenance;
+
+        // Act — gc invoked from the LINKED worktree's own Context.
+        await sut(wtCtx, { tasks: ['gc'] });
+
+        // Assert
+        await expect(readObject(ctx, mainCommitId)).resolves.toMatchObject({ type: 'commit' });
+        await expect(readObject(ctx, mainTreeId)).resolves.toMatchObject({ type: 'tree' });
+        await expect(readObject(ctx, mainBlobId)).resolves.toMatchObject({ type: 'blob' });
       });
     });
   });

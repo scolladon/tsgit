@@ -5,6 +5,7 @@ import type { ObjectId } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
+import { deriveContext } from '../../../primitives/derive-context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { errorDataCode } from '../../../primitives/internal/error-data-code.js';
@@ -366,34 +367,76 @@ async function addOneWorktreeRoots(
   await addIndexRoots(worktreeCtx, roots);
 }
 
+/** Whether `ctx` IS the main worktree — its own `gitDir` doubles as the
+ *  shared `commonDir` (no `worktrees/<id>` nesting). A linked worktree's
+ *  `gitDir` is always `${commonDir}/worktrees/<id>`, so the two coincide
+ *  only for the main worktree. */
+function isMainWorktreeCtx(ctx: Context): boolean {
+  return ctx.layout.gitDir === commonGitDir(ctx);
+}
+
+/**
+ * Roots the MAIN worktree's own HEAD, per-worktree refs, HEAD reflog and
+ * index — covered for free when gc runs FROM the main worktree (`ctx` IS
+ * already that worktree, so `collectRetentionRoots`'s own direct calls
+ * against `ctx` handle it), but otherwise unreachable from anything else
+ * this module calls: `addOtherWorktreeRoots` only enumerates
+ * `${commonDir}/worktrees/*`, a registry the main worktree predates and is
+ * never a member of. Builds a Context whose `gitDir` IS `commonDir` (the
+ * main worktree's own admin-dir convention) via `deriveContext` rather than
+ * `deriveWorktreeContext` — the latter always nests under `worktrees/<id>`,
+ * which is exactly the shape the main worktree does NOT have; nothing this
+ * function calls reads `ctx.layout.workDir`, so the parent's own value
+ * (irrelevant here) is left untouched. `ctx.fs` needs no rescoping either:
+ * `commonDir` is already inside its containment roots (every admin file
+ * this walk reads already lives there for the CURRENT worktree's own shared
+ * reads). Pinned against git 2.55.0: `git gc --prune=now` invoked from a
+ * linked worktree still roots a commit reachable only from the main
+ * worktree's own detached HEAD.
+ */
+async function addMainWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
+  if (isMainWorktreeCtx(ctx)) return;
+  const mainCtx = deriveContext(ctx, {
+    layout: Object.freeze({ ...ctx.layout, gitDir: commonGitDir(ctx) }),
+  });
+  await addRefRoots(mainCtx, roots, undefined, true);
+  await addReflogRoots(mainCtx, roots, true);
+  await addIndexRoots(mainCtx, roots);
+}
+
 /**
  * Roots every OTHER (linked) worktree registered under
  * `${commonGitDir}/worktrees/*` — the main worktree's own HEAD/refs/index
- * are already covered by `collectRetentionRoots`'s own calls against `ctx`
- * itself. Pinned against git 2.55.0: `git gc --prune=now` keeps an object
- * reachable ONLY from a linked worktree's own (possibly detached) HEAD —
- * without this, gc would cruft-then-destroy a subgraph another worktree is
- * actively using.
+ * are `addMainWorktreeRoots`'s job, and whichever worktree `ctx` itself IS
+ * (its own admin dir may itself be listed here) is skipped: covered already
+ * by `collectRetentionRoots`'s direct calls against `ctx`, re-walking it
+ * here would only be a wasted, redundant read. Pinned against git 2.55.0:
+ * `git gc --prune=now` keeps an object reachable ONLY from a linked
+ * worktree's own (possibly detached) HEAD — without this, gc would
+ * cruft-then-destroy a subgraph another worktree is actively using.
  */
 async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const root = `${commonGitDir(ctx)}/worktrees`;
   if (!(await ctx.fs.exists(root))) return;
   for (const entry of await ctx.fs.readdir(root)) {
     if (!entry.isDirectory) continue;
-    await addOneWorktreeRoots(ctx, roots, entry.name, `${root}/${entry.name}`);
+    const adminDir = `${root}/${entry.name}`;
+    if (adminDir === ctx.layout.gitDir) continue;
+    await addOneWorktreeRoots(ctx, roots, entry.name, adminDir);
   }
 }
 
 /**
  * Retention roots for `maintenance`'s `gc` task (Pin H): every resolvable
  * ref (HEAD included), every reflog old/new oid, the index — stage-0
- * entries plus its cache-tree, when present — and every OTHER worktree's
- * own HEAD, per-worktree refs and index (`addOtherWorktreeRoots`), matching
- * git rooting reachability across every worktree, not just the one gc is
- * invoked from. Unlike `collectRoots`, this takes no pre-built object
- * universe: gc is discovering the loose/cruft candidate set the
- * reachability walk will need, not consuming a finished enumeration, so a
- * universe would be the wrong cost shape here.
+ * entries plus its cache-tree, when present — the MAIN worktree's own state
+ * (`addMainWorktreeRoots`) and every OTHER worktree's own HEAD, per-worktree
+ * refs and index (`addOtherWorktreeRoots`), matching git rooting
+ * reachability across every worktree regardless of which one gc is invoked
+ * from. Unlike `collectRoots`, this takes no pre-built object universe: gc
+ * is discovering the loose/cruft candidate set the reachability walk will
+ * need, not consuming a finished enumeration, so a universe would be the
+ * wrong cost shape here.
  *
  * Every collector runs in STRICT mode (see `isTolerableRefFault`): a ref or
  * reflog that genuinely isn't one roots nothing, exactly as `collectRoots`
@@ -408,6 +451,7 @@ export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<O
   await addRefRoots(ctx, roots, undefined, true);
   await addReflogRoots(ctx, roots, true);
   await addIndexRoots(ctx, roots);
+  await addMainWorktreeRoots(ctx, roots);
   await addOtherWorktreeRoots(ctx, roots);
   return roots;
 }

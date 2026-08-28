@@ -29,6 +29,7 @@ import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { parseCruftMtimes, parsePackIndex } from '../../src/domain/storage/index.js';
 import { allObjectIds } from '../../src/domain/storage/pack-index.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -1106,6 +1107,64 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       // Assert
       expect(catFileExists(twin.peerDir, wtCommitId)).toBe(true);
       expect(catFileExists(twin.oursDir, wtCommitId)).toBe(true);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given the main worktree holding a commit reachable only from its own detached HEAD, When gc runs from a linked worktree', () => {
+    let baseDir: string;
+    let mainCommitId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('main-worktree-retention-from-linked');
+      const c0 = await addCommit(baseDir, 'c0');
+      // `commit-tree` leaves NO ref or reflog trail anywhere — unlike
+      // `checkout`/`branch -f`, which would append an entry to a SHARED
+      // reflog (`refs/heads/main`'s, or `logs/HEAD` swept in as part of
+      // `listReflogs`'s whole-commonDir walk) and incidentally root the
+      // commit through a path this row does not intend to exercise.
+      const treeOid = git(baseDir, 'rev-parse', `${c0}^{tree}`).trim();
+      mainCommitId = git(baseDir, 'commit-tree', treeOid, '-p', c0, '-m', 'main-only').trim();
+      // Overwrite the main worktree's own HEAD directly — bypasses
+      // `checkout`, so no reflog entry is written anywhere either. The
+      // commit is now reachable ONLY through the raw HEAD file's own value.
+      await writeFile(path.join(baseDir, '.git', 'HEAD'), `${mainCommitId}\n`);
+      // A linked worktree, detached at c0 — independent of the commit above.
+      git(baseDir, 'worktree', 'add', '-q', '--detach', 'wt1', c0);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep it — gc roots the main worktree regardless of which worktree it runs from', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'main-worktree-retention-from-linked');
+      const extraConfig = ['gc.pruneExpire=now'];
+      // A plain recursive copy does NOT rewrite `wt1/.git`'s own `gitdir:`
+      // pointer — it still names the ORIGINAL `baseDir`'s absolute admin-dir
+      // path. Every OTHER row in this file sidesteps that by running gc from
+      // the main checkout root and reading `.git/worktrees/wt1/HEAD`
+      // directly (a path that never needs resolving). This row instead runs
+      // FROM `wt1` on both twins, which DOES need that pointer resolved —
+      // `git worktree repair` re-links both twins' copies to themselves.
+      git(twin.peerDir, 'worktree', 'repair', 'wt1');
+      git(twin.oursDir, 'worktree', 'repair', 'wt1');
+
+      // Act — git gc from the peer's linked worktree; tsgit's maintenance
+      // via `openRepository({ cwd })`, the ONLY entry point that discovers a
+      // linked worktree's `gitdir:` pointer and commondir — `createNodeContext`
+      // (every other row's `runOursGc`) assumes `workDir/.git` is a plain
+      // directory and cannot open a worktree path at all.
+      runPeerGc(path.join(twin.peerDir, 'wt1'), extraConfig);
+      await setOursGcConfig(twin.oursDir, extraConfig);
+      const repo = await openRepository({ cwd: path.join(twin.oursDir, 'wt1') });
+      await repo.maintenance({ tasks: ['gc'] });
+      await repo.dispose();
+
+      // Assert
+      expect(catFileExists(twin.peerDir, mainCommitId)).toBe(true);
+      expect(catFileExists(twin.oursDir, mainCommitId)).toBe(true);
       await disposeTwin(twin);
     });
   });
