@@ -28,9 +28,11 @@ benchScenario(
   },
 );
 
-// 200 files keeps the per-iteration fixture build tolerable while giving the
-// staging pool far more independent units than its I/O bound, so pool overlap
-// dominates the measured call instead of the repository open.
+// 200 files gives the staging pool far more independent units than its I/O
+// bound. Like every scenario in this file, the median INCLUDES the
+// per-iteration fixture build (parallelised, but still ~200 file writes plus
+// a repository open) — read deltas as advisory, never as an isolated
+// staging-pool measurement.
 const MANY_FILE_COUNT = 200;
 
 benchScenario(

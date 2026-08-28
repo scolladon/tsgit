@@ -80,29 +80,33 @@ export const buildAddScratch = async (): Promise<ScratchRepo> => {
   return scratch;
 };
 
+const NESTED_DIR_COUNT = 8;
+const PAYLOAD_REPEAT = 8;
+
 /**
- * Many unstaged files spread across nested directories — the shape where
- * `add --all`'s bounded hashing/staging pool actually overlaps work. The
- * two-file scratch above is dominated by repository open + scratch build, so
- * pool wins are invisible there; this fixture puts enough independent
- * hash-and-write units on the pool for the concurrency to show in the
- * measured call.
+ * Many unstaged files spread across nested directories — enough independent
+ * hash-and-write units for `add --all`'s bounded staging pool to overlap
+ * work. The fixture writes land in parallel so the build costs wall-clock
+ * proportional to the pool, not one round trip per file.
  */
 export const buildAddManyScratch = async (fileCount: number): Promise<ScratchRepo> => {
   const scratch = await newScratch();
   const { cwd } = scratch;
-  const dirCount = 8;
-  for (let dir = 0; dir < dirCount; dir += 1) {
-    await mkdir(path.join(cwd, `dir${dir}`, 'nested'), { recursive: true });
-  }
-  for (let i = 0; i < fileCount; i += 1) {
-    const dir = `dir${i % dirCount}`;
-    const leaf = i % 2 === 0 ? dir : path.join(dir, 'nested');
-    await writeFile(
-      path.join(cwd, leaf, `f${i.toString().padStart(4, '0')}.txt`),
-      `payload ${i}\n`.repeat(8),
-    );
-  }
+  await Promise.all(
+    Array.from({ length: NESTED_DIR_COUNT }, (_, dir) =>
+      mkdir(path.join(cwd, `dir${dir}`, 'nested'), { recursive: true }),
+    ),
+  );
+  await Promise.all(
+    Array.from({ length: fileCount }, (_, i) => {
+      const dir = `dir${i % NESTED_DIR_COUNT}`;
+      const leaf = i % 2 === 0 ? dir : path.join(dir, 'nested');
+      return writeFile(
+        path.join(cwd, leaf, `f${i.toString().padStart(4, '0')}.txt`),
+        `payload ${i}\n`.repeat(PAYLOAD_REPEAT),
+      );
+    }),
+  );
   return scratch;
 };
 
