@@ -129,6 +129,21 @@ describe('parseApproxidate', () => {
         });
       });
     });
+
+    describe('Given an epoch value exactly at Number.MAX_SAFE_INTEGER', () => {
+      describe('When parsing', () => {
+        it('Then it is accepted — the ceiling is inclusive', () => {
+          // Arrange
+          const input = '@9007199254740991';
+
+          // Act
+          const result = parseApproxidate(input, NOW);
+
+          // Assert
+          expect(result).toBe(9_007_199_254_740_991);
+        });
+      });
+    });
   });
 
   describe('ISO absolute forms', () => {
