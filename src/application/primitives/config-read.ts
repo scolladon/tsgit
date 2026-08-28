@@ -169,6 +169,7 @@ interface CachedConfigEntry {
 /** Sentinel `mtimeKey` for "the config file does not exist" — distinct from
  *  any real `mtimeMs:size` pair, so a file that is CREATED between two calls
  *  is never mistaken for the absent state it replaces. */
+// Stryker disable next-line StringLiteral: equivalent — a real mtimeKey is always `${mtimeMs}:${size}` (digits and a colon); '' can never collide with that shape any less than 'absent' does, so the literal sentinel text carries no observable behavior.
 const CONFIG_ABSENT_MTIME_KEY = 'absent';
 
 /**
