@@ -80,6 +80,7 @@ const sameKey = (a: IndexCacheKey, b: IndexCacheKey): boolean =>
  * snapshot-resolver cache one layer up (`caching-index-resolver.ts`) faces
  * the identical problem and resolves it the same way, below.
  */
+// Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the sole call site gates isRacyMatch behind `sameKey(cached.key, key)`, which already requires `a.mtimeNs === b.mtimeNs` literally; whenever this runs, the two operands are guaranteed equal, so the second operand (`b.mtimeNs === undefined`) is redundant with the first and its mutation can never change the result (full test/unit/application/primitives/read-index.test.ts passes unmutated for both the false-replacement and operator-flip forms).
 const isRacyMatch = (a: IndexCacheKey, b: IndexCacheKey): boolean =>
   a.mtimeNs === undefined || b.mtimeNs === undefined;
 

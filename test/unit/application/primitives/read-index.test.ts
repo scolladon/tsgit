@@ -607,6 +607,57 @@ describe('readIndex', () => {
     });
   });
 
+  describe('Given the stat key collides (no nanosecond precision) and the trailer readSlice comes back shorter than requested (racing truncation)', () => {
+    describe('When readIndex is called again', () => {
+      it('Then the length mismatch is treated as a trailer miss and the file is re-read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const frozenStat = await base.fs.stat('/repo/.git/index');
+        const { ctx, count } = trackRead(withFrozenStat(base, frozenStat));
+        await readIndex(ctx);
+        const baseReadSlice = ctx.fs.readSlice;
+        const shortSliceCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) =>
+              (await baseReadSlice(path, offset, length)).slice(1),
+          },
+        };
+
+        // Act
+        await readIndex(shortSliceCtx);
+
+        // Assert
+        expect(count()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a stat that reports a size far smaller than the real trailer length, pinned identically across both reads', () => {
+    describe('When readIndex is called again', () => {
+      it('Then the undersized-trailer guard forces a re-read rather than trusting the cache', async () => {
+        // Arrange — loadIndex reads the REAL file bytes regardless of the
+        // (frozen, understated) stat.size, so the first call still caches a
+        // genuine trailerSha; the second call's trailerStillMatches then sees
+        // stat.size < trailerSize and must refuse to trust the cache.
+        const base = await buildSeededContext();
+        await seedEmptyIndex(base);
+        const realStat = await base.fs.stat('/repo/.git/index');
+        const tinyStat = { ...realStat, size: 1 };
+        const { ctx, count } = trackRead(withFrozenStat(base, tinyStat));
+        await readIndex(ctx);
+
+        // Act
+        await readIndex(ctx);
+
+        // Assert
+        expect(count()).toBe(2);
+      });
+    });
+  });
+
   describe('Given an index written through the lock commit path, with BOTH the stat key and the trailer read pinned identical across both reads', () => {
     describe('When readIndex is called again', () => {
       it('Then the next readIndex sees it — invalidation, not the stat/trailer safety nets, drives the re-read', async () => {
