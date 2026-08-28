@@ -90,6 +90,35 @@ describe('createWorkdirEntry', () => {
       });
     });
 
+    describe('When hash() is called and the configured HashService returns bytes that fail the oid-shape check', () => {
+      it('Then it throws INVALID_OBJECT_ID carrying the malformed hex verbatim', async () => {
+        // Arrange — a HashService double that returns something that is
+        // not a valid oid for ctx.hashConfig (wrong width, non-hex).
+        const ctx = await buildSeededContext();
+        const brokenCtx: SeededContext = {
+          ...ctx,
+          hash: { ...ctx.hash, hashHex: async () => 'not-a-valid-hex' },
+        };
+        const content = new TextEncoder().encode('hash me');
+        const { stat } = await seedFile(brokenCtx, 'hash-me.txt', content);
+        const sut = createWorkdirEntry(brokenCtx, makeFileRow('hash-me.txt' as FilePath, stat));
+
+        // Act
+        let result: unknown;
+        try {
+          await sut.hash();
+        } catch (e) {
+          result = e;
+        }
+
+        // Assert
+        expect((result as { data: unknown }).data).toEqual({
+          code: 'INVALID_OBJECT_ID',
+          value: 'not-a-valid-hex',
+        });
+      });
+    });
+
     describe('When readLink() is called on a non-symlink', () => {
       it('Then it throws UNSUPPORTED_OPERATION naming readLink and the actual kind', async () => {
         // Arrange
