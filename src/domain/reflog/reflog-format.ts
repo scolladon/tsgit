@@ -80,6 +80,7 @@ export function parseReflog(text: string, hexLength: 40 | 64): ReadonlyArray<Ref
 export function parseReflogLenient(text: string, hexLength: 40 | 64): ReadonlyArray<ReflogEntry> {
   const entries: ReflogEntry[] = [];
   for (const line of text.split('\n')) {
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `line` always fails parseReflogLine's `meta[hexLength] !== FIELD_SEPARATOR` check (undefined !== ' ') and is caught below exactly like any other malformed line, so skipping this guard changes nothing observable.
     if (line === '') continue;
     try {
       entries.push(parseReflogLine(line, hexLength));
