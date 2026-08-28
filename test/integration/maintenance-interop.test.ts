@@ -90,14 +90,20 @@ const TEMP_LITTER_NAMES = {
   fanoutFresh: 'tmp_obj_fresh',
   packStale: 'tmp_pack_stale',
   packFresh: 'tmp_pack_fresh',
+  /** `tmp_`-prefixed but NOT `tmp_obj_`-prefixed, backdated, planted in the
+   *  fanout dir alone — git's fanout walk only ever recognises its own
+   *  `tmp_obj_` quarantine naming, so this one must survive there even
+   *  though it is well past the cutoff, unlike every `*Stale` name above. */
+  fanoutNonObjStale: 'tmp_zz_stale',
 } as const;
 
 /**
  * Plants an identical stale+fresh `tmp_` litter pair in `objects/` root, the
  * `ab/` fanout dir (created if the repo has no object with that prefix
  * yet), and `objects/pack/` — the exact three scan-scope locations the gc
- * task's removal step covers. `staleEpochSeconds` backdates only the
- * `*Stale` names; the `*Fresh` names keep their real write-time mtime.
+ * task's removal step covers — plus a backdated non-`tmp_obj_` name in the
+ * fanout dir alone. `staleEpochSeconds` backdates every `*Stale` name (and
+ * `fanoutNonObjStale`); the `*Fresh` names keep their real write-time mtime.
  */
 async function plantTempLitter(dir: string, staleEpochSeconds: number): Promise<void> {
   const objectsDir = path.join(dir, '.git', 'objects');
@@ -109,10 +115,12 @@ async function plantTempLitter(dir: string, staleEpochSeconds: number): Promise<
   await writeFile(path.join(objectsDir, TEMP_LITTER_NAMES.rootFresh), '');
   await writeFile(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutStale), '');
   await writeFile(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutFresh), '');
+  await writeFile(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutNonObjStale), '');
   await writeFile(path.join(packDir, TEMP_LITTER_NAMES.packStale), '');
   await writeFile(path.join(packDir, TEMP_LITTER_NAMES.packFresh), '');
   await forceMtime(path.join(objectsDir, TEMP_LITTER_NAMES.rootStale), staleEpochSeconds);
   await forceMtime(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutStale), staleEpochSeconds);
+  await forceMtime(path.join(fanoutDir, TEMP_LITTER_NAMES.fanoutNonObjStale), staleEpochSeconds);
   await forceMtime(path.join(packDir, TEMP_LITTER_NAMES.packStale), staleEpochSeconds);
 }
 
@@ -1250,12 +1258,15 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       // Act
       await runBothGc(twin);
 
-      // Assert — identical survivor set on both twins, and it is exactly
-      // the three *Fresh names (the *Stale trio is gone from both).
+      // Assert — identical survivor set on both twins: the three *Fresh
+      // names (too new to prune) plus `fanoutNonObjStale` (stale, but not
+      // `tmp_obj_`-prefixed, so out of the fanout dir's own scan scope) —
+      // the *Stale trio proper is gone from both.
       const peerSurvivors = await tempLitterSurvivors(twin.peerDir);
       const oursSurvivors = await tempLitterSurvivors(twin.oursDir);
       const expectedSurvivors = [
         TEMP_LITTER_NAMES.fanoutFresh,
+        TEMP_LITTER_NAMES.fanoutNonObjStale,
         TEMP_LITTER_NAMES.packFresh,
         TEMP_LITTER_NAMES.rootFresh,
       ].sort();

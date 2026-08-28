@@ -122,6 +122,25 @@ function installLstatOverrides(ctx: Context): {
   };
 }
 
+/**
+ * Installs a `readdir` override on `ctx.fs`: a registered path throws the
+ * given error instead of listing its real entries. Every other path falls
+ * through to the original implementation.
+ */
+function installReaddirOverrides(ctx: Context): {
+  readonly forceFailure: (path: string, error: unknown) => void;
+} {
+  const original = ctx.fs.readdir.bind(ctx.fs);
+  const failureOverrides = new Map<string, unknown>();
+  vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+    if (failureOverrides.has(path)) throw failureOverrides.get(path);
+    return original(path);
+  });
+  return {
+    forceFailure: (path, error) => failureOverrides.set(path, error),
+  };
+}
+
 /** Every oid a registered pack carries, by its sha — the registry is
  *  refreshed first so a pack written moments ago by the very call under
  *  test is visible. */
@@ -1652,9 +1671,12 @@ describe('maintenance', () => {
 
   describe('Given a tmp_obj_ quarantine litter file sitting in a loose fanout dir', () => {
     describe('When gc runs', () => {
-      it('Then it succeeds, leaves the litter alone, and never crufts it', async () => {
+      it('Then it succeeds and leaves the fresh litter alone — it survives on age, not on gc ignoring tmp_ files, and it is never crufted', async () => {
         // Arrange — git's own quarantine naming for a loose-object write
         // that never completed; not hex, not the right width, never an oid.
+        // Left at its real write-time mtime (no forced backdate), so the
+        // stale-litter scan finds and considers it, but keeps it: it is
+        // newer than the default `gc.pruneExpire` cutoff.
         const ctx = await seedOneCommit();
         const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_XXXXXX`;
         await ctx.fs.write(litterPath, new Uint8Array(0));
@@ -1663,8 +1685,9 @@ describe('maintenance', () => {
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — succeeds without wedging; the litter is never enumerated,
-        // so it is never a cruft candidate and gc leaves it untouched.
+        // Assert — succeeds without wedging; separately, `isLooseObjectSuffix`
+        // keeps this name out of the loose-object universe entirely, so it
+        // is never a cruft candidate either.
         expect(result.tasksRun).toEqual(['gc']);
         expect(await ctx.fs.exists(litterPath)).toBe(true);
       });
@@ -1701,6 +1724,104 @@ describe('maintenance', () => {
         expect(await ctx.fs.exists(rootLitter)).toBe(false);
         expect(await ctx.fs.exists(fanoutLitter)).toBe(false);
         expect(await ctx.fs.exists(packLitter)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a stale tmp_-prefixed file in a fanout dir that is not tmp_obj_-prefixed', () => {
+    describe('When gc runs', () => {
+      it('Then it survives — a fanout dir only scans tmp_obj_ candidates', async () => {
+        // Arrange — git's own fanout walk recognises only its own
+        // loose-object quarantine naming (`tmp_obj_`); a hand-planted
+        // `tmp_`-prefixed name outside that stays untouched there, even
+        // though the same prefix is a candidate at the root and in
+        // objects/pack.
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_zz_stale`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given stale tmp_obj_ files sitting in objects/info and a non-hex two-char directory', () => {
+    describe('When gc runs', () => {
+      it('Then both survive — only a two-hex-digit fanout dir is in scope', async () => {
+        // Arrange — kills a weakened fanout-dir-name regex: neither `info`
+        // nor `zz` (non-hex) is a real fanout prefix, so neither is ever
+        // scanned regardless of the litter's own name or age.
+        const ctx = await seedOneCommit();
+        const infoLitter = `${ctx.layout.gitDir}/objects/info/tmp_obj_info`;
+        const nonHexLitter = `${ctx.layout.gitDir}/objects/zz/tmp_obj_non_hex_dir`;
+        await ctx.fs.write(infoLitter, new Uint8Array(0));
+        await ctx.fs.write(nonHexLitter, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(infoLitter, CUTOFF - 100);
+        forceMtimeSeconds(nonHexLitter, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(infoLitter)).toBe(true);
+        expect(await ctx.fs.exists(nonHexLitter)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a directory (not a file) named tmp_dir_stale sitting in objects/pack', () => {
+    describe('When gc runs', () => {
+      it('Then it is left alone — only files are litter candidates', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterDir = `${packDirOf(ctx)}/tmp_dir_stale`;
+        await ctx.fs.mkdir(litterDir);
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterDir, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(litterDir)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tmp_ litter file whose mtime exactly equals the cutoff', () => {
+    describe('When gc runs', () => {
+      it('Then it is removed — the survival rule is strictly greater-than', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_at_cutoff`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, CUTOFF);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(litterPath)).toBe(false);
       });
     });
   });
@@ -1785,8 +1906,12 @@ describe('maintenance', () => {
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert
+        // Assert — the run succeeds, and the file itself (still really on
+        // disk — only its `lstat` was mocked to lie about vanishing) was
+        // never removed: the race is tolerated by skipping it, not by some
+        // path that deletes it anyway.
         expect(result.tasksRun).toEqual(['gc']);
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
       });
     });
   });
@@ -1814,6 +1939,118 @@ describe('maintenance', () => {
 
         // Assert
         expect(caught).toBe(eacces);
+      });
+    });
+  });
+
+  describe('Given the objects root readdir fails with EACCES', () => {
+    describe('When gc runs', () => {
+      it('Then gc still succeeds — the root location is skipped, not fatal', async () => {
+        // Arrange — git's own remove_temporary_files warns to stderr and
+        // continues on an opendir fault at the root/pack locations; tsgit
+        // has no warning channel, so the location is silently skipped.
+        const ctx = await seedOneCommit();
+        const objectsRoot = `${commonGitDir(ctx)}/objects`;
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const { forceFailure } = installReaddirOverrides(ctx);
+        forceFailure(objectsRoot, eacces);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe('Given a stale tmp_ litter file in objects/pack whose own lstat fails with EACCES', () => {
+    describe('When gc runs', () => {
+      it('Then gc still succeeds and the file is skipped, not removed', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${packDirOf(ctx)}/tmp_pack_eacces`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const { forceFailure } = installLstatOverrides(ctx);
+        forceFailure(litterPath, eacces);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a fanout dir readdir fails with EACCES', () => {
+    describe('When gc runs', () => {
+      it('Then it rethrows the fault identically rather than swallowing it', async () => {
+        // Arrange — only the fanout iteration keeps the strict, non-ENOENT
+        // rethrow; root and pack readdir faults are absorbed above. The
+        // dir exists (empty) for the earlier loose-object count scan's own
+        // read; the second read — the stale-litter scan's own — is the one
+        // faulted, isolating the assertion to that function's behavior.
+        const ctx = await seedOneCommit();
+        const fanoutDir = `${ctx.layout.gitDir}/objects/ab`;
+        await ctx.fs.mkdir(fanoutDir);
+        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const original = ctx.fs.readdir.bind(ctx.fs);
+        let fanoutReads = 0;
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          if (path === fanoutDir) {
+            fanoutReads += 1;
+            if (fanoutReads > 1) throw eacces;
+          }
+          return original(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(eacces);
+      });
+    });
+  });
+
+  describe('Given a fanout dir readdir fails with FILE_NOT_FOUND', () => {
+    describe('When gc runs', () => {
+      it('Then gc still succeeds — an absent fanout dir is tolerated', async () => {
+        // Arrange — the fanout dir exists (empty) when the earlier
+        // loose-object count scan reads it once; by the time the
+        // stale-litter scan's own read reaches it, it has vanished — the
+        // same concurrent-removal race the ENOENT tolerance exists for.
+        const ctx = await seedOneCommit();
+        const fanoutDir = `${ctx.layout.gitDir}/objects/ab`;
+        await ctx.fs.mkdir(fanoutDir);
+        const original = ctx.fs.readdir.bind(ctx.fs);
+        let fanoutReads = 0;
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          if (path === fanoutDir) {
+            fanoutReads += 1;
+            if (fanoutReads > 1) throw fileNotFound(fanoutDir);
+          }
+          return original(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
       });
     });
   });
@@ -1846,12 +2083,50 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given stale tmp_ litter and a pack-write failure during the same gc run', () => {
+    describe('When gc runs', () => {
+      it('Then the litter survives — removal runs after repack, not before it', async () => {
+        // Arrange — mirrors git's own sequencing: `remove_temporary_files`
+        // sits at the tail of the `prune` step, strictly after `repack` has
+        // finished; a repack failure must leave existing litter untouched,
+        // the same way a failed `git gc` does.
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_pre_write`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const CUTOFF = 1_700_000_000;
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const packWriteFailure = new Error('simulated pack-write failure');
+        const spy = vi
+          .spyOn(writePackArtifactsMod, 'writePackArtifactsViaQuarantine')
+          .mockRejectedValue(packWriteFailure);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert
+        expect(caught).toBe(packWriteFailure);
+        expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
   describe('Given auto: true, a loose count below gc.auto, and a stale tmp_ litter file', () => {
     describe('When maintenance runs the gc task', () => {
       it('Then the litter survives — a declined run performs no cleanup, matching a declined `git gc --auto`', async () => {
-        // Arrange — pinned against git 2.55.0: a `git gc --auto` decline
-        // (loose count at or below `gc.auto`'s threshold) performs no work
-        // of any kind, tmp_ litter cleanup included.
+        // Arrange — a `git gc --auto` decline (loose count at or below
+        // `gc.auto`'s threshold) performs no work of any kind, tmp_ litter
+        // cleanup included.
         const ctx = await seedOneCommit();
         const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_declined`;
         await ctx.fs.write(litterPath, new Uint8Array(0));
@@ -1866,6 +2141,29 @@ describe('maintenance', () => {
         // Assert
         expect(result.tasksRun).toEqual([]);
         expect(await ctx.fs.exists(litterPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given gc.pruneExpire=never with stale tmp_ litter present', () => {
+    describe('When gc runs', () => {
+      it('Then it never reads the objects root at all — the scan is skipped entirely', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_never_scan`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(litterPath, 1);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const objectsRoot = `${commonGitDir(ctx)}/objects`;
+        const readdirSpy = vi.spyOn(ctx.fs, 'readdir');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(readdirSpy.mock.calls.some(([path]) => path === objectsRoot)).toBe(false);
       });
     });
   });

@@ -95,20 +95,64 @@ async function shouldDeclineForAuto(
 }
 
 const TEMP_FILE_PREFIX = 'tmp_';
+/** A fanout dir's own quarantine naming is narrower than root/pack's — git's
+ *  fanout walk only ever writes (and only ever recognises) this prefix; a
+ *  hand-placed `tmp_`-prefixed name that isn't also `tmp_obj_`-prefixed is
+ *  not gc's litter to remove there, even though the broader `tmp_` prefix
+ *  is in scope at the root and in `objects/pack/`. */
+const FANOUT_TEMP_FILE_PREFIX = 'tmp_obj_';
 const FANOUT_DIR_NAME = /^[0-9a-f]{2}$/;
+
+/** Whether an individual candidate's own lstat/rm fault aborts the run
+ *  (`'strict'`, fanout dirs) or is skipped silently (`'tolerant'`,
+ *  root/pack) — see `removeIfStaleTempFile`. */
+type TempFileFaultPolicy = 'strict' | 'tolerant';
 
 /** git's own quarantine naming for an in-progress loose-object, pack or
  *  cruft-artefact write — the same naming `isLooseObjectSuffix`
  *  (`enumerate-objects.ts`) filters OUT of the loose-object universe.
  *  Directories never qualify: only a stray FILE is litter. */
-function isTempFileEntry(entry: DirEntry): boolean {
-  return entry.isFile && entry.name.startsWith(TEMP_FILE_PREFIX);
+function isTempFileEntry(entry: DirEntry, prefix: string): boolean {
+  return entry.isFile && entry.name.startsWith(prefix);
 }
 
-/** `tmp_`-prefixed file paths sitting directly inside `dir` — tolerant of
- *  `dir` itself being absent (an as-yet-unused fanout prefix, or a
- *  not-yet-created `objects/pack`). */
-async function listTempFileCandidates(ctx: Context, dir: string): Promise<ReadonlyArray<string>> {
+/** `readdir` that tolerates ANY fault — a missing dir, `EACCES`, or
+ *  anything else simply yields no entries. Mirrors git's own
+ *  `remove_temporary_files`, which warns to stderr and moves on rather than
+ *  aborting; tsgit has no warning channel, so the location is silently
+ *  skipped instead. Used for `objects/` root and `objects/pack/` only — a
+ *  fanout dir keeps the stricter, ENOENT-only tolerance below. */
+async function readdirTolerant(ctx: Context, dir: string): Promise<ReadonlyArray<DirEntry>> {
+  try {
+    return await ctx.fs.readdir(dir);
+  } catch {
+    return [];
+  }
+}
+
+/** `prefix`-matching file paths sitting directly inside `dir`, via the
+ *  fault-tolerant `readdirTolerant` above — the root/pack scan scope. */
+async function listTempFileCandidatesTolerant(
+  ctx: Context,
+  dir: string,
+  prefix: string,
+): Promise<ReadonlyArray<string>> {
+  const entries = await readdirTolerant(ctx, dir);
+  return entries
+    .filter((entry) => isTempFileEntry(entry, prefix))
+    .map((entry) => `${dir}/${entry.name}`);
+}
+
+/** `prefix`-matching file paths sitting directly inside a FANOUT `dir` —
+ *  tolerant only of `dir` itself being absent (an as-yet-unused fanout
+ *  prefix, or one that vanished between the root listing that found it and
+ *  this call); every other opendir/readdir fault rethrows, mirroring git's
+ *  fanout walk hard-failing on anything but ENOENT. */
+async function listTempFileCandidatesStrict(
+  ctx: Context,
+  dir: string,
+  prefix: string,
+): Promise<ReadonlyArray<string>> {
   let entries: ReadonlyArray<DirEntry>;
   try {
     entries = await ctx.fs.readdir(dir);
@@ -116,59 +160,98 @@ async function listTempFileCandidates(ctx: Context, dir: string): Promise<Readon
     if (!isFileNotFound(error)) throw error;
     return [];
   }
-  return entries.filter(isTempFileEntry).map((entry) => `${dir}/${entry.name}`);
+  return entries
+    .filter((entry) => isTempFileEntry(entry, prefix))
+    .map((entry) => `${dir}/${entry.name}`);
+}
+
+/** Idempotent, fault-swallowing single-file removal for the `'tolerant'`
+ *  policy — unlike `rmTolerant`, ANY failure (not just a missing file) is
+ *  absorbed here, since git's own root/pack cleanup warns and continues
+ *  rather than aborting the run. */
+async function rmSilently(ctx: Context, path: string): Promise<void> {
+  try {
+    await ctx.fs.rm(path);
+  } catch {
+    // intentionally swallowed — see doc above.
+  }
 }
 
 /** Removes `path` when its own mtime is at or before `cutoff` — the same
  *  `mtime > cutoff` survival rule `partitionByCutoff` applies to cruft
- *  candidates. Tolerant of `path` vanishing between the listing that found
- *  it and this call (a concurrent process finishing the very quarantine
- *  write this litter belonged to); every other fault rethrows. */
-async function removeIfStaleTempFile(ctx: Context, path: string, cutoff: number): Promise<void> {
+ *  candidates. `faultPolicy` mirrors git's own split: `'tolerant'`
+ *  (root/pack) absorbs ANY lstat/rm fault — vanished, `EACCES`, … — the
+ *  same unconditional tolerance git's own per-file removal applies there;
+ *  `'strict'` (fanout) still tolerates the file vanishing between the
+ *  listing that found it and this call (a concurrent process finishing the
+ *  very quarantine write this litter belonged to), but rethrows every
+ *  other fault. */
+async function removeIfStaleTempFile(
+  ctx: Context,
+  path: string,
+  cutoff: number,
+  faultPolicy: TempFileFaultPolicy,
+): Promise<void> {
   let stat: FileStat;
   try {
     stat = await ctx.fs.lstat(path);
   } catch (error) {
-    if (!isFileNotFound(error)) throw error;
-    return;
+    if (faultPolicy === 'tolerant' || isFileNotFound(error)) return;
+    throw error;
   }
   const mtimeSeconds = Math.floor(stat.mtimeMs / 1000);
   if (mtimeSeconds > cutoff) return;
+  if (faultPolicy === 'tolerant') {
+    await rmSilently(ctx, path);
+    return;
+  }
   await rmTolerant(ctx, path);
 }
 
 /**
- * Step 1c: deletes stale `tmp_`-prefixed quarantine litter from every
- * location git itself writes it to — `objects/` root, each existing fanout
- * dir, and `objects/pack/`. Pinned against git 2.55.0: this cleanup runs on
- * every gc invocation that actually PROCEEDS — including one whose
- * repack/prune have no work at all (an already fully-packed repository) —
- * but a genuine `gc.auto` decline (`shouldDeclineForAuto` returning `true`)
- * performs NO cleanup of any kind, litter included (probed: stale litter
- * left untouched across a declined `--auto` run). Called from `runGcTask`
- * strictly AFTER that gate and BEFORE every write this run performs, so it
- * can never race the run's own quarantine files into existence — even if it
- * could, a freshly-written file's mtime keeps it on the "survivor" side of
- * this same age gate. `cutoff` is the identical `gc.pruneExpire`-derived
- * value the cruft-pack survival rule uses: `never` resolves to
- * `-Infinity`, under which `mtimeSeconds > cutoff` is always true, so
- * nothing is ever removed — no separate branch needed for that case.
+ * Deletes stale quarantine litter from every location git itself writes it
+ * to — `objects/` root, each existing fanout dir, and `objects/pack/` —
+ * once this run has actually proceeded past the `gc.auto` gate (a decline
+ * performs no cleanup of any kind, litter included). The scan-scope prefix
+ * and fault tolerance both split by location: root and pack treat any
+ * `tmp_`-prefixed file as a candidate and absorb any opendir/readdir/
+ * lstat/rm fault along the way (no warning channel to mirror git's stderr);
+ * a fanout dir only treats `tmp_obj_`-prefixed names as candidates, and its
+ * own opendir/readdir still hard-fails on anything but the directory being
+ * absent — git's fanout walk is the strict one.
+ *
+ * Called from `runGcTask` after every pack write, verify, prune and
+ * retirement step this run performs — the same position git's own
+ * `remove_temporary_files` occupies, at the tail of the `prune` step,
+ * strictly after `repack` has finished consolidating and retiring packs.
+ * A run that never reaches that point (an aborted pack write, a repack
+ * failure) leaves existing litter untouched, exactly as a failed `git gc`
+ * does. `cutoff` is the identical `gc.pruneExpire`-derived value the
+ * cruft-pack survival rule uses: `never` resolves to `-Infinity`, under
+ * which every candidate would survive the age gate anyway, so the scan
+ * itself is skipped rather than run for nothing.
  */
 async function removeStaleTempFiles(ctx: Context, packDir: string, cutoff: number): Promise<void> {
+  if (cutoff === Number.NEGATIVE_INFINITY) return;
+
   const objectsRoot = `${commonGitDir(ctx)}/objects`;
-  const rootEntries = await ctx.fs.readdir(objectsRoot);
+  const rootEntries = await readdirTolerant(ctx, objectsRoot);
   const rootCandidates = rootEntries
-    .filter(isTempFileEntry)
+    .filter((entry) => isTempFileEntry(entry, TEMP_FILE_PREFIX))
     .map((entry) => `${objectsRoot}/${entry.name}`);
   const fanoutDirs = rootEntries
     .filter((entry) => entry.isDirectory && FANOUT_DIR_NAME.test(entry.name))
     .map((entry) => `${objectsRoot}/${entry.name}`);
-  const perDirCandidates = await boundedMapFor(ctx, 'ioBound', [...fanoutDirs, packDir], (dir) =>
-    listTempFileCandidates(ctx, dir),
+  const packCandidates = await listTempFileCandidatesTolerant(ctx, packDir, TEMP_FILE_PREFIX);
+  const fanoutCandidateLists = await boundedMapFor(ctx, 'ioBound', fanoutDirs, (dir) =>
+    listTempFileCandidatesStrict(ctx, dir, FANOUT_TEMP_FILE_PREFIX),
   );
-  const candidates = [...rootCandidates, ...perDirCandidates.flat()];
-  await boundedMapFor(ctx, 'ioBound', candidates, (path) =>
-    removeIfStaleTempFile(ctx, path, cutoff),
+
+  await boundedMapFor(ctx, 'ioBound', [...rootCandidates, ...packCandidates], (path) =>
+    removeIfStaleTempFile(ctx, path, cutoff, 'tolerant'),
+  );
+  await boundedMapFor(ctx, 'ioBound', fanoutCandidateLists.flat(), (path) =>
+    removeIfStaleTempFile(ctx, path, cutoff, 'strict'),
   );
 }
 
@@ -694,11 +777,6 @@ export async function runGcTask(
   const cruftPacksEnabled = config.gc?.cruftPacks ?? true;
   const cutoff = expiryCutoff(config.gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE, {});
 
-  // --- step 1c: stale tmp_ litter removal — runs whenever gc proceeds past
-  // the auto gate above, before every write below (see removeStaleTempFiles'
-  // own doc for the git-parity placement rationale).
-  await removeStaleTempFiles(ctx, packDir, cutoff);
-
   // --- step 1b: classify every pack, lstat every pack, before any write ---
   const fileNames = await registry.fileNames();
   const classification = classifyPackFiles(allPacksBefore, fileNames);
@@ -847,6 +925,12 @@ export async function runGcTask(
     cruftShasToRetire,
     promisorPacksToRetire,
   );
+
+  // --- stale tmp_ litter removal — runs after every pack write and
+  // retirement this run performs, the same tail-of-prune position git's own
+  // `remove_temporary_files` occupies (see removeStaleTempFiles' own doc for
+  // the full placement rationale).
+  await removeStaleTempFiles(ctx, packDir, cutoff);
 
   // --- step 11: invalidate, refresh, packBytesAfter ---
   refreshPackRegistry(ctx);
