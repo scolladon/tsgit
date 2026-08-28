@@ -432,6 +432,7 @@ export const updateConfigEntries = async (
   );
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
+  // Stryker disable next-line CallExpression: equivalent — invalidateConfigCache already delegates to invalidateScopedConfigCache; this explicit pairing documents the contract but changes no observable cache state.
   invalidateScopedConfigCache(ctx);
 };
 
@@ -560,6 +561,7 @@ export const updateConfigOperations = async (
   const updated = ops.reduce(applyConfigOpInText, original);
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
+  // Stryker disable next-line CallExpression: equivalent — invalidateConfigCache already delegates to invalidateScopedConfigCache; this explicit pairing documents the contract but changes no observable cache state.
   invalidateScopedConfigCache(ctx);
 };
 
