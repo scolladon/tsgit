@@ -409,6 +409,45 @@ describe('clone', () => {
     });
   });
 
+  describe('Given a peer advertising a different object-format and an instrumented session', () => {
+    describe('When clone adopts the peer algorithm', () => {
+      it('Then the derived pack context reuses the ORIGINAL session identity — `session` is read exactly twice (the spread copy, then the keep-session ternary), never minted fresh', async () => {
+        // Arrange — `deriveContext`'s `{ ...ctx, ...changes, session: freshSession ? createSession() : ctx.session }`
+        // reads `ctx.session` once via the object-spread copy and, ONLY when
+        // `keepSessionAcrossHashChange` licenses reuse, a second time via the
+        // ternary's `ctx.session` branch. A mutant that drops or falsifies
+        // that option forces `createSession()` instead, so the ternary never
+        // re-reads `ctx.session` — exactly one read instead of two.
+        const ctx = createMemoryContext();
+        const sourceCtx = createMemoryContext({ algorithm: 'sha256' });
+        const { packBytes, blobId } = await buildPackFromSingleBlob(
+          sourceCtx,
+          'session-identity blob\n',
+        );
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+        let sessionReads = 0;
+        const trackingCtx: Context = new Proxy(networkCtx, {
+          get(target, prop, receiver) {
+            if (prop === 'session') sessionReads += 1;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act
+        await clone(trackingCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(sessionReads).toBe(2);
+      });
+    });
+  });
+
   describe('Given depth: 1 and a server emitting a shallow block', () => {
     describe('When clone', () => {
       it('Then writes.git/shallow with the boundary oid', async () => {
