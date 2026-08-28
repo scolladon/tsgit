@@ -9,7 +9,12 @@ import {
   walkPackEntries,
 } from '../../../../src/application/primitives/fetch-pack.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
-import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/index.js';
+import {
+  fileExists,
+  fileNotFound,
+  permissionDenied,
+  TsgitError,
+} from '../../../../src/domain/index.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
@@ -2909,6 +2914,692 @@ describe('walkPackEntries', () => {
         const tsErr = caught as TsgitError;
         expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
         expect((tsErr.data as { reason: string }).reason).toContain(baseId);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// quarantine tmp-name shape and claim-loop edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('quarantine tmp-name claiming', () => {
+  describe('Given a normal (non-colliding) quarantine claim', () => {
+    describe('When fetchPack drains a pack into quarantine', () => {
+      it("Then the claimed name matches git's tmp_pack_ + 6-char alphabet shape exactly", async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'shape check\n');
+        let claimedPath: string | undefined;
+        const ctx = withFsPatch(baseCtx, {
+          writeExclusive: async (path: string, data: Uint8Array): Promise<void> => {
+            claimedPath ??= path;
+            return baseCtx.fs.writeExclusive(path, data);
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        await fetchPack(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — exactly `tmp_pack_` + 6 alphabet characters, no more, no
+        // fewer: a mutant that drops the suffix loop, off-by-ones it, or
+        // prepends stray text all break this exact shape.
+        expect(claimedPath).toMatch(/\/tmp_pack_[A-Za-z0-9]{6}$/);
+      });
+    });
+  });
+
+  describe('Given every candidate name colliding (a permanently occupied quarantine directory)', () => {
+    describe('When fetchPack drains a pack into quarantine', () => {
+      it('Then it gives up after exactly MAX_QUARANTINE_NAME_ATTEMPTS tries and reports FILE_EXISTS for this pack dir', async () => {
+        // Arrange — every claim attempt collides; proves the retry loop
+        // both terminates (an `attempt -= 1` mutant would spin forever
+        // instead) and reports the pack directory it was claiming inside.
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'always collides\n');
+        let writeExclusiveCalls = 0;
+        const ctx = withFsPatch(baseCtx, {
+          writeExclusive: async (): Promise<void> => {
+            writeExclusiveCalls += 1;
+            throw fileExists('colliding');
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(writeExclusiveCalls).toBe(8);
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; path?: string };
+        expect(data.code).toBe('FILE_EXISTS');
+        expect(data.path).toBe(`${packDir(ctx)}/tmp_pack_<random>`);
+      });
+    });
+  });
+
+  describe('Given the exclusive-create call fails with something other than FILE_EXISTS', () => {
+    describe('When fetchPack drains a pack into quarantine', () => {
+      it('Then it propagates that failure immediately instead of retrying', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'non-collision fault\n');
+        let writeExclusiveCalls = 0;
+        const ctx = withFsPatch(baseCtx, {
+          writeExclusive: async (): Promise<void> => {
+            writeExclusiveCalls += 1;
+            throw permissionDenied('quarantine claim');
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — a single attempt, not a retry loop swallowing the fault
+        expect(writeExclusiveCalls).toBe(1);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// disk-walk retry classification — raw (non-TsgitError) rejections and the
+// switch's default arm
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('disk-walk retry classification', () => {
+  describe('Given the entry decode rejects with a raw `undefined` (not an Error object)', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it("Then the raw rejection propagates unchanged — never crashes reading `.data` off a primitive (typeof undefined !== 'object')", async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'raw undefined\n');
+        const ctx = {
+          ...baseCtx,
+          compressor: {
+            ...baseCtx.compressor,
+            streamInflate: (): Promise<never> => Promise.reject(undefined),
+          },
+        };
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let threw = false;
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          threw = true;
+          caught = err;
+        }
+
+        // Assert
+        expect(threw).toBe(true);
+        expect(caught).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given the entry decode rejects with a raw `null`', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it("Then the raw rejection propagates unchanged — `typeof null === 'object'` needs its own explicit null check", async () => {
+        // Arrange — `typeof null === 'object'` is the JS quirk the guard's
+        // second half exists for; without it this falls through to `(null).data`.
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'raw null\n');
+        const ctx = {
+          ...baseCtx,
+          compressor: {
+            ...baseCtx.compressor,
+            streamInflate: (): Promise<never> => Promise.reject(null),
+          },
+        };
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let threw = false;
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          threw = true;
+          caught = err;
+        }
+
+        // Assert
+        expect(threw).toBe(true);
+        expect(caught).toBeNull();
+      });
+    });
+  });
+
+  describe('Given a large entry (window not yet at trailerStart) whose decode rejects with a raw `undefined`', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then an undefined reason is treated as not-retryable — no growth is attempted', async () => {
+        // Arrange — small packs mask this: their single window already
+        // reaches trailerStart, so `growOrRethrow`'s own cap rethrows
+        // immediately regardless of the retryable classification. A big
+        // entry is required to prove the classification itself — not the
+        // cap guard — is what stops growth here.
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 424_141);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        let readSliceCalls = 0;
+        const ctx = {
+          ...withFsPatch(baseCtx, {
+            readSlice: async (
+              path: string,
+              offset: number,
+              length: number,
+            ): Promise<Uint8Array> => {
+              readSliceCalls += 1;
+              return baseCtx.fs.readSlice(path, offset, length);
+            },
+          }),
+          compressor: {
+            ...baseCtx.compressor,
+            streamInflate: (): Promise<never> => Promise.reject(undefined),
+          },
+        };
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        let threw = false;
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          threw = true;
+          caught = err;
+        }
+
+        // Assert — a mutant treating an undefined reason as retryable would
+        // grow the window (more readSlice calls) before eventually failing
+        // the same way; this pins it to exactly one decode attempt.
+        expect(threw).toBe(true);
+        expect(caught).toBeUndefined();
+        expect(readSliceCalls).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a large entry whose decode fails with DECOMPRESS_FAILED but a non-truncation reason', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then it is not classified retryable — only the exact truncation reason grows the window', async () => {
+        // Arrange — same big-entry shape as the truncation-retry pin above,
+        // but the injected failure's reason is genuine corruption wording,
+        // never equal to RETRYABLE_DECOMPRESS_REASON. A mutant that treats
+        // every DECOMPRESS_FAILED as retryable would still grow the window
+        // before ultimately failing the same way.
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 616_161);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        let readSliceCalls = 0;
+        const ctx = {
+          ...withFsPatch(baseCtx, {
+            readSlice: async (
+              path: string,
+              offset: number,
+              length: number,
+            ): Promise<Uint8Array> => {
+              readSliceCalls += 1;
+              return baseCtx.fs.readSlice(path, offset, length);
+            },
+          }),
+          compressor: {
+            ...baseCtx.compressor,
+            streamInflate: (): Promise<never> =>
+              Promise.reject({
+                data: { code: 'DECOMPRESS_FAILED', reason: 'distance exceeds output' },
+              }),
+          },
+        };
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(readSliceCalls).toBe(2);
+        expect((caught as { data: { code: string; reason: string } }).data.reason).toBe(
+          'distance exceeds output',
+        );
+      });
+    });
+  });
+
+  describe('Given a large entry whose decode fails with an unrelated error code carrying its own reason', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then the switch default arm treats it as not retryable — no growth is attempted', async () => {
+        // Arrange — a big entry so the held window does NOT already reach
+        // trailerStart (the guard in `growOrRethrow` that would otherwise
+        // mask this classification regardless of the mutant under test).
+        // The injected failure carries a real `reason` string and a code
+        // that is neither INVALID_PACK_ENTRY nor DECOMPRESS_FAILED, landing
+        // squarely on the switch's `default` arm.
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 909_090);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        let readSliceCalls = 0;
+        let streamInflateCalls = 0;
+        const ctx = {
+          ...withFsPatch(baseCtx, {
+            readSlice: async (
+              path: string,
+              offset: number,
+              length: number,
+            ): Promise<Uint8Array> => {
+              readSliceCalls += 1;
+              return baseCtx.fs.readSlice(path, offset, length);
+            },
+          }),
+          compressor: {
+            ...baseCtx.compressor,
+            streamInflate: (): Promise<never> => {
+              streamInflateCalls += 1;
+              return Promise.reject({
+                data: { code: 'PERMISSION_DENIED', reason: 'synthetic default-arm probe' },
+              });
+            },
+          },
+        };
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — exactly one decode attempt and the pack-header read plus
+        // one entry window: a mutant treating this as retryable would grow
+        // the window and try again instead of surfacing it immediately.
+        expect(streamInflateCalls).toBe(1);
+        expect(readSliceCalls).toBe(2);
+        expect((caught as { data: { code: string } }).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given an entry header split across a too-small first window (INVALID_PACK_ENTRY, "unexpected end of header")', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then it is classified retryable by prefix and a grown window resolves it', async () => {
+        // Arrange — a blob just over 16 bytes forces a 2-byte varint entry
+        // header (continuation bit set on the first byte); truncating the
+        // FIRST window response to a single byte strands the parse mid
+        // varint with "unexpected end of header". The retry then gets the
+        // real, full bytes and succeeds.
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(
+          baseCtx,
+          'a varint-forcing header content, over sixteen bytes\n',
+        );
+        let readSliceCalls = 0;
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            readSliceCalls += 1;
+            const real = await baseCtx.fs.readSlice(path, offset, length);
+            // Call 1 = pack header (12 bytes) — pass through untouched.
+            // Call 2 = the entry's initial window — strand it at 1 byte.
+            // Call 3+ = the growth retry — pass through in full.
+            return readSliceCalls === 2 ? real.subarray(0, 1) : real;
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — resolved cleanly via the grown window; a mutant that
+        // rejects this reason as non-retryable would instead surface
+        // INVALID_PACK_ENTRY here.
+        expect(result.objectCount).toBe(1);
+        expect(readSliceCalls).toBeGreaterThan(2);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// disk-walk window bookkeeping — trailer-bound clamp and same-anchor reuse
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('disk-walk window bookkeeping', () => {
+  describe('Given a single entry within one entryHeader/inflateEntry pair (no growth needed)', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then entryHeader and inflateEntry share the SAME window fetch for that entry — exactly one window read, not two', async () => {
+        // Arrange — `entryHeader(offset)` and `inflateEntry(offset, ...)`
+        // are called with the identical `offset`. The second call must
+        // REUSE the window the first call just fetched (anchor === held
+        // window's start, satisfied by `>=`); a stricter `>` would refetch.
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'reuse at same anchor\n');
+        let readSliceCalls = 0;
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            readSliceCalls += 1;
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — pack header (12 bytes) + exactly one shared entry window
+        expect(result.objectCount).toBe(1);
+        expect(readSliceCalls).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a multi-window pack and its true entry offsets', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then every entry offset falls inside a window actually fetched to cover it', async () => {
+        // Arrange — a window-reuse check that always returns "covered"
+        // regardless of the held window's real extent would let a later
+        // entry read past the window it was actually given; this proves
+        // each entry's true offset was served by a read that really spans it.
+        const baseCtx = createMemoryContext();
+        const built = await buildMultiWindowPack(baseCtx);
+        const calls: Array<{ offset: number; length: number }> = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            calls.push({ offset, length });
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(result.objectCount).toBe(MULTI_WINDOW_ENTRY_COUNT);
+        for (const offset of built.offsets) {
+          const covered = calls.some((c) => c.offset <= offset && offset < c.offset + c.length);
+          expect(covered).toBe(true);
+        }
+      });
+    });
+  });
+
+  describe('Given a multi-window pack (a fresh, non-growth window crossing near the end)', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then no window fetch ever requests bytes past trailerStart', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const built = await buildMultiWindowPack(baseCtx);
+        const trailerStart = built.packBytes.length - baseCtx.hash.digestLength;
+        const calls: Array<{ offset: number; length: number }> = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            calls.push({ offset, length });
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — the 12-byte pack-header read is exempt (fixed, unrelated
+        // to window sizing); every window fetch must stop at trailerStart.
+        expect(result.objectCount).toBe(MULTI_WINDOW_ENTRY_COUNT);
+        const windowCalls = calls.filter((c) => !(c.offset === 0 && c.length === 12));
+        expect(windowCalls.length).toBeGreaterThan(0);
+        for (const c of windowCalls) {
+          expect(c.offset + c.length).toBeLessThanOrEqual(trailerStart);
+        }
+      });
+    });
+  });
+
+  describe('Given a single entry needing a growth retry near the end of the pack', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it("Then the grown window's requested length also never crosses trailerStart", async () => {
+        // Arrange — content sized just past one window forces exactly one
+        // growth fetch, and that growth fetch's clamp is the one under test
+        // (`nextRung`'s own `trailerStart - anchor`, distinct from
+        // `initialWindowSize`'s first-window clamp exercised above).
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 313_131);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        const trailerStart = built.packBytes.length - baseCtx.hash.digestLength;
+        const calls: Array<{ offset: number; length: number }> = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            calls.push({ offset, length });
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(result.objectCount).toBe(1);
+        const windowCalls = calls.filter((c) => !(c.offset === 0 && c.length === 12));
+        expect(windowCalls.length).toBeGreaterThan(1);
+        for (const c of windowCalls) {
+          expect(c.offset + c.length).toBeLessThanOrEqual(trailerStart);
+        }
+      });
+    });
+  });
+
+  describe('Given a short-read filesystem that never delivers a full window for a large entry', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then the first growth fetch requests the plain documented window size — not a doubling of the short delivery — and gives up after exactly one non-progress retry', async () => {
+        // Arrange — every readSlice delivery is capped far below both the
+        // documented window and the entry's true span, so `w.bytes.length`
+        // never equals `documented` even for the very first (genuinely
+        // fresh) fetch. This is the same "delivered < requested" shape a
+        // short-read filesystem produces, and it is the ONLY way
+        // `isFreshDocumentedWindow` is false for a fetch that just happened
+        // — `rung` must restart at `documented` (not double a stale value),
+        // and `deliveredAtAnchor` must be set from THIS fetch (not stay
+        // `undefined`) so the very next non-progress delivery is caught
+        // immediately rather than after one wasted extra round trip.
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES * 3, 272_727);
+        const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: bigContent }];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        const CAP = 100;
+        const calls: Array<{ offset: number; length: number }> = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            calls.push({ offset, length });
+            const real = await baseCtx.fs.readSlice(path, offset, length);
+            return real.subarray(0, Math.min(real.length, CAP));
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — header, initial (short) window, exactly one growth
+        // attempt, then give-up: a `rung` that wrongly starts at
+        // `documented` doubles this request instead of matching it, and a
+        // `deliveredAtAnchor` that wrongly starts `undefined` costs one
+        // extra non-progress round trip before giving up.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(calls).toHaveLength(3);
+        expect(calls[2]?.length).toBe(DISK_WALK_WINDOW_BYTES);
+      });
+    });
+  });
+
+  describe('Given a small pack (its one window already reaches trailerStart) and a retryable decode failure', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then growth is capped immediately — no growth fetch is attempted once the held window already spans to the trailer', async () => {
+        // Arrange — a small pack's single window is `trailerStart - anchor`
+        // wide by construction (`initialWindowSize`'s own clamp), so
+        // `w.start + w.bytes.length` already equals `trailerStart` before
+        // any retry is even considered. The injected failure carries the
+        // exact retryable truncation reason so classification alone can't
+        // explain a cap; only the trailerStart guard can.
+        const baseCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(baseCtx, 'small capped pack\n');
+        let readSliceCalls = 0;
+        const ctx = {
+          ...withFsPatch(baseCtx, {
+            readSlice: async (
+              path: string,
+              offset: number,
+              length: number,
+            ): Promise<Uint8Array> => {
+              readSliceCalls += 1;
+              return baseCtx.fs.readSlice(path, offset, length);
+            },
+          }),
+          compressor: {
+            ...baseCtx.compressor,
+            streamInflate: (): Promise<never> =>
+              Promise.reject({
+                data: { code: 'DECOMPRESS_FAILED', reason: 'unexpected end of deflate stream' },
+              }),
+          },
+        };
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — pack header + exactly one window; a mutant that skips
+        // (or off-by-ones) the trailerStart cap would attempt a growth
+        // fetch here even though there is nowhere left to grow into.
+        expect(readSliceCalls).toBe(2);
+        expect((caught as { data: { code: string; reason: string } }).data.reason).toBe(
+          'unexpected end of deflate stream',
+        );
       });
     });
   });

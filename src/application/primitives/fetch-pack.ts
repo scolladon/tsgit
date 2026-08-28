@@ -307,7 +307,9 @@ const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
 const removeQuarantineFileIfPresent = async (ctx: Context, path: string): Promise<void> => {
   try {
     await ctx.fs.rm(path);
+    // Stryker disable next-line BlockStatement: equivalent — removeQuarantineFileIfPresent has one caller, cleanupQuarantine, which wraps this whole call in `.catch(() => {})`; every branch here (return vs rethrow, any error code) resolves to the same observable no-op through that caller. `fetch-pack.test.ts`'s "cleanup fails with something other than FILE_NOT_FOUND" pin proves the FILE_NOT_FOUND and PERMISSION_DENIED paths already converge on the same outcome.
   } catch (err) {
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,StringLiteral: equivalent — same single-caller swallow as above: whether this returns or rethrows, and for which code, is unobservable through cleanupQuarantine's `.catch(() => {})`.
     if (errorDataCode(err) === 'FILE_NOT_FOUND') return;
     throw err;
   }
@@ -378,6 +380,7 @@ const receivePackToQuarantine = async (
       total += chunk.byteLength;
       if (total > cap) throw packTooLargeBytes(cap);
       const combined = concatBytes(tail, chunk);
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the only case these mutants can flip is `combined.length <= trailerLen`, where `boundary` is 0 or negative; `hasher.update(combined.subarray(0, boundary))` clamps to an empty slice (a genuine no-op — node:crypto and the memory hasher both treat a zero-byte update as unchanged state) and `combined.slice(boundary)` clamps to a full copy of `combined`, byte-identical to the else arm's `tail = combined`.
       if (combined.length > trailerLen) {
         const boundary = combined.length - trailerLen;
         hasher.update(combined.subarray(0, boundary));
@@ -409,6 +412,7 @@ const receivePackToQuarantine = async (
 
   if (total === 0) {
     await cleanupQuarantine(ctx, tmpPath);
+    // Stryker disable next-line StringLiteral: equivalent — receivePackToQuarantine has one caller (materializePack), which branches on `receipt.totalBytes === 0` and returns `emptyPackResult`'s hardcoded `packSha: ''` in that case, never reading this receipt's `packSha` field — its value here is unobservable.
     return { tmpPath, totalBytes: 0, packSha: '' };
   }
   if (total < PACK_HEADER_BYTES + trailerLen) {
@@ -641,6 +645,7 @@ const isRetryableWindowFailure = (err: unknown): boolean => {
  * Errors of any other shape pass through unchanged.
  */
 const withAbsoluteEntryOffset = (err: unknown, windowStart: number): unknown => {
+  // Stryker disable next-line EqualityOperator: equivalent — withAbsoluteEntryOffset has one caller (entryHeader's catch, fed only by parsePackEntryHeader), and every throw site in parsePackEntryHeader (pack-entry.ts) uses invalidPackEntry — the pass-through arm for a different code is unreachable.
   if (errorDataCode(err) !== 'INVALID_PACK_ENTRY') return err;
   const data = (err as { readonly data: { readonly offset: number; readonly reason: string } })
     .data;
@@ -708,7 +713,9 @@ const diskPackByteSource = (
   const windowCovering = async (anchor: number): Promise<DiskWindow> => {
     if (
       window !== undefined &&
+      // Stryker disable next-line ConditionalExpression: equivalent — diskPackByteSource has one caller sequence (inflateAllEntries's forward scan, entryHeader then inflateEntry at the SAME offset), so anchor only ever grows; `anchor < window.start` never occurs, and forcing the lower bound true changes nothing reachable.
       anchor >= window.start &&
+      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a window wrongly deemed to cover an anchor past its real extent immediately trips decodeTypeAndSize's own `offset >= bytes.length` guard (pack-entry.ts) with the retryable "unexpected end of header" reason, so growOrRethrow re-fetches at the correct anchor on the very next attempt before any byte is read — same final window and result, one wasted parse in between.
       anchor < window.start + window.bytes.length
     ) {
       return window;
