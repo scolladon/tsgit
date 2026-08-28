@@ -250,6 +250,53 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given a Context opened at a linked worktree whose OWN HEAD points at a different branch than the true main', () => {
+    describe('When listWorktrees runs', () => {
+      it("Then the main entry reflects the true main's HEAD — not the calling linked worktree's own", async () => {
+        // Arrange — the common (main) HEAD points at refs/heads/main; the
+        // opened linked worktree's OWN admin HEAD deliberately points
+        // elsewhere. If the main entry's HEAD read were not re-rooted at the
+        // common gitdir, it would read the caller's own HEAD instead.
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: OID_MAIN },
+            { name: 'refs/heads/feature' as RefName, id: OID_WT },
+          ],
+        });
+        await seedMainHead(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n');
+        const adminGitDir = `${ctx.layout.workDir}/wts/self/.git`;
+        const sut: Context = {
+          ...ctx,
+          layout: {
+            ...ctx.layout,
+            workDir: '/repo/wts/self',
+            gitDir: adminGitDir,
+            commonDir: ctx.layout.gitDir,
+          },
+        };
+        await ctx.fs.writeUtf8(`${adminGitDir}/HEAD`, 'ref: refs/heads/feature\n');
+
+        // Act
+        const result = await listWorktrees(sut);
+
+        // Assert — the main entry names the TRUE main branch/head
+        // (refs/heads/main / OID_MAIN), never the linked worktree's own
+        // (refs/heads/feature / OID_WT).
+        expect(result).toEqual([
+          {
+            path: ctx.layout.workDir,
+            head: OID_MAIN,
+            branch: 'refs/heads/main',
+            detached: false,
+            bare: false,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a core.bare = true repository opened with a DEGENERATE commonDir override (normalised off the layout, bareness suppressed)', () => {
     describe('When listWorktrees runs', () => {
       it('Then the main entry follows the suppressed layout.bare — not the config it can no longer see through an absent commonDir', async () => {
