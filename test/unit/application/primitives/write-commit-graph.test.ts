@@ -141,6 +141,60 @@ describe('writeCommitGraph', () => {
         expect(layer.commitCount).toBe(1);
         expect(positionOf(layer, commitId)).not.toBeUndefined();
       });
+
+      it('Then the trailing hash is a real digest of everything before it, not the all-zero placeholder', async () => {
+        // Arrange — `serializeCommitGraph` leaves the trailer zero-filled;
+        // filling in the real digest is this module's own job.
+        const ctx = await buildSeededContext();
+        const commitId = await rootCommit(ctx, AUTHOR.timestamp, 'root');
+        await pointRef(ctx, 'refs/heads/main', commitId);
+        const gitDir = commonGitDir(ctx);
+
+        // Act
+        await writeCommitGraph(ctx);
+
+        // Assert
+        const bytes = await ctx.fs.read(commitGraphPath(gitDir));
+        const trailerStart = bytes.length - ctx.hashConfig.digestLength;
+        const trailer = bytes.subarray(trailerStart);
+        const expectedDigest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
+        expect(trailer).toEqual(expectedDigest);
+        expect(trailer).not.toEqual(new Uint8Array(ctx.hashConfig.digestLength));
+      });
+    });
+  });
+
+  describe('Given a ref pointing at an annotated tag over a reachable commit', () => {
+    describe('When writeCommitGraph runs', () => {
+      it('Then the peeled commit is in the graph — matching --reachable, which follows tags through', async () => {
+        // Arrange — `resolveRef` is called with `{ peel: true }`: the root
+        // set is the TAG's target commit, never the (non-commit) tag object
+        // itself.
+        const ctx = await buildSeededContext();
+        const gitDir = commonGitDir(ctx);
+        const commitId = await rootCommit(ctx, AUTHOR.timestamp, 'tagged');
+        const tagId = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: commitId,
+            objectType: 'commit',
+            tagName: 'v1',
+            message: 'release',
+            extraHeaders: [],
+          },
+        });
+        await pointRef(ctx, 'refs/tags/v1', tagId);
+
+        // Act
+        const result = await writeCommitGraph(ctx);
+
+        // Assert
+        expect(result.commitCount).toBe(1);
+        const layer = parseCommitGraphLayer(await ctx.fs.read(commitGraphPath(gitDir)));
+        expect(layer.commitCount).toBe(1);
+        expect(positionOf(layer, commitId)).not.toBeUndefined();
+      });
     });
   });
 
