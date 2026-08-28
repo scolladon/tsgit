@@ -440,14 +440,27 @@ interface Phase1Result {
   readonly baseOffset: number | undefined;
   /**
    * How deep the resumed base itself already sat below whatever chain
-   * reached it first — 0 for a freshly-read base entry or a REF_DELTA's
-   * resolved base (nothing beneath either one that this walk didn't just
-   * read), or `cached.chainDepth` when this level came from a delta-base
-   * cache hit (see `collectDeltaChain`'s probe). The caching loop in
-   * `resolvePackChain` adds this onto every level IT re-caches — without it,
-   * a chain resumed from a cache hit would recount its own newly-walked
-   * levels as if the resumed base sat at depth zero, undercounting by
-   * exactly the depth the cache hit skipped.
+   * reached it first — 0 for a freshly-read base entry, or `cached.chainDepth`
+   * when this level came from a delta-base cache hit (see
+   * `collectDeltaChain`'s probe). The caching loop in `resolvePackChain` adds
+   * this onto every level IT re-caches — without it, a chain resumed from a
+   * cache hit would recount its own newly-walked levels as if the resumed
+   * base sat at depth zero, undercounting by exactly the depth the cache hit
+   * skipped.
+   *
+   * A REF_DELTA's resolved base is ALSO hardcoded to 0 here (see the
+   * `collectDeltaChain` REF_DELTA arm below), but that 0 is not the same
+   * claim as the freshly-read case above: `resolveBaseForRefDelta` resolves
+   * the base through `resolveObject`, which may itself walk a whole SEPARATE
+   * delta chain (in this pack or another) to reconstruct it — a chain this
+   * walk's own `depth` counter never saw and `assertChainDepthWithinCap`
+   * never checked. `MAX_DELTA_CHAIN_DEPTH` therefore bounds only each
+   * REF_DELTA segment individually, not a chain's true length once it
+   * crosses a REF_DELTA hop — a pre-existing gap this doc only states
+   * explicitly, doesn't close: the symmetric fix (thread the resolved base's
+   * own chain depth back out of `resolveBaseForRefDelta`, the same shape the
+   * cache-hit branch above already uses) is recorded as follow-up, not made
+   * here.
    */
   readonly baseChainDepth: number;
 }
