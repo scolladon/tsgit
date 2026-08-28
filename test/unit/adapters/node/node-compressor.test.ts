@@ -424,6 +424,34 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given a corrupted (not truncated) zlib stream — node:zlib reports Z_DATA_ERROR, not Z_BUF_ERROR', () => {
+      describe('When streamInflate runs', () => {
+        it("Then data.reason is node's own wording, never the truncation-only unified string", async () => {
+          // Arrange — an invalid zlib header (verified on node v22.22.3 to
+          // report code Z_DATA_ERROR, message "incorrect header check") is
+          // neither a truncation nor a valid stream; the truncation-only
+          // wording must not leak onto this reason.
+          const sut = new NodeCompressor();
+          const corrupt = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.streamInflate(corrupt, 0);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          expect(data.reason).not.toBe('unexpected end of deflate stream');
+          expect(data.reason).toBe('incorrect header check');
+        });
+      });
+    });
+
     describe('Given oversized payload to inflate()', () => {
       describe('When inflate runs', () => {
         it('Then throws DECOMPRESS_FAILED (Node maxOutputLength enforced)', async () => {

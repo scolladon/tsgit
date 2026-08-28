@@ -128,6 +128,7 @@ export class NodeCompressor implements Compressor {
     try {
       if (this.usesCallbackDispatch(data)) {
         return new Uint8Array(
+          // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateAsync(data, { level: undefined })`; node's callback zlib API shares the sync API's options-normalisation, so this is byte-for-byte identical to the no-options `deflateAsync(data)`, same as the sync arm below.
           level === undefined ? await deflateAsync(data) : await deflateAsync(data, { level }),
         );
       }
@@ -142,6 +143,7 @@ export class NodeCompressor implements Compressor {
     try {
       if (this.usesCallbackDispatch(data)) {
         return new Uint8Array(
+          // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateRawAsync(data, { level: undefined })`; node's callback zlib API shares the sync API's options-normalisation, so this is byte-for-byte identical to the no-options `deflateRawAsync(data)`, same as the sync arm below.
           level === undefined
             ? await deflateRawAsync(data)
             : await deflateRawAsync(data, { level }),
