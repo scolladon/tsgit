@@ -11,7 +11,6 @@ import {
   type ObjectId,
   parseHeader,
   parseObject,
-  serializeObject,
 } from '../../domain/objects/index.js';
 import { MAX_DELTA_CHAIN_DEPTH } from '../../domain/storage/delta.js';
 import { deltaChainTooDeep, invalidPackIndex } from '../../domain/storage/error.js';
@@ -57,6 +56,29 @@ export async function resolveObjectBytes(
   verifyHash: boolean,
   maxBytes?: number,
 ): Promise<Uint8Array> {
+  const resolved = await resolveObjectBytesWithDepth(ctx, registry, id, verifyHash, maxBytes, 0);
+  return resolved.bytes;
+}
+
+/**
+ * Depth-aware core `resolveObjectBytes` delegates to (with `externalDepth`
+ * 0). Mirrors the same arms — empty-tree / deltaCache hit / loose read never
+ * walk a delta chain, so each reports depth 0; a pack hit threads
+ * `externalDepth` into `resolvePackChain` (bounding the cap early, and any
+ * further REF_DELTA recursion beneath it) and surfaces the chain's true
+ * depth back out. `resolveBaseForRefDelta` calls this directly — never the
+ * public `resolveObjectBytes` — so a REF_DELTA's base resolves with the
+ * accumulated depth of the chain that reached it, and its own true depth
+ * comes back out for the caching loop to record accurately.
+ */
+async function resolveObjectBytesWithDepth(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+  externalDepth: number,
+): Promise<{ bytes: Uint8Array; chainDepth: number }> {
   // An already-aborted read honours the abort before paying any scan I/O.
   checkAborted(ctx);
   // Git dies during object-store setup, ahead of every read — a structurally
@@ -64,19 +86,19 @@ export async function resolveObjectBytes(
   // gate sits before the empty-tree short-circuit and the deltaCache probe.
   await registry.assertLoadable();
   if (id === emptyTreeOid(ctx.hashConfig)) {
-    return EMPTY_TREE_BYTES;
+    return { bytes: EMPTY_TREE_BYTES, chainDepth: 0 };
   }
   const cached = ctx.deltaCache.get(id);
   if (cached !== undefined) {
     enforceCachedCap(id, cached, maxBytes);
-    return verifyAndReturn(ctx, id, cached, verifyHash);
+    return { bytes: await verifyAndReturn(ctx, id, cached, verifyHash), chainDepth: 0 };
   }
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);
     enforceLooseCap(id, loose, maxBytes);
     cacheEntry(ctx.deltaCache, id, loose);
-    return verifyAndReturn(ctx, id, loose, verifyHash);
+    return { bytes: await verifyAndReturn(ctx, id, loose, verifyHash), chainDepth: 0 };
   }
 
   checkAborted(ctx);
@@ -85,9 +107,12 @@ export async function resolveObjectBytes(
     throw objectNotFound(id);
   }
   checkAborted(ctx);
-  const bytes = await resolvePackChain(ctx, registry, hit, id, maxBytes);
+  const resolved = await resolvePackChainWithDepth(ctx, registry, hit, id, maxBytes, externalDepth);
   checkAborted(ctx);
-  return verifyAndReturn(ctx, id, bytes, verifyHash);
+  return {
+    bytes: await verifyAndReturn(ctx, id, resolved.bytes, verifyHash),
+    chainDepth: resolved.chainDepth,
+  };
 }
 
 export async function resolveObject(
@@ -279,19 +304,22 @@ interface Phase1Result {
    * base sat at depth zero, undercounting by exactly the depth the cache hit
    * skipped.
    *
-   * A REF_DELTA's resolved base is ALSO hardcoded to 0 here (see the
-   * `collectDeltaChain` REF_DELTA arm below), but that 0 is not the same
-   * claim as the freshly-read case above: `resolveBaseForRefDelta` resolves
-   * the base through `resolveObject`, which may itself walk a whole SEPARATE
-   * delta chain (in this pack or another) to reconstruct it — a chain this
-   * walk's own `depth` counter never saw and `assertChainDepthWithinCap`
-   * never checked. `MAX_DELTA_CHAIN_DEPTH` therefore bounds only each
-   * REF_DELTA segment individually, not a chain's true length once it
-   * crosses a REF_DELTA hop — a pre-existing gap this doc only states
-   * explicitly, doesn't close: the symmetric fix (thread the resolved base's
-   * own chain depth back out of `resolveBaseForRefDelta`, the same shape the
-   * cache-hit branch above already uses) is recorded as follow-up, not made
-   * here.
+   * For a REF_DELTA's resolved base, this is the base object's OWN true
+   * chain depth — `resolveBaseForRefDelta` surfaces
+   * `deltas.length + baseChainDepth` from the inner `resolvePackChain` that
+   * reconstructed it (via `resolveObjectBytesWithDepth`'s `externalDepth`
+   * thread, so a chain nested behind the REF hop is bounded by the SAME cap
+   * the outer walk enforces, not resolved unbounded first and checked after).
+   * `collectDeltaChain`'s REF_DELTA arm asserts
+   * `externalDepth + depth + base.chainDepth` against the cap before
+   * returning it here, so `MAX_DELTA_CHAIN_DEPTH` bounds a chain's true
+   * length once it crosses a REF_DELTA hop, not just each segment in
+   * isolation.
+   *
+   * One honest residual: a base served from the id-keyed `ctx.deltaCache`
+   * (see `resolveBaseForRefDelta`'s own cache check) reports depth 0 even
+   * when the object was originally delta-resolved — that cache stores raw
+   * bytes only, never the depth they were reconstructed at.
    */
   readonly baseChainDepth: number;
 }
@@ -310,6 +338,7 @@ async function collectDeltaChain(
   hit: PackLookupHit,
   targetId: ObjectId,
   maxBytes: number | undefined,
+  externalDepth: number,
 ): Promise<Phase1Result> {
   const deltas: DeltaStep[] = [];
   let currentHit: PackLookupHit = hit;
@@ -333,7 +362,9 @@ async function collectDeltaChain(
       // actually walked) plus whatever the cached entry itself still has
       // beneath it, so a chain deeper than MAX_DELTA_CHAIN_DEPTH still
       // throws even though this walk never touched its lower levels.
-      assertChainDepthWithinCap(depth + cached.chainDepth);
+      // `externalDepth` adds whatever depth a REF_DELTA hop already
+      // accumulated before this walk even started.
+      assertChainDepthWithinCap(externalDepth + depth + cached.chainDepth);
       return {
         deltas,
         baseContent: cached.content,
@@ -363,7 +394,7 @@ async function collectDeltaChain(
       };
     }
     depth += 1;
-    assertChainDepthWithinCap(depth);
+    assertChainDepthWithinCap(externalDepth + depth);
     const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
@@ -384,14 +415,27 @@ async function collectDeltaChain(
       // Cap propagates into the REF_DELTA base resolution so an oversized
       // base never inflates fully. The cap applies to the BASE object now,
       // not just the delta's target — tightens the OBJECT_TOO_LARGE
-      // contract beyond what originally documented.
-      const base = await resolveBaseForRefDelta(ctx, registry, refDeltaBaseId, maxBytes);
+      // contract beyond what originally documented. `depth` already counts
+      // this REF level's own increment above, so `externalDepth + depth` is
+      // the accumulated depth at this exact point — not double-counted.
+      const base = await resolveBaseForRefDelta(
+        ctx,
+        registry,
+        refDeltaBaseId,
+        maxBytes,
+        externalDepth + depth,
+      );
+      // The base may itself have been a delta chain (in this pack, another
+      // pack, or behind a further REF hop) — its own true depth
+      // (`base.chainDepth`) adds onto everything walked so far before the
+      // combined total is checked against the cap.
+      assertChainDepthWithinCap(externalDepth + depth + base.chainDepth);
       return {
         deltas,
         baseContent: base.content,
         baseType: base.type,
         baseOffset: undefined,
-        baseChainDepth: 0,
+        baseChainDepth: base.chainDepth,
       };
     }
     throw objectNotFound(targetId);
@@ -415,7 +459,27 @@ export async function resolvePackChain(
   targetId: ObjectId,
   maxBytes: number | undefined,
 ): Promise<Uint8Array> {
-  const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes);
+  const resolved = await resolvePackChainWithDepth(ctx, registry, hit, targetId, maxBytes, 0);
+  return resolved.bytes;
+}
+
+/**
+ * Depth-aware core `resolvePackChain` delegates to (with `externalDepth` 0).
+ * Threads `externalDepth` into `collectDeltaChain` so a chain reached through
+ * a REF_DELTA hop is bounded by the SAME cap the outer walk enforces, and
+ * surfaces the reconstructed object's own true chain depth
+ * (`deltas.length + baseChainDepth`) back to `resolveObjectBytesWithDepth` —
+ * the only other caller, used from `resolveBaseForRefDelta`.
+ */
+async function resolvePackChainWithDepth(
+  ctx: Context,
+  registry: PackRegistry,
+  hit: PackLookupHit,
+  targetId: ObjectId,
+  maxBytes: number | undefined,
+  externalDepth: number,
+): Promise<{ bytes: Uint8Array; chainDepth: number }> {
+  const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes, externalDepth);
 
   // Apply deltas bottom-up. The REF_DELTA terminator already cached its base
   // (by id) in `resolveBaseForRefDelta`; every OFS/REF level here is cached
@@ -465,7 +529,7 @@ export async function resolvePackChain(
   // Cache the final reconstructed object under targetId for future lookups.
   const fullBytes = prependHeader(current, phase1.baseType, targetId);
   cacheEntry(ctx.deltaCache, targetId, fullBytes);
-  return fullBytes;
+  return { bytes: fullBytes, chainDepth: phase1.deltas.length + phase1.baseChainDepth };
 }
 
 function prependHeader(
@@ -541,21 +605,35 @@ async function resolveBaseForRefDelta(
   registry: PackRegistry,
   baseId: ObjectId,
   maxBytes: number | undefined,
-): Promise<{ content: Uint8Array; type: PackEntryHeader['type'] }> {
+  externalDepth: number,
+): Promise<{ content: Uint8Array; type: PackEntryHeader['type']; chainDepth: number }> {
   // Resolve the base object (may recurse into another chain) and strip its header
   // to obtain content + type for delta application.
   const cached = ctx.deltaCache.get(baseId);
   if (cached !== undefined) {
     // Cache stores raw loose-format (header+content). An earlier uncapped
     // read may have admitted an oversized object; enforce the cap here
-    // before returning bytes that bypass the regular read path.
+    // before returning bytes that bypass the regular read path. This
+    // id-keyed cache holds bytes only, never the depth they were
+    // reconstructed at, so a base served from here is honestly reported at
+    // depth 0 even when it was originally delta-resolved.
     enforceCachedCap(baseId, cached, maxBytes);
-    return splitHeader(cached, baseId);
+    return { ...splitHeader(cached, baseId), chainDepth: 0 };
   }
-  const obj = await resolveObject(ctx, registry, baseId, false, maxBytes);
-  const rawBytes = serializeObject(obj, ctx.hashConfig);
-  cacheEntry(ctx.deltaCache, baseId, rawBytes);
-  return splitHeader(rawBytes, baseId);
+  // Depth-aware bytes-only resolution (not the public `resolveObject`): the
+  // base is applied to a delta, never returned to a caller as a parsed
+  // object, and this walk needs the base's own true chain depth back out —
+  // `externalDepth` bounds it against the SAME cap the outer walk enforces.
+  const resolved = await resolveObjectBytesWithDepth(
+    ctx,
+    registry,
+    baseId,
+    false,
+    maxBytes,
+    externalDepth,
+  );
+  cacheEntry(ctx.deltaCache, baseId, resolved.bytes);
+  return { ...splitHeader(resolved.bytes, baseId), chainDepth: resolved.chainDepth };
 }
 
 function splitHeader(
@@ -565,9 +643,9 @@ function splitHeader(
   content: Uint8Array;
   type: PackEntryHeader['type'];
 } {
-  // Cache bytes come from our own resolvePackChain / serializeObject paths, which
-  // always produce `<type> <size>\0...`. If those invariants ever break, treat it
-  // as a missing object rather than silently mis-typing.
+  // Cache bytes come from our own resolvePackChain / resolveObjectBytes
+  // paths, which always produce `<type> <size>\0...`. If those invariants
+  // ever break, treat it as a missing object rather than silently mis-typing.
   const nulIdx = bytes.indexOf(0);
   // Stryker disable next-line EqualityOperator: equivalent — at the only differing input (`nulIdx === 0`) the fall-through path finds no space (`space === -1`) and throws the identical OBJECT_NOT_FOUND.
   if (nulIdx < 0) {
