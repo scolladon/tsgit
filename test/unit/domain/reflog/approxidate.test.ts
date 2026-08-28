@@ -59,6 +59,24 @@ describe('parseApproxidate', () => {
             expected: NOW,
             label: 'surrounding whitespace is trimmed before matching',
           },
+          {
+            // git-pinned (git 2.55.0): `git log --since`/`reflog expire --expire`
+            // both parse this without error.
+            input: '@9999999999 +0200',
+            expected: 9_999_999_999,
+            label:
+              'accepts a trailing timezone offset and discards it (the offset never shifts the absolute instant)',
+          },
+          {
+            input: '@1779710400 -0530',
+            expected: NOW,
+            label: 'accepts a negative trailing timezone offset',
+          },
+          {
+            input: '@1779710400+0200',
+            expected: NOW,
+            label: 'accepts the offset with no separating space',
+          },
         ])('Then $label', ({ input, expected }) => {
           // Arrange & Act
           const result = parseApproxidate(input, NOW);
@@ -78,8 +96,32 @@ describe('parseApproxidate', () => {
             input: 'x@1779710400',
             label: 'leading text before the @ sigil (anchored to the start)',
           },
+          { input: '@1779710400 +200', label: 'a timezone offset with fewer than 4 digits' },
+          { input: '@1779710400 +02000', label: 'a timezone offset with more than 4 digits' },
+          { input: '@1779710400 0200', label: 'a timezone offset missing its sign' },
+          {
+            input: `@${'9'.repeat(400)}`,
+            label: 'a digit run so long Number() overflows to Infinity',
+          },
         ])('Then returns undefined for $label', ({ input }) => {
           // Arrange & Act
+          const result = parseApproxidate(input, NOW);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given an epoch value above Number.MAX_SAFE_INTEGER', () => {
+      describe('When parsing', () => {
+        it('Then returns undefined rather than an imprecise value', () => {
+          // Arrange — 9007199254740991 is Number.MAX_SAFE_INTEGER; one past it
+          // (9007199254740993) is not exactly representable as a float64 and
+          // rounds to 9007199254740992 (2**53), still strictly above it.
+          const input = '@9007199254740993';
+
+          // Act
           const result = parseApproxidate(input, NOW);
 
           // Assert
