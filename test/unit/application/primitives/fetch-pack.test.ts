@@ -17,7 +17,11 @@ import {
   encodePktStream,
   type GitExchange,
 } from '../../../../src/domain/protocol/pkt-line.js';
-import { parsePackHeader } from '../../../../src/domain/storage/pack-entry.js';
+import {
+  encodePackEntryHeader,
+  PACK_ENTRY_TYPE,
+  parsePackHeader,
+} from '../../../../src/domain/storage/pack-entry.js';
 import {
   lookupPackIndex,
   lookupPackIndexPosition,
@@ -298,6 +302,29 @@ const pseudoRandomBytes = (length: number, seed: number): Uint8Array => {
     out[i] = state & 0xff;
   }
   return out;
+};
+
+/**
+ * A pack that spans several `DISK_WALK_WINDOW_BYTES` windows without any
+ * single entry coming anywhere near one window's size — used by the
+ * multi-window flat-peak and window-reuse pins below. 12 entries at ~60 KB
+ * each land comfortably past the second window boundary, so the walk both
+ * crosses windows (proving the peak stays flat) and reuses a held window
+ * across several entries per crossing (proving reuse, not one read per
+ * entry).
+ */
+const MULTI_WINDOW_ENTRY_COUNT = 12;
+const MULTI_WINDOW_ENTRY_BYTES = 60_000;
+
+const buildMultiWindowPack = (
+  ctx: ReturnType<typeof createMemoryContext>,
+): Promise<Awaited<ReturnType<typeof buildSyntheticPack>>> => {
+  const entries: EntrySpec[] = Array.from({ length: MULTI_WINDOW_ENTRY_COUNT }, (_, i) => ({
+    kind: 'base',
+    type: 'blob',
+    content: pseudoRandomBytes(MULTI_WINDOW_ENTRY_BYTES, 2000 + i),
+  }));
+  return buildSyntheticPack(ctx, entries);
 };
 
 const buildSingleBlobPack = async (
@@ -610,8 +637,9 @@ describe('fetchPack', () => {
           // larger than its own offset minus the 12-byte header. Real packs cannot
           // produce such an entry; we craft it directly to exercise the negative
           // base-offset guard inside tryResolveEntry. The entry header is hand-built:
-          // type-byte sets OFS_DELTA(=6) with a 1-byte size of 0, the distance varint
-          // encodes 100, then a 2-byte zlib stream for an empty target.
+          // type-byte sets OFS_DELTA(=6) with a 1-byte declared size of 2 (matching
+          // the 2-byte delta payload below), the distance varint encodes 100, then
+          // a 2-byte zlib stream for an empty target.
           const ctx = createMemoryContext();
           // Pack header (12 bytes) — version 2, 1 entry.
           const header = new Uint8Array(12);
@@ -619,9 +647,9 @@ describe('fetchPack', () => {
           dv.setUint32(0, 0x5041434b);
           dv.setUint32(4, 2);
           dv.setUint32(8, 1);
-          // Entry header: type=6 (OFS_DELTA), size=0 → byte = (6 << 4) | 0 = 0x60.
+          // Entry header: type=6 (OFS_DELTA), size=2 → byte = (6 << 4) | 2 = 0x62.
           // Distance = 100, encoded as a single byte 0x64 (no continuation).
-          const entryHeader = new Uint8Array([0x60, 0x64]);
+          const entryHeader = new Uint8Array([0x62, 0x64]);
           // zlib-compressed body for an empty delta payload (sourceLength=0, targetLength=0).
           const emptyDelta = new Uint8Array([0x00, 0x00]);
           const zlibBody = await ctx.compressor.deflate(emptyDelta);
@@ -1563,9 +1591,10 @@ describe('fetchPack', () => {
           hdv.setUint32(0, 0x5041434b);
           hdv.setUint32(4, 2);
           hdv.setUint32(8, 1);
-          // Entry header: type=6 (OFS_DELTA), size=0 → byte (6 << 4) | 0 = 0x60.
+          // Entry header: type=6 (OFS_DELTA), size=2 (matching the 2-byte delta
+          // payload below) → byte (6 << 4) | 2 = 0x62.
           // Distance = 0, encoded as a single 0x00 byte (no continuation).
-          const entryHeader = new Uint8Array([0x60, 0x00]);
+          const entryHeader = new Uint8Array([0x62, 0x00]);
           // zlib-compressed empty delta payload (sourceLength=0, targetLength=0).
           const zlibBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
           const bodyBytes = new Uint8Array(header.length + entryHeader.length + zlibBody.length);
@@ -2431,6 +2460,214 @@ describe('quarantine disk-backed entry walk', () => {
         // Assert
         expect(callCount).toBeGreaterThan(2);
         expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a pack spanning several windows with entries that never individually need growth (12 x 60 KB)', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then no readSlice call exceeds the documented window even though the walk crosses more than two window boundaries', async () => {
+        // Arrange — each boundary crossing that reuses an already-grown
+        // window is exactly where the ratchet bug used to compound: growth
+        // doubled from whatever window happened to be held, not from the
+        // documented window size for the entry actually being read.
+        const baseCtx = createMemoryContext();
+        const built = await buildMultiWindowPack(baseCtx);
+        const requestedLengths: number[] = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            requestedLengths.push(length);
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        const result = await sut(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(result.objectCount).toBe(MULTI_WINDOW_ENTRY_COUNT);
+        expect(Math.max(...requestedLengths)).toBeLessThanOrEqual(DISK_WALK_WINDOW_BYTES);
+        // Exclude the 12-byte header read: each remaining call is a window
+        // fetch, and this pack is bigger than two windows.
+        const windowFetches = requestedLengths.length - 1;
+        expect(windowFetches).toBeGreaterThan(2);
+      });
+    });
+  });
+
+  describe('Given the same multi-window pack', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then the readSlice call shape proves windows are reused across entries, not fetched again per entry', async () => {
+        // Arrange
+        const baseCtx = createMemoryContext();
+        const built = await buildMultiWindowPack(baseCtx);
+        const calls: Array<{ offset: number; length: number }> = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            calls.push({ offset, length });
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        const result = await sut(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — first call is the bare 12-byte header read; a mutant that
+        // broke reuse (e.g. always refetching at the entry's own offset)
+        // would drive one readSlice per entry (12, plus the header), far
+        // above the window-count-shaped ceiling below.
+        expect(result.objectCount).toBe(MULTI_WINDOW_ENTRY_COUNT);
+        expect(calls[0]).toEqual({ offset: 0, length: 12 });
+        const packBodyBytes = built.packBytes.length - 12 - 20;
+        const maxExpectedCalls = Math.ceil(packBodyBytes / DISK_WALK_WINDOW_BYTES) + 2;
+        expect(calls.length).toBeLessThanOrEqual(maxExpectedCalls);
+        expect(calls.length).toBeLessThan(MULTI_WINDOW_ENTRY_COUNT);
+      });
+    });
+  });
+
+  describe('Given a quarantined pack with a genuinely corrupt entry header (reserved type 5) and a correct trailer', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then the error surfaces without growing the window, reports the absolute offset, and reaps the quarantine file', async () => {
+        // Arrange — a single byte of entry header (type=5 << 4 | size=0 =>
+        // 0x50) is enough to trip `validateEntryType`'s reserved-type guard
+        // before any delta-specific or zlib byte is ever read. Padding well
+        // past one window between the corrupt byte and the trailer gives a
+        // blind retry room to actually happen — without it, `trailerStart`
+        // proximity alone would cap growth after one window regardless of
+        // whether the failure was ever classified as retryable.
+        const ctx = createMemoryContext();
+        const dummyId = (await computeBlobId(ctx, ENCODER.encode('reserved-type\n'))) as ObjectId;
+        const header = new Uint8Array(12);
+        const dv = new DataView(header.buffer);
+        dv.setUint32(0, 0x5041434b);
+        dv.setUint32(4, 2);
+        dv.setUint32(8, 1);
+        const entryByte = new Uint8Array([0x50]);
+        const padding = new Uint8Array(DISK_WALK_WINDOW_BYTES + 40_000);
+        const bodyBytes = new Uint8Array(header.length + entryByte.length + padding.length);
+        bodyBytes.set(header, 0);
+        bodyBytes.set(entryByte, header.length);
+        bodyBytes.set(padding, header.length + entryByte.length);
+        const trailerHex = await ctx.hash.hashHex(bodyBytes);
+        const packBytes = new Uint8Array(bodyBytes.length + 20);
+        packBytes.set(bodyBytes, 0);
+        packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+        let readSliceCalls = 0;
+        const spiedCtx = withFsPatch(ctx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            readSliceCalls += 1;
+            return ctx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(packBytes, 32_768);
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(spiedCtx, toNegotiator(transport), {
+            wants: [dummyId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          offset?: number;
+          reason?: string;
+        };
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        expect(data.reason).toContain('reserved type 5');
+        // Fails fast: the corrupt header is read once (the entry's initial
+        // window) and never triggers a growth retry, even though the pack
+        // has plenty of room past that window for a blind retry to grow into.
+        expect(readSliceCalls).toBe(2); // pack header (12 bytes) + one entry window
+        // Absolute pack offset, not window-relative (the entry starts right
+        // after the 12-byte pack header).
+        expect(data.offset).toBe(12);
+        expect(await tmpPackNames(spiedCtx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a quarantined pack entry whose zlib stream inflates past its declared header size', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then the disk walk refuses instead of inflating past the declared size, and reaps the quarantine file', async () => {
+        // Arrange — declared size 5, but the zlib stream is a valid, complete
+        // encoding of 10 bytes: bounding `streamInflate` to the declared size
+        // trips the output-safety-cap refusal instead of silently accepting a
+        // stream larger than its own header claims.
+        const ctx = createMemoryContext();
+        const dummyId = (await computeBlobId(
+          ctx,
+          ENCODER.encode('oversize-declare\n'),
+        )) as ObjectId;
+        const header = new Uint8Array(12);
+        const dv = new DataView(header.buffer);
+        dv.setUint32(0, 0x5041434b);
+        dv.setUint32(4, 2);
+        dv.setUint32(8, 1);
+        const declaredSize = 5;
+        const actualPayload = ENCODER.encode('AAAAAAAAAA'); // 10 bytes, > declaredSize
+        const entryHeaderByte = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, declaredSize);
+        const zlibStream = await ctx.compressor.deflate(actualPayload);
+        const bodyBytes = new Uint8Array(
+          header.length + entryHeaderByte.length + zlibStream.length,
+        );
+        bodyBytes.set(header, 0);
+        bodyBytes.set(entryHeaderByte, header.length);
+        bodyBytes.set(zlibStream, header.length + entryHeaderByte.length);
+        const trailerHex = await ctx.hash.hashHex(bodyBytes);
+        const packBytes = new Uint8Array(bodyBytes.length + 20);
+        packBytes.set(bodyBytes, 0);
+        packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, toNegotiator(transport), {
+            wants: [dummyId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('DECOMPRESS_FAILED');
+        expect(data.reason).toContain('safety cap');
         expect(await tmpPackNames(ctx)).toHaveLength(0);
       });
     });
