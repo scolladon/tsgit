@@ -10,6 +10,8 @@ import {
 } from '../../../src/adapters/memory/index.js';
 import { readConfig } from '../../../src/application/primitives/config-read.js';
 import { readConfigSections } from '../../../src/application/primitives/config-scoped-read.js';
+import { loadShallowSet } from '../../../src/application/primitives/internal/shallow-set.js';
+import { readIndex } from '../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
@@ -675,6 +677,47 @@ describe('openRepository — dispose cache hygiene', () => {
         // Act
         await sut.dispose();
         await readConfig(sut.ctx);
+
+        // Assert
+        expect(spy).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a repo whose shallow-set memo was warmed before dispose', () => {
+    describe('When dispose runs and loadShallowSet is called again on the same ctx', () => {
+      it('Then the memo re-reads instead of serving the pre-dispose entry — forgetSessionCaches dropped it', async () => {
+        // Arrange
+        const sut = await open();
+        await loadShallowSet(sut.ctx);
+        const spy = vi.spyOn(sut.ctx.fs, 'readUtf8');
+
+        // Act
+        await sut.dispose();
+        await loadShallowSet(sut.ctx);
+
+        // Assert
+        expect(spy).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a repo whose index cache was warmed before dispose', () => {
+    describe('When dispose runs and readIndex is called again on the same ctx', () => {
+      it('Then the cache re-reads instead of serving the pre-dispose entry — forgetSessionCaches dropped it', async () => {
+        // Arrange — a real index file (via add), so readIndex actually
+        // populates its per-session cache rather than short-circuiting on
+        // a missing file.
+        const sut = await open();
+        await sut.init();
+        await sut.ctx.fs.writeUtf8(`${sut.ctx.layout.workDir}/tracked.txt`, 'hi');
+        await sut.add(['tracked.txt']);
+        await readIndex(sut.ctx);
+        const spy = vi.spyOn(sut.ctx.fs, 'read');
+
+        // Act
+        await sut.dispose();
+        await readIndex(sut.ctx);
 
         // Assert
         expect(spy).toHaveBeenCalled();
@@ -1467,6 +1510,107 @@ describe('openRepository — config-scope allowlist', () => {
     });
   });
 
+  describe('Given a Context branded first-party (node runtime, default fs) whose adapter root is wider than layoutRoots', () => {
+    describe("When reading a path inside the adapter's own root but outside layoutRoots", () => {
+      it("Then the read succeeds — guardReads must be false, deferring to the first-party adapter's own (wider) containment", async () => {
+        // Arrange — isFirstPartyFs brands the fs only when composeAdapters
+        // sources it from a 'node'-runtime fallback with no opts.fs
+        // override; a MemoryFileSystem masquerading as that runtime is
+        // branded all the same (the signal is provenance, not class).
+        // Its own root ('/root') is wider than layoutRoots (['/root/repo']
+        // only), so this path is reachable ONLY when the wrapper's own
+        // (narrower) read guard is skipped in favour of the adapter's own.
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        await fs.writeUtf8(
+          '/root/sibling-file.txt',
+          'outside layoutRoots, inside the adapter root',
+        );
+        const fallback: RuntimeFallback = {
+          ...makeFallback(),
+          fs,
+          runtime: 'node',
+          layout: {
+            workDir: '/root/repo',
+            gitDir: '/root/repo/.git',
+            bare: false,
+            refStorage: 'files',
+          },
+        };
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+
+        // Act
+        const content = await sut.ctx.fs.readUtf8('/root/sibling-file.txt');
+
+        // Assert
+        expect(content).toBe('outside layoutRoots, inside the adapter root');
+      });
+    });
+  });
+
+  describe('Given a Context branded first-party (node runtime, default fs) reading a worktree-scoped fs', () => {
+    describe("When reading a path inside the adapter's own root but outside the worktree-scoped roots", () => {
+      it("Then the read succeeds — worktreeFs's own guardReads must be false too, deferring to the first-party adapter", async () => {
+        // Arrange — mirrors the top-level detected.fs case, but for
+        // worktreeFs's own wrapFsValidator call: worktreeRawIsFirstParty
+        // is true here purely via `|| fsIsFirstParty` (no makeWorktreeFs
+        // capability supplied), so raw falls back to the SAME
+        // first-party-branded fs.
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        await fs.writeUtf8(
+          '/root/other-sibling.txt',
+          'outside worktree-scoped roots, inside the adapter root',
+        );
+        const fallback: RuntimeFallback = {
+          ...makeFallback(),
+          fs,
+          runtime: 'node',
+          layout: {
+            workDir: '/root/repo',
+            gitDir: '/root/repo/.git',
+            bare: false,
+            refStorage: 'files',
+          },
+        };
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+        const worktreeFs = worktreeScopedFs(sut, '/root/wt');
+
+        // Act
+        const content = await worktreeFs.readUtf8('/root/other-sibling.txt');
+
+        // Assert
+        expect(content).toBe('outside worktree-scoped roots, inside the adapter root');
+      });
+    });
+  });
+
+  describe('Given fallback.makeWorktreeFs is supplied while the top-level fs is NOT first-party (memory runtime)', () => {
+    describe("When reading a path inside the makeWorktreeFs-supplied adapter's own (wider) root but outside the worktree-scoped roots", () => {
+      it('Then the read succeeds — makeWorktreeFs alone must brand the worktree raw fs as first-party, independent of fsIsFirstParty', async () => {
+        // Arrange — makeWorktreeFs's presence is documented as its own,
+        // sufficient, first-party signal (never re-derived from
+        // isFirstPartyFs on its return value); this pins that the `||`
+        // really does let EITHER operand carry it.
+        const rootFs = new MemoryFileSystem({ rootDir: '/root' });
+        await rootFs.writeUtf8(
+          '/root/other-sibling.txt',
+          'reachable only via makeWorktreeFs branding alone',
+        );
+        const fallback: RuntimeFallback = {
+          ...makeFallback(),
+          makeWorktreeFs: () => rootFs,
+        };
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+        const worktreeFs = worktreeScopedFs(sut, '/root/wt');
+
+        // Act
+        const content = await worktreeFs.readUtf8('/root/other-sibling.txt');
+
+        // Assert
+        expect(content).toBe('reachable only via makeWorktreeFs branding alone');
+      });
+    });
+  });
+
   describe('Given a default-wrapped repo whose adapter config-path probes all throw', () => {
     const openUnavailable = (): Promise<Repository> =>
       openRepository(
@@ -1828,6 +1972,25 @@ describe('openRepository — worktreeFs memoisation', () => {
 
         // Assert
         expect(second).not.toBe(first);
+      });
+    });
+
+    describe('When invoked with two distinct root arrays that concatenate to the identical string without a separator', () => {
+      it('Then it still builds and caches DISTINCT fs instances — the cache key must not collide two different root sets', async () => {
+        // Arrange — ['/ab'] and ['/a', 'b'] are different root arrays, but
+        // Array.prototype.join('') folds both (plus the shared layoutRoots
+        // tail) to the identical string; only a real separator (e.g. '\0',
+        // never a legal path character) keeps them apart.
+        const sut = await open();
+        const factory = sut.ctx.worktreeFs;
+        if (factory === undefined) throw new Error('worktreeFs capability missing');
+
+        // Act
+        const fsA = factory(['/ab']);
+        const fsB = factory(['/a', 'b']);
+
+        // Assert
+        expect(fsB).not.toBe(fsA);
       });
     });
   });
