@@ -681,6 +681,41 @@ describe('openRepository — dispose cache hygiene', () => {
       });
     });
   });
+
+  describe('Given a deltaCache whose clear() throws synchronously', () => {
+    describe('When dispose runs', () => {
+      it('Then adapter teardown still runs — a cache-release fault must not skip disposeAdapters', async () => {
+        // Arrange — a pooling server disposing an idle repo must reclaim
+        // adapter resources (here: the fs port's own teardown) even when an
+        // unrelated in-process cache release faults first.
+        const fallback = makeFallback();
+        const boom = new Error('boom');
+        const throwingDeltaCache = {
+          ...fallback.deltaCache,
+          clear: () => {
+            throw boom;
+          },
+        };
+        let disposeCalls = 0;
+        const fsWithDispose = {
+          ...fallback.fs,
+          dispose: async () => {
+            disposeCalls += 1;
+          },
+        };
+        const sut = await openRepository(
+          { cwd: '/repo', fs: fsWithDispose, unsafeRawAdapters: true },
+          { ...fallback, deltaCache: throwingDeltaCache },
+        );
+
+        // Act
+        await expect(sut.dispose()).rejects.toBe(boom);
+
+        // Assert
+        expect(disposeCalls).toBe(1);
+      });
+    });
+  });
 });
 
 describe('openRepository — unsafeRawAdapters', () => {

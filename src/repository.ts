@@ -751,12 +751,20 @@ export const openRepository = async (
       // A failing pack-handle close must never skip adapter teardown or
       // cache release — a pooling server disposing an idle repo must
       // reclaim this memory even when pack-handle teardown itself faults.
+      // Cache release is nested in its OWN try/finally for the same reason:
+      // a sync throw from `deltaCache.clear()`/`forgetSessionCaches` must
+      // not skip `disposeAdapters` either — both cache release and adapter
+      // teardown run unconditionally, in that order, however either one
+      // faults.
       try {
         await disposePackRegistry(ctx);
       } finally {
-        ctx.deltaCache.clear();
-        forgetSessionCaches(ctx);
-        await disposeAdapters(ctx);
+        try {
+          ctx.deltaCache.clear();
+          forgetSessionCaches(ctx);
+        } finally {
+          await disposeAdapters(ctx);
+        }
       }
       state = 'DISPOSED';
     })();
