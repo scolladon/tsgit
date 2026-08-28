@@ -137465,15 +137465,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " drops the entry every\nOTHER Context in that session would otherwise keep serving stale. This\ndoes NOT drop the per-scope sections cache ("
-									},
-									{
-										"kind": "code",
-										"text": "`config-scoped-read.ts`"
-									},
-									{
-										"kind": "text",
-										"text": "'s\n"
+										"text": " drops the entry every\nOTHER Context in that session would otherwise keep serving stale.\n\nDELEGATES to "
 									},
 									{
 										"kind": "code",
@@ -137481,7 +137473,31 @@
 									},
 									{
 										"kind": "text",
-										"text": ") — that cache is invalidated independently;\nevery config writer that needs it calls both (see "
+										"text": " ("
+									},
+									{
+										"kind": "code",
+										"text": "`config-scoped-read.ts`"
+									},
+									{
+										"kind": "text",
+										"text": ") so a\ncaller who invalidates only this cache — an embedder unaware of the\nscoped-sections cache, or test code that seeds config with a raw\n"
+									},
+									{
+										"kind": "code",
+										"text": "`ctx.fs.writeUtf8`"
+									},
+									{
+										"kind": "text",
+										"text": " and calls only this invalidator — still observes a\nfresh scoped read next time, rather than a same-tick-frozen stat\nindefinitely masking the rewrite there too. Every config writer ALSO calls\n"
+									},
+									{
+										"kind": "code",
+										"text": "`invalidateScopedConfigCache`"
+									},
+									{
+										"kind": "text",
+										"text": " directly (see "
 									},
 									{
 										"kind": "code",
@@ -137497,7 +137513,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ")."
+										"text": "); that explicit call still matters — it is\nwhat lets a caller invalidate the scoped cache WITHOUT touching this one\n(not needed today, but the pairing is not required to only run one way)."
 									}
 								]
 							},
@@ -137540,15 +137556,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Drop the per-scope sections cache for a single "
-									},
-									{
-										"kind": "code",
-										"text": "`Context`"
-									},
-									{
-										"kind": "text",
-										"text": ". NOT called by\n"
+										"text": "Drop the per-scope sections cache for an entire SESSION — every gitDir\nbucket, not just the calling Context's own (see the cache's own docstring\nabove for why). "
 									},
 									{
 										"kind": "code",
@@ -137556,7 +137564,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " in "
+										"text": " ("
 									},
 									{
 										"kind": "code",
@@ -137564,7 +137572,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " — every config writer calls\nboth invalidators explicitly (see "
+										"text": ") delegates to\nthis; every config writer also calls it directly (see "
 									},
 									{
 										"kind": "code",
@@ -137572,7 +137580,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " and\n"
+										"text": "\nand "
 									},
 									{
 										"kind": "code",
@@ -137580,7 +137588,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "); this function only runs when a writer, or a\ntest, calls it directly."
+										"text": ") for the same-tick signal a stat cannot\nprovide."
 									}
 								]
 							},
@@ -141863,23 +141871,23 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Read and cache the scope-merged config ("
+										"text": "Read and cache the LOCAL config (see "
 									},
 									{
 										"kind": "code",
-										"text": "`system → global → local →\nworktree`"
+										"text": "`loadConfigEntry`"
 									},
 									{
 										"kind": "text",
-										"text": ", matching git's own resolution order). A scope whose file is\nmissing, or whose file lives at a path this adapter cannot reach (e.g. the\nbrowser adapter has no system config), contributes nothing rather than\nerroring — mirroring "
+										"text": "'s own docstring for\nwhy merging system/global/worktree scopes here was tried and reverted —\nthis reads "
 									},
 									{
 										"kind": "code",
-										"text": "`readConfig`"
+										"text": "`${commonGitDir}/config`"
 									},
 									{
 										"kind": "text",
-										"text": "'s long-standing \"missing local file is\nempty config\" contract, now extended to every scope.\n\nThe cache is keyed on "
+										"text": " alone).\n\nThe cache is keyed on "
 									},
 									{
 										"kind": "code",
@@ -141895,7 +141903,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ") — a fresh session gets a fresh read; a\nwrite observed through any Context sharing the session invalidates it for\nevery other. Concurrent calls share the same in-flight promise\n(single-flight per session)."
+										"text": "/"
+									},
+									{
+										"kind": "code",
+										"text": "`coalescedMtimeKey`"
+									},
+									{
+										"kind": "text",
+										"text": ") — a fresh session gets a\nfresh read; a write observed through any Context sharing the session\ninvalidates it for every other. Concurrent calls share the same in-flight\npromise (single-flight per session)."
 									}
 								]
 							},
@@ -141992,7 +142008,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ") does NOT drop\nthese entries — callers that write the config file should still call\n"
+										"text": ") DELEGATES to\n"
+									},
+									{
+										"kind": "code",
+										"text": "`invalidateScopedConfigCache`"
+									},
+									{
+										"kind": "text",
+										"text": ", so it drops these entries too — callers\nthat write the config file should still call "
 									},
 									{
 										"kind": "code",
@@ -142000,7 +142024,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " too, for a same-tick rewrite the mtime\ncheck cannot distinguish from no change at all.\n\nIn the merged-read path ("
+										"text": "\ndirectly as well, for a same-tick rewrite the mtime check cannot\ndistinguish from no change at all.\n\nIn the merged-read path ("
 									},
 									{
 										"kind": "code",
@@ -150243,15 +150267,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " would.\n"
+										"text": " would.\n\nMatches an "
 									},
 									{
 										"kind": "code",
-										"text": "`assertValidSeeds`"
+										"text": "`async function*`"
 									},
 									{
 										"kind": "text",
-										"text": " still fires at the same point relative to iteration —\non "
+										"text": " generator's contract on the two points a\nnaive per-call "
 									},
 									{
 										"kind": "code",
@@ -150259,7 +150283,47 @@
 									},
 									{
 										"kind": "text",
-										"text": ", i.e. when a consumer starts iterating, not\nat call time — matching the previous generator's lazy-until-first-"
+										"text": " implementation would silently\nchange: the iterator returned here is built and memoised ONCE, at\n"
+									},
+									{
+										"kind": "code",
+										"text": "`walkCommitsByDate`"
+									},
+									{
+										"kind": "text",
+										"text": " call time, and "
+									},
+									{
+										"kind": "code",
+										"text": "`[Symbol.asyncIterator]()`"
+									},
+									{
+										"kind": "text",
+										"text": " always\nreturns that SAME object — so a second "
+									},
+									{
+										"kind": "code",
+										"text": "`for await...of`"
+									},
+									{
+										"kind": "text",
+										"text": " over the same\nreturned value re-enters the already-advanced (or already-exhausted)\niterator rather than starting a fresh walk, exactly as a generator's own\n"
+									},
+									{
+										"kind": "code",
+										"text": "`[Symbol.asyncIterator]() { return this }`"
+									},
+									{
+										"kind": "text",
+										"text": " does. "
+									},
+									{
+										"kind": "code",
+										"text": "`assertValidSeeds`"
+									},
+									{
+										"kind": "text",
+										"text": " runs\ninside the FIRST call to "
 									},
 									{
 										"kind": "code",
@@ -150267,7 +150331,55 @@
 									},
 									{
 										"kind": "text",
-										"text": "\nvalidation."
+										"text": ", not synchronously on\n"
+									},
+									{
+										"kind": "code",
+										"text": "`[Symbol.asyncIterator]()`"
+									},
+									{
+										"kind": "text",
+										"text": ", so an invalid "
+									},
+									{
+										"kind": "code",
+										"text": "`from`"
+									},
+									{
+										"kind": "text",
+										"text": " surfaces as a REJECTED\npromise a caller can "
+									},
+									{
+										"kind": "code",
+										"text": "`.catch()`"
+									},
+									{
+										"kind": "text",
+										"text": " — matching the previous generator's\nlazy-until-first-"
+									},
+									{
+										"kind": "code",
+										"text": "`next()`"
+									},
+									{
+										"kind": "text",
+										"text": " validation, where nothing in the generator body\n(including a "
+									},
+									{
+										"kind": "code",
+										"text": "`throw`"
+									},
+									{
+										"kind": "text",
+										"text": ") runs before the first "
+									},
+									{
+										"kind": "code",
+										"text": "`next()`"
+									},
+									{
+										"kind": "text",
+										"text": " call."
 									}
 								]
 							},
