@@ -207,6 +207,49 @@ describe('walkCommitsByDate', () => {
     });
   });
 
+  describe('Given a linear 5-commit chain walked fully once', () => {
+    describe('When a SECOND for-await runs over the same returned iterable', () => {
+      it("Then it yields nothing — single-use, matching an async-generator's own contract", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 5);
+        const walk = walkCommitsByDate(ctx, { from: [ids.at(-1)!] });
+        const first = await collect(walk);
+
+        // Act
+        const second: Commit[] = [];
+        for await (const commit of walk) second.push(commit);
+
+        // Assert
+        expect(idsOf(first)).toEqual([...ids].reverse());
+        expect(second).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given empty from', () => {
+    describe('When the first next() is awaited directly (not through for-await)', () => {
+      it('Then assertValidSeeds surfaces as a REJECTED promise, not a synchronous throw out of [Symbol.asyncIterator]()', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const iterable = walkCommitsByDate(ctx, { from: [] });
+
+        // Act — obtaining the iterator must not throw synchronously.
+        let iterator: AsyncIterator<Commit>;
+        try {
+          iterator = iterable[Symbol.asyncIterator]();
+        } catch {
+          expect.unreachable('Symbol.asyncIterator() must not throw synchronously');
+          return;
+        }
+
+        // Assert — the rejection surfaces from the first next() instead.
+        const rejection = iterator.next().catch((err: unknown) => err);
+        await expect(rejection).resolves.toMatchObject({ data: { code: 'INVALID_WALK_INPUT' } });
+      });
+    });
+  });
+
   describe('Given a diamond DAG with strictly increasing dates', () => {
     describe('When walkCommitsByDate is called from the merge', () => {
       it('Then yields all parents in exact newest-date order [d, c, b, a]', async () => {

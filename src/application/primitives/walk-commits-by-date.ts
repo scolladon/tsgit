@@ -25,31 +25,47 @@ import {
  * suspend/resume per commit for no work. `next`/`return` are forwarded
  * directly onto `commitDateWalk`'s iterator so an early `break` (`log`'s
  * `limit` cutoff) still closes it, exactly as `for await...of` would.
- * `assertValidSeeds` still fires at the same point relative to iteration —
- * on `[Symbol.asyncIterator]()`, i.e. when a consumer starts iterating, not
- * at call time — matching the previous generator's lazy-until-first-`next()`
- * validation.
+ *
+ * Matches an `async function*` generator's contract on the two points a
+ * naive per-call `[Symbol.asyncIterator]()` implementation would silently
+ * change: the iterator returned here is built and memoised ONCE, at
+ * `walkCommitsByDate` call time, and `[Symbol.asyncIterator]()` always
+ * returns that SAME object — so a second `for await...of` over the same
+ * returned value re-enters the already-advanced (or already-exhausted)
+ * iterator rather than starting a fresh walk, exactly as a generator's own
+ * `[Symbol.asyncIterator]() { return this }` does. `assertValidSeeds` runs
+ * inside the FIRST call to `next()`, not synchronously on
+ * `[Symbol.asyncIterator]()`, so an invalid `from` surfaces as a REJECTED
+ * promise a caller can `.catch()` — matching the previous generator's
+ * lazy-until-first-`next()` validation, where nothing in the generator body
+ * (including a `throw`) runs before the first `next()` call.
  */
 export function walkCommitsByDate(
   ctx: Context,
   options: WalkCommitsByDateOptions,
 ): AsyncIterable<Commit> {
+  let source: AsyncIterator<{ readonly commit: Commit }> | undefined;
+  let validated = false;
+  const iterator: AsyncIterator<Commit> = {
+    next: async (): Promise<IteratorResult<Commit>> => {
+      if (!validated) {
+        validated = true;
+        assertValidSeeds(options.from);
+      }
+      source ??= commitDateWalk(ctx, options)[Symbol.asyncIterator]();
+      const step = await source.next();
+      return step.done === true
+        ? { done: true, value: undefined }
+        : { done: false, value: step.value.commit };
+    },
+    return: async (): Promise<IteratorResult<Commit>> => {
+      await source?.return?.();
+      return { done: true, value: undefined };
+    },
+  };
   return {
     [Symbol.asyncIterator](): AsyncIterator<Commit> {
-      assertValidSeeds(options.from);
-      const source = commitDateWalk(ctx, options)[Symbol.asyncIterator]();
-      return {
-        next: async (): Promise<IteratorResult<Commit>> => {
-          const step = await source.next();
-          return step.done === true
-            ? { done: true, value: undefined }
-            : { done: false, value: step.value.commit };
-        },
-        return: async (): Promise<IteratorResult<Commit>> => {
-          await source.return?.();
-          return { done: true, value: undefined };
-        },
-      };
+      return iterator;
     },
   };
 }
