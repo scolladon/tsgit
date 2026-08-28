@@ -49,10 +49,12 @@ const NO_EXISTING_CRUFT: ExistingCruftPack = { mtimes: new Map(), packShas: [] }
 /** The `.mtimes` sidecar's own hash-id byte, peeked without trusting the
  *  rest of the header — used only to size the self-checksum slice safely. */
 function peekDigestLength(bytes: Uint8Array): number | undefined {
+  // Stryker disable next-line EqualityOperator: equivalent — `bytes.length === CRUFT_HEADER_SIZE` (12) is unreachable with a real trailer: `view.getUint32(8)` then reads bytes 8-11, so EVERY possible byte value there routes through either `return 20`/`return 32` or the trailing `return undefined`, followed by `candidateSelfChecksum`'s own `bytes.length !== trailerStart + digestLength` check — which always disagrees at exactly 12 bytes for any real objectCount/digestLength pair — so both branches resolve to `undefined` regardless of `<` vs `<=` at this one boundary value; every other length behaves identically under both operators.
   if (bytes.length < CRUFT_HEADER_SIZE) return undefined;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const hashId = view.getUint32(8);
   if (hashId === 1) return 20;
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing this condition's true-branch cannot change the RETURNED value when hashId genuinely IS 2 (same 32 either way), and for hashId ∉ {1, 2} the only caller (`readOneCruftSidecar` → `parseCruftMtimes`, domain/storage/cruft-pack.ts) independently validates `hashId === 1 || hashId === 2` and throws its own `hash-id` refusal BEFORE ever consulting the self-checksum this function's return value feeds — a wrongly-returned `32` for an invalid hashId is therefore never observed. `hashId === 1` (line above) already returns first, so this line is unreached whenever hashId is 1.
   if (hashId === 2) return 32;
   return undefined;
 }
@@ -72,6 +74,7 @@ async function candidateSelfChecksum(
   const digestLength = peekDigestLength(bytes);
   if (digestLength === undefined) return undefined;
   const trailerStart = CRUFT_HEADER_SIZE + 4 * objectCount + digestLength;
+  // Stryker disable next-line ConditionalExpression: equivalent — this internal length gate duplicates a check the ONLY caller (`parseCruftMtimes`, domain/storage/cruft-pack.ts) performs independently and unconditionally before ever consulting the `selfChecksum` this function returns; whenever the two checks would disagree, `parseCruftMtimes`'s own `bytes.length !== expectedLength` guard throws first (a structural `count`/`size` refusal), so no caller-observable outcome ever depends on whether this gate fires.
   if (bytes.length !== trailerStart + digestLength) return undefined;
   return ctx.hash.hash(bytes.subarray(0, trailerStart));
 }
@@ -107,6 +110,7 @@ async function readOneCruftSidecar(
 }
 
 const byPackName = (a: RegisteredPack, b: RegisteredPack): number =>
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,UnaryOperator: equivalent — `readExistingCruftPack`'s only uses of sort order are `mergeMtimesInto`'s per-oid `Math.max` (commutative, order-independent) and `packShas[0]` (read only from `applyCruftOutcome`'s `fate === 'noop'` branch, itself gated to `cruftPacks.length === 1` — a single-element array `.sort()` never even invokes this comparator). No observable outcome depends on the comparator's return value, in any branch or ordering.
   a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 
 /**
@@ -127,10 +131,12 @@ export async function readExistingCruftPack(
   ctx: Context,
   cruftPacks: ReadonlyArray<RegisteredPack>,
 ): Promise<ExistingCruftPack> {
+  // Stryker disable next-line ConditionalExpression: equivalent — bypassing this early return for an empty `cruftPacks` falls straight through an empty `for` loop (line below) to `return { mtimes: mergedMtimes, packShas }`, both freshly `new Map()`/`[]` — structurally identical by value to `NO_EXISTING_CRUFT`, and `packsDir`/`commonGitDir` are pure path-string derivations with no side effect to skip.
   if (cruftPacks.length === 0) return NO_EXISTING_CRUFT;
   const dir = packsDir(commonGitDir(ctx));
   const mergedMtimes = new Map<ObjectId, number>();
   const packShas: string[] = [];
+  // Stryker disable next-line MethodExpression: equivalent — see byPackName's own equivalence proof above: the sort's order has no observable consumer (`mergeMtimesInto`'s Math.max is commutative; `packShas[0]` is read only when `cruftPacks.length === 1`, where sorting a single element is a no-op either way), so processing `cruftPacks` unsorted merges to the identical `mergedMtimes`/`packShas` value.
   for (const pack of [...cruftPacks].sort(byPackName)) {
     const found = await readOneCruftSidecar(ctx, dir, pack);
     mergeMtimesInto(mergedMtimes, found.mtimes);

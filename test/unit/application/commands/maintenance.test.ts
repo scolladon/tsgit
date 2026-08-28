@@ -34,6 +34,7 @@ import {
   type MaintenanceTask,
   maintenance,
 } from '../../../../src/application/commands/maintenance.js';
+import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import * as enumerateObjectsMod from '../../../../src/application/primitives/enumerate-objects.js';
 import * as cruftPackLifecycleMod from '../../../../src/application/primitives/internal/cruft-pack-lifecycle.js';
 import { probeLooseOid } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
@@ -52,6 +53,7 @@ import {
 } from '../../../../src/application/primitives/read-object.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
+import * as writeObjectMod from '../../../../src/application/primitives/write-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -398,6 +400,25 @@ describe('maintenance', () => {
         enumerateSpy.mockRestore();
         writeGraphSpy.mockRestore();
         expect(gcOrder).toBeLessThan(graphOrder);
+      });
+    });
+  });
+
+  describe('Given tasks: ["gc", "gc"] — the same task requested twice', () => {
+    describe('When maintenance runs', () => {
+      it('Then it runs the task only once and tasksRun lists it only once', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const enumerateSpy = vi.spyOn(enumerateObjectsMod, 'enumerateObjects');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc', 'gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(enumerateSpy.mock.calls.length).toBe(1);
+        enumerateSpy.mockRestore();
       });
     });
   });
@@ -1540,8 +1561,169 @@ describe('maintenance', () => {
   });
 
   // ---------------------------------------------------------------------
-  // Existing-cruft-pack outcomes
+  // cruft .mtimes sidecar integrity
   // ---------------------------------------------------------------------
+
+  describe('Given an existing cruft pack (SHA-1) whose self-checksum trailer is corrupted', () => {
+    describe('When gc reads the existing cruft pack', () => {
+      it('Then it detects the corruption rather than silently accepting it', async () => {
+        // Arrange — two objects, so the self-checksum's own trailer offset
+        // depends on the real object count, not a coincidence of count 1.
+        const ctx = await seedOneCommit();
+        const idA = await writeLooseBlob(ctx, 'checksum-corrupt-a');
+        const idB = await writeLooseBlob(ctx, 'checksum-corrupt-b');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idA), 2_000_000_000);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idB), 2_000_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
+        const bytes = await ctx.fs.read(mtimesPath);
+        const corrupted = new Uint8Array(bytes);
+        const lastIndex = corrupted.length - 1;
+        corrupted[lastIndex] = (corrupted[lastIndex] ?? 0) ^ 0xff;
+        await ctx.fs.write(mtimesPath, corrupted);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_CRUFT_MTIMES');
+      });
+    });
+  });
+
+  describe('Given an existing cruft pack (SHA-256) whose self-checksum trailer is corrupted', () => {
+    describe('When gc reads the existing cruft pack', () => {
+      it('Then it detects the corruption using the correct 32-byte digest width', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'hello');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'seed', author: AUTHOR });
+        const idA = await writeLooseBlob(ctx, 'sha256-checksum-corrupt-a');
+        const idB = await writeLooseBlob(ctx, 'sha256-checksum-corrupt-b');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idA), 2_000_000_000);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idB), 2_000_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
+        const bytes = await ctx.fs.read(mtimesPath);
+        const corrupted = new Uint8Array(bytes);
+        const lastIndex = corrupted.length - 1;
+        corrupted[lastIndex] = (corrupted[lastIndex] ?? 0) ^ 0xff;
+        await ctx.fs.write(mtimesPath, corrupted);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_CRUFT_MTIMES');
+      });
+    });
+  });
+
+  describe('Given a cruft .mtimes sidecar truncated to 11 bytes — one short of its own header', () => {
+    describe('When gc reads the existing cruft pack', () => {
+      it('Then it refuses with a structured error rather than an out-of-bounds crash', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await writeLooseBlob(ctx, 'truncated-sidecar');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
+        await ctx.fs.write(mtimesPath, new Uint8Array(11));
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_CRUFT_MTIMES');
+      });
+    });
+  });
+
+  describe('Given the same oid across two crash-surviving cruft packs with different mtimes', () => {
+    describe('When the next gc runs', () => {
+      it('Then the merged mtime is the MAX across both sidecars, not the min', async () => {
+        // Arrange — oidA is crufted once (c1, mtime 1e9), then FRESHENED
+        // (rewritten loose with a newer mtime) alongside a brand-new oidB —
+        // the changed survivor SET (2 members, not 1) forces a genuine
+        // rewrite rather than the `fate === 'noop'` shortcut, so c2 really
+        // gets its own sidecar recording oidA's freshened (3e9) mtime.
+        // Crashing before c1's own retirement leaves BOTH sidecars —
+        // disagreeing on oidA — for the next gc's union to merge.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const oidAContent = 'merge-max-a';
+        const blobA = await writeLooseBlob(ctx, oidAContent);
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        const loosePathA = looseObjectPath(commonGitDir(ctx), blobA);
+        forceMtimeSeconds(loosePathA, 1_000_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] }); // c1: oidA -> 1e9
+        expect(first.cruftPackId).toBeDefined();
+        const c1Sha = first.cruftPackId as string;
+        const packDir = packDirOf(ctx);
+
+        await writeLooseBlob(ctx, oidAContent); // freshen oidA
+        forceMtimeSeconds(loosePathA, 3_000_000_000);
+        const blobB = await writeLooseBlob(ctx, 'merge-max-b');
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobB), 3_800_000_000);
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path.startsWith(`${packDir}/pack-${c1Sha}.`)) return;
+          return originalRm(path);
+        });
+        const second = await sut(ctx, { tasks: ['gc'] }); // c2: oidA -> 3e9, oidB -> 3.8e9
+        rmSpy.mockRestore();
+        expect(second.cruftPackId).toBeDefined();
+        expect(second.cruftPackId).not.toBe(c1Sha);
+        expect(second.cruftObjectsRetained + second.cruftObjectsAdded).toBe(2);
+
+        // Act — cutoff strictly between oidA's two recorded mtimes: only
+        // the MAX (3e9) beats it; oidB (3.8e9) survives regardless.
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @2000000000\n');
+        const third = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(third.cruftObjectsRetained).toBe(2);
+        expect(third.cruftObjectsExpired).toBe(0);
+      });
+    });
+  });
 
   describe('Given an existing cruft pack and new unreachable garbage appears', () => {
     describe('When gc runs again', () => {
@@ -1662,6 +1844,114 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given an existing cruft pack whose survivor set is exactly unchanged, with nothing else reachable', () => {
+    describe('When gc runs again', () => {
+      it('Then buildPack is never invoked — the noop shortcut skips the rebuild entirely', async () => {
+        // Arrange — an empty (no-commit) repository, so the normal-pack
+        // and promisor-pack builds are both skipped for having zero oids;
+        // any `buildPack` call can only come from the cruft path.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await writeLooseBlob(ctx, 'noop-shortcut-skips-build');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        buildPackSpy.mockClear();
+
+        // Act — nothing changed.
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBe(first.cruftPackId);
+        expect(buildPackSpy).not.toHaveBeenCalled();
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe("Given a crash state with two valid cruft packs whose union exactly matches this run's survivors", () => {
+    describe('When the next gc runs', () => {
+      it('Then it still rebuilds via buildPack — the noop shortcut requires exactly one existing cruft pack', async () => {
+        // Arrange — mirrors the two-cruft-pack crash-recovery fixture, but
+        // with no other reachable content, so any `buildPack` call can
+        // only come from the cruft path.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const oldBlobId = await writeLooseBlob(ctx, 'crash-noop-old');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), oldBlobId), 1_900_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const c1Sha = first.cruftPackId as string;
+        const packDir = packDirOf(ctx);
+
+        const newBlobId = await writeLooseBlob(ctx, 'crash-noop-new');
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), newBlobId), 1_950_000_000);
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path.startsWith(`${packDir}/pack-${c1Sha}.`)) return;
+          return originalRm(path);
+        });
+        const second = await sut(ctx, { tasks: ['gc'] });
+        rmSpy.mockRestore();
+        expect(second.cruftPackId).toBeDefined();
+        expect(second.cruftPackId).not.toBe(c1Sha);
+
+        // Act — a third gc, nothing new: the union of c1+c2 exactly
+        // matches this run's survivors, but existingCruftPackCount is 2.
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        buildPackSpy.mockClear();
+        const third = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(third.cruftObjectsRetained).toBe(2);
+        expect(buildPackSpy).toHaveBeenCalled();
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given an existing cruft pack whose survivor set is the same SIZE but a different member set', () => {
+    describe('When gc runs again', () => {
+      it('Then it still rebuilds via buildPack — a same-size set is not the same set', async () => {
+        // Arrange — A and B are crufted together; by the next run B has
+        // expired and C has newly appeared, so survivors (A, C) match
+        // existingCruftKeys (A, B) in SIZE but not in MEMBERSHIP.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const idA = await writeLooseBlob(ctx, 'partial-overlap-a');
+        const idB = await writeLooseBlob(ctx, 'partial-overlap-b');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idA), 2_000_000_000);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idB), 1_000_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftObjectsAdded).toBe(2);
+
+        await writeLooseBlob(ctx, 'partial-overlap-c');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1500000000\n');
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        buildPackSpy.mockClear();
+
+        // Act — B expires (mtime 1e9 <= cutoff), C is new: survivors are
+        // (A, C), size 2 — same size as the old (A, B), different members.
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftObjectsRetained).toBe(1);
+        expect(second.cruftObjectsAdded).toBe(1);
+        expect(second.cruftObjectsExpired).toBe(1);
+        expect(buildPackSpy).toHaveBeenCalled();
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given an object in the cruft pack made reachable again', () => {
     describe('When gc runs', () => {
       it('Then it moves to the normal pack and leaves the cruft set', async () => {
@@ -1689,9 +1979,90 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given an empty repository (no commits at all) with one unreachable blob crufted, then referenced directly by a ref', () => {
+    describe('When gc runs again', () => {
+      it('Then the rebuilt normal pack reproduces the old cruft pack byte-for-byte, and the cruft classification is dropped without destroying the pack', async () => {
+        // Arrange — with no commits at all, the crufted blob is the ONLY
+        // object gc ever owns; once it is the sole reachable object too,
+        // the rebuilt normal pack's oid set is byte-identical to the old
+        // cruft pack's, so `buildPack` reproduces the exact same sha.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const blobId = await writeLooseBlob(ctx, 'byte-identical-reuse');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        expect(first.packId).toBeUndefined();
+        const packDir = packDirOf(ctx);
+        const oldMtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
+        const oldPackPath = `${packDir}/pack-${first.cruftPackId}.pack`;
+
+        // Act — the ONLY reachable object in the whole repo now.
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/keep`, `${blobId}\n`);
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — declassified in place: same sha reused as the normal
+        // pack, never retired as garbage, its `.mtimes` sidecar dropped.
+        expect(second.packId).toBe(first.cruftPackId);
+        expect(second.cruftPackId).toBeUndefined();
+        expect(await ctx.fs.exists(oldMtimesPath)).toBe(false);
+        expect(await ctx.fs.exists(oldPackPath)).toBe(true);
+        await expect(readObject(ctx, blobId, { verifyHash: true })).resolves.toMatchObject({
+          type: 'blob',
+        });
+      });
+    });
+  });
+
+  describe('Given a normal pack rebuild that does not reproduce any existing cruft pack', () => {
+    describe('When gc runs again', () => {
+      it('Then it never attempts to declassify a cruft pack — no .mtimes rm for a pack that was never cruft', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        await sut(ctx, { tasks: ['gc'] });
+        const rmSpy = vi.spyOn(ctx.fs, 'rm');
+
+        // Act — same content, same normal pack sha; no cruft pack exists at all.
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+        expect(rmSpy.mock.calls.some(([path]) => (path as string).endsWith('.mtimes'))).toBe(false);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // gc.cruftPacks=false
   // ---------------------------------------------------------------------
+
+  describe('Given a malformed gc.cruftPacks value', () => {
+    describe('When gc runs', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming cruftPacks', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tcruftPacks = bogus\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect((err.data as { key: string }).key.toLowerCase()).toContain('cruftpacks');
+      });
+    });
+  });
 
   describe('Given gc.cruftPacks=false and a fresh unreachable object', () => {
     describe('When gc runs', () => {
@@ -1760,6 +2131,96 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given gc.cruftPacks=false and a survivor already loose', () => {
+    describe('When gc runs', () => {
+      it('Then it is never re-written — already loose is a no-op', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'already-loose-write-back');
+        await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n');
+        const writeSpy = vi.spyOn(writeObjectMod, 'writeObject');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftPackId).toBeUndefined();
+        expect(await isLoose(ctx, blobId)).toBe(true);
+        expect(writeSpy).not.toHaveBeenCalled();
+        writeSpy.mockRestore();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Loose-prune fault tolerance
+  // ---------------------------------------------------------------------
+
+  describe('Given a loose unreachable object past the cutoff whose own rm races to FILE_NOT_FOUND during prune', () => {
+    describe('When gc runs', () => {
+      it('Then it tolerates the race rather than failing the run', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'prune-race-tolerated');
+        const loosePath = looseObjectPath(commonGitDir(ctx), blobId);
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        const CUTOFF = 1_700_000_000;
+        forceMtimeSeconds(loosePath, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path === loosePath) throw fileNotFound(loosePath);
+          return originalRm(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(result.cruftObjectsExpired).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a loose unreachable object past the cutoff whose own rm fails with a non-FILE_NOT_FOUND fault during prune', () => {
+    describe('When gc runs', () => {
+      it('Then it rethrows the fault rather than silently swallowing it', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'prune-eacces');
+        const loosePath = looseObjectPath(commonGitDir(ctx), blobId);
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        const CUTOFF = 1_700_000_000;
+        forceMtimeSeconds(loosePath, CUTOFF - 100);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const genericFault = Object.assign(new Error('EACCES: permission denied'), {
+          data: { code: 'EACCES' },
+        });
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path === loosePath) throw genericFault;
+          return originalRm(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(genericFault);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Deletion safety
   // ---------------------------------------------------------------------
@@ -1819,6 +2280,32 @@ describe('maintenance', () => {
         refreshPackRegistry(ctx);
         const registeredNames = (await getPackRegistry(ctx).all()).map((p) => p.name);
         expect(registeredNames).not.toContain(`pack-${first.cruftPackId}`);
+      });
+    });
+  });
+
+  describe('Given a cruft pack whose .rev sibling is already absent when it is retired', () => {
+    describe('When gc retires it', () => {
+      it('Then the absence is tolerated, not rethrown', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'retire-tolerant-rev');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), 1_000_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const revPath = `${packDir}/pack-${first.cruftPackId}.rev`;
+        if (await ctx.fs.exists(revPath)) await ctx.fs.rm(revPath);
+
+        // Act — every entry expires this run, retiring the cruft pack entirely.
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBeUndefined();
       });
     });
   });
@@ -2378,6 +2865,72 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a fanout dir readdir fails with a fault that is neither FILE_NOT_FOUND nor NOT_A_DIRECTORY, and the dir never existed', () => {
+    describe('When gc runs', () => {
+      it('Then it rethrows rather than tolerating the fault as absence', async () => {
+        // Arrange — `errorDataCode` reads `.data.code` structurally, so a
+        // plain `Error` with a bare `.code` property (not `.data.code`)
+        // classifies as neither known fault: `isFanoutDirAbsent` must fall
+        // through to its `!(await ctx.fs.exists(dir))` fallback. The dir is
+        // never created, so that fallback alone can't be trusted to save a
+        // wrongly-skipped early return — pinning the early `return false`
+        // still fires for this fault BEFORE the exists() fallback ever runs.
+        const ctx = await seedOneCommit();
+        const fanoutDir = `${ctx.layout.gitDir}/objects/cd`;
+        const genericFault = Object.assign(new Error('EACCES: permission denied'), {
+          data: { code: 'EACCES' },
+        });
+        const original = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          if (path === fanoutDir) throw genericFault;
+          return original(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(genericFault);
+        expect(await ctx.fs.exists(fanoutDir)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given every fanout dir is absent except one holding real litter', () => {
+    describe('When gc runs', () => {
+      it('Then only the real litter file is ever lstat-probed — an absent fanout dir contributes no phantom candidate', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const litterPath = `${ctx.layout.gitDir}/objects/ab/tmp_obj_real`;
+        await ctx.fs.write(litterPath, new Uint8Array(0));
+        const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — pack-file lstats (lstatPacks) and the retention-root scan's
+        // own HEAD lstat are excluded by name; every REMAINING lstat call
+        // must be the one real litter candidate. A fanout dir tolerated as
+        // absent must never contribute a bogus element into the candidate
+        // array passed downstream — this catches an injected element even
+        // though it is not itself objects-root-prefixed.
+        const headPath = `${ctx.layout.gitDir}/HEAD`;
+        const litterCandidateLstatPaths = lstatSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path !== headPath && !path.includes('/pack-'));
+        expect(litterCandidateLstatPaths).toEqual([litterPath]);
+      });
+    });
+  });
+
   describe('Given a repository a prior gc already fully consolidated, with a stale tmp_ litter file planted afterward', () => {
     describe('When gc runs again', () => {
       it('Then the litter is still removed even though repack and prune find nothing new to do', async () => {
@@ -2581,6 +3134,38 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given an object both loose AND already inside a *.keep-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then it is still excluded from a fresh normal pack — the *.keep total exclusion wins even for a loose duplicate', async () => {
+        // Arrange — everything reachable lives ONLY in the kept pack except
+        // the commit, which is ALSO duplicated loose: the ONLY route by
+        // which this object enters the candidate set at all (an object
+        // living purely inside a kept pack never becomes a candidate in the
+        // first place, so a kept-but-never-otherwise-owned object can't
+        // exercise this guard).
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const commitId = (
+          await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)
+        ).trim() as ObjectId;
+        const packDir = packDirOf(ctx);
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
+        const commitObj = await readObject(ctx, commitId, { verifyHash: true });
+        await writeObject(ctx, commitObj);
+        expect(await isLoose(ctx, commitId)).toBe(true);
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — nothing new to pack: the loose duplicate is pruned as
+        // already-packed (via the kept pack), never repacked.
+        expect(second.packId).toBeUndefined();
+        expect(await isLoose(ctx, commitId)).toBe(false);
+      });
+    });
+  });
+
   describe('Given an unreachable object living inside a *.keep-marked pack', () => {
     describe('When gc runs', () => {
       it('Then no cruft pack is written for it', async () => {
@@ -2715,6 +3300,58 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a second gc where nothing needs retiring', () => {
+    describe('When gc runs', () => {
+      it('Then it never awaits settleRefresh — the empty-retirement guard short-circuits before any refresh', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        await sut(ctx, { tasks: ['gc'] });
+        const registry = getPackRegistry(ctx);
+        const settleSpy = vi.spyOn(registry, 'settleRefresh');
+
+        // Act — same content, nothing to retire.
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — `settleRefresh` is called ONLY from inside
+        // `retireSupersededPacks`, gated on the same guard.
+        expect(result.packsRetired).toBe(0);
+        expect(settleSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a second gc with nothing retired and a multi-pack-index already present', () => {
+    describe('When gc runs', () => {
+      it('Then expireMidxIfNeeded never reads it — the empty-retirement guard short-circuits first', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
+        const midxPath = multiPackIndexPath(packDir);
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        let expireMidxRead = false;
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          // The pack registry's own scan also reads the midx; only a read
+          // attributable to `expireMidxIfNeeded` itself is tracked here.
+          if (path === midxPath && new Error().stack?.includes('expireMidxIfNeeded')) {
+            expireMidxRead = true;
+          }
+          return originalRead(path);
+        });
+
+        // Act — same content, nothing retired.
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packsRetired).toBe(0);
+        expect(expireMidxRead).toBe(false);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // The three-source mtime max
   // ---------------------------------------------------------------------
@@ -2834,6 +3471,75 @@ describe('maintenance', () => {
         expect(second.cruftPackId).toBeDefined();
         const recorded = await readCruftMtime(ctx, second.cruftPackId as string, blobId);
         expect(recorded).toBe(PAST_MTIME);
+      });
+    });
+  });
+
+  describe('Given an unreachable object present in two separate pre-existing normal packs with different mtimes', () => {
+    describe('When gc runs', () => {
+      it('Then its resolved mtime is the MAX of the two pack mtimes, not the min', async () => {
+        // Arrange — two independent synthetic normal packs sharing one oid;
+        // an object migrating out of more than one superseded normal pack
+        // at once must carry the NEWEST of their mtimes forward.
+        const ctx = await seedOneCommit();
+        const content = 'shared-across-two-normal-packs';
+        await writeSyntheticPack(ctx, 'dup-src-a', [
+          { kind: 'base', type: 'blob', content: enc.encode(content) },
+        ]);
+        await writeSyntheticPack(ctx, 'dup-src-b', [
+          { kind: 'base', type: 'blob', content: enc.encode(content) },
+        ]);
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        const packDir = packDirOf(ctx);
+        forceMtimeSeconds(`${packDir}/pack-dup-src-a.pack`, 1_000_000_000);
+        forceMtimeSeconds(`${packDir}/pack-dup-src-b.pack`, 3_000_000_000);
+        const CUTOFF = 2_000_000_000;
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert — survives because the MAX (3e9) beats the cutoff, even
+        // though the MIN (1e9) would not.
+        expect(result.cruftObjectsAdded).toBe(1);
+        expect(result.cruftObjectsExpired).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an object packed while reachable, then made unreachable and aged past the cutoff', () => {
+    describe('When gc runs', () => {
+      it('Then prunedLooseObjects stays at zero — a pack-only doomed object is never counted as a loose prune', async () => {
+        // Arrange — the doomed subgraph (commit+tree+blob) lives ONLY in the
+        // superseded normal pack by the time it is doomed, never loose.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await seedDoomedBlob(ctx, 'doomed-from-normal-pack');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.packId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        const CUTOFF = 1_700_000_000;
+        forceMtimeSeconds(`${packDir}/pack-${first.packId}.pack`, CUTOFF - 100);
+        await severDoomedBranch(ctx);
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftObjectsExpired).toBe(3);
+        expect(second.prunedLooseObjects).toBe(0);
+        let caught: unknown;
+        try {
+          await readObject(ctx, blobId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
       });
     });
   });
@@ -3038,6 +3744,140 @@ describe('maintenance', () => {
 
         // Assert
         expect(Buffer.compare(Buffer.from(midxBefore), Buffer.from(midxAfter))).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming only a pack that survives this run, while a different pack is retired', () => {
+    describe('When gc runs', () => {
+      it('Then it is left untouched — no named pack is actually gone', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const second = await sut(ctx, { tasks: ['gc'] });
+        expect(second.packId).toBeDefined();
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
+        const midxPath = multiPackIndexPath(packDir);
+        const midxBefore = await ctx.fs.read(midxPath);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'more still');
+        await add(ctx, ['c.txt']);
+        await commit(ctx, { message: 'third', author: AUTHOR });
+
+        // Act — this run retires packId2 (superseded), never packId1 (kept).
+        const third = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(third.packsRetired).toBeGreaterThan(0);
+        const midxAfter = await ctx.fs.read(midxPath);
+        expect(Buffer.compare(Buffer.from(midxBefore), Buffer.from(midxAfter))).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming both a surviving pack and a pack this run retires', () => {
+    describe('When gc runs', () => {
+      it('Then it is deleted — at least one named pack is gone', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const second = await sut(ctx, { tasks: ['gc'] });
+        expect(second.packId).toBeDefined();
+        await writeMinimalMidx(
+          ctx,
+          packDir,
+          [`pack-${first.packId}.idx`, `pack-${second.packId}.idx`].sort(),
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'more still');
+        await add(ctx, ['c.txt']);
+        await commit(ctx, { message: 'third', author: AUTHOR });
+
+        // Act
+        const third = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(third.packsRetired).toBeGreaterThan(0);
+        expect(await ctx.fs.exists(multiPackIndexPath(packDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming a cruft pack this run retires entirely', () => {
+    describe('When gc runs again', () => {
+      it('Then the multi-pack-index is expired too', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'cruft-midx-expire');
+        const { forceMtimeSeconds } = installLstatOverrides(ctx);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), 1_000_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.cruftPackId}.idx`]);
+
+        // Act — every entry expires this run, deleting the cruft pack entirely.
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBeUndefined();
+        expect(await ctx.fs.exists(multiPackIndexPath(packDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index read failing with a non-FILE_NOT_FOUND fault while a pack is being retired', () => {
+    describe('When gc runs', () => {
+      it('Then it rethrows rather than tolerating the fault as absence', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        const midxPath = multiPackIndexPath(packDir);
+        await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'more');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author: AUTHOR });
+        const genericFault = Object.assign(new Error('EACCES: permission denied'), {
+          data: { code: 'EACCES' },
+        });
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          // The pack registry's own scan also reads the midx; only the
+          // read from `expireMidxIfNeeded` itself is faulted here, so a
+          // registry-owned read never masks this function's own handling.
+          if (path === midxPath && new Error().stack?.includes('expireMidxIfNeeded')) {
+            throw genericFault;
+          }
+          return originalRead(path);
+        });
+
+        // Act — the first pack is superseded this run, so retiredIdxNames
+        // is non-empty and the midx read is actually attempted.
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(genericFault);
       });
     });
   });

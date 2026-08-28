@@ -905,6 +905,7 @@ export async function runGcTask(
   // neither of which has any concept of an object having been removed.
   for (const id of doomedSet) {
     ctx.deltaCache.delete(id);
+    // Stryker disable next-line CallExpression: equivalent — `resolveObject` (object-resolver.ts) always calls `resolveObjectBytesWithDepth` first, which independently re-verifies existence via the just-cleared `ctx.deltaCache`, the (now-unlinked) loose file, and the (already-refreshed) pack registry, throwing `objectNotFound` before this memo is ever consulted; content-addressing also means any surviving entry could never disagree with a fresh parse of the same oid.
     forgetParsedObjectMemo(ctx, id);
   }
 
@@ -914,6 +915,7 @@ export async function runGcTask(
     await declassifyCruftPack(ctx, packDir, reusedCruftSha);
   }
 
+  // Stryker disable next-line ConditionalExpression: equivalent — the sole reader is the `pack.name !== reusedNormalName` filter below; `pack-${normalPack.packId}` can equal an EXISTING classification.normal pack's name if and only if `reuse === 'normal'` (identical predicate, `existingNormalNames.has('pack-' + pack.sha)`, in buildAndWriteNormalPack), so forcing this ternary's true-branch unconditionally never matches a real pack.name when reuse isn't actually 'normal' — same as `undefined`.
   const reusedNormalName = normalPack.reuse === 'normal' ? `pack-${normalPack.packId}` : undefined;
   const normalPacksToRetire = classification.normal.filter(
     (pack) => pack.name !== reusedNormalName,
@@ -954,6 +956,7 @@ export async function runGcTask(
   await removeStaleTempFiles(ctx, packDir, cutoff);
 
   // --- step 11: invalidate, refresh, packBytesAfter ---
+  // Stryker disable next-line CallExpression: equivalent — the registry's dirty-flag/lazy-rescan model (`refreshPackRegistry` marks dirty; the NEXT `.all()`/`.lookup()` call performs the actual re-scan) means this call is always redundant with an earlier one: every pack write in this run happens before step 8's own `refreshPackRegistry` + the registry calls inside the verify/packedAnywhere loops (so those already observe every write), and `retireSupersededPacks` performs its OWN `registry.refresh()` immediately before any unlink whenever it retires anything — so `getPackRegistry(ctx).all()` below always re-scans against a state already known-fresh, with or without this line — confirmed empirically (hand-applied CallExpression removal, full covering set still green).
   refreshPackRegistry(ctx);
   const allPacksAfter = await getPackRegistry(ctx).all();
   const packsAfter = allPacksAfter.length;

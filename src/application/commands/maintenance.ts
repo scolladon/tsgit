@@ -119,6 +119,7 @@ export const maintenance = async (
     commitGraphWritten: false,
     commitsInGraph: 0,
   };
+  // Stryker disable next-line BooleanLiteral: equivalent — `gcOutcome.ran` is read only inside the loop below, immediately after `gcOutcome` is reassigned in that same iteration's `gc` branch; the final return spreads only `.result`, never `.ran`. This initial value is therefore never observed, whichever task list is requested.
   let gcOutcome: { readonly ran: boolean; readonly result: GcResult } = {
     ran: false,
     result: GC_NOT_RUN,
