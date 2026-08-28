@@ -960,9 +960,10 @@ describe('decodePktStream — buffer-ownership safety', () => {
           yield stitched.subarray(splitOne, splitTwo);
           yield stitched.subarray(splitTwo);
         }
+        const sut = decodePktStream;
 
         // Act
-        const result = await collect(decodePktStream(threeChunkSource()));
+        const result = await collect(sut(threeChunkSource()));
 
         // Assert
         expect(result).toEqual([
