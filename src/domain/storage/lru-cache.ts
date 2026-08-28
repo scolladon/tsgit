@@ -103,6 +103,7 @@ export function createLruCache<V>(
         existing.byteSize = byteSize;
         currentSize += byteSize;
         // Same head fast-path as `get`: already-MRU needs no relink.
+        // Stryker disable next-line ConditionalExpression: equivalent — forcing the relink when existing===head is a no-op: removeNode(head) leaves a fully-formed list (head=node.next, its .prev cleared) and addToHead re-inserts at the front, reproducing the exact original order (hand-traced for both the single-node and multi-node case).
         if (existing !== head) {
           removeNode(existing);
           addToHead(existing);

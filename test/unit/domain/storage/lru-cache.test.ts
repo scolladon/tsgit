@@ -181,6 +181,32 @@ describe('lru-cache', () => {
         });
       });
     });
+
+    describe('Given cache(90) with A(30), B(30), C(30) set in that order (C is head/MRU)', () => {
+      describe('When A (not head) is re-set, then three more sets apply capacity pressure', () => {
+        it('Then A was correctly relinked to MRU on update and is evicted on its true LRU turn — not orphaned from the eviction chain forever', () => {
+          // Arrange — A is tail (LRU) before the update; re-setting it while
+          // not head must relink it into the list, not just unlink it.
+          const sut = createLruCache<string>(90);
+          sut.set('a', 'val-a', 30);
+          sut.set('b', 'val-b', 30);
+          sut.set('c', 'val-c', 30);
+
+          // Act — re-set 'a' (not head) promotes it to MRU; three more sets
+          // are exactly enough capacity pressure to cycle it back to tail
+          // and evict it, proving it was relinked rather than orphaned.
+          sut.set('a', 'val-a-2', 30);
+          sut.set('d', 'val-d', 30);
+          sut.set('e', 'val-e', 30);
+          sut.set('f', 'val-f', 30);
+
+          // Assert
+          expect(sut.has('a')).toBe(false);
+          expect(sut.has('d')).toBe(true);
+          expect(sut.entryCount).toBe(3);
+        });
+      });
+    });
   });
 
   describe('size tracking', () => {
