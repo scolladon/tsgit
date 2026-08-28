@@ -1843,6 +1843,72 @@ describe('add', () => {
     });
   });
 
+  describe('Given three hostile paths where the settle order is neither ordinal order nor its reverse', () => {
+    describe('When add runs', () => {
+      it('Then the recorded error still corresponds to the earliest-walked path — not merely whichever settled last', async () => {
+        // Arrange — walk (ordinal) order is a.txt(0), m.txt(1), z.txt(2).
+        // Settle order is chained the OPPOSITE of walk order except for the
+        // middle entry: z settles first (releasing a), a settles second
+        // (releasing m), m settles LAST. A firstError keyed by "whichever
+        // settled most recently" would land on m (ordinal 1) — neither the
+        // first-settled (z) nor the correct answer (a, ordinal 0) — so this
+        // is the one arrangement that distinguishes "always overwrite" from
+        // "overwrite only when this ordinal is a new minimum".
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'm.txt': 'm', 'z.txt': 'z' });
+        let releaseA: (() => void) | undefined;
+        const aGate = new Promise<void>((resolve) => {
+          releaseA = resolve;
+        });
+        let releaseM: (() => void) | undefined;
+        const mGate = new Promise<void>((resolve) => {
+          releaseM = resolve;
+        });
+        const baseLstat = ctx.fs.lstat;
+        const racingCtx = {
+          ...ctx,
+          fs: new Proxy(ctx.fs, {
+            get(target, prop, receiver) {
+              if (prop === 'lstat') {
+                return async (path: string) => {
+                  if (path.endsWith('/z.txt')) {
+                    releaseA?.();
+                    throw permissionDenied(path);
+                  }
+                  if (path.endsWith('/a.txt')) {
+                    await aGate;
+                    releaseM?.();
+                    throw permissionDenied(path);
+                  }
+                  if (path.endsWith('/m.txt')) {
+                    await mGate;
+                    throw permissionDenied(path);
+                  }
+                  return baseLstat(path);
+                };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(racingCtx, [], { all: true });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; path: string };
+        expect(data.code).toBe('PERMISSION_DENIED');
+        expect(data.path.endsWith('/a.txt')).toBe(true);
+      });
+    });
+  });
+
   describe('Given multiple unsorted modified and removed files', () => {
     describe('When add({ all: true })', () => {
       it('Then modified and removed are each independently sorted', async () => {

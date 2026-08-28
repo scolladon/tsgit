@@ -261,6 +261,7 @@ const stageWalkedEntries = async (
             if (outcome !== undefined) outcomes.push(outcome);
           },
           (error: unknown) => {
+            // Stryker disable next-line EqualityOperator: equivalent — `ordinal` is a distinct integer per dispatch() call (assigned via a single monotonically-incrementing `ordinal++` in the walk loop), so `ordinal === firstError.ordinal` can only be true when this IS the entry that already set firstError — impossible, since a settled promise's rejection handler runs at most once; `<=` and `<` are therefore indistinguishable at every reachable call (full add.test.ts suite, incl. the earliest-walked-path race tests, passes unmutated).
             if (firstError === undefined || ordinal < firstError.ordinal) {
               firstError = { error, ordinal };
             }
