@@ -48,6 +48,18 @@ const catchTsgitError = async (thunk: () => Promise<unknown>): Promise<TsgitErro
   throw new Error('expected thunk to throw');
 };
 
+/** Runs `thunk`, capturing ITS rejection whatever its type — unlike
+ *  `catchTsgitError`, no `TsgitError` cast, so a plain injected `Error`
+ *  (e.g. a simulated transient I/O fault) is returned as-is. */
+const catchAnyError = async (thunk: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await thunk();
+  } catch (err) {
+    return err;
+  }
+  throw new Error('expected thunk to throw');
+};
+
 describe('primitives/internal/repo-state', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
@@ -139,6 +151,32 @@ describe('primitives/internal/repo-state', () => {
           key: 'core.sparsecheckout',
           value: 'bogus',
         });
+      });
+    });
+  });
+
+  describe('Given the gate-verdict compute rejects transiently on the first call', () => {
+    describe('When assertOperationalRepository is called again', () => {
+      it('Then the second call re-runs compute and succeeds — the rejection is never cached', async () => {
+        // Arrange — simulates a transient EACCES/EIO/EMFILE surfacing from
+        // one of the eager finders `computeGateVerdict` awaits.
+        const ctx = await seededCtx();
+        const spy = vi.spyOn(configReadMod, 'findFirstInvalidCompression');
+        spy.mockImplementationOnce(() => {
+          throw new Error('transient EACCES');
+        });
+
+        // Act
+        const first = await catchAnyError(() => assertOperationalRepository(ctx));
+        const second = await assertOperationalRepository(ctx);
+
+        // Assert — the first call surfaces the transient failure; the memo
+        // does not poison the session, so the second call re-runs compute
+        // (mockImplementationOnce is spent) and resolves normally.
+        expect(first).toBeInstanceOf(Error);
+        expect((first as Error).message).toBe('transient EACCES');
+        expect(typeof second).toBe('string');
+        spy.mockRestore();
       });
     });
   });

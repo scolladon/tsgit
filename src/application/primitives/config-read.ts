@@ -236,6 +236,16 @@ let gateVerdictCache: WeakMap<Context['session'], Promise<FilePath>> = new WeakM
  * this memo alongside its own, so a config write observed through that
  * invalidator — from ANY Context sharing the session, not just the one that
  * first populated the memo — is observed here too.
+ *
+ * A REJECTED verdict is never left cached: `compute` can fail on a transient
+ * condition (EACCES/EIO/EMFILE reading the config file) that has nothing to
+ * do with the repository's actual state, and caching that failure would
+ * permanently poison the session until `invalidateConfigCache` happens to
+ * run — every later command would refuse for a fault that already cleared.
+ * The eviction only removes the entry when it is STILL the one this call
+ * populated: a later, successful `compute` may already have replaced it
+ * (e.g., a concurrent call after `invalidateConfigCache`), and this handler
+ * must not evict that fresh entry out from under it.
  */
 export const memoizeGateVerdict = (
   ctx: Context,
@@ -245,6 +255,9 @@ export const memoizeGateVerdict = (
   if (existing !== undefined) return existing;
   const pending = compute(ctx);
   gateVerdictCache.set(ctx.session, pending);
+  pending.catch(() => {
+    if (gateVerdictCache.get(ctx.session) === pending) gateVerdictCache.delete(ctx.session);
+  });
   return pending;
 };
 
