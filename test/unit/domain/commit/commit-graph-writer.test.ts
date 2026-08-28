@@ -6,7 +6,10 @@ import {
   OCTOPUS_FLAG,
 } from '../../../../src/domain/commit/commit-graph.js';
 import type { CommitGraphWriterCommit } from '../../../../src/domain/commit/commit-graph-writer.js';
-import { serializeCommitGraph } from '../../../../src/domain/commit/commit-graph-writer.js';
+import {
+  MAX_GENERATION_OFFSET,
+  serializeCommitGraph,
+} from '../../../../src/domain/commit/commit-graph-writer.js';
 import { decode } from '../../../../src/domain/objects/encoding.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -175,6 +178,26 @@ describe('serializeCommitGraph', () => {
     });
   });
 
+  describe('Given a commit with exactly two parents (an ordinary merge, not an octopus)', () => {
+    describe('When serialized', () => {
+      it('Then numChunks stays 4 — a 2-parent merge never gets an EDGE chunk', () => {
+        // Arrange — `planEdges` only chains positions for 3+-parent commits;
+        // a 2-parent merge's parent2 is a plain CDAT slot (`resolveParent2`),
+        // so an EDGE chunk here would be pure (git-unfaithful) dead weight.
+        const p0 = commit('c0', []);
+        const p1 = commit('c1', []);
+        const merge = commit('c2', [p0.id, p1.id]);
+
+        // Act
+        const bytes = serializeCommitGraph([p0, p1, merge], SHA1_CONFIG);
+
+        // Assert
+        expect(bytes[6]).toBe(4);
+        expect(() => findChunkRowIndex(bytes, 'EDGE')).toThrow();
+      });
+    });
+  });
+
   describe('Given three commits with distinct first oid bytes', () => {
     describe('When serialized', () => {
       it('Then OIDF is exactly 1024 bytes with correct cumulative counts', () => {
@@ -257,6 +280,32 @@ describe('serializeCommitGraph', () => {
     });
   });
 
+  describe('Given a 3-commit linear chain', () => {
+    describe('When serialized', () => {
+      it("Then each commit's CDAT level is 1 + its parent's level (root=1, child=2, grandchild=3)", () => {
+        // Arrange — git's own convention: a root's level is 1, pinned by the
+        // write interop suite ("a 3-commit linear chain's tip carries genWord
+        // 12 = level 3 × 4"); this is the level-only unit pin for that fact.
+        const c0 = commit('c0', []);
+        const c1 = commit('c1', [c0.id]);
+        const c2 = commit('c2', [c1.id]);
+
+        // Act — sorted-oid order is c0 < c1 < c2 already, matching construction.
+        const bytes = serializeCommitGraph([c0, c1, c2], SHA1_CONFIG);
+        const view = new DataView(bytes.buffer);
+        const cdat = chunkRange(bytes, view, 'CDAT');
+        const entrySize = 20 + 16;
+        const levelOf = (pos: number): number =>
+          Math.floor(view.getUint32(cdat.start + pos * entrySize + 20 + 8) / 4);
+
+        // Assert
+        expect(levelOf(0)).toBe(1);
+        expect(levelOf(1)).toBe(2);
+        expect(levelOf(2)).toBe(3);
+      });
+    });
+  });
+
   describe('Given a committer date at the 34-bit ceiling', () => {
     describe('When serialized', () => {
       it('Then genWord wraps mod 2**34 rather than refusing, matching git’s own silent truncation', () => {
@@ -276,6 +325,44 @@ describe('serializeCommitGraph', () => {
         // Assert
         expect(view.getUint32(cdat.start + 20 + 8)).toBe(1 * 4 + 0);
         expect(view.getUint32(cdat.start + 20 + 12)).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a chain whose corrected-date offset is exactly MAX_GENERATION_OFFSET', () => {
+    describe('When serialized', () => {
+      it('Then numChunks stays 4 — the boundary is inclusive, no overflow yet', () => {
+        // Arrange — offset = correctedDate(child) - committerDate(child) =
+        // (parentDate + 1) - 0 = parentDate + 1; set parentDate so that
+        // lands exactly on MAX_GENERATION_OFFSET.
+        const parentDate = MAX_GENERATION_OFFSET - 1;
+        const parent = commit('c0', [], { committerDate: parentDate });
+        const child = commit('c1', [parent.id], { committerDate: 0 });
+
+        // Act
+        const bytes = serializeCommitGraph([parent, child], SHA1_CONFIG);
+
+        // Assert
+        expect(bytes[6]).toBe(4);
+        expect(() => findChunkRowIndex(bytes, 'GDO2')).toThrow();
+      });
+    });
+  });
+
+  describe('Given a chain whose corrected-date offset is exactly MAX_GENERATION_OFFSET + 1', () => {
+    describe('When serialized', () => {
+      it('Then numChunks is 5 — one past the boundary overflows into GDO2', () => {
+        // Arrange
+        const parentDate = MAX_GENERATION_OFFSET;
+        const parent = commit('c0', [], { committerDate: parentDate });
+        const child = commit('c1', [parent.id], { committerDate: 0 });
+
+        // Act
+        const bytes = serializeCommitGraph([parent, child], SHA1_CONFIG);
+
+        // Assert
+        expect(bytes[6]).toBe(5);
+        expect(() => findChunkRowIndex(bytes, 'GDO2')).not.toThrow();
       });
     });
   });
