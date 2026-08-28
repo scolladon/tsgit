@@ -445,6 +445,23 @@ describe('commit', () => {
       });
     });
 
+    describe('Given a commit with no blank-line separator at all (headers only)', () => {
+      describe('When parsing', () => {
+        it('Then message is empty string', () => {
+          // Arrange — no "\n\n" anywhere, so findBlankLine returns -1
+          const content = encode(
+            `tree ${'b'.repeat(40)}\nauthor A <a@a.com> 0 +0000\ncommitter A <a@a.com> 0 +0000`,
+          );
+
+          // Act
+          const result = parseCommitContent(DUMMY_ID, content);
+
+          // Assert
+          expect(result.data.message).toBe('');
+        });
+      });
+    });
+
     describe('Given a commit with message without trailing newline', () => {
       describe('When parsing', () => {
         it('Then message has no trailing newline', () => {

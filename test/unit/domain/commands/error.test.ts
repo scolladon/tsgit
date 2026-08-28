@@ -1567,6 +1567,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       "CONFIG_BAD_NUMERIC_VALUE: bad numeric config value '2147483648' for 'core.loosecompression' in file /repo/.git/config: out of range",
     ],
     [
+      { code: 'CONFIG_BAD_DATE_VALUE', value: 'not-a-date' },
+      "CONFIG_BAD_DATE_VALUE: bad date config value 'not-a-date'",
+    ],
+    [
       {
         code: 'CONFIG_BAD_BOOLEAN_VALUE',
         key: 'core.bare',
