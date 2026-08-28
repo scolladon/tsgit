@@ -11,6 +11,7 @@ import {
 import { TsgitError } from '../../domain/error.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { invalidateScopedConfigCache } from './config-scoped-read.js';
 import { layoutFailsTrustGate } from './internal/layout-verdict.js';
 import { commonGitDir } from './path-layout.js';
 
@@ -349,15 +350,23 @@ export const __resetConfigCacheForTests = (): void => {
  * memo `internal/repo-state.ts` populates via `memoizeGateVerdict` (owned
  * here — see that export's docstring for why) — both session-keyed, so a
  * call through ANY Context sharing `ctx.session` drops the entry every
- * OTHER Context in that session would otherwise keep serving stale. This
- * does NOT drop the per-scope sections cache (`config-scoped-read.ts`'s
- * `invalidateScopedConfigCache`) — that cache is invalidated independently;
- * every config writer that needs it calls both (see `update-config.ts` and
- * `update-config-sections.ts`).
+ * OTHER Context in that session would otherwise keep serving stale.
+ *
+ * DELEGATES to `invalidateScopedConfigCache` (`config-scoped-read.ts`) so a
+ * caller who invalidates only this cache — an embedder unaware of the
+ * scoped-sections cache, or test code that seeds config with a raw
+ * `ctx.fs.writeUtf8` and calls only this invalidator — still observes a
+ * fresh scoped read next time, rather than a same-tick-frozen stat
+ * indefinitely masking the rewrite there too. Every config writer ALSO calls
+ * `invalidateScopedConfigCache` directly (see `update-config.ts` and
+ * `update-config-sections.ts`); that explicit call still matters — it is
+ * what lets a caller invalidate the scoped cache WITHOUT touching this one
+ * (not needed today, but the pairing is not required to only run one way).
  */
 export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx.session);
   gateVerdictCache.delete(ctx.session);
+  invalidateScopedConfigCache(ctx);
 };
 
 /**

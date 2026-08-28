@@ -56,13 +56,15 @@ async function scopeFileMtimeKey(ctx: Context, path: string): Promise<string> {
  * own invalidator keep serving a stale cached scope forever. Lives apart
  * from `readConfig`'s ParsedConfig cache (in `config-read.ts`) because the
  * porcelain readers walk the raw `IniSection[]` directly.
- * `invalidateConfigCache(ctx)` does NOT delegate here — the two caches are
- * invalidated independently, and every config writer calls both
- * `invalidateConfigCache` and `invalidateScopedConfigCache` explicitly (see
- * `update-config.ts` and `update-config-sections.ts`); that explicit path
- * still matters — it drops the entry NOW rather than waiting for the next
- * read to pay a stat, and it is the only signal for a same-tick rewrite a
- * millisecond-granularity mtime cannot distinguish from no change at all.
+ *
+ * `invalidateConfigCache(ctx)` (`config-read.ts`) DELEGATES to
+ * `invalidateScopedConfigCache` below, so calling it alone invalidates both
+ * caches. Every config writer ALSO calls `invalidateScopedConfigCache`
+ * directly (see `update-config.ts` and `update-config-sections.ts`); that
+ * explicit path still matters — it drops the entry NOW rather than waiting
+ * for the next read to pay a stat, and it is the only signal for a
+ * same-tick rewrite a millisecond-granularity mtime cannot distinguish from
+ * no change at all.
  *
  * Keyed on the GITDIR, not the session alone: the `'worktree'` scope resolves
  * to `${ctx.layout.gitDir}/config.worktree` (`resolveScopePath`), which
@@ -72,7 +74,12 @@ async function scopeFileMtimeKey(ctx: Context, path: string): Promise<string> {
  * (`system`/`global`/`local`) are commonDir-anchored and so identical across
  * every worktree of one session; bucketing by gitDir still shares them
  * correctly across every SAME-gitDir derivation (fsck's audit view, clone's
- * and bundle-verify's hash adoption), just not across distinct worktrees.
+ * and bundle-verify's hash adoption). This is also why `invalidateScopedConfigCache`
+ * (below) drops EVERY gitDir bucket for the session, not just the caller's
+ * own: a system/global write observed through one worktree's Context must
+ * not leave a SIBLING worktree's bucket serving the pre-write value, and
+ * this cache has no way to tell a system/global write from a local/worktree
+ * one to narrow the drop selectively.
  */
 let sectionsCache: WeakMap<
   Context['session'],
@@ -85,14 +92,15 @@ export const __resetSectionsCacheForTests = (): void => {
 };
 
 /**
- * Drop the per-scope sections cache for a single `Context`. NOT called by
- * `invalidateConfigCache` in `config-read.ts` — every config writer calls
- * both invalidators explicitly (see `update-config.ts` and
- * `update-config-sections.ts`); this function only runs when a writer, or a
- * test, calls it directly.
+ * Drop the per-scope sections cache for an entire SESSION — every gitDir
+ * bucket, not just the calling Context's own (see the cache's own docstring
+ * above for why). `invalidateConfigCache` (`config-read.ts`) delegates to
+ * this; every config writer also calls it directly (see `update-config.ts`
+ * and `update-config-sections.ts`) for the same-tick signal a stat cannot
+ * provide.
  */
 export const invalidateScopedConfigCache = (ctx: Context): void => {
-  sectionsCache.get(ctx.session)?.delete(ctx.layout.gitDir);
+  sectionsCache.delete(ctx.session);
 };
 
 const getSectionsCacheBucket = (ctx: Context): Map<ConfigScope, CachedScopeEntry> => {
@@ -148,11 +156,11 @@ const readSingleScope = async (
   const mtimeKey = await scopeFileMtimeKey(ctx, path);
   const cached = bucket.get(scope);
   if (cached !== undefined && cached.mtimeKey === mtimeKey) {
-    return cached.promise;
+    return await cached.promise;
   }
   const promise = readScopeFile(ctx, path);
   bucket.set(scope, { promise, mtimeKey });
-  return promise;
+  return await promise;
 };
 
 const safeReadScopeOrSkip = async (
@@ -180,10 +188,11 @@ const safeReadScopeOrSkip = async (
  * Per-session-and-gitDir, per-scope cached, with mtime+size staleness
  * detection: a second call with the same `(session, gitDir, scope)` whose
  * scope file is unchanged on disk shares the in-flight promise of the
- * first. `invalidateConfigCache(ctx)` (from `config-read.ts`) does NOT drop
- * these entries — callers that write the config file should still call
- * `invalidateScopedConfigCache(ctx)` too, for a same-tick rewrite the mtime
- * check cannot distinguish from no change at all.
+ * first. `invalidateConfigCache(ctx)` (from `config-read.ts`) DELEGATES to
+ * `invalidateScopedConfigCache`, so it drops these entries too — callers
+ * that write the config file should still call `invalidateScopedConfigCache(ctx)`
+ * directly as well, for a same-tick rewrite the mtime check cannot
+ * distinguish from no change at all.
  *
  * In the merged-read path (`scope` omitted), scopes that are unavailable on
  * the current adapter (`CONFIG_SCOPE_NOT_AVAILABLE`, `CONFIG_SYSTEM_PATH_UNRESOLVED`)

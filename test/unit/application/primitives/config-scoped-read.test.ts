@@ -43,23 +43,26 @@ describe('primitives/config-scoped-read', () => {
     __resetSectionsCacheForTests();
   });
 
-  // Pins the corrected contract (previously falsely documented): the two
-  // per-Context config caches — `readConfig`'s and the scoped-sections one —
-  // are invalidated independently. `invalidateConfigCache` alone never
-  // reaches the scoped cache; every writer that needs both calls both.
+  // Pins the corrected contract: `invalidateConfigCache` DELEGATES to
+  // `invalidateScopedConfigCache`, so calling it alone is enough to drop the
+  // scoped cache too — an embedder unaware of the second cache, or test code
+  // seeding via a raw fs write plus a single invalidator call, still
+  // observes a fresh scoped read. Every writer also calls both explicitly
+  // (see `update-config.ts`/`update-config-sections.ts`); that path remains
+  // useful on its own (dropping the scoped cache without touching the parse
+  // cache), just no longer required for THIS contract.
   //
   // The stat is deliberately FROZEN (`withFrozenConfigStat`), not left to a
-  // real rewrite's real mtime: mtime+size staleness detection (added
-  // alongside this scenario) WOULD catch an ordinary same-size rewrite most
-  // of the time, since two sequential writes rarely land in the exact same
-  // clock tick — making a test that relies on real timing flaky rather than
-  // deterministic. Freezing the stat pins the one case detection genuinely
-  // cannot help with (a same-tick, same-size external rewrite — see
-  // `scopeFileMtimeKey`'s own docstring), for which
-  // `invalidateScopedConfigCache` remains the only signal.
+  // real rewrite's real mtime: mtime+size staleness detection WOULD catch an
+  // ordinary same-size rewrite most of the time, since two sequential writes
+  // rarely land in the exact same clock tick — making a test that relies on
+  // real timing flaky rather than deterministic. Freezing the stat pins the
+  // one case detection genuinely cannot help with (a same-tick, same-size
+  // external rewrite — see `scopeFileMtimeKey`'s own docstring), for which
+  // an explicit invalidator remains the only signal.
   describe('Given a scoped value cached, and the config file rewritten under a frozen (same-tick) stat', () => {
     describe('When invalidateConfigCache runs alone', () => {
-      it('Then the next scoped read still serves the stale cached value', async () => {
+      it('Then the next scoped read sees the new value — invalidateConfigCache delegates to invalidateScopedConfigCache', async () => {
         // Arrange
         const base = createMemoryContext();
         await seed(base, '[user]\n\tname = ada\n');
@@ -72,11 +75,11 @@ describe('primitives/config-scoped-read', () => {
         const result = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
 
         // Assert
-        expect(result).toEqual({ key: 'user.name', value: 'ada', scope: 'local' });
+        expect(result).toEqual({ key: 'user.name', value: 'bob', scope: 'local' });
       });
     });
 
-    describe('When invalidateScopedConfigCache also runs', () => {
+    describe('When invalidateScopedConfigCache also runs (the explicit pairing every writer still uses)', () => {
       it('Then the next scoped read sees the new value', async () => {
         // Arrange
         const base = createMemoryContext();
@@ -89,6 +92,36 @@ describe('primitives/config-scoped-read', () => {
         invalidateConfigCache(ctx);
         invalidateScopedConfigCache(ctx);
         const result = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+
+        // Assert
+        expect(result).toEqual({ key: 'user.name', value: 'bob', scope: 'local' });
+      });
+    });
+  });
+
+  describe('Given a scoped value cached for one worktree Context, and a sibling worktree Context (same session, different gitDir) writes global config under a frozen stat', () => {
+    describe('When the sibling calls invalidateConfigCache and Context A reads the scope again', () => {
+      it("Then Context A sees the new value — invalidateScopedConfigCache drops every gitDir bucket for the session, not just the caller's own", async () => {
+        // Arrange — two Contexts sharing one session and one commonDir (so
+        // the LOCAL scope is the SAME physical file) but distinct gitDirs —
+        // the shape a repository's linked worktrees take.
+        const base = createMemoryContext();
+        await seed(base, '[user]\n\tname = ada\n');
+        const ctxA = await withFrozenConfigStat(base);
+        const ctxB: Context = {
+          ...base,
+          layout: {
+            ...base.layout,
+            gitDir: `${base.layout.gitDir}-sibling`,
+            commonDir: base.layout.gitDir,
+          },
+        };
+        await getConfigValue({ ctx: ctxA, key: 'user.name', scope: 'local' });
+        await seed(base, '[user]\n\tname = bob\n');
+
+        // Act — invalidation runs through the SIBLING Context, not ctxA.
+        invalidateConfigCache(ctxB);
+        const result = await getConfigValue({ ctx: ctxA, key: 'user.name', scope: 'local' });
 
         // Assert
         expect(result).toEqual({ key: 'user.name', value: 'bob', scope: 'local' });
