@@ -410,13 +410,58 @@ describe('writePackArtifactsViaQuarantine', () => {
         spy.mockRestore();
 
         // Assert — exactly `tmp_pack_`/`tmp_idx_` + 6 alphabet characters,
-        // no more, no fewer: a mutant that drops the suffix loop,
-        // off-by-ones it, or corrupts the random index (division instead of
-        // multiplication) all break this exact shape.
+        // no more, no fewer: a mutant that drops the suffix loop or
+        // off-by-ones it breaks this exact shape. (Index-corruption mutants
+        // keep the shape — the pinned-random test below owns those.)
         const tmpPaths = claimedPaths.filter((p) => p.includes('/tmp_'));
         expect(tmpPaths).toHaveLength(2);
         expect(tmpPaths.some((p) => /\/tmp_pack_[A-Za-z0-9]{6}$/.test(p))).toBe(true);
         expect(tmpPaths.some((p) => /\/tmp_idx_[A-Za-z0-9]{6}$/.test(p))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given Math.random pinned to just under 1', () => {
+    describe('When writePackArtifactsViaQuarantine claims its tmp names', () => {
+      it('Then every suffix character is the LAST alphabet entry — the random index scales across the whole alphabet', async () => {
+        // Arrange — with random() = 0.999…, `floor(random * len)` picks the
+        // final alphabet character ('9') in every position; an index that is
+        // divided instead of multiplied (or floored away) collapses to the
+        // first character regardless of the draw. Shape checks cannot see
+        // that — only pinning the draw makes the index arithmetic
+        // observable.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+        const claimedPaths: string[] = [];
+        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        const writeSpy = vi
+          .spyOn(ctx.fs, 'writeExclusive')
+          .mockImplementation(async (path: string, data: Uint8Array) => {
+            claimedPaths.push(path);
+            return originalWriteExclusive(path, data);
+          });
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9999);
+
+        // Act
+        try {
+          await sut(ctx, {
+            packDir: dir,
+            packBytes: PACK_BYTES,
+            entries,
+            packSha: PACK_SHA,
+            promisor: false,
+          });
+        } finally {
+          randomSpy.mockRestore();
+          writeSpy.mockRestore();
+        }
+
+        // Assert — '9' is the 62nd (last) alphabet character.
+        const tmpPaths = claimedPaths.filter((p) => p.includes('/tmp_'));
+        expect(tmpPaths.some((p) => p.endsWith('/tmp_pack_999999'))).toBe(true);
+        expect(tmpPaths.some((p) => p.endsWith('/tmp_idx_999999'))).toBe(true);
       });
     });
   });
