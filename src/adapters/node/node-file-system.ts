@@ -996,6 +996,25 @@ export class NodeFileSystem implements FileSystem {
    * `this.resolvedRootSet ?? await this.loadRootSet()` sync-fast-arm idiom
    * BEFORE calling in, so the one-time root canonicalisation still pays its
    * microtask exactly once per adapter lifetime, never once per call.
+   *
+   * A RELATIVE `path` (a raw-adapter call — every primitive-facing caller
+   * already passes absolute, `${gitDir}/…`-shaped paths) is anchored via
+   * `toAbsolute` against `this.rootDir` — the adapter's PRIMARY root, first
+   * in whatever `roots` array this instance was constructed with. On an
+   * instance with a WIDER root set (a worktree fs built from
+   * `[worktreePath, ...layoutRoots]`), a relative path the caller intended
+   * as commonDir-relative silently resolves under the worktree root instead —
+   * an ambiguity with no principled resolution here (this method has no way
+   * to know which of several roots a relative path was meant against).
+   * Fail-safe, not a containment escape: the mis-anchored candidate still
+   * passes through the SAME `roots.some(…)` check below, so a result that
+   * would have landed outside every root is still refused (`''` resolves to
+   * `this.rootDir` itself, which reads as a directory and maps to
+   * `PERMISSION_DENIED` via `EISDIR`, not silently admitted). Left
+   * unenforced deliberately: rejecting every non-absolute path here would
+   * break the single-root case's own tested, intentional relative-path
+   * support — closing the multi-root ambiguity would need callers to stop
+   * passing relative paths at all, not a change local to this method.
    */
   private resolveRead(path: string, roots: ReadonlyArray<RootPrefix>): string {
     const absolute = toAbsolute(path, this.rootDir, this.pathPolicy);
