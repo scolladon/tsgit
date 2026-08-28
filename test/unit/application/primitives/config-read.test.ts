@@ -1109,6 +1109,46 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given several readConfig calls fired within the same synchronous turn (the shape assertEagerConfigValid/assertDiscoveryBooleansValid fan out via Promise.all)', () => {
+    describe('When they all resolve', () => {
+      it('Then only one fs.stat call is made — the concurrent calls share one in-flight stat', async () => {
+        // Arrange — a per-read stat is unavoidable (it is what detects an
+        // external rewrite past invalidateConfigCache), but N calls started
+        // before the first stat settles must not each pay their own.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+
+        // Act
+        await Promise.all([readConfig(ctx), readConfig(ctx), readConfig(ctx), readConfig(ctx)]);
+
+        // Assert
+        expect(statSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given two readConfig calls separated by a settled turn', () => {
+    describe('When the config file changes in between', () => {
+      it('Then the second call still pays its own stat and observes the new content — coalescing never skips staleness detection', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+
+        // Act
+        const first = await readConfig(ctx);
+        await seed(ctx, '[core]\n  bare = false\n');
+        const second = await readConfig(ctx);
+
+        // Assert
+        expect(first.core?.bare).toBe(true);
+        expect(second.core?.bare).toBe(false);
+        expect(statSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
   describe('Given a config that was missing on first call', () => {
     describe('When readConfig is called twice', () => {
       it('Then second call also hits cache', async () => {

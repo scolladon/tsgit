@@ -142,21 +142,17 @@ export interface ParsedConfig {
 }
 
 /**
- * One read of `readConfig`, cached per `Context`: the scope-merged parse
- * (`system → global → local → worktree`, later scopes winning — see
- * `mergeConfigsByScope`), the LOCAL `${gitDir}/config` token stream, and the
- * absolute path those tokens were read from.
+ * One read of `readConfig`, cached per session: the LOCAL `${commonGitDir}/config`
+ * parse (`parsed`), its token stream (`tokens`), and the absolute path those
+ * tokens were read from (`source`) — every field describes the SAME single
+ * file. NOT a multi-scope merge: see `loadConfigEntry`'s own docstring for
+ * why local-only is deliberate.
  *
- * `tokens`/`source` describe the LOCAL file ONLY, deliberately — the seven
- * `findFirstInvalid*`/`findLastInvalid*` finders below walk `tokens` to
- * locate a malformed entry and report `source` as its file, and the eager
- * config gate (`assertEagerConfigValid`/`assertDiscoveryBooleansValid`) must
- * keep refusing on a malformed LOCAL config exactly as it always has —
- * widening validation to scan every scope's tokens would be a behaviour
- * change these finders never asked for. `parsed`, by contrast, IS the full
- * multi-scope merge: every `readConfig` consumer sees system/global/worktree
- * values the finders never validate. A missing file at any scope is normal
- * (empty), not an error.
+ * The seven `findFirstInvalid*`/`findLastInvalid*` finders further down walk
+ * `tokens` to locate a malformed entry and report `source` as its file — the
+ * eager config gate (`assertEagerConfigValid`/`assertDiscoveryBooleansValid`)
+ * refuses on a malformed LOCAL config only, exactly as it always has. A
+ * missing file is normal (empty), not an error.
  */
 interface ConfigCacheEntry {
   readonly parsed: ParsedConfig;
@@ -196,6 +192,35 @@ async function configMtimeKey(ctx: Context, path: string): Promise<string> {
     }
     throw err;
   }
+}
+
+/**
+ * At most one IN-FLIGHT `configMtimeKey` stat per session: every
+ * `readConfigEntry` call that starts before the previous one's stat has
+ * settled joins that SAME pending answer, so the up to eight concurrent
+ * finders `assertEagerConfigValid`/`assertDiscoveryBooleansValid` fan out
+ * via one `Promise.all` share one stat between them rather than paying one
+ * each — the measured 8-way-concurrent-stat cost this coalescing closes.
+ *
+ * Cleared the INSTANT the stat settles, never held past it: a later,
+ * genuinely separate `readConfigEntry` call (a different command, or the
+ * same session's next gate stage, both of which run after the previous
+ * stat's promise has already resolved) still pays its own fresh stat. That
+ * is what keeps the "external `ctx.fs.writeUtf8` past `invalidateConfigCache`
+ * is observed on the next read" contract intact — this coalesces duplicate
+ * concurrent work, it does not skip staleness detection.
+ */
+let inflightMtimeKey: WeakMap<Context['session'], Promise<string>> = new WeakMap();
+
+function coalescedMtimeKey(ctx: Context, path: string): Promise<string> {
+  const existing = inflightMtimeKey.get(ctx.session);
+  if (existing !== undefined) return existing;
+  const pending = configMtimeKey(ctx, path);
+  inflightMtimeKey.set(ctx.session, pending);
+  pending.finally(() => {
+    if (inflightMtimeKey.get(ctx.session) === pending) inflightMtimeKey.delete(ctx.session);
+  });
+  return pending;
 }
 
 // Keyed on `ctx.session` — not `ctx` itself — so every Context derived from
@@ -262,18 +287,15 @@ export const memoizeGateVerdict = (
 };
 
 /**
- * Read and cache the scope-merged config (`system → global → local →
- * worktree`, matching git's own resolution order). A scope whose file is
- * missing, or whose file lives at a path this adapter cannot reach (e.g. the
- * browser adapter has no system config), contributes nothing rather than
- * erroring — mirroring `readConfig`'s long-standing "missing local file is
- * empty config" contract, now extended to every scope.
+ * Read and cache the LOCAL config (see `loadConfigEntry`'s own docstring for
+ * why merging system/global/worktree scopes here was tried and reverted —
+ * this reads `${commonGitDir}/config` alone).
  *
  * The cache is keyed on `ctx.session`, with mtime+size staleness detection
- * on top (see `configMtimeKey`) — a fresh session gets a fresh read; a
- * write observed through any Context sharing the session invalidates it for
- * every other. Concurrent calls share the same in-flight promise
- * (single-flight per session).
+ * on top (see `configMtimeKey`/`coalescedMtimeKey`) — a fresh session gets a
+ * fresh read; a write observed through any Context sharing the session
+ * invalidates it for every other. Concurrent calls share the same in-flight
+ * promise (single-flight per session).
  */
 export const readConfig = (ctx: Context): Promise<ParsedConfig> =>
   readConfigEntry(ctx).then((entry) => entry.parsed);
@@ -286,10 +308,12 @@ export const readConfig = (ctx: Context): Promise<ParsedConfig> =>
  * config file's own mtime+size change or `invalidateConfigCache` runs.
  *
  * The mtime check and the cache lookup/populate are a single `await`-free
- * span: two concurrent calls that both miss the mtime-keyed cache each stat
- * the file, but whichever resumes first populates the cache atomically
- * before the other can observe it, so only one ever starts `loadConfigEntry`
- * — the single-flight guarantee holds despite the added stat.
+ * span: two concurrent calls that both miss the CONTENT cache each ask
+ * `coalescedMtimeKey` for a key, but share its single in-flight stat rather
+ * than each paying their own — whichever resumes first then populates the
+ * content cache atomically before the other can observe it, so only one
+ * ever starts `loadConfigEntry` — the single-flight guarantee holds despite
+ * the stat.
  */
 const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   // The trust gate refuses before any I/O — not even a stat — so an
@@ -297,7 +321,7 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   // rather than consulting or populating the cache below.
   if (layoutFailsTrustGate(ctx.layout)) return loadConfigEntry(ctx);
   const path = `${commonGitDir(ctx)}/config`;
-  const mtimeKey = await configMtimeKey(ctx, path);
+  const mtimeKey = await coalescedMtimeKey(ctx, path);
   const cached = cache.get(ctx.session);
   if (cached !== undefined && cached.mtimeKey === mtimeKey) {
     return cached.promise;
@@ -308,13 +332,16 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
 };
 
 /**
- * @internal — test-only cache reset between cases. Replaces both WeakMaps
- * this module owns (the parse cache and the gate-verdict memo), mirroring
- * what `invalidateConfigCache` drops in production.
+ * @internal — test-only cache reset between cases. Replaces every WeakMap
+ * this module owns (the parse cache, the gate-verdict memo, and the
+ * in-flight stat-coalescing memo), mirroring what `invalidateConfigCache`
+ * drops in production plus the transient memo that never survives past its
+ * own settling anyway.
  */
 export const __resetConfigCacheForTests = (): void => {
   cache = new WeakMap();
   gateVerdictCache = new WeakMap();
+  inflightMtimeKey = new WeakMap();
 };
 
 /**
