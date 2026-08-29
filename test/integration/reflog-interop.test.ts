@@ -467,7 +467,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe('When reflog show reads a tab-less line (empty message)', () => {
         it('Then both sides keep all four entries, the corrupted one with an empty message', async () => {
           // Arrange — no tab: the line ends at the timezone.
-          const dir = await caseDir('tabless-message');
+          const dir = await caseDir('tab-free-message');
           await writeLine3(dir, `${c1} ${c2} Ada <ada@example.com> 1700000002 +0200\n`);
           const ctx = createNodeContext({ workDir: dir });
 
@@ -606,9 +606,9 @@ describe.skipIf(!GIT_AVAILABLE)(
        *  and replaces the c1→c2 transition with garbage — `main@{1}` then
        *  targets the c0→c1 entry, leaving the tab-less entry to survive and
        *  be re-serialized under the rewrite writer's always-TAB rule. */
-      const tablessSurvivorText = (): string => {
-        const tabless = `${baseLines[0].split('\t')[0]}\n`;
-        return `${tabless}${baseLines[1]}this is not a reflog line at all\n${baseLines[3]}`;
+      const tabFreeSurvivorText = (): string => {
+        const tabFree = `${baseLines[0].split('\t')[0]}\n`;
+        return `${tabFree}${baseLines[1]}this is not a reflog line at all\n${baseLines[3]}`;
       };
 
       describe('When main@{1} is deleted', () => {
@@ -616,7 +616,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange — twin repos, corrupted identically; git mutates its own
           // copy on delete, so read-only sharing (used by the rest of this
           // suite) does not apply here.
-          const text = tablessSurvivorText();
+          const text = tabFreeSurvivorText();
           const peer = await caseDir('delete-peer');
           const ours = await caseDir('delete-ours');
           await writeFile(mainLogPath(peer), text, 'utf8');
@@ -639,7 +639,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe('When main@{1} is deleted with chain repair', () => {
         it('Then git reflog delete --rewrite and tsgit delete rewrite=true produce byte-identical logs', async () => {
           // Arrange
-          const text = tablessSurvivorText();
+          const text = tabFreeSurvivorText();
           const peer = await caseDir('delete-rewrite-peer');
           const ours = await caseDir('delete-rewrite-ours');
           await writeFile(mainLogPath(peer), text, 'utf8');
@@ -865,61 +865,51 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a ref that exists but has no reflog file at all', () => {
-        describe('When expire runs', () => {
-          it('Then git refuses (reflog could not be found, exit 255) but tsgit treats it as empty — a pre-existing, accepted divergence', async () => {
-            // Arrange
-            const dir = await caseDir('degenerate-absent-log');
-            git(dir, 'branch', 'existsnolog');
-            await rm(path.join(dir, '.git', 'logs', 'refs', 'heads', 'existsnolog'));
-            const ctx = createNodeContext({ workDir: dir });
+      describe('When expire runs on a ref that exists but has no reflog file at all', () => {
+        it('Then git refuses (reflog could not be found, exit 255) but tsgit treats it as empty — a pre-existing, accepted divergence', async () => {
+          // Arrange
+          const dir = await caseDir('degenerate-absent-log');
+          git(dir, 'branch', 'exists-no-log');
+          await rm(path.join(dir, '.git', 'logs', 'refs', 'heads', 'exists-no-log'));
+          const ctx = createNodeContext({ workDir: dir });
 
-            // Act
-            const gitResult = tryRunGitWithExit([
-              '-C',
-              dir,
-              'reflog',
-              'expire',
-              '--expire=never',
-              'refs/heads/existsnolog',
-            ]);
-            const result = await reflog(ctx, {
-              action: 'expire',
-              ref: 'refs/heads/existsnolog',
-              expire: 'never',
-            });
-
-            // Assert
-            expect(gitResult.exitCode).toBe(255);
-            expect(gitResult.stderr).toContain('reflog could not be found');
-            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            dir,
+            'reflog',
+            'expire',
+            '--expire=never',
+            'refs/heads/exists-no-log',
+          ]);
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/exists-no-log',
+            expire: 'never',
           });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(255);
+          expect(gitResult.stderr).toContain('reflog could not be found');
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
         });
       });
 
-      describe('Given a ref name that does not resolve to any ref at all', () => {
-        describe('When reflog show runs', () => {
-          it('Then git refuses (fatal: ambiguous argument, exit 128) but tsgit returns an empty result — a pre-existing, accepted divergence', async () => {
-            // Arrange
-            const dir = await caseDir('degenerate-absent-ref');
-            const ctx = createNodeContext({ workDir: dir });
+      describe('When reflog show runs on a ref name that does not resolve to any ref at all', () => {
+        it('Then git refuses (fatal: ambiguous argument, exit 128) but tsgit returns an empty result — a pre-existing, accepted divergence', async () => {
+          // Arrange
+          const dir = await caseDir('degenerate-absent-ref');
+          const ctx = createNodeContext({ workDir: dir });
 
-            // Act
-            const gitResult = tryRunGitWithExit([
-              '-C',
-              dir,
-              'reflog',
-              'show',
-              'totally-absent-ref',
-            ]);
-            const result = await reflog(ctx, { action: 'show', ref: 'totally-absent-ref' });
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'totally-absent-ref']);
+          const result = await reflog(ctx, { action: 'show', ref: 'totally-absent-ref' });
 
-            // Assert
-            expect(gitResult.exitCode).toBe(128);
-            expect(gitResult.stderr).toContain('ambiguous argument');
-            expect(result.kind).toBe('show');
-            expect(result.kind === 'show' && result.entries).toEqual([]);
-          });
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain('ambiguous argument');
+          expect(result.kind).toBe('show');
+          expect(result.kind === 'show' && result.entries).toEqual([]);
         });
       });
     });
@@ -955,7 +945,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // read-only `stash list` case above, which tolerates hand-rolled
           // oids).
           const stashBase = await mkdtemp(
-            path.join(os.tmpdir(), 'tsgit-reflog-interop-stashbase-'),
+            path.join(os.tmpdir(), 'tsgit-reflog-interop-stash-base-'),
           );
           caseRoots.push(stashBase);
           runGit(['init', '-q', '-b', 'main', stashBase]);
