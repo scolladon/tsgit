@@ -46,15 +46,31 @@ npm run test:mutation # Stryker mutation testing
 npm run build         # Compile to dist/
 ```
 
-## Code Navigation (Serena)
+## Code Navigation (Serena + graft + tokensave)
+
+Three tools, three jobs — full routing table and rationale in
+[`.claude/workflow/code-navigation.md`](.claude/workflow/code-navigation.md)
+(injected into every craft agent); measurements in
+[`docs/spike/code-graph-tool-selection.md`](docs/spike/code-graph-tool-selection.md).
+
+- **serena — precision and all writes.** Exact references, symbol bodies, renames,
+  diagnostics. The **only** tool that resolves `export type *` barrels, so every
+  "who uses this re-exported symbol" question is serena's.
+- **graft — cheap breadth.** `graft ask` to orient, `graft skeleton` for a file's
+  signatures (~6× cheaper than reading it). Deterministic tier only — never
+  `graft build --deep`.
+- **tokensave — analytics only.** `circular`, `god_class`, `coupling`, `dsm`,
+  `blame`. Not for orientation; `dead_code` is unusable unfiltered here.
+
+Loop: `graft ask` → `graft skeleton` → serena `find_symbol` /
+`find_referencing_symbols` → serena `replace_*`.
 
 **Activate Serena on the active worktree first** (`mcp__serena__activate_project`
 with the absolute worktree path, e.g. `/abs/path/tsgit-<slug>`), then use its
-symbol/LSP tools (`find_symbol`, `find_referencing_symbols`, `rename_symbol`,
-`get_symbols_overview`, `insert_after_symbol`, …) as the **default** for
-navigating, understanding, and editing source. Fall back to the harness LSP tool
-or `Edit`/`Write` only when Serena can't do it; reach for `Read`/`Grep` only for
-non-code files (markdown, JSON, generated artefacts) or a quick literal scan.
+symbol/LSP tools as the **default** for editing and precise navigation. Fall back
+to the harness LSP tool or `Edit`/`Write` only when Serena can't do it; reach for
+`Read`/`Grep` only for non-code files (markdown, JSON, generated artefacts) or a
+quick literal scan.
 
 **Why Serena, not the harness LSP, in worktrees:** Serena's activated-project LSP
 is rooted at the **worktree**, so references/hover/rename reflect the worktree's

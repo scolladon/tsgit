@@ -57,3 +57,9 @@ megalinter-reports/
 .env.local
 .env.*.local
 reports/stryker-incremental.json
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# graft re-creates this on every build to re-admit graft/ to ripgrep; see .rgignore.
+/.ignore

@@ -1,0 +1,5 @@
+# graft/ is a regenerable cache of derived cards; every hit in it duplicates a
+# hit in src/, and a card left stale by a skipped `graft build` reads as real.
+# graft re-appends a `!graft/` re-admit to .ignore on every build, so the
+# exclusion is pinned here — ripgrep gives .rgignore precedence over .ignore.
+graft/
