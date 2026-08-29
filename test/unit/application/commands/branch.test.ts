@@ -337,6 +337,33 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a log-less source force-renamed onto a live branch that has a reflog', () => {
+    describe('When branch rename', () => {
+      it('Then the destination old history is dropped and only the rename entry remains', async () => {
+        // Arrange — the one shape where the destination-log drop is
+        // load-bearing on its own: with no source log to rename over it,
+        // only the explicit drop separates "replaced" from "concatenated"
+        // (git's forced rename deletes the destination ref, dropping its
+        // log, before the rename entry is appended).
+        const { ctx, commitId } = await seedWithCommit();
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/other' as RefName, id: commitId },
+        ]);
+        const stale = (await readReflog(ctx, 'refs/heads/main' as RefName))[0] as ReflogEntry;
+        await appendReflog(ctx, 'refs/heads/other' as RefName, stale);
+        await deleteReflog(ctx, 'refs/heads/main' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'other', force: true });
+
+        // Assert — exactly one entry: the rename; the stale history is gone.
+        const log = await readReflog(ctx, 'refs/heads/other' as RefName);
+        expect(log).toHaveLength(1);
+        expect(log[0]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/other');
+      });
+    });
+  });
+
   describe('Given a log-less source and an orphan reflog file under the destination name', () => {
     describe('When branch rename', () => {
       it('Then the orphan history is kept and the rename entry appends to it', async () => {

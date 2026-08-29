@@ -193,8 +193,9 @@ const runExpire = async (
   // applyRefUpdates call is a full stack transaction plus a compaction
   // attempt, so a per-ref loop makes `expire --all` cost grow faster than linearly in ref count
   // (measured 3.6-5x at 200-800 refs) and leaves a partial rewrite behind if
-  // one ref fails mid-loop.
-  if (updates.length > 0) await getRefStore(ctx).applyRefUpdates(updates);
+  // one ref fails mid-loop. An empty list is a no-op on both backends, so
+  // zero targets need no guard.
+  await getRefStore(ctx).applyRefUpdates(updates);
   return { kind: 'expire', removed, kept };
 };
 
