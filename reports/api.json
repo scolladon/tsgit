@@ -126318,7 +126318,32 @@
 											"variant": "declaration",
 											"kind": 1024,
 											"flags": {
+												"isOptional": true,
 												"isReadonly": true
+											},
+											"comment": {
+												"summary": [
+													{
+														"kind": "text",
+														"text": "Absent when "
+													},
+													{
+														"kind": "code",
+														"text": "`index`"
+													},
+													{
+														"kind": "text",
+														"text": " named no entry — git's own silent no-op for an\nout-of-range "
+													},
+													{
+														"kind": "code",
+														"text": "`reflog delete`"
+													},
+													{
+														"kind": "text",
+														"text": ". The reflog is rewritten either way."
+													}
+												]
 											},
 											"type": {
 												"type": "reference",

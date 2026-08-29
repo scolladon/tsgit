@@ -260,8 +260,9 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
-          // Assert
+          // Assert — `removed` is present, the optional field's other direction.
           expect(result).toEqual({ kind: 'delete', removed: second });
+          expect('removed' in result).toBe(true);
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
             third,
@@ -438,89 +439,61 @@ describe('reflog command', () => {
 
     describe('Given an index past the last entry', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE with requested and available', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — two entries, index 2 is out of range.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, [entry(), entry({ oldId: OID_X, newId: OID_Y })]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 2 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 2 });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: 2,
-            available: 2,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given a negative index', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, [entry()]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: -1 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: -1 });
 
           // Assert
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: -1,
-            available: 1,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given an empty reflog file', () => {
       describe('When delete index 0', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — the file exists (so not REFLOG_NOT_FOUND) but holds no entries.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, []);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
 
           // Assert
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: 0,
-            available: 0,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given a NaN index', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE with the NaN requested', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — NaN would index `stored[NaN]` as `undefined` and bypass the
           // range guard; the integer guard must reject it.
           const ctx = createMemoryContext();
@@ -528,49 +501,93 @@ describe('reflog command', () => {
           await writeReflog(ctx, HEAD, [entry()]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: Number.NaN });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: Number.NaN });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: Number.NaN,
-            available: 1,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given a fractional index', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — 1.5 is in range numerically but is not a valid entry index.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, [entry(), entry({ oldId: OID_X, newId: OID_Y })]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1.5 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1.5 });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: 1.5,
-            available: 2,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a raw reflog file with a malformed line and an out-of-range index', () => {
+      describe('When delete', () => {
+        it('Then the malformed line is purged from disk and the valid entry survives', async () => {
+          // Arrange — seeded with a raw writeUtf8 (not writeReflog, which would
+          // refuse the malformed line itself), so the corruption actually lands
+          // on disk.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          const kept = entry({ message: 'kept' });
+          const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+          await ctx.fs.writeUtf8(reflogPath, `${serializeReflogLine(kept, 40)}garbage line\n`);
+
+          // Act
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 99 });
+
+          // Assert — out of range is a no-op selection, but the write still
+          // happens and purges the malformed line.
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
+          const after = await ctx.fs.readUtf8(reflogPath);
+          expect(after).toBe(serializeReflogLine(kept, 40));
+        });
+      });
+    });
+
+    describe('Given a clean reflog and an out-of-range index', () => {
+      describe('When delete', () => {
+        it('Then the log is still rewritten and its content is unchanged', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          const first = entry({ message: 'first' });
+          const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
+          await writeReflog(ctx, HEAD, [first, second]);
+          const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+          const renameDestinations: string[] = [];
+          const spiedCtx: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              rename: (source: string, destination: string): Promise<void> => {
+                renameDestinations.push(destination);
+                return ctx.fs.rename(source, destination);
+              },
+            },
+          };
+
+          // Act
+          const result = await reflog(spiedCtx, { action: 'delete', ref: 'HEAD', index: 99 });
+
+          // Assert — the index named no entry, but the lock file was still
+          // renamed onto the log, and the content that landed is unchanged.
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
+          expect(renameDestinations).toContain(reflogPath);
+          const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            second,
+            first,
+          ]);
         });
       });
     });

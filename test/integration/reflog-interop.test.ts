@@ -628,6 +628,87 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a corrupted refs/heads/main log with an out-of-range delete', () => {
+      describe('When main@{3} and main@{99} are deleted', () => {
+        it.each([3, 99])(
+          'Then git and tsgit both exit clean with empty stderr and purge the malformed line, byte-identical',
+          async (index) => {
+            // Arrange — twin repos, corrupted identically; git mutates its own
+            // copy on delete, so read-only sharing (used by the rest of this
+            // suite) does not apply here.
+            const peer = await caseDir(`delete-oor-corrupt-peer-${index}`);
+            const ours = await caseDir(`delete-oor-corrupt-ours-${index}`);
+            await writeLine3(peer, 'this is not a reflog line at all\n');
+            await writeLine3(ours, 'this is not a reflog line at all\n');
+            const ctx = createNodeContext({ workDir: ours });
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              peer,
+              'reflog',
+              'delete',
+              `main@{${index}}`,
+            ]);
+            const result = await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index });
+
+            // Assert — an out-of-range delete is a silent no-op on both
+            // sides, but the malformed line is still purged from disk.
+            expect(gitResult.exitCode).toBe(0);
+            expect(gitResult.stderr).toBe('');
+            expect(result.kind).toBe('delete');
+            if (result.kind !== 'delete') throw new Error('unreachable');
+            expect('removed' in result).toBe(false);
+            const peerBytes = await readFile(mainLogPath(peer));
+            const oursBytes = await readFile(mainLogPath(ours));
+            expect(oursBytes).toEqual(peerBytes);
+          },
+        );
+      });
+    });
+
+    describe('Given a clean refs/heads/main log with an out-of-range delete', () => {
+      const CLEAN_OUT_OF_RANGE: ReadonlyArray<{
+        readonly label: string;
+        readonly selector: string;
+        readonly index: number;
+      }> = [
+        { label: 'main@{4}', selector: 'main@{4}', index: 4 },
+        { label: 'main@{99}', selector: 'main@{99}', index: 99 },
+        { label: 'a negative index', selector: 'main@{-1}', index: -1 },
+      ];
+
+      describe('When main@{4}, main@{99} and a negative index are deleted', () => {
+        it.each(CLEAN_OUT_OF_RANGE)(
+          'Then $label exits clean on both sides and the file is content-identical to before',
+          async ({ selector, index }) => {
+            // Arrange
+            const peer = await caseDir(`delete-oor-clean-peer-${index}`);
+            const ours = await caseDir(`delete-oor-clean-ours-${index}`);
+            const before = await readFile(mainLogPath(ours));
+            const ctx = createNodeContext({ workDir: ours });
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', peer, 'reflog', 'delete', selector]);
+            const result = await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index });
+
+            // Assert — content is unchanged on both sides; git's own clean
+            // rewrite still touches the inode (measured), so bytes — not
+            // `stat` — are compared.
+            expect(gitResult.exitCode).toBe(0);
+            expect(gitResult.stderr).toBe('');
+            expect(result.kind).toBe('delete');
+            if (result.kind !== 'delete') throw new Error('unreachable');
+            expect('removed' in result).toBe(false);
+            const peerBytes = await readFile(mainLogPath(peer));
+            const oursBytes = await readFile(mainLogPath(ours));
+            expect(peerBytes).toEqual(before);
+            expect(oursBytes).toEqual(before);
+          },
+        );
+      });
+    });
+
     describe('Given a corrupted refs/heads/main log with no entry stale enough to prune', () => {
       describe('When expire runs with --expire=never', () => {
         it('Then git and tsgit both purge the malformed line and keep every survivor, byte-identical', async () => {
