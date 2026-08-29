@@ -51,18 +51,20 @@ import {
   readObject,
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
 import * as writeObjectMod from '../../../../src/application/primitives/write-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { parseCruftMtimes } from '../../../../src/domain/storage/index.js';
 import { allObjectIds } from '../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx } from '../../domain/storage/arbitraries.js';
 import { writeSyntheticPack } from '../primitives/pack-fixture.js';
+import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -1417,6 +1419,62 @@ describe('maintenance', () => {
         // parse-shaped reflog fault is now tolerated.
         expect(caught).toBe(eacces);
         expect((await getPackRegistry(ctx).all()).length).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a reftable-backed repository where a commit is reachable only from a reflog', () => {
+    describe('When gc runs with prune=now', () => {
+      it('Then the commit survives', async () => {
+        // Arrange — a reftable repo's reflogs live in the stack, never under
+        // `.git/logs/`; the retention scan must read them through the
+        // backend-dispatched store, not a hardcoded `logs/**` path.
+        const ctx = withReftableStorage(createMemoryContext());
+        await init(ctx);
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'setSymbolic', name: 'HEAD' as RefName, target: 'refs/heads/main' as RefName },
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'hello');
+        await add(ctx, ['a.txt']);
+        const { id: tip } = await commit(ctx, { message: 'seed', author: AUTHOR });
+        const orphanTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [],
+        });
+        const orphanCommitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: orphanTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'orphan-via-reftable-reflog',
+            extraHeaders: [],
+          },
+        });
+        await getRefStore(ctx).applyRefUpdates([
+          {
+            kind: 'set',
+            name: 'refs/heads/other' as RefName,
+            id: tip,
+            reflog: {
+              oldId: orphanCommitId,
+              newId: tip,
+              message: `reset: moving to ${tip}`,
+              unconditional: true,
+            },
+          },
+        ]);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        await expect(readObject(ctx, orphanCommitId)).resolves.toMatchObject({ type: 'commit' });
       });
     });
   });

@@ -289,6 +289,18 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return entries.reverse();
   }
 
+  /**
+   * `RefStore.readReflogLenient`'s reftable implementation: a plain alias of
+   * {@link readReflog}. A reftable log record is length-prefixed binary
+   * inside a block, so a damaged record damages the whole BLOCK, not one
+   * entry — there is no per-line grammar to be lenient about the way the
+   * files backend's text format has one. `readReflog` already skips
+   * non-`entry` records (tombstones), and inventing a per-record tolerance
+   * beyond that would need an oracle real git's reftable format does not
+   * provide.
+   */
+  const readReflogLenient = readReflog;
+
   /** Whether `stack.logs(name)` — already tombstone-shadowed — yields at
    *  least one live entry. A name whose raw tables carry only shadowed-away
    *  entries has no reflog at all, matching the files backend's own
@@ -361,6 +373,7 @@ export function createReftableRefStore(ctx: Context): RefStore {
     listRefNames,
     verifyIntegrity,
     readReflog,
+    readReflogLenient,
     hasReflog,
     listReflogs,
     packRefs,

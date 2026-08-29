@@ -6,6 +6,7 @@ import {
   getRefStore,
 } from '../../../../src/application/primitives/ref-store.js';
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -1276,6 +1277,72 @@ describe('ref-store', () => {
         expect([...result].sort()).toEqual(
           ['HEAD', 'refs/heads/main', 'refs/remotes/origin/main'].sort(),
         );
+      });
+    });
+  });
+
+  describe('Given a files-backed reflog with a garbage line between two valid entries', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then both valid entries are returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({ oldId: first.newId, message: 'second' });
+        await appendReflog(ctx, 'refs/heads/main' as RefName, first);
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'this is not a valid reflog line at all\n',
+        );
+        await appendReflog(ctx, 'refs/heads/main' as RefName, second);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflogLenient('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toEqual([first, second]);
+      });
+    });
+  });
+
+  describe('Given a files-backed reflog file one byte past MAX_REFLOG_BYTES', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it still throws INVALID_REFLOG_ENTRY — the cap is not tolerated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'x'.repeat(MAX_REFLOG_BYTES + 1),
+        );
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        try {
+          await sut.readReflogLenient('refs/heads/main' as RefName);
+          expect.fail('expected INVALID_REFLOG_ENTRY');
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as TsgitError).data).toEqual({
+            code: 'INVALID_REFLOG_ENTRY',
+            reason: `reflog file exceeds ${MAX_REFLOG_BYTES} bytes`,
+          });
+        }
+      });
+    });
+  });
+
+  describe('Given no reflog file for the ref', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it returns an empty array', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflogLenient('refs/heads/absent' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });

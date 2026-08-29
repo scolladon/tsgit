@@ -26,6 +26,14 @@ export async function readReflog(ctx: Context, ref: RefName): Promise<ReadonlyAr
   return getRefStore(ctx).readReflog(ref);
 }
 
+/** `ref`'s reflog, oldest-first, skipping any line that does not parse. `[]` when absent. */
+export async function readReflogLenient(
+  ctx: Context,
+  ref: RefName,
+): Promise<ReadonlyArray<ReflogEntry>> {
+  return getRefStore(ctx).readReflogLenient(ref);
+}
+
 /** Whether `ref` has a reflog file at all. */
 export async function reflogExists(ctx: Context, ref: RefName): Promise<boolean> {
   return ctx.fs.exists(reflogPath(perWorktreeRefDir(ctx, ref), ref));

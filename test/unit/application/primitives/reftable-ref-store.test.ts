@@ -552,6 +552,141 @@ describe('reftable-ref-store', () => {
     });
   });
 
+  describe('Given a stack with a reflog for refs/heads/main', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it returns the same entries as readReflog, oldest-first', async () => {
+        // Arrange — a length-prefixed binary log record has no malformed-line
+        // analogue, so the lenient verb is a structural alias of readReflog
+        // rather than an independently tolerant reader.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 2n };
+        const header = buildReftableHeader(headerSpec);
+        const logBlock = await buildReftableLogBlock(
+          {
+            records: [
+              {
+                refName: 'refs/heads/main',
+                updateIndex: 2n,
+                entry: {
+                  kind: 'entry',
+                  oldId: ID_MAIN,
+                  newId: ID_GONE,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_001_000,
+                  tzOffset: '+0000',
+                  message: 'commit: second',
+                },
+              },
+              {
+                refName: 'refs/heads/main',
+                updateIndex: 1n,
+                entry: {
+                  kind: 'entry',
+                  oldId: oid(0x00),
+                  newId: ID_MAIN,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_000_000,
+                  tzOffset: '+0000',
+                  message: 'commit (initial): first',
+                },
+              },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const bytes = buildReftable({
+          ...headerSpec,
+          blocks: [logBlock],
+          logPosition: header.length,
+          logIndexPosition: 0,
+        });
+        await writeReftableFiles(ctx, dir, [{ name: 'table1.ref', bytes }]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const lenient = await sut.readReflogLenient(ref('refs/heads/main'));
+        const strict = await sut.readReflog(ref('refs/heads/main'));
+
+        // Assert
+        expect(lenient).toEqual(strict);
+        expect(lenient.map((entry) => entry.message)).toEqual([
+          'commit (initial): first',
+          'commit: second',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a ref whose entire reflog is tombstoned by a newer table', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it returns an empty array, matching readReflog over the tombstone-shadowing path', async () => {
+        // Arrange — table1 carries one live log record for refs/heads/topic;
+        // table2 tombstones it at the same update_index.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+        const header = buildReftableHeader(headerSpec);
+        const logBlock = await buildReftableLogBlock(
+          {
+            records: [
+              {
+                refName: 'refs/heads/topic',
+                updateIndex: 1n,
+                entry: {
+                  kind: 'entry',
+                  oldId: oid(0x00),
+                  newId: ID_MAIN,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_000_000,
+                  tzOffset: '+0000',
+                  message: 'commit (initial): first',
+                },
+              },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const bytes = buildReftable({
+          ...headerSpec,
+          blocks: [logBlock],
+          logPosition: header.length,
+          logIndexPosition: 0,
+        });
+        const tombstoneHeaderSpec = { version: 1 as const, minUpdateIndex: 2n, maxUpdateIndex: 2n };
+        const tombstoneHeader = buildReftableHeader(tombstoneHeaderSpec);
+        const tombstoneBlock = await buildReftableLogBlock(
+          {
+            records: [
+              { refName: 'refs/heads/topic', updateIndex: 1n, entry: { kind: 'deletion' } },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const tombstoneBytes = buildReftable({
+          ...tombstoneHeaderSpec,
+          blocks: [tombstoneBlock],
+          logPosition: tombstoneHeader.length,
+          logIndexPosition: 0,
+        });
+        await writeReftableFiles(ctx, dir, [
+          { name: 'table1.ref', bytes },
+          { name: 'table2.ref', bytes: tombstoneBytes },
+        ]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const entries = await sut.readReflogLenient(ref('refs/heads/topic'));
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
   describe('Given the reftable backend', () => {
     describe('When verifyIntegrity runs', () => {
       it('Then it reports no findings', async () => {

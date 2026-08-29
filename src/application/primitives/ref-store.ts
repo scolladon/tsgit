@@ -5,7 +5,11 @@ import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
-import { parseReflog, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
+import {
+  parseReflog,
+  parseReflogLenient,
+  serializeReflogLine,
+} from '../../domain/reflog/reflog-format.js';
 import {
   type ReftableCheck,
   refChainTooDeep,
@@ -103,6 +107,16 @@ export interface RefStore {
   verifyIntegrity(): Promise<readonly RefIntegrityFinding[]>;
   /** `name`'s reflog, oldest-first. Empty when the ref has no reflog. */
   readReflog(name: RefName): Promise<readonly ReflogEntry[]>;
+  /**
+   * Same contract as {@link readReflog}, except a line that does not parse is
+   * skipped instead of failing the whole file — an object reachable only
+   * from that ONE entry stays rooted rather than silently falling out of a
+   * retention scan over one malformed neighbour. The `MAX_REFLOG_BYTES` cap
+   * still throws: an over-cap reflog that silently rooted nothing would be
+   * the exact silent-data-loss shape leniency must not create. Every I/O
+   * fault still propagates.
+   */
+  readReflogLenient(name: RefName): Promise<readonly ReflogEntry[]>;
   /**
    * Whether `name` has a reflog at all — a file-presence question
    * independent of entry count (an emptied-but-present log still counts,
@@ -607,15 +621,40 @@ function createFilesRefStore(ctx: Context): RefStore {
     await ctx.fs.writeUtf8(reflogPath(refDir(update.name), update.name), text);
   }
 
-  /** `name`'s reflog, oldest-first. `[]` when the file is absent. */
-  async function readReflog(name: RefName): Promise<readonly ReflogEntry[]> {
+  /** `name`'s reflog text, or `undefined` when the file is absent. Refuses
+   *  an over-cap file — the one preamble {@link readReflog} and {@link
+   *  readReflogLenient} share, so the cap and the exists/stat probe are
+   *  enforced exactly once regardless of which parse strictness the caller
+   *  wants. */
+  async function readReflogText(name: RefName): Promise<string | undefined> {
     const path = reflogPath(refDir(name), name);
-    if (!(await ctx.fs.exists(path))) return [];
+    if (!(await ctx.fs.exists(path))) return undefined;
     const stat = await ctx.fs.stat(path);
     if (stat.size > MAX_REFLOG_BYTES) {
       throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
     }
-    return parseReflog(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
+    return ctx.fs.readUtf8(path);
+  }
+
+  /** `name`'s reflog, oldest-first. `[]` when the file is absent. */
+  async function readReflog(name: RefName): Promise<readonly ReflogEntry[]> {
+    return parseReflog((await readReflogText(name)) ?? '', ctx.hashConfig.hexLength);
+  }
+
+  /**
+   * `name`'s reflog, oldest-first, tolerating a malformed LINE — skipped,
+   * never discarding the file's other valid entries the way {@link
+   * readReflog}'s all-or-nothing parse does. Pinned against git 2.55.0:
+   * `git gc --prune=now` keeps an object reachable only from a valid entry
+   * that shares a reflog file with a garbage line. The `MAX_REFLOG_BYTES`
+   * cap is still enforced by the shared {@link readReflogText} preamble and
+   * is NOT tolerated here: an over-cap reflog that silently rooted nothing
+   * would be the exact silent-data-loss shape leniency must not create, so
+   * that fault still throws and aborts the caller's run. `[]` when the file
+   * is absent, matching `readReflog`.
+   */
+  async function readReflogLenient(name: RefName): Promise<readonly ReflogEntry[]> {
+    return parseReflogLenient((await readReflogText(name)) ?? '', ctx.hashConfig.hexLength);
   }
 
   /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
@@ -810,6 +849,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     listRefNames,
     verifyIntegrity,
     readReflog,
+    readReflogLenient,
     hasReflog,
     listReflogs,
     packRefs,
