@@ -34,15 +34,12 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   the merge confirmation.
 - **`pre-pr-gate: npm outdated`** — the CI `deps` job gates on freshness; catching it
   pre-PR saves a round. Remediation: bump in a `chore(deps): bump <pkgs>` commit,
-  re-validate. **Exceptions** (both skipped in the `check:deps` grep): `@ls-lint/ls-lint`
+  re-validate. **Exceptions** (skipped in the `check:deps` grep): `@ls-lint/ls-lint`
   flags at its own installed version (publisher bug); `typescript` is pinned to 6.x because
   7.x is the native ("tsgo") compiler — an API-breaking major whose main export is a version
   stub and whose programmatic API moved under `./unstable/*`, so `@rollup/plugin-typescript`
   and `rollup-plugin-dts` cannot load it (the `tsc` CLI still works). Unpin once the rollup
-  toolchain supports TS 7. `rollup` is pinned to 4.62.5: 4.63.0 miscompiles
-  `config-ini.ts`'s `tokenizeLine` (deletes the live header/malformed branches after
-  `scanHeaderPrefix`, breaking every built-bundle config parse — caught by
-  `dispose-free-exit`); unpin when a fixed rollup release builds that function intact.
+  toolchain supports TS 7. `knip` is also skipped; the reason was never recorded.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,
