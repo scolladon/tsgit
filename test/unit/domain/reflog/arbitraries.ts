@@ -28,12 +28,16 @@ export const arbMessage = (): fc.Arbitrary<string> =>
 
 const TZ_OFFSETS = ['+0000', '-0500', '+0900', '+0530'] as const;
 
+/** A non-zero timestamp — shared by every arbitrary that must never trip the zero-timestamp refusal. */
+export const arbNonZeroTimestamp = (): fc.Arbitrary<number> =>
+  fc.integer({ min: 1, max: 4_000_000_000 });
+
 /**
  * A timestamp that CAN be 0 — an explicit constant, so the zero case is
  * guaranteed rather than left to fast-check's boundary bias.
  */
 export const arbTimestampIncludingZero = (): fc.Arbitrary<number> =>
-  fc.oneof(fc.constant(0), fc.integer({ min: 1, max: 4_000_000_000 }));
+  fc.oneof(fc.constant(0), arbNonZeroTimestamp());
 
 /** An arbitrary reflog entry. `timestamp` defaults to the zero-inclusive arbitrary. */
 export const arbEntry = (
@@ -85,7 +89,7 @@ const arbGarbageLine = (): fc.Arbitrary<string> =>
  */
 export const arbCandidateLine = (): fc.Arbitrary<string> =>
   fc.oneof(
-    arbEntry(fc.integer({ min: 1, max: 4_000_000_000 })).map((entry) =>
+    arbEntry(arbNonZeroTimestamp()).map((entry) =>
       serializeReflogLine(entry, 40).replace(/\n$/, ''),
     ),
     arbGarbageLine(),

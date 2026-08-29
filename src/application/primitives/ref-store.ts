@@ -8,11 +8,12 @@ import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import {
   parseReflog,
   parseReflogLenient,
-  serializeReflogLine,
+  serializeReflogRewriteLine,
 } from '../../domain/reflog/reflog-format.js';
 import {
   type ReftableCheck,
   refChainTooDeep,
+  refLocked,
   refNotFound,
   refUpdateConflict,
 } from '../../domain/refs/error.js';
@@ -27,7 +28,7 @@ import {
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
-import { atomicWriteRef } from './atomic-write.js';
+import { atomicWriteFile, atomicWriteRef } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import {
@@ -611,14 +612,25 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
-  /** Replace `name`'s reflog with exactly `entries` — the files backend's whole-file rewrite. */
+  /**
+   * Replace `name`'s reflog with exactly `entries` — the files backend's
+   * whole-file rewrite. `runExpire` runs this on every ref on every call, so
+   * a torn write here would be routine rather than rare; locked-then-renamed
+   * through {@link atomicWriteFile}, the same shape git itself takes for a
+   * reflog rewrite.
+   */
   async function applyReflogReplace(
     update: Extract<RefUpdate, { kind: 'reflogReplace' }>,
   ): Promise<void> {
     const text = update.entries
-      .map((entry) => serializeReflogLine(entry, ctx.hashConfig.hexLength))
+      .map((entry) => serializeReflogRewriteLine(entry, ctx.hashConfig.hexLength))
       .join('');
-    await ctx.fs.writeUtf8(reflogPath(refDir(update.name), update.name), text);
+    await atomicWriteFile(
+      ctx,
+      reflogPath(refDir(update.name), update.name),
+      TEXT_ENCODER.encode(text),
+      () => refLocked(update.name),
+    );
   }
 
   /** `name`'s reflog text, or `undefined` when the file is absent. Refuses

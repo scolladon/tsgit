@@ -14,7 +14,7 @@
  *   unique:         per-line reflog tolerance and rewrite bytes against canonical git
  *   interopSurface: reflog
  */
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -22,7 +22,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { ReflogShowEntry } from '../../src/application/commands/reflog.js';
 import { reflog } from '../../src/application/commands/reflog.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
-import { readStashStack } from '../../src/application/primitives/stash-ref.js';
+import { dropStashEntry, readStashStack } from '../../src/application/primitives/stash-ref.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import {
@@ -47,10 +47,11 @@ const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
   GIT_COMMITTER_DATE: `${epoch} +0200`,
 });
 
-/** `<dir>/.git/logs/<ref path>` — the two refs this suite corrupts. */
+/** `<dir>/.git/logs/<ref path>` — the refs this suite corrupts. */
 const mainLogPath = (dir: string): string =>
   path.join(dir, '.git', 'logs', 'refs', 'heads', 'main');
 const stashLogPath = (dir: string): string => path.join(dir, '.git', 'logs', 'refs', 'stash');
+const headLogPath = (dir: string): string => path.join(dir, '.git', 'logs', 'HEAD');
 const refPath = (dir: string, ref: string): string => path.join(dir, '.git', ...ref.split('/'));
 
 /** Splits one `%format`'s multi-record stdout into exactly one string per
@@ -106,6 +107,14 @@ describe.skipIf(!GIT_AVAILABLE)(
     /** The base repo's four valid `refs/heads/main` log lines, each including
      *  its own trailing LF — spliced around a corrupted line 3 by every row. */
     let baseLines: readonly [string, string, string, string];
+    /** `logs/HEAD` mirrors `logs/refs/heads/main` line for line — HEAD stays
+     *  attached to `main` for every commit the base repo makes. */
+    let headLines: readonly [string, string, string, string];
+    /** A second base repo built with the REAL current wall clock (no
+     *  `GIT_COMMITTER_DATE` override) — the expire-timing cases need entries
+     *  whose age is relative to actual "now", not a fixed historical date
+     *  that eventually drifts past any cutoff under test. */
+    let freshBaseDir = '';
     const caseRoots: string[] = [];
 
     beforeAll(async () => {
@@ -126,24 +135,60 @@ describe.skipIf(!GIT_AVAILABLE)(
       const rawBase = await readFile(mainLogPath(baseDir), 'utf8');
       const lines = rawBase.split(/(?<=\n)/).filter((line) => line.length > 0);
       baseLines = lines as unknown as [string, string, string, string];
+      const rawHead = await readFile(headLogPath(baseDir), 'utf8');
+      headLines = rawHead.split(/(?<=\n)/).filter((line) => line.length > 0) as unknown as [
+        string,
+        string,
+        string,
+        string,
+      ];
+
+      freshBaseDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-interop-fresh-'));
+      runGit(['init', '-q', '-b', 'main', freshBaseDir]);
+      git(freshBaseDir, 'config', 'user.name', 'Ada');
+      git(freshBaseDir, 'config', 'user.email', 'ada@example.com');
+      git(freshBaseDir, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(freshBaseDir);
+      // Anchored a few seconds behind real "now", not AT it: reflog
+      // timestamps are second-precision and `keepEntry`'s cutoff comparison
+      // is inclusive (`>=`), so a commit stamped in the same wall-clock
+      // second as a later `--expire=now` call would survive on both tools —
+      // a timing race, not a tolerance question. A few seconds of margin
+      // keeps the fixture "fresh" for the never/90-days-ago cases while
+      // staying safely earlier than any `now` cutoff computed later.
+      const freshEpoch = Math.floor(Date.now() / 1000) - 5;
+      for (let i = 0; i < 2; i += 1) {
+        await writeFile(path.join(freshBaseDir, `g${i}.txt`), `g${i}\n`);
+        git(freshBaseDir, 'add', '-A');
+        runGit(['-C', freshBaseDir, 'commit', '-q', '-m', `g${i}`], {
+          env: datedEnv(freshEpoch + i),
+        });
+      }
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
       await rm(baseDir, { recursive: true, force: true });
+      await rm(freshBaseDir, { recursive: true, force: true });
       await Promise.all(
         caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
       );
     });
 
-    /** Every case gets its own copy of the shared base repo — read-only, so
-     *  one copy suffices for both readers (see file header). */
-    const caseDir = async (slug: string): Promise<string> => {
+    /** Copy `source` into a fresh, tracked tmpdir — the general form behind
+     *  {@link caseDir}: the rewrite cases need TWO independent copies of a
+     *  fixture (one git mutates, one tsgit mutates), so read-only sharing
+     *  (used by the rest of this suite) does not apply to them. */
+    const cloneRepo = async (source: string, slug: string): Promise<string> => {
       const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-reflog-interop-${slug}-`));
       caseRoots.push(root);
       const target = path.join(root, 'repo');
-      await cp(baseDir, target, { recursive: true });
+      await cp(source, target, { recursive: true });
       return target;
     };
+
+    /** Every case gets its own copy of the shared base repo — read-only, so
+     *  one copy suffices for both readers (see file header). */
+    const caseDir = async (slug: string): Promise<string> => cloneRepo(baseDir, slug);
 
     /** Replaces line 3 of 4 (oldest-first, the `c1 → c2` move) with `line3`,
      *  keeping the other three valid lines from the base fixture — the
@@ -521,6 +566,317 @@ describe.skipIf(!GIT_AVAILABLE)(
             { index: 0, selector: 'stash@{0}', stash: c1, message: 'WIP on main: 111 second' },
             { index: 1, selector: 'stash@{1}', stash: c0, message: 'WIP on main: 000 first' },
           ]);
+        });
+      });
+    });
+
+    describe('Given a corrupted refs/heads/main log with a tab-less surviving entry', () => {
+      /** Strips `baseLines[0]`'s message to the tab-less (empty-message) form
+       *  and replaces the c1→c2 transition with garbage — `main@{1}` then
+       *  targets the c0→c1 entry, leaving the tab-less entry to survive and
+       *  be re-serialized under the rewrite writer's always-TAB rule. */
+      const tablessSurvivorText = (): string => {
+        const tabless = `${baseLines[0].split('\t')[0]}\n`;
+        return `${tabless}${baseLines[1]}this is not a reflog line at all\n${baseLines[3]}`;
+      };
+
+      describe('When main@{1} is deleted', () => {
+        it('Then git reflog delete and tsgit delete produce byte-identical logs', async () => {
+          // Arrange — twin repos, corrupted identically; git mutates its own
+          // copy on delete, so read-only sharing (used by the rest of this
+          // suite) does not apply here.
+          const text = tablessSurvivorText();
+          const peer = await caseDir('delete-peer');
+          const ours = await caseDir('delete-ours');
+          await writeFile(mainLogPath(peer), text, 'utf8');
+          await writeFile(mainLogPath(ours), text, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'delete', 'main@{1}');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 1 });
+
+          // Assert — the surviving set (garbage purged, the targeted entry
+          // removed) and the re-serialization (the tab-less survivor gains a
+          // trailing TAB) both land byte-for-byte the same as git's.
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When main@{1} is deleted with chain repair', () => {
+        it('Then git reflog delete --rewrite and tsgit delete rewrite=true produce byte-identical logs', async () => {
+          // Arrange
+          const text = tablessSurvivorText();
+          const peer = await caseDir('delete-rewrite-peer');
+          const ours = await caseDir('delete-rewrite-ours');
+          await writeFile(mainLogPath(peer), text, 'utf8');
+          await writeFile(mainLogPath(ours), text, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'delete', '--rewrite', 'main@{1}');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 1, rewrite: true });
+
+          // Assert — the surviving entry's oldId is repaired to chain from
+          // the deleted entry's oldId, same as git's.
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a corrupted refs/heads/main log with no entry stale enough to prune', () => {
+      describe('When expire runs with --expire=never', () => {
+        it('Then git and tsgit both purge the malformed line and keep every survivor, byte-identical', async () => {
+          // Arrange — "never" never expires anything regardless of the
+          // fixture's (historical) commit dates, so the fixed base repo is
+          // fine here.
+          const peer = await caseDir('expire-never-peer');
+          const ours = await caseDir('expire-never-ours');
+          await writeLine3(peer, 'this is not a reflog line at all\n');
+          await writeLine3(ours, 'this is not a reflog line at all\n');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'expire', ref: 'refs/heads/main', expire: 'never' });
+
+          // Assert
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with --expire=90.days.ago against fresh (non-expiring) timestamps', () => {
+        it('Then git and tsgit both purge the malformed line and keep every survivor, byte-identical', async () => {
+          // Arrange — real "now" timestamps, so a 90-day cutoff never reaches
+          // them regardless of when this suite happens to run.
+          const rawFresh = await readFile(mainLogPath(freshBaseDir), 'utf8');
+          const freshLines = rawFresh.split(/(?<=\n)/).filter((line) => line.length > 0) as [
+            string,
+            string,
+          ];
+          const text = `${freshLines[0]}this is not a reflog line at all\n${freshLines[1]}`;
+          const peer = await cloneRepo(freshBaseDir, 'expire-90days-peer');
+          const ours = await cloneRepo(freshBaseDir, 'expire-90days-ours');
+          await writeFile(mainLogPath(peer), text, 'utf8');
+          await writeFile(mainLogPath(ours), text, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=90.days.ago', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'expire', ref: 'refs/heads/main', expire: '90.days.ago' });
+
+          // Assert
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with --expire=now', () => {
+        it('Then git and tsgit both truncate the log to zero bytes, the file still present', async () => {
+          // Arrange — every entry, however fresh, was created strictly before
+          // this test's own "now", so a `now` cutoff prunes everything.
+          const peer = await cloneRepo(freshBaseDir, 'expire-now-peer');
+          const ours = await cloneRepo(freshBaseDir, 'expire-now-ours');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=now', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'expire', ref: 'refs/heads/main', expire: 'now' });
+
+          // Assert
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(peerBytes).toHaveLength(0);
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given degenerate reflog files', () => {
+      describe('When expire runs on a log where every line is corrupt', () => {
+        it('Then git and tsgit both truncate it to zero bytes and report nothing removed or kept', async () => {
+          // Arrange
+          const peer = await caseDir('degenerate-all-corrupt-peer');
+          const ours = await caseDir('degenerate-all-corrupt-ours');
+          const garbage = 'garbage one\ngarbage two\n';
+          await writeFile(mainLogPath(peer), garbage, 'utf8');
+          await writeFile(mainLogPath(ours), garbage, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'never',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(peerBytes).toHaveLength(0);
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs on a 0-byte log', () => {
+        it('Then git and tsgit both leave it at zero bytes and report nothing removed or kept', async () => {
+          // Arrange
+          const peer = await caseDir('degenerate-empty-peer');
+          const ours = await caseDir('degenerate-empty-ours');
+          await writeFile(mainLogPath(peer), '', 'utf8');
+          await writeFile(mainLogPath(ours), '', 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'never',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(peerBytes).toHaveLength(0);
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('Given a ref that exists but has no reflog file at all', () => {
+        describe('When expire runs', () => {
+          it('Then git refuses (reflog could not be found, exit 255) but tsgit treats it as empty — a pre-existing, accepted divergence', async () => {
+            // Arrange
+            const dir = await caseDir('degenerate-absent-log');
+            git(dir, 'branch', 'existsnolog');
+            await rm(path.join(dir, '.git', 'logs', 'refs', 'heads', 'existsnolog'));
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              dir,
+              'reflog',
+              'expire',
+              '--expire=never',
+              'refs/heads/existsnolog',
+            ]);
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/existsnolog',
+              expire: 'never',
+            });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(255);
+            expect(gitResult.stderr).toContain('reflog could not be found');
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          });
+        });
+      });
+
+      describe('Given a ref name that does not resolve to any ref at all', () => {
+        describe('When reflog show runs', () => {
+          it('Then git refuses (fatal: ambiguous argument, exit 128) but tsgit returns an empty result — a pre-existing, accepted divergence', async () => {
+            // Arrange
+            const dir = await caseDir('degenerate-absent-ref');
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              dir,
+              'reflog',
+              'show',
+              'totally-absent-ref',
+            ]);
+            const result = await reflog(ctx, { action: 'show', ref: 'totally-absent-ref' });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(128);
+            expect(gitResult.stderr).toContain('ambiguous argument');
+            expect(result.kind).toBe('show');
+            expect(result.kind === 'show' && result.entries).toEqual([]);
+          });
+        });
+      });
+    });
+
+    describe('Given a corrupted logs/HEAD alongside an otherwise-clean logs/refs/heads/main', () => {
+      describe('When expire runs with --expire=never --all', () => {
+        it('Then git and tsgit both purge the malformed line from logs/HEAD, byte-identical', async () => {
+          // Arrange
+          const peer = await caseDir('all-peer');
+          const ours = await caseDir('all-ours');
+          const text = `${headLines[0]}${headLines[1]}this is not a reflog line at all\n${headLines[3]}`;
+          await writeFile(headLogPath(peer), text, 'utf8');
+          await writeFile(headLogPath(ours), text, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', '--all');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'expire', all: true, expire: 'never' });
+
+          // Assert
+          const peerBytes = await readFile(headLogPath(peer));
+          const oursBytes = await readFile(headLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a corrupted refs/stash log with a garbage line between two real stash entries', () => {
+      describe('When stash@{1} is dropped', () => {
+        it("Then git stash drop and tsgit dropStashEntry produce byte-identical logs — git's repeated gap-warning stderr is rendering and is not matched", async () => {
+          // Arrange — `stash drop` validates that the target is a stash-like
+          // commit, so real `git stash push` entries are required (unlike the
+          // read-only `stash list` case above, which tolerates hand-rolled
+          // oids).
+          const stashBase = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-reflog-interop-stashbase-'),
+          );
+          caseRoots.push(stashBase);
+          runGit(['init', '-q', '-b', 'main', stashBase]);
+          git(stashBase, 'config', 'user.name', 'Ada');
+          git(stashBase, 'config', 'user.email', 'ada@example.com');
+          git(stashBase, 'config', 'commit.gpgsign', 'false');
+          disableAutoMaintenance(stashBase);
+          await writeFile(path.join(stashBase, 'f.txt'), 'base\n');
+          git(stashBase, 'add', '-A');
+          runGit(['-C', stashBase, 'commit', '-q', '-m', 'base'], { env: datedEnv(BASE_EPOCH) });
+          for (let i = 1; i <= 3; i += 1) {
+            await appendFile(path.join(stashBase, 'f.txt'), `change${i}\n`);
+            runGit(['-C', stashBase, 'stash', 'push', '-q', '-m', `entry ${i}`], {
+              env: datedEnv(BASE_EPOCH + i),
+            });
+          }
+          const rawStashLog = await readFile(stashLogPath(stashBase), 'utf8');
+          const stashLines = rawStashLog.split(/(?<=\n)/).filter((line) => line.length > 0);
+          const corrupted = `${stashLines[0]}this is not a reflog line at all\n${stashLines[1]}${stashLines[2]}`;
+          const peer = await cloneRepo(stashBase, 'stash-drop-peer');
+          const ours = await cloneRepo(stashBase, 'stash-drop-ours');
+          await writeFile(stashLogPath(peer), corrupted, 'utf8');
+          await writeFile(stashLogPath(ours), corrupted, 'utf8');
+
+          // Act
+          git(peer, 'stash', 'drop', 'stash@{1}');
+          const ctx = createNodeContext({ workDir: ours });
+          await dropStashEntry(ctx, 1);
+
+          // Assert
+          const peerBytes = await readFile(stashLogPath(peer));
+          const oursBytes = await readFile(stashLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
         });
       });
     });

@@ -1370,6 +1370,61 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a pre-existing logs/<ref>.lock file', () => {
+    describe('When applyRefUpdates applies a reflogReplace update', () => {
+      it('Then it refuses with REF_LOCKED', async () => {
+        // Arrange — git locks and renames the rewrite; a bare writeUtf8 would
+        // ignore the lock file entirely.
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/main' as RefName, reflogEntry());
+        await ctx.fs.write(`${ctx.layout.gitDir}/logs/refs/heads/main.lock`, new Uint8Array([0]));
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([
+            {
+              kind: 'reflogReplace',
+              name: 'refs/heads/main' as RefName,
+              entries: [reflogEntry({ message: 'kept' })],
+            },
+          ]);
+          expect.fail('expected REF_LOCKED');
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_LOCKED',
+          name: 'refs/heads/main',
+        });
+      });
+    });
+  });
+
+  describe('Given a reflogReplace update with an entry whose message is empty', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then the on-disk bytes end with a trailing TAB before the line feed', async () => {
+        // Arrange — the rewrite serializer always emits the message TAB, unlike
+        // the append writer, which omits it for an empty message.
+        const ctx = await buildSeededContext();
+        const empty = reflogEntry({ message: '' });
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: [empty] },
+        ]);
+
+        // Assert
+        const raw = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+        expect(raw.endsWith('\t\n')).toBe(true);
+      });
+    });
+  });
+
   describe('Given a set update with an unconditional reflog entry, no reflog file, and autocreate disabled', () => {
     describe('When applyRefUpdates is called', () => {
       it('Then the reflog entry is appended anyway', async () => {

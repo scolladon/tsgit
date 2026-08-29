@@ -9,6 +9,7 @@ import {
   parseReflogLine,
   sanitizeReflogMessage,
   serializeReflogLine,
+  serializeReflogRewriteLine,
 } from '../../../../src/domain/reflog/reflog-format.js';
 
 const OID_A = ObjectId.from('a'.repeat(40));
@@ -157,6 +158,87 @@ describe('serializeReflogLine', () => {
         // Act & Assert
         expectInvalidReflogEntry(
           () => serializeReflogLine(entry, 40),
+          'timestamp must be non-zero',
+        );
+      });
+    });
+  });
+});
+
+describe('serializeReflogRewriteLine', () => {
+  describe('Given an empty message', () => {
+    describe('When serializing', () => {
+      it('Then a trailing TAB is written before the line feed', () => {
+        // Arrange — git's expire/delete rewrite writer always emits the TAB,
+        // even for an empty message (unlike the append writer).
+        const entry: ReflogEntry = { ...ENTRY, message: '' };
+
+        // Act
+        const line = serializeReflogRewriteLine(entry, 40);
+
+        // Assert
+        expect(line).toBe(`${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\t\n`);
+      });
+    });
+  });
+
+  describe('Given a non-empty message', () => {
+    describe('When serializing', () => {
+      it('Then the bytes are identical to serializeReflogLine', () => {
+        // Arrange
+        const entry = ENTRY;
+
+        // Act
+        const rewriteLine = serializeReflogRewriteLine(entry, 40);
+
+        // Assert
+        expect(rewriteLine).toBe(serializeReflogLine(entry, 40));
+      });
+    });
+  });
+
+  describe('Given a message containing a line break', () => {
+    describe('When serializing', () => {
+      it.each([
+        { message: 'first\nsecond', label: 'an LF' },
+        { message: 'first\rsecond', label: 'a CR' },
+      ])('Then throws INVALID_REFLOG_ENTRY for $label', ({ message }) => {
+        // Arrange
+        const entry: ReflogEntry = { ...ENTRY, message };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLine(entry, 40),
+          'message contains a line break',
+        );
+      });
+    });
+  });
+
+  describe('Given an old id shorter than the repository hex width', () => {
+    describe('When serializing at hexLength 64', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange — OID_A/OID_B are 40-hex (SHA-1 width); the repo is SHA-256.
+        const entry: ReflogEntry = { ...ENTRY, oldId: OID_A };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLine(entry, 64),
+          'object id does not match the repository oid width',
+        );
+      });
+    });
+  });
+
+  describe('Given an entry whose identity timestamp is zero', () => {
+    describe('When serializing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange
+        const entry: ReflogEntry = { ...ENTRY, identity: { ...IDENTITY, timestamp: 0 } };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLine(entry, 40),
           'timestamp must be non-zero',
         );
       });

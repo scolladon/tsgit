@@ -166,16 +166,23 @@ const runExpire = async (
     );
     removed += stored.length - survivors.length;
     kept += survivors.length;
-    if (survivors.length !== stored.length) {
-      await getRefStore(ctx).applyRefUpdates([
-        { kind: 'reflogReplace', name: ref, entries: survivors },
-      ]);
-    }
+    // Unconditional: git rewrites the reflog on every `expire` run, even when
+    // nothing is pruned — the only way a malformed line (which a lenient read
+    // silently drops, leaving parsed counts equal) still gets purged from disk.
+    await getRefStore(ctx).applyRefUpdates([
+      { kind: 'reflogReplace', name: ref, entries: survivors },
+    ]);
   }
   return { kind: 'expire', removed, kept };
 };
 
 const resolveCutoff = (raw: string, now: number): number => {
+  // 'never' has no moment-in-time meaning outside expiry, so it is not part
+  // of parseApproxidate's grammar — mapped here to negative infinity so
+  // every entry, however old or however negative its own timestamp, is
+  // `>= cutoff` and none ever expires. Mirrors expiryCutoff's identical
+  // special-case for gc.pruneExpire.
+  if (raw.trim().toLowerCase() === 'never') return Number.NEGATIVE_INFINITY;
   const cutoff = parseApproxidate(raw, now);
   if (cutoff === undefined) throw revparseUnresolved(raw);
   return cutoff;

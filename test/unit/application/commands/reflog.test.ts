@@ -1020,10 +1020,11 @@ describe('reflog command', () => {
 
     describe('Given no entry is stale enough to prune', () => {
       describe('When expire', () => {
-        it('Then the reflog file is not rewritten', async () => {
-          // Arrange — two recent reachable entries; nothing crosses the cutoff. The
-          // write-back must be skipped entirely (the count equality short-circuits
-          // it), so the reflog path receives no `writeUtf8` call.
+        it('Then the reflog file is rewritten anyway and the entries are unchanged', async () => {
+          // Arrange — two recent reachable entries; nothing crosses the cutoff.
+          // The rewrite runs on every call regardless — a lock-then-rename pair
+          // onto the reflog path is the proof it happened; `writeUtf8` no longer
+          // sees the write once the replace goes through `atomicWriteFile`.
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
@@ -1033,14 +1034,14 @@ describe('reflog command', () => {
             entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'second recent' }),
           ]);
           const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
-          const writes: string[] = [];
+          const renameDestinations: string[] = [];
           const spiedCtx: Context = {
             ...ctx,
             fs: {
               ...ctx.fs,
-              writeUtf8: (path: string, content: string): Promise<void> => {
-                writes.push(path);
-                return ctx.fs.writeUtf8(path, content);
+              rename: (source: string, destination: string): Promise<void> => {
+                renameDestinations.push(destination);
+                return ctx.fs.rename(source, destination);
               },
             },
           };
@@ -1048,14 +1049,41 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(spiedCtx, { action: 'expire', ref: 'HEAD' });
 
-          // Assert — nothing pruned, and the reflog file was never rewritten.
+          // Assert — nothing pruned, but the lock file was renamed onto the log.
           expect(result).toEqual({ kind: 'expire', removed: 0, kept: 2 });
-          expect(writes).not.toContain(reflogPath);
+          expect(renameDestinations).toContain(reflogPath);
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry.message)).toEqual([
             'second recent',
             'first recent',
           ]);
+        });
+      });
+    });
+
+    describe('Given a raw reflog file with a malformed line and no entry stale enough to prune', () => {
+      describe('When expire runs with expire: never', () => {
+        it('Then the malformed line is purged from disk and the valid entry survives', async () => {
+          // Arrange — seeded with a raw writeUtf8 (not writeReflog, which would
+          // refuse the malformed line itself), so the corruption actually lands
+          // on disk. The old guard compared PARSED counts (1 stored === 1 kept,
+          // since the garbage line was never counted as an entry), which used
+          // to skip the write and leave the malformed line behind.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          const kept = entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'kept' });
+          const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+          await ctx.fs.writeUtf8(reflogPath, `${serializeReflogLine(kept, 40)}garbage line\n`);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'never' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          const after = await ctx.fs.readUtf8(reflogPath);
+          expect(after).toBe(serializeReflogLine(kept, 40));
         });
       });
     });

@@ -22,8 +22,14 @@ const CONTROL_CHARS = /[\n\r]/;
  * wide, so `newIdStart`/`newIdEnd`/`identityStart` are all offsets by that
  * one number.
  */
-/** Serialize one entry to a single LF-terminated reflog line. */
-export function serializeReflogLine(entry: ReflogEntry, hexLength: 40 | 64): string {
+/**
+ * Runs the three refusals shared by both reflog line serializers and builds
+ * the meta portion (old id, new id, identity) common to both — everything
+ * before the TAB/message. One path for every field but the trailing
+ * TAB/message is what keeps the append and rewrite serializers from drifting
+ * apart.
+ */
+function reflogLineMeta(entry: ReflogEntry, hexLength: 40 | 64): string {
   if (CONTROL_CHARS.test(entry.message)) {
     throw invalidReflogEntry('message contains a line break');
   }
@@ -34,10 +40,27 @@ export function serializeReflogLine(entry: ReflogEntry, hexLength: 40 | 64): str
     throw invalidReflogEntry('timestamp must be non-zero');
   }
   const identity = serializeIdentity(entry.identity);
-  const meta = `${entry.oldId} ${entry.newId} ${identity}`;
+  return `${entry.oldId} ${entry.newId} ${identity}`;
+}
+
+/** Serialize one entry to a single LF-terminated reflog line. */
+export function serializeReflogLine(entry: ReflogEntry, hexLength: 40 | 64): string {
+  const meta = reflogLineMeta(entry, hexLength);
   // git appends the TAB + message only when the message is non-empty
   // (`if (msg && *msg)`); an empty message ends the line at the timezone.
   return entry.message === '' ? `${meta}\n` : `${meta}\t${entry.message}\n`;
+}
+
+/**
+ * Serialize one entry as git's expire/delete REWRITE writer does. Identical
+ * to the append form except the message TAB is always emitted, even for an
+ * empty message — measured against git 2.55.0, where a tab-less entry gains
+ * a trailing TAB after `reflog expire --expire=never`. Two git writers, two
+ * rules; the append writer's own rule stays in `serializeReflogLine`.
+ */
+export function serializeReflogRewriteLine(entry: ReflogEntry, hexLength: 40 | 64): string {
+  const meta = reflogLineMeta(entry, hexLength);
+  return `${meta}\t${entry.message}\n`;
 }
 
 /** Parse one reflog line (LF already stripped). Throws INVALID_REFLOG_ENTRY. */

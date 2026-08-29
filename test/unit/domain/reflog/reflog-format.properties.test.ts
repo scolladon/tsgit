@@ -6,8 +6,9 @@ import {
   parseReflogLenient,
   parseReflogLine,
   serializeReflogLine,
+  serializeReflogRewriteLine,
 } from '../../../../src/domain/reflog/reflog-format.js';
-import { arbCandidateLine, arbEntry, arbReflogText } from './arbitraries.js';
+import { arbCandidateLine, arbEntry, arbNonZeroTimestamp, arbReflogText } from './arbitraries.js';
 
 describe('Given an arbitrary ASCII text with no NUL', () => {
   describe('When parseReflogLenient parses it', () => {
@@ -65,6 +66,24 @@ describe('Given an arbitrary entry whose timestamp may be zero', () => {
             expect(entry.identity.timestamp).toBe(0);
             return;
           }
+
+          expect(parseReflog(line, 40)).toEqual([entry]);
+        }),
+        { numRuns: 200 },
+      );
+    });
+  });
+});
+
+describe('Given an arbitrary entry with a non-zero timestamp', () => {
+  describe('When serializing with the rewrite serializer then parsing with the strict parser', () => {
+    it('Then every entry round-trips exactly', () => {
+      // Arrange + Act + Assert — the rewrite serializer always emits the TAB,
+      // so (unlike the append form) it never needs the zero-timestamp escape
+      // hatch to stay total over this arbitrary.
+      fc.assert(
+        fc.property(arbEntry(arbNonZeroTimestamp()), (entry) => {
+          const line = serializeReflogRewriteLine(entry, 40);
 
           expect(parseReflog(line, 40)).toEqual([entry]);
         }),
