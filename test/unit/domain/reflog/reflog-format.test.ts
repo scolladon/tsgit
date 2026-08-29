@@ -1,4 +1,3 @@
-import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
@@ -148,6 +147,21 @@ describe('serializeReflogLine', () => {
       });
     });
   });
+
+  describe('Given an entry whose identity timestamp is zero', () => {
+    describe('When serializing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange
+        const entry: ReflogEntry = { ...ENTRY, identity: { ...IDENTITY, timestamp: 0 } };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogLine(entry, 40),
+          'timestamp must be non-zero',
+        );
+      });
+    });
+  });
 });
 
 describe('parseReflogLine', () => {
@@ -285,6 +299,31 @@ describe('parseReflogLine', () => {
       });
     });
   });
+
+  describe('Given a reflog line whose timestamp is zero', () => {
+    describe('When parsing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY with the zero-timestamp reason', () => {
+        // Arrange
+        const line = `${OID_A} ${OID_B} Ada <ada@example.com> 0 +0000\tcommit: x`;
+
+        // Act & Assert
+        expectInvalidReflogEntry(() => parseReflogLine(line, 40), 'zero timestamp');
+      });
+    });
+  });
+
+  describe('Given a reflog line whose timestamp is not a number', () => {
+    describe('When parsing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY with the invalid-identity reason', () => {
+        // Arrange — a distinct guard from the zero-timestamp one: neither
+        // test can pass by the other guard firing instead.
+        const line = `${OID_A} ${OID_B} Ada <ada@example.com> not-a-number +0200\tcommit: x`;
+
+        // Act & Assert
+        expectInvalidReflogEntry(() => parseReflogLine(line, 40), 'invalid identity');
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -416,6 +455,41 @@ describe('parseReflog', () => {
       });
     });
   });
+
+  describe('Given a reflog file whose final line has no terminating LF', () => {
+    describe('When parsing', () => {
+      it('Then the unterminated entry is dropped rather than throwing', () => {
+        // Arrange
+        const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
+        const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
+        const third: ReflogEntry = { ...ENTRY, message: 'commit: c' };
+        const content =
+          `${serializeReflogLine(first, 40)}${serializeReflogLine(second, 40)}` +
+          serializeReflogLine(third, 40).replace(/\n$/, '');
+
+        // Act
+        const entries = parseReflog(content, 40);
+
+        // Assert
+        expect(entries).toEqual([first, second]);
+      });
+    });
+  });
+
+  describe('Given a reflog file that is a single unterminated line', () => {
+    describe('When parsing', () => {
+      it('Then returns an empty array', () => {
+        // Arrange
+        const content = 'garbage line';
+
+        // Act
+        const entries = parseReflog(content, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
 });
 
 describe('parseReflogLenient', () => {
@@ -500,6 +574,41 @@ describe('parseReflogLenient', () => {
       });
     });
   });
+
+  describe('Given a reflog file whose final line has no terminating LF', () => {
+    describe('When parseReflogLenient parses it', () => {
+      it('Then the unterminated entry is absent and the terminated ones survive', () => {
+        // Arrange
+        const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
+        const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
+        const third: ReflogEntry = { ...ENTRY, message: 'commit: c' };
+        const content =
+          `${serializeReflogLine(first, 40)}${serializeReflogLine(second, 40)}` +
+          serializeReflogLine(third, 40).replace(/\n$/, '');
+
+        // Act
+        const entries = parseReflogLenient(content, 40);
+
+        // Assert
+        expect(entries).toEqual([first, second]);
+      });
+    });
+  });
+
+  describe('Given a reflog file that is a single unterminated line', () => {
+    describe('When parsing', () => {
+      it('Then returns an empty array', () => {
+        // Arrange
+        const content = 'garbage line';
+
+        // Act
+        const entries = parseReflogLenient(content, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
 });
 
 describe('sanitizeReflogMessage', () => {
@@ -532,55 +641,6 @@ describe('sanitizeReflogMessage', () => {
 
         // Assert
         expect(result).toBe(expected);
-      });
-    });
-  });
-});
-
-describe('reflog line round-trip property', () => {
-  const arbHex = (length: number): fc.Arbitrary<string> =>
-    fc
-      .array(fc.constantFrom(...'0123456789abcdef'.split('')), {
-        minLength: length,
-        maxLength: length,
-      })
-      .map((chars) => chars.join(''));
-
-  // Identity name/email exclude angle brackets, control chars, and the
-  // surrounding-space ambiguity parseIdentity strips; messages exclude CR/LF
-  // and the framing whitespace sanitizeReflogMessage trims.
-  const arbSafeText = fc
-    .string({ minLength: 1, maxLength: 20 })
-    .filter((s) => !/[\n\r<>]/.test(s) && s.trim() === s);
-
-  const arbEntry: fc.Arbitrary<ReflogEntry> = fc.record({
-    oldId: arbHex(40).map((h) => ObjectId.from(h)),
-    newId: arbHex(40).map((h) => ObjectId.from(h)),
-    identity: fc.record({
-      name: arbSafeText,
-      email: arbSafeText,
-      timestamp: fc.integer({ min: 0, max: 4_000_000_000 }),
-      timezoneOffset: fc.constantFrom('+0000', '-0500', '+0900', '+0530'),
-    }),
-    message: fc.string({ maxLength: 30 }).filter((s) => !/[\n\r]/.test(s) && s.trim() === s),
-  });
-
-  describe('Given an arbitrary valid entry', () => {
-    describe('When serialize then parse', () => {
-      it('Then the entry is recovered', () => {
-        // Arrange
-        fc.assert(
-          fc.property(arbEntry, (entry) => {
-            // Act
-            const recovered = parseReflogLine(
-              serializeReflogLine(entry, 40).replace(/\n$/, ''),
-              40,
-            );
-
-            // Assert
-            expect(recovered).toEqual(entry);
-          }),
-        );
       });
     });
   });

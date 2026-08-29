@@ -30,6 +30,9 @@ export function serializeReflogLine(entry: ReflogEntry, hexLength: 40 | 64): str
   if (entry.oldId.length !== hexLength || entry.newId.length !== hexLength) {
     throw invalidReflogEntry('object id does not match the repository oid width');
   }
+  if (entry.identity.timestamp === 0) {
+    throw invalidReflogEntry('timestamp must be non-zero');
+  }
   const identity = serializeIdentity(entry.identity);
   const meta = `${entry.oldId} ${entry.newId} ${identity}`;
   // git appends the TAB + message only when the message is non-empty
@@ -54,13 +57,27 @@ export function parseReflogLine(line: string, hexLength: 40 | 64): ReflogEntry {
   const oldId = parseOid(meta.slice(0, hexLength));
   const newId = parseOid(meta.slice(newIdStart, newIdEnd));
   const identity = parseReflogIdentity(meta.slice(identityStart));
+  if (identity.timestamp === 0) {
+    throw invalidReflogEntry('zero timestamp');
+  }
   return { oldId, newId, identity, message };
 }
 
+/**
+ * Splits reflog file text into lines, dropping a final line with no LF
+ * terminator: git treats a torn trailing write as absent, not as an entry
+ * (measured, git 2.55.0). This is a file-level rule on the split, not a
+ * per-line predicate, so the strict and lenient parsers keep agreeing about
+ * every file's line set.
+ */
+const splitReflogLines = (text: string): readonly string[] => {
+  const lastTerminator = text.lastIndexOf('\n');
+  return lastTerminator === -1 ? [] : text.slice(0, lastTerminator).split('\n');
+};
+
 /** Parse a whole reflog file. Oldest-first. A trailing blank line is tolerated. */
 export function parseReflog(text: string, hexLength: 40 | 64): ReadonlyArray<ReflogEntry> {
-  return text
-    .split('\n')
+  return splitReflogLines(text)
     .filter((line) => line !== '')
     .map((line) => parseReflogLine(line, hexLength));
 }
@@ -79,8 +96,8 @@ export function parseReflog(text: string, hexLength: 40 | 64): ReadonlyArray<Ref
  */
 export function parseReflogLenient(text: string, hexLength: 40 | 64): ReadonlyArray<ReflogEntry> {
   const entries: ReflogEntry[] = [];
-  for (const line of text.split('\n')) {
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `line` always fails parseReflogLine's `meta[hexLength] !== FIELD_SEPARATOR` check (undefined !== ' ') and is caught below exactly like any other malformed line, so skipping this guard changes nothing observable.
+  for (const line of splitReflogLines(text)) {
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — splitReflogLines can still yield an empty `line` (e.g. a blank line between two LFs); it always fails parseReflogLine's `meta[hexLength] !== FIELD_SEPARATOR` check (undefined !== ' ') and is caught below exactly like any other malformed line, so skipping this guard changes nothing observable.
     if (line === '') continue;
     try {
       entries.push(parseReflogLine(line, hexLength));
