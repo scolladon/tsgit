@@ -14,25 +14,19 @@ import type { ReflogEntry } from './reflog-entry.js';
 
 const FIELD_SEPARATOR = ' ';
 const CONTROL_CHARS = /[\n\r]/;
+const LINE_FEED = /\n/;
 
 /**
- * The old-id/new-id/identity field boundaries within a reflog line's meta
- * portion (everything before the TAB), derived from the repository's own
- * hex oid width — 40 for SHA-1, 64 for SHA-256. Both fields are `hexLength`
- * wide, so `newIdStart`/`newIdEnd`/`identityStart` are all offsets by that
- * one number.
- */
-/**
- * Runs the three refusals shared by both reflog line serializers and builds
+ * Runs the two refusals shared by both reflog line serializers and builds
  * the meta portion (old id, new id, identity) common to both — everything
  * before the TAB/message. One path for every field but the trailing
  * TAB/message is what keeps the append and rewrite serializers from drifting
- * apart.
+ * apart. Message refusals live in each serializer: the append writer refuses
+ * CR and LF, the rewrite writer only LF (git's rewrite preserves a bare CR
+ * byte in the message — measured, git 2.55.0, a CRLF reflog survives
+ * `expire --expire=never` with every `\r` intact).
  */
 function reflogLineMeta(entry: ReflogEntry, hexLength: 40 | 64): string {
-  if (CONTROL_CHARS.test(entry.message)) {
-    throw invalidReflogEntry('message contains a line break');
-  }
   if (entry.oldId.length !== hexLength || entry.newId.length !== hexLength) {
     throw invalidReflogEntry('object id does not match the repository oid width');
   }
@@ -45,6 +39,9 @@ function reflogLineMeta(entry: ReflogEntry, hexLength: 40 | 64): string {
 
 /** Serialize one entry to a single LF-terminated reflog line. */
 export function serializeReflogLine(entry: ReflogEntry, hexLength: 40 | 64): string {
+  if (CONTROL_CHARS.test(entry.message)) {
+    throw invalidReflogEntry('message contains a line break');
+  }
   const meta = reflogLineMeta(entry, hexLength);
   // git appends the TAB + message only when the message is non-empty
   // (`if (msg && *msg)`); an empty message ends the line at the timezone.
@@ -56,9 +53,14 @@ export function serializeReflogLine(entry: ReflogEntry, hexLength: 40 | 64): str
  * to the append form except the message TAB is always emitted, even for an
  * empty message — measured against git 2.55.0, where a tab-less entry gains
  * a trailing TAB after `reflog expire --expire=never`. Two git writers, two
- * rules; the append writer's own rule stays in `serializeReflogLine`.
+ * rules; the append writer's own rule stays in `serializeReflogLine`. A CR
+ * in the message is legal here: parsed entries can carry one (CRLF files),
+ * and git's rewrite emits it back verbatim.
  */
 export function serializeReflogRewriteLine(entry: ReflogEntry, hexLength: 40 | 64): string {
+  if (LINE_FEED.test(entry.message)) {
+    throw invalidReflogEntry('message contains a line break');
+  }
   const meta = reflogLineMeta(entry, hexLength);
   return `${meta}\t${entry.message}\n`;
 }

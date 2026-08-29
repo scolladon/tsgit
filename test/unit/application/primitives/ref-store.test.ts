@@ -1376,17 +1376,20 @@ describe('ref-store', () => {
 
   describe('Given a source ref with no reflog and a destination ref that has one', () => {
     describe('When moveReflog moves the source onto the destination', () => {
-      it('Then the destination reflog is removed rather than kept', async () => {
-        // Arrange
+      it('Then the destination reflog is kept untouched', async () => {
+        // Arrange — the move is pure: dropping the destination's log on a
+        // forced rename is the caller's decision (git keeps an orphan log
+        // and appends to it; measured, 2.55.0).
         const ctx = await buildSeededContext();
         await appendReflog(ctx, 'refs/heads/trunk' as RefName, reflogEntry());
+        const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/trunk`);
         const sut = createRefStore(ctx);
 
         // Act
         await sut.moveReflog('refs/heads/main' as RefName, 'refs/heads/trunk' as RefName);
 
         // Assert
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/trunk`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/trunk`)).toBe(before);
       });
     });
   });

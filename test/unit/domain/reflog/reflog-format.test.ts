@@ -197,20 +197,33 @@ describe('serializeReflogRewriteLine', () => {
     });
   });
 
-  describe('Given a message containing a line break', () => {
+  describe('Given a message containing an LF', () => {
     describe('When serializing', () => {
-      it.each([
-        { message: 'first\nsecond', label: 'an LF' },
-        { message: 'first\rsecond', label: 'a CR' },
-      ])('Then throws INVALID_REFLOG_ENTRY for $label', ({ message }) => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
         // Arrange
-        const entry: ReflogEntry = { ...ENTRY, message };
+        const entry: ReflogEntry = { ...ENTRY, message: 'first\nsecond' };
 
         // Act & Assert
         expectInvalidReflogEntry(
           () => serializeReflogRewriteLine(entry, 40),
           'message contains a line break',
         );
+      });
+    });
+  });
+
+  describe('Given a message carrying a bare CR', () => {
+    describe('When serializing', () => {
+      it('Then the CR is emitted verbatim in the message bytes', () => {
+        // Arrange — a CRLF reflog file parses to messages with a trailing \r;
+        // git's rewrite writes that byte back untouched (measured, 2.55.0).
+        const entry: ReflogEntry = { ...ENTRY, message: 'crlf tail\r' };
+
+        // Act
+        const result = serializeReflogRewriteLine(entry, 40);
+
+        // Assert
+        expect(result.endsWith('\tcrlf tail\r\n')).toBe(true);
       });
     });
   });

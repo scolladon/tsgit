@@ -993,16 +993,23 @@ describe('reflog command', () => {
 
     describe('Given a missing reflog', () => {
       describe('When expire', () => {
-        it('Then nothing is removed and kept is zero', async () => {
-          // Arrange
+        it('Then throws REFLOG_NOT_FOUND and creates no log file', async () => {
+          // Arrange — git refuses (exit 255) and creates nothing; the
+          // unconditional rewrite must not manufacture an empty log file.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
 
-          // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'refs/heads/missing' });
-
-          // Assert
-          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          // Act & Assert
+          try {
+            await reflog(ctx, { action: 'expire', ref: 'refs/heads/missing' });
+            expect.unreachable('expire on a missing reflog must refuse');
+          } catch (err) {
+            expect((err as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/missing',
+            });
+          }
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/missing`)).toBe(false);
         });
       });
     });

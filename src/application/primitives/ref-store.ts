@@ -682,16 +682,17 @@ function createFilesRefStore(ctx: Context): RefStore {
   /**
    * `rename(2)`s `from`'s reflog file onto `to`'s — byte-preserving, so a
    * malformed line moves verbatim without ever being parsed. When `from`
-   * has none, `to`'s own reflog file (if any) is removed instead of kept:
-   * `ctx.fs.rename` would otherwise leave it untouched, which is not git's
-   * `branch -m` contract (a forced rename replaces, never merges).
+   * has none this is a pure no-op: whether `to`'s existing log survives is
+   * the CALLER's question, not the move's — git keeps an orphan log (no
+   * live ref underneath) and appends to it, while a forced rename over a
+   * live ref drops the old log via its ref delete (measured, git 2.55.0).
+   * The `hasReflog` probe (not a bare `exists`) keeps a directory at
+   * `logs/<from>` — the D/F shape a sibling `<from>/x` log creates — from
+   * being renamed wholesale.
    */
   async function moveReflog(from: RefName, to: RefName): Promise<void> {
+    if (!(await hasReflog(from))) return;
     const src = reflogPath(refDir(from), from);
-    if (!(await ctx.fs.exists(src))) {
-      await removeReflogFile(to);
-      return;
-    }
     await ctx.fs.rename(src, reflogPath(refDir(to), to));
   }
 

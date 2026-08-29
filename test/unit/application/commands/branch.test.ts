@@ -13,6 +13,8 @@ import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import {
+  appendReflog,
+  deleteReflog,
   listReflogs,
   readReflog,
   reflogExists,
@@ -20,6 +22,7 @@ import {
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
+import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
 import { withReftableStorage } from '../primitives/reftable-fixtures.js';
@@ -288,6 +291,72 @@ describe('branch', () => {
         expect(movedLog[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
         expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([]);
         expect(await listReflogs(ctx)).not.toContain('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a branch renamed onto its own name with force', () => {
+    describe('When branch rename', () => {
+      it('Then the branch and its history survive and only the rename entry is appended', async () => {
+        // Arrange — git accepts a self-rename (`branch -M x x` exits 0): the
+        // ref stays, the log stays, one rename entry lands (measured, 2.55.0).
+        const { ctx } = await seedWithCommit();
+        const before = await readReflog(ctx, 'refs/heads/main' as RefName);
+
+        // Act
+        const result = await branchRename(ctx, { from: 'main', to: 'main', force: true });
+
+        // Assert
+        expect(result).toEqual({ from: 'refs/heads/main', to: 'refs/heads/main' });
+        const names = (await branchList(ctx)).branches.map((b) => b.name);
+        expect(names).toContain('refs/heads/main');
+        const log = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(log).toHaveLength(before.length + 1);
+        expect(log[log.length - 1]?.message).toBe(
+          'Branch: renamed refs/heads/main to refs/heads/main',
+        );
+      });
+    });
+  });
+
+  describe('Given a branch renamed onto its own name without force', () => {
+    describe('When branch rename', () => {
+      it('Then it succeeds exactly like the forced form instead of refusing', async () => {
+        // Arrange — `branch -m x x` also exits 0 in git; the absent-CAS that
+        // guards a real rename does not apply to the self case.
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        const result = await branchRename(ctx, { from: 'main', to: 'main' });
+
+        // Assert
+        expect(result).toEqual({ from: 'refs/heads/main', to: 'refs/heads/main' });
+        const names = (await branchList(ctx)).branches.map((b) => b.name);
+        expect(names).toContain('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a log-less source and an orphan reflog file under the destination name', () => {
+    describe('When branch rename', () => {
+      it('Then the orphan history is kept and the rename entry appends to it', async () => {
+        // Arrange — `to` is NOT a live ref, only a leftover log file exists.
+        // git keeps that orphan log and appends (measured, 2.55.0); only a
+        // forced rename over a LIVE ref drops the old log.
+        const { ctx } = await seedWithCommit();
+        const mainLog = await readReflog(ctx, 'refs/heads/main' as RefName);
+        const orphan = mainLog[0] as ReflogEntry;
+        await appendReflog(ctx, 'refs/heads/trunk' as RefName, orphan);
+        await deleteReflog(ctx, 'refs/heads/main' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert — orphan entry first, rename entry after it.
+        const log = await readReflog(ctx, 'refs/heads/trunk' as RefName);
+        expect(log).toHaveLength(2);
+        expect(log[0]).toEqual(orphan);
+        expect(log[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
       });
     });
   });

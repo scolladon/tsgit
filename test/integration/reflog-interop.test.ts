@@ -1,12 +1,12 @@
 /**
  * Integration — the reflog malformed-line parity matrix, driven against
  * canonical git. A shared four-commit base repo is built once; every case
- * below gets its own copy, corrupted identically, then read by both real
- * git and tsgit. Read-only: `reflog show`, `rev-parse @{n}` and the
- * stash-stack read never mutate the fixture in this part, so a single copy
- * per case (rather than a git-side/tsgit-side twin) already guarantees both
- * readers see byte-identical bytes — the rewrite-bytes cases (`delete`,
- * `expire`, `stash drop`) land in a later part.
+ * below gets its own copy, corrupted identically. Read-only cases
+ * (`reflog show`, `rev-parse @{n}`, the stash-stack read) use that single
+ * copy — both readers see byte-identical bytes by construction. The
+ * rewrite cases (`delete`, `expire`, `stash drop`, `branch -m`) use twin
+ * copies instead: git mutates one, tsgit the other, and the resulting
+ * file bytes are compared.
  *
  * @proves
  *   surface:        reflog
@@ -866,7 +866,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
 
       describe('When expire runs on a ref that exists but has no reflog file at all', () => {
-        it('Then git refuses (reflog could not be found, exit 255) but tsgit treats it as empty — a pre-existing, accepted divergence', async () => {
+        it('Then both sides refuse and neither creates a log file (git exit 255, tsgit REFLOG_NOT_FOUND)', async () => {
           // Arrange
           const dir = await caseDir('degenerate-absent-log');
           git(dir, 'branch', 'exists-no-log');
@@ -882,16 +882,26 @@ describe.skipIf(!GIT_AVAILABLE)(
             '--expire=never',
             'refs/heads/exists-no-log',
           ]);
-          const result = await reflog(ctx, {
-            action: 'expire',
-            ref: 'refs/heads/exists-no-log',
-            expire: 'never',
-          });
+          let caught: unknown;
+          try {
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/exists-no-log',
+              expire: 'never',
+            });
+          } catch (err) {
+            caught = err;
+          }
 
           // Assert
           expect(gitResult.exitCode).toBe(255);
           expect(gitResult.stderr).toContain('reflog could not be found');
-          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: 'refs/heads/exists-no-log',
+          });
+          const logPath = path.join(dir, '.git', 'logs', 'refs', 'heads', 'exists-no-log');
+          await expect(stat(logPath)).rejects.toThrow();
         });
       });
 
@@ -1063,6 +1073,61 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(oursBytes).toEqual(peerBytes);
           expect(await pathExists(branchLogPath(peer, 'left'))).toBe(false);
           expect(await pathExists(branchLogPath(ours, 'left'))).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a branch renamed onto its own name with force', () => {
+      describe('When the self-rename runs on both sides', () => {
+        it("Then the branch survives with git's own appended rename entry, byte-identical", async () => {
+          // Arrange — `branch -M x x` exits 0 in git and appends one rename
+          // entry; the branch and its prior history are untouched.
+          const peer = await caseDir('self-rename-peer');
+          const ours = await caseDir('self-rename-ours');
+          const renameEpoch = BASE_EPOCH + 2_000;
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          runGit(['-C', peer, 'branch', '-M', 'main', 'main'], {
+            env: pinnedCommitterEnv(renameEpoch),
+          });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(renameEpoch * 1000);
+          try {
+            await branchRename(ctx, { from: 'main', to: 'main', force: true });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a CRLF-terminated refs/heads/main log', () => {
+      describe('When expire runs with --expire=never on both sides', () => {
+        it('Then every bare CR survives the rewrite byte-for-byte on both sides', async () => {
+          // Arrange — a CR is legal message content: git's rewrite emits it
+          // back verbatim rather than refusing, so a CRLF log round-trips
+          // with every \r intact (only the rewrite TAB rule applies).
+          const peer = await caseDir('expire-crlf-peer');
+          const ours = await caseDir('expire-crlf-ours');
+          const raw = await readFile(mainLogPath(peer), 'utf8');
+          const crlf = raw.replaceAll('\n', '\r\n');
+          await writeFile(mainLogPath(peer), crlf, 'utf8');
+          await writeFile(mainLogPath(ours), crlf, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'expire', ref: 'refs/heads/main', expire: 'never' });
+
+          // Assert
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
         });
       });
     });
