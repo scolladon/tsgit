@@ -6,7 +6,6 @@ import type { Snapshot, SnapshotEntry } from './snapshot.js';
 type SnapshotMap = { readonly [k: string]: Snapshot<SnapshotEntry> };
 
 export interface JoinOptions {
-  readonly concurrency?: number;
   readonly signal?: AbortSignal;
 }
 

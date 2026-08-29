@@ -1,14 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  HEAVY_READ_ITERATIONS,
-  resolveWorkloads,
-  UnknownCommandError,
-  WORKLOADS,
-} from '../../profile-registry.js';
+import { resolveWorkloads, UnknownCommandError, WORKLOADS } from '../../profile-registry.js';
 
 const READ_KEYS = [
   'log',
+  'log-commit-graph',
   'status',
   'pack-read',
   'describe',
@@ -96,20 +92,20 @@ describe('resolveWorkloads', () => {
         expect(sut[key]?.kind).toBe('read');
       });
 
-      it('Then blame carries the heavy-read iteration override', () => {
+      it('Then blame carries a per-workload iteration override raised to clear the under-sampled tick floor', () => {
         // Arrange
         const sut = WORKLOADS;
 
         // Assert
-        expect(sut.blame?.iterations).toBe(HEAVY_READ_ITERATIONS);
+        expect(sut.blame?.iterations).toBe(100);
       });
 
-      it('Then a light read (log) has no iteration override', () => {
+      it('Then status has no iteration override (its default already clears the tick floor)', () => {
         // Arrange
         const sut = WORKLOADS;
 
         // Assert
-        expect(sut.log?.iterations).toBeUndefined();
+        expect(sut.status?.iterations).toBeUndefined();
       });
     });
   });

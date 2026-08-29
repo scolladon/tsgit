@@ -30,6 +30,7 @@ import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/opera
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { limiterFor } from '../primitives/internal/concurrency.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -58,6 +59,22 @@ import {
 } from './internal/resolve-pathspec.js';
 
 export type { AttributeProvider } from '../primitives/internal/read-gitattributes.js';
+
+/** Runs the guard at most once, on first use, per {@link createPromisorGuard} call. */
+type PromisorGuard = () => Promise<void>;
+
+/**
+ * Defers `assertValidPromisorRemoteConfig` to the first file the write path
+ * actually touches, and single-flights it thereafter — so a pathspec that
+ * matches nothing never pays it (or refuses on it) at all, while a
+ * multi-file `add` pays it once instead of once per file. Each of `add`'s
+ * three write-path entry points (`addLiteralOnly`, `addByPathspec`,
+ * `addAll`) creates its own guard, scoping "once" to one `add` invocation.
+ */
+const createPromisorGuard = (ctx: Context): PromisorGuard => {
+  let pending: Promise<void> | undefined;
+  return () => (pending ??= assertValidPromisorRemoteConfig(ctx));
+};
 
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
@@ -135,13 +152,21 @@ const addLiteralOnly = async (
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
     for (const path of validated) {
-      const result = await stageOne(ctx, path, provider, existing.get(path), indexMtime);
+      const result = await stageOne(
+        ctx,
+        path,
+        provider,
+        existing.get(path),
+        indexMtime,
+        ensurePromisorConfigValid,
+      );
       if (result === 'missing') throw pathspecNoMatch(path);
       const previous = existing.get(path);
       newEntries.set(path, result);
@@ -186,6 +211,74 @@ const lstatOrMissing = async (
   }
 };
 
+/**
+ * Fans every walked entry's `stageFromStat` work through an `ioBound` pool
+ * while the walk itself (`walkWorkingTree`) stays a plain sequential
+ * `for await` — the walker's ignore stack is stateful and its emission
+ * order is a pinned contract; only the per-entry I/O that follows a yield is
+ * safe to run concurrently. Staging is path-keyed and every caller sorts
+ * `added`/`modified` afterwards, so completion order carries no meaning.
+ *
+ * A rejection (a hostile-path abort, or the walk itself throwing) is
+ * recorded rather than propagated immediately: every already-dispatched
+ * task is drained (awaited to settlement, never left dangling) before the
+ * recorded error surfaces, so the index is never committed while a pooled
+ * write may still be in flight. The recorded error is the LOWEST-ordinal
+ * (earliest walk-order) rejection, not whichever settles first under the
+ * pool's own scheduling — a later-walked entry with a faster failure must
+ * not shadow an earlier one's, or the refusal payload becomes a function of
+ * pool timing instead of the deterministic walk order.
+ */
+const stageWalkedEntries = async (
+  ctx: Context,
+  walk: AsyncIterable<WalkWorkingTreeEntry>,
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+  seen: Set<FilePath>,
+  provider: AttributeProvider | undefined,
+  indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
+): Promise<WalkOutcome[]> => {
+  const limiter = limiterFor(ctx, 'ioBound');
+  const outcomes: WalkOutcome[] = [];
+  const pending: Promise<void>[] = [];
+  let firstError: { readonly error: unknown; readonly ordinal: number } | undefined;
+  const dispatch = (walkEntry: WalkWorkingTreeEntry, ordinal: number): void => {
+    pending.push(
+      limiter
+        .run(() =>
+          processWalkEntry(
+            ctx,
+            walkEntry,
+            existing,
+            seen,
+            provider,
+            indexMtime,
+            ensurePromisorConfigValid,
+          ),
+        )
+        .then(
+          (outcome) => {
+            if (outcome !== undefined) outcomes.push(outcome);
+          },
+          (error: unknown) => {
+            // Stryker disable next-line EqualityOperator: equivalent — `ordinal` is a distinct integer per dispatch() call (assigned via a single monotonically-incrementing `ordinal++` in the walk loop), so `ordinal === firstError.ordinal` can only be true when this IS the entry that already set firstError — impossible, since a settled promise's rejection handler runs at most once; `<=` and `<` are therefore indistinguishable at every reachable call (full add.test.ts suite, incl. the earliest-walked-path race tests, passes unmutated).
+            if (firstError === undefined || ordinal < firstError.ordinal) {
+              firstError = { error, ordinal };
+            }
+          },
+        ),
+    );
+  };
+  try {
+    let ordinal = 0;
+    for await (const walkEntry of walk) dispatch(walkEntry, ordinal++);
+  } finally {
+    await Promise.all(pending);
+  }
+  if (firstError !== undefined) throw firstError.error;
+  return outcomes;
+};
+
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
 // out) and the user's pathspec on top. Directories are NOT pruned by
 // the pathspec (a pattern like `*.ts` matches leaves, not dirs); only
@@ -204,20 +297,28 @@ const addByPathspec = async (
     return !matchesPathspec(matcher, path);
   };
   const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
+    const seen = new Set<FilePath>();
+    const outcomes = await stageWalkedEntries(
+      ctx,
+      walkWorkingTree(ctx, { ignore: combinedIgnore }),
+      existing,
+      seen,
+      provider,
+      indexMtime,
+      ensurePromisorConfigValid,
+    );
     const matched: FilePath[] = [];
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
-    const seen = new Set<FilePath>();
-    for await (const walkEntry of walkWorkingTree(ctx, { ignore: combinedIgnore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider, indexMtime);
-      if (result === undefined) continue;
-      matched.push(result.path);
-      newEntries.set(result.path, result.entry);
-      if (result.kind === 'added') added.push(result.path);
-      else if (result.kind === 'modified') modified.push(result.path);
+    for (const outcome of outcomes) {
+      matched.push(outcome.path);
+      newEntries.set(outcome.path, outcome.entry);
+      if (outcome.kind === 'added') added.push(outcome.path);
+      else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
     enforceLiteralMustMatch(literalMustMatch, matched);
     added.sort();
@@ -240,6 +341,7 @@ export const addAll = async (
 ): Promise<AddResult> => {
   const ignore = ignoreOverride ?? (await buildRepoIgnorePredicate(ctx));
   const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
@@ -250,12 +352,19 @@ export const addAll = async (
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
-    for await (const walkEntry of walkWorkingTree(ctx, { ignore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider, indexMtime);
-      if (result === undefined) continue;
-      newEntries.set(result.path, result.entry);
-      if (result.kind === 'added') added.push(result.path);
-      else if (result.kind === 'modified') modified.push(result.path);
+    const outcomes = await stageWalkedEntries(
+      ctx,
+      walkWorkingTree(ctx, { ignore }),
+      existing,
+      seen,
+      provider,
+      indexMtime,
+      ensurePromisorConfigValid,
+    );
+    for (const outcome of outcomes) {
+      newEntries.set(outcome.path, outcome.entry);
+      if (outcome.kind === 'added') added.push(outcome.path);
+      else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
     const removed = await collectRemovedPaths(existing, seen, ignore);
     for (const path of removed) newEntries.delete(path);
@@ -327,6 +436,7 @@ const processWalkEntry = async (
   seen: Set<FilePath>,
   provider: AttributeProvider | undefined,
   indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome | undefined> => {
   const { path, isFile, isDirectory, isSymbolicLink } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
@@ -346,6 +456,7 @@ const processWalkEntry = async (
     provider,
     existing.get(path),
     indexMtime,
+    ensurePromisorConfigValid,
   );
   const previous = existing.get(path);
   if (previous === undefined) return { kind: 'added', path, entry };
@@ -382,10 +493,11 @@ const stageOne = async (
   provider: AttributeProvider | undefined,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
 ): Promise<IndexEntry | 'missing'> => {
   const stat = await lstatOrMissing(ctx, path);
   if (stat === undefined) return 'missing';
-  return stageFromStat(ctx, path, stat, provider, previous, indexMtime);
+  return stageFromStat(ctx, path, stat, provider, previous, indexMtime, ensurePromisorConfigValid);
 };
 
 /**
@@ -402,6 +514,7 @@ const stageFromStat = async (
   provider: AttributeProvider | undefined,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
 ): Promise<IndexEntry> => {
   // Re-lstat under the index lock to close the TOCTOU window: an attacker
   // swapping the inode (regular ↔ symlink, file ↔ directory) between `kind`
@@ -413,8 +526,9 @@ const stageFromStat = async (
   // for the walked case the reference point is readdir instead of a walk-time
   // lstat, a marginally wider window of the SAME TOCTOU class; this fresh
   // lstat remains the sole authority either way.
-  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — once the write path engages.
-  await assertValidPromisorRemoteConfig(ctx);
+  // Promisor-remote guard (see createPromisorGuard) — lazy-once per add()
+  // invocation, first paid when the write path actually engages.
+  await ensurePromisorConfigValid();
   const fresh = await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'add'), path));
   if (
     fresh.isSymbolicLink !== kind.isSymbolicLink ||

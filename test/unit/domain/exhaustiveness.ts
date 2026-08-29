@@ -26,6 +26,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_MULTI_PACK_INDEX':
     case 'INVALID_PACK_REV_INDEX':
     case 'INVALID_PACK_BITMAP':
+    case 'INVALID_CRUFT_MTIMES':
     case 'INVALID_REF':
     case 'INVALID_PACKED_REFS':
     case 'INVALID_REFTABLE':
@@ -162,6 +163,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_BAD_NUMERIC_VALUE':
     case 'CONFIG_BAD_BOOLEAN_VALUE':
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
+    case 'CONFIG_BAD_DATE_VALUE':
     case 'CONFIG_INVALID_ENUM_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':
     case 'CONFIG_INVALID_FILE':

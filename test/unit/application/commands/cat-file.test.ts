@@ -157,4 +157,33 @@ describe('catFile', () => {
       });
     });
   });
+
+  describe('Given a corrupt object (stored bytes do not hash to its id)', () => {
+    describe('When invoked', () => {
+      it('Then catFile serves the bytes (matching cat-file, which never verifies)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        const result = await catFile(ctx, { ids: [fakeId] });
+
+        // Assert
+        expect(result.entries).toHaveLength(1);
+        const [entry] = result.entries;
+        if (entry?.ok !== true) throw new Error('expected ok');
+        expect(entry.type).toBe('blob');
+      });
+    });
+  });
 });

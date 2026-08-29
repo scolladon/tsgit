@@ -6,9 +6,11 @@ import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
-  entryOffsets,
+  createLruCache,
+  type LruCache,
   lookupPackIndex,
   type MultiPackIndex,
+  type PackEntryHeader,
   type PackIndex,
   type PackRevIndex,
   parsePackIndex,
@@ -43,7 +45,7 @@ import {
 import {
   nextOffsetForEntry,
   type PackOffsetTable,
-  resolveSortedOffsets,
+  resolveOffsetTable,
 } from './internal/pack-offset-table.js';
 import { packPositionMap, revIndexPositions } from './internal/pack-positions.js';
 import {
@@ -176,6 +178,33 @@ export interface PackLookupHit {
 }
 
 /**
+ * A resolved OFS/REF-delta chain level's `(type, content)` — already
+ * header-split, so a hit never re-runs the loose-format split a raw-bytes
+ * cache would need. `(packName, offset)` is only meaningful within the
+ * generation that produced it, which is exactly the registry's lifetime
+ * between one `refresh()` and the next.
+ */
+export interface DeltaBaseCacheEntry {
+  readonly type: PackEntryHeader['type'];
+  readonly content: Uint8Array;
+  /**
+   * How many MORE delta applications lie between this entry and the true
+   * base of its chain (0 for the base itself). A probe hit short-circuits
+   * the walk that would otherwise have counted those levels one at a time —
+   * without this, a warm cache lets a chain deeper than
+   * `MAX_DELTA_CHAIN_DEPTH` succeed by resuming from a shallower point that
+   * hides how much chain lies beneath it.
+   */
+  readonly chainDepth: number;
+}
+
+/** The one key shape for {@link PackRegistry.deltaBaseCache} — a pack name and
+ *  an on-disk byte offset are only meaningful together, within one generation. */
+export function deltaBaseCacheKey(packName: string, offset: number): string {
+  return `${packName}:${offset}`;
+}
+
+/**
  * A pack or index `health()` could not use, and at which layer. `data` is the
  * raw fault and may carry an absolute `path` — never forward it across the
  * library boundary; project to `code`/`reason` as the fsck pack pass does.
@@ -194,6 +223,14 @@ export interface PackHealth {
 
 export interface PackRegistry {
   all(): Promise<ReadonlyArray<RegisteredPack>>;
+  /**
+   * Every regular-file name the current generation's directory scan saw —
+   * the SAME set `hasRevIndex`/`hasBitmap` already consult per pack. Exposed
+   * so a caller can classify a pack by sibling marker
+   * (`.keep`/`.promisor`/`.mtimes`, see {@link classifyPackFiles}) at zero
+   * extra I/O — never a second `readdir` of `objects/pack/`.
+   */
+  fileNames(): Promise<ReadonlySet<string>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
   /**
    * Await the store gate — the multi-pack-index load alone — for its
@@ -213,6 +250,14 @@ export interface PackRegistry {
    *  re-lists the pack directory — used after a lazy-fetch writes a new pack,
    *  which may ship a new midx as well as new packs. */
   refresh(): void;
+  /**
+   * Await every handle close a prior `refresh()` parked for background
+   * completion, without disposing the registry. A caller about to unlink a
+   * retired pack must drain first: on Windows an open `FileHandle` may
+   * refuse the unlink outright, and on every platform an unlinked-but-open
+   * pack keeps its bytes allocated until the fd closes.
+   */
+  settleRefresh(): Promise<void>;
   /** Close every loaded pack's persistent handle. Idempotent; a registry
    *  that never scanned the pack directory disposes without touching `fs`. */
   dispose(): Promise<void>;
@@ -256,10 +301,64 @@ export interface PackRegistry {
    * to.
    */
   midxBitmap(): Promise<MidxBitmapLoad | undefined>;
+  /**
+   * Offset-keyed cache for delta-chain intermediates — every OFS/REF-delta
+   * level `collectDeltaChain`/`resolvePackChain` (object-resolver.ts) walks
+   * through, not just a chain's tip. Lives here, per-registry, rather than
+   * on a `Context`: `(packName, offset)` is only meaningful within the
+   * generation that produced it, and `refresh()`/`dispose()` clear it
+   * alongside everything else generation-scoped. Sized once, from the
+   * Context that first creates this registry — see `createPackRegistry`.
+   */
+  readonly deltaBaseCache: LruCache<DeltaBaseCacheEntry>;
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
   return entry.isFile && entry.name.endsWith('.idx') && isSafePackName(entry.name);
+}
+
+/** Every registered pack sorted into exactly one of gc's four file classes. */
+export interface PackFileClassification {
+  /** `*.keep`-marked — git's total opt-out (Pin V). Not read for repacking,
+   *  not rewritten, not deleted; its objects are neither duplicated into the
+   *  new pack nor migrated to the cruft pack, even when unreachable. */
+  readonly kept: ReadonlyArray<RegisteredPack>;
+  /** `.promisor`-marked — a second, disjoint consolidation class. Every
+   *  promisor object repacks whole into one new promisor pack, never merged
+   *  with the normal one; it is not an exclusion the way a kept pack is. */
+  readonly promisor: ReadonlyArray<RegisteredPack>;
+  /** `.mtimes`-marked — the existing cruft pack, owned by the cruft
+   *  lifecycle, never by consolidation. */
+  readonly cruft: ReadonlyArray<RegisteredPack>;
+  /** Carries none of the three markers — consolidated into the one new pack. */
+  readonly normal: ReadonlyArray<RegisteredPack>;
+}
+
+/**
+ * Step 1b's classifier: sorts every candidate pack into exactly one of four
+ * file classes by pure sibling lookup against `fileNames` — the SAME set
+ * `hasRevIndex`/`hasBitmap` already consult, so this costs zero extra I/O.
+ * Checked in this order and mutually exclusive: `.keep` wins over
+ * everything (a pack carrying `.keep` AND `.mtimes`, or `.keep` AND
+ * `.promisor`, is kept — never cruft or promisor), `.promisor` wins over
+ * `.mtimes` and the default, and only a pack with none of the three markers
+ * is normal.
+ */
+export function classifyPackFiles(
+  packs: ReadonlyArray<RegisteredPack>,
+  fileNames: ReadonlySet<string>,
+): PackFileClassification {
+  const kept: RegisteredPack[] = [];
+  const promisor: RegisteredPack[] = [];
+  const cruft: RegisteredPack[] = [];
+  const normal: RegisteredPack[] = [];
+  for (const pack of packs) {
+    if (fileNames.has(`${pack.name}.keep`)) kept.push(pack);
+    else if (fileNames.has(`${pack.name}.promisor`)) promisor.push(pack);
+    else if (fileNames.has(`${pack.name}.mtimes`)) cruft.push(pack);
+    else normal.push(pack);
+  }
+  return { kept, promisor, cruft, normal };
 }
 
 async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array> {
@@ -325,11 +424,17 @@ function loadPack(
   // Pack position -> index position, read straight out of the same `.rev`
   // load `revIndexMemo` already memoises — one `Uint32Array` filled in
   // place, since the body already stores exactly this table. An
-  // out-of-range value falls back to `packPositionMap`, exactly as
-  // `resolveSortedOffsets` falls back for the offset table. Never warns
-  // here: `buildOffsetTable`'s own fallback already warns once for the SAME
-  // `.rev` fault when it runs, and this memo has no independent finding to
-  // report.
+  // out-of-range value falls back to `packPositionMap`, the same posture
+  // `buildOffsetTable`'s successor lookup takes for a corrupt `.rev` value.
+  // Never warns here for a REFUSED artefact: `buildOffsetTable`'s own
+  // `resolveOffsetTable` call already warns once for that fault when it
+  // runs, and this memo has no independent finding to report. An
+  // out-of-range STORED VALUE is different — `buildOffsetTable`'s lazy
+  // successor discovers that lazily, on the first query that probes it, and
+  // now DOES warn once (the whole pack degrades to the sorted fallback at
+  // that point, not just the one query), so this memo's own silent fallback
+  // here is a second, independent path to the same degraded state — the
+  // `fsck` pass remains the authority for surfacing it as a finding.
   const packPositionsMemo = createPromiseMemo(async (): Promise<Uint32Array> => {
     const index = await indexMemo.get();
     const load = await revIndexMemo.get();
@@ -355,18 +460,18 @@ function loadPack(
     const index = await indexMemo.get();
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
-    const raw = entryOffsets(index);
-    // The memo is handed over UNFORCED: below its object-count threshold
-    // `resolveSortedOffsets` sorts without ever calling it, so a small pack
-    // pays no `.rev` read at all.
-    const sortedOffsets = await resolveSortedOffsets(ctx, name, raw, revIndexMemo.get);
     // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
     // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
     const trailerStart = packFileSize - ctx.hashConfig.digestLength;
     if (trailerStart < 0) {
       throw invalidPackIndex('pack file too small to contain a trailer');
     }
-    return { sortedOffsets, packFileSize, trailerStart };
+    // A present, loadable `.rev` always wins — resolveOffsetTable answers
+    // with a lazy, `.rev`-backed table and never materialises an O(n) sorted
+    // array for it. `revIndexMemo.get` is passed through rather than
+    // awaited here, so the SAME single-flight `.rev` load this pack's other
+    // consumers (packPositionsMemo) share is reused, not duplicated.
+    return resolveOffsetTable(ctx, name, index, revIndexMemo.get, packFileSize, trailerStart);
   };
   const offsetTable = createPromiseMemo(buildOffsetTable).get;
 
@@ -516,8 +621,26 @@ function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
   return createPromiseMemo(loadStoreGate);
 }
 
+/**
+ * Entry-count ceiling for the delta-base cache, mirroring the parsed-object
+ * memo and the commit-graph header cache's own caps — a byte cap alone
+ * under-defends a repo of many small, cheap-to-cache intermediates.
+ */
+const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
+
 export function createPackRegistry(ctx: Context): PackRegistry {
   const storeGate = createStoreGate(ctx);
+  // A SEPARATE, ADDITIONAL byte budget the same size as the ordinary delta
+  // cache's own — not a share carved out of it. The two caches hold
+  // different things (raw loose-format bytes vs. header-split reconstructed
+  // delta bases) and compete only for process memory, not a shared
+  // accounting ledger; sizing this one AT `ctx.deltaCache.maxSize` rather
+  // than a fraction of it is a deliberate choice, not an oversight — see the
+  // delta-base cache sizing decision.
+  const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(
+    ctx.deltaCache.maxSize,
+    DELTA_BASE_CACHE_MAX_ENTRIES,
+  );
 
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
@@ -773,6 +896,10 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   return {
     all: allPacks,
+    async fileNames(): Promise<ReadonlySet<string>> {
+      const generation = await currentGeneration();
+      return generation.fileNames;
+    },
     async assertLoadable(): Promise<void> {
       await currentGate();
     },
@@ -785,6 +912,11 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       if (disposed) return;
       healthMemo.clear();
       midxHealthMemo.clear();
+      // (packName, offset) pairs are only meaningful within the generation
+      // that produced them — a replaced pack can reuse the same name and
+      // offset for entirely different bytes, so this MUST clear alongside
+      // the scan, not survive into the next generation.
+      deltaBaseCache.clear();
       // Cleared before the early return below: a Context that only ever
       // called assertLoadable (a loose-only read) never forces the scan, so
       // clearing the gate here — not after the guard — is the only way a
@@ -805,6 +937,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
         ),
       );
     },
+    settleRefresh: drainPendingCloses,
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
       const generation = await currentGeneration();
       const midx = generation.midx;
@@ -822,8 +955,10 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       return healthMemo.get();
     },
     indexFaults: indexFaultEntries,
+    deltaBaseCache,
     async dispose(): Promise<void> {
       disposed = true;
+      deltaBaseCache.clear();
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
       // find nothing. Peek, not clear: all() keeps returning the closed,

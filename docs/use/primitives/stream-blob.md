@@ -8,7 +8,7 @@ Stream a blob by id as an `AsyncIterable<Uint8Array>`. Chunks arrive as they inf
 repo.primitives.streamBlob(id: ObjectId, options?: StreamBlobOptions): Promise<BlobStream>;
 
 interface StreamBlobOptions {
-  readonly verifyHash?: boolean; // default: true
+  readonly verifyHash?: boolean; // default: false
 }
 
 interface BlobStream extends AsyncIterable<Uint8Array> {
@@ -31,13 +31,13 @@ for await (const chunk of stream) {
   process.stdout.write(chunk);
 }
 
-// Opt out of hash verification
-const stream2 = await repo.primitives.streamBlob(oid, { verifyHash: false });
+// Opt in to hash verification
+const stream2 = await repo.primitives.streamBlob(oid, { verifyHash: true });
 ```
 
 ## Hash verification
 
-Hash verification is **on by default** (`verifyHash: true`). The running SHA is fed the canonical `<type> <size>\0` header bytes followed by each content chunk as it arrives. The comparison happens **after the last chunk is yielded** — if the digest does not match `id`, `OBJECT_HASH_MISMATCH` is thrown at end-of-stream. Draining the iterable completely is required for verification to run. Pass `{ verifyHash: false }` to skip verification (parity with `readObject`).
+Hash verification is **off by default** (`verifyHash: false`) — matching canonical git, an ordinary read does not re-hash the object on every access (ADR-718). Pass `{ verifyHash: true }` to opt in: the running SHA is fed the canonical `<type> <size>\0` header bytes followed by each content chunk as it arrives, and the comparison happens **after the last chunk is yielded** — if the digest does not match `id`, `OBJECT_HASH_MISMATCH` is thrown at end-of-stream. Draining the iterable completely is required for verification to run (parity with `readObject`). Corruption detection otherwise lives in `fsck` and `bundle verify`.
 
 ## No `maxBytes`
 

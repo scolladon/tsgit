@@ -55,11 +55,58 @@ export const buildCommitScratch = async (): Promise<ScratchRepo> => {
   return scratch;
 };
 
+/**
+ * `fileCount` freshly committed small files, all loose (never packed) — the
+ * reachable-loose-object shape `maintenance`'s `gc` task repacks on a plain
+ * (non-partial-clone) repository. One flat commit, not `fileCount` separate
+ * ones: gc's cost is driven by object count, not commit-graph depth.
+ */
+export const buildManyLooseObjectsScratch = async (fileCount: number): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
+  const { cwd, repo } = scratch;
+  for (let i = 0; i < fileCount; i += 1) {
+    await writeFile(path.join(cwd, `f${i.toString().padStart(6, '0')}.txt`), `payload ${i}\n`);
+  }
+  await repo.add([], { all: true });
+  await repo.commit({ message: 'seed', author: SCRATCH_AUTHOR, committer: SCRATCH_AUTHOR });
+  return scratch;
+};
+
 /** Writes unstaged working-tree files, ready for the measured `add --all` call. */
 export const buildAddScratch = async (): Promise<ScratchRepo> => {
   const scratch = await newScratch();
   await writeFile(path.join(scratch.cwd, 'a.txt'), 'a\n');
   await writeFile(path.join(scratch.cwd, 'b.txt'), 'b\n');
+  return scratch;
+};
+
+const NESTED_DIR_COUNT = 8;
+const PAYLOAD_REPEAT = 8;
+
+/**
+ * Many unstaged files spread across nested directories — enough independent
+ * hash-and-write units for `add --all`'s bounded staging pool to overlap
+ * work. The fixture writes land in parallel so the build costs wall-clock
+ * proportional to the pool, not one round trip per file.
+ */
+export const buildAddManyScratch = async (fileCount: number): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
+  const { cwd } = scratch;
+  await Promise.all(
+    Array.from({ length: NESTED_DIR_COUNT }, (_, dir) =>
+      mkdir(path.join(cwd, `dir${dir}`, 'nested'), { recursive: true }),
+    ),
+  );
+  await Promise.all(
+    Array.from({ length: fileCount }, (_, i) => {
+      const dir = `dir${i % NESTED_DIR_COUNT}`;
+      const leaf = i % 2 === 0 ? dir : path.join(dir, 'nested');
+      return writeFile(
+        path.join(cwd, leaf, `f${i.toString().padStart(4, '0')}.txt`),
+        `payload ${i}\n`.repeat(PAYLOAD_REPEAT),
+      );
+    }),
+  );
   return scratch;
 };
 

@@ -1,4 +1,4 @@
-import { diffLines, isBinary, splitLines } from '../diff/line-diff.js';
+import { diffLines, isBinary } from '../diff/line-diff.js';
 import { bytesEqual } from '../objects/encoding.js';
 import { writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
@@ -89,7 +89,9 @@ function mergeFromDiffs(
   const theirsDiff = diffLines(base, theirs);
   const segments: ReadonlyArray<MergeSegment> =
     oursDiff.degraded || theirsDiff.degraded
-      ? [{ kind: 'conflict', ours: splitLines(ours), theirs: splitLines(theirs) }]
+      ? // oursDiff.theirsLines/theirsDiff.theirsLines are already splitLines(ours)/splitLines(theirs)
+        // — reuse them instead of re-splitting.
+        [{ kind: 'conflict', ours: oursDiff.theirsLines, theirs: theirsDiff.theirsLines }]
       : buildMergeSegments(
           oursDiff.oursLines,
           changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),

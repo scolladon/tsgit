@@ -1,9 +1,11 @@
 /// <reference lib="dom" />
+import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import { type Context, type CreateContextParts, createContext } from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
 import { BrowserCompressor } from './browser-compressor.js';
+import { nativeMachineFacts } from './browser-concurrency.js';
 import { BrowserFileSystem } from './browser-file-system.js';
 import { BrowserHashService } from './browser-hash-service.js';
 import { BrowserHttpTransport } from './browser-http-transport.js';
@@ -52,6 +54,7 @@ export function createBrowserContext(options: BrowserAdapterOptions): Context {
     runtime: 'browser',
     hashConfig: configFor(algorithm),
     deltaCache,
+    concurrency: deriveLimits(nativeMachineFacts()),
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
   };
   return createContext(parts);

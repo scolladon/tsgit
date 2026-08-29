@@ -44,8 +44,8 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { readRawObject } from '../read-object.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
-import { MAX_CONCURRENT_OBJECT_LOADS } from './bounded-map.js';
-import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
+import { limiterFor } from './concurrency.js';
+import type { ConcurrencyLimiter } from './concurrency-limiter.js';
 import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
 import { joinPath, readRawTreeById } from './raw-tree-io.js';
 import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
@@ -109,7 +109,7 @@ export async function flattenRawTree(
   const config: FlattenConfig = {
     ctx,
     bounds,
-    limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
+    limiter: limiterFor(ctx, 'ioBound'),
   };
   const state: FlattenState = { counter: { value: 0 }, entries: new Map() };
   await flattenLevel(config, state, content, rootId, '', 0, new Set());

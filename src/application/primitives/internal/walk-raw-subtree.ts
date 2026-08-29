@@ -60,8 +60,8 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { readRawObject } from '../read-object.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
-import { MAX_CONCURRENT_OBJECT_LOADS } from './bounded-map.js';
-import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
+import { limiterFor } from './concurrency.js';
+import type { ConcurrencyLimiter } from './concurrency-limiter.js';
 import type { FlattenBounds } from './flatten-raw.js';
 import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
 import { readRawTreeById } from './raw-tree-io.js';
@@ -116,7 +116,7 @@ export async function walkRawSubtree(
   prefix: string,
   counter: Counter,
   emit: (entry: RawSubtreeEntry) => void,
-  limiter: ConcurrencyLimiter = createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
+  limiter: ConcurrencyLimiter = limiterFor(ctx, 'ioBound'),
 ): Promise<void> {
   const content = await readRawTreeById(ctx, root);
   const config: WalkConfig = { ctx, bounds, limiter, emit };

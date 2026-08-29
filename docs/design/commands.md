@@ -551,7 +551,7 @@ Users wanting per-request auth (token refresh, rotating keys) pass `opts.auth` t
 |---|---|---|---|
 | `user` | `AuthorIdentity` | undefined | `commit`, `tag --annotated` |
 | `auth` | `AuthConfig` | undefined | `clone`, `fetch`, `push` |
-| `parallelism` | `number` (1..32) | `8` (Phase 7) | `clone`, `checkout`, `add` |
+| `parallelism` | `number \| { cpu?, io? }` (each 1..32) | derived concurrency policy, overridable | `clone`, `checkout`, `add` |
 | `upstreamRef` | `RefName` | undefined | `status` (`ahead`/`behind`) |
 | `allowInsecure` | `boolean` | `false` | `internal/url-validate` (allows `http`) |
 | `allowPrivateNetworks` | `boolean` | `false` | `internal/url-validate` |
@@ -1494,7 +1494,7 @@ Inherited from CLAUDE.md: Given/When/Then titles, AAA bodies, `sut`. Error asser
 | `checkout` of 100K files | Sequential writes | Parallel materialize up to `parallelism`; same cap |
 | `merge` with 10K conflicting files | Three-tree comparison | `mergeTrees` already streams; conflict count cap at 100K (throws — repository likely needs manual rebase) |
 
-The single shared `parallelism` knob (`ctx.config.parallelism`, default 8, max 32) governs concurrent FS operations. Network operations are sequential by default (one in-flight request per command); transport-level retries do not count against parallelism.
+Concurrent FS operations are bounded by a two-bucket policy (`cpuBound`, `ioBound`) derived from machine facts, not a fixed constant — see [performance.md](../understand/performance.md#methodology). `ctx.config.parallelism` (max 32, either bucket) overrides the derived bound and always wins when set. Network operations are sequential by default (one in-flight request per command); transport-level retries do not count against parallelism.
 
 ---
 

@@ -1,5 +1,6 @@
 import type { FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { deriveContext } from '../derive-context.js';
 import { joinPath } from './join-working-tree-path.js';
 import { inheritedAcceptanceVerdicts } from './layout-verdict.js';
 import { requireWorkTree } from './repo-state.js';
@@ -13,13 +14,17 @@ import { requireWorkTree } from './repo-state.js';
  *
  * `promisor` and `hooks` are dropped — both close over the parent `Context` and
  * would fire against the parent's gitdir if invoked while operating on the child.
+ *
+ * A submodule is a genuinely DIFFERENT repository — its common dir is its own
+ * absorbed gitdir, not the parent's — so `deriveContext` mints a fresh
+ * session and every identity-keyed cache starts cold, unlike the worktree
+ * derivation above.
  */
 const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context => {
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
   const workDir = joinPath(requireWorkTree(ctx, 'deriveSubmoduleContext'), treeRelPath);
   const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
-  return Object.freeze({
-    ...rest,
+  return deriveContext(rest, {
     layout: Object.freeze({
       workDir,
       gitDir,

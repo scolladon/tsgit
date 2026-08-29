@@ -1454,4 +1454,456 @@ describe('applyChangeset', () => {
       });
     });
   });
+
+  describe('Given more add entries than the ioBound limit', () => {
+    describe('When applyChangeset writes them', () => {
+      it('Then at most ioBound writes are in flight at once', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression (deriving the write pool from the wrong
+        // bucket) fails loudly.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = await buildSeededContext();
+        const entries: ChangesetEntry[] = [];
+        for (let i = 0; i < width; i += 1) {
+          const id = await writeBlob(base, new TextEncoder().encode(`content-${i}`));
+          entries.push(makeAdd(`f${i}.txt`, id));
+        }
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
+        const spy = vi
+          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+          .mockImplementation(async (...args) => {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            await Promise.resolve();
+            inFlight -= 1;
+            return realWrite(...args);
+          });
+
+        // Act
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset(entries),
+            force: false,
+            workdir: WORKDIR,
+          });
+
+          // Assert
+          expect(maxInFlight).toBe(ioBound);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given entries whose writes complete out of changeset order under a pool', () => {
+    describe('When applyChangeset reports progress', () => {
+      it('Then current is strictly monotone', async () => {
+        // Arrange — the FIRST entry's write resolves slower than every other
+        // one, so it finishes LAST even though it is first in changeset
+        // order. A `current` derived from an entry's position (rather than a
+        // shared completion counter) would report it out of sequence here.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = await buildSeededContext();
+        const entries: ChangesetEntry[] = [];
+        for (let i = 0; i < width; i += 1) {
+          const id = await writeBlob(base, new TextEncoder().encode(`content-${i}`));
+          entries.push(makeAdd(`f${i}.txt`, id));
+        }
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
+        // Gated, not timed: f0.txt's write is held open until every OTHER
+        // entry has already landed, so it is deterministically last — a
+        // fixed setTimeout race could flake if scheduling ever let f0.txt's
+        // own write win the race instead.
+        let othersCompleted = 0;
+        let releaseF0: (() => void) | undefined;
+        const f0Gate = new Promise<void>((resolve) => {
+          releaseF0 = resolve;
+        });
+        const spy = vi
+          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+          .mockImplementation(async (...args) => {
+            const targetPath = args[1];
+            if (targetPath === 'f0.txt') {
+              await f0Gate;
+              return realWrite(...args);
+            }
+            const result = await realWrite(...args);
+            othersCompleted += 1;
+            if (othersCompleted === width - 1) releaseF0?.();
+            return result;
+          });
+        const progressUpdate =
+          vi.fn<(op: string, current: number, total?: number, text?: string) => void>();
+        const wrappedCtx: Context = {
+          ...ctx,
+          progress: { ...ctx.progress, update: progressUpdate },
+        };
+
+        // Act
+        try {
+          await applyChangeset(wrappedCtx, {
+            changeset: makeChangeset(entries),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert — strictly increasing 1..width, with no gaps or repeats,
+        // and the deliberately-delayed entry lands last.
+        const currents = progressUpdate.mock.calls.map((call) => call[1]);
+        expect(currents).toEqual(Array.from({ length: width }, (_unused, i) => i + 1));
+        expect(progressUpdate.mock.calls.at(-1)?.[3]).toBe('f0.txt');
+      });
+    });
+  });
+
+  describe('Given an entry whose write is still pending in a pooled changeset', () => {
+    describe('When applyChangeset reports progress for the entries that already finished', () => {
+      it("Then the pending entry's path is not yet reported in progress text", async () => {
+        // Arrange — three entries share one pool; two resolve immediately,
+        // the third is held open by a manual gate so its write is still
+        // pending when progress is inspected.
+        const ioBound = 3;
+        const base = await buildSeededContext();
+        const idA = await writeBlob(base, new TextEncoder().encode('a'));
+        const idB = await writeBlob(base, new TextEncoder().encode('b'));
+        const idPending = await writeBlob(base, new TextEncoder().encode('pending'));
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        let releasePending: (() => void) | undefined;
+        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
+        const spy = vi
+          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+          .mockImplementation(async (...args) => {
+            const targetPath = args[1];
+            if (targetPath === 'pending.txt') {
+              await new Promise<void>((resolve) => {
+                releasePending = resolve;
+              });
+            }
+            return realWrite(...args);
+          });
+        const progressUpdate =
+          vi.fn<(op: string, current: number, total?: number, text?: string) => void>();
+        const wrappedCtx: Context = {
+          ...ctx,
+          progress: { ...ctx.progress, update: progressUpdate },
+        };
+        // Polls rather than a fixed delay: the memory adapter's decompress
+        // chain (Web `DecompressionStream`) crosses real event-loop ticks,
+        // so a single microtask flush is not always enough for a.txt/b.txt
+        // to land — but they must land well inside this bound while
+        // pending.txt's gate stays shut.
+        const waitUntilBothLanded = async (): Promise<void> => {
+          const deadline = Date.now() + 2000;
+          while (progressUpdate.mock.calls.length < 2) {
+            if (Date.now() > deadline) throw new Error('timed out waiting for a.txt/b.txt');
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        };
+
+        // Act
+        const pending = applyChangeset(wrappedCtx, {
+          changeset: makeChangeset([
+            makeAdd('a.txt', idA),
+            makeAdd('b.txt', idB),
+            makeAdd('pending.txt', idPending),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+        await waitUntilBothLanded();
+
+        // Assert — a.txt/b.txt already landed and reported; pending.txt's
+        // write has started but not finished, so it must not appear yet.
+        const textsBeforeRelease = progressUpdate.mock.calls.map((call) => call[3]);
+        expect(textsBeforeRelease).toHaveLength(2);
+        expect(textsBeforeRelease).not.toContain('pending.txt');
+
+        // Cleanup — release the gate and let the call settle.
+        releasePending?.();
+        await pending;
+        spy.mockRestore();
+        expect(progressUpdate.mock.calls.map((call) => call[3])).toContain('pending.txt');
+      });
+    });
+  });
+
+  describe('Given a delete entry for a plain file and an add entry for a path beneath its former location', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the delete completes before the add write starts', async () => {
+        // Arrange — the target tree drops the tracked file at 'dir' and adds
+        // 'dir/child.txt' beneath it. Writing the child before the delete
+        // lands throws: the working-tree write auto-creates 'dir' as a
+        // directory, which fails while 'dir' still exists as a file.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${WORKDIR}/dir`, 'old file content');
+        const delId = await writeBlob(ctx, new TextEncoder().encode('old file content'));
+        const addId = await writeBlob(ctx, new TextEncoder().encode('child content'));
+
+        // Act
+        const result = await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('dir', delId), makeAdd('dir/child.txt', addId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert — no thrown NOT_A_DIRECTORY: the delete wave fully drained
+        // before the write wave started.
+        expect(result.deleted).toBe(1);
+        expect(result.written).toBe(1);
+        const bytes = await ctx.fs.read(`${WORKDIR}/dir/child.txt`);
+        expect(new TextDecoder().decode(bytes)).toBe('child content');
+      });
+    });
+  });
+
+  describe('Given a changeset whose entries are not in path-sorted order', () => {
+    describe('When applyChangeset refuses the checkout', () => {
+      it('Then the refusal array is byte-sorted, not changeset-entry order', async () => {
+        // Arrange — entries are dispatched and collected in THIS order by a
+        // pool that preserves input order (boundedMap); feeding
+        // already-sorted input would make the trailing `.sort(comparePaths)`
+        // a no-op and never actually exercise it. `c.txt` first, `a.txt`
+        // last proves the sort — not input order — decides the result.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
+        const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
+        await ctx.fs.write(`${WORKDIR}/a.txt`, new TextEncoder().encode('local-edit'));
+        await ctx.fs.write(`${WORKDIR}/b.txt`, new TextEncoder().encode('local-edit'));
+        await ctx.fs.write(`${WORKDIR}/c.txt`, new TextEncoder().encode('local-edit'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([
+              makeUpdate('c.txt', oldId, newId),
+              makeUpdate('a.txt', oldId, newId),
+              makeUpdate('b.txt', oldId, newId),
+            ]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code === 'CHECKOUT_OVERWRITE_DIRTY' && data.localChanges).toEqual([
+          'a.txt',
+          'b.txt',
+          'c.txt',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a required smudge filter that fails while a sibling write is still pending in the same pool', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the sibling write lands before the rejection is observed — the pool is drained, not raced', async () => {
+        // Arrange — a.y's smudge fails immediately (required=true, exit 1);
+        // sibling.txt's write is held open by a manual gate. Draining the
+        // pool before rethrowing (the fix) means applyChangeset's returned
+        // promise cannot settle until the gate is released and sibling.txt
+        // has actually landed; racing (the bug) lets the smudge rejection
+        // propagate immediately, while sibling.txt — still in flight in a
+        // sibling pool slot — has not completed.
+        const ctx = await buildSeededContext();
+        const failId = await writeBlob(ctx, enc('HELLO WORLD'));
+        const okId = await writeBlob(ctx, enc('sibling content'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = fail-cmd\n\trequired = true\n',
+        );
+        const runner = new FakeSmudgeRunner(1);
+        const enrichedCtx: Context = {
+          ...ctx,
+          command: runner,
+          concurrency: { cpuBound: 1, ioBound: 2 },
+        };
+        let releaseSibling: (() => void) | undefined;
+        const siblingGate = new Promise<void>((resolve) => {
+          releaseSibling = resolve;
+        });
+        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
+        const spy = vi
+          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+          .mockImplementation(async (...args) => {
+            const targetPath = args[1];
+            if (targetPath === 'sibling.txt') await siblingGate;
+            return realWrite(...args);
+          });
+
+        // Act
+        let settled = false;
+        const pending = applyChangeset(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.y', failId), makeAdd('sibling.txt', okId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+        pending.catch(() => {
+          settled = true;
+        });
+        const waitUntilSmudgeAttempted = async (): Promise<void> => {
+          const deadline = Date.now() + 2000;
+          while (runner.calls.length < 1) {
+            if (Date.now() > deadline) throw new Error('timed out waiting for the smudge attempt');
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        };
+        await waitUntilSmudgeAttempted();
+        // A few more microtask turns for the rejection to propagate through
+        // resolveFilterDriver/runFilterDriver/applyWriteEntry — still short
+        // of anything that could let the deliberately-gated sibling resolve.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Assert — pre-release: the smudge already failed but the sibling's
+        // write is still gated, so a draining implementation must not have
+        // settled the overall promise yet.
+        expect(settled).toBe(false);
+        expect(await ctx.fs.exists(`${WORKDIR}/sibling.txt`)).toBe(false);
+
+        // Cleanup — release the gate and let the call settle.
+        releaseSibling?.();
+        let caught: unknown;
+        try {
+          await pending;
+        } catch (err) {
+          caught = err;
+        }
+        spy.mockRestore();
+
+        // Assert — the sibling write landed before the rejection surfaced.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('SMUDGE_FILTER_FAILED');
+        expect(await ctx.fs.exists(`${WORKDIR}/sibling.txt`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two changeset add entries whose paths differ only by case', () => {
+    describe('When applyChangeset writes them', () => {
+      it('Then the case-colliding writes never run concurrently with each other', async () => {
+        // Arrange — 'Colliding.txt' and 'colliding.txt' are legal, distinct
+        // target-tree entries that collide to the SAME name on a
+        // case-insensitive filesystem; a pool that dispatches every entry
+        // independently could interleave both writes against the one
+        // underlying path.
+        const ctx = await buildSeededContext();
+        const idUpper = await writeBlob(ctx, enc('upper'));
+        const idLower = await writeBlob(ctx, enc('lower'));
+        const wrappedCtx: Context = {
+          ...ctx,
+          concurrency: { cpuBound: 1, ioBound: 2 },
+        };
+        let active = 0;
+        let sawOverlap = false;
+        let firstHeld = false;
+        let releaseFirst: (() => void) | undefined;
+        const firstGate = new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
+        const spy = vi
+          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+          .mockImplementation(async (...args) => {
+            const targetPath = args[1] as string;
+            if (targetPath.toLowerCase() !== 'colliding.txt') return realWrite(...args);
+            active += 1;
+            if (active > 1) sawOverlap = true;
+            // Only the FIRST colliding write is held open — grouping must
+            // not let the SECOND one start while this is still outstanding.
+            if (!firstHeld) {
+              firstHeld = true;
+              await firstGate;
+            }
+            active -= 1;
+            return realWrite(...args);
+          });
+
+        // Act
+        const pending = applyChangeset(wrappedCtx, {
+          changeset: makeChangeset([
+            makeAdd('Colliding.txt', idUpper),
+            makeAdd('colliding.txt', idLower),
+          ]),
+          force: true,
+          workdir: WORKDIR,
+        });
+        // Bounded, real-time window for an (ungrouped) pool to also dispatch
+        // the second colliding write while the first is still held open —
+        // the gate is always released after this, so the test cannot hang.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        releaseFirst?.();
+        try {
+          await pending;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert
+        expect(sawOverlap).toBe(false);
+      });
+    });
+  });
+
+  describe('Given several add entries whose paths all match an active smudge filter', () => {
+    describe('When applyChangeset writes them under a wide ioBound but a narrow cpuBound', () => {
+      it('Then the smudge subprocess never runs more than cpuBound at once', async () => {
+        // Arrange — P10: a smudge filter spawns a subprocess (CPU/process
+        // bound), so it must be gated behind cpuBound rather than
+        // inheriting the write wave's wider ioBound budget.
+        const ctx = await buildSeededContext();
+        const ids = await Promise.all(
+          Array.from({ length: 4 }, (_unused, i) => writeBlob(ctx, enc(`content-${i}`))),
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\tsmudge = lowercase\n',
+        );
+        let active = 0;
+        let maxActive = 0;
+        class TrackingRunner implements CommandRunner {
+          async run(request: CommandRequest): Promise<CommandResult> {
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            active -= 1;
+            return { exitCode: 0, stdout: request.stdin ?? new Uint8Array(0) };
+          }
+        }
+        const runner = new TrackingRunner();
+        const enrichedCtx: Context = {
+          ...ctx,
+          command: runner,
+          concurrency: { cpuBound: 1, ioBound: 4 },
+        };
+        const entries = ids.map((id, i) => makeAdd(`f${i}.y`, id));
+
+        // Act
+        await applyChangeset(enrichedCtx, {
+          changeset: makeChangeset(entries),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(maxActive).toBe(1);
+      });
+    });
+  });
 });

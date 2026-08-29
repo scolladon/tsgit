@@ -10,7 +10,6 @@ import { joinPathSegment } from './internal/join-path-segment.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
-import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
 
 interface WalkConfig {
@@ -23,7 +22,6 @@ interface WalkConfig {
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly ignore: WalkIgnorePredicate | undefined;
-  readonly stats: WorkingTreeStatMap | undefined;
 }
 
 interface Counter {
@@ -166,7 +164,6 @@ export async function* walkWorkingTree(
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     ignore: options?.ignore,
-    stats: options?.stats,
   };
   const counter: Counter = { value: 0 };
   const stack: WalkFrame[] = [await readDirectoryFrame(config, '', 0)];
@@ -193,24 +190,14 @@ export async function* walkWorkingTree(
  * until a consumer actually reads the stat, and — unchanged from the prior
  * eager fetch — carries no `.catch()`: a file deleted between `readdir` and
  * the accessor's first call still throws, just later (on first read instead
- * of on yield). When a shared {@link WorkingTreeStatMap} is supplied, a prior
- * sample for this path (recorded by another pass) short-circuits the `lstat`
- * entirely; a fresh fetch is recorded back into the map for a later pass.
+ * of on yield).
  */
 const lazyStat = (config: WalkConfig, path: FilePath): (() => Promise<FileStat>) => {
   let memo: Promise<FileStat> | undefined;
   return () => {
-    memo ??= fetchStat(config, path);
+    memo ??= config.ctx.fs.lstat(joinPath(config.workDir, path));
     return memo;
   };
-};
-
-const fetchStat = async (config: WalkConfig, path: FilePath): Promise<FileStat> => {
-  const sampled = config.stats?.sampled(path);
-  if (sampled !== undefined) return sampled;
-  const stat = await config.ctx.fs.lstat(joinPath(config.workDir, path));
-  config.stats?.record(path, stat);
-  return stat;
 };
 
 const directoryPath = (config: WalkConfig, prefix: string): string =>

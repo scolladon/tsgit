@@ -79,11 +79,14 @@ describe('pkt-line laws', () => {
   describe('Given the property "chunk re-arrangement is invariant for valid encoded streams"', () => {
     describe('When sampled', () => {
       it('Then it holds', async () => {
-        // Arrange + Act + Assert
+        // Arrange + Act + Assert — array/chunk bounds reach past the old
+        // fixed pkt-line accumulator (65,520 bytes) so the property also
+        // exercises delivered chunks larger than a single frame, and splits
+        // that land mid-frame at arbitrary offsets, including huge ones.
         await fc.assert(
           fc.asyncProperty(
-            fc.array(fc.uint8Array({ minLength: 0, maxLength: 256 }), { maxLength: 8 }),
-            fc.array(fc.integer({ min: 1, max: 64 }), { maxLength: 16 }),
+            fc.array(fc.uint8Array({ minLength: 0, maxLength: 4096 }), { maxLength: 24 }),
+            fc.array(fc.integer({ min: 1, max: 90_000 }), { maxLength: 16 }),
             async (rawPayloads, sizes) => {
               const payloads = rawPayloads.map((p) => Uint8Array.from(p));
               const encoded = encodePktStream(payloads);

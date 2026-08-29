@@ -9,6 +9,7 @@ import * as nodePath from 'node:path';
 
 import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
 import { NodeCompressor } from './adapters/node/node-compressor.js';
+import { nativeMachineFacts } from './adapters/node/node-concurrency.js';
 import { NodeEnvReader } from './adapters/node/node-env-reader.js';
 import { NodeFileSystem } from './adapters/node/node-file-system.js';
 import { NodeHashService } from './adapters/node/node-hash-service.js';
@@ -17,6 +18,7 @@ import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
 import { ownedByCallerPredicate } from './adapters/node/owner-predicate.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
+import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
@@ -114,6 +116,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
+    concurrency: deriveLimits(nativeMachineFacts()),
     // A linked worktree lives outside `workDir`; root a fresh adapter at the
     // repo's own workDir PLUS every path the caller asked for (the facade
     // passes the worktree paths followed by the layout roots), so it reaches

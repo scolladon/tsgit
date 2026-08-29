@@ -11,6 +11,7 @@ import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { enumerateBundleObjects } from '../primitives/enumerate-bundle-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { peel } from '../primitives/internal/peel.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readObject } from '../primitives/read-object.js';
@@ -215,15 +216,13 @@ const makePrerequisites = async (
   ctx: Context,
   boundary: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<BundlePrerequisite>> =>
-  Promise.all(
-    [...boundary].sort().map(async (oid) => {
-      const obj = await readObject(ctx, oid);
-      // git uses format_subject (%s): folds the whole first paragraph
-      // (all non-blank lines before the first blank) into a single line
-      const commit = assertBoundaryCommit(obj, oid);
-      return { oid, comment: foldSubject(commit.data.message) };
-    }),
-  );
+  boundedMapFor(ctx, 'ioBound', [...boundary].sort(), async (oid) => {
+    const obj = await readObject(ctx, oid);
+    // git uses format_subject (%s): folds the whole first paragraph
+    // (all non-blank lines before the first blank) into a single line
+    const commit = assertBoundaryCommit(obj, oid);
+    return { oid, comment: foldSubject(commit.data.message) };
+  });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte concatenation helper

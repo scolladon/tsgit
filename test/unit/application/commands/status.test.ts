@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as repoState from '../../../../src/application/commands/internal/repo-state.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import {
@@ -14,14 +15,9 @@ import {
   toStagedKind,
   toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
-import { compareWorkingTreeDelta } from '../../../../src/application/primitives/compare-working-tree-entry.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
-import { createWorkingTreeStatMap } from '../../../../src/application/primitives/internal/working-tree-stat-map.js';
-import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import { walkWorkingTree } from '../../../../src/application/primitives/walk-working-tree.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type {
   AuthorIdentity,
   FileMode,
@@ -1127,6 +1123,49 @@ describe('status — unmerged column', () => {
     });
   });
 
+  describe('Given status over three conflicted (unmerged) paths', () => {
+    describe('When status runs', () => {
+      it('Then requireWorkTree is called once, not once per unmerged path', async () => {
+        // Arrange — three files conflicted, so `buildUnmergedEntries`'s per-path
+        // `readWorktreeMode` runs three times; requireWorkTree must be hoisted
+        // to the single call at status()'s entry.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'shared\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'FEATURE\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'MAIN\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        await mergeRun(ctx, { rev: 'feature', author });
+        const requireWorkTreeSpy = vi.spyOn(repoState, 'requireWorkTree');
+
+        try {
+          // Act
+          const result = await status(ctx);
+
+          // Assert
+          expect(result.unmerged).toHaveLength(3);
+          expect(requireWorkTreeSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          requireWorkTreeSpy.mockRestore();
+        }
+      });
+    });
+  });
+
   describe('Given a clean repo', () => {
     describe('When status', () => {
       it('Then the unmerged column is empty', async () => {
@@ -1142,108 +1181,145 @@ describe('status — unmerged column', () => {
     });
   });
 
-  describe('status with one working-tree stat map shared across its two passes', () => {
-    // status's own untracked pass never reads the walker's lazy stat (see "no
-    // lstat is issued for the untracked path" above), so wiring one shared
-    // map through status is currently behaviour-preserving for status's own
-    // output — there is nothing IN status today to dedupe against. These
-    // tests pin the dedup CONTRACT the wiring establishes instead, composing
-    // the same two primitives (compareWorkingTreeDelta, walkWorkingTree) over
-    // the same shared instance status threads between its tracked and
-    // untracked passes — precisely the case Part 7's per-walk memoisation
-    // alone does not cover, and the guarantee any future untracked-pass stat
-    // read (or any other status-adjacent command) can now rely on.
-    const trackLstat = (ctx: Context): { readonly ctx: Context; readonly calls: () => number } => {
+  describe('status dedupes lstats across its tracked and untracked passes structurally', () => {
+    // `WorkingTreeStatMap` was write-only in status's own call graph: the
+    // untracked pass never reads a leaf's lazy stat (see "no lstat is issued
+    // for the untracked path" above), and `scanUntracked` excludes every
+    // tracked path from `untracked` by construction — so the two passes'
+    // lstat'd paths can never overlap. Deleting the map cost nothing; this
+    // pins the same "no path is ever stated twice" guarantee through that
+    // structural partition instead of a shared cache. Counted per-file (not
+    // as a raw total) because the gate/ignore-predicate machinery issues its
+    // own unrelated `lstat`s (HEAD discovery, `.gitignore`/`info/exclude`
+    // symlink-safety probes) that this test is not about.
+    const trackLstat = (
+      ctx: Context,
+    ): { readonly ctx: Context; readonly countFor: (name: string) => number } => {
       const baseLstat = ctx.fs.lstat;
-      let calls = 0;
+      const calls: string[] = [];
       const trackingFs = new Proxy(ctx.fs, {
         get(target, prop, receiver) {
           if (prop === 'lstat') {
             return async (p: string) => {
-              calls += 1;
+              calls.push(p);
               return baseLstat(p);
             };
           }
           return Reflect.get(target, prop, receiver);
         },
       });
-      return { ctx: { ...ctx, fs: trackingFs }, calls: () => calls };
+      return {
+        ctx: { ...ctx, fs: trackingFs },
+        countFor: (name) => calls.filter((p) => p.endsWith(`/${name}`)).length,
+      };
     };
 
-    const stagedEntry = async (ctx: Context, path: string): Promise<IndexEntry> => {
-      const index = await readIndex(ctx);
-      const entry = index.entries.find((e) => e.path === path);
-      if (entry === undefined) throw new Error(`stagedEntry: ${path} not staged`);
-      return entry;
-    };
-
-    describe('Given a tracked path already recorded and a separate untracked-only path', () => {
-      describe("When a walk consumer reads every leaf's lazy stat", () => {
-        it('Then the tracked path costs one lstat total and the untracked path costs one of its own', async () => {
+    describe('Given a tracked path and a separate untracked-only path', () => {
+      describe('When status runs', () => {
+        it('Then the tracked path costs exactly one lstat and the untracked path costs none', async () => {
           // Arrange
           const ctx = await seedClean();
           await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
-          const entry = await stagedEntry(ctx, 'a.txt');
-          const stats = createWorkingTreeStatMap();
-          const { ctx: tracked, calls } = trackLstat(ctx);
+          const { ctx: tracked, countFor } = trackLstat(ctx);
 
-          // Act — pass 1: the tracked-pass comparison records a.txt's sample.
-          await compareWorkingTreeDelta(tracked, entry, undefined, undefined, stats);
-          // Act — pass 2: a walk consumer reads every leaf's lazy stat.
-          const samples = new Map<string, unknown>();
-          for await (const walked of walkWorkingTree(tracked, { stats })) {
-            samples.set(walked.path, await walked.stat());
-          }
+          // Act
+          const result = await status(tracked);
 
-          // Assert — a.txt reuses pass 1's sample (no extra lstat); b.txt pays
-          // its own. Total: exactly 2, never a path stated twice.
-          expect(calls()).toBe(2);
-          expect(samples.get('a.txt')).toBeDefined();
-          expect(samples.get('b.txt')).toBeDefined();
+          // Assert
+          expect(result.untracked).toContain('b.txt');
+          expect(countFor('a.txt')).toBe(1);
+          expect(countFor('b.txt')).toBe(0);
         });
       });
     });
+  });
+});
 
-    describe('Given a tracked path deleted from disk before the tracked pass runs', () => {
-      describe('When compareWorkingTreeDelta is called with the shared map', () => {
-        it("Then the status is 'absent' and nothing is recorded", async () => {
-          // Arrange
-          const ctx = await seedClean();
-          await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
-          const entry = await stagedEntry(ctx, 'a.txt');
-          const stats = createWorkingTreeStatMap();
+describe('status — bounded working-tree I/O', () => {
+  const trackInFlight = (ctx: Context): { readonly ctx: Context; readonly max: () => number } => {
+    const baseLstat = ctx.fs.lstat;
+    let inFlight = 0;
+    let max = 0;
+    const trackingFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (p: string) => {
+            inFlight += 1;
+            if (inFlight > max) max = inFlight;
+            try {
+              return await baseLstat(p);
+            } finally {
+              inFlight -= 1;
+            }
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    return { ctx: { ...ctx, fs: trackingFs }, max: () => max };
+  };
 
-          // Act
-          const result = await compareWorkingTreeDelta(ctx, entry, undefined, undefined, stats);
+  describe('Given N tracked entries and an ioBound bucket of 2', () => {
+    describe('When status scans the working tree', () => {
+      it('Then at most 2 lstats are in flight at once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const names = ['a.txt', 'b.txt', 'c.txt', 'd.txt'];
+        for (const name of names) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, name);
+        }
+        await add(ctx, names);
+        await commit(ctx, { message: 'seed', author });
+        for (const name of names) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, `${name}-changed`);
+        }
+        const limited = { ...ctx, concurrency: { cpuBound: 1, ioBound: 2 } };
+        const { ctx: tracked, max } = trackInFlight(limited);
 
-          // Assert
-          expect(result.status).toBe('absent');
-          expect(stats.sampled(entry.path)).toBeUndefined();
-        });
+        // Act
+        await status(tracked);
+
+        // Assert
+        expect(max()).toBe(2);
       });
     });
+  });
 
-    describe('Given a tracked path absent during the tracked pass but recreated before a later walk reads it', () => {
-      describe("When a walk consumer reads that path's lazy stat", () => {
-        it('Then it takes a fresh sample rather than a stale negative', async () => {
-          // Arrange — the tracked pass sees the path missing and records
-          // nothing (no tombstone); the file then reappears before pass 2.
-          const ctx = await seedClean();
-          await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
-          const entry = await stagedEntry(ctx, 'a.txt');
-          const stats = createWorkingTreeStatMap();
-          await compareWorkingTreeDelta(ctx, entry, undefined, undefined, stats);
-          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'recreated');
+  describe('Given three unmerged (conflicted) paths and an ioBound bucket of 2', () => {
+    describe('When status builds the unmerged column', () => {
+      it('Then at most 2 lstats are in flight at once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'shared\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'FEATURE\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'on-feature', author });
+        await checkout(ctx, { rev: 'main' });
+        for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'MAIN\n');
+        }
+        await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        await mergeRun(ctx, { rev: 'feature', author });
+        const limited = { ...ctx, concurrency: { cpuBound: 1, ioBound: 2 } };
+        const { ctx: tracked, max } = trackInFlight(limited);
 
-          // Act
-          let sample: unknown;
-          for await (const walked of walkWorkingTree(ctx, { stats })) {
-            if (walked.path === 'a.txt') sample = await walked.stat();
-          }
+        // Act
+        const result = await status(tracked);
 
-          // Assert
-          expect(sample).toBeDefined();
-        });
+        // Assert
+        expect(result.unmerged).toHaveLength(3);
+        expect(max()).toBe(2);
       });
     });
   });

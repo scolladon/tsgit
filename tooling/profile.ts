@@ -74,16 +74,41 @@ const runReadChild = async (
   }
 };
 
+const runInterleaved = async (
+  workload: Extract<ProfileWorkload, { kind: 'write' }>,
+  iterations: number,
+  scratches: ScratchRepo[],
+): Promise<void> => {
+  for (let i = 0; i < iterations; i += 1) {
+    const scratch = await workload.build(profileEnv());
+    scratches.push(scratch); // teardown deferred off the sampled path
+    await workload.run(scratch.repo, scratch);
+  }
+};
+
+const runHoisted = async (
+  workload: Extract<ProfileWorkload, { kind: 'write' }>,
+  iterations: number,
+  scratches: ScratchRepo[],
+): Promise<void> => {
+  for (let i = 0; i < iterations; i += 1) {
+    scratches.push(await workload.build(profileEnv())); // build fully out of the sampled run loop
+  }
+  for (const scratch of scratches) {
+    await workload.run(scratch.repo, scratch);
+  }
+};
+
 const runWriteChild = async (
   workload: Extract<ProfileWorkload, { kind: 'write' }>,
 ): Promise<void> => {
   const iterations = workload.iterations ?? WRITE_ITERATIONS;
   const scratches: ScratchRepo[] = [];
   try {
-    for (let i = 0; i < iterations; i += 1) {
-      const scratch = await workload.build(profileEnv());
-      scratches.push(scratch); // teardown deferred off the sampled path
-      await workload.run(scratch.repo, scratch);
+    if (workload.hoistBuild === false) {
+      await runInterleaved(workload, iterations, scratches);
+    } else {
+      await runHoisted(workload, iterations, scratches);
     }
   } finally {
     for (const scratch of scratches) {
@@ -163,8 +188,7 @@ const captureBaseline = async (
   for (const [name, workload] of resolved) {
     process.stdout.write(`profiling ${name}…\n`);
     const digest = await captureProfile(name);
-    const entry =
-      workload.kind === 'read' ? { hotShares: parseDigest(digest) } : partitionWriteDigest(digest);
+    const entry = workload.kind === 'read' ? parseDigest(digest) : partitionWriteDigest(digest);
     if (entry.hotShares.length === 0) {
       process.stderr.write(
         `warning: ${name} produced no tsgit frames above the noise floor — ` +

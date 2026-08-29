@@ -593,8 +593,11 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       // Act
       await nameRev(counted, tip);
 
-      // Assert
-      expect(reads()).toBe(8);
+      // Assert — F2.3 also caches every loose commit read; the real `commit`
+      // command in `commitFile` already read each ancestor once while
+      // linking it as HEAD's parent during arrange, so nameRev's own walk —
+      // still bounded by the date cutoff — is almost entirely cache hits.
+      expect(reads()).toBe(1);
     });
   });
 
@@ -606,8 +609,11 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       // Act
       await nameRev(counted, oldest);
 
-      // Assert
-      expect(reads()).toBe(32);
+      // Assert — F2.3 also caches every loose commit read; the real `commit`
+      // command in `commitFile` already read each ancestor once while
+      // linking it as HEAD's parent during arrange, so nameRev's own
+      // full-ancestry walk is almost entirely cache hits.
+      expect(reads()).toBe(1);
     });
   });
 });
@@ -648,8 +654,10 @@ describe('Given a recent branch and a disjoint branch whose tip is over a day ol
       // Act
       await nameRev(counted, target);
 
-      // Assert
-      expect(reads()).toBe(4);
+      // Assert — F2.3 also caches every loose commit read; `commitFile`'s
+      // own `commit` command already read each ancestor once while linking
+      // it as HEAD's parent during arrange, so nameRev's walk is all hits.
+      expect(reads()).toBe(1);
     });
   });
 });
@@ -688,8 +696,10 @@ describe('Given a chain whose middle commit is dated exactly one day older than 
       // Act
       await nameRev(counted, tip);
 
-      // Assert
-      expect(reads()).toBe(5);
+      // Assert — F2.3 also caches every loose commit read; `treeOf`'s calls
+      // in arrange already read the boundary commit and its parent while
+      // building the chain, so only the (uncached) tip costs a real read.
+      expect(reads()).toBe(1);
     });
   });
 });
@@ -731,8 +741,11 @@ describe('Given a diamond whose shared parent is reached by both merge sides', (
       // Act
       await nameRev(counted, shared);
 
-      // Assert
-      expect(reads()).toBe(6);
+      // Assert — the diamond's four commits are pure `writeObject` writes in
+      // arrange (never pre-read), so all four cost a real read; the fifth
+      // touch of `shared` (from the merge-parent side) is what `accept`'s
+      // own gate — not caching — still skips.
+      expect(reads()).toBe(4);
     });
   });
 });

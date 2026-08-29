@@ -46,6 +46,21 @@ export const ObjectId = {
     return hex as ObjectId;
   },
 
+  /**
+   * Trusted-width construction: refuses a truncated hex string (wrong
+   * length) but skips `from`'s per-code-unit hex-digit scan. For sites that
+   * slice a `tree `/`parent `/`object ` line whose hex portion is git's own
+   * oid-hex alphabet by construction — the digit-class scan there is
+   * provably vacuous for well-formed input, and any object it would still
+   * reject (a truncated line) is already caught by the width check.
+   */
+  fromTrustedHex(hex: string): ObjectId {
+    if (hex.length !== SHA1_HEX_LENGTH && hex.length !== SHA256_HEX_LENGTH) {
+      throw invalidObjectId(hex);
+    }
+    return hex as ObjectId;
+  },
+
   fromRaw(bytes: Uint8Array): ObjectId {
     if (bytes.length !== 20 && bytes.length !== 32) {
       throw invalidObjectId(`raw bytes length ${bytes.length} is not 20 or 32`);

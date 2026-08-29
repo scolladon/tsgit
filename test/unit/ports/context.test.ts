@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ConcurrencyLimits } from '../../../src/domain/concurrency/derive-limits.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
@@ -226,6 +227,110 @@ describe('Context', () => {
 
         // Assert
         expect(sut.cwd).toBe(sentinelLayout.workDir);
+      });
+    });
+  });
+
+  describe('Given parts without concurrency', () => {
+    describe('When creating context', () => {
+      it('Then ctx.concurrency is undefined', () => {
+        // Arrange
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.concurrency).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given parts with concurrency', () => {
+    describe('When creating context', () => {
+      it('Then ctx.concurrency carries it', () => {
+        // Arrange
+        const concurrency: ConcurrencyLimits = { cpuBound: 4, ioBound: 32 };
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+          concurrency,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.concurrency).toBe(concurrency);
+      });
+    });
+  });
+
+  describe('Given a Context built by createContext', () => {
+    describe('When reading ctx.session', () => {
+      it('Then it carries a frozen session token', () => {
+        // Arrange
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.session).toBeDefined();
+        expect(Object.isFrozen(sut.session)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two separate calls to createContext', () => {
+    describe('When comparing ctx.session', () => {
+      it('Then each Context carries a distinct session token', () => {
+        // Arrange
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+        };
+
+        // Act
+        const first = createContext(options);
+        const second = createContext(options);
+
+        // Assert
+        expect(first.session).not.toBe(second.session);
       });
     });
   });

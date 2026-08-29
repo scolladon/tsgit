@@ -6,6 +6,7 @@ import { ObjectId, ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import {
   parseReflog,
+  parseReflogLenient,
   parseReflogLine,
   sanitizeReflogMessage,
   serializeReflogLine,
@@ -263,6 +264,27 @@ describe('parseReflogLine', () => {
       });
     });
   });
+
+  describe('Given a malformed identity in a reflog line', () => {
+    describe('When parsing', () => {
+      it('Then it throws a TsgitError, not a bare Error', () => {
+        // Arrange — `parseIdentity` rejects this: no angle-bracketed email.
+        const line = `${OID_A} ${OID_B} no-brackets 1716240000 +0000\tx`;
+
+        // Act
+        let result: unknown;
+        try {
+          parseReflogLine(line, 40);
+        } catch (error) {
+          result = error;
+        }
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect((result as TsgitError).data.code).toBe('INVALID_REFLOG_ENTRY');
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -391,6 +413,90 @@ describe('parseReflog', () => {
 
         // Act & Assert
         expectInvalidReflogEntry(() => parseReflog(content, 40), 'misplaced field separator');
+      });
+    });
+  });
+});
+
+describe('parseReflogLenient', () => {
+  describe('Given a reflog file with a garbage line between two valid entries', () => {
+    describe('When parsing', () => {
+      it('Then the garbage line is skipped and both valid entries are returned', () => {
+        // Arrange — pinned against git 2.55.0: `git gc --prune=now` keeps an
+        // object reachable only through a valid entry that shares a reflog
+        // file with a garbage line (`for_each_reflog_ent` skips the bad
+        // line rather than discarding the whole file).
+        const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
+        const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
+        const content = `${serializeReflogLine(first, 40)}garbage line\n${serializeReflogLine(second, 40)}`;
+
+        // Act
+        const entries = parseReflogLenient(content, 40);
+
+        // Assert
+        expect(entries).toEqual([first, second]);
+      });
+    });
+  });
+
+  describe('Given a well-formed multi-line reflog file', () => {
+    describe('When parsing', () => {
+      it('Then returns every entry oldest-first, same as parseReflog', () => {
+        // Arrange
+        const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
+        const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
+        const content = `${serializeReflogLine(first, 40)}${serializeReflogLine(second, 40)}`;
+
+        // Act
+        const entries = parseReflogLenient(content, 40);
+
+        // Assert
+        expect(entries).toEqual([first, second]);
+      });
+    });
+  });
+
+  describe('Given a reflog file with a trailing blank line', () => {
+    describe('When parsing', () => {
+      it('Then the blank line is tolerated', () => {
+        // Arrange
+        const content = `${serializeReflogLine(ENTRY, 40)}`;
+
+        // Act
+        const entries = parseReflogLenient(content, 40);
+
+        // Assert
+        expect(entries).toEqual([ENTRY]);
+      });
+    });
+  });
+
+  describe('Given an empty string', () => {
+    describe('When parsing', () => {
+      it('Then returns an empty array', () => {
+        // Arrange
+        const content = '';
+
+        // Act
+        const entries = parseReflogLenient(content, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a reflog file with ONLY a garbage line', () => {
+    describe('When parsing', () => {
+      it('Then returns an empty array rather than throwing', () => {
+        // Arrange
+        const content = 'garbage line\n';
+
+        // Act
+        const entries = parseReflogLenient(content, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
       });
     });
   });

@@ -339,6 +339,16 @@
         "default": "./dist/cjs/commands/log.cjs"
       }
     },
+    "./commands/maintenance": {
+      "import": {
+        "types": "./dist/types/commands/maintenance.d.ts",
+        "default": "./dist/esm/commands/maintenance.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/maintenance.d.cts",
+        "default": "./dist/cjs/commands/maintenance.cjs"
+      }
+    },
     "./commands/merge": {
       "import": {
         "types": "./dist/types/commands/merge.d.ts",
@@ -705,6 +715,7 @@
     "test:perf": "wireit",
     "bench:summary": "wireit",
     "bench:check": "node --experimental-strip-types tooling/bench-check.ts",
+    "bench:ab": "node --experimental-strip-types tooling/bench-ab.ts",
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
     "profile": "npm run build:profile && node --experimental-strip-types tooling/profile.ts",
     "bench:memory": "npm run build && node --expose-gc --experimental-strip-types tooling/bench-memory.ts",
@@ -828,7 +839,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^rollup \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -1336,9 +1347,9 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
-    "@biomejs/biome": "2.5.10",
+    "@biomejs/biome": "2.5.11",
     "@cloudflare/vitest-pool-workers": "0.22.0",
-    "@cloudflare/workers-types": "5.20260823.1",
+    "@cloudflare/workers-types": "5.20260828.1",
     "@commitlint/cli": "21.2.2",
     "@commitlint/config-conventional": "21.2.2",
     "@ls-lint/ls-lint": "2.3.1",
@@ -1350,16 +1361,16 @@
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/typescript-checker": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
-    "@types/node": "26.2.0",
+    "@types/node": "26.4.0",
     "@vitest/coverage-v8": "4.1.11",
-    "cspell": "10.1.0",
+    "cspell": "10.1.1",
     "dependency-cruiser": "18.2.0",
     "fast-check": "4.9.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.41.9",
     "jscpd": "5.0.16",
-    "knip": "6.32.2",
-    "lint-staged": "17.3.0",
+    "knip": "6.32.3",
+    "lint-staged": "17.4.1",
     "minimatch": "10.2.6",
     "rollup": "4.62.5",
     "rollup-plugin-dts": "6.5.1",
@@ -1369,6 +1380,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.11",
     "wireit": "0.14.13",
-    "wrangler": "4.125.0"
+    "wrangler": "4.127.1"
   }
 }

@@ -118,6 +118,27 @@ describe('Node shim — algorithm option', () => {
   });
 });
 
+describe('Node shim — concurrency', () => {
+  describe('Given a fresh (not-yet-existing) repository', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.concurrency carries a derived cpuBound and ioBound', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ cwd: tmpdir });
+
+        try {
+          // Assert — this host has real machine facts, so the policy is
+          // populated, not left for every consumer to fall back to the floor.
+          expect(sut.ctx.concurrency).toBeDefined();
+          expect(sut.ctx.concurrency?.cpuBound).toBeGreaterThanOrEqual(1);
+          expect(sut.ctx.concurrency?.ioBound).toBeGreaterThanOrEqual(1);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
 describe('Node shim — allowInsecureHttp enabled', () => {
   describe('Given allowInsecureHttp is true', () => {
     describe('When an http:// request is made', () => {

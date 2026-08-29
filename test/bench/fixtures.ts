@@ -139,8 +139,11 @@ export interface OffsetTablePackFixture {
 }
 
 /** Large enough that gathering the offset table in O(n) from a `.rev` is
- *  expected to beat sorting `entryOffsets` in O(n log n). */
-export const MANY_OBJECT_COUNT = 3_000;
+ *  expected to beat sorting `entryOffsets` in O(n log n) — above
+ *  `REV_INDEX_MIN_OBJECTS` (`pack-offset-table.ts`), so the "healthy .rev
+ *  present" and "`.rev` deleted" scenarios below actually diverge onto their
+ *  two different code paths instead of both taking the sort fallback. */
+export const MANY_OBJECT_COUNT = 8_000;
 
 /**
  * A single pack holding `MANY_OBJECT_COUNT` blobs — the shape `buildOffsetTable`'s

@@ -77,10 +77,10 @@ export async function openBlobSource(
   maxBufferedBytes: number,
   options?: StreamBlobOptions,
 ): Promise<BlobSource> {
-  const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? true };
+  const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? false };
 
   checkAborted(ctx);
-  // Same store-setup gate as resolveObjectBytes: a structurally
+  // Same store-setup gate as resolveObjectBytesWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
   await getPackRegistry(ctx).assertLoadable();

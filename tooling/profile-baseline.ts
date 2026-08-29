@@ -43,9 +43,14 @@ const setupSection = (setupShares: ReadonlyArray<FrameShare> | undefined): Reado
           'measured command are attributed to `command`, never `setup`._',
       ];
 
+const underSampledMarker = (underSampled: boolean): string =>
+  underSampled ? ' — **under-sampled**' : '';
+
 const commandSection = (name: string, baseline: CommandBaseline): string =>
   [
     `## ${name}`,
+    '',
+    `totalTicks: ${baseline.totalTicks}${underSampledMarker(baseline.underSampled)}`,
     '',
     '### hotShares',
     '',

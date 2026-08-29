@@ -1,6 +1,6 @@
 # 625 — One shared pack-offset sort for idx and rev
 
-- **Status:** accepted — **adopted-as-recommended (no user judgment)**
+- **Status:** accepted — **adopted-as-recommended (no user judgment)** · **Refined by:** ADR-720
 - **Date:** 2026-08-13
 - **Design:** docs/design/rev-on-idx-write.md (DC-2)
 

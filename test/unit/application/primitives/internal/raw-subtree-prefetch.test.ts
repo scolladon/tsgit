@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_CONCURRENT_OBJECT_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
 import { createConcurrencyLimiter } from '../../../../../src/application/primitives/internal/concurrency-limiter.js';
 import { prefetchSubtreeChildren } from '../../../../../src/application/primitives/internal/raw-subtree-prefetch.js';
 import { readRawTreeById } from '../../../../../src/application/primitives/internal/raw-tree-io.js';
@@ -143,9 +142,14 @@ describe('prefetchSubtreeChildren', () => {
   describe('Given a tree with more directory entries than the prescan window', () => {
     describe('When prefetchSubtreeChildren runs', () => {
       it('Then only the window (2x the shared concurrency cap) worth of children are queued', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const window = MAX_CONCURRENT_OBJECT_LOADS * 2;
+        // Arrange — an explicit ioBound distinct from cpuBound so a bucket-swap
+        // regression (deriving the window from the wrong bucket) fails loudly.
+        const ioBound = 6;
+        const ctx: Ctx = {
+          ...(await buildSeededContext()),
+          concurrency: { cpuBound: 1, ioBound },
+        };
+        const window = ioBound * 2;
         const width = window + 8;
         const parts: Uint8Array[] = [];
         for (let i = 0; i < width; i++) {

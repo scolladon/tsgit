@@ -28,8 +28,12 @@ done
 # 750 KiB from a 656 KiB floor — so a change that meaningfully grows any of
 # the three still fires the guard for a considered review rather than an
 # automatic bump. Source maps are not shipped, so they do not count against
-# this cap.
-SIZE_CAP=$((880 * 1024))
+# this cap. Raised 880 -> 884 KiB by the perf-remediation work: the measured
+# pack landed at 902 275 B, 1 155 B over the old cap, attributable to the
+# disk-windowed quarantine pack walk, the gc temp-litter rules, and the
+# cross-hop delta-depth accounting — all runtime code shipped in every
+# distribution form, none removable without dropping the behaviour.
+SIZE_CAP=$((884 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

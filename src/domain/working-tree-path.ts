@@ -76,12 +76,19 @@ const rejectInputShape = (input: string): void => {
 const rejectTraversalShape = (component: string, original: string): void => {
   if (component === '') reject(original); // empty component → trailing slash or // sequence.
   if (component === '.' || component === '..') reject(original);
-  if (byteLength(component) > MAX_COMPONENT_BYTES) reject(original);
-  // Stryker disable next-line EqualityOperator: equivalent — `i <= component.length` reads one past the end where `charCodeAt` returns NaN; `NaN <= 0x1f` and `NaN === 0x7f` are both false, so the extra iteration never rejects.
+  // Single pass: the control-char scan and the ASCII/non-ASCII split fall
+  // out of the same charCodeAt loop. A pure-ASCII component's UTF-8 byte
+  // length is exactly its UTF-16 code-unit length, so the common case never
+  // pays the allocating TextEncoder-based byteLength() below.
+  let asciiOnly = true;
+  // Stryker disable next-line EqualityOperator: equivalent — `i <= component.length` reads one past the end where `charCodeAt` returns NaN; `NaN <= 0x1f` and `NaN === 0x7f` are both false, so the extra iteration never rejects (and `NaN > 0x7f` is also false, so `asciiOnly` is unaffected).
   for (let i = 0; i < component.length; i += 1) {
     const code = component.charCodeAt(i);
     if (code <= 0x1f || code === 0x7f) reject(original);
+    if (code > 0x7f) asciiOnly = false;
   }
+  const componentByteLength = asciiOnly ? component.length : byteLength(component);
+  if (componentByteLength > MAX_COMPONENT_BYTES) reject(original);
 };
 
 const rejectComponent = (component: string, original: string): void => {

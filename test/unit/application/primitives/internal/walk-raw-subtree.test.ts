@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_CONCURRENT_OBJECT_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
 import type { FlattenBounds } from '../../../../../src/application/primitives/internal/flatten-raw.js';
 import {
   type Counter,
@@ -349,9 +348,14 @@ describe('walkRawSubtree', () => {
   describe('Given a root subtree with more directory children than the concurrency bound', () => {
     describe('When walkRawSubtree runs', () => {
       it('Then in-flight subtree reads peak at exactly the bound', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const width = MAX_CONCURRENT_OBJECT_LOADS + 8;
+        // Arrange — an explicit ioBound distinct from cpuBound so a bucket-swap
+        // regression (deriving the limiter from the wrong bucket) fails loudly.
+        const ioBound = 6;
+        const ctx: Ctx = {
+          ...(await buildSeededContext()),
+          concurrency: { cpuBound: 1, ioBound },
+        };
+        const width = ioBound + 8;
         const dirEntries: Array<{ name: string; mode: FileMode; id: ObjectId }> = [];
         const subtreeIds = new Set<ObjectId>();
         for (let i = 0; i < width; i++) {
@@ -391,7 +395,7 @@ describe('walkRawSubtree', () => {
           // every child is queued and the limiter alone decides the peak:
           // exactly the bound, not merely at-or-under it (which a
           // non-serialising bug of 2 or 3 in-flight would also satisfy).
-          expect(maxInFlight).toBe(MAX_CONCURRENT_OBJECT_LOADS);
+          expect(maxInFlight).toBe(ioBound);
         } finally {
           spy.mockRestore();
         }

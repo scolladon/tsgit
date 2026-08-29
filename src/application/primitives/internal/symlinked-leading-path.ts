@@ -11,6 +11,7 @@ import { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from './join-working-tree-path.js';
+import { createPromiseMemo, type PromiseMemo } from './promise-memo.js';
 import { requireWorkTree } from './repo-state.js';
 
 export interface LeadingPathScanner {
@@ -42,15 +43,45 @@ type PrefixShape = 'symlink' | 'plain' | 'missing';
  * prefix across a multi-literal pathspec set costs exactly one `lstat`.
  */
 export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
-  const memo = new Map<string, PrefixShape>();
+  // One single-flight memo per prefix, not a plain settled-value cache: two
+  // concurrent scans of the SAME prefix (delete wave + write wave running
+  // through the same pool) would otherwise both miss the cache before
+  // either write lands, doubling the `lstat`. `createPromiseMemo` caches the
+  // IN-FLIGHT promise itself, so the second caller joins the first's flight.
+  const memo = new Map<string, PromiseMemo<PrefixShape>>();
+  // Single-flights the UNLINK step itself, separate from `memo` above: two
+  // concurrent `unlinkSymlinkedLeadingComponent` calls for the SAME prefix
+  // both join the same classifyPrefix flight and can therefore both observe
+  // 'symlink' before either has unlinked it — without this, both would call
+  // `ctx.fs.rm` and the loser throws FILE_NOT_FOUND on an already-removed
+  // path (`rm` is not idempotent). Keyed and cleared independently of
+  // `memo` so a later, unrelated scan of the same prefix still re-lstats.
+  const unlinkMemo = new Map<string, PromiseMemo<void>>();
   const workDir = requireWorkTree(ctx, 'createLeadingPathScanner');
 
-  const classifyPrefix = async (prefix: string): Promise<PrefixShape> => {
-    const cached = memo.get(prefix);
-    if (cached !== undefined) return cached;
-    const shape = await lstatPrefix(prefix);
-    memo.set(prefix, shape);
-    return shape;
+  const classifyPrefix = (prefix: string): Promise<PrefixShape> => {
+    let entry = memo.get(prefix);
+    if (entry === undefined) {
+      entry = createPromiseMemo(() => lstatPrefix(prefix));
+      memo.set(prefix, entry);
+    }
+    return entry.get();
+  };
+
+  const unlinkPrefixOnce = (prefix: string): Promise<void> => {
+    let entry = unlinkMemo.get(prefix);
+    if (entry === undefined) {
+      entry = createPromiseMemo(async () => {
+        await ctx.fs.rm(joinPath(workDir, prefix));
+        // The prefix is no longer a symlink (or exists at all, until a
+        // deeper write recreates it as a real directory) — a stale 'symlink'
+        // verdict must not survive to serve a later lookup of this same
+        // prefix, so drop it rather than guess its post-unlink shape.
+        memo.delete(prefix);
+      });
+      unlinkMemo.set(prefix, entry);
+    }
+    return entry.get();
   };
 
   const lstatPrefix = async (prefix: string): Promise<PrefixShape> => {
@@ -99,12 +130,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
         return;
       }
       if (shape === 'symlink') {
-        await ctx.fs.rm(joinPath(workDir, prefix));
-        // The prefix is no longer a symlink (or exists at all, until a
-        // deeper write recreates it as a real directory) — a stale 'symlink'
-        // verdict must not survive to serve a later lookup of this same
-        // prefix, so drop it rather than guess its post-unlink shape.
-        memo.delete(prefix);
+        await unlinkPrefixOnce(prefix);
         return;
       }
       prefix = `${prefix}/${segments[i]}`;

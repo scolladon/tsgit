@@ -304,6 +304,11 @@ describe('bundleVerify', () => {
           revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
         });
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
+        // F2.3 also populates the delta cache when `bundleCreate` reads
+        // commit1's loose bytes above; drop that entry so the injected
+        // PERMISSION_DENIED below is actually reached instead of being
+        // masked by a cache hit.
+        ctx.deltaCache.delete(commit1);
 
         const prereqLoosePath = `${ctx.layout.gitDir}/objects/${commit1.slice(0, 2)}/${commit1.slice(2)}`;
         const spyCtx: Context = {
@@ -330,6 +335,42 @@ describe('bundleVerify', () => {
         // Assert — isMissingObject rethrows the PERMISSION_DENIED error
         expect(thrown).toBeInstanceOf(TsgitError);
         expect((thrown as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  // ── prerequisite hash verification (bundle verify opts in explicitly) ────
+
+  describe('Given a range bundle whose prerequisite object is present but corrupt', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then it refuses (bundle verify opts into hash verification)', async () => {
+        // Arrange — build a two-commit repo, create a range bundle so commit1
+        // is a prerequisite, then corrupt its stored loose bytes.
+        const { ctx, commit1 } = await buildTwoCommitRepo();
+        const createResult = await bundleCreate(ctx, {
+          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+        });
+        await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
+        // F2.3 also populates the delta cache when `bundleCreate` reads
+        // commit1's loose bytes above; drop that entry so the corrupted loose
+        // file below is actually read instead of being served from cache.
+        ctx.deltaCache.delete(commit1);
+        const prereqLoosePath = `${ctx.layout.gitDir}/objects/${commit1.slice(0, 2)}/${commit1.slice(2)}`;
+        const bogus = enc.encode('commit 3\0xyz');
+        const compressed = await ctx.compressor.deflate(bogus);
+        await ctx.fs.write(prereqLoosePath, compressed);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
       });
     });
   });
@@ -749,6 +790,80 @@ describe('bundleVerify', () => {
     });
   });
 
+  describe('Given a bundle where the REF_DELTA base object exists on disk but its bytes do not hash to its own oid', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then throws OBJECT_HASH_MISMATCH — the external base resolver reads with verifyHash: true', async () => {
+        // Arrange — three objects: blobA (prerequisite, always readable),
+        // blobB (REF_DELTA base, its ORIGINAL content), and blobC (an
+        // unrelated object). blobB's loose file is then overwritten in
+        // place with blobC's raw stored bytes, so reading it back under
+        // blobB's own oid — with hash verification — must fail.
+        const ctx = await initRepo();
+
+        const prereqContent = enc.encode('prerequisite blob — always readable');
+        const prereqOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: prereqContent,
+        });
+
+        const baseContent = enc.encode('base blob for REF_DELTA — will be corrupted on disk');
+        const baseOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: baseContent,
+        });
+
+        const mismatchedContent = enc.encode('a completely different stored object');
+        const mismatchedOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: mismatchedContent,
+        });
+
+        const baseLoosePath = `${ctx.layout.gitDir}/objects/${baseOid.slice(0, 2)}/${baseOid.slice(2)}`;
+        const mismatchedLoosePath = `${ctx.layout.gitDir}/objects/${mismatchedOid.slice(0, 2)}/${mismatchedOid.slice(2)}`;
+        const mismatchedRawBytes = await ctx.fs.read(mismatchedLoosePath);
+        await ctx.fs.write(baseLoosePath, mismatchedRawBytes);
+
+        const targetContent = enc.encode('derived content');
+        const { packBytes, ids } = await buildSyntheticPack(ctx, [
+          {
+            kind: 'ref-delta',
+            baseId: baseOid as string,
+            baseUncompressed: baseContent,
+            targetContent,
+          } as EntrySpec,
+        ]);
+
+        const headerBytes = serializeBundleHeader({
+          version: 2,
+          hashAlgorithm: 'sha1',
+          prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
+          refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
+        });
+        const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+        bundleBytes.set(headerBytes, 0);
+        bundleBytes.set(packBytes, headerBytes.length);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — a mutant that reads the base without hash verification
+        // would silently accept blobC's bytes under blobB's oid instead.
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('OBJECT_HASH_MISMATCH');
+      });
+    });
+  });
+
   // ── memoized external-base resolver ────────────────────────────────────────
 
   describe('Given a bundle with two REF_DELTA entries sharing the same external base blob', () => {
@@ -790,7 +905,7 @@ describe('bundleVerify', () => {
     };
 
     describe('When bundleVerify is called in a repo where the base object is present', () => {
-      it('Then the external base object is read from the object store exactly twice — prereq check plus one memoized resolver lookup', async () => {
+      it('Then the external base object is read from the object store exactly once — the prereq check warms the shared delta cache and every resolver lookup hits it', async () => {
         // Arrange
         const ctx = await initRepo();
         const baseContent = enc.encode('shared external base blob');
@@ -820,9 +935,10 @@ describe('bundleVerify', () => {
 
         // Assert — verify succeeds with both prerequisites present
         expect(result.prerequisitesPresent).toBe(true);
-        // Assert — base is read twice: once by the prereq check, once by the memoized
-        // resolver (second REF_DELTA entry hits cache — no extra read)
-        expect(baseReadCount).toBe(2);
+        // Assert — the prereq check's loose read populates the shared delta
+        // cache (F2.3), so both the resolver's own memo and every REF_DELTA
+        // entry's base lookup thereafter are cache hits — one physical read.
+        expect(baseReadCount).toBe(1);
       });
     });
   });
@@ -907,6 +1023,68 @@ describe('bundleVerify', () => {
         expect(result.prerequisitesPresent).toBe(true);
         expect(result.hashAlgorithm).toBe('sha256');
         expect(result.refs[0]?.oid).toMatch(/^[0-9a-f]{64}$/);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 bundle with no prerequisites and an instrumented deltaCache', () => {
+    describe('When bundleVerify adopts the algorithm and keeps the session', () => {
+      it('Then no oid-keyed cache holds an entry at the moment the algorithm is adopted', async () => {
+        // Arrange — the assertion that licenses `deriveContext`'s
+        // `keepSessionAcrossHashChange` at this call site: the only path
+        // that reaches a real algorithm swap is a mismatch with ZERO
+        // prerequisites (any mismatch WITH prerequisites already refuses in
+        // `assertPrerequisiteAlgorithmMatches`, before this point), and a
+        // zero-prerequisite bundle never resolves an external base — so the
+        // repository's own deltaCache is never touched at all.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const base = await initRepo();
+        await base.fs.write(BUNDLE_PATH, created.bytes);
+        let touched = 0;
+        const trackingDeltaCache = new Proxy(base.deltaCache, {
+          get(target, prop, receiver) {
+            if (prop === 'get' || prop === 'set') touched += 1;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const sha1Ctx: Context = { ...base, deltaCache: trackingDeltaCache };
+
+        // Act
+        await bundleVerify(sha1Ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(touched).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 bundle with no prerequisites and an instrumented session', () => {
+    describe('When bundleVerify adopts the algorithm', () => {
+      it('Then the derived pack context reuses the ORIGINAL session identity — `session` is read exactly twice (the spread copy, then the keep-session ternary), never minted fresh', async () => {
+        // Arrange — `deriveContext`'s `{ ...ctx, ...changes, session: freshSession ? createSession() : ctx.session }`
+        // reads `ctx.session` once via the object-spread copy and, ONLY when
+        // `keepSessionAcrossHashChange` licenses reuse, a second time via the
+        // ternary's `ctx.session` branch. A mutant that drops or falsifies
+        // that option forces `createSession()` instead, so the ternary never
+        // re-reads `ctx.session` — exactly one read instead of two.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const base = await initRepo();
+        await base.fs.write(BUNDLE_PATH, created.bytes);
+        let sessionReads = 0;
+        const trackingCtx: Context = new Proxy(base, {
+          get(target, prop, receiver) {
+            if (prop === 'session') sessionReads += 1;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act
+        await bundleVerify(trackingCtx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(sessionReads).toBe(2);
       });
     });
   });

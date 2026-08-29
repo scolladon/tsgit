@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { loadShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import {
   commonGitDir,
   looseObjectPath,
@@ -12,8 +13,10 @@ import {
 } from '../../../../src/application/primitives/path-layout.js';
 import {
   disposePackRegistry,
+  getPackRegistry,
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
+import * as reflogStoreMod from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   decompressFailed,
@@ -769,6 +772,54 @@ describe('Given a commit reachable only via reflog (reset --hard scenario)', () 
       const isDanglingOld = dangling.some((f) => (f as { id: ObjectId }).id === oldCommitId);
       expect(isDanglingOld).toBe(true);
       expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given more reflogs than the ioBound limit', () => {
+  describe('When fsck collects reflog roots', () => {
+    it('Then reflog reads peak at exactly the bound', async () => {
+      // Arrange — an explicit ioBound distinct from cpuBound so a
+      // bucket-swap regression (deriving the pool from the wrong bucket)
+      // fails loudly. Each branch carries its own reflog file, so every
+      // one becomes a sibling `readReflog` call fanning out together.
+      const ioBound = 3;
+      const width = ioBound + 4;
+      const ZERO_OID_STR = '0000000000000000000000000000000000000000';
+      const base = await initBareCtx();
+      const treeId = await writeObject(base, makeTree([]));
+      await base.fs.mkdir(`${base.layout.gitDir}/logs/refs/heads`);
+      for (let i = 0; i < width; i++) {
+        const commitId = await writeObject(base, makeCommit(treeId, [], `c${i}`));
+        await base.fs.writeUtf8(`${base.layout.gitDir}/refs/heads/br${i}`, `${commitId}\n`);
+        const reflogLine = `${ZERO_OID_STR} ${commitId} Ada <ada@example.com> 1700000000 +0000\tcommit (initial): c${i}\n`;
+        await base.fs.writeUtf8(`${base.layout.gitDir}/logs/refs/heads/br${i}`, reflogLine);
+      }
+      await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/br0\n');
+      const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const realReadReflog = reflogStoreMod.readReflog;
+      const spy = vi
+        .spyOn(reflogStoreMod, 'readReflog')
+        .mockImplementation(async (spyCtx, name) => {
+          inFlight += 1;
+          if (inFlight > maxInFlight) maxInFlight = inFlight;
+          await Promise.resolve();
+          inFlight -= 1;
+          return realReadReflog(spyCtx, name);
+        });
+
+      // Act
+      try {
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(result.exitCode).toBe(0);
+        expect(maxInFlight).toBe(ioBound);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });
@@ -6779,6 +6830,96 @@ describe('Given a .gitmodules blob with a disallowed URL nested below the root t
         { type: 'root', id: commitId },
       ]);
       expect(result.exitCode).toBe(1);
+    });
+  });
+});
+
+describe('Given fsck audit reads through the shared registry with createNoDeltaCache()', () => {
+  describe('When fsck runs over an OFS chain shared across two objects', () => {
+    it('Then no offset-keyed delta-base cache entry is retained', async () => {
+      // Arrange — base ← mid ← {tip1, tip2}: fsck's own decode-once walk
+      // touches the shared mid level from two different objects, exactly the
+      // shape that would populate the offset-keyed cache on an ordinary
+      // read. fsck's audit Context swaps in a zero-budget deltaCache while
+      // still sharing the session — and, through it, the ordinary registry
+      // — with the opening Context, so the new cache must honour that same
+      // zero budget, not just the audit Context's own (unused) deltaCache.
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('shared base content');
+      const midContent = enc.encode('shared mid content');
+      await writeSyntheticPack(ctx, 'audit-ofs', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: midContent },
+        { kind: 'ofs-delta', baseIndex: 1, targetContent: enc.encode('tip one') },
+        { kind: 'ofs-delta', baseIndex: 1, targetContent: enc.encode('tip two — different') },
+      ]);
+
+      // Act
+      await fsck(ctx);
+
+      // Assert
+      const registry = getPackRegistry(ctx);
+      expect(registry.deltaBaseCache.entryCount).toBe(0);
+    });
+  });
+});
+
+describe('Given a loose blob a prior read has NOT yet cached', () => {
+  describe('When fsck reads it during the audit', () => {
+    it('Then the opening Context’s own object-byte cache is never populated', async () => {
+      // Arrange — the audit's own decode never touches `ctx.deltaCache`
+      // (it reads through a zero-budget one instead), so a lookup against
+      // the REAL cache after fsck runs must still miss.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: enc.encode('never cached by fsck'),
+      });
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'f', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      await fsck(ctx);
+
+      // Assert
+      expect(ctx.deltaCache.get(blobId)).toBeUndefined();
+    });
+  });
+});
+
+describe('Given the opening Context already loaded its shallow-boundary set', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit reuses it — the shallow file is not re-read', async () => {
+      // Arrange — the deliberate narrowing under a session token: fsck
+      // isolates only `deltaCache`, so a commonDir-anchored cache like the
+      // shallow set — already warm on `ctx` — is shared with the audit
+      // Context rather than reloaded.
+      const ctx = await initBareCtx();
+      await loadShallowSet(ctx);
+      const shallowPath = `${commonGitDir(ctx)}/shallow`;
+      let reads = 0;
+      const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+      const instrumented: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          readUtf8: async (path: string) => {
+            if (path === shallowPath) reads += 1;
+            return originalReadUtf8(path);
+          },
+        },
+      };
+
+      // Act
+      await fsck(instrumented);
+
+      // Assert
+      expect(reads).toBe(0);
     });
   });
 });

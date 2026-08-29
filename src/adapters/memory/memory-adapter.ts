@@ -1,3 +1,4 @@
+import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
@@ -77,6 +78,11 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
     runtime: 'memory' as const,
     hashConfig,
     deltaCache,
+    // No real machine to report facts for (no cores, no libuv threadpool);
+    // `deriveLimits({})` is the same safe floor `limitFor` would fall back
+    // to for an absent `concurrency`, set explicitly so the floor reads as
+    // an intentional choice rather than an omission.
+    concurrency: deriveLimits({}),
     // Stryker disable next-line ConditionalExpression,EqualityOperator,ObjectLiteral: equivalent — when `signal` is undefined the always-spread mutant yields `{ signal: undefined }`, which createContext freezes indistinguishably from omitting the key (consumers read `ctx.signal` by value). The killable always-`{}` half is covered by the signal-propagation test.
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     // Stryker disable next-line ConditionalExpression,EqualityOperator,ObjectLiteral: equivalent — when `hooks` is undefined the always-spread mutant yields `{ hooks: undefined }`, indistinguishable from omitting the key once createContext freezes it (consumers read `ctx.hooks` by value). The killable always-`{}` half is covered by the hooks-propagation test.

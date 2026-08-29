@@ -1,15 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as boolConfigGuard from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { type GitIndex, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { permissionDenied, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
@@ -1683,6 +1684,231 @@ describe('add', () => {
     });
   });
 
+  describe('Given N new files staged via a walk and an ioBound bucket of 2', () => {
+    describe('When add runs', () => {
+      it('Then at most 2 stagings are in flight at once', async () => {
+        // Arrange
+        const base = await seedFreshRepo({
+          'a.txt': 'a',
+          'b.txt': 'b',
+          'c.txt': 'c',
+          'd.txt': 'd',
+        });
+        let inFlight = 0;
+        let max = 0;
+        const baseLstat = base.fs.lstat;
+        // A macrotask tick per lstat gives the (much cheaper) walk time to
+        // dispatch every entry before any one staging settles — without it,
+        // the walk-then-stage pipeline finishes file N before the walker
+        // even discovers file N+1, masking the pool's real width.
+        const trackingFs = new Proxy(base.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (path: string) => {
+                inFlight += 1;
+                if (inFlight > max) max = inFlight;
+                try {
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                  return await baseLstat(path);
+                } finally {
+                  inFlight -= 1;
+                }
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const limited = { ...base, fs: trackingFs, concurrency: { cpuBound: 1, ioBound: 2 } };
+
+        // Act
+        await add(limited, [], { all: true });
+
+        // Assert
+        expect(max).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a hostile path mid-walk while a sibling file is still being staged', () => {
+    describe('When add runs', () => {
+      it('Then the pool drains the sibling before the error propagates, and no index commit happens', async () => {
+        // Arrange — the sibling's re-lstat blocks until the hostile path's own
+        // re-lstat has fired (guaranteeing the sibling is still in flight when
+        // the abort happens); it only resumes and finishes staging from
+        // there. `stageWalkedEntries` must await every dispatched task before
+        // the recorded error can propagate, so 'sibling-staged' can only
+        // precede 'add-rejected' if the drain genuinely happened first.
+        const ctx = await seedFreshRepo({ 'hostile.txt': 'h', 'sibling.txt': 's' });
+        const events: string[] = [];
+        let releaseSibling: (() => void) | undefined;
+        const siblingGate = new Promise<void>((resolve) => {
+          releaseSibling = resolve;
+        });
+        const baseLstat = ctx.fs.lstat;
+        const racingCtx = {
+          ...ctx,
+          fs: new Proxy(ctx.fs, {
+            get(target, prop, receiver) {
+              if (prop === 'lstat') {
+                return async (path: string) => {
+                  const real = await baseLstat(path);
+                  if (path.endsWith('/hostile.txt')) {
+                    releaseSibling?.();
+                    return { ...real, isSymbolicLink: true, isFile: false };
+                  }
+                  if (path.endsWith('/sibling.txt')) {
+                    await siblingGate;
+                    events.push('sibling-staged');
+                  }
+                  return real;
+                };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(racingCtx, [], { all: true });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+          events.push('add-rejected');
+        }
+
+        // Assert
+        expect(events).toEqual(['sibling-staged', 'add-rejected']);
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        const after = await readIndex(ctx);
+        expect(after.entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two hostile paths in the walk where the LATER one settles first', () => {
+    describe('When add runs', () => {
+      it('Then the recorded error corresponds to the earlier-walked path, not whichever settled first', async () => {
+        // Arrange — 'a.txt' is walked (dispatched) before 'z.txt', but
+        // 'z.txt's own lstat rejects immediately and releases the gate that
+        // holds 'a.txt's rejection back — so 'z.txt' always settles FIRST
+        // in real time despite being SECOND in walk order.  A firstError
+        // keyed by settle order would record 'z.txt'; the fix must record
+        // 'a.txt' regardless.
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'z.txt': 'z' });
+        let releaseA: (() => void) | undefined;
+        const aGate = new Promise<void>((resolve) => {
+          releaseA = resolve;
+        });
+        const baseLstat = ctx.fs.lstat;
+        const racingCtx = {
+          ...ctx,
+          fs: new Proxy(ctx.fs, {
+            get(target, prop, receiver) {
+              if (prop === 'lstat') {
+                return async (path: string) => {
+                  if (path.endsWith('/z.txt')) {
+                    releaseA?.();
+                    throw permissionDenied(path);
+                  }
+                  if (path.endsWith('/a.txt')) {
+                    await aGate;
+                    throw permissionDenied(path);
+                  }
+                  return baseLstat(path);
+                };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(racingCtx, [], { all: true });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; path: string };
+        expect(data.code).toBe('PERMISSION_DENIED');
+        expect(data.path.endsWith('/a.txt')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given three hostile paths where the settle order is neither ordinal order nor its reverse', () => {
+    describe('When add runs', () => {
+      it('Then the recorded error still corresponds to the earliest-walked path — not merely whichever settled last', async () => {
+        // Arrange — walk (ordinal) order is a.txt(0), m.txt(1), z.txt(2).
+        // Settle order is chained the OPPOSITE of walk order except for the
+        // middle entry: z settles first (releasing a), a settles second
+        // (releasing m), m settles LAST. A firstError keyed by "whichever
+        // settled most recently" would land on m (ordinal 1) — neither the
+        // first-settled (z) nor the correct answer (a, ordinal 0) — so this
+        // is the one arrangement that distinguishes "always overwrite" from
+        // "overwrite only when this ordinal is a new minimum".
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'm.txt': 'm', 'z.txt': 'z' });
+        let releaseA: (() => void) | undefined;
+        const aGate = new Promise<void>((resolve) => {
+          releaseA = resolve;
+        });
+        let releaseM: (() => void) | undefined;
+        const mGate = new Promise<void>((resolve) => {
+          releaseM = resolve;
+        });
+        const baseLstat = ctx.fs.lstat;
+        const racingCtx = {
+          ...ctx,
+          fs: new Proxy(ctx.fs, {
+            get(target, prop, receiver) {
+              if (prop === 'lstat') {
+                return async (path: string) => {
+                  if (path.endsWith('/z.txt')) {
+                    releaseA?.();
+                    throw permissionDenied(path);
+                  }
+                  if (path.endsWith('/a.txt')) {
+                    await aGate;
+                    releaseM?.();
+                    throw permissionDenied(path);
+                  }
+                  if (path.endsWith('/m.txt')) {
+                    await mGate;
+                    throw permissionDenied(path);
+                  }
+                  return baseLstat(path);
+                };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(racingCtx, [], { all: true });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; path: string };
+        expect(data.code).toBe('PERMISSION_DENIED');
+        expect(data.path.endsWith('/a.txt')).toBe(true);
+      });
+    });
+  });
+
   describe('Given multiple unsorted modified and removed files', () => {
     describe('When add({ all: true })', () => {
       it('Then modified and removed are each independently sorted', async () => {
@@ -2199,6 +2425,62 @@ describe('add — remote.promisor guard', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(data.key).toBe('remote.origin.promisor');
         expect(data.value).toBe('maybe');
+      });
+    });
+  });
+
+  describe('Given add stages three files', () => {
+    describe('When add runs', () => {
+      it('Then the promisor-remote config guard runs once, not once per file', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
+        const guardSpy = vi.spyOn(boolConfigGuard, 'assertValidPromisorRemoteConfig');
+
+        try {
+          // Act
+          await add(ctx, ['a.txt', 'b.txt', 'c.txt']);
+
+          // Assert
+          expect(guardSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          guardSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a literal pathspec that matches no file on disk', () => {
+    describe('When add runs', () => {
+      it('Then the promisor-remote config guard never runs (zero-match adds do not start refusing)', async () => {
+        // Arrange — the missing literal routes through addByPathspec (not
+        // addLiteralOnly, since allLiteralsAreFiles fails its lstat), whose
+        // walk yields zero entries, so stageFromStat — the guard's only call
+        // site — never runs.
+        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = maybe\n',
+        );
+        __resetConfigCacheForTests();
+        const guardSpy = vi.spyOn(boolConfigGuard, 'assertValidPromisorRemoteConfig');
+
+        try {
+          // Act
+          let caught: unknown;
+          try {
+            await add(ctx, ['missing.txt']);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — a bad promisor value would surface as
+          // CONFIG_BAD_BOOLEAN_VALUE if the guard ran; the pathspec instead
+          // fails with PATHSPEC_NO_MATCH, proving the guard never fired.
+          expect((caught as TsgitError | undefined)?.data.code).toBe('PATHSPEC_NO_MATCH');
+          expect(guardSpy).not.toHaveBeenCalled();
+        } finally {
+          guardSpy.mockRestore();
+        }
       });
     });
   });

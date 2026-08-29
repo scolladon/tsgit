@@ -61,14 +61,18 @@ async function writeCommitAsGitlink(
 }
 
 describe('materialisePatchFiles', () => {
-  describe('Given more changes than the concurrency cap', () => {
+  describe('Given more changes than the ioBound limit', () => {
     describe('When materialisePatchFiles is called', () => {
-      it('Then in-flight reads stay bounded at 32', async () => {
-        // Arrange — 80 add changes; expect peak concurrency ≤ 32.
-        const ctx = createMemoryContext();
+      it('Then in-flight reads peak at exactly the bound', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression (deriving the pool from the wrong bucket)
+        // fails loudly.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = createMemoryContext();
         const changes: AddChange[] = [];
-        for (let i = 0; i < 80; i++) {
-          const oid = await writeBlob(ctx, `body-${i}\n`);
+        for (let i = 0; i < width; i++) {
+          const oid = await writeBlob(base, `body-${i}\n`);
           changes.push({
             type: 'add',
             newPath: `f${i}.txt` as FilePath,
@@ -76,6 +80,10 @@ describe('materialisePatchFiles', () => {
             newMode: FILE_MODE.REGULAR,
           });
         }
+        const ctx: ReturnType<typeof createMemoryContext> = {
+          ...base,
+          concurrency: { cpuBound: 1, ioBound },
+        };
         const originalRead = ctx.fs.read.bind(ctx.fs);
         let inFlight = 0;
         let peak = 0;
@@ -92,10 +100,9 @@ describe('materialisePatchFiles', () => {
         // Act
         const result = await materialisePatchFiles(ctx, changes);
 
-        // Assert — every result hydrated, peak in-flight obeyed the bound.
-        expect(result).toHaveLength(80);
-        expect(peak).toBeGreaterThan(0);
-        expect(peak).toBeLessThanOrEqual(32);
+        // Assert — every result hydrated, peak in-flight reaches exactly the bound.
+        expect(result).toHaveLength(width);
+        expect(peak).toBe(ioBound);
       });
     });
   });

@@ -1,9 +1,9 @@
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { deriveContext } from '../primitives/derive-context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
-import { adoptPackRegistry } from '../primitives/read-object.js';
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
   buildBlobFilenameMap,
@@ -36,16 +36,9 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
 // ---------------------------------------------------------------------------
 
 /** A cache that holds nothing — fsck's audit reads always reach the store.
- *  Built fresh per call, never a shared module-level singleton: a
- *  `Context`'s `deltaCache` is also the identity anchor
- *  `load-reftable-stack.ts`'s stack memo keys on, so one process-wide
- *  instance reused across every `fsck` call would alias independent
- *  repositories that route ref reads through this audit Context and happen
- *  to share a `reftableDir` path string (the memory and browser/OPFS
- *  adapters routinely do). Currently latent — nothing in this module hands
- *  `auditCtx` to `getRefStore`/`loadReftableStack` — but the per-call
- *  allocation is free enough that closing the door outright beats relying
- *  on that staying true. */
+ *  Built fresh per call, never a shared module-level singleton — the
+ *  allocation is free enough that a fresh instance every call beats relying
+ *  on a shared one staying inert. */
 function createNoDeltaCache(): LruCache<Uint8Array> {
   return {
     get: () => undefined,
@@ -64,17 +57,20 @@ function createNoDeltaCache(): LruCache<Uint8Array> {
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertOperationalRepository(ctx);
 
-  // An integrity audit observes the STORE, never the session's read cache: a
+  // An integrity audit observes the STORE, never the object-byte read cache: a
   // delta base cached by an earlier read (or by this walk itself) would
   // satisfy a lookup git answers through the multi-pack-index, hiding the
-  // exact per-entry corruption class this command exists to surface. The
-  // audit view shares the ordinary registry — a second registry would double
-  // the scan and duplicate every persistent pack handle. Every OTHER
-  // per-Context read cache (loose fanout, commit graph, config) is left to
-  // rebuild: bounded rework, no handles, no correctness stake. Frozen like
-  // every Context the factories hand out.
-  const auditCtx: Context = Object.freeze({ ...ctx, deltaCache: createNoDeltaCache() });
-  adoptPackRegistry(ctx, auditCtx);
+  // exact per-entry corruption class this command exists to surface.
+  // `deriveContext` keeps the session for a `deltaCache`-only change, so the
+  // audit view SHARES every other session-keyed cache with the opening
+  // Context — the pack registry (a second registry would double the scan and
+  // duplicate every persistent pack handle), config and commit graph. (Refs
+  // are verified through `ctx` directly, never `auditCtx`, so the ref store
+  // is untouched by this derivation either way.) Re-reading those is
+  // redundant work, not safer work: fsck's integrity guarantee comes from
+  // its own independent re-hash of every object, which this isolation
+  // leaves untouched.
+  const auditCtx: Context = deriveContext(ctx, { deltaCache: createNoDeltaCache() });
 
   const allIds = await enumerateObjects(ctx, {
     includePacks: opts.full !== false,

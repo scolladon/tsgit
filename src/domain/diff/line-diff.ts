@@ -359,9 +359,34 @@ export function diffLinesWithBound(
   options: LineDiffOptions | undefined,
   maxEditDistance: number,
 ): LineDiff {
+  return diffPresplitLinesWithBound(splitLines(ours), splitLines(theirs), options, maxEditDistance);
+}
+
+/**
+ * `diffLines`'s counterpart for a caller that already holds both sides
+ * split — `blame`'s changed-parent hop, where the child side is the
+ * previous generation's carried `Suspect.lines` and only the parent side is
+ * genuinely new. Skips `splitLines` entirely on both inputs; the returned
+ * `oursLines`/`theirsLines` are the SAME array references passed in, not
+ * copies.
+ */
+export function diffPresplitLines(
+  oursLines: ReadonlyArray<Uint8Array>,
+  theirsLines: ReadonlyArray<Uint8Array>,
+  options?: LineDiffOptions,
+): LineDiff {
+  return diffPresplitLinesWithBound(oursLines, theirsLines, options, MAX_DIFF_EDIT_DISTANCE);
+}
+
+// Test-only seam, mirroring `diffLinesWithBound`'s — deliberately not
+// re-exported from domain/diff/index.ts or public-types.ts.
+export function diffPresplitLinesWithBound(
+  oursLines: ReadonlyArray<Uint8Array>,
+  theirsLines: ReadonlyArray<Uint8Array>,
+  options: LineDiffOptions | undefined,
+  maxEditDistance: number,
+): LineDiff {
   const lineKey = options?.lineKey;
-  const oursLines = splitLines(ours);
-  const theirsLines = splitLines(theirs);
   const M = oursLines.length;
   const N = theirsLines.length;
 

@@ -96,6 +96,26 @@ function chainTipModel(baseGraphHash: ObjectId): CommitGraphLayerModel {
   };
 }
 
+// A root whose corrected date fits GDA2's plain field, and a child whose
+// overflowing offset must round-trip through GDO2 instead — the exact shape
+// `serializeCommitGraph` produces once the correction exceeds 0x7fffffff.
+function overflowModel(): CommitGraphLayerModel {
+  return {
+    hashVersion: 1,
+    numBaseGraphs: 0,
+    baseGraphHashes: [],
+    includeGenerationData: true,
+    commits: [
+      commit('c0', [], { generationV1: 1, committerDate: 1_700_000_000, generationV2Offset: 0 }),
+      commit('c1', [0], {
+        generationV1: 2,
+        committerDate: 1_700_000_100,
+        generationOverflowOffset: 5_000_000_000,
+      }),
+    ],
+  };
+}
+
 function readChunkRowOffset(view: DataView, rowIndex: number): number {
   const rowStart = 8 + rowIndex * 12;
   return view.getUint32(rowStart + 4) * 0x100000000 + view.getUint32(rowStart + 8);
@@ -136,6 +156,17 @@ function setGda2Overflow(bytes: Uint8Array, commitIndex: number): Uint8Array {
   const gda2Start = readChunkRowOffset(view, findChunkRowIndex(copy, 'GDA2'));
   const entryOffset = gda2Start + commitIndex * 4;
   view.setUint32(entryOffset, view.getUint32(entryOffset) | 0x80000000);
+  return copy;
+}
+
+// Overwrites a GDA2 entry with the overflow flag plus an arbitrary index —
+// used to point a valid overflow entry past the end of an existing GDO2
+// chunk, independent of `setGda2Overflow`'s missing-chunk scenario.
+function corruptGda2Index(bytes: Uint8Array, commitIndex: number, newIndex: number): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const gda2Start = readChunkRowOffset(view, findChunkRowIndex(copy, 'GDA2'));
+  view.setUint32(gda2Start + commitIndex * 4, 0x80000000 | newIndex);
   return copy;
 }
 
@@ -597,22 +628,62 @@ describe('commit-graph', () => {
       });
     });
 
-    describe('Given a GDA2 entry with its overflow bit set', () => {
+    describe('Given a GDA2 entry with its overflow bit set and a matching GDO2 chunk', () => {
       describe('When reading commit data', () => {
-        it('Then falls back to the v1 topological generation instead of throwing', () => {
+        it('Then resolves the 64-bit corrected date from GDO2', () => {
           // Arrange
-          const model = fiveCommitModel();
-          const bytes = setGda2Overflow(buildCommitGraphBytes(model), 0);
-          const layer = parseCommitGraphLayer(bytes);
+          const model = overflowModel();
+          const layer = parseCommitGraphLayer(buildCommitGraphBytes(model));
 
           // Act
-          const result = commitDataAt(layer, 0);
+          const result = commitDataAt(layer, 1);
 
-          // Assert — the corrected date lives in the unparsed GDO2 chunk; the
-          // reader degrades to the CDAT v1 generation rather than failing a
-          // read git itself serves
-          expect(result.generation).toBe(model.commits[0]!.generationV1);
-          expect(result.committerDate).toBe(model.commits[0]!.committerDate);
+          // Assert
+          const overflowCommit = model.commits[1]!;
+          expect(result.generation).toBe(
+            overflowCommit.committerDate + overflowCommit.generationOverflowOffset!,
+          );
+          expect(result.committerDate).toBe(overflowCommit.committerDate);
+        });
+      });
+    });
+
+    describe('Given a GDA2 entry with its overflow bit set but no GDO2 chunk', () => {
+      describe('When reading commit data', () => {
+        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for the missing GDO2 chunk', () => {
+          // Arrange
+          const bytes = setGda2Overflow(buildCommitGraphBytes(fiveCommitModel()), 0);
+          const layer = parseCommitGraphLayer(bytes);
+
+          // Act & Assert
+          expectThrows(() => commitDataAt(layer, 0), 'INVALID_COMMIT_GRAPH_CHUNK', 'missing GDO2');
+        });
+      });
+    });
+
+    describe('Given a GDA2 overflow entry whose GDO2 index is out of range', () => {
+      describe('When reading commit data', () => {
+        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for the out-of-range index', () => {
+          // Arrange — overflowModel's GDO2 chunk holds exactly one entry (index 0).
+          const bytes = corruptGda2Index(buildCommitGraphBytes(overflowModel()), 1, 99);
+          const layer = parseCommitGraphLayer(bytes);
+
+          // Act & Assert
+          expectThrows(() => commitDataAt(layer, 1), 'INVALID_COMMIT_GRAPH_CHUNK', 'out of range');
+        });
+      });
+    });
+
+    describe('Given a GDA2 overflow entry whose GDO2 index is exactly one past the last valid entry', () => {
+      describe('When reading commit data', () => {
+        it('Then throws INVALID_COMMIT_GRAPH_CHUNK — the range check is exclusive at the boundary', () => {
+          // Arrange — overflowModel's GDO2 chunk holds exactly one entry
+          // (index 0), so index 1 is the tightest possible out-of-range case.
+          const bytes = corruptGda2Index(buildCommitGraphBytes(overflowModel()), 1, 1);
+          const layer = parseCommitGraphLayer(bytes);
+
+          // Act & Assert
+          expectThrows(() => commitDataAt(layer, 1), 'INVALID_COMMIT_GRAPH_CHUNK', 'out of range');
         });
       });
     });

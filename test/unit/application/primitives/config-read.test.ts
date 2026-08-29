@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
+  assertValidGcAutoConfig,
   type ConfigToken,
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
+  findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidPushGpgSign,
   findFirstValuelessEntry,
@@ -14,6 +16,7 @@ import {
   findLastInvalidMaxTreeDepth,
   type IniSection,
   invalidateConfigCache,
+  memoizeGateVerdict,
   parseGitBoolean,
   parseGitInt,
   parseIniSections,
@@ -27,9 +30,11 @@ import {
   invalidateScopedConfigCache,
   readConfigSections,
 } from '../../../../src/application/primitives/config-scoped-read.js';
+import { assertValidBooleanConfig } from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
 import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { notADirectory, TsgitError } from '../../../../src/domain/error.js';
+import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context, RepositoryFormatRefusal } from '../../../../src/ports/context.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
@@ -1106,6 +1111,81 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given several readConfig calls fired within the same synchronous turn (the shape assertEagerConfigValid/assertDiscoveryBooleansValid fan out via Promise.all)', () => {
+    describe('When they all resolve', () => {
+      it('Then only one fs.stat call is made — the concurrent calls share one in-flight stat', async () => {
+        // Arrange — a per-read stat is unavoidable (it is what detects an
+        // external rewrite past invalidateConfigCache), but N calls started
+        // before the first stat settles must not each pay their own.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+
+        // Act
+        await Promise.all([readConfig(ctx), readConfig(ctx), readConfig(ctx), readConfig(ctx)]);
+
+        // Assert
+        expect(statSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given two readConfig calls separated by a settled turn', () => {
+    describe('When the config file changes in between', () => {
+      it('Then the second call still pays its own stat and observes the new content — coalescing never skips staleness detection', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+
+        // Act
+        const first = await readConfig(ctx);
+        await seed(ctx, '[core]\n  bare = false\n');
+        const second = await readConfig(ctx);
+
+        // Assert
+        expect(first.core?.bare).toBe(true);
+        expect(second.core?.bare).toBe(false);
+        expect(statSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given the coalesced stat rejects with an error the caller already catches', () => {
+    describe('When one macrotask has passed', () => {
+      it('Then no unhandledRejection is ever raised — the .finally()-derived promise is marked handled independently of the caller', async () => {
+        // Arrange — a non-FILE_NOT_FOUND stat failure (configMtimeKey only
+        // tolerates that one code) propagates through the in-flight memo's
+        // own `.finally()`, which returns a SEPARATE promise from the one
+        // the caller awaits; that separate promise needs its own handler or
+        // it surfaces as an unhandled rejection independent of the caller's.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        vi.spyOn(ctx.fs, 'stat').mockRejectedValueOnce(
+          notADirectory(`${ctx.layout.gitDir}/config`),
+        );
+        let unhandled = false;
+        const onUnhandledRejection = (): void => {
+          unhandled = true;
+        };
+        process.on('unhandledRejection', onUnhandledRejection);
+
+        try {
+          // Act
+          const caught = await readConfig(ctx).catch((err: unknown) => err);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect(unhandled).toBe(false);
+        } finally {
+          process.removeListener('unhandledRejection', onUnhandledRejection);
+        }
+      });
+    });
+  });
+
   describe('Given a config that was missing on first call', () => {
     describe('When readConfig is called twice', () => {
       it('Then second call also hits cache', async () => {
@@ -2131,6 +2211,40 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(() => invalidateConfigCache(ctx)).not.toThrow();
+      });
+    });
+  });
+
+  describe('Given a memoizeGateVerdict call rejects after its cache entry was already replaced by a fresh one', () => {
+    describe("When the stale call's rejection handler runs its cleanup", () => {
+      it('Then it must not evict the fresh entry it no longer owns', async () => {
+        // Arrange — a stale `compute` that stays pending until we reject it
+        // by hand, so a fresh call can populate a NEW entry in between.
+        const ctx = createMemoryContext();
+        let rejectStale: (err: unknown) => void = () => {};
+        const stale = new Promise<FilePath>((_resolve, reject) => {
+          rejectStale = reject;
+        });
+        const computeStale = () => stale;
+        const computeFresh = vi.fn(async () => 'fresh-verdict' as unknown as FilePath);
+        const computeThird = vi.fn(async () => 'third-verdict' as unknown as FilePath);
+
+        // Act — start the stale call, then externally invalidate (dropping
+        // it from the memo) and populate a fresh entry before the stale
+        // call's own rejection ever fires.
+        const staleResult = memoizeGateVerdict(ctx, computeStale);
+        invalidateConfigCache(ctx);
+        const freshResult = memoizeGateVerdict(ctx, computeFresh);
+        rejectStale(new Error('stale rejection'));
+        await expect(staleResult).rejects.toThrow('stale rejection');
+        await freshResult;
+
+        // A third call must still be served by the fresh entry rather than
+        // triggering a new compute.
+        await memoizeGateVerdict(ctx, computeThird);
+
+        // Assert
+        expect(computeThird).not.toHaveBeenCalled();
       });
     });
   });
@@ -3234,6 +3348,32 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
 
       // Assert
       expect(caught?.data).toEqual({ code: 'NOT_A_DIRECTORY', path: '/repo/.git/config' });
+    });
+  });
+
+  describe('Given fs.stat rejects with a TsgitError that is neither FILE_NOT_FOUND nor PERMISSION_DENIED, When readConfigSections reads a single scope', () => {
+    it('Then the error propagates rather than being read as an absent scope file', async () => {
+      // Arrange — the mtime-staleness stat, not the content read, is what
+      // `scopeFileMtimeKey` guards: only FILE_NOT_FOUND/PERMISSION_DENIED
+      // there mean "treat as absent"; anything else must still abort.
+      const ctx = createMemoryContext();
+      await seed(ctx, '[user]\n\tname = ada\n');
+      const boom = new TsgitError({ code: 'NOT_A_DIRECTORY', path: `${ctx.layout.gitDir}/config` });
+      vi.spyOn(ctx.fs, 'stat').mockRejectedValue(boom);
+      let caught: TsgitError | undefined;
+
+      // Act
+      try {
+        await readConfigSections({ ctx, scope: 'local' });
+      } catch (err) {
+        caught = err as TsgitError;
+      }
+
+      // Assert
+      expect(caught?.data).toEqual({
+        code: 'NOT_A_DIRECTORY',
+        path: `${ctx.layout.gitDir}/config`,
+      });
     });
   });
 
@@ -6456,6 +6596,471 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [gc] auto = 12000', () => {
+    describe('When readConfig', () => {
+      it('Then gc.auto is 12000', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 12000\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBe(12000);
+      });
+    });
+  });
+
+  describe('Given [gc] auto = 0', () => {
+    describe('When readConfig', () => {
+      it('Then gc.auto is 0 — the disable-every-heuristic value, not a falsy absence', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 0\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBe(0);
+      });
+    });
+  });
+
+  describe('Given [gc] auto just above the C int max (but within the 64-bit int grammar)', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined — the merge path applies the same C int ceiling', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 3000000000\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] auto exactly at the C int max (merge path)', () => {
+    describe('When readConfig', () => {
+      it('Then gc.auto is 2147483647 — the ceiling is inclusive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 2147483647\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBe(2_147_483_647);
+      });
+    });
+  });
+
+  describe('Given [gc] auto just below the C int min (but within the 64-bit int grammar)', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined — the merge path applies the same C int floor', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = -3000000000\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] auto exactly at the C int min (merge path)', () => {
+    describe('When readConfig', () => {
+      it('Then gc.auto is -2147483648 — the floor is inclusive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = -2147483648\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBe(-2_147_483_648);
+      });
+    });
+  });
+
+  describe('Given [gc] auto is malformed', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it returns the entry with reason invalid unit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.key).toBe('gc.auto');
+        expect(result?.value).toBe('abc');
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+
+    describe('When assertValidGcAutoConfig', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying key/source/value/reason', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidGcAutoConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code === 'CONFIG_BAD_NUMERIC_VALUE') {
+          expect(data.key).toBe('gc.auto');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+          expect(data.source).toMatch(/\/config$/);
+        }
+      });
+    });
+  });
+
+  describe('Given [gc] auto beyond the C int range', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it returns the entry with reason out of range', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 99999999999999999999\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given an orphan auto key before any section header', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it is ignored — the orphan region is not inside [gc]', async () => {
+        // Arrange — `inSection` must start `false`: an orphan entry (before
+        // any header at all) is never inside `[gc]`, however it spells.
+        const ctx = createMemoryContext();
+        await seed(ctx, 'auto = 99999999999999999999\n[core]\n  bare = true\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gc] section with an unrelated key holding a non-numeric value', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it is ignored — only the auto key is checked, not every entry in the section', async () => {
+        // Arrange — without the key guard, `pruneExpire`'s own (non-integer)
+        // value would be handed to `parseGitInt` and misreported as gc.auto.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  pruneExpire = 30.days.ago\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] auto just above the C int max (but within the 64-bit int grammar)', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it is reported out of range — the C int ceiling, not the 64-bit one, gates auto', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 3000000000\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given [gc] auto exactly at the C int max', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it is accepted — the ceiling is inclusive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = 2147483647\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] auto just below the C int min (but within the 64-bit int grammar)', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it is reported out of range — the C int floor, not the 64-bit one, gates auto', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = -3000000000\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given [gc] auto exactly at the C int min', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it is accepted — the floor is inclusive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = -2147483648\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] auto is valueless', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it("Then it is reported with value '' — a valueless entry has no token.value to report", async () => {
+        // Arrange — a bare `auto` key (no `=`) parses to `token.value === null`;
+        // the reported `value` falls back to `''`, never `null` or the literal token.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.value).toBe('');
+      });
+    });
+  });
+
+  describe('Given no [gc] section', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+
+    describe('When assertValidGcAutoConfig', () => {
+      it('Then it resolves (no throw)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act + Assert
+        await assertValidGcAutoConfig(ctx);
+      });
+    });
+
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] auto under a [GC] block in a different case', () => {
+    describe('When findFirstInvalidGcAuto', () => {
+      it('Then it reports the entry, because [GC] is [gc]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[GC]\n  auto = abc\n');
+
+        // Act
+        const result = await findFirstInvalidGcAuto(ctx);
+
+        // Assert
+        expect(result?.key).toBe('gc.auto');
+      });
+    });
+  });
+
+  describe('Given [gc] pruneExpire = 30.days.ago', () => {
+    describe('When readConfig', () => {
+      it('Then gc.pruneExpire carries the raw string, unvalidated and with no default applied', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  pruneExpire = 30.days.ago\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.pruneExpire).toBe('30.days.ago');
+      });
+    });
+  });
+
+  describe('Given [gc] pruneExpire is valueless', () => {
+    describe('When readConfig', () => {
+      it('Then gc.pruneExpire is absent — a valueless key is treated as absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  pruneExpire\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.pruneExpire).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] cruftPacks = false', () => {
+    describe('When readConfig', () => {
+      it('Then gc.cruftPacks is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  cruftPacks = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.cruftPacks).toBe(false);
+      });
+    });
+  });
+
+  describe('Given [gc] cruftPacks is malformed', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  cruftPacks = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+
+    describe('When assertValidBooleanConfig is called for the gc section', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE carrying key/source/value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  cruftPacks = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidBooleanConfig(ctx, 'gc', undefined, ['cruftpacks']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        if (data.code === 'CONFIG_BAD_BOOLEAN_VALUE') {
+          expect(data.key).toBe('gc.cruftpacks');
+          expect(data.value).toBe('maybe');
+        }
+      });
+    });
+  });
+
+  describe('Given a malformed [gc] auto alongside a well-formed cruftPacks', () => {
+    describe('When readConfig', () => {
+      it('Then cruftPacks is set while auto stays absent — each key merges independently', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  auto = abc\n  cruftPacks = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.auto).toBeUndefined();
+        expect(result.gc?.cruftPacks).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a [gc] section with an unrelated key', () => {
+    describe('When readConfig', () => {
+      it('Then config.gc is undefined — the key guard only matches auto/pruneExpire/cruftPacks', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  reflogExpire = 90\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a config with a [push] gpgSign value', () => {
     describe('When readConfig', () => {
       it.each([
@@ -6856,6 +7461,11 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           config: '[pack]\n\twriteReverseIndex = maybe\n',
           label: 'pack.writeReverseIndex (the whole pack bucket stays absent)',
           read: (result: Awaited<ReturnType<typeof readConfig>>) => result.pack,
+        },
+        {
+          config: '[gc]\n\tcruftPacks = maybe\n',
+          label: 'gc.cruftPacks (the whole gc bucket stays absent)',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) => result.gc,
         },
       ])('Then $label is absent, not a guessed default', async ({ config, read }) => {
         // Arrange

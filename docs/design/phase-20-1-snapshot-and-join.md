@@ -851,7 +851,6 @@ detail (the `WriteEventBus` adapter holds the only reference).
 ```typescript
 // src/application/primitives/snapshot/join.ts
 export interface JoinOptions {
-  readonly concurrency?: number
   readonly signal?: AbortSignal
 }
 
@@ -908,8 +907,11 @@ Passing `Promise<TreeSnapshot | null>` directly into `join` fails type-checking
 
 ### 11.2 Concurrency
 
-`JoinOptions.concurrency` is forwarded to operator stages downstream
-(`hashWorkdir`, `loadBlob`). Default: `ctx.concurrency` (existing).
+`join`/`innerJoin` themselves do no bounded fan-out — there is no
+`JoinOptions.concurrency` to set (ADR-719: a declared-but-never-read
+option is wired or removed, never left as dead surface). Downstream
+operator stages (`hashWorkdir`, `loadBlob`) resolve their own bound from
+the concurrency policy independently — see the concurrency-policy design.
 
 ### 11.3 Cancellation
 

@@ -6,7 +6,7 @@ import type { Compressor } from '../../../src/ports/compressor.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import type { HashService } from '../../../src/ports/hash-service.js';
 import type { HttpTransport } from '../../../src/ports/http-transport.js';
-import { composeAdapters } from '../../../src/repository/compose-adapters.js';
+import { composeAdapters, isFirstPartyFs } from '../../../src/repository/compose-adapters.js';
 
 const sentinelFs = {} as FileSystem;
 const sentinelHash = {} as HashService;
@@ -17,12 +17,16 @@ const fallbackHash = {} as HashService;
 const fallbackCompressor = {} as Compressor;
 const fallbackTransport = {} as HttpTransport;
 
+// `runtime: 'node'` — the one runtime whose fallback adapter is branded
+// first-party (its own containment already equals the layout's root set).
+// Tests that specifically exercise the memory-runtime carve-out build their
+// own fallback with `runtime: 'memory'` instead.
 const fallback = {
   fs: fallbackFs,
   hash: fallbackHash,
   compressor: fallbackCompressor,
   transport: fallbackTransport,
-  runtime: 'memory' as const,
+  runtime: 'node' as const,
 };
 
 describe('composeAdapters — fallback only', () => {
@@ -165,6 +169,99 @@ describe('composeAdapters — ADAPTER_UNAVAILABLE', () => {
         expect(result.data.code === 'ADAPTER_UNAVAILABLE' && result.data.reason).toBe(
           'bad\\x07data',
         );
+      });
+    });
+  });
+});
+
+describe('composeAdapters — first-party provenance brand', () => {
+  describe('Given no user override for fs (the fallback adapter is used)', () => {
+    describe('When composeAdapters runs', () => {
+      it('Then the composed fs is branded first-party', () => {
+        // Arrange & Act
+        const result = composeAdapters({}, fallback);
+
+        // Assert
+        expect(isFirstPartyFs(result.fs)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a fresh user-supplied fs override never seen by composeAdapters before', () => {
+    describe('When composeAdapters runs', () => {
+      it('Then the composed fs is NOT branded', () => {
+        // Arrange — a fs object of its own, never passed as a fallback anywhere else.
+        const freshOverrideFs = {} as FileSystem;
+
+        // Act
+        const result = composeAdapters({ fs: freshOverrideFs }, fallback);
+
+        // Assert
+        expect(isFirstPartyFs(result.fs)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a fresh fs never passed through composeAdapters as an override', () => {
+    describe('When composeAdapters runs with it only in the fallback arm', () => {
+      it('Then the brand check is by reference, not by the shape of a single call — a fresh unrelated fs stays unbranded', () => {
+        // Arrange — its own fallback set, isolated from the shared module-level fixture,
+        // so branding this fs cannot leak into any other test's assertions.
+        const freshFallbackFs = {} as FileSystem;
+        const isolatedFallback = {
+          fs: freshFallbackFs,
+          hash: fallbackHash,
+          compressor: fallbackCompressor,
+          transport: fallbackTransport,
+          runtime: 'node' as const,
+        };
+        const unrelatedFs = {} as FileSystem;
+
+        // Act
+        composeAdapters({}, isolatedFallback);
+
+        // Assert — branding tracks the exact object composeAdapters resolved to, not
+        // every FileSystem value that happens to exist.
+        expect(isFirstPartyFs(freshFallbackFs)).toBe(true);
+        expect(isFirstPartyFs(unrelatedFs)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an unrelated FileSystem object never seen by composeAdapters', () => {
+    describe('When isFirstPartyFs is called', () => {
+      it('Then it returns false', () => {
+        // Arrange
+        const strangerFs = {} as FileSystem;
+
+        // Act
+        const result = isFirstPartyFs(strangerFs);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a memory-runtime fallback and no user override for fs', () => {
+    describe('When composeAdapters runs', () => {
+      it('Then the composed fs is NOT branded first-party — MemoryFileSystem is single-rooted, independent of the layout, so the wrapper must stay the containment authority', () => {
+        // Arrange — a fresh fallback so branding this fs cannot leak into
+        // any other test's assertions.
+        const memoryFallbackFs = {} as FileSystem;
+        const memoryFallback = {
+          fs: memoryFallbackFs,
+          hash: fallbackHash,
+          compressor: fallbackCompressor,
+          transport: fallbackTransport,
+          runtime: 'memory' as const,
+        };
+
+        // Act
+        const result = composeAdapters({}, memoryFallback);
+
+        // Assert
+        expect(isFirstPartyFs(result.fs)).toBe(false);
       });
     });
   });

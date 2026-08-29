@@ -354,23 +354,39 @@ export function mapStat(s: {
   isDirectory: () => boolean;
   isSymbolicLink: () => boolean;
 }): FileStat {
-  const base = {
-    ctimeMs: Number(s.ctimeMs),
-    mtimeMs: Number(s.mtimeMs),
-    dev: Number(s.dev),
-    ino: Number(s.ino),
-    mode: Number(s.mode),
-    uid: Number(s.uid),
-    gid: Number(s.gid),
-    size: Number(s.size),
-    isFile: s.isFile(),
-    isDirectory: s.isDirectory(),
-    isSymbolicLink: s.isSymbolicLink(),
-  };
+  // Each field is coerced exactly once into a local, then the RETURNED
+  // object is built directly — once, in whichever branch applies — instead
+  // of building an intermediate `base` object and spreading it into a
+  // second one for the ns-bearing case.
+  const ctimeMs = Number(s.ctimeMs);
+  const mtimeMs = Number(s.mtimeMs);
+  const dev = Number(s.dev);
+  const ino = Number(s.ino);
+  const mode = Number(s.mode);
+  const uid = Number(s.uid);
+  const gid = Number(s.gid);
+  const size = Number(s.size);
+  const isFile = s.isFile();
+  const isDirectory = s.isDirectory();
+  const isSymbolicLink = s.isSymbolicLink();
   if (s.ctimeNs !== undefined && s.mtimeNs !== undefined) {
-    return { ...base, ctimeNs: s.ctimeNs, mtimeNs: s.mtimeNs };
+    return {
+      ctimeMs,
+      mtimeMs,
+      dev,
+      ino,
+      mode,
+      uid,
+      gid,
+      size,
+      isFile,
+      isDirectory,
+      isSymbolicLink,
+      ctimeNs: s.ctimeNs,
+      mtimeNs: s.mtimeNs,
+    };
   }
-  return base;
+  return { ctimeMs, mtimeMs, dev, ino, mode, uid, gid, size, isFile, isDirectory, isSymbolicLink };
 }
 
 export class NodeFileSystem implements FileSystem {
@@ -410,6 +426,16 @@ export class NodeFileSystem implements FileSystem {
    * recomputation is safe in a way that supplying a second value is not.
    */
   private readonly rootsArePreResolved: boolean;
+
+  /**
+   * Bound on concurrent child removals in `removeTree`'s `mapConcurrent`
+   * fan-out. `mapConcurrent` lives here (the adapter cannot import from
+   * `application/`, where the ioBound concurrency policy lives), so a
+   * caller that HAS resolved that policy passes it in; the default
+   * (`REMOVE_TREE_CONCURRENCY`) preserves this adapter's historical
+   * behaviour for every caller that does not.
+   */
+  private readonly removeTreeConcurrency: number;
 
   /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
@@ -466,6 +492,7 @@ export class NodeFileSystem implements FileSystem {
     pathPolicy: PathPolicy = nativePolicy,
     fsOps: FsOperations = realFsOps,
     rootsArePreResolved = false,
+    removeTreeConcurrency: number = REMOVE_TREE_CONCURRENCY,
   ) {
     const roots = typeof rootDir === 'string' ? [rootDir] : rootDir;
     const [primary] = roots;
@@ -480,6 +507,7 @@ export class NodeFileSystem implements FileSystem {
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
     this.rootsArePreResolved = rootsArePreResolved;
+    this.removeTreeConcurrency = removeTreeConcurrency;
   }
 
   /**
@@ -860,7 +888,7 @@ export class NodeFileSystem implements FileSystem {
       () => this.fsOps.readdir(real, { withFileTypes: true }),
       originalPath,
     );
-    await mapConcurrent(entries, REMOVE_TREE_CONCURRENCY, (entry) =>
+    await mapConcurrent(entries, this.removeTreeConcurrency, (entry) =>
       this.removeTree(this.pathPolicy.join(real, entry.name), originalPath),
     );
     await runFs(() => this.fsOps.rmdir(real), originalPath);
@@ -968,6 +996,25 @@ export class NodeFileSystem implements FileSystem {
    * `this.resolvedRootSet ?? await this.loadRootSet()` sync-fast-arm idiom
    * BEFORE calling in, so the one-time root canonicalisation still pays its
    * microtask exactly once per adapter lifetime, never once per call.
+   *
+   * A RELATIVE `path` (a raw-adapter call — every primitive-facing caller
+   * already passes absolute, `${gitDir}/…`-shaped paths) is anchored via
+   * `toAbsolute` against `this.rootDir` — the adapter's PRIMARY root, first
+   * in whatever `roots` array this instance was constructed with. On an
+   * instance with a WIDER root set (a worktree fs built from
+   * `[worktreePath, ...layoutRoots]`), a relative path the caller intended
+   * as commonDir-relative silently resolves under the worktree root instead —
+   * an ambiguity with no principled resolution here (this method has no way
+   * to know which of several roots a relative path was meant against).
+   * Fail-safe, not a containment escape: the mis-anchored candidate still
+   * passes through the SAME `roots.some(…)` check below, so a result that
+   * would have landed outside every root is still refused (`''` resolves to
+   * `this.rootDir` itself, which reads as a directory and maps to
+   * `PERMISSION_DENIED` via `EISDIR`, not silently admitted). Left
+   * unenforced deliberately: rejecting every non-absolute path here would
+   * break the single-root case's own tested, intentional relative-path
+   * support — closing the multi-root ambiguity would need callers to stop
+   * passing relative paths at all, not a change local to this method.
    */
   private resolveRead(path: string, roots: ReadonlyArray<RootPrefix>): string {
     const absolute = toAbsolute(path, this.rootDir, this.pathPolicy);
@@ -1000,8 +1047,21 @@ export class NodeFileSystem implements FileSystem {
     // separators (a `/` on Windows). The adapter is contractually allowed
     // to receive mixed-separator input; resolving here produces a
     // platform-native form so the containment prefix-check compares
-    // like-for-like.
-    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
+    // like-for-like AND so `realpathForCreation`'s fallback walk-up
+    // (`realpathNearestExisting`, which splits on `policy.sep` alone) can
+    // segment the path correctly.
+    //
+    // Non-allocating prefilter, mirroring `resolveRead`'s: skip `resolve()`
+    // only when it is PROVABLY a no-op for both purposes above — no `..` to
+    // collapse, and (Windows only) no foreign `/` separator for `resolve()`
+    // to fold to `\`. A backslash-free, dot-dot-free POSIX path never needs
+    // `resolve()` for either reason, so POSIX always takes the fast path;
+    // Windows takes it only when the path is already native-separator.
+    const absolute = toAbsolute(path, this.rootDir, this.pathPolicy);
+    // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — this is a perf-only skip-the-allocating-resolve() prefilter, not a correctness gate: when it wrongly stays false, resolveWrite's downstream path (realpathForCreation → either an OS-level fsOps.realpath, which resolves ".." itself for any path that genuinely exists, or realpathNearestExisting's own `policy.join(real, remaining)`, which is Node's path.join and therefore normalises — collapsing ".." — regardless) reaches the identical canonical `real` either way; the windowsSyntax operand is also unreachable on this posixPolicy-only CI (always false). Hand-verified: forcing the whole condition false, flipping the outer `||` to `&&`, and forcing each operand false in turn all leave the full covering set (node-file-system, node-file-system-injected, index.node) green.
+    const needsResolve =
+      absolute.indexOf('..') !== -1 || (this.pathPolicy.windowsSyntax && absolute.includes('/'));
+    const resolved = needsResolve ? this.pathPolicy.resolve(absolute) : absolute;
     // Every root is constant for the adapter's lifetime; their normalised
     // raw and canonical prefixes are held as one `RootSet` instance field.
     // The same synchronous-first-path idiom as every read surface

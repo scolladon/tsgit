@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import {
@@ -10,13 +10,17 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as historyRewriteMod from '../../../../src/application/commands/internal/history-rewrite.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { mv } from '../../../../src/application/commands/mv.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { findTreeEntry } from '../../../../src/application/primitives/internal/resolve-tree-path.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import * as lineDiffMod from '../../../../src/domain/diff/line-diff.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, Blob, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { refuseReadOnSymlink } from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
@@ -395,6 +399,385 @@ describe('Given a commit whose parent has the identical blob at the same path', 
   });
 });
 
+/**
+ * `readObject`/`readRawObject` reads for `id` across both spies — counts
+ * logical read/parse attempts regardless of which entry point made them, so
+ * the assertion survives the loose-object byte cache underneath (a second
+ * `ctx.fs.read` for the same oid can be served from cache, but a second call
+ * into either primitive still shows up here).
+ */
+const objectReadsOf = (
+  id: ObjectId,
+  readObjectSpy: ReturnType<typeof vi.spyOn>,
+  readRawObjectSpy: ReturnType<typeof vi.spyOn>,
+): number =>
+  [...readObjectSpy.mock.calls, ...readRawObjectSpy.mock.calls].filter(
+    ([, calledId]) => calledId === id,
+  ).length;
+
+describe("Given a parent whose root tree equals the child's", () => {
+  describe('When the parent is resolved', () => {
+    it('Then no tree object is read for it', async () => {
+      // Arrange — c2 reuses c1's tree verbatim (a message-only child commit),
+      // so the per-level oid short-circuit sees the root match with zero reads.
+      const ctx = await seed();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'a\nb\n');
+      await add(ctx, ['f.txt']);
+      clock += 60;
+      const c1 = await commit(ctx, {
+        message: 'c1 subject',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      clock += 60;
+      const c2 = await createCommit(ctx, {
+        tree: c1.tree,
+        parents: [c1.id],
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+        message: 'c2 message-only change',
+      });
+      const readObjectSpy = vi.spyOn(readObjectMod, 'readObject');
+      const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
+
+      // Act
+      await blame(ctx, 'f.txt', { rev: c2 });
+
+      // Assert — the shared tree is read once in total, resolving c2's own
+      // path; c1's resolution (the parent) reads it zero additional times.
+      expect(objectReadsOf(c1.tree, readObjectSpy, readRawObjectSpy)).toBe(1);
+      readObjectSpy.mockRestore();
+      readRawObjectSpy.mockRestore();
+    });
+  });
+});
+
+describe("Given a parent that differs from the child only outside the blamed path's first segment", () => {
+  describe('When the file is blamed', () => {
+    it('Then the descent stops at the first equal level', async () => {
+      // Arrange — a/b/c.txt is byte-identical in c1 and c2; only the sibling
+      // a/other.txt changes, so the root and a/ differ but a/b/ does not.
+      const ctx = await seed();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/b/c.txt`, 'x\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/other.txt`, 'A\n');
+      await add(ctx, ['a/b/c.txt', 'a/other.txt']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c1',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/other.txt`, 'B\n');
+      await add(ctx, ['a/other.txt']);
+      clock += 60;
+      const c2 = await commit(ctx, {
+        message: 'c2',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+      const abEntry = await findTreeEntry(ctx, c2.tree, 'a/b');
+      if (abEntry === undefined) throw new Error('test setup: a/b missing from c2');
+      const readObjectSpy = vi.spyOn(readObjectMod, 'readObject');
+      const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
+
+      // Act
+      await blame(ctx, 'a/b/c.txt', { rev: c2.id });
+
+      // Assert — a/b/ is read once in total, resolving c2's own path; c1's
+      // resolution matches a/b/'s oid at the second level and never reads
+      // a/b/'s own content again to look for c.txt inside it.
+      expect(objectReadsOf(abEntry.id, readObjectSpy, readRawObjectSpy)).toBe(1);
+      readObjectSpy.mockRestore();
+      readRawObjectSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a grandparent that shares a subtree with the parent but the child does not', () => {
+  describe('When the file is blamed across three generations', () => {
+    it("Then the grandparent's resolution reuses the parent's own accurate chain, matching one level higher than the child's chain would", async () => {
+      // Arrange — a/b/c.txt never changes across c0→c1→c2. a/ itself is
+      // byte-identical between c0 and c1 (only z.txt differs there), but
+      // DIFFERS between c1 and c2 (a/other.txt changes at c2). The suspect
+      // scheduled at c1 (a TREESAME hop from c2, matching two levels down at
+      // a/b/) must carry c1's OWN root/a-level oids, not c2's stale ones, or
+      // resolving c0 (c1's parent) re-descends into a/ a second time to find
+      // a match that was already available one level higher.
+      const ctx = await seed();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/other.txt`, 'same\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/b/c.txt`, 'x\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'Z0\n');
+      await add(ctx, ['a/other.txt', 'a/b/c.txt', 'z.txt']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c0',
+        author: ident('c0', clock),
+        committer: ident('c0', clock),
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'Z1\n');
+      await add(ctx, ['z.txt']);
+      clock += 60;
+      const c1 = await commit(ctx, {
+        message: 'c1',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      const c1aEntry = await findTreeEntry(ctx, c1.tree, 'a');
+      if (c1aEntry === undefined) throw new Error('test setup: a missing from c1');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/other.txt`, 'different\n');
+      await add(ctx, ['a/other.txt']);
+      clock += 60;
+      const c2 = await commit(ctx, {
+        message: 'c2',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+      const readObjectSpy = vi.spyOn(readObjectMod, 'readObject');
+      const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
+
+      // Act
+      await blame(ctx, 'a/b/c.txt', { rev: c2.id });
+
+      // Assert — a/'s shared oid (identical in c0 and c1) is read as an
+      // object exactly once (resolving c1 against c2, where a/ genuinely
+      // differs and a real descent into a/ is required); resolving c0
+      // against c1's stored chain matches it at the entry level instead of
+      // reading it again to descend a second time.
+      expect(objectReadsOf(c1aEntry.id, readObjectSpy, readRawObjectSpy)).toBe(1);
+      readObjectSpy.mockRestore();
+      readRawObjectSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a suspect whose blob is unchanged across three generations', () => {
+  describe('When the file is blamed', () => {
+    it('Then the blob is split once', async () => {
+      // Arrange — c1 introduces f.txt; c2, c3, c4 touch only other.txt, so
+      // f.txt is TREESAME at every hop walking back from c4 to c1.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await commitFile(ctx, 'c2', 'other.txt', '1\n');
+      await commitFile(ctx, 'c3', 'other.txt', '2\n');
+      const c4 = await commitFile(ctx, 'c4', 'other.txt', '3\n');
+      const splitLinesSpy = vi.spyOn(lineDiffMod, 'splitLines');
+
+      // Act
+      await blame(ctx, 'f.txt', { rev: c4 });
+
+      // Assert
+      expect(splitLinesSpy).toHaveBeenCalledTimes(1);
+      splitLinesSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a two-commit history where the parent hop actually changes the file', () => {
+  describe('When the file is blamed', () => {
+    it('Then the changed-parent hop diffs via diffPresplitLines, passing the carried suspect.lines as theirsLines unchanged', async () => {
+      // Arrange — c1 introduces f.txt, c2 modifies it: the c1 hop diffs c1's
+      // freshly-split blob against c2's ALREADY-split suspect.lines, by
+      // reference, rather than handing diffLines raw bytes to re-split.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'a\nb-mod\n');
+      const diffLinesSpy = vi.spyOn(lineDiffMod, 'diffLines');
+      const diffPresplitLinesSpy = vi.spyOn(lineDiffMod, 'diffPresplitLines');
+
+      // Act
+      await blame(ctx, 'f.txt', { rev: c2 });
+
+      // Assert
+      expect(diffLinesSpy).not.toHaveBeenCalled();
+      expect(diffPresplitLinesSpy).toHaveBeenCalledTimes(1);
+      const [oursLines, theirsLines] = diffPresplitLinesSpy.mock.calls[0]!;
+      expect(theirsLines).toEqual(lineDiffMod.splitLines(new TextEncoder().encode('a\nb-mod\n')));
+      expect(oursLines).toEqual(lineDiffMod.splitLines(new TextEncoder().encode('a\nb\n')));
+      diffLinesSpy.mockRestore();
+      diffPresplitLinesSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a merge commit with two parents', () => {
+  describe('When the merge tip is blamed', () => {
+    it('Then each parent commit object is read once', async () => {
+      // Arrange — side changes line 1, main changes line 3, line 2 untouched:
+      // both parents receive passed entries and are later processed as
+      // suspects in their own right.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\n');
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      const side = await commitFile(ctx, 'side', 'f.txt', 'a-side\nb\nc\n');
+      await checkout(ctx, { rev: 'main' });
+      const main = await commitFile(ctx, 'main', 'f.txt', 'a\nb\nc-main\n');
+      clock += 60;
+      await mergeRun(ctx, {
+        rev: 'side',
+        author: ident('merger', clock),
+        committer: ident('merger', clock),
+      });
+      const readCommitDataSpy = vi.spyOn(historyRewriteMod, 'readCommitData');
+
+      // Act
+      await blame(ctx, 'f.txt');
+
+      // Assert — each parent's own commit object is read once (by whichever
+      // resolution first discovers it), never re-read when it pops as a suspect.
+      const readsOf = (id: ObjectId): number =>
+        readCommitDataSpy.mock.calls.filter(([, calledId]) => calledId === id).length;
+      expect(readsOf(side)).toBe(1);
+      expect(readsOf(main)).toBe(1);
+      readCommitDataSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a symlink at the blamed path', () => {
+  describe('When the file is blamed across a commit that changes its target', () => {
+    it('Then its target string is blamed as content', async () => {
+      // Arrange
+      const ctx = await seed();
+      await ctx.fs.symlink('target-v1', `${ctx.layout.workDir}/link`);
+      await add(ctx, ['link']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c1',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+      await ctx.fs.symlink('target-v2', `${ctx.layout.workDir}/link`);
+      await add(ctx, ['link']);
+      clock += 60;
+      const c2 = await commit(ctx, {
+        message: 'c2',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+
+      // Act
+      const result = await blame(ctx, 'link');
+
+      // Assert
+      expect(committedLines(result).map((l) => l.commit)).toEqual([c2.id]);
+      expect(text(result.lines[0]!.content)).toBe('target-v2');
+    });
+  });
+});
+
+describe('Given a gitlink at the blamed path in an ancestor commit', () => {
+  describe('When a descendant replaces it with a regular file of the same name', () => {
+    it('Then the gitlink ancestor is treated as absent, not blamed through', async () => {
+      // Arrange
+      const ctx = await seed();
+      const base = await commitFile(ctx, 'base', 'keep.txt', 'x\n');
+      const gitlinkTreeId = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [{ mode: FILE_MODE.GITLINK, name: 'mysub', id: base }],
+      } as Tree);
+      clock += 60;
+      const c1 = await createCommit(ctx, {
+        tree: gitlinkTreeId,
+        parents: [base],
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+        message: 'c1 gitlink',
+      });
+      const blobId = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('real content\n'),
+      } as Blob);
+      const regularTreeId = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [{ mode: FILE_MODE.REGULAR, name: 'mysub', id: blobId }],
+      } as Tree);
+      clock += 60;
+      const c2 = await createCommit(ctx, {
+        tree: regularTreeId,
+        parents: [c1],
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+        message: 'c2 replaces gitlink with a file',
+      });
+
+      // Act
+      const result = await blame(ctx, 'mysub', { rev: c2 });
+
+      // Assert — 'mysub' is treated as freshly introduced at c2, never
+      // blamed through the gitlink ancestor.
+      expect(committedLines(result).map((l) => l.commit)).toEqual([c2]);
+      expect(committedLines(result)[0]!.boundary).toBe(false);
+      expect(result.lines[0]!.previous).toBeUndefined();
+    });
+  });
+});
+
+describe('Given a commit whose `tree` field points at a non-tree object', () => {
+  describe('When blaming a path as of that revision', () => {
+    it('Then refuses with UNEXPECTED_OBJECT_TYPE rather than degrading to a path-not-found', async () => {
+      // Arrange — the root of the descent shares the same raw byte-scan as
+      // every other level (Part 10's consolidation); it must still assert
+      // the root is actually a tree, the way `readTree`'s own peel-chain
+      // does, instead of silently returning "not found" for the whole file.
+      const ctx = await seed();
+      const blobId = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('not a tree'),
+      } as Blob);
+      clock += 60;
+      const corrupt = await createCommit(ctx, {
+        tree: blobId,
+        parents: [],
+        author: ident('corrupt', clock),
+        committer: ident('corrupt', clock),
+        message: 'commit with a corrupt tree field',
+      });
+
+      // Act / Assert
+      try {
+        await blame(ctx, 'f.txt', { rev: corrupt });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(TsgitError);
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+          expect(data.expected).toBe('tree');
+          expect(data.actual).toBe('blob');
+          expect(data.id).toBe(blobId);
+        }
+      }
+    });
+  });
+});
+
+describe('Given a blamed line living inside an otherwise-large blob', () => {
+  describe('When the file is blamed', () => {
+    it("Then a finalized line's content does not retain the whole inflated blob buffer", async () => {
+      // Arrange — one real line, padded with many throwaway lines so the
+      // blob is large; only the first line survives to be blamed.
+      const ctx = await seed();
+      const padding = Array.from({ length: 500 }, (_, i) => `pad${i}\n`).join('');
+      await commitFile(ctx, 'c1', 'f.txt', `real\n${padding}`);
+
+      // Act
+      const result = await blame(ctx, 'f.txt');
+      const content = result.lines[0]!.content;
+
+      // Assert — a copy's own backing buffer is exactly its own length; a
+      // subarray view into the original (much larger) blob would report the
+      // blob's full byte length instead.
+      expect(content.buffer.byteLength).toBe(content.byteLength);
+    });
+  });
+});
+
 describe('Given a rename of a file inside a subdirectory', () => {
   describe('When blaming it under the new nested name', () => {
     it('Then the rename is followed across the subtree to the originating commit', async () => {
@@ -418,6 +801,53 @@ describe('Given a rename of a file inside a subdirectory', () => {
       expect(committedLines(result).map((l) => l.commit)).toEqual([c1, c1]);
       expect(result.lines.map((l) => l.sourcePath)).toEqual(['dir/a.txt', 'dir/a.txt']);
       expect(committedLines(result).some((l) => l.commit === c2)).toBe(false);
+    });
+  });
+});
+
+describe('Given a rename whose source path is unchanged across a further ancestor', () => {
+  describe('When blaming past the rename to that ancestor', () => {
+    it("Then the line still blames to the root commit — the rename hop's chain is usable for a further short-circuit", async () => {
+      // Arrange — c0 introduces dir/a.txt and other.txt; c1 touches only
+      // other.txt (dir/ untouched, so dir/'s oid is identical in c0 and c1);
+      // c2 renames dir/a.txt to dir/b.txt with no content change. Blaming
+      // dir/b.txt from c2 must follow the rename to dir/a.txt, then keep
+      // walking past c1 (TREESAME on dir/) all the way to c0.
+      const ctx = await seed();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir/a.txt`, 'x\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/other.txt`, '0\n');
+      await add(ctx, ['dir/a.txt', 'other.txt']);
+      clock += 60;
+      const c0 = (
+        await commit(ctx, {
+          message: 'c0',
+          author: ident('c0', clock),
+          committer: ident('c0', clock),
+        })
+      ).id;
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/other.txt`, '1\n');
+      await add(ctx, ['other.txt']);
+      clock += 60;
+      await commit(ctx, {
+        message: 'c1',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      });
+      await mv(ctx, ['dir/a.txt'], 'dir/b.txt');
+      clock += 60;
+      await commit(ctx, {
+        message: 'c2',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      });
+
+      // Act
+      const result = await blame(ctx, 'dir/b.txt');
+
+      // Assert
+      expect(committedLines(result).map((l) => l.commit)).toEqual([c0]);
+      expect(committedLines(result)[0]!.boundary).toBe(true);
+      expect(result.lines[0]!.sourcePath).toBe('dir/a.txt');
     });
   });
 });

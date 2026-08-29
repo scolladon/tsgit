@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { joinPathSegment } from '../../../../src/application/primitives/internal/join-path-segment.js';
 import { joinPath } from '../../../../src/application/primitives/internal/join-working-tree-path.js';
-import type { WorkingTreeStatMap } from '../../../../src/application/primitives/internal/working-tree-stat-map.js';
 import type {
   WalkIgnorePredicate,
   WalkWorkingTreeEntry,
@@ -47,7 +46,6 @@ interface WalkConfigOracle {
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly ignore: WalkIgnorePredicate | undefined;
-  readonly stats: WorkingTreeStatMap | undefined;
 }
 
 interface CounterOracle {
@@ -58,7 +56,6 @@ interface WalkWorkingTreeOracleOptions {
   readonly maxDepth?: number;
   readonly maxEntries?: number;
   readonly ignore?: WalkIgnorePredicate;
-  readonly stats?: WorkingTreeStatMap;
 }
 
 async function* walkWorkingTreeOracle(
@@ -70,7 +67,6 @@ async function* walkWorkingTreeOracle(
     maxDepth: options?.maxDepth ?? Number.MAX_SAFE_INTEGER,
     maxEntries: options?.maxEntries ?? Number.MAX_SAFE_INTEGER,
     ignore: options?.ignore,
-    stats: options?.stats,
   };
   const counter: CounterOracle = { value: 0 };
   yield* walkInternalOracle(config, counter, '', 0, /* isRoot */ true);
@@ -125,17 +121,9 @@ async function* visitEntryOracle(
 const lazyStatOracle = (config: WalkConfigOracle, path: FilePath): (() => Promise<FileStat>) => {
   let memo: Promise<FileStat> | undefined;
   return () => {
-    memo ??= fetchStatOracle(config, path);
+    memo ??= config.ctx.fs.lstat(joinPath(workDirOf(config.ctx), path));
     return memo;
   };
-};
-
-const fetchStatOracle = async (config: WalkConfigOracle, path: FilePath): Promise<FileStat> => {
-  const sampled = config.stats?.sampled(path);
-  if (sampled !== undefined) return sampled;
-  const stat = await config.ctx.fs.lstat(joinPath(workDirOf(config.ctx), path));
-  config.stats?.record(path, stat);
-  return stat;
 };
 
 const directoryPathOracle = (config: WalkConfigOracle, prefix: string): string => {

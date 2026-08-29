@@ -17,7 +17,7 @@
  *  - reftable: a deleted ref stays absent after a full compaction
  *    (tombstone elided, not resurrected)
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -27,6 +27,7 @@ import { packRefs } from '../../../../src/application/commands/pack-refs.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { tablesListPath } from '../../../../src/application/primitives/path-layout.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -315,6 +316,56 @@ describe('packRefs — files backend', () => {
         expect(data.code).toBe('REF_CHAIN_TOO_DEEP');
         if (data.code === 'REF_CHAIN_TOO_DEEP') {
           expect(data.depth).toBe(MAX_PEEL_DEPTH + 1);
+        }
+      });
+    });
+  });
+
+  describe('Given more packable refs than the ioBound limit', () => {
+    describe('When packRefs runs', () => {
+      it('Then packed-entry building peaks at exactly the bound', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression (deriving the pool from the wrong bucket)
+        // fails loudly. Each ref points at its own distinct commit so every
+        // one reaches its own `readObject` peel call.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = createMemoryContext();
+        await init(base);
+        const commitIds: ObjectId[] = [];
+        for (let i = 0; i < width; i++) {
+          await base.fs.writeUtf8(`${base.layout.workDir}/f${i}.txt`, `c-${i}`);
+          await add(base, [`f${i}.txt`]);
+          const result = await commit(base, { message: `c${i}`, author: AUTHOR });
+          commitIds.push(result.id);
+        }
+        for (let i = 0; i < width; i++) {
+          await base.fs.writeUtf8(looseHeadsPathOf(base, `br${i}`), `${commitIds[i]}\n`);
+        }
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, opts) => {
+            inFlight += 1;
+            if (inFlight > maxInFlight) maxInFlight = inFlight;
+            await Promise.resolve();
+            inFlight -= 1;
+            return realReadObject(spyCtx, id, opts);
+          });
+        const sut = packRefs;
+
+        // Act
+        try {
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.packedRefCount).toBe(width + 1); // + main
+          expect(maxInFlight).toBe(ioBound);
+        } finally {
+          spy.mockRestore();
         }
       });
     });

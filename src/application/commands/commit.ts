@@ -26,6 +26,7 @@ import {
   assertValidBooleanConfig,
   assertValidPromisorRemoteConfig,
 } from '../primitives/internal/boolean-config-guard.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -437,12 +438,16 @@ const writeSubtree = async (ctx: Context, node: SubtreeNode): Promise<ObjectId> 
   for (const [name, leaf] of node.files) {
     treeEntries.push({ mode: leaf.mode as TreeEntry['mode'], name, id: leaf.id });
   }
-  // Subtrees at the same level are independent — write them in parallel.
-  const subdirs = await Promise.all(
-    Array.from(node.subdirs).map(async ([name, child]) => ({
+  // Subtrees at the same level are independent — write them in parallel,
+  // bounded by the ioBound policy.
+  const subdirs = await boundedMapFor(
+    ctx,
+    'ioBound',
+    Array.from(node.subdirs),
+    async ([name, child]) => ({
       name,
       id: await writeSubtree(ctx, child),
-    })),
+    }),
   );
   for (const { name, id } of subdirs) {
     treeEntries.push({ mode: '40000', name, id });

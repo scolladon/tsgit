@@ -10,8 +10,8 @@
  * divergence row. X8/X9 cover the other write surfaces (a real network
  * fetch, and `outputDirectory` mode). X10 and the scaled case close the
  * read-side loop: tsgit's own freshly written `.rev` is usable by tsgit's
- * own reader, at both the always-on scale and the accelerator threshold
- * (`REV_INDEX_MIN_OBJECTS`).
+ * own reader, both for a small pack and at a scale large enough to prove the
+ * accelerator holds under load, not just for a tiny fixture.
  *
  * @proves
  *   surface:        packRevIndex
@@ -29,7 +29,6 @@ import { fsck } from '../../src/application/commands/fsck.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { buildPack } from '../../src/application/primitives/build-pack.js';
 import { loadPackRevIndex } from '../../src/application/primitives/internal/pack-artefact-source.js';
-import { REV_INDEX_MIN_OBJECTS } from '../../src/application/primitives/internal/pack-offset-table.js';
 import {
   packPositionMap,
   revIndexPositions,
@@ -576,15 +575,17 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   // Scaled read-side pickup — the accelerator arm actually fires
   // ---------------------------------------------------------------------
 
-  describe('Given a tsgit-written pack at or above REV_INDEX_MIN_OBJECTS objects, When tsgit reads one of its own packed objects back', () => {
-    it('Then the accelerator gathers from the freshly written .rev and never warns', async () => {
+  const SCALE_OBJECTS = 5_000;
+
+  describe('Given a tsgit-written pack at scale, When tsgit reads one of its own packed objects back', () => {
+    it('Then the accelerator answers lazily from the freshly written .rev and never warns', async () => {
       // Arrange — built via the domain primitives directly (writeObject +
       // buildPack + writePackArtifacts, the same building blocks packObjects
       // itself composes), so 5,000 objects costs no git subprocess spawns.
       const dir = await freshRepo('scale');
       const writeCtx = trackedNodeContext(dir);
       const oids: ObjectId[] = [];
-      for (let i = 0; i < REV_INDEX_MIN_OBJECTS; i += 1) {
+      for (let i = 0; i < SCALE_OBJECTS; i += 1) {
         const id = await writeObject(writeCtx, {
           type: 'blob',
           id: '' as ObjectId,

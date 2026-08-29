@@ -356,8 +356,9 @@ export async function buildObjectCache(
   const shallow = await loadShallowSet(ctx);
   for (const id of universe) {
     try {
-      // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — verifyHash defaults true; any hash-verification throw is caught → stored as null, same as with verifyHash:false.
-      const obj = await readObject(ctx, id, { verifyHash: false });
+      // No hash verification here by design (see the header comment): the
+      // default is already unverified, so no explicit option is needed.
+      const obj = await readObject(ctx, id);
       const grafted = obj.type === 'commit' ? applyGraft(obj, shallow) : obj;
       acc.cache.set(id, project(grafted));
     } catch (err) {

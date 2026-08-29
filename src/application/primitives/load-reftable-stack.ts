@@ -69,26 +69,24 @@ const MAX_CACHED_STACKS = 64;
 /**
  * Per-repository, per-stack-directory memo — a repository may back two
  * independent stacks (common dir + a linked worktree's own). Keyed by
- * `ctx.deltaCache` rather than `ctx` itself: every `Context` derived from
- * the same `openRepository()`/`createXContext()` call carries the SAME
- * `deltaCache` object by reference (it survives every spread-derivation this
- * codebase does — `deriveWorktreeContext`, `deriveSubmoduleContext`, …),
- * whereas `ctx` — and even `ctx.fs` — does not: `list-worktrees.ts` builds a
- * FRESH Context per worktree, and a linked worktree's own `fs` is a fresh
- * confinement wrapper (`worktreeFs(path)`, rebuilt on every call, never
- * memoised) on top of that. Keying on `ctx` (or `ctx.fs`) therefore misses
- * this memo on every worktree, forcing `listWorktrees` to reload the SAME
- * common stack once per worktree instead of once for the whole call.
- * `deltaCache` is otherwise unrelated to ref storage — reused here purely as
- * a stable, per-repository identity anchor already threaded everywhere a
- * `Context` goes, never a global path-keyed cache (which would alias
- * independent repositories that happen to share a path string, e.g. two
- * `createMemoryContext()` instances in the same test process). The INNER
- * cache is itself bounded (see {@link MAX_CACHED_STACK_BYTES}), so retention
- * tracks recent use rather than growing for the repository's whole
- * lifetime.
+ * `ctx.session` rather than `ctx` itself: every `Context` derived from the
+ * same `openRepository()`/`createXContext()` call that keeps the same
+ * cache identity (`deriveContext` — `deriveWorktreeContext`,
+ * `deriveMainContext`, …) shares the SAME session, whereas `ctx` — and even
+ * `ctx.fs` — does not: `list-worktrees.ts` builds a FRESH Context per
+ * worktree, and a linked worktree's own `fs` is a fresh confinement wrapper
+ * (`worktreeFs(path)`, rebuilt on every call, never memoised) on top of
+ * that. Keying on `ctx` (or `ctx.fs`) would therefore miss this memo on
+ * every worktree, forcing `listWorktrees` to reload the SAME common stack
+ * once per worktree instead of once for the whole call — the session is
+ * what keeps that from happening, never a global path-keyed cache (which
+ * would alias independent repositories that happen to share a path string,
+ * e.g. two `createMemoryContext()` instances in the same test process). The
+ * INNER cache is itself bounded (see {@link MAX_CACHED_STACK_BYTES}), so
+ * retention tracks recent use rather than growing for the repository's
+ * whole lifetime.
  */
-const stackCache = new WeakMap<Context['deltaCache'], LruCache<CachedStack>>();
+const stackCache = new WeakMap<Context['session'], LruCache<CachedStack>>();
 
 /** A stack's retained footprint: every table's own on-disk bytes plus its
  *  log blocks' INFLATED bytes (never smaller, sometimes larger, than their
@@ -233,10 +231,10 @@ async function openTables(ctx: Context, reftableDir: string): Promise<readonly L
 }
 
 function scopedCache(ctx: Context): LruCache<CachedStack> {
-  let scoped = stackCache.get(ctx.deltaCache);
+  let scoped = stackCache.get(ctx.session);
   if (scoped === undefined) {
     scoped = createLruCache<CachedStack>(MAX_CACHED_STACK_BYTES, MAX_CACHED_STACKS);
-    stackCache.set(ctx.deltaCache, scoped);
+    stackCache.set(ctx.session, scoped);
   }
   return scoped;
 }
@@ -256,7 +254,7 @@ function scopedCache(ctx: Context): LruCache<CachedStack> {
  * nothing was cached yet.
  */
 export function invalidateReftableStack(ctx: Context, reftableDir: string): void {
-  stackCache.get(ctx.deltaCache)?.delete(reftableDir);
+  stackCache.get(ctx.session)?.delete(reftableDir);
 }
 
 export async function loadReftableStack(ctx: Context, reftableDir: string): Promise<ReftableStack> {

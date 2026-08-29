@@ -12,6 +12,7 @@ import { fsckScenario } from './fsck.scenario.ts';
 import { fsckDegradedStoreScenario } from './fsck-degraded-store.scenario.ts';
 import { grepScenario } from './grep.scenario.ts';
 import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.ts';
+import { maintenanceScenario } from './maintenance.scenario.ts';
 import { mergeAbortScenario } from './merge-abort.scenario.ts';
 import { mergeContinueScenario } from './merge-continue.scenario.ts';
 import { mergeFfScenario } from './merge-ff.scenario.ts';
@@ -94,4 +95,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   trustDefaultsScenario,
   sha256ObjectFormatScenario,
   reftableRefsScenario,
+  maintenanceScenario,
 ];

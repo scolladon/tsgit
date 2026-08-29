@@ -1,6 +1,6 @@
 # 625 — Relax path containment to git's security model
 
-- **Status:** accepted (ratified by user)
+- **Status:** accepted (ratified by user) · **Refined by:** [ADR-721](721-first-party-read-containment-is-single-authority.md)
 - **Date:** 2026-08-13
 - **Design:** docs/design/git-parity-containment.md · **Supersedes/Refines:** supersedes the "every access is contained" invariant of `docs/understand/security.md` (Node read side); refines [ADR-042](042-canonical-root-lazy-realpath.md), [ADR-485](485-status-clean-containment-tax-amortisation.md), [ADR-541](541-raw-node-adapter-layout-root-set.md)
 

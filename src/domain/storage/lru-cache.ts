@@ -80,8 +80,12 @@ export function createLruCache<V>(
       if (node === undefined) {
         return undefined;
       }
-      removeNode(node);
-      addToHead(node);
+      // Already the most-recently-used node: recency order is unchanged, so
+      // skip the unlink/relink dance entirely.
+      if (node !== head) {
+        removeNode(node);
+        addToHead(node);
+      }
       return node.value;
     },
 
@@ -98,8 +102,12 @@ export function createLruCache<V>(
         existing.value = value;
         existing.byteSize = byteSize;
         currentSize += byteSize;
-        removeNode(existing);
-        addToHead(existing);
+        // Same head fast-path as `get`: already-MRU needs no relink.
+        // Stryker disable next-line ConditionalExpression: equivalent — forcing the relink when existing===head is a no-op: removeNode(head) leaves a fully-formed list (head=node.next, its .prev cleared) and addToHead re-inserts at the front, reproducing the exact original order (hand-traced for both the single-node and multi-node case).
+        if (existing !== head) {
+          removeNode(existing);
+          addToHead(existing);
+        }
       } else {
         const node: Node<V> = { key, value, byteSize, prev: null, next: null };
         map.set(key, node);

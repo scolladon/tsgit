@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
-import { REV_INDEX_MIN_OBJECTS } from '../../../../src/application/primitives/internal/pack-offset-table.js';
 import { packPositionMap } from '../../../../src/application/primitives/internal/pack-positions.js';
 import {
   createPackRegistry,
@@ -46,6 +45,14 @@ import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
 import { restampPackHeader, writeSyntheticPack, writeSyntheticRevIndex } from './pack-fixture.js';
+
+vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/domain/storage/index.js')>();
+  return { ...actual, createLruCache: vi.fn(actual.createLruCache) };
+});
+
+const storage = await import('../../../../src/domain/storage/index.js');
+const createLruCacheSpy = vi.mocked(storage.createLruCache);
 
 const dirEntry = (name: string): DirEntry => ({
   name,
@@ -122,6 +129,49 @@ describe('pack-registry', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+    describe('When fileNames() is called', () => {
+      it('Then returns an empty set', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.fileNames();
+
+        // Assert
+        expect(result).toEqual(new Set());
+      });
+    });
+  });
+
+  describe('Given a pack directory whose listing carries sibling marker files', () => {
+    describe('When fileNames() is called', () => {
+      it('Then returns exactly the regular-file names the scan saw — the same set hasRevIndex/hasBitmap consult', async () => {
+        // Arrange — the SAME wrapped-readdir shape the oversized-.idx test
+        // below uses, so this exercises the real scan path rather than a
+        // second, hand-rolled listing mechanism.
+        const ctx = await buildSeededContext();
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async () => [
+              dirEntry('pack-aaa.idx'),
+              dirEntry('pack-aaa.pack'),
+              dirEntry('pack-aaa.keep'),
+              { ...dirEntry('subdir'), isFile: false, isDirectory: true },
+            ],
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const result = await sut.fileNames();
+
+        // Assert — the directory entry is excluded, only regular files remain.
+        expect(result).toEqual(new Set(['pack-aaa.idx', 'pack-aaa.pack', 'pack-aaa.keep']));
       });
     });
   });
@@ -1910,6 +1960,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
 describe('nextOffsetForEntry', () => {
   describe('Given a table with sortedOffsets=[100, 500, 900], packFileSize=1000, trailerStart=980', () => {
     const table: PackOffsetTable = {
+      kind: 'sorted',
       sortedOffsets: Float64Array.of(100, 500, 900),
       packFileSize: 1000,
       trailerStart: 980,
@@ -1954,6 +2005,7 @@ describe('nextOffsetForEntry', () => {
       it('Then returns trailerStart = 480', () => {
         // Arrange
         const table: PackOffsetTable = {
+          kind: 'sorted',
           sortedOffsets: Float64Array.of(400),
           packFileSize: 500,
           trailerStart: 480,
@@ -2123,9 +2175,10 @@ describe('RegisteredPack.offsetTable', () => {
         const result = await sut();
 
         // Assert — two entries, offsets are in ascending order, both > 0
-        expect(result.sortedOffsets).toHaveLength(2);
-        expect(result.sortedOffsets[0]!).toBeGreaterThan(0);
-        expect(result.sortedOffsets[1]!).toBeGreaterThan(result.sortedOffsets[0]!);
+        const sortedOffsets = expectSortedOffsets(result);
+        expect(sortedOffsets).toHaveLength(2);
+        expect(sortedOffsets[0]!).toBeGreaterThan(0);
+        expect(sortedOffsets[1]!).toBeGreaterThan(sortedOffsets[0]!);
       });
     });
   });
@@ -2259,7 +2312,7 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
         const registry = createPackRegistry(ctx);
         const pack = (await registry.all())[0]!;
         const table = await pack.offsetTable();
-        const entryOffset = table.sortedOffsets[0]!;
+        const entryOffset = expectSortedOffsets(table)[0]!;
         const available = table.packFileSize - entryOffset;
 
         // Act — request far more than the remaining bytes.
@@ -2293,7 +2346,7 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
         const registry = createPackRegistry(wrapped);
         const pack = (await registry.all())[0]!;
         const table = await pack.offsetTable();
-        const entryOffset = table.sortedOffsets[0]!;
+        const entryOffset = expectSortedOffsets(table)[0]!;
         const sliceLength = table.trailerStart - entryOffset;
 
         // Act — twice: the second call exercises the handlePromise
@@ -2503,6 +2556,69 @@ describe('PackRegistry.refresh', () => {
   });
 });
 
+describe('Given a registry whose delta-base cache holds an entry from an OFS chain read', () => {
+  describe('When refresh() runs', () => {
+    it('Then the delta-base cache is cleared', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'delta-cache-refresh', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('base') },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: new TextEncoder().encode('tip') },
+      ]);
+      const registry = getPackRegistry(ctx);
+      await readObject(ctx, ids[1] as ObjectId);
+      expect(registry.deltaBaseCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      registry.refresh();
+
+      // Assert
+      expect(registry.deltaBaseCache.entryCount).toBe(0);
+    });
+  });
+
+  describe('When dispose() is awaited', () => {
+    it('Then the delta-base cache is cleared', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'delta-cache-dispose', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('base') },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: new TextEncoder().encode('tip') },
+      ]);
+      const registry = getPackRegistry(ctx);
+      await readObject(ctx, ids[1] as ObjectId);
+      expect(registry.deltaBaseCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      await registry.dispose();
+
+      // Assert
+      expect(registry.deltaBaseCache.entryCount).toBe(0);
+    });
+  });
+});
+
+describe('Given the delta-base cache is created for a fresh registry', () => {
+  describe('When createLruCache is called to build it', () => {
+    it('Then it is given an entry cap, not just a byte cap', async () => {
+      // Arrange — a byte cap alone admits unboundedly many small entries;
+      // the entry cap is a second, independent defence.
+      const ctx = await buildSeededContext();
+      createLruCacheSpy.mockClear();
+
+      // Act
+      createPackRegistry(ctx);
+
+      // Assert
+      const deltaBaseCall = createLruCacheSpy.mock.calls.find(
+        (call) => call[0] === ctx.deltaCache.maxSize,
+      );
+      expect(deltaBaseCall?.[1]).toBeDefined();
+      expect(deltaBaseCall?.[1]).toBeGreaterThan(0);
+    });
+  });
+});
+
 describe('PackRegistry.dispose', () => {
   describe('Given two packs that were each read once (persistent handles opened)', () => {
     describe('When dispose is called', () => {
@@ -2631,6 +2747,73 @@ describe('PackRegistry.dispose', () => {
         // Assert
         expect(ledger.outstanding()).toBe(0);
         expect(ledger.closes()).toBe(1);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.settleRefresh', () => {
+  describe('Given a refresh with outgoing handles', () => {
+    describe('When settleRefresh is awaited', () => {
+      it('Then every outgoing handle is closed, without disposing the registry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'settle-refresh-drains', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('s') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        // Delay the handle's close by a real turn so a settleRefresh() that
+        // fails to drain refresh's fire-and-forget close batch observes it
+        // still outstanding.
+        const slowClose = {
+          ...ledger.ctx,
+          fs: {
+            ...ledger.ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ledger.ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                close: async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(slowClose);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        registry.refresh();
+        await registry.settleRefresh();
+
+        // Assert
+        expect(ledger.outstanding()).toBe(0);
+        expect(ledger.closes()).toBe(1);
+
+        // Assert — the registry is still usable, unlike after dispose()
+        const packsAfterRefresh = await registry.all();
+        expect(packsAfterRefresh).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a registry that never scanned', () => {
+    describe('When settleRefresh is awaited', () => {
+      it('Then it resolves without triggering a readdir or a close', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
+
+        // Act
+        await registry.settleRefresh();
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.closes()).toBe(0);
       });
     });
   });
@@ -5282,16 +5465,15 @@ describe('PackRegistry — bitmap degradation', () => {
 const revAccelEnc = new TextEncoder();
 
 /**
- * Object count for the describes below that need the `.rev` accelerator to
- * actually run: `resolveSortedOffsets` sorts without opening the artefact at
- * all beneath `REV_INDEX_MIN_OBJECTS`, so a handful of objects would make
- * these assertions vacuous rather than failing. The arms themselves are
- * covered far more cheaply in `internal/pack-offset-table.test.ts`, which
- * needs no pack on disk; what these still prove is the REGISTRY wiring —
- * that `offsetTable()` reaches the artefact, memoises one read, and applies
- * the threshold to the pack's own object count.
+ * Object count for the describes below — small and arbitrary. The
+ * object-count threshold that used to gate the `.rev` accelerator is
+ * retired: a present, loadable `.rev` now wins at any pack size, so there is
+ * no crossover left to clear. The arms themselves are covered far more
+ * cheaply in `internal/pack-offset-table.test.ts`, which needs no pack on
+ * disk; what these still prove is the REGISTRY wiring — that `offsetTable()`
+ * reaches the artefact and memoises one read.
  */
-const ACCEL_OBJECTS = REV_INDEX_MIN_OBJECTS;
+const ACCEL_OBJECTS = 4;
 
 const revAccelEntries = (n: number, prefix: string) =>
   Array.from({ length: n }, (_unused, i) => ({
@@ -5315,32 +5497,50 @@ async function revAccelRawOffsets(ctx: Context, name: string): Promise<ReadonlyA
   return entryOffsets(parsePackIndex(idxBytes, 20));
 }
 
-/** The expected offset table, in the same `Float64Array` shape both arms of
- *  `resolveSortedOffsets` produce — sorted independently of the production
- *  code, so the oracle stays a comparison rather than a copy of the sort
- *  under test. */
+/** The expected offset table, in the same `Float64Array` shape the no-`.rev`
+ *  fallback produces — sorted independently of the production code, so the
+ *  oracle stays a comparison rather than a copy of the sort under test. */
 function ascendingSortOf(raw: ReadonlyArray<number>): Float64Array {
   return Float64Array.from([...raw].sort((a, b) => a - b));
 }
 
-/** Throws PERMISSION_DENIED for a path ending in `.rev`, delegating everything else. */
+/**
+ * Throws PERMISSION_DENIED for a path ending in `.rev`, delegating everything
+ * else. `loadPackRevIndex` reads the artefact through `readSlice` (a single
+ * bounded read, not a `stat`-then-`read` pair), so `readSlice` — not `stat` —
+ * is the call this fixture must intercept for the simulated fault to reach
+ * the loader at all.
+ */
 function withUnreadableRev(ctx: Context): Context {
   return {
     ...ctx,
     fs: {
       ...ctx.fs,
-      stat: async (path: string) => {
+      readSlice: async (path: string, offset: number, length: number) => {
         if (path.endsWith('.rev')) throw permissionDenied(path);
-        return ctx.fs.stat(path);
+        return ctx.fs.readSlice(path, offset, length);
       },
     },
   };
 }
 
+/**
+ * Narrows a resolved table to its no-`.rev` fallback arm and returns the
+ * materialised offsets — every describe below that inspects `sortedOffsets`
+ * directly is asserting the FALLBACK, never the lazy `.rev`-backed arm (which
+ * has no array to inspect by construction).
+ */
+function expectSortedOffsets(table: PackOffsetTable): Float64Array {
+  if (table.kind !== 'sorted') {
+    expect.unreachable(`expected the sorted fallback table, got kind=${table.kind}`);
+  }
+  return table.sortedOffsets;
+}
+
 describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => {
   describe('Given a synthetic pack with a healthy .rev, and the same pack with the .rev deleted', () => {
     describe('When offsetTable() is called on each', () => {
-      it('Then sortedOffsets is element-wise identical across both', async () => {
+      it('Then the .rev arm answers lazily and nextOffsetForEntry agrees with the sorted arm for every entry', async () => {
         // Arrange
         const entries = revAccelEntries(5, 'identity');
         const withRev = await buildSeededContext();
@@ -5352,6 +5552,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => 
         );
         const withoutRev = await buildSeededContext();
         await writeSyntheticPack(withoutRev, 'identity-pack', entries);
+        const raw = await revAccelRawOffsets(withoutRev, 'identity-pack');
 
         // Act
         const [withRevPack] = await createPackRegistry(withRev).all();
@@ -5359,15 +5560,21 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => 
         const withRevTable = await withRevPack!.offsetTable();
         const withoutRevTable = await withoutRevPack!.offsetTable();
 
-        // Assert
-        expect(withRevTable.sortedOffsets).toEqual(withoutRevTable.sortedOffsets);
+        // Assert — a usable .rev never materialises a sorted table
+        expect(withRevTable.kind).toBe('lazy');
+        expect(withoutRevTable.kind).toBe('sorted');
+        for (const offset of raw) {
+          expect(nextOffsetForEntry(withRevTable, offset)).toBe(
+            nextOffsetForEntry(withoutRevTable, offset),
+          );
+        }
       });
     });
   });
 
   describe('Given a 200-entry pack with a healthy .rev, offsets out of index order', () => {
     describe('When offsetTable() is called', () => {
-      it('Then sortedOffsets matches the sort baseline and is strictly increasing', async () => {
+      it('Then nextOffsetForEntry matches the sort baseline for every entry', async () => {
         // Arrange
         const entries = revAccelEntries(200, 'scale');
         const withRev = await buildSeededContext();
@@ -5379,6 +5586,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => 
         );
         const baseline = await buildSeededContext();
         await writeSyntheticPack(baseline, 'scale-pack', entries);
+        const raw = await revAccelRawOffsets(baseline, 'scale-pack');
 
         // Act
         const [pack] = await createPackRegistry(withRev).all();
@@ -5387,9 +5595,9 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => 
         const baselineTable = await baselinePack!.offsetTable();
 
         // Assert
-        expect(table.sortedOffsets).toEqual(baselineTable.sortedOffsets);
-        for (let i = 1; i < table.sortedOffsets.length; i += 1) {
-          expect(table.sortedOffsets[i]!).toBeGreaterThan(table.sortedOffsets[i - 1]!);
+        expect(table.kind).toBe('lazy');
+        for (const offset of raw) {
+          expect(nextOffsetForEntry(table, offset)).toBe(nextOffsetForEntry(baselineTable, offset));
         }
       });
     });
@@ -5411,7 +5619,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const result = await pack!.offsetTable();
 
         // Assert
-        expect(result.sortedOffsets).toEqual(expected);
+        expect(expectSortedOffsets(result)).toEqual(expected);
         const object = await readObject(ctx, ids[0] as ObjectId);
         expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-absent-0'));
       });
@@ -5438,7 +5646,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const result = await pack!.offsetTable();
 
         // Assert
-        expect(result.sortedOffsets).toEqual(expected);
+        expect(expectSortedOffsets(result)).toEqual(expected);
         const object = await readObject(wrapped, ids[0] as ObjectId);
         expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-unreadable-0'));
       });
@@ -5465,7 +5673,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const result = await pack!.offsetTable();
 
         // Assert
-        expect(result.sortedOffsets).toEqual(expected);
+        expect(expectSortedOffsets(result)).toEqual(expected);
         const object = await readObject(ctx, ids[0] as ObjectId);
         expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-bad-magic-0'));
       });
@@ -5492,7 +5700,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const result = await pack!.offsetTable();
 
         // Assert
-        expect(result.sortedOffsets).toEqual(expected);
+        expect(expectSortedOffsets(result)).toEqual(expected);
         const object = await readObject(ctx, ids[0] as ObjectId);
         expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-wrong-size-0'));
       });
@@ -5532,7 +5740,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const result = await pack!.offsetTable();
 
         // Assert
-        expect(result.sortedOffsets).toEqual(expected);
+        expect(expectSortedOffsets(result)).toEqual(expected);
         expect(warn).toHaveBeenCalledTimes(1);
         const [, context] = warn.mock.calls[0] ?? [];
         // The reason, not the refusal: without the length gate these bytes
@@ -5620,65 +5828,44 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, logging', () => {
   });
 });
 
-describe('RegisteredPack.offsetTable — the .rev accelerator, trust', () => {
-  describe('Given a .rev whose body is a valid permutation but in the wrong order, restamped', () => {
-    describe('When offsetTable() is called', () => {
-      it('Then sortedOffsets is what that body implies, not the sort, and no error is raised', async () => {
-        // Arrange
-        const entries = revAccelEntries(ACCEL_OBJECTS, 'trust');
-        const ctx = await buildSeededContext();
-        await writeSyntheticPack(ctx, 'trust-pack', entries);
-        const correct = await revAccelCorrectBody(ctx, 'trust-pack');
-        const wrongOrder = [correct[1]!, correct[0]!, ...correct.slice(2)];
-        await writeSyntheticRevIndex(ctx, 'trust-pack', wrongOrder);
-        const raw = await revAccelRawOffsets(ctx, 'trust-pack');
-        const expectedFromBody = Float64Array.from(
-          wrongOrder.map((indexPosition) => raw[indexPosition]!),
-        );
-        const expectedFromSort = ascendingSortOf(raw);
-
-        // Act
-        const [pack] = await createPackRegistry(ctx).all();
-        const result = await pack!.offsetTable();
-
-        // Assert
-        expect(result.sortedOffsets).toEqual(expectedFromBody);
-        expect(result.sortedOffsets).not.toEqual(expectedFromSort);
-      });
-    });
-  });
-});
-
 describe('RegisteredPack.offsetTable — the .rev accelerator, out-of-range body', () => {
   describe('Given a pack whose .rev body[0] is one past its last index position, restamped', () => {
     describe('When offsetTable() is called', () => {
-      it('Then falls back to the sort, warns once, and every object still reads', async () => {
+      it('Then it answers lazily — the corrupt position is discovered per query, not at build time', async () => {
         // Arrange
         const entries = revAccelEntries(ACCEL_OBJECTS, 'oob');
         const ctx = await buildSeededContext();
-        const ids = await writeSyntheticPack(ctx, 'oob-pack', entries);
+        await writeSyntheticPack(ctx, 'oob-pack', entries);
         const correct = await revAccelCorrectBody(ctx, 'oob-pack');
         const outOfRange = [correct.length, ...correct.slice(1)];
         await writeSyntheticRevIndex(ctx, 'oob-pack', outOfRange);
-        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'oob-pack'));
-        const warn = vi.fn();
-        const wrapped = { ...ctx, logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await getPackRegistry(ctx).all();
         const result = await pack!.offsetTable();
 
-        // Assert
-        expect(result.sortedOffsets).toEqual(expected);
-        expect(warn).toHaveBeenCalledTimes(1);
-        // First, last and a middle object rather than all of them: the claim
-        // is that the sort fallback produced a usable table, and a bad
-        // `nextOffsetForEntry` bound shows up at the ends — reading every one
-        // of an above-threshold pack's objects would cost seconds to prove
-        // the same thing.
+        // Assert — no eager scan of the body ran, so building the table alone
+        // cannot yet know the stored position is out of range.
+        expect(result.kind).toBe('lazy');
+      });
+    });
+
+    describe('When every object is read through it', () => {
+      it('Then each one still resolves correctly — a touched corrupt position degrades that query to the sort, not a throw', async () => {
+        // Arrange
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'oob-read');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'oob-read-pack', entries);
+        const correct = await revAccelCorrectBody(ctx, 'oob-read-pack');
+        const outOfRange = [correct.length, ...correct.slice(1)];
+        await writeSyntheticRevIndex(ctx, 'oob-read-pack', outOfRange);
+
+        // Act + Assert — first, last and a middle object rather than all of
+        // them: the claim is that a corrupt position never breaks a read,
+        // and a bad `nextOffsetForEntry` bound shows up at the ends.
         for (const i of [0, ids.length >> 1, ids.length - 1]) {
-          const object = await readObject(wrapped, ids[i] as ObjectId);
-          expect((object as Blob).content).toEqual(revAccelEnc.encode(`oob-${i}`));
+          const object = await readObject(ctx, ids[i] as ObjectId);
+          expect((object as Blob).content).toEqual(revAccelEnc.encode(`oob-read-${i}`));
         }
       });
     });
@@ -5937,8 +6124,6 @@ describe('RegisteredPack.packPositions', () => {
 // ---------------------------------------------------------------------------
 
 const REV_REFUSED_WARN = 'packRegistry: discarding unusable pack reverse index';
-const REV_OUT_OF_RANGE_WARN =
-  'packRegistry: pack reverse index position out of range, falling back to sort';
 
 describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
   describe('Given a pack whose .rev is refused', () => {
@@ -5972,15 +6157,19 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
 
   describe('Given a .rev whose first stored position is exactly the pack object count', () => {
     describe('When offsetTable() is called', () => {
-      it('Then it falls back to the ascending sort and warns naming the out-of-range fallback and the artefact', async () => {
-        // Arrange — one past the last valid index position, the boundary the
-        // bound has to reject rather than gather `undefined` off the end.
+      it('Then it never warns — the corrupt position is not read until a query touches it, not at build time', async () => {
+        // Arrange — one past the last valid index position, the boundary
+        // `offsetAtPackPosition` has to refuse rather than read `undefined`
+        // off the end of the index. Unlike a REFUSED artefact (caught eagerly
+        // by the one load `resolveOffsetTable` always pays), an out-of-range
+        // STORED VALUE inside an otherwise well-formed `.rev` is invisible
+        // until a successor lookup's binary search happens to touch it — no
+        // full-body scan runs here to find it up front.
         const entries = revAccelEntries(ACCEL_OBJECTS, 'warn-oob');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'warn-oob', entries);
         const correct = await revAccelCorrectBody(ctx, 'warn-oob');
         await writeSyntheticRevIndex(ctx, 'warn-oob', [correct.length, ...correct.slice(1)]);
-        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'warn-oob'));
         const warn = vi.fn();
         const wrapped = { ...ctx, logger: { warn } };
 
@@ -5989,11 +6178,8 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
         const result = await pack!.offsetTable();
 
         // Assert
-        expect(result.sortedOffsets).toEqual(expected);
-        expect(warn).toHaveBeenCalledTimes(1);
-        const [message, context] = warn.mock.calls[0] ?? [];
-        expect(message).toBe(REV_OUT_OF_RANGE_WARN);
-        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-warn-oob.rev');
+        expect(result.kind).toBe('lazy');
+        expect(warn).not.toHaveBeenCalled();
       });
     });
   });

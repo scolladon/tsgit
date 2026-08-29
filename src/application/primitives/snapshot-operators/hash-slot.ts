@@ -1,5 +1,6 @@
 import { operationAborted } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/index.js';
+import { defaultLimitFor } from '../internal/concurrency.js';
 import { assertOrdered } from '../snapshot/path-merge.js';
 
 export interface HashSlotOptions {
@@ -22,7 +23,10 @@ type SlotKeyedRow = { readonly path: FilePath };
  */
 export const hashSlot = <R extends SlotKeyedRow>(slot: string, opts: HashSlotOptions = {}) =>
   async function* (source: AsyncIterable<R>): AsyncIterable<R> {
-    const concurrency = opts.concurrency ?? 4;
+    // ioBound, not cpuBound: `hash()` reads a working-tree file (I/O-bound),
+    // matching the sibling load-blob.ts operator. cpuBound's derived floor
+    // is 1 (serial) with no Context to consult; ioBound's is 4.
+    const concurrency = opts.concurrency ?? defaultLimitFor('ioBound');
     type Pending = { readonly row: R; readonly task: Promise<unknown> };
     const inflight: Pending[] = [];
 

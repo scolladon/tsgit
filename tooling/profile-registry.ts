@@ -1,5 +1,5 @@
 // Command → workload registry: the single source of truth for what the
-// profiler can capture (10 reads + 3 writes) and how to drive each one.
+// profiler can capture (11 reads + 3 writes) and how to drive each one.
 // Replaces the hardcoded HOT_PATHS triple. `resolveWorkloads` stays a pure
 // lookup — the stderr-write + `process.exit(1)` on an unknown command lives
 // in the entry point (`profile.ts`), not here, so this module is unit-testable
@@ -9,7 +9,10 @@ import { promisify } from 'node:util';
 import type { ObjectId } from '../src/domain/objects/index.ts';
 import type { Repository } from '../src/repository.ts';
 import type { FixtureSpec, ScaledFixture } from '../test/bench/support/fixture-generator.ts';
-import { MEDIUM_FIXTURE } from '../test/bench/support/fixture-generator.ts';
+import {
+  MEDIUM_FIXTURE,
+  MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
+} from '../test/bench/support/fixture-generator.ts';
 import { withPinnedDate } from './profile-env.ts';
 import {
   buildAddScratch,
@@ -20,16 +23,6 @@ import {
 } from './profile-scratch-repo.ts';
 
 export const READ_ITERATIONS = 100;
-// The lightest reads (single-object lookups, a one-commit diff, an
-// early-terminating describe/name-rev) do sub-millisecond work per call, so at
-// READ_ITERATIONS they collect only a handful of ticks and the shares are
-// sampling luck. Loop them far more so their tsgit tick total is high enough
-// for a stable rank (or an honestly-empty result the caller warns on).
-export const FAST_READ_ITERATIONS = 2000;
-// A single blame over a moderately deep file already samples for tens of seconds
-// (blame's cost is linear in the blamed file's history depth — see BLAME_TARGET),
-// so a couple of iterations give a stable profile; more only add wall-clock.
-export const HEAVY_READ_ITERATIONS = 2;
 // Write commands run against a TINY scratch repo, so a single iteration is
 // sub-millisecond — far below the one-time bundle-load cost that shares the
 // profile. Loop enough that the write path (index/tree/object writes) clears
@@ -38,9 +31,9 @@ export const WRITE_ITERATIONS = 100;
 
 // Blame walks the full commit history back to where the file was introduced.
 // Bench-fixture blobs are add-once / never-modified, so a blob introduced ~200
-// commits before HEAD exercises a real history walk (which dominates the profile)
-// while terminating in tens of seconds — the root blob (`d0/f0.dat`, ~5000 deep)
-// takes minutes to blame.
+// commits before HEAD exercises a real history walk (which dominates the
+// profile) while staying fast enough (~0.1s/iteration measured) to loop —
+// the root blob (`d0/f0.dat`, ~5000 deep) is far too slow to loop for this.
 const BLAME_TARGET = 'd37/f19200.dat';
 
 const NEAR_TAG_DISTANCE = 10;
@@ -62,6 +55,14 @@ export type WriteWorkload = {
   readonly build: (env: NodeJS.ProcessEnv) => Promise<ScratchRepo>;
   readonly run: (repo: Repository, scratch: ScratchRepo) => Promise<void>;
   readonly iterations?: number;
+  /**
+   * False keeps this workload's build interleaved with its `run` — one
+   * iteration at a time, as the profiler's write driver did before hoisting
+   * existed — relying on `SETUP_FRAMES` to classify the per-iteration build
+   * cost instead. Defaults to true: every scratch is built before any is
+   * run, so the sampled run loop is command work only.
+   */
+  readonly hoistBuild?: boolean;
 };
 
 export type ProfileWorkload = ReadWorkload | WriteWorkload;
@@ -125,9 +126,25 @@ const ensurePrunableTaggedTip = async (
 };
 
 const READ_WORKLOADS: Record<string, ReadWorkload> = {
+  // 350 ticks measured @ READ_ITERATIONS (100) — below the floor.
   log: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    iterations: 200, // 685 ticks measured
+    run: async (repo) => {
+      await repo.log();
+    },
+  },
+  // Samples the commit-graph read path, which no other workload reaches:
+  // MEDIUM_FIXTURE has no commit-graph, so `log`'s walk above always takes
+  // the plain object-read path. `gen-bench-fixture.ts` cannot pre-warm this
+  // fixture (it only knows the medium/large/delta-chain/many-pack labels),
+  // so the first run here pays fixture generation. 322 ticks measured @
+  // READ_ITERATIONS (100) — below the floor.
+  'log-commit-graph': {
+    kind: 'read',
+    fixture: MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
+    iterations: 200, // 659 ticks measured
     run: async (repo) => {
       await repo.log();
     },
@@ -135,71 +152,90 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   status: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    // 1316 ticks measured @ READ_ITERATIONS (100) — already clears the floor.
     run: async (repo) => {
       await repo.status();
     },
   },
+  // 8 ticks measured @ READ_ITERATIONS (100) — each iteration pays a full
+  // `openRepository`, so ticks/iteration is far lower than a reused-handle
+  // read; needs a much larger multiple to clear the floor.
   'pack-read': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
     perIterationRepo: true,
+    iterations: 8000, // 590 ticks measured
     run: async (repo, fixture) => {
       await repo.primitives.readBlob(fixture.firstBlobId as ObjectId);
     },
   },
+  // 62 ticks measured @ 2000 iterations — below the floor.
   describe: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: FAST_READ_ITERATIONS,
+    iterations: 20_000, // 581 ticks measured
     setup: (fixtureCwd, env) => ensureNearTag(fixtureCwd, env),
     run: async (repo) => {
       await repo.describe();
     },
   },
+  // 45 ticks measured @ 2000 iterations — below the floor.
   'name-rev': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: FAST_READ_ITERATIONS,
+    iterations: 30_000, // 913 ticks measured
     setup: (fixtureCwd, env) => ensurePrunableTaggedTip(fixtureCwd, env),
     run: async (repo, _fixture, target) => {
       await repo.nameRev(target as string);
     },
   },
+  // 12 ticks measured @ 2000 iterations, 268 ticks measured @ 100 000
+  // iterations — `revParse('HEAD')` is a single ref read, so ticks/iteration
+  // is tiny and the total sits close enough to the floor that sampling
+  // noise alone can push a run under it (448–604 ticks measured @ 220 000
+  // iterations across repeat runs); a wider margin absorbs that noise.
   'rev-parse': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: FAST_READ_ITERATIONS,
+    iterations: 350_000, // 900 ticks measured
     run: async (repo) => {
       await repo.revParse('HEAD');
     },
   },
+  // 6 ticks measured @ 2000 iterations — below the floor.
   'cat-file': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: FAST_READ_ITERATIONS,
+    iterations: 200_000, // 1042 ticks measured
     run: async (repo, fixture) => {
       await repo.catFile({ ids: [fixture.headCommitId] });
     },
   },
+  // 1 tick measured @ READ_ITERATIONS (100) — below the floor.
   show: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
+    iterations: 60_000, // 532 ticks measured
     run: async (repo) => {
       await repo.show('HEAD');
     },
   },
+  // 31 ticks measured @ 2000 iterations — below the floor.
   diff: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: FAST_READ_ITERATIONS,
+    iterations: 40_000, // 544 ticks measured
     run: async (repo) => {
       await repo.diff({ from: 'HEAD~1', to: 'HEAD' });
     },
   },
+  // 15 ticks measured @ 2 iterations, 465 ticks measured @ 80 iterations
+  // (~0.1s/iteration on this fixture) — a moderate raise (not a smaller
+  // fixture) clears the floor within a few seconds.
   blame: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: HEAVY_READ_ITERATIONS,
+    iterations: 100, // 609 ticks measured
     run: async (repo) => {
       await repo.blame(BLAME_TARGET);
     },
@@ -207,23 +243,31 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
 };
 
 const WRITE_WORKLOADS: Record<string, WriteWorkload> = {
+  // 10 ticks measured @ WRITE_ITERATIONS (100) — below the floor.
   commit: {
     kind: 'write',
     build: buildCommitScratch,
+    iterations: 5000, // 844 ticks measured
     run: async (repo) => {
       await repo.commit({ message: 'profile', author: PROFILE_AUTHOR, committer: PROFILE_AUTHOR });
     },
   },
+  // 11 ticks measured @ WRITE_ITERATIONS (100), 475 ticks measured @ 5000
+  // iterations — below the floor.
   add: {
     kind: 'write',
     build: buildAddScratch,
+    hoistBuild: false,
+    iterations: 6000, // 607 ticks measured
     run: async (repo) => {
       await repo.add([], { all: true });
     },
   },
+  // 80 ticks measured @ WRITE_ITERATIONS (100) — below the floor.
   merge: {
     kind: 'write',
     build: buildMergeScratch,
+    iterations: 800, // 697 ticks measured
     run: async (repo) => {
       await repo.merge.run({
         rev: 'side',

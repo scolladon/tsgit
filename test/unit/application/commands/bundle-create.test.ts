@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   assertBoundaryCommit,
@@ -9,6 +9,7 @@ import {
 } from '../../../../src/application/commands/bundle-create.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -496,6 +497,61 @@ describe('bundleCreate', () => {
 
         // Assert — both bases present (all merge bases), oid-sorted ascending.
         expect(result.prerequisites).toEqual([lo, hi]);
+      });
+    });
+  });
+
+  // ── Bounded prerequisite building ───────────────────────────────────────
+
+  describe('Given more excluded boundary commits than the ioBound limit', () => {
+    describe('When bundleCreate builds prerequisites', () => {
+      it('Then prerequisite building peaks at exactly the bound', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression (deriving the pool from the wrong bucket)
+        // fails loudly. `boundary` only records an excluded commit that is
+        // the DIRECT PARENT of an interesting one, so each root needs its
+        // own interesting leaf; the octopus tip merges all of them so every
+        // root becomes its own sibling boundary read.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = await initRepo();
+        const tree = await writeTree(base, []);
+        const roots: ObjectId[] = [];
+        const leaves: ObjectId[] = [];
+        for (let i = 0; i < width; i++) {
+          const root = await makeCommitObj(base, tree, [], `root ${i}`, i * 2 + 1);
+          roots.push(root);
+          leaves.push(await makeCommitObj(base, tree, [root], `leaf ${i}`, i * 2 + 2));
+        }
+        const tip = await makeCommitObj(base, tree, leaves, 'tip', width * 2 + 1);
+        await setRef(base, 'refs/heads/main', tip);
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, opts) => {
+            if (!roots.includes(id)) return realReadObject(spyCtx, id, opts);
+            inFlight += 1;
+            if (inFlight > maxInFlight) maxInFlight = inFlight;
+            await Promise.resolve();
+            inFlight -= 1;
+            return realReadObject(spyCtx, id, opts);
+          });
+
+        // Act
+        try {
+          const result = await bundleCreate(ctx, {
+            revs: [{ tip: 'refs/heads/main' }, ...roots.map((oid) => ({ exclude: oid }))],
+          });
+
+          // Assert
+          expect(result.prerequisites).toHaveLength(width);
+          expect(maxInFlight).toBe(ioBound);
+        } finally {
+          spy.mockRestore();
+        }
       });
     });
   });

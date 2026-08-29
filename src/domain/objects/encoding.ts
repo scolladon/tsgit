@@ -68,6 +68,19 @@ export function decode(bytes: Uint8Array): string {
   return textDecoder.decode(bytes);
 }
 
+// Decodes UTF-8 bytes without treating a leading U+FEFF as decoder
+// bookkeeping to strip: git stores commit/tag header and message bytes
+// verbatim, so a byte-order mark that happens to open a message, an
+// identity value, or a header line is content, not a stream marker. The
+// commit/tag parse path decodes several independent byte sub-slices per
+// object — a plain `decode()` call on each would treat that slice's start
+// as a fresh stream start and silently drop a BOM sitting there.
+const bomPreservingDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+export function decodePreservingBom(bytes: Uint8Array): string {
+  return bomPreservingDecoder.decode(bytes);
+}
+
 export function splitHeaderAndMessage(text: string): {
   readonly headerPart: string;
   readonly message: string;

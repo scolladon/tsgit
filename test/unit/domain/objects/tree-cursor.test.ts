@@ -8,6 +8,7 @@ import {
   compareCursorNames,
   cursorMode,
   cursorName,
+  cursorNameEquals,
   cursorOid,
   cursorsSame,
   openTreeCursor,
@@ -396,6 +397,77 @@ describe('tree-cursor', () => {
 
           // Assert
           expect(result).toBe(0);
+        });
+      });
+    });
+  });
+
+  describe('cursorNameEquals', () => {
+    describe('Given a cursor name equal to the target bytes', () => {
+      describe('When comparing', () => {
+        it('Then returns true', () => {
+          // Arrange
+          const cursor = singleEntryCursor('100644', 'a.txt');
+          const target = encode('a.txt');
+          const sut = cursorNameEquals;
+
+          // Act
+          const result = sut(cursor, target);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a target that is a byte-for-byte prefix of the cursor name', () => {
+      describe('When comparing', () => {
+        it("Then returns false ('ab' vs 'ab.txt')", () => {
+          // Arrange — a length-unbounded byte compare would stop at the
+          // shorter side and report a match; the length check must reject it.
+          const cursor = singleEntryCursor('100644', 'ab.txt');
+          const target = encode('ab');
+          const sut = cursorNameEquals;
+
+          // Act
+          const result = sut(cursor, target);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a cursor name that is a byte-for-byte prefix of the target', () => {
+      describe('When comparing', () => {
+        it("Then returns false ('ab' vs 'ab.txt')", () => {
+          // Arrange
+          const cursor = singleEntryCursor('100644', 'ab');
+          const target = encode('ab.txt');
+          const sut = cursorNameEquals;
+
+          // Act
+          const result = sut(cursor, target);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a same-length target differing in one byte', () => {
+      describe('When comparing', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const cursor = singleEntryCursor('100644', 'abc');
+          const target = encode('abd');
+          const sut = cursorNameEquals;
+
+          // Act
+          const result = sut(cursor, target);
+
+          // Assert
+          expect(result).toBe(false);
         });
       });
     });

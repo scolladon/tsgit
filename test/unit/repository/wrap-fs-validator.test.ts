@@ -531,3 +531,135 @@ describe('wrapFsValidator — coverage of every wrapped method', () => {
     });
   });
 });
+
+describe('wrapFsValidator — guardReads: false (branded first-party adapters)', () => {
+  describe('Given guardReads: false and a read path outside every root', () => {
+    describe('When read runs', () => {
+      it('Then it delegates without throwing — the wrapper no longer guards reads', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expect(sut.read('/etc/passwd')).resolves.toBeInstanceOf(Uint8Array);
+        expect(fs.read).toHaveBeenCalledWith('/etc/passwd');
+      });
+    });
+  });
+
+  describe('Given guardReads: false and every other read surface with a path outside every root', () => {
+    describe('When each is called', () => {
+      it.each([
+        ['readSlice', (s: FileSystem) => s.readSlice('/etc/x', 0, 1)],
+        ['readUtf8', (s: FileSystem) => s.readUtf8('/etc/x')],
+        ['exists', (s: FileSystem) => s.exists('/etc/x')],
+        ['stat', (s: FileSystem) => s.stat('/etc/x')],
+        ['lstat', (s: FileSystem) => s.lstat('/etc/x')],
+        ['readdir', (s: FileSystem) => s.readdir('/etc/x')],
+        ['readlink', (s: FileSystem) => s.readlink('/etc/x')],
+        ['openWithNoFollow(read)', (s: FileSystem) => s.openWithNoFollow('/etc/x', 'read')],
+      ])('Then %s delegates without throwing', async (_label, call) => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expect(call(sut)).resolves.not.toThrow();
+      });
+    });
+  });
+
+  describe('Given guardReads: false and a write path outside every root', () => {
+    describe('When write runs', () => {
+      it('Then it STILL throws PATHSPEC_OUTSIDE_REPO — guardReads never weakens write guarding', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expectOutside(() => sut.write('/etc/passwd', new Uint8Array(0)));
+        expect(fs.write).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given guardReads: false and every other write surface with a path outside every root', () => {
+    describe('When each is called', () => {
+      it.each([
+        [
+          'writeSlice/writeStream',
+          (s: FileSystem) => s.writeStream('/etc/x', (async function* () {})()),
+        ],
+        ['writeExclusive', (s: FileSystem) => s.writeExclusive('/etc/x', new Uint8Array(0))],
+        ['writeUtf8', (s: FileSystem) => s.writeUtf8('/etc/x', '')],
+        ['appendUtf8', (s: FileSystem) => s.appendUtf8('/etc/x', '')],
+        ['mkdir', (s: FileSystem) => s.mkdir('/etc/x')],
+        ['rm', (s: FileSystem) => s.rm('/etc/x')],
+        ['chmod', (s: FileSystem) => s.chmod('/etc/x', 0o644)],
+        ['rmRecursive', (s: FileSystem) => s.rmRecursive('/etc/x')],
+        ['openWithNoFollow(write)', (s: FileSystem) => s.openWithNoFollow('/etc/x', 'write')],
+      ])('Then %s still throws PATHSPEC_OUTSIDE_REPO', async (_label, call) => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expectOutside(() => call(sut) as Promise<unknown>);
+      });
+    });
+  });
+
+  describe('Given guardReads: false and rename whose source or destination is outside every root', () => {
+    describe('When called', () => {
+      it('Then it still throws — rename is a write surface, unaffected by guardReads', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expectOutside(() => sut.rename('/etc/x', '/repo/y'));
+      });
+    });
+  });
+
+  describe('Given guardReads: false and symlink whose linkPath is outside every root', () => {
+    describe('When called', () => {
+      it('Then it still throws — symlink is a write surface, unaffected by guardReads', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expectOutside(() => sut.symlink('arbitrary-target', '/etc/link'));
+      });
+    });
+  });
+
+  describe('Given no options argument at all', () => {
+    describe('When a read path outside every root is read', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO — guardReads defaults to true', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(() => sut.read('/etc/passwd'));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given guardReads: true supplied explicitly', () => {
+    describe('When a read path outside every root is read', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO — identical to the default', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: true });
+
+        // Act + Assert
+        await expectOutside(() => sut.read('/etc/passwd'));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
+});

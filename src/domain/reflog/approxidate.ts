@@ -5,6 +5,15 @@
  * ISO absolute forms are interpreted in the host's local timezone, constructed
  * from calendar components — matching git, which never uses a UTC date-only
  * parse. Relative forms are timezone-agnostic (a delta from `now`).
+ *
+ * `@<epoch>` is an absolute unix-seconds literal — git's `approxidate()`
+ * accepts it everywhere a date expression is read, not only for expiry, so
+ * it belongs here rather than in a caller-specific wrapper. Also accepted,
+ * pinned against git 2.55.0: a trailing timezone offset (`@<epoch> <tz>`,
+ * e.g. `@1700000000 +0200`) — `git log --since`/`reflog expire --expire`
+ * both parse it without error. The offset is discarded, never applied: `@n`
+ * already names an absolute instant, and a timezone shift cannot move an
+ * instant already anchored to UTC — git's own `approxidate()` does the same.
  */
 
 const SECONDS_PER_UNIT: Readonly<Record<string, number>> = {
@@ -20,6 +29,9 @@ const SECONDS_PER_UNIT: Readonly<Record<string, number>> = {
 
 const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}):(\d{2}))?$/;
 const RELATIVE_RE = /^(\d+)[ .]([a-z]+?)s?(?:[ .]ago)?$/;
+// The trailing group is a discarded timezone offset (`@n +hhmm`/`@n -hhmm`) —
+// see this module's own docstring for why the offset never shifts the value.
+const EPOCH_RE = /^@(\d+)(?:\s*[+-]\d{4})?$/;
 const DAY_SECONDS = 86_400;
 
 /** Resolve an approximate-date string to unix seconds. `undefined` = unparseable. */
@@ -27,7 +39,17 @@ export function parseApproxidate(text: string, now: number): number | undefined 
   const normalized = text.trim().toLowerCase();
   if (normalized === 'now') return now;
   if (normalized === 'yesterday') return now - DAY_SECONDS;
-  return parseIso(normalized) ?? parseRelative(normalized, now);
+  return parseEpoch(normalized) ?? parseIso(normalized) ?? parseRelative(normalized, now);
+}
+
+function parseEpoch(text: string): number | undefined {
+  const match = EPOCH_RE.exec(text);
+  if (match === null) return undefined;
+  const value = Number(match[1]);
+  // `Number` on an overlong digit run loses precision (or overflows to
+  // `Infinity`) past 2**53 — refuse rather than return a corrupted instant.
+  if (value > Number.MAX_SAFE_INTEGER) return undefined;
+  return value;
 }
 
 function parseIso(text: string): number | undefined {

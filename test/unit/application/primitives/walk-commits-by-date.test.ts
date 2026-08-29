@@ -169,6 +169,86 @@ describe('walkCommitsByDate', () => {
     });
   });
 
+  describe('Given a linear 5-commit chain walked with an early `break`', () => {
+    describe('When the consumer stops after the first two commits', () => {
+      it('Then iteration stops cleanly with the first two commits still in date order', async () => {
+        // Arrange — the public iteration contract (order, values, early-break
+        // cleanup) must survive the generator-layer collapse: `log`'s own
+        // `limit` cutoff relies on exactly this shape.
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 5);
+
+        // Act
+        const seen: ObjectId[] = [];
+        for await (const commit of walkCommitsByDate(ctx, { from: [ids.at(-1)!] })) {
+          seen.push(commit.id);
+          if (seen.length === 2) break;
+        }
+
+        // Assert
+        expect(seen).toEqual([ids.at(-1), ids.at(-2)]);
+      });
+    });
+
+    describe('When the returned iterator is closed explicitly mid-walk', () => {
+      it('Then return() resolves done without throwing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 5);
+        const iterator = walkCommitsByDate(ctx, { from: [ids.at(-1)!] })[Symbol.asyncIterator]();
+        await iterator.next();
+
+        // Act
+        const result = await iterator.return?.();
+
+        // Assert
+        expect(result).toEqual({ done: true, value: undefined });
+      });
+    });
+  });
+
+  describe('Given a linear 5-commit chain walked fully once', () => {
+    describe('When a SECOND for-await runs over the same returned iterable', () => {
+      it("Then it yields nothing — single-use, matching an async-generator's own contract", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 5);
+        const walk = walkCommitsByDate(ctx, { from: [ids.at(-1)!] });
+        const first = await collect(walk);
+
+        // Act
+        const second: Commit[] = [];
+        for await (const commit of walk) second.push(commit);
+
+        // Assert
+        expect(idsOf(first)).toEqual([...ids].reverse());
+        expect(second).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given empty from', () => {
+    describe('When the first next() is awaited directly (not through for-await)', () => {
+      it('Then assertValidSeeds surfaces as a REJECTED promise, not a synchronous throw out of [Symbol.asyncIterator]()', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const iterable = walkCommitsByDate(ctx, { from: [] });
+
+        // Act — obtaining the iterator must not throw synchronously.
+        let iterator: AsyncIterator<Commit>;
+        try {
+          iterator = iterable[Symbol.asyncIterator]();
+        } catch {
+          expect.unreachable('Symbol.asyncIterator() must not throw synchronously');
+        }
+
+        // Assert — the rejection surfaces from the first next() instead.
+        const rejection = iterator.next().catch((err: unknown) => err);
+        await expect(rejection).resolves.toMatchObject({ data: { code: 'INVALID_WALK_INPUT' } });
+      });
+    });
+  });
+
   describe('Given a diamond DAG with strictly increasing dates', () => {
     describe('When walkCommitsByDate is called from the merge', () => {
       it('Then yields all parents in exact newest-date order [d, c, b, a]', async () => {
@@ -442,32 +522,78 @@ describe('walkCommitsByDate', () => {
     });
   });
 
-  describe('Given a corrupted loose object and default verifyHash', () => {
+  describe('Given a loose file whose bytes belong to a different commit and the default', () => {
     describe('When walkCommitsByDate is iterated', () => {
-      it('Then throws OBJECT_HASH_MISMATCH', async () => {
-        // Arrange — kills the `verifyHash ?? true` default → false mutant.
+      it('Then the impostor commit is yielded (unverified by default)', async () => {
+        // Arrange — kills the `verifyHash ?? false` BooleanLiteral mutant to
+        // `true`.
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
-        const commitId = await createCommit(ctx, {
+        const commitA = await createCommit(ctx, {
           tree: treeId,
           parents: [],
           author: AUTHOR,
           committer: AUTHOR,
           message: 'original',
         });
+        const commitB = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          message: 'impostor',
+        });
         const { computeLooseObjectPath } = await import(
           '../../../../src/domain/storage/loose-path.js'
         );
-        const bogus = new TextEncoder().encode('commit 3\0xyz');
-        const compressed = await ctx.compressor.deflate(bogus);
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitId)}`,
-          compressed,
+        const aPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
+        const bPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
+        await ctx.fs.write(aPath, await ctx.fs.read(bPath));
+
+        // Act
+        const commits = await collect(walkCommitsByDate(ctx, { from: [commitA] }));
+
+        // Assert
+        expect(commits[0]?.data.message).toMatch(/impostor/);
+      });
+    });
+  });
+
+  describe('Given verifyHash=true and a loose file whose bytes belong to a different commit', () => {
+    describe('When walkCommitsByDate is iterated', () => {
+      it('Then throws OBJECT_HASH_MISMATCH', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const commitA = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'original',
+        });
+        const commitB = await createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+          message: 'impostor',
+        });
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
         );
+        const aPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitA)}`;
+        const bPath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commitB)}`;
+        await ctx.fs.write(aPath, await ctx.fs.read(bPath));
 
         // Act & Assert
         try {
-          for await (const _ of walkCommitsByDate(ctx, { from: [commitId] })) void _;
+          for await (const _ of walkCommitsByDate(ctx, {
+            from: [commitA],
+            verifyHash: true,
+          })) {
+            void _;
+          }
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
@@ -632,6 +758,10 @@ describe('walkCommitsByDate', () => {
           const { computeLooseObjectPath } = await import(
             '../../../../src/domain/storage/loose-path.js'
           );
+          // F2.3 also populates the delta cache on `asCommits`'s pre-read
+          // above; drop that entry so removing the loose file below produces
+          // a genuine miss instead of a cache-served hit.
+          ctx.deltaCache.delete(missingId);
           await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(missingId)}`);
 
           // Act

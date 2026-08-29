@@ -3479,4 +3479,62 @@ describe('diffTrees', () => {
       });
     });
   });
+
+  describe('Given more added top-level directories than the ioBound limit', () => {
+    describe('When diffRecursive runs', () => {
+      it('Then sibling directory expansions at the level peak at exactly the bound', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression (deriving diffRecursiveLevel's fan-out from
+        // the wrong bucket) fails loudly. Each directory is a top-level
+        // 'add', so every one becomes a sibling expansion at the SAME level,
+        // fanning out through `boundedMapFor` together.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = await buildSeededContext();
+        const entries: Array<{ name: string; mode: FileMode; id: ObjectId }> = [];
+        for (let i = 0; i < width; i++) {
+          const subId = await subTree(
+            base,
+            'f',
+            await blob(base, `content-${i}`),
+            FILE_MODE.REGULAR,
+          );
+          entries.push({
+            name: `d${String(i).padStart(3, '0')}`,
+            mode: FILE_MODE.DIRECTORY,
+            id: subId,
+          });
+        }
+        const oldRoot = await writeTree(base, []);
+        const newRoot = await writeTree(base, entries);
+        const ctx: Ctx = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
+        const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realWalkRawSubtree = walkRawSubtreeMod.walkRawSubtree;
+        const spy = vi
+          .spyOn(walkRawSubtreeMod, 'walkRawSubtree')
+          .mockImplementation(async (...args) => {
+            inFlight += 1;
+            if (inFlight > maxInFlight) maxInFlight = inFlight;
+            await Promise.resolve();
+            inFlight -= 1;
+            return realWalkRawSubtree(...args);
+          });
+        const sut = diffRecursive;
+
+        // Act
+        try {
+          const result = await sut(ctx, rawOld, rawNew);
+
+          // Assert
+          expect(result.changes).toHaveLength(width);
+          expect(maxInFlight).toBe(ioBound);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
 });

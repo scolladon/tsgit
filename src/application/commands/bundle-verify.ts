@@ -13,6 +13,7 @@ import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { ObjectFilter } from '../../domain/protocol/object-filter.js';
 import { notARepository } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
+import { deriveContext } from '../primitives/derive-context.js';
 import {
   type ExternalBaseResolver,
   verifyPackTrailer,
@@ -115,6 +116,14 @@ const assertPrerequisiteAlgorithmMatches = (ctx: Context, header: ParsedBundleHe
  * width reads the pack wrongly (measured: a 32-byte-oid pack read at 20 bytes
  * fails as `INVALID_PACK_HEADER`, a confusing error in place of a clear
  * refusal). Refuse instead, as `clone` does in the same situation.
+ *
+ * `deriveContext` keeps the session across this hash-algorithm change: the
+ * only path that reaches a real algorithm swap is a mismatch with ZERO
+ * prerequisites (any mismatch WITH prerequisites already refused in
+ * `assertPrerequisiteAlgorithmMatches`, before this runs), and a
+ * zero-prerequisite bundle never resolves an external base — so no
+ * oid-keyed cache holds an entry at this point. `bundle-verify.test.ts`
+ * asserts exactly that.
  */
 const contextForBundleAlgorithm = (ctx: Context, algorithm: BundleHashAlgorithm): Context => {
   if (algorithm === ctx.hashConfig.algorithm) return ctx;
@@ -125,7 +134,11 @@ const contextForBundleAlgorithm = (ctx: Context, algorithm: BundleHashAlgorithm)
       `the supplied hash service cannot switch to the bundle's declared algorithm ${algorithm}`,
     );
   }
-  return Object.freeze({ ...ctx, hash, hashConfig: configFor(algorithm) });
+  return deriveContext(
+    ctx,
+    { hash, hashConfig: configFor(algorithm) },
+    { keepSessionAcrossHashChange: true },
+  );
 };
 
 const buildResult = (
@@ -144,7 +157,7 @@ const buildResult = (
 
 const resolveExternalBase = async (ctx: Context, baseOid: ObjectId) => {
   try {
-    const obj = await readObject(ctx, baseOid);
+    const obj = await readObject(ctx, baseOid, { verifyHash: true });
     const raw = serializeObject(obj, ctx.hashConfig);
     const { contentOffset } = parseHeader(raw);
     return { type: obj.type, content: raw.subarray(contentOffset) };
@@ -177,7 +190,7 @@ const findMissingPrerequisites = async (
 
 const isMissingObject = async (ctx: Context, oid: ObjectId): Promise<boolean> => {
   try {
-    await readObject(ctx, oid);
+    await readObject(ctx, oid, { verifyHash: true });
     return false;
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return true;

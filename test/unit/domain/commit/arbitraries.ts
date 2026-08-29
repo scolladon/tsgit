@@ -2,9 +2,15 @@ import fc from 'fast-check';
 
 import {
   EDGE_LAST_FLAG,
+  GENERATION_OVERFLOW_FLAG,
   NO_PARENT,
   OCTOPUS_FLAG,
 } from '../../../../src/domain/commit/commit-graph.js';
+import {
+  type CommitGraphWriterCommit,
+  hashLengthFor,
+  setUint64BE,
+} from '../../../../src/domain/commit/commit-graph-writer.js';
 import { compareBytes, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import { arbObjectId } from '../objects/arbitraries.js';
@@ -15,6 +21,7 @@ const HEADER_SIZE = 8;
 const CHUNK_TABLE_ROW_SIZE = 12;
 const FANOUT_SIZE = 1024;
 const CDAT_FIXED_SIZE = 16;
+const GDO2_ENTRY_SIZE = 8;
 
 export interface CommitGraphCommitModel {
   readonly oid: ObjectId;
@@ -23,6 +30,10 @@ export interface CommitGraphCommitModel {
   readonly generationV1: number;
   readonly committerDate: number;
   readonly generationV2Offset: number;
+  /** When set, the GDA2 slot carries `GENERATION_OVERFLOW_FLAG | <GDO2 index>`
+   *  instead of `generationV2Offset`, and this value is appended to GDO2
+   *  (in commit-array order) as the true 64-bit corrected-date offset. */
+  readonly generationOverflowOffset?: number;
 }
 
 export interface CommitGraphLayerModel {
@@ -31,17 +42,6 @@ export interface CommitGraphLayerModel {
   readonly baseGraphHashes: readonly ObjectId[];
   readonly commits: readonly CommitGraphCommitModel[];
   readonly includeGenerationData: boolean;
-}
-
-function hashLengthFor(hashVersion: 1 | 2): number {
-  return hashVersion === 1 ? 20 : 32;
-}
-
-function setUint64BE(view: DataView, offset: number, value: number): void {
-  const high = Math.floor(value / 0x100000000);
-  const low = value % 0x100000000;
-  view.setUint32(offset, high);
-  view.setUint32(offset + 4, low);
 }
 
 interface EdgePlan {
@@ -67,16 +67,38 @@ function planEdgeChunk(commits: ReadonlyArray<CommitGraphCommitModel>): EdgePlan
   return { entries, startByCommit };
 }
 
+interface OverflowPlan {
+  readonly entries: readonly number[];
+  readonly indexByPosition: ReadonlyMap<number, number>;
+}
+
+function planOverflowChunk(commits: ReadonlyArray<CommitGraphCommitModel>): OverflowPlan {
+  const entries: number[] = [];
+  const indexByPosition = new Map<number, number>();
+  commits.forEach((commit, i) => {
+    if (commit.generationOverflowOffset === undefined) return;
+    indexByPosition.set(i, entries.length);
+    entries.push(commit.generationOverflowOffset);
+  });
+  return { entries, indexByPosition };
+}
+
 /**
- * Test-only encoder for the `commit-graph` on-disk format (Pin D). Production code never
- * writes this format — `commit-graph` generation is out of scope — so the encoder lives
- * beside the arbitraries it serves, giving `parseCommitGraphLayer` a round-trip oracle.
+ * Test-only encoder for the `commit-graph` on-disk format (Pin D). Production
+ * code DOES write this format now (`serializeCommitGraph`,
+ * `src/domain/commit/commit-graph-writer.ts`), but that writer only ever
+ * emits a valid, causally-consistent commit DAG — it cannot reach every byte
+ * layout the READER must still tolerate or reject (out-of-order positions,
+ * self-referencing parents, an EDGE-less octopus, …). This encoder stays
+ * beside the arbitraries it serves, fuzzing `parseCommitGraphLayer` directly
+ * over the full space of well-formed files, not just the writer's own output.
  */
 export function buildCommitGraphBytes(model: CommitGraphLayerModel): Uint8Array {
   const hashLength = hashLengthFor(model.hashVersion);
   const commitCount = model.commits.length;
   const cdatEntrySize = hashLength + CDAT_FIXED_SIZE;
   const edgePlan = planEdgeChunk(model.commits);
+  const overflowPlan = planOverflowChunk(model.commits);
 
   const chunkSpecs: { readonly id: string; readonly size: number }[] = [
     { id: 'OIDF', size: FANOUT_SIZE },
@@ -88,6 +110,9 @@ export function buildCommitGraphBytes(model: CommitGraphLayerModel): Uint8Array 
   }
   if (model.includeGenerationData) {
     chunkSpecs.push({ id: 'GDA2', size: commitCount * 4 });
+  }
+  if (overflowPlan.entries.length > 0) {
+    chunkSpecs.push({ id: 'GDO2', size: overflowPlan.entries.length * GDO2_ENTRY_SIZE });
   }
   if (model.baseGraphHashes.length > 0) {
     chunkSpecs.push({ id: 'BASE', size: model.baseGraphHashes.length * hashLength });
@@ -147,7 +172,19 @@ export function buildCommitGraphBytes(model: CommitGraphLayerModel): Uint8Array 
   if (model.includeGenerationData) {
     const gda2Offset = chunkOffset('GDA2');
     model.commits.forEach((commit, i) => {
-      view.setUint32(gda2Offset + i * 4, commit.generationV2Offset);
+      const overflowIndex = overflowPlan.indexByPosition.get(i);
+      const value =
+        overflowIndex === undefined
+          ? commit.generationV2Offset
+          : GENERATION_OVERFLOW_FLAG | overflowIndex;
+      view.setUint32(gda2Offset + i * 4, value);
+    });
+  }
+
+  if (overflowPlan.entries.length > 0) {
+    const gdo2Offset = chunkOffset('GDO2');
+    overflowPlan.entries.forEach((value, i) => {
+      setUint64BE(view, gdo2Offset + i * GDO2_ENTRY_SIZE, value);
     });
   }
 
@@ -267,6 +304,68 @@ export function arbCommitGraphLayerModel(): fc.Arbitrary<CommitGraphLayerModel> 
             includeGenerationData: r.includeGenerationData,
           };
         });
+    }),
+  );
+}
+
+/** A causally-consistent commit DAG, paired with the hash width it was generated for. */
+export interface CommitGraphWriterDag {
+  readonly hashVersion: 1 | 2;
+  readonly commits: readonly CommitGraphWriterCommit[];
+}
+
+/**
+ * An arbitrary, CAUSALLY-CONSISTENT commit DAG for `serializeCommitGraph`'s
+ * round-trip property. `arbCommitGraphLayerModel`'s `parentPositions` are
+ * unconstrained integers — fine for fuzzing the READER's byte-level decode,
+ * where any in-range position is a legal (if unrealistic) file, but a real
+ * commit's parents can only be its own ancestors. This generator reuses the
+ * same building blocks (`arbObjectId`, a `parentPositionsList`-shaped
+ * candidate array) but FILTERS each commit's candidates to strictly earlier
+ * positions — acyclic by construction, and naturally producing multiple
+ * roots (any commit whose filtered candidate list is empty) and octopus
+ * merges (three or more surviving candidates) across a run.
+ *
+ * `committerDate` ranges up to 2**32 — past `MAX_GENERATION_OFFSET`
+ * (0x7fffffff), so a chain pairing a huge ancestor date with a small
+ * descendant date routinely overflows GDA2's plain field and round-trips
+ * through GDO2 instead; still comfortably under CDAT's own 34-bit ceiling,
+ * so `committerDate` itself never wraps and the round-trip stays exact.
+ */
+export function arbCommitGraphWriterDag(): fc.Arbitrary<CommitGraphWriterDag> {
+  return fc.constantFrom<1 | 2>(1, 2).chain((hashVersion) =>
+    fc.integer({ min: 1, max: 8 }).chain((commitCount) => {
+      const hexLength = hashLengthFor(hashVersion) === 20 ? 40 : 64;
+      return fc
+        .record({
+          ids: fc.uniqueArray(arbObjectId(hexLength), {
+            minLength: commitCount,
+            maxLength: commitCount,
+          }),
+          rootTrees: fc.array(arbObjectId(hexLength), {
+            minLength: commitCount,
+            maxLength: commitCount,
+          }),
+          committerDates: fc.array(fc.integer({ min: 0, max: 2 ** 32 }), {
+            minLength: commitCount,
+            maxLength: commitCount,
+          }),
+          parentCandidateLists: fc.array(
+            fc.uniqueArray(fc.integer({ min: 0, max: commitCount - 1 }), { maxLength: 4 }),
+            { minLength: commitCount, maxLength: commitCount },
+          ),
+        })
+        .map(({ ids, rootTrees, committerDates, parentCandidateLists }) => ({
+          hashVersion,
+          commits: ids.map((id, i) => ({
+            id,
+            rootTree: rootTrees[i]!,
+            committerDate: committerDates[i]!,
+            parents: parentCandidateLists[i]!.filter((position) => position < i).map(
+              (position) => ids[position]!,
+            ),
+          })),
+        }));
     }),
   );
 }

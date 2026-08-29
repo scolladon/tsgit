@@ -24,6 +24,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { atomicWriteRef } from './atomic-write.js';
+import { boundedMapFor } from './internal/concurrency.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import {
   commonGitDir,
@@ -214,9 +215,31 @@ export type RefUpdate =
     };
 
 /**
- * Per-Context store cache. Mirrors the registryCache pattern in read-object —
- * a session that resolves N refs reuses one parsed packed-refs (with mtime-keyed
- * invalidation inside the closure) instead of re-parsing on every call.
+ * Store cache, keyed on `Context` object identity — deliberately NOT on
+ * `ctx.session`, unlike every other cache this plan re-keys.
+ *
+ * A `RefStore` closes over `ctx` at construction and reads far more of it
+ * than just `layout.gitDir` during its lifetime: `packRefs()` peels tags via
+ * `readObject(ctx, …)` (itself sensitive to `ctx.fs`, `ctx.hashConfig`,
+ * `ctx.promisor`, `ctx.deltaCache`) and pools that work through
+ * `boundedMapFor(ctx, 'ioBound', …)` (sensitive to `ctx.concurrency`).
+ * Sharing the whole object across two Context values that agree on session
+ * (and even gitDir) but differ in `fs` or `concurrency` — exactly the shape
+ * a test takes when it swaps in a failing/proxied `fs` or an explicit
+ * concurrency override via `{ ...ctx, fs: proxy }` / `{ ...ctx, concurrency }`
+ * — silently resolves every read/write against the WRONG fs or ignores the
+ * override, because the cached store keeps using whichever Context built it
+ * first. Measured: both shapes broke real tests before this cache was
+ * pinned back to literal identity. A compound key naming every field the
+ * closure touches would have to name nearly the whole Context to stay safe,
+ * which is indistinguishable from identity — so identity is what this cache
+ * uses.
+ *
+ * This is not a regression for the cross-worktree win a session token
+ * unlocks: `listWorktrees` (`list-worktrees.ts`) delivers it by reusing the
+ * SAME `mainCtx` object for every worktree's shared-ref lookup, which hits
+ * this very identity-keyed cache on every call after the first — no
+ * session-keying required.
  */
 const storeCache = new WeakMap<Context, RefStore>();
 
@@ -766,7 +789,7 @@ function createFilesRefStore(ctx: Context): RefStore {
         toPrune.push(entry.name);
       }
     }
-    const entries = await Promise.all(packable.map(buildPackedEntry));
+    const entries = await boundedMapFor(ctx, 'ioBound', packable, buildPackedEntry);
     const content = serializePackedRefs({ entries, peeling: 'fully', sorted: true });
     await ctx.fs.writeUtf8(packedRefsPath(commonGitDir(ctx)), content);
     packedCache = undefined;

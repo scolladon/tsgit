@@ -1,9 +1,10 @@
 /**
- * Per-`Context` `.git/shallow` memo — mirrors `internal/loose-oid-cache.ts`'s
+ * Per-session `.git/shallow` memo — mirrors `internal/loose-oid-cache.ts`'s
  * `fanoutCache` and `read-commit-graph.ts`'s `graphCache`. Every grafted
  * commit read consults the shallow set, so this module amortises the
- * `.git/shallow` probe to exactly one filesystem call per `Context` lifetime
- * instead of one per commit.
+ * `.git/shallow` probe to exactly one filesystem call per session lifetime
+ * instead of one per commit — shared across every Context derived from the
+ * same repository-open, since `.git/shallow` lives under `commonGitDir(ctx)`.
  *
  * `present` and `set` are deliberately two distinct signals, not derived from
  * each other: an existing-but-0-byte `.git/shallow` is a shallow repository
@@ -27,7 +28,7 @@ interface ShallowState {
 
 const EMPTY_SHALLOW_STATE: ShallowState = { present: false, set: new Set() };
 
-const shallowCache = new WeakMap<Context, Promise<ShallowState>>();
+const shallowCache = new WeakMap<Context['session'], Promise<ShallowState>>();
 
 /**
  * Shared absence predicate for `.git/shallow` — used by this memo AND by
@@ -58,16 +59,16 @@ async function loadStateUncached(ctx: Context): Promise<ShallowState> {
 }
 
 function loadState(ctx: Context): Promise<ShallowState> {
-  const existing = shallowCache.get(ctx);
+  const existing = shallowCache.get(ctx.session);
   if (existing !== undefined) return existing;
   const created = loadStateUncached(ctx);
-  shallowCache.set(ctx, created);
+  shallowCache.set(ctx.session, created);
   // Never memoize a rejection: a transient fs failure (or a malformed file
   // later fixed) must not permanently poison every later read. Only evict
   // our own entry — an invalidate-then-reload interleaving may have stored
   // a fresh promise this rejection must not tear down.
   created.catch(() => {
-    if (shallowCache.get(ctx) === created) shallowCache.delete(ctx);
+    if (shallowCache.get(ctx.session) === created) shallowCache.delete(ctx.session);
   });
   return created;
 }
@@ -93,5 +94,5 @@ export const isShallowRepository = async (ctx: Context): Promise<boolean> =>
 
 /** Drop the memo so the next accessor call re-reads `.git/shallow`. */
 export const invalidateShallowSet = (ctx: Context): void => {
-  shallowCache.delete(ctx);
+  shallowCache.delete(ctx.session);
 };

@@ -23,7 +23,7 @@ import {
 } from '../../domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from './internal/bounded-map.js';
+import { boundedMapFor } from './internal/concurrency.js';
 import { readBlob } from './read-blob.js';
 
 /** Must match `rename-detect.ts` DEFAULT_LIMIT (1000). */
@@ -38,7 +38,7 @@ async function hydrateIds(
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<BlobEntry>> {
-  return boundedMap(ids, MAX_CONCURRENT_OBJECT_LOADS, async (id) => ({
+  return boundedMapFor(ctx, 'ioBound', ids, async (id) => ({
     id,
     bytes: (await readBlob(ctx, id)).content,
   }));
@@ -142,7 +142,7 @@ export function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): 
 }
 
 /** Precomputed spanhash fingerprint for one blob. */
-interface BlobFingerprint {
+export interface BlobFingerprint {
   readonly chunkMap: Map<number, number>;
   readonly size: number;
 }
@@ -380,24 +380,34 @@ interface InexactPassResult {
   readonly consumedAdds: ReadonlySet<AddChange>;
 }
 
-interface FingerprintPair {
+export interface FingerprintPair {
   readonly srcFingerprints: Map<ObjectId, BlobFingerprint>;
   readonly dstFingerprints: Map<ObjectId, BlobFingerprint>;
 }
 
-/** Hydrate blobs for all src and dst ids and build per-id fingerprint maps. */
-async function hydrateAndFingerprint(
+/**
+ * Hydrate blobs for all src and dst ids and build per-id fingerprint maps.
+ *
+ * Both id sets are hydrated through ONE shared `hydrateIds` call rather than
+ * two `Promise.all`-nested ones — two independently-bounded pools would each
+ * cap at the ioBound limit, so together they let twice that many object
+ * reads run in flight at once. Concatenating first shares a single pool
+ * across both arms, so the ioBound limit is the true ceiling regardless of
+ * how the ids split between src and dst.
+ *
+ * Exported for direct unit testing (the concurrency-boundary proof above).
+ */
+export async function hydrateAndFingerprint(
   ctx: Context,
   allSrcIds: ReadonlyArray<ObjectId>,
   adds: ReadonlyArray<AddChange>,
 ): Promise<FingerprintPair> {
-  const [srcEntries, dstEntries] = await Promise.all([
-    hydrateIds(ctx, allSrcIds),
-    hydrateIds(
-      ctx,
-      adds.map((a) => a.newId),
-    ),
-  ]);
+  const dstIds = adds.map((a) => a.newId);
+  const combined = await hydrateIds(ctx, [...allSrcIds, ...dstIds]);
+  // Stryker disable next-line MethodExpression: equivalent — the store is content-addressed (id implies content), so buildFingerprintMap below only ever looks up ids explicitly passed to it (allSrcIds / adds' newIds); whether srcBytesById/dstBytesById is built from the sliced subset or the full combined array, every looked-up id resolves to the same bytes (full covering set — detect-similarity-renames ×2, diff-trees, diff — passes unmutated with both slices removed).
+  const srcEntries = combined.slice(0, allSrcIds.length);
+  // Stryker disable next-line MethodExpression: equivalent — same reasoning as srcEntries above.
+  const dstEntries = combined.slice(allSrcIds.length);
   const srcBytesById = new Map<ObjectId, Uint8Array>(srcEntries.map((e) => [e.id, e.bytes]));
   const dstBytesById = new Map<ObjectId, Uint8Array>(dstEntries.map((e) => [e.id, e.bytes]));
   // Fingerprint each unique blob id once — avoids O(pairs) re-hashing and

@@ -8,6 +8,8 @@ import { createRawTreeResolver } from './adapters/snapshot-resolvers/raw-tree-re
 import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/single-flight-index-resolver.js';
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
+import { invalidateShallowSet } from './application/primitives/internal/shallow-set.js';
+import { invalidateIndexCache } from './application/primitives/read-index.js';
 import { disposePackRegistry } from './application/primitives/read-object.js';
 import {
   createSnapshotFactory,
@@ -15,16 +17,18 @@ import {
 } from './application/primitives/snapshot/snapshot-factory.js';
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
+import type { ConcurrencyLimits } from './domain/concurrency/derive-limits.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import { unsupportedOperation } from './domain/error.js';
 import { configFor } from './domain/objects/hash-config.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
-import type {
-  Context,
-  RepositoryConfig,
-  RepositoryFormatRefusal,
-  RepositoryLayout,
+import {
+  type Context,
+  createSession,
+  type RepositoryConfig,
+  type RepositoryFormatRefusal,
+  type RepositoryLayout,
 } from './ports/context.js';
 import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
@@ -36,7 +40,7 @@ import type { ProgressReporter } from './ports/progress-reporter.js';
 import type { PromisorRemote } from './ports/promisor.js';
 import type { SshTransport } from './ports/ssh-channel.js';
 import { noopProgress } from './progress.js';
-import { composeAdapters } from './repository/compose-adapters.js';
+import { composeAdapters, isFirstPartyFs } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
 import { defaultCwd } from './repository/default-cwd.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
@@ -317,6 +321,12 @@ export interface RuntimeFallback {
   readonly hashConfig: Context['hashConfig'];
   readonly deltaCache: Context['deltaCache'];
   /**
+   * Optional resolved concurrency policy for this host. Absent on runtimes
+   * with no machine facts to report (memory, workerd) — `limitFor` falls
+   * back to the safe floor in that case.
+   */
+  readonly concurrency?: ConcurrencyLimits;
+  /**
    * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
    * (which may lie outside `workDir`) as well as the repository itself — for the
    * worktree containment escape (ADR-298). The node shim roots a fresh adapter
@@ -370,6 +380,7 @@ export interface Repository {
   readonly grep: BindCtx<typeof commands.grep>;
   readonly init: BindCtx<typeof commands.init>;
   readonly log: BindCtx<typeof commands.log>;
+  readonly maintenance: BindCtx<typeof commands.maintenance>;
   /** Nested `repo.merge.{run,continue,abort}` namespace. */
   readonly merge: commands.MergeNamespace;
   readonly mv: BindCtx<typeof commands.mv>;
@@ -517,6 +528,7 @@ interface OptionalCtxInputs {
   readonly command: CommandRunner | undefined;
   readonly env: EnvReader | undefined;
   readonly ssh: SshTransport | undefined;
+  readonly concurrency: ConcurrencyLimits | undefined;
 }
 
 /**
@@ -532,6 +544,7 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.command !== undefined ? { command: inputs.command } : {}),
   ...(inputs.env !== undefined ? { env: inputs.env } : {}),
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
+  ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
 });
 
 /**
@@ -557,6 +570,26 @@ const hashForAlgorithm = (service: HashService, algorithm: 'sha1' | 'sha256'): H
   return switched;
 };
 
+/**
+ * Drop every session-keyed identity cache this module can reach WITHOUT
+ * reading through `ctx.fs` (dispose has already begun tearing adapters
+ * down) — the config parse cache, the scoped-sections cache it delegates to
+ * (see `invalidateConfigCache`'s own docstring), the shallow-set memo, and
+ * the parsed-index cache. `ctx.deltaCache` is cleared by the caller
+ * directly (it lives ON `ctx`, not behind one of this module's own
+ * `WeakMap<Context['session'], …>`s), and every OTHER session-keyed cache
+ * in the codebase (the pack registry's parsed-object memo, the commit-graph
+ * header cache, the reftable stack cache, …) stays reachable through the
+ * `WeakMap` alone once this handle is unreferenced — this function exists to
+ * shrink retained memory for a pooling server that disposes idle repos
+ * while still holding the handle, not to guarantee zero retention.
+ */
+const forgetSessionCaches = (ctx: Context): void => {
+  primitives.invalidateConfigCache(ctx);
+  invalidateShallowSet(ctx);
+  invalidateIndexCache(ctx);
+};
+
 export const openRepository = async (
   opts: OpenRepositoryOptions,
   fallback: RuntimeFallback,
@@ -572,12 +605,22 @@ export const openRepository = async (
   // under commonDir, outside workDir entirely). The security goal is "no
   // paths outside the repo's own roots."
   const layoutRoots = layoutRootsOf(fallback.layout);
+  // First-party adapters (Node/Memory/browser, sourced from the runtime
+  // fallback — never a caller-supplied `opts.fs`) already enforce read
+  // containment in their OWN read path against this same root set; guarding
+  // reads here too would be a redundant check on the hot path. The adapter
+  // becomes the single authority for reads; the wrapper keeps guarding every
+  // write regardless (it cannot do the write path's realpath escape check,
+  // so it is never redundant there).
+  const fsIsFirstParty = isFirstPartyFs(detected.fs);
   const adapters =
     opts.unsafeRawAdapters === true
       ? detected
       : {
           ...detected,
-          fs: wrapFsValidator(detected.fs, layoutRoots, computeConfigScopePaths(detected.fs)),
+          fs: wrapFsValidator(detected.fs, layoutRoots, computeConfigScopePaths(detected.fs), {
+            guardReads: !fsIsFirstParty,
+          }),
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
   // ADR-298: a linked worktree lives outside workDir and a worktree Context must
@@ -586,12 +629,32 @@ export const openRepository = async (
   // paths (the node shim roots a fresh adapter at the common ancestor), then
   // confines it with a multi-root validator to exactly those subtrees (or
   // returns the raw fs when containment is opted out).
+  //
+  // Memoised by root set: `listWorktrees` calls this once per worktree, and a
+  // fresh adapter + validator pair on every call was pure waste when the same
+  // worktree (or the same handful of worktrees) gets asked for repeatedly.
+  const worktreeFsCache = new Map<string, FileSystem>();
+  // `fallback.makeWorktreeFs`, when present, is ALWAYS a first-party adapter —
+  // it is a runtime capability (never something `opts` can supply), so its
+  // output carries the same "own read path enforces containment" guarantee
+  // `fsIsFirstParty` establishes for `detected.fs`. When absent, `worktreeFs`
+  // falls back to `detected.fs` itself, whose provenance is `fsIsFirstParty`.
+  const worktreeRawIsFirstParty = fallback.makeWorktreeFs !== undefined || fsIsFirstParty;
   const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
     const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
     const roots = [...paths, ...layoutRoots];
+    const cacheKey = roots.join('\0');
+    const cached = worktreeFsCache.get(cacheKey);
+    if (cached !== undefined) return cached;
     const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
-    if (opts.unsafeRawAdapters === true) return raw;
-    return wrapFsValidator(raw, roots, computeConfigScopePaths(raw));
+    const built =
+      opts.unsafeRawAdapters === true
+        ? raw
+        : wrapFsValidator(raw, roots, computeConfigScopePaths(raw), {
+            guardReads: !worktreeRawIsFirstParty,
+          });
+    worktreeFsCache.set(cacheKey, built);
+    return built;
   };
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
@@ -660,36 +723,64 @@ export const openRepository = async (
       command,
       env: fallback.env,
       ssh: fallback.ssh,
+      concurrency: fallback.concurrency,
     }),
     promisor,
+    session: createSession(),
   });
   promisorCtx = ctx;
 
   let state: DisposeState = 'OPEN';
   let disposePromise: Promise<void> | undefined;
   const dispose = async (): Promise<void> => {
-    // Stryker disable next-line ConditionalExpression: equivalent — `state === 'DISPOSED'` implies `disposePromise` is already set (state only flips to DISPOSED inside the IIFE assigned to disposePromise), so the next guard returns the same resolved promise; removing this fast-path changes nothing observable.
+    // A repeat call short-circuits here even when the FIRST call's own
+    // disposePromise rejected (a faulted pack-handle close, cache release,
+    // or adapter teardown below) — dispose is best-effort teardown, so a
+    // fault on the first call must not wedge every later call into
+    // re-awaiting (and re-surfacing) that same rejected promise forever.
+    // The outer try/finally below guarantees `state` reaches 'DISPOSED'
+    // whether or not the teardown body threw, which is what makes this
+    // fast path reachable on the fault path too, not just the success one.
     if (state === 'DISPOSED') return;
     if (disposePromise !== undefined) return disposePromise;
     state = 'DISPOSING';
     controller.abort(); // synchronous abort — gates every bound method via ctx.signal.aborted
     disposePromise = (async () => {
-      // Macrotask boundary: lets queued I/O callbacks observe the abort and unwind
-      // via try/finally before adapters are torn down. setImmediate is preferred
-      // when available (Node); setTimeout(0) is the cross-runtime fallback.
-      await new Promise<void>((resolve) => {
-        if (typeof setImmediate === 'function') setImmediate(resolve);
-        else setTimeout(resolve, 0);
-      });
-      // Pack handles are FileHandles owned by ctx.fs — close them before the
-      // fs adapter itself is torn down.
-      // A failing pack-handle close must never skip adapter teardown.
       try {
-        await disposePackRegistry(ctx);
+        // Macrotask boundary: lets queued I/O callbacks observe the abort and
+        // unwind via try/finally before adapters are torn down. setImmediate
+        // is preferred when available (Node); setTimeout(0) is the
+        // cross-runtime fallback.
+        await new Promise<void>((resolve) => {
+          if (typeof setImmediate === 'function') setImmediate(resolve);
+          else setTimeout(resolve, 0);
+        });
+        // Pack handles are FileHandles owned by ctx.fs — close them before the
+        // fs adapter itself is torn down.
+        // A failing pack-handle close must never skip adapter teardown or
+        // cache release — a pooling server disposing an idle repo must
+        // reclaim this memory even when pack-handle teardown itself faults.
+        // Cache release is nested in its OWN try/finally for the same reason:
+        // a sync throw from `deltaCache.clear()`/`forgetSessionCaches` must
+        // not skip `disposeAdapters` either — both cache release and adapter
+        // teardown run unconditionally, in that order, however either one
+        // faults.
+        try {
+          await disposePackRegistry(ctx);
+        } finally {
+          try {
+            ctx.deltaCache.clear();
+            forgetSessionCaches(ctx);
+          } finally {
+            await disposeAdapters(ctx);
+          }
+        }
       } finally {
-        await disposeAdapters(ctx);
+        // Unconditional: a faulted teardown still reaches DISPOSED (the
+        // fault itself still propagates through this call's own rejected
+        // disposePromise — only a LATER call is spared re-surfacing it).
+        state = 'DISPOSED';
       }
-      state = 'DISPOSED';
     })();
     return disposePromise;
   };
@@ -780,6 +871,10 @@ export const openRepository = async (
       guard();
       return commands.log(ctx, logOpts);
     }) as Repository['log'],
+    maintenance: ((maintenanceOpts) => {
+      guard();
+      return commands.maintenance(ctx, maintenanceOpts);
+    }) as Repository['maintenance'],
     merge: commands.bindMergeNamespace(ctx, guard),
     mv: ((sources, destination, mvOpts) => {
       guard();

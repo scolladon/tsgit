@@ -11,6 +11,7 @@ import { refNotFound } from '../../domain/refs/error.js';
 import { resolveWorktreePath } from '../../domain/worktree/resolve-path.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
+import { deriveContext } from './derive-context.js';
 import { deriveWorktreeContext, worktreeScopedFs } from './internal/worktree-context.js';
 import { commonGitDir } from './path-layout.js';
 import { getRefStore } from './ref-store.js';
@@ -49,15 +50,19 @@ interface ResolvedHead {
  * hop). `worktreeCtx` must be rooted at the worktree being described — never
  * the calling Context — so this reads through the ref backend rather than a
  * raw file, the seam that keeps a reftable repository's HEAD stub file from
- * ever being mistaken for the real answer.
+ * ever being mistaken for the real answer. The branch TARGET, by contrast,
+ * is a shared ref — resolved through `commonCtx`, the ONE Context every
+ * caller in this module reuses for the common dir, so `getRefStore` builds
+ * that ref store once for the whole `listWorktrees` call instead of once per
+ * worktree.
  */
-const resolveHead = async (worktreeCtx: Context): Promise<ResolvedHead> => {
+const resolveHead = async (worktreeCtx: Context, commonCtx: Context): Promise<ResolvedHead> => {
   const head = await getRefStore(worktreeCtx).resolveDirect(HEAD_REF);
   if (head.kind === 'missing') throw refNotFound(HEAD_REF);
   if (head.kind === 'direct') {
     return { head: head.id, detached: true };
   }
-  const target = await getRefStore(worktreeCtx).resolveDirect(head.target);
+  const target = await getRefStore(commonCtx).resolveDirect(head.target);
   return {
     branch: head.target,
     detached: false,
@@ -69,12 +74,11 @@ const resolveHead = async (worktreeCtx: Context): Promise<ResolvedHead> => {
  * A Context rooted at the main checkout's own admin dir — the main
  * worktree's per-worktree state (HEAD, index, …) lives there, never under
  * the opened Context's own `gitDir` when that Context was opened from
- * inside a linked worktree.
+ * inside a linked worktree. The common dir is unchanged by this derivation,
+ * so `deriveContext` keeps the session.
  */
-const deriveMainContext = (ctx: Context): Context => ({
-  ...ctx,
-  layout: { ...ctx.layout, gitDir: commonGitDir(ctx) },
-});
+const deriveMainContext = (ctx: Context): Context =>
+  deriveContext(ctx, { layout: { ...ctx.layout, gitDir: commonGitDir(ctx) } });
 
 /**
  * Strip a trailing `/.git` from `dir`; absent means `dir` itself. Shared by
@@ -115,7 +119,7 @@ const isMainCheckoutBare = async (ctx: Context): Promise<boolean> => {
  * path when opened from inside one, whereas `git worktree list` always
  * reports the main worktree's path first.
  */
-const mainEntry = async (ctx: Context): Promise<WorktreeEntry> => {
+const mainEntry = async (ctx: Context, mainCtx: Context): Promise<WorktreeEntry> => {
   const path = stripGitSuffix(commonGitDir(ctx)) as FilePath;
   if (await isMainCheckoutBare(ctx)) {
     return { path, detached: false, bare: true, main: true };
@@ -123,7 +127,7 @@ const mainEntry = async (ctx: Context): Promise<WorktreeEntry> => {
   // Verdict: foreign-worktree — resolved against a Context rooted at the
   // main checkout's own admin dir, never the opened (possibly linked)
   // Context, and never a raw HEAD-file read.
-  const resolved = await resolveHead(deriveMainContext(ctx));
+  const resolved = await resolveHead(mainCtx, mainCtx);
   return { path, bare: false, main: true, ...resolved };
 };
 
@@ -137,7 +141,12 @@ const readLocked = async (
 };
 
 /** Build the entry for one linked worktree from its admin dir. */
-const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<WorktreeEntry> => {
+const linkedEntry = async (
+  ctx: Context,
+  mainCtx: Context,
+  id: string,
+  adminDir: string,
+): Promise<WorktreeEntry> => {
   // Resolved ONCE against adminDir (git-faithful for `--relative-paths`
   // pointers) and reused for BOTH consumers below: an absolute pointer
   // resolves to itself, so this is a no-op for today's default writer.
@@ -152,7 +161,8 @@ const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<
   // resolved against a Context derived for THIS worktree's admin dir
   // (reusing the same derivation `worktree.ts` uses to operate on a linked
   // worktree), never the calling Context and never a raw HEAD-file read.
-  const resolved = await resolveHead(deriveWorktreeContext(ctx, id, path));
+  // The shared branch TARGET resolves through `mainCtx` (see `resolveHead`).
+  const resolved = await resolveHead(deriveWorktreeContext(ctx, id, path), mainCtx);
   const locked = await readLocked(ctx, adminDir);
   // The worktree dir lives outside workDir, so probe it through the worktree fs
   // (confined to the worktree path + common dir; ADR-298).
@@ -180,13 +190,18 @@ const byPath = (a: WorktreeEntry, b: WorktreeEntry): number => {
 };
 
 export const listWorktrees = async (ctx: Context): Promise<ReadonlyArray<WorktreeEntry>> => {
-  const main = await mainEntry(ctx);
+  // Built once and reused by every entry below (main AND every linked
+  // worktree) for the shared-ref lookup — the "immediate win" a session
+  // token unlocks: N linked worktrees no longer cost N+1 fresh ref stores
+  // and N+1 packed-refs parses.
+  const mainCtx = deriveMainContext(ctx);
+  const main = await mainEntry(ctx, mainCtx);
   const root = `${commonGitDir(ctx)}/worktrees`;
   if (!(await ctx.fs.exists(root))) return [main];
   const linked: WorktreeEntry[] = [];
   for (const dir of await ctx.fs.readdir(root)) {
     if (!dir.isDirectory) continue;
-    linked.push(await linkedEntry(ctx, dir.name, `${root}/${dir.name}`));
+    linked.push(await linkedEntry(ctx, mainCtx, dir.name, `${root}/${dir.name}`));
   }
   linked.sort(byPath);
   return [main, ...linked];

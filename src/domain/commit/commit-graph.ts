@@ -14,8 +14,12 @@ const CHUNK_ID_OIDF = 'OIDF';
 const CHUNK_ID_OIDL = 'OIDL';
 const CHUNK_ID_CDAT = 'CDAT';
 const CHUNK_ID_GDA2 = 'GDA2';
+const CHUNK_ID_GDO2 = 'GDO2';
 const CHUNK_ID_EDGE = 'EDGE';
 const CHUNK_ID_BASE = 'BASE';
+
+/** Bytes per GDO2 entry: a plain (non-flagged) 64-bit corrected-date offset. */
+const GDO2_ENTRY_SIZE = 8;
 
 /** CDAT parent-position sentinel: this parent slot is unused. */
 export const NO_PARENT = 0x70000000;
@@ -23,9 +27,9 @@ export const NO_PARENT = 0x70000000;
 export const OCTOPUS_FLAG = 0x80000000;
 /** EDGE entry flag: this is the last parent position in the commit's chain. */
 export const EDGE_LAST_FLAG = 0x80000000;
-/** Mask isolating the position bits of an EDGE entry (or an octopus CDAT parent2 slot). */
+/** Mask isolating the position bits of an EDGE entry, an octopus CDAT parent2 slot, or a GDA2 overflow entry's GDO2 index. */
 export const EDGE_POS_MASK = 0x7fffffff;
-/** GDA2 entry flag: the low 31 bits index into the unsupported GDO2 overflow chunk. */
+/** GDA2 entry flag: the low 31 bits index into the GDO2 overflow chunk. */
 export const GENERATION_OVERFLOW_FLAG = 0x80000000;
 
 interface ChunkRange {
@@ -57,6 +61,7 @@ export interface CommitGraphLayer {
   readonly _commitDataEntrySize: number;
   readonly _generationDataRange: ChunkRange | undefined;
   readonly _extraEdgeRange: ChunkRange | undefined;
+  readonly _overflowGenerationRange: ChunkRange | undefined;
 }
 
 export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
@@ -104,6 +109,7 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
   }
 
   const extraEdgeRange = chunkRanges.get(CHUNK_ID_EDGE);
+  const overflowGenerationRange = chunkRanges.get(CHUNK_ID_GDO2);
 
   const baseGraphHashes = readBaseGraphHashes(chunkRanges, numBaseGraphs, hashLength, bytes);
 
@@ -121,6 +127,7 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
     _commitDataEntrySize: commitDataEntrySize,
     _generationDataRange: generationDataRange,
     _extraEdgeRange: extraEdgeRange,
+    _overflowGenerationRange: overflowGenerationRange,
   };
 }
 
@@ -140,9 +147,7 @@ function readChunkTable(
   for (let i = 0; i < rowCount; i += 1) {
     const rowStart = HEADER_SIZE + i * CHUNK_TABLE_ROW_SIZE;
     const id = decode(bytes.subarray(rowStart, rowStart + 4));
-    const high = view.getUint32(rowStart + 4);
-    const low = view.getUint32(rowStart + 8);
-    rows.push({ id, offset: high * 0x100000000 + low });
+    rows.push({ id, offset: readUint64BE(view, rowStart + 4) });
   }
 
   const trailerStart = rows[rows.length - 1]!.offset;
@@ -155,6 +160,15 @@ function readChunkTable(
     ranges.set(rows[i]!.id, { start: rows[i]!.offset, end: rows[i + 1]!.offset });
   }
   return ranges;
+}
+
+/** Reads a big-endian 64-bit unsigned integer as a JS number — every value
+ *  this format stores in 64 bits (chunk-table offsets, GDO2 entries) stays
+ *  far below `Number.MAX_SAFE_INTEGER`, so plain arithmetic is exact. */
+function readUint64BE(view: DataView, offset: number): number {
+  const high = view.getUint32(offset);
+  const low = view.getUint32(offset + 4);
+  return high * 0x100000000 + low;
 }
 
 function requireChunk(ranges: ReadonlyMap<string, ChunkRange>, id: string): ChunkRange {
@@ -305,11 +319,22 @@ function resolveGeneration(
   }
   const raw = layer._view.getUint32(layer._generationDataRange.start + localPos * 4);
   if ((raw & GENERATION_OVERFLOW_FLAG) !== 0) {
-    // The exact corrected date lives in the GDO2 overflow chunk, which is not
-    // parsed; degrade to the v1 topological generation instead of failing a
-    // read git itself serves — generation only accelerates pruning, never
-    // changes the visible commit set.
-    return generationV1;
+    return committerDate + readOverflowOffset(layer, raw & EDGE_POS_MASK);
   }
   return committerDate + raw;
+}
+
+/** The true (64-bit) corrected-date offset for a GDA2 entry whose overflow
+ *  bit is set — `index` is the low 31 bits of that entry, a position into
+ *  GDO2's flat array of plain (non-flagged) offsets. */
+function readOverflowOffset(layer: CommitGraphLayer, index: number): number {
+  const range = layer._overflowGenerationRange;
+  if (range === undefined) {
+    throw invalidCommitGraphChunk('generation overflow flag set but missing GDO2 chunk');
+  }
+  const offset = range.start + index * GDO2_ENTRY_SIZE;
+  if (offset + GDO2_ENTRY_SIZE > range.end) {
+    throw invalidCommitGraphChunk(`GDO2 index ${index} out of range`);
+  }
+  return readUint64BE(layer._view, offset);
 }

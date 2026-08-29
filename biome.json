@@ -18,6 +18,8 @@
       "tooling/test/unit/profile-*.test.ts",
       "tooling/bench-check.ts",
       "tooling/test/unit/bench-check.test.ts",
+      "tooling/bench-ab.ts",
+      "tooling/test/unit/bench-ab.test.ts",
       "tooling/bench-to-snapshot.ts",
       "tooling/test/unit/bench-to-snapshot.test.ts",
       "tooling/test/unit/fixture-generator.test.ts",

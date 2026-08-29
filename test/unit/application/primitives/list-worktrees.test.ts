@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { listWorktrees } from '../../../../src/application/primitives/list-worktrees.js';
-import { reftableDir } from '../../../../src/application/primitives/path-layout.js';
+import {
+  commonGitDir,
+  packedRefsPath,
+  reftableDir,
+} from '../../../../src/application/primitives/path-layout.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -232,6 +236,53 @@ describe('listWorktrees', () => {
 
         // Assert — derived from the common dir (strips its `/.git` suffix),
         // NOT `sut.layout.workDir` (the opened linked worktree's own path).
+        expect(result).toEqual([
+          {
+            path: ctx.layout.workDir,
+            head: OID_MAIN,
+            branch: 'refs/heads/main',
+            detached: false,
+            bare: false,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a Context opened at a linked worktree whose OWN HEAD points at a different branch than the true main', () => {
+    describe('When listWorktrees runs', () => {
+      it("Then the main entry reflects the true main's HEAD — not the calling linked worktree's own", async () => {
+        // Arrange — the common (main) HEAD points at refs/heads/main; the
+        // opened linked worktree's OWN admin HEAD deliberately points
+        // elsewhere. If the main entry's HEAD read were not re-rooted at the
+        // common gitdir, it would read the caller's own HEAD instead.
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: OID_MAIN },
+            { name: 'refs/heads/feature' as RefName, id: OID_WT },
+          ],
+        });
+        await seedMainHead(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n');
+        const adminGitDir = `${ctx.layout.workDir}/wts/self/.git`;
+        const sut: Context = {
+          ...ctx,
+          layout: {
+            ...ctx.layout,
+            workDir: '/repo/wts/self',
+            gitDir: adminGitDir,
+            commonDir: ctx.layout.gitDir,
+          },
+        };
+        await ctx.fs.writeUtf8(`${adminGitDir}/HEAD`, 'ref: refs/heads/feature\n');
+
+        // Act
+        const result = await listWorktrees(sut);
+
+        // Assert — the main entry names the TRUE main branch/head
+        // (refs/heads/main / OID_MAIN), never the linked worktree's own
+        // (refs/heads/feature / OID_WT).
         expect(result).toEqual([
           {
             path: ctx.layout.workDir,
@@ -635,6 +686,54 @@ describe('listWorktrees', () => {
           '/repo/wts/alpha',
           '/repo/wts/zebra',
         ]);
+      });
+    });
+  });
+
+  describe('Given a files-backed repository with several linked worktrees sharing one packed branch', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the common ref store is built once, not once per worktree (files backend)', async () => {
+        // Arrange — 3 linked worktrees, each with its OWN symbolic HEAD (a
+        // necessarily fresh per-worktree read) pointing at the SAME shared
+        // `refs/heads/main`, packed at the common dir. Before the fix, each
+        // worktree's own derived Context called `getRefStore` again for
+        // that shared lookup, so the packed-refs file was re-parsed once
+        // per worktree; `listWorktrees` now derives ONE main-rooted Context
+        // and threads it through every worktree's shared-ref resolution.
+        const ctx = await buildSeededContext({
+          packedRefs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        await seedAdmin(ctx, { id: 'one', path: '/repo/wts/one', head: 'ref: refs/heads/main' });
+        await seedAdmin(ctx, { id: 'two', path: '/repo/wts/two', head: 'ref: refs/heads/main' });
+        await seedAdmin(ctx, {
+          id: 'three',
+          path: '/repo/wts/three',
+          head: 'ref: refs/heads/main',
+        });
+        const commonPackedRefs = packedRefsPath(commonGitDir(ctx));
+        const readUtf8Calls: string[] = [];
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string) => {
+              readUtf8Calls.push(path);
+              return originalReadUtf8(path);
+            },
+          },
+        };
+
+        // Act
+        const result = await listWorktrees(instrumented);
+
+        // Assert — one read of the shared packed-refs file across the main
+        // entry and all 3 linked worktrees' shared-ref resolution, instead
+        // of one per worktree (4 total).
+        expect(result).toHaveLength(4);
+        expect(result.every((entry) => entry.branch === 'refs/heads/main')).toBe(true);
+        expect(readUtf8Calls.filter((p) => p === commonPackedRefs)).toHaveLength(1);
       });
     });
   });

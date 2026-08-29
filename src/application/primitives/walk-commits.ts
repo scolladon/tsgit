@@ -2,8 +2,9 @@ import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
+import { limitFor } from './internal/concurrency.js';
 import { readCommit } from './internal/read-commit.js';
-import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './internal/read-commit-graph.js';
+import { commitHeader } from './internal/read-commit-graph.js';
 import { resolveShallow } from './internal/shallow-set.js';
 import { MAX_WALK_QUEUE_SIZE, type WalkCommitsOptions } from './types.js';
 import {
@@ -38,7 +39,7 @@ interface WalkSession {
 async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Promise<WalkSession> {
   const order = options.order ?? 'topo';
   const ignoreMissing = options.ignoreMissing ?? false;
-  const verifyHash = options.verifyHash ?? true;
+  const verifyHash = options.verifyHash ?? false;
   const shallow = await resolveShallow(ctx, options.shallow);
   const state: WalkState = {
     queue: [...options.from],
@@ -47,7 +48,7 @@ async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Pro
     until: new Set(options.until ?? []),
     shallow,
   };
-  const bound = ctx.config?.parallelism ?? DEFAULT_PREFETCH_CONCURRENCY;
+  const bound = limitFor(ctx, 'ioBound');
   const bodies: CommitBodies = createBoundedReader(bound, (id) =>
     readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing, shallow }),
   );

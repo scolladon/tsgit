@@ -5,6 +5,7 @@ import {
   parseIniSections,
   readConfig,
 } from '../../../../src/application/primitives/config-read.js';
+import { getConfigValue } from '../../../../src/application/primitives/config-scoped-read.js';
 import {
   appendConfigEntry,
   applyConfigOpInText,
@@ -1627,6 +1628,24 @@ describe('primitives/update-config', () => {
           // Assert
           const reread = await readConfig(ctx);
           expect(reread.extensions?.partialClone).toBe('origin');
+        });
+      });
+    });
+
+    describe('Given a value cached by a scoped read', () => {
+      describe('When updateConfigEntries writes', () => {
+        it('Then a later scoped read sees the new value', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[user]\n\tname = ada\n');
+          await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+
+          // Act
+          await updateConfigEntries(ctx, [{ section: 'user', key: 'name', value: 'bob' }]);
+
+          // Assert
+          const reread = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+          expect(reread).toEqual({ key: 'user.name', value: 'bob', scope: 'local' });
         });
       });
     });
@@ -3654,6 +3673,26 @@ describe('primitives/update-config', () => {
           // Assert
           const reread = await readConfig(ctx);
           expect(reread.remote).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a value cached by a scoped read', () => {
+      describe('When updateConfigOperations writes', () => {
+        it('Then a later scoped read sees the new value', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[user]\n\tname = ada\n');
+          await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+
+          // Act
+          await updateConfigOperations(ctx, [
+            { kind: 'set', section: 'user', key: 'name', value: 'bob' },
+          ]);
+
+          // Assert
+          const reread = await getConfigValue({ ctx, key: 'user.name', scope: 'local' });
+          expect(reread).toEqual({ key: 'user.name', value: 'bob', scope: 'local' });
         });
       });
     });

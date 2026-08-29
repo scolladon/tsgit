@@ -726,32 +726,152 @@ describe('decodePktStream — DoS resistance', () => {
   });
 });
 
-describe('decodePktStream — partial-header then capacity overflow', () => {
-  describe('Given a 2-byte partial header then an over-capacity chunk completing a valid length', () => {
+describe('decodePktStream — chunk size independence (HTTP stream coalescing)', () => {
+  describe('Given a single delivered chunk larger than the old fixed accumulator, containing only well-formed small pkt-lines', () => {
     describe('When decoded', () => {
-      it('Then PKT_TOO_LARGE value equals the 4-byte header count', () => {
-        // Arrange — chunk1 buffers 2 header bytes ("00"); chunk2 overflows ACC_CAPACITY
-        // and supplies the remaining 2 header bytes ("04") so the full header "0004"
-        // parses to a valid length, reaching `throw pktTooLarge(this.used)`.
-        // headerNeeded = MAX(0, 4 - 2) = 2 → used = 2 + 2 = 4.
-        // The L119 `-`→`+` mutant makes headerNeeded = 4 + 2 = 6 → used = 8.
-        // The L122 `+=`→`-=` mutant makes used = 2 - 2 = 0.
-        const chunk1 = bytesOf('00');
-        const overflow = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 100); // > ACC_CAPACITY - 2
-        overflow.set(bytesOf('04'), 0);
+      it('Then every pkt-line parses (delivered chunk size no longer bounds a single accept)', async () => {
+        // Arrange — Node stream coalescing (highWaterMark 64 KiB) can deliver
+        // this shape on real HTTP clone/fetch of a moderately large repo.
+        const payloads = Array.from({ length: 100 }, (_, i) => new Uint8Array(700).fill(i % 256));
+        const chunk = encodePktStream(payloads);
+
+        // Act
+        const result = await collect(decodePktStream(asyncOf([chunk])));
+
+        // Assert
+        expect(chunk.byteLength).toBeGreaterThan(MAX_PKT_LINE_PAYLOAD + 4);
+        expect(result).toEqual([
+          ...payloads.map((payload) => ({ kind: 'data', payload })),
+          { kind: 'flush' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a chunk boundary that falls exactly at the old accumulator cap, mid pkt-line', () => {
+    describe('When decoded', () => {
+      it('Then both the filler and the straddling pkt-line parse', async () => {
+        // Arrange — the filler frame occupies bytes [0, 65500); the straddle
+        // frame spans [65500, 65604), so splitting at byte 65520 (the old
+        // fixed accumulator size) lands inside the straddling frame's body.
+        const oldAccumulatorCap = MAX_PKT_LINE_PAYLOAD + 4;
+        const fillerPayload = new Uint8Array(65496);
+        const straddlePayload = bytesOf('x'.repeat(100));
+        const whole = encodePktLines([fillerPayload, straddlePayload]);
+        const chunk1 = whole.slice(0, oldAccumulatorCap);
+        const chunk2 = whole.slice(oldAccumulatorCap);
+
+        // Act
+        const result = await collect(decodePktStream(asyncOf([chunk1, chunk2])));
+
+        // Assert
+        expect(chunk1.byteLength).toBe(oldAccumulatorCap);
+        expect(result).toEqual([
+          { kind: 'data', payload: fillerPayload },
+          { kind: 'data', payload: straddlePayload },
+        ]);
+      });
+    });
+  });
+});
+
+describe('decodePktStream — declared length vs delivered chunk size', () => {
+  describe('Given a 2-byte partial header then an over-capacity chunk completing a declared length that exceeds the format max', () => {
+    describe('When decoded', () => {
+      it('Then throws PKT_TOO_LARGE with the declared value, regardless of delivered chunk size', async () => {
+        // Arrange — chunk1 buffers 2 header bytes ("ff"); chunk2 supplies the
+        // remaining 2 ("f1", declaring 0xfff1 > MAX_PKT_LINE_PAYLOAD + 4) plus
+        // padding — refusal must key off the DECLARED length, never off how
+        // much the delivered chunk itself contains.
+        const chunk1 = bytesOf('ff');
+        const overflow = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 100);
+        overflow.set(bytesOf('f1'), 0);
 
         // Act & Assert
-        return collect(decodePktStream(asyncOf([chunk1, overflow]))).then(
-          () => {
-            throw new Error('expected throw');
-          },
-          (err) => {
-            // Assert
-            expect(err).toBeInstanceOf(TsgitError);
-            const te = err as TsgitError;
-            expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 4 });
-          },
+        try {
+          await collect(decodePktStream(asyncOf([chunk1, overflow])));
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          const te = err as TsgitError;
+          expect(te.data).toEqual({ code: 'PKT_TOO_LARGE', value: 0xfff1 });
+        }
+      });
+    });
+  });
+
+  describe('Given a 2-byte partial header then an over-capacity chunk completing a small declared length plus a further well-formed frame', () => {
+    describe('When decoded', () => {
+      it('Then both pkt-lines parse — the incomplete tail never accumulates beyond one frame', async () => {
+        // Arrange — chunk1 buffers 2 header bytes ("00"); chunk2 alone is
+        // larger than the old fixed accumulator (used(2) + chunk2.length >
+        // old cap) yet carries only the 2 remaining header bytes ("04", an
+        // empty-payload pkt) followed by one further well-formed max-size
+        // pkt-line. The carried tail is bounded by one frame, never by
+        // delivered chunk size.
+        const chunk1 = bytesOf('00');
+        const maxPayload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+        const chunk2 = concat(bytesOf('04'), encodePktLine(maxPayload));
+
+        // Act
+        const result = await collect(decodePktStream(asyncOf([chunk1, chunk2])));
+
+        // Assert
+        expect(chunk1.byteLength + chunk2.byteLength).toBeGreaterThan(MAX_PKT_LINE_PAYLOAD + 4);
+        expect(result).toEqual([
+          { kind: 'data', payload: new Uint8Array(0) },
+          { kind: 'data', payload: maxPayload },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a chunk that fills the accumulator to capacity, drains down to a small tail, and STILL has one byte left over', () => {
+    describe('When decoded', () => {
+      it("Then the second top-up within the same chunk takes only the bytes truly remaining — never a mutant's inflated (length + offset) count", async () => {
+        // Arrange — chunk1 leaves a 3-byte partial header. chunk2 completes
+        // it, then packs the accumulator with an odd-sized frame (breaking
+        // 4-byte alignment) plus enough empty frames to fill the
+        // accumulator to EXACTLY capacity on the first top-up, leaving a
+        // 3-byte partial header as the new tail. chunk2 then carries
+        // exactly ONE more byte, completing that tail into one final
+        // empty-payload frame — a SECOND top-up within this same `accept`
+        // call, now with a nonzero `chunkOffset`. The correct take is
+        // `chunk.byteLength - chunkOffset` (1 byte); `+ chunkOffset`
+        // instead computes a huge, wrong take that `Math.min` clamps to
+        // `room`, claiming the WHOLE remaining capacity was filled with
+        // fresh data when only one real byte was copied — the rest is
+        // stale bytes left over from the frames already drained this round.
+        const chunk1 = bytesOf('000');
+        const oddFrame = concat(bytesOf('0005'), bytesOf('Z')); // 5 bytes, breaks 4-byte alignment
+        const emptyFrame = bytesOf('0004');
+        const frameCount = 16_377;
+        const padding = new Uint8Array(frameCount * emptyFrame.byteLength);
+        for (let i = 0; i < frameCount; i += 1) {
+          padding.set(emptyFrame, i * emptyFrame.byteLength);
+        }
+        const chunk2 = concat(
+          bytesOf('4'), // completes chunk1's "000" into "0004" (frame 0)
+          oddFrame,
+          padding,
+          bytesOf('000'), // 3-byte partial header — lands exactly at capacity
+          bytesOf('4'), // completes it into one final "0004" — the lone extra byte
         );
+
+        // Act
+        const result = await collect(decodePktStream(asyncOf([chunk1, chunk2])));
+
+        // Assert — every frame parses cleanly with no leftover; a mutant
+        // that over-counts the final top-up either throws PKT_TRUNCATED
+        // (stale garbage read as an incomplete header) or never reaches
+        // this assertion at all.
+        expect(result).toHaveLength(2 + frameCount + 1);
+        expect(result[0]).toEqual({ kind: 'data', payload: new Uint8Array(0) });
+        expect(result[1]).toEqual({ kind: 'data', payload: bytesOf('Z') });
+        for (let i = 0; i < frameCount + 1; i += 1) {
+          expect(result[2 + i]).toEqual({ kind: 'data', payload: new Uint8Array(0) });
+        }
       });
     });
   });
@@ -770,6 +890,136 @@ describe('decodePktStream — case-insensitive length parse', () => {
         // Assert
         expect(result).toHaveLength(1);
         expect(result[0]).toEqual({ kind: 'data', payload: bytesOf('abcdef') });
+      });
+    });
+  });
+});
+
+async function* asyncByteDrip(bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  for (let i = 0; i < bytes.byteLength; i += 1) {
+    yield bytes.subarray(i, i + 1);
+  }
+}
+
+describe('decodePktStream — linear-time accumulation (byte-drip)', () => {
+  describe('Given a maximal-size pkt-line delivered one byte at a time', () => {
+    describe('When the bytes copied into the internal accumulator are counted', () => {
+      it('Then total copied bytes scale with size, not size squared', async () => {
+        // Arrange — a naive concat-then-slice accumulator copies the ENTIRE
+        // pending tail on every delivered byte (`Uint8Array.prototype.set`
+        // is the primitive both that and this accumulator copy through),
+        // so byte-dripping an n-byte frame costs O(n²) total copied bytes —
+        // for n = MAX_PKT_LINE_PAYLOAD that's ~65 520 vs ~4.3 BILLION.
+        // Counting the actual work sidesteps wall-clock timing entirely —
+        // a duration-based assertion is provably unreliable here: measured
+        // under a fully-loaded CI run (every other suite's coverage
+        // instrumentation competing for the same cores), a wall-clock
+        // ratio between two sizes swung far past a ceiling that looked
+        // generous in isolation. Byte-counting has no such dependency on
+        // ambient system load.
+        const payload = new Uint8Array(MAX_PKT_LINE_PAYLOAD);
+        const frame = encodePktLine(payload);
+        let bytesCopied = 0;
+        const originalSet = Uint8Array.prototype.set;
+        const patchedSet = function patchedSet(
+          this: Uint8Array,
+          source: ArrayLike<number>,
+          offset?: number,
+        ): void {
+          bytesCopied += source.length;
+          originalSet.call(this, source, offset);
+        };
+        Uint8Array.prototype.set = patchedSet;
+
+        // Act
+        let result: PktLine[];
+        try {
+          result = await collect(decodePktStream(asyncByteDrip(frame)));
+        } finally {
+          Uint8Array.prototype.set = originalSet;
+        }
+
+        // Assert — 10x the frame size stays far above ANY plausible linear
+        // constant factor, yet is dwarfed by the quadratic byte count.
+        expect(result).toHaveLength(1);
+        expect(bytesCopied).toBeLessThan(frame.byteLength * 10);
+      });
+    });
+  });
+});
+
+describe('decodePktStream — buffer-ownership safety', () => {
+  describe('Given a source that reuses one backing buffer across every yielded chunk', () => {
+    describe('When decoded', () => {
+      it('Then every payload decodes independently — later reuse of the source buffer does not corrupt an earlier payload', async () => {
+        // Arrange — `Buffer.prototype.slice` (Node's `Uint8Array` subclass)
+        // ALIASES its source instead of copying; a zero-copy stream source
+        // that recycles one backing buffer per delivery (e.g. a Node
+        // `Readable` in non-flowing mode) would otherwise silently corrupt
+        // an already-yielded payload once the source overwrites the shared
+        // buffer for its next chunk.
+        const first = encodePktLine(bytesOf('first-payload'));
+        const second = encodePktLine(bytesOf('second-payload'));
+        const shared = Buffer.alloc(Math.max(first.byteLength, second.byteLength));
+
+        async function* reusedBufferSource(): AsyncIterable<Uint8Array> {
+          shared.set(first, 0);
+          yield shared.subarray(0, first.byteLength);
+          // Overwrite the SAME backing buffer before the consumer has had
+          // any further chance to copy — a `.slice()`-based payload would
+          // now read back as (part of) `second-payload`.
+          shared.fill(0);
+          shared.set(second, 0);
+          yield shared.subarray(0, second.byteLength);
+        }
+
+        // Act
+        const result = await collect(decodePktStream(reusedBufferSource()));
+
+        // Assert
+        expect(result).toEqual([
+          { kind: 'data', payload: bytesOf('first-payload') },
+          { kind: 'data', payload: bytesOf('second-payload') },
+        ]);
+      });
+    });
+  });
+
+  describe('Given frames that drain from the internal pending-tail accumulator', () => {
+    describe('When a later chunk compacts the accumulator over an already-yielded frame', () => {
+      it('Then every payload survives the compaction intact', async () => {
+        // Arrange — split three frames so A and B complete INSIDE the
+        // internal accumulator (chunk 1 leaves A incomplete, forcing the
+        // buffering path) while C's opening bytes arrive in the same chunk:
+        // draining A and B then compacts C's fragment to the accumulator's
+        // front, overwriting the very bytes A and B were parsed from. A
+        // payload aliasing the accumulator instead of owning a copy would
+        // read back as C's bytes after that compaction.
+        const frameA = encodePktLine(new Uint8Array(100).fill(0x61));
+        const frameB = encodePktLine(new Uint8Array(50).fill(0x62));
+        const frameC = encodePktLine(new Uint8Array(200).fill(0x63));
+        const stitched = new Uint8Array(frameA.byteLength + frameB.byteLength + frameC.byteLength);
+        stitched.set(frameA, 0);
+        stitched.set(frameB, frameA.byteLength);
+        stitched.set(frameC, frameA.byteLength + frameB.byteLength);
+        const splitOne = 50; // mid-A: forces A into the accumulator
+        const splitTwo = frameA.byteLength + frameB.byteLength + 30; // mid-C: compaction moves C's fragment over A's bytes
+        async function* threeChunkSource(): AsyncIterable<Uint8Array> {
+          yield stitched.subarray(0, splitOne);
+          yield stitched.subarray(splitOne, splitTwo);
+          yield stitched.subarray(splitTwo);
+        }
+        const sut = decodePktStream;
+
+        // Act
+        const result = await collect(sut(threeChunkSource()));
+
+        // Assert
+        expect(result).toEqual([
+          { kind: 'data', payload: new Uint8Array(100).fill(0x61) },
+          { kind: 'data', payload: new Uint8Array(50).fill(0x62) },
+          { kind: 'data', payload: new Uint8Array(200).fill(0x63) },
+        ]);
       });
     });
   });

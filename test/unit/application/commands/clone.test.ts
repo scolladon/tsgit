@@ -360,6 +360,94 @@ describe('clone', () => {
     });
   });
 
+  describe('Given a peer advertising a different object-format and an instrumented deltaCache', () => {
+    describe('When clone adopts the peer algorithm and keeps the session', () => {
+      it('Then no oid-keyed cache holds an entry at the moment the algorithm is adopted', async () => {
+        // Arrange — the assertion that licenses `deriveContext`'s
+        // `keepSessionAcrossHashChange` at this call site: the swap happens
+        // during bootstrap, before any oid-keyed cache is populated, proven
+        // here by tracking every `deltaCache.get`/`set` call up to the
+        // first filesystem write bootstrap performs.
+        const ctx = createMemoryContext();
+        const sourceCtx = createMemoryContext({ algorithm: 'sha256' });
+        const { packBytes, blobId } = await buildPackFromSingleBlob(sourceCtx, 'pre-adopt blob\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+        let bootstrapStarted = false;
+        const trackingFs = new Proxy(networkCtx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'mkdir') bootstrapStarted = true;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        let touchedBeforeBootstrap = 0;
+        const trackingDeltaCache = new Proxy(networkCtx.deltaCache, {
+          get(target, prop, receiver) {
+            if (!bootstrapStarted && (prop === 'get' || prop === 'set')) {
+              touchedBeforeBootstrap += 1;
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const trackingCtx: Context = {
+          ...networkCtx,
+          fs: trackingFs,
+          deltaCache: trackingDeltaCache,
+        };
+
+        // Act
+        await clone(trackingCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(touchedBeforeBootstrap).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a peer advertising a different object-format and an instrumented session', () => {
+    describe('When clone adopts the peer algorithm', () => {
+      it('Then the derived pack context reuses the ORIGINAL session identity — `session` is read exactly twice (the spread copy, then the keep-session ternary), never minted fresh', async () => {
+        // Arrange — `deriveContext`'s `{ ...ctx, ...changes, session: freshSession ? createSession() : ctx.session }`
+        // reads `ctx.session` once via the object-spread copy and, ONLY when
+        // `keepSessionAcrossHashChange` licenses reuse, a second time via the
+        // ternary's `ctx.session` branch. A mutant that drops or falsifies
+        // that option forces `createSession()` instead, so the ternary never
+        // re-reads `ctx.session` — exactly one read instead of two.
+        const ctx = createMemoryContext();
+        const sourceCtx = createMemoryContext({ algorithm: 'sha256' });
+        const { packBytes, blobId } = await buildPackFromSingleBlob(
+          sourceCtx,
+          'session-identity blob\n',
+        );
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+        let sessionReads = 0;
+        const trackingCtx: Context = new Proxy(networkCtx, {
+          get(target, prop, receiver) {
+            if (prop === 'session') sessionReads += 1;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act
+        await clone(trackingCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(sessionReads).toBe(2);
+      });
+    });
+  });
+
   describe('Given depth: 1 and a server emitting a shallow block', () => {
     describe('When clone', () => {
       it('Then writes.git/shallow with the boundary oid', async () => {

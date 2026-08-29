@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -45,7 +46,36 @@ describe('readObject', () => {
     });
   });
 
-  describe('Given a corrupted loose file and verifyHash default true', () => {
+  describe('Given a corrupted loose file and the default', () => {
+    describe('When readObject is called', () => {
+      it('Then it returns the bytes', async () => {
+        // Arrange
+        // Kills the `options?.verifyHash ?? false` BooleanLiteral mutant to
+        // `true`: the default must stay unverified, or a corrupt object would
+        // be refused instead of served, matching canonical git's unverified
+        // cat-file/log/show reads.
+        const ctx = await buildSeededContext();
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        const result = await readObject(ctx, fakeId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given verifyHash=true on the same corrupted file', () => {
     describe('When readObject is called', () => {
       it('Then throws OBJECT_HASH_MISMATCH', async () => {
         // Arrange
@@ -63,37 +93,12 @@ describe('readObject', () => {
 
         // Act
         try {
-          await readObject(ctx, fakeId);
+          await readObject(ctx, fakeId, { verifyHash: true });
           // Assert
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
         }
-      });
-    });
-  });
-
-  describe('Given verifyHash=false on the same corrupted file', () => {
-    describe('When readObject is called', () => {
-      it('Then returns the bytes', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const fakeId = 'a'.repeat(40) as ObjectId;
-        const { computeLooseObjectPath } = await import(
-          '../../../../src/domain/storage/loose-path.js'
-        );
-        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
-        const compressed = await ctx.compressor.deflate(rawBytes);
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
-          compressed,
-        );
-
-        // Act
-        const result = await readObject(ctx, fakeId, { verifyHash: false });
-
-        // Assert
-        expect(result.type).toBe('blob');
       });
     });
   });
@@ -370,6 +375,117 @@ describe('readObject', () => {
       });
     });
   });
+
+  describe('Given a pack registry populated through the opening Context', () => {
+    describe('When read through a Context derived by deriveContext (same session)', () => {
+      it('Then the derived Context hits the shared registry (readdir runs at most once)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
+        const missingId = 'f'.repeat(40) as ObjectId;
+        try {
+          await readObject(ctx, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
+        }
+        // No fields change — a no-op derivation still keeps the session,
+        // and (unlike the other tests here) leaves `fs` identical too, so a
+        // spy on the SHARED object observes calls made through either.
+        const derived = deriveContext(ctx, {});
+        const spy = vi.spyOn(ctx.fs, 'readdir');
+
+        // Act
+        try {
+          await readObject(derived, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected.
+        }
+
+        // Assert — session unchanged ⇒ same registry, no re-scan.
+        expect(derived.session).toBe(ctx.session);
+        expect(spy).not.toHaveBeenCalledWith('/repo/.git/objects/pack');
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a pack registry populated through a Context derived by deriveContext (same session)', () => {
+    describe('When read through the opening Context', () => {
+      it('Then the opening Context hits the shared registry (readdir runs at most once)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
+        const derived = deriveContext(ctx, { deltaCache: ctx.deltaCache });
+        const missingId = 'f'.repeat(40) as ObjectId;
+        try {
+          await readObject(derived, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
+        }
+        let readdirCount = 0;
+        const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === '/repo/.git/objects/pack') readdirCount += 1;
+              return originalReaddir(path);
+            },
+          },
+        };
+
+        // Act
+        try {
+          await readObject(instrumented, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected.
+        }
+
+        // Assert
+        expect(readdirCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a Context whose session was minted fresh by a repository-boundary derivation', () => {
+    describe('When read through it', () => {
+      it('Then the pack registry is NOT shared with the opening Context (readdir runs again)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
+        const missingId = 'f'.repeat(40) as ObjectId;
+        try {
+          await readObject(ctx, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
+        }
+        let readdirCount = 0;
+        const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
+        const fresh = deriveContext(ctx, {
+          layout: { ...ctx.layout, gitDir: '/elsewhere/.git' },
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === '/elsewhere/.git/objects/pack') readdirCount += 1;
+              return originalReaddir('/repo/.git/objects/pack');
+            },
+          },
+        });
+
+        // Act
+        try {
+          await readObject(fresh, missingId);
+        } catch {
+          // OBJECT_NOT_FOUND — expected.
+        }
+
+        // Assert — a fresh session starts the registry cache cold.
+        expect(fresh.session).not.toBe(ctx.session);
+        expect(readdirCount).toBe(1);
+      });
+    });
+  });
 });
 
 describe('readRawObject', () => {
@@ -511,7 +627,35 @@ describe('readRawObject', () => {
     });
   });
 
-  describe('Given a corrupted loose file and verifyHash default true', () => {
+  describe('Given a corrupted loose file and the default', () => {
+    describe('When readRawObject is called', () => {
+      it('Then it returns the unverified raw content', async () => {
+        // Arrange
+        // Kills the `options?.verifyHash ?? false` BooleanLiteral mutant to
+        // `true`: the default must stay unverified.
+        const ctx = await buildSeededContext();
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        const result = await readRawObject(ctx, fakeId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(new TextDecoder().decode(result.content)).toBe('xyz');
+      });
+    });
+  });
+
+  describe('Given verifyHash=true on the same corrupted file', () => {
     describe('When readRawObject is called', () => {
       it('Then throws OBJECT_HASH_MISMATCH with expected/actual', async () => {
         // Arrange
@@ -529,7 +673,7 @@ describe('readRawObject', () => {
 
         // Act
         try {
-          await readRawObject(ctx, fakeId);
+          await readRawObject(ctx, fakeId, { verifyHash: true });
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -541,32 +685,6 @@ describe('readRawObject', () => {
             expect(data.actual).toBe(actualHash);
           }
         }
-      });
-    });
-  });
-
-  describe('Given verifyHash=false on the same corrupted file', () => {
-    describe('When readRawObject is called', () => {
-      it('Then returns the unverified raw content', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const fakeId = 'a'.repeat(40) as ObjectId;
-        const { computeLooseObjectPath } = await import(
-          '../../../../src/domain/storage/loose-path.js'
-        );
-        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
-        const compressed = await ctx.compressor.deflate(rawBytes);
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
-          compressed,
-        );
-
-        // Act
-        const result = await readRawObject(ctx, fakeId, { verifyHash: false });
-
-        // Assert
-        expect(result.type).toBe('blob');
-        expect(new TextDecoder().decode(result.content)).toBe('xyz');
       });
     });
   });
@@ -871,7 +989,7 @@ describe('readObject — lazy-fetch (partial clone)', () => {
 
         // Act — a non-OBJECT_NOT_FOUND error is rethrown untouched.
         try {
-          await readObject(ctx, fakeId);
+          await readObject(ctx, fakeId, { verifyHash: true });
           // Assert
           expect.unreachable();
         } catch (error) {

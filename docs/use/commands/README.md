@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 46 entries, alphabetical.
+Every method bound on a `Repository` handle. 47 entries, alphabetical.
 
 Each command is also published as its own entry point —
 `import { add } from '@scolladon/tsgit/commands/add'` — one subpath per
@@ -30,6 +30,7 @@ a bound `this`.
 | [`grep`](grep.md) | Search tracked content for a JavaScript `RegExp` (or literal); returns structured per-line match data (no rendered line). |
 | [`init`](init.md) | Initialize a fresh repository. |
 | [`log`](log.md) | Walk first-parent commit history. |
+| [`maintenance`](maintenance.md) | Explicit-only repository upkeep — currently the commit-graph task. |
 | [`merge`](merge.md) | Three-way merge with conflict materialisation. Nested-namespace surface (`repo.merge.run/continue/abort`). |
 | [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
 | [`nameRev`](name-rev.md) | Name a commit by the nearest ref that contains it (`~`/`^` path); `describe --contains` delegates here. Structured data (no rendered line). |

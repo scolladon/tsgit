@@ -1,11 +1,13 @@
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
+import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
+import { nativeMachineFacts } from './node-concurrency.js';
 import { NodeEnvReader } from './node-env-reader.js';
 import { NodeFileSystem } from './node-file-system.js';
 import { NodeHashService } from './node-hash-service.js';
@@ -80,6 +82,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     runtime: 'node' as const,
     hashConfig: configFor(algorithm),
     deltaCache,
+    concurrency: deriveLimits(nativeMachineFacts()),
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.hooks === false ? {} : { hooks: new NodeHookRunner() }),
     ...(options.command === false ? {} : { command: new NodeCommandRunner() }),

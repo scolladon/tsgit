@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 
 import type { AuthorIdentity } from '../../../../src/domain/objects/author-identity.js';
+import type { ExtraHeader } from '../../../../src/domain/objects/commit.js';
 import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mode.js';
 import {
   type HashConfig,
@@ -134,17 +135,40 @@ export function dedupeTreeEntriesByName(
   });
 }
 
+// A name/email field: well-formed Unicode graphemes (never a lone surrogate
+// half — `fc.string({ unit: 'grapheme' })` only ever emits complete code
+// points, unlike `arbCodeUnitString()`). A lone surrogate can't round-trip
+// through the UTF-8 encode/decode this same arbitrary feeds in
+// commit.properties.test.ts / tag.properties.test.ts (TextEncoder replaces
+// it with U+FFFD), so it would falsify those byte-level round-trip
+// properties for a reason that has nothing to do with parseIdentity. Filtered
+// on the three bytes that would corrupt the "name <email> ts tz" line framing
+// (`<`, `>`, `\n`) plus the two more serializeIdentity's control-character
+// guard forbids (`\r`, `\0`).
+function arbIdentityFieldString(): fc.Arbitrary<string> {
+  return fc
+    .string({ unit: 'grapheme', maxLength: 20 })
+    .filter(
+      (s) =>
+        !s.includes('<') &&
+        !s.includes('>') &&
+        !s.includes('\n') &&
+        !s.includes('\r') &&
+        !s.includes('\0'),
+    );
+}
+
 export function arbAuthorIdentity(): fc.Arbitrary<AuthorIdentity> {
   return fc.record({
-    name: fc
-      .string({ maxLength: 20 })
-      .filter((s) => !s.includes('<') && !s.includes('>') && !s.includes('\n')),
-    email: fc
-      .string({ maxLength: 20 })
-      .filter((s) => !s.includes('<') && !s.includes('>') && !s.includes(' ') && !s.includes('\n')),
-    timestamp: fc.integer({ min: 0, max: 9999999999 }),
+    name: arbIdentityFieldString(),
+    email: arbIdentityFieldString(),
+    timestamp: fc.integer({ min: -2_000_000_000, max: 9_999_999_999 }),
     timezoneOffset: fc
-      .tuple(fc.constantFrom('+', '-'), fc.integer({ min: 0, max: 12 }), fc.constantFrom(0, 30))
+      .tuple(
+        fc.constantFrom('+', '-'),
+        fc.integer({ min: 0, max: 12 }),
+        fc.constantFrom(0, 15, 30, 45),
+      )
       .map(
         ([sign, h, m]) => `${sign}${h.toString().padStart(2, '0')}${m.toString().padStart(2, '0')}`,
       ),
@@ -189,7 +213,7 @@ export function arbArmorBlock(): fc.Arbitrary<string> {
 // whitespace noise (every git `isspace` kind). Joining an array of these with
 // '\n' yields messages that exercise stripspace's collapse / drop / strip
 // paths: blank runs, leading/trailing blanks, and per-line trailing whitespace.
-function arbRawLine(): fc.Arbitrary<string> {
+export function arbRawLine(): fc.Arbitrary<string> {
   const bodyChars = fc.constantFrom('a', 'b', 'c', '#', 'x', '.', ' ');
   const wsChars = fc.constantFrom(' ', '\t', '\v', '\f', '\r');
   return fc
@@ -202,6 +226,38 @@ function arbRawLine(): fc.Arbitrary<string> {
 
 export function arbCommitMessage(): fc.Arbitrary<string> {
   return fc.array(arbRawLine(), { maxLength: 10 }).map((lines) => lines.join('\n'));
+}
+
+// `arbCommitMessage()` with a roughly-even chance of a leading U+FEFF
+// byte-order mark — additive, so `arbCommitMessage()` itself (shared with
+// commit-message.properties.test.ts) stays untouched. Pins that a BOM is
+// content the commit parse path preserves verbatim, never decoder
+// bookkeeping it strips.
+export function arbCommitMessageWithOptionalBom(): fc.Arbitrary<string> {
+  return fc
+    .tuple(fc.boolean(), arbCommitMessage())
+    .map(([withBom, message]) => (withBom ? `\uFEFF${message}` : message));
+}
+
+// A well-formed extra-header key: non-empty, free of the bytes that would
+// break formatContinuationHeader's line framing (space, newline, NUL), and
+// distinct from the one key commits special-case ('gpgsig').
+export function arbExtraHeaderKey(): fc.Arbitrary<string> {
+  return fc
+    .string({ minLength: 1, maxLength: 15 })
+    .filter((s) => !s.includes(' ') && !s.includes('\n') && !s.includes('\0') && s !== 'gpgsig');
+}
+
+// A multi-line extra-header value (>= 2 lines on every run) so continuation
+// folding — formatContinuationHeader's per-line ' ' prefix,
+// parseOptionalHeaderBlock's push arm — is actually exercised rather than
+// left to chance.
+export function arbExtraHeaderValue(): fc.Arbitrary<string> {
+  return fc.array(arbRawLine(), { minLength: 2, maxLength: 4 }).map((lines) => lines.join('\n'));
+}
+
+export function arbExtraHeader(): fc.Arbitrary<ExtraHeader> {
+  return fc.record({ key: arbExtraHeaderKey(), value: arbExtraHeaderValue() });
 }
 
 // A single `\n`-free line guaranteed to carry at least one non-whitespace ASCII

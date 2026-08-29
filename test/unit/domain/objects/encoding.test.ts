@@ -6,6 +6,7 @@ import {
   bytesToHex,
   compareBytes,
   decode,
+  decodePreservingBom,
   encode,
   formatContinuationHeader,
   hexToBytes,
@@ -293,6 +294,38 @@ describe('encoding', () => {
 
           // Assert
           expect(result).toBe(str);
+        });
+      });
+    });
+  });
+
+  describe('decodePreservingBom', () => {
+    describe('Given bytes starting with a UTF-8 byte-order mark', () => {
+      describe('When decoding', () => {
+        it('Then the BOM character (U+FEFF) is kept at the start of the result', () => {
+          // Arrange
+          const bytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69]);
+
+          // Act
+          const result = decodePreservingBom(bytes);
+
+          // Assert
+          expect(result).toBe('\uFEFFhi');
+        });
+      });
+    });
+
+    describe('Given bytes without a byte-order mark', () => {
+      describe('When decoding', () => {
+        it('Then it decodes identically to decode', () => {
+          // Arrange
+          const bytes = new Uint8Array([104, 101, 108, 108, 111]);
+
+          // Act
+          const result = decodePreservingBom(bytes);
+
+          // Assert
+          expect(result).toBe(decode(bytes));
         });
       });
     });

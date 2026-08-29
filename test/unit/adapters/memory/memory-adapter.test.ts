@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryCommandRunner } from '../../../../src/adapters/memory/memory-command-runner.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
+import { limitFor } from '../../../../src/application/primitives/internal/concurrency.js';
+import { deriveLimits } from '../../../../src/domain/concurrency/derive-limits.js';
 
 describe('createMemoryContext', () => {
   describe('Given a command runner option', () => {
@@ -254,6 +256,33 @@ describe('createMemoryContext', () => {
         expect(sut.deltaCache.entryCount).toBe(2);
         expect(sut.deltaCache.get('a')).toBeUndefined();
         expect(sut.deltaCache.get('c')).toEqual(new Uint8Array([3]));
+      });
+    });
+  });
+
+  describe('Given default options', () => {
+    describe('When reading ctx.concurrency', () => {
+      it('Then it is explicitly set to the no-machine-facts floor, not left undefined', () => {
+        // Arrange / Act — node/browser adapters always set concurrency from
+        // real machine facts; the memory adapter has none to report, so it
+        // must set the same floor deriveLimits({}) would fall back to
+        // explicitly, rather than leaving the field undefined.
+        const sut = createMemoryContext();
+
+        // Assert
+        expect(sut.concurrency).toEqual(deriveLimits({}));
+      });
+    });
+
+    describe('When resolving the ioBound and cpuBound pool sizes', () => {
+      it('Then both match the documented no-facts floor (4 and 1)', () => {
+        // Arrange / Act
+        const sut = createMemoryContext();
+
+        // Assert — pins the actual floor values so a future deriveLimits
+        // change surfaces here instead of silently drifting.
+        expect(limitFor(sut, 'ioBound')).toBe(4);
+        expect(limitFor(sut, 'cpuBound')).toBe(1);
       });
     });
   });

@@ -146,6 +146,21 @@ export function compareCursorNames(a: TreeCursor, b: TreeCursor): number {
   return aLen - bLen;
 }
 
+/**
+ * Byte-equality check between a cursor's (undecoded) name and an
+ * already-encoded target — the exact-match counterpart to
+ * `compareCursorNames`, which orders two cursors against each other. No
+ * virtual trailing slash: an exact name match never needs one.
+ */
+export function cursorNameEquals(c: TreeCursor, target: Uint8Array): boolean {
+  const length = c.nameEnd - c.nameStart;
+  if (length !== target.length) return false;
+  for (let i = 0; i < length; i++) {
+    if (c.buf[c.nameStart + i] !== target[i]) return false;
+  }
+  return true;
+}
+
 export function cursorsSame(a: TreeCursor, b: TreeCursor): boolean {
   return sameOid(a, b) && sameMode(a, b);
 }

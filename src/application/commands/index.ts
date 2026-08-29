@@ -185,6 +185,12 @@ export {
   type WorktreeNamespace,
 } from './internal/worktree-namespace.js';
 export { type LogEntry, type LogOptions, type LogOrder, log } from './log.js';
+export {
+  type MaintenanceOptions,
+  type MaintenanceResult,
+  type MaintenanceTask,
+  maintenance,
+} from './maintenance.js';
 export { type MergeResult, type MergeRunInput, mergeRun } from './merge.js';
 export {
   type MvMove,

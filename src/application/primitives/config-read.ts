@@ -1,3 +1,4 @@
+import { configBadNumericValue } from '../../domain/commands/error.js';
 import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
 import {
   GIT_C_INT_MAX,
@@ -8,7 +9,9 @@ import {
   tokenizeConfig,
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
+import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { invalidateScopedConfigCache } from './config-scoped-read.js';
 import { layoutFailsTrustGate } from './internal/layout-verdict.js';
 import { commonGitDir } from './path-layout.js';
 
@@ -112,6 +115,18 @@ export interface ParsedConfig {
   readonly tag?: { readonly gpgSign?: boolean };
   /** `pack.writeReverseIndex` — write a sibling `.rev` beside each pack index. git defaults to true. */
   readonly pack?: { readonly writeReverseIndex?: boolean };
+  /**
+   * `[gc]` — maintenance's `gc` task settings. `auto` (git default `6700`) is
+   * consulted only under `auto: true`; `pruneExpire` (git default
+   * `2.weeks.ago`) is the raw config string, resolved by `expiryCutoff`;
+   * `cruftPacks` (git default `true`) routes surviving unreachable objects
+   * to a cruft pack rather than loose files.
+   */
+  readonly gc?: {
+    readonly auto?: number;
+    readonly pruneExpire?: string;
+    readonly cruftPacks?: boolean;
+  };
   readonly push?: {
     /** `push.gpgSign` — sign push certificates: `true`/`false`, or `if-asked` (server-requested). */
     readonly gpgSign?: 'true' | 'false' | 'if-asked';
@@ -128,21 +143,17 @@ export interface ParsedConfig {
 }
 
 /**
- * One read of `readConfig`, cached per `Context`: the scope-merged parse
- * (`system → global → local → worktree`, later scopes winning — see
- * `mergeConfigsByScope`), the LOCAL `${gitDir}/config` token stream, and the
- * absolute path those tokens were read from.
+ * One read of `readConfig`, cached per session: the LOCAL `${commonGitDir}/config`
+ * parse (`parsed`), its token stream (`tokens`), and the absolute path those
+ * tokens were read from (`source`) — every field describes the SAME single
+ * file. NOT a multi-scope merge: see `loadConfigEntry`'s own docstring for
+ * why local-only is deliberate.
  *
- * `tokens`/`source` describe the LOCAL file ONLY, deliberately — the seven
- * `findFirstInvalid*`/`findLastInvalid*` finders below walk `tokens` to
- * locate a malformed entry and report `source` as its file, and the eager
- * config gate (`assertEagerConfigValid`/`assertDiscoveryBooleansValid`) must
- * keep refusing on a malformed LOCAL config exactly as it always has —
- * widening validation to scan every scope's tokens would be a behaviour
- * change these finders never asked for. `parsed`, by contrast, IS the full
- * multi-scope merge: every `readConfig` consumer sees system/global/worktree
- * values the finders never validate. A missing file at any scope is normal
- * (empty), not an error.
+ * The seven `findFirstInvalid*`/`findLastInvalid*` finders further down walk
+ * `tokens` to locate a malformed entry and report `source` as its file — the
+ * eager config gate (`assertEagerConfigValid`/`assertDiscoveryBooleansValid`)
+ * refuses on a malformed LOCAL config only, exactly as it always has. A
+ * missing file is normal (empty), not an error.
  */
 interface ConfigCacheEntry {
   readonly parsed: ParsedConfig;
@@ -150,56 +161,222 @@ interface ConfigCacheEntry {
   readonly source: string;
 }
 
-// Cache reference is mutable so test code can swap in a fresh WeakMap and
-// guarantee isolation between cases that re-use the same Context identity
-// (the WeakMap itself can't be iterated, so a true reset requires replacement).
-let cache: WeakMap<Context, Promise<ConfigCacheEntry>> = new WeakMap();
+interface CachedConfigEntry {
+  readonly promise: Promise<ConfigCacheEntry>;
+  readonly mtimeKey: string;
+}
+
+/** Sentinel `mtimeKey` for "the config file does not exist" — distinct from
+ *  any real `mtimeMs:size` pair, so a file that is CREATED between two calls
+ *  is never mistaken for the absent state it replaces. */
+// Stryker disable next-line StringLiteral: equivalent — a real mtimeKey is always `${mtimeMs}:${size}` (digits and a colon); '' can never collide with that shape any less than 'absent' does, so the literal sentinel text carries no observable behavior.
+const CONFIG_ABSENT_MTIME_KEY = 'absent';
 
 /**
- * Read and cache the scope-merged config (`system → global → local →
- * worktree`, matching git's own resolution order). A scope whose file is
- * missing, or whose file lives at a path this adapter cannot reach (e.g. the
- * browser adapter has no system config), contributes nothing rather than
- * erroring — mirroring `readConfig`'s long-standing "missing local file is
- * empty config" contract, now extended to every scope.
+ * `${mtimeMs}:${size}` for `path`, or {@link CONFIG_ABSENT_MTIME_KEY} when it
+ * does not exist — mirrors `ref-store.ts`'s `loadPackedRefs` and
+ * `load-reftable-stack.ts`'s own mtime-keyed invalidation. Keying the cache
+ * on session alone (below) shares it across every Context derived from the
+ * same repository-open, INCLUDING a plain `{ ...ctx, x }` spread that never
+ * goes through `deriveContext` — so a raw `ctx.fs.writeUtf8` past the config
+ * writers' `invalidateConfigCache` call (the pattern most tests use to seed
+ * config) must still be observed on the next read. A stat-based check is
+ * what makes that safe without giving up the cross-derivation sharing this
+ * cache exists for.
+ */
+async function configMtimeKey(ctx: Context, path: string): Promise<string> {
+  try {
+    const stat = await ctx.fs.stat(path);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') {
+      return CONFIG_ABSENT_MTIME_KEY;
+    }
+    throw err;
+  }
+}
+
+/**
+ * At most one IN-FLIGHT `configMtimeKey` stat per session: every
+ * `readConfigEntry` call that starts before the previous one's stat has
+ * settled joins that SAME pending answer, so the up to eight concurrent
+ * finders `assertEagerConfigValid`/`assertDiscoveryBooleansValid` fan out
+ * via one `Promise.all` share one stat between them rather than paying one
+ * each — the measured 8-way-concurrent-stat cost this coalescing closes.
  *
- * The cache is keyed on `Context` identity; a new context (e.g., after a write
- * that re-creates the repo) gets a fresh read. Concurrent calls share the same
- * in-flight promise (per-context single-flight).
+ * Cleared the INSTANT the stat settles, never held past it: a later,
+ * genuinely separate `readConfigEntry` call (a different command, or the
+ * same session's next gate stage, both of which run after the previous
+ * stat's promise has already resolved) still pays its own fresh stat. That
+ * is what keeps the "external `ctx.fs.writeUtf8` past `invalidateConfigCache`
+ * is observed on the next read" contract intact — this coalesces duplicate
+ * concurrent work, it does not skip staleness detection.
+ */
+let inflightMtimeKey: WeakMap<Context['session'], Promise<string>> = new WeakMap();
+
+function coalescedMtimeKey(ctx: Context, path: string): Promise<string> {
+  const existing = inflightMtimeKey.get(ctx.session);
+  if (existing !== undefined) return existing;
+  const pending = configMtimeKey(ctx, path);
+  inflightMtimeKey.set(ctx.session, pending);
+  // `.finally()` returns its OWN promise, which rejects independently of
+  // `pending` when `pending` rejects — the caller below observes and
+  // handles `pending`'s own rejection via the returned value, but this
+  // derived one is otherwise never awaited or caught, so it would surface
+  // as a SECOND, unhandled rejection for the exact same fault. The no-op
+  // `.catch()` marks only this derived promise as handled; it changes
+  // nothing about what the caller sees.
+  pending
+    .finally(() => {
+      if (inflightMtimeKey.get(ctx.session) === pending) inflightMtimeKey.delete(ctx.session);
+    })
+    .catch(() => {});
+  return pending;
+}
+
+// Keyed on `ctx.session` — not `ctx` itself — so every Context derived from
+// the same repository-open shares one parse instead of missing on every
+// spread-derivation. Cache reference is mutable so test code can swap in a
+// fresh WeakMap and guarantee isolation between cases that re-use the same
+// session (the WeakMap itself can't be iterated, so a true reset requires
+// replacement).
+let cache: WeakMap<Context['session'], CachedConfigEntry> = new WeakMap();
+
+/**
+ * The operational gate-verdict memo `internal/repo-state.ts` populates via
+ * `memoizeGateVerdict`, below — owned HERE rather than there so
+ * `invalidateConfigCache` can drop it without `repo-state.ts` importing this
+ * module's own invalidator: `repo-state.ts` already imports the finders
+ * above, and the reverse import would cycle. The verdict shape (`FilePath`)
+ * is the only thing this module knows about it; `compute` — supplied by the
+ * caller — is what actually builds one.
+ *
+ * Keyed on `ctx.session` — not `ctx` itself — for the same reason as `cache`
+ * above, and for a correctness reason specific to this memo: the verdict is
+ * DERIVED FROM the parse `cache`'s content (`computeGateVerdict` calls
+ * `assertEagerConfigValid`, which reads the cached tokens), so the two must
+ * share exactly one invalidation domain. Keying this memo on `ctx` while
+ * `cache` keys on `ctx.session` would let a config write observed through a
+ * DERIVED Context (same session, different object) refresh the shared parse
+ * cache while leaving the ORIGINAL Context's verdict entry stale — a
+ * mid-session config edit that should flip the gate to refuse would instead
+ * keep passing through the original Context, since `invalidateConfigCache`
+ * only ever drops the caller's own key.
+ */
+let gateVerdictCache: WeakMap<Context['session'], Promise<FilePath>> = new WeakMap();
+
+/**
+ * Get-or-populate the per-session gate-verdict memo: a second call sharing
+ * the same, unchanged session joins the promise the first call started
+ * rather than re-running `compute`. `invalidateConfigCache` (below) drops
+ * this memo alongside its own, so a config write observed through that
+ * invalidator — from ANY Context sharing the session, not just the one that
+ * first populated the memo — is observed here too.
+ *
+ * A REJECTED verdict is never left cached: `compute` can fail on a transient
+ * condition (EACCES/EIO/EMFILE reading the config file) that has nothing to
+ * do with the repository's actual state, and caching that failure would
+ * permanently poison the session until `invalidateConfigCache` happens to
+ * run — every later command would refuse for a fault that already cleared.
+ * The eviction only removes the entry when it is STILL the one this call
+ * populated: a later, successful `compute` may already have replaced it
+ * (e.g., a concurrent call after `invalidateConfigCache`), and this handler
+ * must not evict that fresh entry out from under it.
+ */
+export const memoizeGateVerdict = (
+  ctx: Context,
+  compute: (ctx: Context) => Promise<FilePath>,
+): Promise<FilePath> => {
+  const existing = gateVerdictCache.get(ctx.session);
+  if (existing !== undefined) return existing;
+  const pending = compute(ctx);
+  gateVerdictCache.set(ctx.session, pending);
+  pending.catch(() => {
+    if (gateVerdictCache.get(ctx.session) === pending) gateVerdictCache.delete(ctx.session);
+  });
+  return pending;
+};
+
+/**
+ * Read and cache the LOCAL config (see `loadConfigEntry`'s own docstring for
+ * why merging system/global/worktree scopes here was tried and reverted —
+ * this reads `${commonGitDir}/config` alone).
+ *
+ * The cache is keyed on `ctx.session`, with mtime+size staleness detection
+ * on top (see `configMtimeKey`/`coalescedMtimeKey`) — a fresh session gets a
+ * fresh read; a write observed through any Context sharing the session
+ * invalidates it for every other. Concurrent calls share the same in-flight
+ * promise (single-flight per session).
  */
 export const readConfig = (ctx: Context): Promise<ParsedConfig> =>
   readConfigEntry(ctx).then((entry) => entry.parsed);
 
 /**
- * The cache accessor: returns the per-`Context` `ConfigCacheEntry` promise,
+ * The cache accessor: returns the per-session `ConfigCacheEntry` promise,
  * single-flight (concurrent calls share the same in-flight read). Both
- * `readConfig` (`.parsed`) and the valueless finders (`.tokens`) consume it, so
- * the file is read and tokenized at most once per context until invalidated.
+ * `readConfig` (`.parsed`) and the valueless finders (`.tokens`) consume it,
+ * so the file is read and tokenized at most once per session until the
+ * config file's own mtime+size change or `invalidateConfigCache` runs.
+ *
+ * The mtime check and the cache lookup/populate are a single `await`-free
+ * span: two concurrent calls that both miss the CONTENT cache each ask
+ * `coalescedMtimeKey` for a key, but share its single in-flight stat rather
+ * than each paying their own — whichever resumes first then populates the
+ * content cache atomically before the other can observe it, so only one
+ * ever starts `loadConfigEntry` — the single-flight guarantee holds despite
+ * the stat.
  */
-const readConfigEntry = (ctx: Context): Promise<ConfigCacheEntry> => {
-  const existing = cache.get(ctx);
-  if (existing !== undefined) return existing;
-  const pending = loadConfigEntry(ctx);
-  cache.set(ctx, pending);
-  return pending;
-};
-
-/** @internal — test-only cache reset between cases. Replaces the entire WeakMap. */
-export const __resetConfigCacheForTests = (): void => {
-  cache = new WeakMap();
+const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
+  // The trust gate refuses before any I/O — not even a stat — so an
+  // untrusted layout is recomputed fresh every call (cheap: no fs access)
+  // rather than consulting or populating the cache below.
+  if (layoutFailsTrustGate(ctx.layout)) return loadConfigEntry(ctx);
+  const path = `${commonGitDir(ctx)}/config`;
+  const mtimeKey = await coalescedMtimeKey(ctx, path);
+  const cached = cache.get(ctx.session);
+  if (cached !== undefined && cached.mtimeKey === mtimeKey) {
+    return cached.promise;
+  }
+  const promise = loadConfigEntry(ctx);
+  cache.set(ctx.session, { promise, mtimeKey });
+  return promise;
 };
 
 /**
- * Drop the cached `readConfig` entry for a single `Context`, AND the
- * per-scope sections cache `readConfig` now builds its merged parse from
- * (`config-scoped-read.ts`'s own cache — shared with the porcelain `config`
- * command's readers) — one call invalidates both, so they can never drift
- * out of sync. The production invalidator: a config write (`updateCoreConfig`)
- * calls this so a subsequent `readConfig` on the same context re-reads
- * instead of serving the stale parse.
+ * @internal — test-only cache reset between cases. Replaces every WeakMap
+ * this module owns (the parse cache, the gate-verdict memo, and the
+ * in-flight stat-coalescing memo), mirroring what `invalidateConfigCache`
+ * drops in production plus the transient memo that never survives past its
+ * own settling anyway.
+ */
+export const __resetConfigCacheForTests = (): void => {
+  cache = new WeakMap();
+  gateVerdictCache = new WeakMap();
+  inflightMtimeKey = new WeakMap();
+};
+
+/**
+ * Drop the cached `readConfig` entry for the session, AND the gate-verdict
+ * memo `internal/repo-state.ts` populates via `memoizeGateVerdict` (owned
+ * here — see that export's docstring for why) — both session-keyed, so a
+ * call through ANY Context sharing `ctx.session` drops the entry every
+ * OTHER Context in that session would otherwise keep serving stale.
+ *
+ * DELEGATES to `invalidateScopedConfigCache` (`config-scoped-read.ts`) so a
+ * caller who invalidates only this cache — an embedder unaware of the
+ * scoped-sections cache, or test code that seeds config with a raw
+ * `ctx.fs.writeUtf8` and calls only this invalidator — still observes a
+ * fresh scoped read next time, rather than a same-tick-frozen stat
+ * indefinitely masking the rewrite there too. Every config writer ALSO calls
+ * `invalidateScopedConfigCache` directly (see `update-config.ts` and
+ * `update-config-sections.ts`); that explicit call still matters — it is
+ * what lets a caller invalidate the scoped cache WITHOUT touching this one
+ * (not needed today, but the pairing is not required to only run one way).
  */
 export const invalidateConfigCache = (ctx: Context): void => {
-  cache.delete(ctx);
+  cache.delete(ctx.session);
+  gateVerdictCache.delete(ctx.session);
+  invalidateScopedConfigCache(ctx);
 };
 
 /**
@@ -413,6 +590,57 @@ export const findFirstInvalidCompression = async (
   return undefined;
 };
 
+const GC_AUTO_KEY = 'auto';
+
+/** One invalid `gc.auto` entry returned by `findFirstInvalidGcAuto`. */
+export interface InvalidGcAutoEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly value: string;
+  readonly reason: 'invalid unit' | 'out of range';
+}
+
+/**
+ * Cold-path detection: walk the cached `[gc]` (subsectionless) tokens in
+ * file order and return the FIRST `auto` entry whose value fails git's
+ * integer grammar or the C `int` range. Returns `undefined` when the key is
+ * absent or its first entry is valid. Runs ONLY on a command's refusal
+ * path — `readConfig` stays lenient and merges an invalid `gc.auto` as
+ * absent (see `mergeGc`).
+ */
+export const findFirstInvalidGcAuto = async (
+  ctx: Context,
+): Promise<InvalidGcAutoEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'gc', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    if (token.key.toLowerCase() !== GC_AUTO_KEY) continue;
+    const parsed = parseGitInt(token.value);
+    if (parsed.ok && parsed.value >= GIT_C_INT_MIN && parsed.value <= GIT_C_INT_MAX) continue;
+    const reason = parsed.ok ? 'out of range' : parsed.reason;
+    return { key: `gc.${GC_AUTO_KEY}`, source: path, value: token.value ?? '', reason };
+  }
+  return undefined;
+};
+
+/**
+ * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when `gc.auto` holds a value git's
+ * integer grammar refuses — the integer sibling of `assertValidBooleanConfig`,
+ * same eager-gate posture `pack.writeReverseIndex` established: a refused
+ * value must never be silently read back as absent-and-defaulted.
+ */
+export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
+  const found = await findFirstInvalidGcAuto(ctx);
+  if (found !== undefined) {
+    throw configBadNumericValue(found.key, found.source, found.value, found.reason);
+  }
+};
+
 const MAX_TREE_DEPTH_KEY = 'maxtreedepth';
 
 /** One invalid `core.maxTreeDepth` entry returned by `findLastInvalidMaxTreeDepth`. */
@@ -497,6 +725,7 @@ interface MutableParsedConfig {
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
   pack?: { writeReverseIndex?: boolean };
+  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 }
@@ -536,6 +765,8 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergeTag(acc, sec);
   } else if (section === 'pack') {
     mergePack(acc, sec);
+  } else if (section === 'gc') {
+    mergeGc(acc, sec);
   } else if (section === 'push') {
     mergePush(acc, sec);
   } else if (section === 'gpg') {
@@ -915,6 +1146,49 @@ const mergePack = (acc: { pack?: { writeReverseIndex?: boolean } }, sec: IniSect
   }
 };
 
+type MutableGc = { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+
+const applyGcAutoEntry = (gc: MutableGc, value: string | null): MutableGc | undefined => {
+  const parsed = parseGitInt(value);
+  if (!parsed.ok || parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) return undefined;
+  return { ...gc, auto: parsed.value };
+};
+
+/**
+ * Apply one `[gc]` entry. Returns the updated accumulator, or `undefined`
+ * when the key is not recognised or its value fails validation — the same
+ * shape `applyCoreEntry` uses, so a malformed sibling never blocks a
+ * well-formed key from being merged. `readConfig` stays total/lenient here —
+ * the eager refusal for `gc.auto` lives in `assertValidGcAutoConfig`,
+ * `gc.cruftPacks`'s in `assertValidBooleanConfig`, and `gc.pruneExpire`'s
+ * grammar in `expiryCutoff`, mirroring `pack.writeReverseIndex`'s split
+ * between a lenient merge and a separate refusal gate.
+ */
+const applyGcEntry = (
+  gc: MutableGc,
+  lowered: string,
+  value: string | null,
+): MutableGc | undefined => {
+  if (lowered === 'auto') return applyGcAutoEntry(gc, value);
+  if (lowered === 'pruneexpire') {
+    // String-typed field: skip null (valueless key treated as absent).
+    // Grammar validated downstream by expiryCutoff — readConfig stays lenient.
+    return value === null ? undefined : { ...gc, pruneExpire: value };
+  }
+  if (lowered === 'cruftpacks') {
+    const parsed = parseGitBoolean(value);
+    return parsed.ok ? { ...gc, cruftPacks: parsed.value } : undefined;
+  }
+  return undefined;
+};
+
+const mergeGc = (acc: { gc?: MutableGc }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    const next = applyGcEntry(acc.gc ?? {}, key.toLowerCase(), value);
+    if (next !== undefined) acc.gc = next;
+  }
+};
+
 // `if-asked` is a third state beyond git's boolean values, checked ahead of the
 // standard boolean parse. A refusal there leaves the field absent (`undefined`).
 const parsePushGpgSign = (value: string | null): 'true' | 'false' | 'if-asked' | undefined => {
@@ -1046,6 +1320,7 @@ type FinalizeOut = {
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
   pack?: { writeReverseIndex?: boolean };
+  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 };
@@ -1084,6 +1359,7 @@ const finalizeScalarBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void
   if (acc.commit !== undefined) out.commit = acc.commit;
   if (acc.tag !== undefined) out.tag = acc.tag;
   if (acc.pack !== undefined) out.pack = acc.pack;
+  if (acc.gc !== undefined) out.gc = acc.gc;
   if (acc.push !== undefined) out.push = acc.push;
   if (acc.gpg !== undefined) out.gpg = acc.gpg;
 };
@@ -1125,6 +1401,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     commit?: { gpgSign?: boolean };
     tag?: { gpgSign?: boolean };
     pack?: { writeReverseIndex?: boolean };
+    gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
     push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
     gpg?: MutableGpg;
   } = {};

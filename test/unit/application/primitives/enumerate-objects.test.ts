@@ -145,6 +145,29 @@ describe('enumerateObjects', () => {
     });
   });
 
+  describe('Given repo with a loose object and a tmp_obj_ quarantine litter file in the same prefix dir', () => {
+    describe('When enumerateObjects runs', () => {
+      it('Then the litter file never becomes a phantom oid', async () => {
+        // Arrange — `objects/<prefix>/tmp_obj_XXXXXX` is git's own quarantine
+        // naming for a loose-object write that never completed; its filename
+        // is neither hex nor the right width, so it is not an oid suffix.
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blob('real-object'));
+        const prefix = blobId.slice(0, 2);
+        const prefixDir = `${ctx.layout.gitDir}/objects/${prefix}`;
+        await ctx.fs.write(`${prefixDir}/tmp_obj_XXXXXX`, new Uint8Array(0));
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        expect(result).toContain(blobId);
+        expect(result).not.toContain(`${prefix}tmp_obj_XXXXXX`);
+        expect(result.every((id) => id.length === 40)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a repo holding one healthy pack, one header-refused pack and one loose object', () => {
     describe('When enumerateObjects runs with default options', () => {
       it('Then the ids include the refused pack ids', async () => {
@@ -214,6 +237,50 @@ describe('enumerateObjects', () => {
 
         // Assert
         expect(result).toEqual([looseId]);
+      });
+    });
+  });
+
+  describe('Given a fanout entry whose name is the right length but contains a non-hex character', () => {
+    describe('When enumerateObjects runs', () => {
+      it('Then it is excluded — right length alone is not sufficient', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blob('right-length-non-hex'));
+        const prefix = blobId.slice(0, 2);
+        const prefixDir = `${ctx.layout.gitDir}/objects/${prefix}`;
+        const suffixLength = blobId.length - 2;
+        const nonHexSuffix = 'g'.repeat(suffixLength);
+        await ctx.fs.write(`${prefixDir}/${nonHexSuffix}`, new Uint8Array(0));
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        expect(result).toContain(blobId);
+        expect(result).not.toContain(`${prefix}${nonHexSuffix}`);
+      });
+    });
+  });
+
+  describe('Given a fanout entry whose name is valid hex but the wrong length', () => {
+    describe('When enumerateObjects runs', () => {
+      it('Then it is excluded — hex-looking alone is not sufficient', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, blob('wrong-length-hex'));
+        const prefix = blobId.slice(0, 2);
+        const prefixDir = `${ctx.layout.gitDir}/objects/${prefix}`;
+        const suffixLength = blobId.length - 2;
+        const shortHexSuffix = 'a'.repeat(suffixLength - 1);
+        await ctx.fs.write(`${prefixDir}/${shortHexSuffix}`, new Uint8Array(0));
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        expect(result).not.toContain(`${prefix}${shortHexSuffix}`);
+        expect(result.every((id) => id.length === blobId.length)).toBe(true);
       });
     });
   });

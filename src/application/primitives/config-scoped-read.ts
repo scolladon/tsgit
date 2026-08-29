@@ -8,14 +8,83 @@ import { collectScopedValues, collectValues } from './internal/config-key.js';
 import { mergeConfigsByScope, resolveScopePath, SCOPE_ORDER } from './internal/config-scope.js';
 import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 
-// Per-scope sections cache, single-flight by Context identity. Lives apart from
-// `readConfig`'s ParsedConfig cache (in `config-read.ts`) because the porcelain
-// readers walk the raw `IniSection[]` directly; both caches share invalidation
-// through `invalidateConfigCache(ctx)` which delegates to this module's
-// `invalidateScopedConfigCache(ctx)`.
+interface CachedScopeEntry {
+  readonly promise: Promise<ReadonlyArray<IniSection>>;
+  readonly mtimeKey: string;
+}
+
+/** Sentinel `mtimeKey` for "the scope's file does not exist" — mirrors
+ *  `config-read.ts`'s `CONFIG_ABSENT_MTIME_KEY`. */
+// Stryker disable next-line StringLiteral: equivalent — a real mtimeKey is always `${mtimeMs}:${size}` (digits and a colon); '' can never collide with that shape any less than 'absent' does, so the literal sentinel text carries no observable behavior.
+const SCOPE_ABSENT_MTIME_KEY = 'absent';
+
+/**
+ * `${mtimeMs}:${size}` for `path`, or {@link SCOPE_ABSENT_MTIME_KEY} when it
+ * does not exist — mirrors `config-read.ts`'s `configMtimeKey`. Keying the
+ * cache on session+gitDir alone (below) shares it across every Context
+ * derived from the same repository-open, INCLUDING a plain `{ ...ctx, x }`
+ * spread that never goes through `deriveContext` — so a raw
+ * `ctx.fs.writeUtf8` past the config writers' `invalidateScopedConfigCache`
+ * call (the pattern most tests use to seed config) must still be observed
+ * on the next read. A stat-based check is what makes that safe without
+ * giving up the cross-derivation sharing this cache exists for.
+ */
+async function scopeFileMtimeKey(ctx: Context, path: string): Promise<string> {
+  try {
+    const stat = await ctx.fs.stat(path);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch (err) {
+    if (err instanceof TsgitError) {
+      const code = err.data.code;
+      // A missing scope file is normal. A permission-denied one is too —
+      // `readScopeFile` below treats both the same way (empty scope, not an
+      // error); the stat must agree, or a `/etc/gitconfig`/`~/.gitconfig`
+      // this adapter cannot see would throw here before ever reaching that
+      // tolerant read.
+      if (code === 'FILE_NOT_FOUND' || code === 'PERMISSION_DENIED') {
+        return SCOPE_ABSENT_MTIME_KEY;
+      }
+    }
+    throw err;
+  }
+}
+
+/**
+ * Per-scope sections cache, single-flight by `(ctx.session, ctx.layout.gitDir)`,
+ * with mtime+size staleness detection on top (see `scopeFileMtimeKey`) —
+ * the same latent-bug class `config-read.ts`'s `cache` closes: a pure
+ * identity/session key alone would let a raw fs write past this module's
+ * own invalidator keep serving a stale cached scope forever. Lives apart
+ * from `readConfig`'s ParsedConfig cache (in `config-read.ts`) because the
+ * porcelain readers walk the raw `IniSection[]` directly.
+ *
+ * `invalidateConfigCache(ctx)` (`config-read.ts`) DELEGATES to
+ * `invalidateScopedConfigCache` below, so calling it alone invalidates both
+ * caches. Every config writer ALSO calls `invalidateScopedConfigCache`
+ * directly (see `update-config.ts` and `update-config-sections.ts`); that
+ * explicit path still matters — it drops the entry NOW rather than waiting
+ * for the next read to pay a stat, and it is the only signal for a
+ * same-tick rewrite a millisecond-granularity mtime cannot distinguish from
+ * no change at all.
+ *
+ * Keyed on the GITDIR, not the session alone: the `'worktree'` scope resolves
+ * to `${ctx.layout.gitDir}/config.worktree` (`resolveScopePath`), which
+ * genuinely differs between a repository's linked worktrees even though they
+ * share one session — a pure session key would leak one worktree's
+ * `config.worktree` entries into another's read. The other three scopes
+ * (`system`/`global`/`local`) are commonDir-anchored and so identical across
+ * every worktree of one session; bucketing by gitDir still shares them
+ * correctly across every SAME-gitDir derivation (fsck's audit view, clone's
+ * and bundle-verify's hash adoption). This is also why `invalidateScopedConfigCache`
+ * (below) drops EVERY gitDir bucket for the session, not just the caller's
+ * own: a system/global write observed through one worktree's Context must
+ * not leave a SIBLING worktree's bucket serving the pre-write value, and
+ * this cache has no way to tell a system/global write from a local/worktree
+ * one to narrow the drop selectively.
+ */
 let sectionsCache: WeakMap<
-  Context,
-  Map<ConfigScope, Promise<ReadonlyArray<IniSection>>>
+  Context['session'],
+  Map<string, Map<ConfigScope, CachedScopeEntry>>
 > = new WeakMap();
 
 /** @internal — test-only cache reset for the per-scope readers. */
@@ -24,29 +93,31 @@ export const __resetSectionsCacheForTests = (): void => {
 };
 
 /**
- * Drop the per-scope sections cache for a single `Context`. Called by
- * `invalidateConfigCache` in `config-read.ts` so writers can invalidate both
- * caches atomically.
+ * Drop the per-scope sections cache for an entire SESSION — every gitDir
+ * bucket, not just the calling Context's own (see the cache's own docstring
+ * above for why). `invalidateConfigCache` (`config-read.ts`) delegates to
+ * this; every config writer also calls it directly (see `update-config.ts`
+ * and `update-config-sections.ts`) for the same-tick signal a stat cannot
+ * provide.
  */
 export const invalidateScopedConfigCache = (ctx: Context): void => {
-  sectionsCache.delete(ctx);
+  sectionsCache.delete(ctx.session);
 };
 
-const getSectionsCacheBucket = (
-  ctx: Context,
-): Map<ConfigScope, Promise<ReadonlyArray<IniSection>>> => {
-  const existing = sectionsCache.get(ctx);
+const getSectionsCacheBucket = (ctx: Context): Map<ConfigScope, CachedScopeEntry> => {
+  let byGitDir = sectionsCache.get(ctx.session);
+  if (byGitDir === undefined) {
+    byGitDir = new Map();
+    sectionsCache.set(ctx.session, byGitDir);
+  }
+  const existing = byGitDir.get(ctx.layout.gitDir);
   if (existing !== undefined) return existing;
-  const fresh = new Map<ConfigScope, Promise<ReadonlyArray<IniSection>>>();
-  sectionsCache.set(ctx, fresh);
+  const fresh = new Map<ConfigScope, CachedScopeEntry>();
+  byGitDir.set(ctx.layout.gitDir, fresh);
   return fresh;
 };
 
-const readSingleScopeUncached = async (
-  ctx: Context,
-  scope: ConfigScope,
-): Promise<ReadonlyArray<IniSection>> => {
-  const path = await resolveScopePath(ctx, scope);
+const readScopeFile = async (ctx: Context, path: string): Promise<ReadonlyArray<IniSection>> => {
   try {
     const text = await ctx.fs.readUtf8(path);
     return parseIniSections(text, path);
@@ -63,16 +134,34 @@ const readSingleScopeUncached = async (
   }
 };
 
-const readSingleScope = (ctx: Context, scope: ConfigScope): Promise<ReadonlyArray<IniSection>> => {
+/**
+ * `resolveScopePath` is re-run on every call whose scope path cannot be
+ * served from the mtime-checked cache below — deliberately NOT
+ * single-flighted the way a resolved path's contents are. For `'worktree'`,
+ * resolving the path is itself content-dependent (`isWorktreeScopeActive`
+ * reads the local config to decide whether the scope exists at all), so
+ * caching an "unavailable" verdict under a stable key would go stale the
+ * moment a later write turns `extensions.worktreeConfig` on. The other
+ * three scopes resolve their path with no I/O, so this costs nothing extra
+ * for them.
+ */
+const readSingleScope = async (
+  ctx: Context,
+  scope: ConfigScope,
+): Promise<ReadonlyArray<IniSection>> => {
   if (layoutFailsAcceptance(ctx.layout) && (scope === 'local' || scope === 'worktree')) {
     throw configScopeNotAvailable(scope, 'repository-not-accepted');
   }
+  const path = await resolveScopePath(ctx, scope);
   const bucket = getSectionsCacheBucket(ctx);
+  const mtimeKey = await scopeFileMtimeKey(ctx, path);
   const cached = bucket.get(scope);
-  if (cached !== undefined) return cached;
-  const pending = readSingleScopeUncached(ctx, scope);
-  bucket.set(scope, pending);
-  return pending;
+  if (cached !== undefined && cached.mtimeKey === mtimeKey) {
+    return await cached.promise;
+  }
+  const promise = readScopeFile(ctx, path);
+  bucket.set(scope, { promise, mtimeKey });
+  return await promise;
 };
 
 const safeReadScopeOrSkip = async (
@@ -97,9 +186,14 @@ const safeReadScopeOrSkip = async (
  * flat array merged in precedence order (`system → global → local → worktree`)
  * when `scope` is omitted.
  *
- * Per-Context, per-scope cached: a second call with the same `(ctx, scope)`
- * shares the in-flight promise of the first. `invalidateConfigCache(ctx)` (from
- * `config-read.ts`) drops the cached entries here too.
+ * Per-session-and-gitDir, per-scope cached, with mtime+size staleness
+ * detection: a second call with the same `(session, gitDir, scope)` whose
+ * scope file is unchanged on disk shares the in-flight promise of the
+ * first. `invalidateConfigCache(ctx)` (from `config-read.ts`) DELEGATES to
+ * `invalidateScopedConfigCache`, so it drops these entries too — callers
+ * that write the config file should still call `invalidateScopedConfigCache(ctx)`
+ * directly as well, for a same-tick rewrite the mtime check cannot
+ * distinguish from no change at all.
  *
  * In the merged-read path (`scope` omitted), scopes that are unavailable on
  * the current adapter (`CONFIG_SCOPE_NOT_AVAILABLE`, `CONFIG_SYSTEM_PATH_UNRESOLVED`)

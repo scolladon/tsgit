@@ -319,7 +319,7 @@ describe('streamBlob', () => {
     });
   });
 
-  describe('Given a corrupted loose blob, When drained to completion', () => {
+  describe('Given a corrupted loose blob and verifyHash true, When drained to completion', () => {
     it('Then throws objectHashMismatch with correct data', async () => {
       // Arrange
       const blob: Blob = {
@@ -345,7 +345,7 @@ describe('streamBlob', () => {
 
       // Act + Assert
       try {
-        const sut = await streamBlob(ctx, id);
+        const sut = await streamBlob(ctx, id, { verifyHash: true });
         await collect(sut);
         expect.unreachable();
       } catch (error) {
@@ -573,7 +573,7 @@ describe('streamBlob', () => {
   // because no loose object for this id exists. The index maps the real id to
   // an offset whose compressed payload inflates to different bytes, so the
   // incremental hash built by yieldAndVerifyPackedBaseChunks never matches.
-  describe('Given a genuinely-packed blob whose pack payload inflates to different content, When drained to completion', () => {
+  describe('Given a genuinely-packed blob whose pack payload inflates to different content and verifyHash true, When drained to completion', () => {
     it('Then throws objectHashMismatch via yieldAndVerifyPackedBaseChunks (pack handle opened, loose path skipped)', async () => {
       // Arrange
       // Build two separate packs in the same ctx so we share fs / hash service.
@@ -609,7 +609,7 @@ describe('streamBlob', () => {
 
       // Act + Assert
       try {
-        const sut = await streamBlob(ctx, id);
+        const sut = await streamBlob(ctx, id, { verifyHash: true });
         await collect(sut);
         expect.unreachable();
       } catch (error) {

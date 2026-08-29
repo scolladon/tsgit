@@ -199,6 +199,31 @@ describe('validateWorkingTreePath', () => {
     });
   });
 
+  describe('Given a non-ASCII component whose UTF-16 length is under 255 but whose UTF-8 byte length exceeds it', () => {
+    describe('When validated', () => {
+      it('Then rejects on the byte cap (the ASCII-fast-path length shortcut must not undercount multi-byte chars)', () => {
+        // Arrange — '€' (U+20AC) is 1 UTF-16 code unit but 3 UTF-8 bytes;
+        // 90 of them is 90 code units (well under 255) but 270 bytes (over).
+        const nonAscii = '€'.repeat(90);
+
+        // Act + Assert
+        expectReject(`a/${nonAscii}/c`);
+      });
+    });
+  });
+
+  describe('Given a non-ASCII component whose UTF-8 byte length is exactly 255', () => {
+    describe('When validated', () => {
+      it('Then accepts (boundary, computed via the real byte length, not code-unit length)', () => {
+        // Arrange — 85 × 3-byte chars = 255 bytes exactly.
+        const nonAscii = '€'.repeat(85);
+
+        // Act + Assert
+        expect(validateWorkingTreePath(`a/${nonAscii}/c`)).toBe(`a/${nonAscii}/c`);
+      });
+    });
+  });
+
   describe('Given a leading single-letter drive-letter qualifier (`a:b`)', () => {
     describe('When validated', () => {
       it('Then rejects (drive-letter / pathspec-magic-lookalike guard)', () => {
@@ -562,6 +587,31 @@ describe('validateWalkedEntryPath', () => {
       it('Then rejects', () => {
         // Arrange & Act + Assert
         expectWalkedEntryReject(`a/${'b'.repeat(256)}/c`);
+      });
+    });
+  });
+
+  describe('Given a non-ASCII component whose UTF-16 length is under 255 but whose UTF-8 byte length exceeds it', () => {
+    describe('When validated', () => {
+      it('Then rejects on the byte cap (the ASCII-fast-path length shortcut must not undercount multi-byte chars)', () => {
+        // Arrange — same corpus entry as validateWorkingTreePath's sibling
+        // test, exercising the shared rejectTraversalShape fast path.
+        const nonAscii = '€'.repeat(90);
+
+        // Act + Assert
+        expectWalkedEntryReject(`a/${nonAscii}/c`);
+      });
+    });
+  });
+
+  describe('Given a non-ASCII component whose UTF-8 byte length is exactly 255', () => {
+    describe('When validated', () => {
+      it('Then accepts (boundary, computed via the real byte length, not code-unit length)', () => {
+        // Arrange
+        const nonAscii = '€'.repeat(85);
+
+        // Act + Assert
+        expect(validateWalkedEntryPath(`a/${nonAscii}/c`)).toBe(`a/${nonAscii}/c`);
       });
     });
   });

@@ -29,9 +29,6 @@ import {
 } from '../path-layout.js';
 import { isShallowRepository } from './shallow-set.js';
 
-/** `RepositoryConfig.parallelism`'s own default — reused as the prefetch bound. */
-export const DEFAULT_PREFETCH_CONCURRENCY = 8;
-
 /** Parents/root-tree/generation/date for one commit, sourced from the commit-graph. */
 export interface CommitHeader {
   readonly rootTree: ObjectId;
@@ -47,9 +44,10 @@ interface LoadedGraph {
   readonly layerOffsets: readonly number[];
 }
 
-// Keyed by Context so a long-running (or repeated) walk parses the graph files
-// at most once per repo lifetime — mirrors `registryCache` in read-object.ts.
-const graphCache = new WeakMap<Context, Promise<LoadedGraph | undefined>>();
+// Keyed by session so a long-running (or repeated) walk parses the graph
+// files at most once per repo lifetime, shared across every Context derived
+// from the same repository-open — mirrors `registryCache` in read-object.ts.
+const graphCache = new WeakMap<Context['session'], Promise<LoadedGraph | undefined>>();
 
 // Entry cap mirrors `DEFAULT_DELTA_CACHE_ENTRIES` (`src/index.node.ts`) — the
 // repo's existing bound for a per-repository memo cache, reused here rather
@@ -78,7 +76,7 @@ const HEADER_CACHE_MAX_ENTRIES = 65_536;
 // repays its per-entry node bookkeeping — at the cap that bookkeeping alone
 // costs ~2 MiB. Map iteration order is insertion order, so evicting
 // `keys().next()` drops the oldest entry in O(1) with zero extra structure.
-const headerCache = new WeakMap<Context, Map<ObjectId, CommitHeader>>();
+const headerCache = new WeakMap<Context['session'], Map<ObjectId, CommitHeader>>();
 
 /**
  * Insert into an insertion-order-bounded Map: when the map is at `cap`,
@@ -208,22 +206,22 @@ function isGraphDecodeFailure(error: unknown): boolean {
 }
 
 function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
-  let cached = graphCache.get(ctx);
+  let cached = graphCache.get(ctx.session);
   if (cached === undefined) {
     cached = loadGraphUncached(ctx);
-    graphCache.set(ctx, cached);
+    graphCache.set(ctx.session, cached);
     // Never memoize a rejection: a transient fs failure must not permanently
     // poison every later commit walk for this repository.
-    cached.catch(() => graphCache.delete(ctx));
+    cached.catch(() => graphCache.delete(ctx.session));
   }
   return cached;
 }
 
 function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
-  let cache = headerCache.get(ctx);
+  let cache = headerCache.get(ctx.session);
   if (cache === undefined) {
     cache = new Map<ObjectId, CommitHeader>();
-    headerCache.set(ctx, cache);
+    headerCache.set(ctx.session, cache);
   }
   return cache;
 }
@@ -311,7 +309,7 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     // positions, truncated EDGE data) surfaces here; degrade to ABSENT for
     // the rest of the repo lifetime, exactly like a corrupt file on disk.
     if (isGraphDecodeFailure(error)) {
-      graphCache.set(ctx, Promise.resolve(undefined));
+      graphCache.set(ctx.session, Promise.resolve(undefined));
       return undefined;
     }
     throw error;

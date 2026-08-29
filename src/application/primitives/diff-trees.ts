@@ -37,11 +37,8 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
-import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from './internal/bounded-map.js';
-import {
-  type ConcurrencyLimiter,
-  createConcurrencyLimiter,
-} from './internal/concurrency-limiter.js';
+import { boundedMapFor, limiterFor } from './internal/concurrency.js';
+import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import {
   type FlattenBounds,
   flattenRawTree,
@@ -242,9 +239,9 @@ async function expandDirectoryChanges(
     counter: { value: 0 },
     maxEntries: MAX_FLAT_TREE_ENTRIES,
     maxDepth: await resolveMaxTreeDepth(ctx),
-    limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
+    limiter: limiterFor(ctx, 'ioBound'),
   };
-  const expanded = await boundedMap(changes, MAX_CONCURRENT_OBJECT_LOADS, (change) =>
+  const expanded = await boundedMapFor(ctx, 'ioBound', changes, (change) =>
     expandLevelChange(ctx, change, ROOT_CURSOR, state),
   );
   return expanded.flat();
@@ -269,7 +266,7 @@ async function applyDropPredicate(
     providerPromise ??= buildAttributeProvider(ctx);
     return providerPromise;
   };
-  const drops = await boundedMap(diff.changes, MAX_CONCURRENT_OBJECT_LOADS, (change) =>
+  const drops = await boundedMapFor(ctx, 'ioBound', diff.changes, (change) =>
     changeShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider),
   );
   return { changes: diff.changes.filter((_, index) => !drops[index]) };
@@ -301,7 +298,7 @@ async function materialisedShouldDrop(
   getProvider: () => Promise<AttributeProvider>,
 ): Promise<boolean> {
   const files = await materialisePatchFiles(ctx, [change], { applyTextconv: true, getProvider });
-  // boundedMap (materialisePatchFiles' worker) returns exactly one result per input
+  // boundedMapFor (materialisePatchFiles' worker) returns exactly one result per input
   // change or rejects — never fewer — so a 1-element input always yields files[0].
   const file = files[0]!;
   return dropVerdict(
@@ -467,7 +464,7 @@ async function peelToTree(ctx: Context, id: ObjectId): Promise<PeeledTree> {
  * `core.maxTreeDepth` is heap exhaustion, an uncatchable abort rather than the
  * typed refusal the depth cap exists to produce. A mutable `Set` would fix the
  * memory but not survive this walk: `diffRecursiveLevel` fans changed subtrees
- * out through `boundedMap`, so several sibling descents share one cursor at
+ * out through `boundedMapFor`, so several sibling descents share one cursor at
  * the same instant and would observe each other's ancestry. Immutable sharing
  * is what satisfies both constraints at once — O(depth) total memory, and
  * every concurrent sibling still sees exactly its own path.
@@ -509,7 +506,7 @@ interface DiffWalkCounter {
  *  `limiter` is ONE `ConcurrencyLimiter` for the WHOLE operation, created
  *  once and threaded into every `walkRawSubtree` call `expandAddedSubtree`/
  *  `expandDeletedSubtree` make — sibling subtree expansions (added and
- *  deleted directories, expanded concurrently by the `boundedMap` calls
+ *  deleted directories, expanded concurrently by the `boundedMapFor` calls
  *  below) queue behind the SAME budget instead of each call minting its own
  *  and multiplying the effective in-flight object-read count. */
 interface DiffWalkState {
@@ -541,7 +538,7 @@ export async function diffRecursive(
     counter: { value: 0 },
     maxEntries,
     maxDepth: await resolveMaxTreeDepth(ctx),
-    limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
+    limiter: limiterFor(ctx, 'ioBound'),
   };
   const changes = await diffRecursiveLevel(ctx, a, b, ROOT_CURSOR, state);
   return { changes };
@@ -553,7 +550,7 @@ export async function diffRecursive(
  * on both sides) never reaches `expandLevelChange` — the merge-join already
  * drops it — so its subtree is never read or flattened, matching git's own
  * diff-tree pruning. Sibling directories that DO differ are expanded
- * concurrently via `boundedMap`, bounded to `MAX_CONCURRENT_OBJECT_LOADS`
+ * concurrently via `boundedMapFor`, bounded to the ioBound policy's limit
  * in-flight reads PER LEVEL — nested levels each open their own bounded
  * batch, so the total in-flight count across a deep recursion is not itself
  * capped, only each level's own fan-out is. Object reads a directory
@@ -576,7 +573,7 @@ async function diffRecursiveLevel(
     // multi-entry level batch stays byte-identical to the old per-entry loop.
     throw treeEntryLimitExceeded(state.maxEntries + 1, state.maxEntries);
   }
-  const expanded = await boundedMap(levelChanges, MAX_CONCURRENT_OBJECT_LOADS, (change) =>
+  const expanded = await boundedMapFor(ctx, 'ioBound', levelChanges, (change) =>
     expandLevelChange(ctx, change, cursor, state),
   );
   return expanded.flat();

@@ -36,8 +36,11 @@ import {
   type FilePath,
   type ObjectId,
 } from '../../domain/objects/index.js';
+import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
+import { boundedMapFor, limiterFor } from './internal/concurrency.js';
+import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
@@ -156,15 +159,23 @@ const validateChangesetPaths = (changeset: Changeset): void => {
 const checkDirty = async (
   ctx: Context,
   workdir: string,
-  changeset: Changeset,
+  entries: ReadonlyArray<ChangesetEntry>,
 ): Promise<WouldOverwriteClasses> => {
+  // Fanned out through the ioBound pool — pure reads, so collection order
+  // is free: refusal arrays are sorted with `comparePaths` below regardless
+  // of which entry's probe lands first. `entries` is the caller's
+  // pre-split delete+write waves, never raw `changeset.entries` — a `noop`
+  // entry needs no dirty probe at all, so skipping it here avoids both a
+  // wasted pool slot and an oversized `boundedMap` allocation.
+  const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
+    evaluateDirtyPath(ctx, workdir, entry),
+  );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
-  for (const entry of changeset.entries) {
-    const offending = await evaluateDirtyPath(ctx, workdir, entry);
-    if (offending === undefined) continue;
-    if (offending.class === 'local-changes') localChanges.push(offending.path);
-    else untracked.push(offending.path);
+  for (const result of offending) {
+    if (result === undefined) continue;
+    if (result.class === 'local-changes') localChanges.push(result.path);
+    else untracked.push(result.path);
   }
   // Refusal arrays mirror git's raw-byte path order, matching `findWouldOverwrite`
   // — `changeset.entries` order (UTF-16 from a JS sort upstream) is not faithful
@@ -203,6 +214,7 @@ const writeBlobToWorkingTree = async (
   id: IndexEntry['id'],
   mode: FileMode,
   scanner: LeadingPathScanner,
+  filterLimiter: ConcurrencyLimiter,
   provider?: AttributeProvider,
 ): Promise<void> => {
   if (mode === FILE_MODE.GITLINK) {
@@ -215,12 +227,22 @@ const writeBlobToWorkingTree = async (
     return;
   }
   if (provider !== undefined && ctx.command !== undefined) {
+    const command: CommandRunner = ctx.command;
     const choice = await resolveFilterDriver(ctx, provider, path, {
       eagerSectionValidation: true,
     });
     if (choice.kind === 'external' && choice.smudge !== undefined) {
       const blob = await readBlob(ctx, id);
-      const result = await runFilterDriver(ctx, ctx.command, choice.smudge, blob.content);
+      const smudge = choice.smudge;
+      // A smudge filter spawns a subprocess — CPU/process-bound, not
+      // blocking-fd-bound — so it must not inherit the write wave's wider
+      // ioBound budget (P10): `filterLimiter` is sized off cpuBound and
+      // shared for the whole changeset apply, bounding how many subprocess
+      // spawns run at once regardless of how many writes the ioBound pool
+      // has in flight. The write itself, below, stays on the full pool.
+      const result = await filterLimiter.run(() =>
+        runFilterDriver(ctx, command, smudge, blob.content),
+      );
       if (!result.ok) {
         if (choice.required) {
           throw smudgeFilterFailed(path, choice.name, result.exitCode);
@@ -236,65 +258,222 @@ const writeBlobToWorkingTree = async (
   await writeWorkingTreeEntryStream(ctx, path, stream, mode, scanner);
 };
 
-const applyEntry = async (
+const applyDeleteEntry = async (
   ctx: Context,
   workdir: string,
   entry: ChangesetEntry,
   scanner: LeadingPathScanner,
-  provider?: AttributeProvider,
+): Promise<void> => {
+  // git skips a removal silently when the leading directory is a symlink —
+  // the delete is never attempted, not refused.
+  if (await scanner.hasSymlinkedLeadingPath(entry.path)) return;
+  await rmIfExists(ctx, joinPath(workdir, entry.path));
+};
+
+const applyWriteEntry = async (
+  ctx: Context,
+  workdir: string,
+  entry: ChangesetEntry,
+  scanner: LeadingPathScanner,
+  filterLimiter: ConcurrencyLimiter,
+  provider: AttributeProvider | undefined,
 ): Promise<IndexEntry | undefined> => {
-  const absPath = joinPath(workdir, entry.path);
-  if (entry.kind === 'noop') return undefined;
-  if (entry.kind === 'delete') {
-    // git skips a removal silently when the leading directory is a
-    // symlink — the delete is never attempted, not refused.
-    if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
-    await rmIfExists(ctx, absPath);
-    return undefined;
-  }
   if (entry.id === undefined) return undefined;
+  const absPath = joinPath(workdir, entry.path);
   await writeBlobToWorkingTree(
     ctx,
     entry.path,
     entry.id as IndexEntry['id'],
     entry.mode,
     scanner,
+    filterLimiter,
     provider,
   );
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };
 
+interface EntryWaves {
+  readonly deletes: ReadonlyArray<ChangesetEntry>;
+  readonly writes: ReadonlyArray<ChangesetEntry>;
+}
+
+/**
+ * Splits the changeset into its two write-side waves. A delete must land
+ * before any add/update — `applyEntry`'s write auto-creates missing parent
+ * directories, so a stale file/symlink a delete would have cleared must be
+ * gone first. The changeset's own `kind` split gives the wave boundary
+ * directly; `noop` entries carry no I/O and are dropped here.
+ */
+const splitWaves = (entries: ReadonlyArray<ChangesetEntry>): EntryWaves => {
+  const deletes: ChangesetEntry[] = [];
+  const writes: ChangesetEntry[] = [];
+  for (const entry of entries) {
+    if (entry.kind === 'delete') deletes.push(entry);
+    else if (entry.kind === 'add' || entry.kind === 'update') writes.push(entry);
+  }
+  return { deletes, writes };
+};
+
+/**
+ * One counter shared by both waves — `current` increments once per entry as
+ * it FINISHES, in completion order, never derived from an index or wave
+ * position. That keeps `current` strictly monotone under a concurrent pool
+ * and makes `text` always name a path that has already landed on disk.
+ */
+interface ProgressCounter {
+  current: number;
+}
+
+const reportCompletion = (
+  ctx: Context,
+  total: number,
+  counter: ProgressCounter,
+  path: FilePath,
+): void => {
+  counter.current += 1;
+  ctx.progress.update(CHECKOUT_OP, counter.current, total, path);
+};
+
+/**
+ * Fans `worker` over `items` through the ioBound pool, like `boundedMapFor`,
+ * but never lets a rejection escape while sibling tasks are still running.
+ * `boundedMapFor`'s pool is Promise.all semantics (see bounded-map.ts): the
+ * first rejection propagates immediately while the OTHER runners keep
+ * pulling and writing further entries. Every task dispatched here is a
+ * working-tree WRITE, so that race lets pooled writes keep mutating the
+ * tree after `applyChangeset` has already thrown back to a caller
+ * (`checkout.ts` / `apply-sparse-checkout.ts`) that releases `index.lock`
+ * on that same rejection — a partially-applied checkout with no error left
+ * to explain it. Mirrors `add.ts`'s `stageWalkedEntries`: record the first
+ * error, drain every dispatched task to settlement, then rethrow.
+ */
+const drainPooled = async <T, R>(
+  ctx: Context,
+  items: ReadonlyArray<T>,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  const limiter = limiterFor(ctx, 'ioBound');
+  const results: R[] = [];
+  let firstError: { readonly error: unknown } | undefined;
+  const pending = items.map((item) =>
+    limiter
+      .run(() => worker(item))
+      .then(
+        (result) => {
+          results.push(result);
+        },
+        (error: unknown) => {
+          firstError ??= { error };
+        },
+      ),
+  );
+  await Promise.all(pending);
+  if (firstError !== undefined) throw firstError.error;
+  return results;
+};
+
+const applyDeleteWave = async (
+  ctx: Context,
+  workdir: string,
+  deletes: ReadonlyArray<ChangesetEntry>,
+  scanner: LeadingPathScanner,
+  total: number,
+  counter: ProgressCounter,
+): Promise<number> => {
+  await drainPooled(ctx, deletes, async (entry) => {
+    await applyDeleteEntry(ctx, workdir, entry, scanner);
+    reportCompletion(ctx, total, counter, entry.path);
+  });
+  return deletes.length;
+};
+
+/**
+ * Groups `writes` by case-folded path. Two changeset entries whose paths
+ * differ only by case are a legal shape — a target tree may carry both
+ * `File.txt` and `file.txt` as distinct byte-sorted entries — but they
+ * collide to the SAME name on a case-insensitive filesystem. Dispatched as
+ * independent pool tasks, both writes would interleave against the one
+ * underlying path, nondeterministically deciding which content (and
+ * post-write lstat) the resulting index entry records. Entries within one
+ * group share a single pool slot and apply sequentially, in changeset
+ * order; distinct groups still run fully concurrently, so the common case
+ * (no collisions) pays nothing extra.
+ */
+const groupByCaseFoldedPath = (
+  entries: ReadonlyArray<ChangesetEntry>,
+): ReadonlyArray<ReadonlyArray<ChangesetEntry>> => {
+  const order: string[] = [];
+  const groups = new Map<string, ChangesetEntry[]>();
+  for (const entry of entries) {
+    // Stryker disable next-line MethodExpression: equivalent — `key` is purely an internal Map key that groups case-variant paths for serialized writes; it is never exposed to a caller (order.map((key) => groups.get(key)) returns the ChangesetEntry groups, not the key strings), so toUpperCase() groups the identical set of case-variants as toLowerCase() — same partition, different key spelling (hand-verified: apply-changeset.test.ts plus materialize-tree/apply-merge-to-worktree/checkout/status all pass unmutated).
+    const key = entry.path.toLowerCase();
+    let group = groups.get(key);
+    if (group === undefined) {
+      group = [];
+      groups.set(key, group);
+      order.push(key);
+    }
+    group.push(entry);
+  }
+  return order.map((key) => groups.get(key) as ChangesetEntry[]);
+};
+
+const applyWriteWave = async (
+  ctx: Context,
+  workdir: string,
+  writes: ReadonlyArray<ChangesetEntry>,
+  lazyProvider: () => Promise<AttributeProvider>,
+  scanner: LeadingPathScanner,
+  filterLimiter: ConcurrencyLimiter,
+  total: number,
+  counter: ProgressCounter,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const groups = groupByCaseFoldedPath(writes);
+  const grouped = await drainPooled(ctx, groups, async (group) => {
+    const written: IndexEntry[] = [];
+    for (const entry of group) {
+      const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
+      const indexEntry = await applyWriteEntry(
+        ctx,
+        workdir,
+        entry,
+        scanner,
+        filterLimiter,
+        provider,
+      );
+      reportCompletion(ctx, total, counter, entry.path);
+      if (indexEntry !== undefined) written.push(indexEntry);
+    }
+    return written;
+  });
+  return grouped.flat();
+};
+
 const applyAllEntries = async (
   ctx: Context,
-  changeset: Changeset,
+  deletes: ReadonlyArray<ChangesetEntry>,
+  writes: ReadonlyArray<ChangesetEntry>,
   workdir: string,
   lazyProvider: () => Promise<AttributeProvider>,
   scanner: LeadingPathScanner,
+  filterLimiter: ConcurrencyLimiter,
 ): Promise<ApplyChangesetResult> => {
-  const writtenEntries: IndexEntry[] = [];
-  let written = 0;
-  let deleted = 0;
+  const total = deletes.length + writes.length;
+  const counter: ProgressCounter = { current: 0 };
 
-  for (const entry of changeset.entries) {
-    const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
-    const indexEntry = await applyEntry(ctx, workdir, entry, scanner, provider);
-    if (entry.kind === 'delete') {
-      deleted += 1;
-    } else if (entry.kind === 'add' || entry.kind === 'update') {
-      written += 1;
-      if (indexEntry !== undefined) writtenEntries.push(indexEntry);
-    }
-    if (entry.kind !== 'noop') {
-      ctx.progress.update(
-        CHECKOUT_OP,
-        written + deleted,
-        changeset.stats.add + changeset.stats.update + changeset.stats.delete,
-        entry.path,
-      );
-    }
-  }
+  const deleted = await applyDeleteWave(ctx, workdir, deletes, scanner, total, counter);
+  const writtenEntries = await applyWriteWave(
+    ctx,
+    workdir,
+    writes,
+    lazyProvider,
+    scanner,
+    filterLimiter,
+    total,
+    counter,
+  );
 
-  return { writtenEntries, written, deleted };
+  return { writtenEntries, written: writes.length, deleted };
 };
 
 export const applyChangeset = async (
@@ -305,8 +484,12 @@ export const applyChangeset = async (
 
   validateChangesetPaths(changeset);
 
+  // Hoisted above the dirty check (P9) so a `noop`-heavy changeset never
+  // pays a dirty probe — or a pool slot — for entries that carry no I/O.
+  const { deletes, writes } = splitWaves(changeset.entries);
+
   if (!force) {
-    const dirty = await checkDirty(ctx, workdir, changeset);
+    const dirty = await checkDirty(ctx, workdir, [...deletes, ...writes]);
     if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
       throw checkoutOverwriteDirty(dirty);
     }
@@ -323,5 +506,9 @@ export const applyChangeset = async (
   // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
-  return applyAllEntries(ctx, changeset, workdir, lazyProvider, scanner);
+  // Sized off cpuBound, not ioBound (P10): a smudge subprocess spawn is
+  // process/CPU-bound, not blocking-fd-bound, so it must not inherit the
+  // write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
+  const filterLimiter = limiterFor(ctx, 'cpuBound');
+  return applyAllEntries(ctx, deletes, writes, workdir, lazyProvider, scanner, filterLimiter);
 };

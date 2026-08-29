@@ -15,6 +15,7 @@ import {
 import { cloneFrom } from '../../domain/reflog/reflog-messages.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
+import { deriveContext } from '../primitives/derive-context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
@@ -144,6 +145,11 @@ const fetchAndPropagate = async (
  * invoked with: `readConfig` and the pack registry memoize per-`Context`
  * identity, so mixing the two after this point reproduces the known
  * spread-context `OBJECT_NOT_FOUND` hazard.
+ *
+ * `deriveContext` keeps the session across this hash-algorithm change: a
+ * clone target is a repository nothing has read from yet, so no oid-keyed
+ * cache holds an entry at this point for the wrong algorithm to poison —
+ * see `clone.test.ts`'s assertion of exactly that.
  */
 const adoptPeerAlgorithm = (ctx: Context, peer: string): Context => {
   const local = ctx.hash.algorithm;
@@ -159,7 +165,11 @@ const adoptPeerAlgorithm = (ctx: Context, peer: string): Context => {
       `the supplied hash service cannot switch to the peer's declared algorithm ${peer}`,
     );
   }
-  return Object.freeze({ ...ctx, hash: adopted, hashConfig: configFor(adopted.algorithm) });
+  return deriveContext(
+    ctx,
+    { hash: adopted, hashConfig: configFor(adopted.algorithm) },
+    { keepSessionAcrossHashChange: true },
+  );
 };
 
 const negotiateAndWritePack = async (

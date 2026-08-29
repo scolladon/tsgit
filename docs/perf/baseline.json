@@ -5,880 +5,1706 @@
       "hotShares": [
         {
           "frame": "parseRequiredFields",
-          "self": 0.22
+          "self": 0.35,
+          "ticks": 217
+        },
+        {
+          "frame": "isValidObjectIdHex",
+          "self": 0.18,
+          "ticks": 111
         },
         {
           "frame": "verifyAndReturn",
-          "self": 0.14
+          "self": 0.09,
+          "ticks": 54
         },
         {
           "frame": "resolveObjectBytes",
-          "self": 0.1
+          "self": 0.06,
+          "ticks": 38
         },
         {
           "frame": "parseObject",
-          "self": 0.08
+          "self": 0.05,
+          "ticks": 34
         },
         {
           "frame": "readCommit",
-          "self": 0.08
-        },
-        {
-          "frame": "commitDateWalk",
-          "self": 0.07
-        },
-        {
-          "frame": "log",
-          "self": 0.06
+          "self": 0.05,
+          "ticks": 33
         },
         {
           "frame": "enqueueParents",
-          "self": 0.06
+          "self": 0.05,
+          "ticks": 28
+        },
+        {
+          "frame": "log",
+          "self": 0.04,
+          "ticks": 22
+        },
+        {
+          "frame": "commitDateWalk",
+          "self": 0.03,
+          "ticks": 21
         },
         {
           "frame": "enqueueCommit",
-          "self": 0.04
-        },
-        {
-          "frame": "commitHeader",
-          "self": 0.04
+          "self": 0.03,
+          "ticks": 17
         },
         {
           "frame": "<anonymous>",
-          "self": 0.03
+          "self": 0.02,
+          "ticks": 10
+        },
+        {
+          "frame": "commitHeader",
+          "self": 0.01,
+          "ticks": 9
         },
         {
           "frame": "walkCommitsByDate",
-          "self": 0.02
+          "self": 0.01,
+          "ticks": 6
+        }
+      ],
+      "totalTicks": 619,
+      "underSampled": false
+    },
+    "log-commit-graph": {
+      "hotShares": [
+        {
+          "frame": "parseRequiredFields",
+          "self": 0.4,
+          "ticks": 244
         },
         {
-          "frame": "acquire",
-          "self": 0.02
+          "frame": "isValidObjectIdHex",
+          "self": 0.2,
+          "ticks": 123
+        },
+        {
+          "frame": "parseObject",
+          "self": 0.04,
+          "ticks": 27
+        },
+        {
+          "frame": "enqueueParents",
+          "self": 0.04,
+          "ticks": 24
+        },
+        {
+          "frame": "readCommit",
+          "self": 0.04,
+          "ticks": 22
+        },
+        {
+          "frame": "enqueueCommit",
+          "self": 0.04,
+          "ticks": 23
+        },
+        {
+          "frame": "commitDateWalk",
+          "self": 0.04,
+          "ticks": 22
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.04,
+          "ticks": 22
+        },
+        {
+          "frame": "log",
+          "self": 0.03,
+          "ticks": 20
+        },
+        {
+          "frame": "verifyAndReturn",
+          "self": 0.03,
+          "ticks": 17
+        },
+        {
+          "frame": "walkCommitsByDate",
+          "self": 0.02,
+          "ticks": 11
+        },
+        {
+          "frame": "resolveObjectBytes",
+          "self": 0.02,
+          "ticks": 12
         },
         {
           "frame": "decode$1",
-          "self": 0.01
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "commitHeader",
+          "self": 0.01,
+          "ticks": 5
         }
-      ]
+      ],
+      "totalTicks": 608,
+      "underSampled": false
     },
     "status": {
       "hotShares": [
         {
           "frame": "lstat",
-          "self": 0.39
-        },
-        {
-          "frame": "<anonymous>",
-          "self": 0.1
-        },
-        {
-          "frame": "compareWorkingTreeDelta",
-          "self": 0.09
+          "self": 0.38,
+          "ticks": 500
         },
         {
           "frame": "parseIndex",
-          "self": 0.08
+          "self": 0.09,
+          "ticks": 112
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.08,
+          "ticks": 103
         },
         {
           "frame": "stepEntry",
-          "self": 0.07
+          "self": 0.07,
+          "ticks": 96
+        },
+        {
+          "frame": "compareWorkingTreeDelta",
+          "self": 0.05,
+          "ticks": 65
         },
         {
           "frame": "flattenEntry",
-          "self": 0.04
+          "self": 0.05,
+          "ticks": 62
         },
         {
           "frame": "validateIndexPath",
-          "self": 0.04
-        },
-        {
-          "frame": "flattenLevel",
-          "self": 0.04
+          "self": 0.04,
+          "ticks": 55
         },
         {
           "frame": "walkWorkingTree",
-          "self": 0.03
+          "self": 0.04,
+          "ticks": 47
         },
         {
-          "frame": "advanceCursor",
-          "self": 0.03
+          "frame": "flattenLevel",
+          "self": 0.03,
+          "ticks": 44
         },
         {
-          "frame": "diffIndexAgainstTree",
-          "self": 0.02
+          "frame": "mapStat",
+          "self": 0.03,
+          "ticks": 39
+        },
+        {
+          "frame": "statOnlyVerdict",
+          "self": 0.03,
+          "ticks": 37
+        },
+        {
+          "frame": "scanForPrefetch",
+          "self": 0.02,
+          "ticks": 30
         },
         {
           "frame": "scanUntracked",
-          "self": 0.01
+          "self": 0.02,
+          "ticks": 22
+        },
+        {
+          "frame": "diffIndexAgainstTree",
+          "self": 0.01,
+          "ticks": 18
         },
         {
           "frame": "runFs",
-          "self": 0.01
+          "self": 0.01,
+          "ticks": 17
         },
         {
           "frame": "matchSixByteMode",
-          "self": 0.01
+          "self": 0.01,
+          "ticks": 16
         },
         {
           "frame": "groupUnmergedEntries",
-          "self": 0.01
-        },
-        {
-          "frame": "buildChanges",
-          "self": 0.01
+          "self": 0.01,
+          "ticks": 11
         }
-      ]
+      ],
+      "totalTicks": 1307,
+      "underSampled": false
     },
     "pack-read": {
       "hotShares": [
         {
-          "frame": "gatherByRevIndex",
-          "self": 0.46
-        },
-        {
           "frame": "entryOffsets",
-          "self": 0.31
+          "self": 0.3,
+          "ticks": 166
         },
         {
-          "frame": "revIndexPositionAt",
-          "self": 0.08
+          "frame": "resolveSortedOffsets",
+          "self": 0.18,
+          "ticks": 96
+        },
+        {
+          "frame": "gatherByRevIndex",
+          "self": 0.12,
+          "ticks": 68
+        },
+        {
+          "frame": "openRepository",
+          "self": 0.07,
+          "ticks": 37
+        },
+        {
+          "frame": "sectionedEntries",
+          "self": 0.03,
+          "ticks": 18
+        },
+        {
+          "frame": "layoutRootsOf",
+          "self": 0.03,
+          "ticks": 17
+        },
+        {
+          "frame": "readSlice",
+          "self": 0.03,
+          "ticks": 16
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.02,
+          "ticks": 9
+        },
+        {
+          "frame": "stat",
+          "self": 0.02,
+          "ticks": 9
+        },
+        {
+          "frame": "resolveRead",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "resolveFormatVersion",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "openRepository$1",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "lastTopLevelEntry",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "join",
+          "self": 0.01,
+          "ticks": 5
         },
         {
           "frame": "buildOffsetTable",
-          "self": 0.08
+          "self": 0.01,
+          "ticks": 5
         },
         {
-          "frame": "NodeCompressor",
-          "self": 0.08
+          "frame": "NodeFileSystem",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "resolveNodeLayout",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "readRepositoryFormat",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "pickScoped",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01,
+          "ticks": 3
         }
-      ]
+      ],
+      "totalTicks": 546,
+      "underSampled": false
     },
     "describe": {
       "hotShares": [
         {
-          "frame": "exists",
-          "self": 0.12
-        },
-        {
-          "frame": "resolveRead",
-          "self": 0.09
-        },
-        {
-          "frame": "readLooseCompressed",
-          "self": 0.07
-        },
-        {
-          "frame": "resolveObjectBytes",
-          "self": 0.05
-        },
-        {
           "frame": "parseRequiredFields",
-          "self": 0.05
-        },
-        {
-          "frame": "probeLooseOid",
-          "self": 0.05
-        },
-        {
-          "frame": "readLooseContent",
-          "self": 0.04
-        },
-        {
-          "frame": "peelRefToCommit",
-          "self": 0.04
-        },
-        {
-          "frame": "buildNameMap",
-          "self": 0.04
-        },
-        {
-          "frame": "tryLoose",
-          "self": 0.04
-        },
-        {
-          "frame": "resolveDirectChain",
-          "self": 0.03
-        },
-        {
-          "frame": "resolveDirect",
-          "self": 0.03
-        },
-        {
-          "frame": "describe",
-          "self": 0.03
-        },
-        {
-          "frame": "assertOperationalRepository",
-          "self": 0.03
+          "self": 0.17,
+          "ticks": 99
         },
         {
           "frame": "parseTagContent",
-          "self": 0.03
+          "self": 0.09,
+          "ticks": 53
         },
         {
-          "frame": "enqueueParents",
-          "self": 0.03
+          "frame": "resolveObjectBytes",
+          "self": 0.08,
+          "ticks": 48
         },
         {
-          "frame": "validateRefName",
-          "self": 0.01
+          "frame": "from",
+          "self": 0.08,
+          "ticks": 45
         },
         {
-          "frame": "runFs",
-          "self": 0.01
+          "frame": "resolveRead",
+          "self": 0.07,
+          "ticks": 43
         },
         {
-          "frame": "resolveCommitIsh",
-          "self": 0.01
-        },
-        {
-          "frame": "release",
-          "self": 0.01
-        },
-        {
-          "frame": "peelChain",
-          "self": 0.01
-        },
-        {
-          "frame": "exceedsMaxPeelDepth",
-          "self": 0.01
-        },
-        {
-          "frame": "commitHeader",
-          "self": 0.01
-        },
-        {
-          "frame": "assertEagerConfigValid",
-          "self": 0.01
-        },
-        {
-          "frame": "assertDiscoveryBooleansValid",
-          "self": 0.01
-        },
-        {
-          "frame": "BinaryHeap",
-          "self": 0.01
-        },
-        {
-          "frame": "readObject",
-          "self": 0.01
-        },
-        {
-          "frame": "read",
-          "self": 0.01
+          "frame": "isValidObjectIdHex",
+          "self": 0.06,
+          "ticks": 33
         },
         {
           "frame": "parseObject",
-          "self": 0.01
+          "self": 0.05,
+          "ticks": 27
+        },
+        {
+          "frame": "readLooseContent",
+          "self": 0.04,
+          "ticks": 23
+        },
+        {
+          "frame": "readLooseCompressed",
+          "self": 0.04,
+          "ticks": 23
+        },
+        {
+          "frame": "verifyAndReturn",
+          "self": 0.03,
+          "ticks": 17
+        },
+        {
+          "frame": "buildNameMap",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "resolveRef",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "exists",
+          "self": 0.02,
+          "ticks": 10
+        },
+        {
+          "frame": "enforceLooseCap",
+          "self": 0.02,
+          "ticks": 10
         },
         {
           "frame": "parseLooseRef",
-          "self": 0.01
+          "self": 0.02,
+          "ticks": 10
         },
         {
-          "frame": "looseObjectPath",
-          "self": 0.01
+          "frame": "describe",
+          "self": 0.02,
+          "ticks": 10
         },
         {
-          "frame": "findFirstInvalidCompression",
-          "self": 0.01
+          "frame": "tryLoose",
+          "self": 0.01,
+          "ticks": 8
         },
         {
-          "frame": "collectLooseRefs",
-          "self": 0.01
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "checkAborted$1",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "parseIdentity",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "parseCommitContent",
+          "self": 0.01,
+          "ticks": 4
         },
         {
           "frame": "assertLoadable",
-          "self": 0.01
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "walkRefDir",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "walkAllLooseRefNames",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "resolveCommitIsh",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "readObject",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "decode$1",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "assertEagerConfigValid",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "resolveDirectChain",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.01,
+          "ticks": 4
         }
-      ]
+      ],
+      "totalTicks": 575,
+      "underSampled": false
     },
     "name-rev": {
       "hotShares": [
         {
-          "frame": "exists",
-          "self": 0.14
+          "frame": "parseRequiredFields",
+          "self": 0.24,
+          "ticks": 326
         },
         {
-          "frame": "parseObject",
-          "self": 0.12
-        },
-        {
-          "frame": "resolveRead",
-          "self": 0.1
+          "frame": "isValidObjectIdHex",
+          "self": 0.12,
+          "ticks": 165
         },
         {
           "frame": "readLooseCompressed",
-          "self": 0.1
-        },
-        {
-          "frame": "parseRequiredFields",
-          "self": 0.07
-        },
-        {
-          "frame": "resolveObjectBytes",
-          "self": 0.07
-        },
-        {
-          "frame": "resolveDirect",
-          "self": 0.05
-        },
-        {
-          "frame": "tryLoose",
-          "self": 0.05
+          "self": 0.07,
+          "ticks": 93
         },
         {
           "frame": "parseTagContent",
-          "self": 0.05
+          "self": 0.06,
+          "ticks": 79
         },
         {
-          "frame": "<anonymous>",
-          "self": 0.05
+          "frame": "from",
+          "self": 0.05,
+          "ticks": 74
         },
         {
-          "frame": "withLazyFetchRetry",
-          "self": 0.02
+          "frame": "resolveObjectBytes",
+          "self": 0.05,
+          "ticks": 73
         },
         {
-          "frame": "qualifies",
-          "self": 0.02
+          "frame": "read",
+          "self": 0.05,
+          "ticks": 72
         },
         {
-          "frame": "parseNameRevOptions",
-          "self": 0.02
+          "frame": "parseObject",
+          "self": 0.04,
+          "ticks": 48
         },
         {
-          "frame": "runFs",
-          "self": 0.02
+          "frame": "readLooseContent",
+          "self": 0.03,
+          "ticks": 46
+        },
+        {
+          "frame": "resolveRead",
+          "self": 0.03,
+          "ticks": 41
+        },
+        {
+          "frame": "nameRev",
+          "self": 0.02,
+          "ticks": 31
         },
         {
           "frame": "readObject",
-          "self": 0.02
+          "self": 0.02,
+          "ticks": 25
         },
         {
-          "frame": "findFirstRejectedBoolean",
-          "self": 0.02
+          "frame": "readlink",
+          "self": 0.01,
+          "ticks": 18
         },
         {
-          "frame": "decode$1",
-          "self": 0.02
+          "frame": "hasUsableHead",
+          "self": 0.01,
+          "ticks": 18
         },
         {
-          "frame": "commonGitDir",
-          "self": 0.02
+          "frame": "resolveCommit",
+          "self": 0.01,
+          "ticks": 19
         },
         {
-          "frame": "collectLooseRefs",
-          "self": 0.02
+          "frame": "hashHex",
+          "self": 0.01,
+          "ticks": 15
+        },
+        {
+          "frame": "exists",
+          "self": 0.01,
+          "ticks": 15
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 14
+        },
+        {
+          "frame": "parseIdentity",
+          "self": 0.01,
+          "ticks": 14
+        },
+        {
+          "frame": "verifyAndReturn",
+          "self": 0.01,
+          "ticks": 11
+        },
+        {
+          "frame": "seedRef",
+          "self": 0.01,
+          "ticks": 11
+        },
+        {
+          "frame": "peelRefToCommit",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "tryLoose",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "probeLooseOid",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "assertAcceptedRepository",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "loadShallowSet",
+          "self": 0.01,
+          "ticks": 7
         }
-      ]
+      ],
+      "totalTicks": 1370,
+      "underSampled": false
     },
     "rev-parse": {
       "hotShares": [
         {
-          "frame": "runFs",
-          "self": 0.14
-        },
-        {
-          "frame": "resolveDirect",
-          "self": 0.14
-        },
-        {
-          "frame": "isPerWorktreeRef",
-          "self": 0.14
-        },
-        {
-          "frame": "findFirstInvalidCompression",
-          "self": 0.14
-        },
-        {
-          "frame": "<anonymous>",
-          "self": 0.14
+          "frame": "readUtf8",
+          "self": 0.24,
+          "ticks": 239
         },
         {
           "frame": "resolveRead",
-          "self": 0.14
+          "self": 0.16,
+          "ticks": 159
         },
         {
-          "frame": "exists",
-          "self": 0.14
+          "frame": "evaluate",
+          "self": 0.15,
+          "ticks": 147
+        },
+        {
+          "frame": "resolveDirectChain",
+          "self": 0.11,
+          "ticks": 108
+        },
+        {
+          "frame": "revParse",
+          "self": 0.08,
+          "ticks": 76
+        },
+        {
+          "frame": "parseLooseRef",
+          "self": 0.04,
+          "ticks": 42
+        },
+        {
+          "frame": "readlink",
+          "self": 0.04,
+          "ticks": 40
+        },
+        {
+          "frame": "findFirstRejectedBoolean",
+          "self": 0.04,
+          "ticks": 40
+        },
+        {
+          "frame": "assertEagerConfigValid",
+          "self": 0.02,
+          "ticks": 18
+        },
+        {
+          "frame": "findFirstInvalidBoolean",
+          "self": 0.01,
+          "ticks": 14
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "assertRepository",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "findLastInvalidMaxTreeDepth",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "hasUsableHead",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "assertAcceptedRepository",
+          "self": 0.01,
+          "ticks": 6
         }
-      ]
+      ],
+      "totalTicks": 979,
+      "underSampled": false
     },
     "cat-file": {
       "hotShares": [
         {
-          "frame": "resolveSortedOffsets",
-          "self": 0.17
+          "frame": "parseRequiredFields",
+          "self": 0.34,
+          "ticks": 479
         },
         {
-          "frame": "parseHeader$1",
-          "self": 0.17
+          "frame": "serializeCommitContent",
+          "self": 0.16,
+          "ticks": 225
         },
         {
-          "frame": "emptyTreeOid",
-          "self": 0.17
+          "frame": "parseObject",
+          "self": 0.15,
+          "ticks": 215
+        },
+        {
+          "frame": "readOne",
+          "self": 0.06,
+          "ticks": 85
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.05,
+          "ticks": 74
+        },
+        {
+          "frame": "resolveRead",
+          "self": 0.05,
+          "ticks": 73
+        },
+        {
+          "frame": "withLazyFetchRetry",
+          "self": 0.05,
+          "ticks": 65
+        },
+        {
+          "frame": "isValidObjectIdHex",
+          "self": 0.03,
+          "ticks": 45
         },
         {
           "frame": "catFileBatch",
-          "self": 0.17
+          "self": 0.02,
+          "ticks": 28
+        },
+        {
+          "frame": "parseOptionalHeaderBlock",
+          "self": 0.02,
+          "ticks": 23
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 13
         },
         {
           "frame": "catFile",
-          "self": 0.17
+          "self": 0.01,
+          "ticks": 13
+        },
+        {
+          "frame": "hasUsableHead",
+          "self": 0.01,
+          "ticks": 11
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.01,
+          "ticks": 11
         },
         {
           "frame": "findFirstRejectedBoolean",
-          "self": 0.17
+          "self": 0.01,
+          "ticks": 9
         }
-      ]
+      ],
+      "totalTicks": 1420,
+      "underSampled": false
     },
     "show": {
       "hotShares": [
         {
-          "frame": "gatherByRevIndex",
-          "self": 0.14
+          "frame": "parseRequiredFields",
+          "self": 0.2,
+          "ticks": 129
         },
         {
-          "frame": "buildOffsetTable",
-          "self": 0.14
+          "frame": "evaluate",
+          "self": 0.15,
+          "ticks": 94
         },
         {
-          "frame": "verifyAndReturn",
-          "self": 0.14
+          "frame": "readUtf8",
+          "self": 0.08,
+          "ticks": 53
         },
         {
-          "frame": "parseIdentity",
-          "self": 0.14
+          "frame": "isValidObjectIdHex",
+          "self": 0.08,
+          "ticks": 51
         },
         {
-          "frame": "exists",
-          "self": 0.14
+          "frame": "resolveDirectChain",
+          "self": 0.07,
+          "ticks": 43
         },
         {
-          "frame": "cursorsSame",
-          "self": 0.14
+          "frame": "revParse",
+          "self": 0.05,
+          "ticks": 31
         },
         {
-          "frame": "assertLoadable",
-          "self": 0.14
+          "frame": "buildForRev",
+          "self": 0.04,
+          "ticks": 27
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.04,
+          "ticks": 25
+        },
+        {
+          "frame": "resolveRead",
+          "self": 0.03,
+          "ticks": 21
+        },
+        {
+          "frame": "readlink",
+          "self": 0.03,
+          "ticks": 19
+        },
+        {
+          "frame": "resolveObjectBytes",
+          "self": 0.03,
+          "ticks": 18
+        },
+        {
+          "frame": "splitObject",
+          "self": 0.02,
+          "ticks": 13
+        },
+        {
+          "frame": "scanEntryAt",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "diffRawTrees",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "show",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "assertRepository",
+          "self": 0.02,
+          "ticks": 11
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "readCommitData",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "findFirstRejectedBoolean",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "peelToTree",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "findLastInvalidMaxTreeDepth",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.01,
+          "ticks": 6
         }
-      ]
+      ],
+      "totalTicks": 638,
+      "underSampled": false
     },
     "diff": {
       "hotShares": [
         {
-          "frame": "getNthParent",
-          "self": 0.07
+          "frame": "parseRequiredFields",
+          "self": 0.19,
+          "ticks": 114
         },
         {
-          "frame": "parseTreeContent",
-          "self": 0.07
-        },
-        {
-          "frame": "<anonymous>",
-          "self": 0.07
-        },
-        {
-          "frame": "scanPacks",
-          "self": 0.03
-        },
-        {
-          "frame": "revIndexPositionAt",
-          "self": 0.03
-        },
-        {
-          "frame": "peel",
-          "self": 0.03
-        },
-        {
-          "frame": "runFs",
-          "self": 0.03
-        },
-        {
-          "frame": "resolveDirectChain",
-          "self": 0.03
-        },
-        {
-          "frame": "resolveBase$1",
-          "self": 0.03
-        },
-        {
-          "frame": "readTree",
-          "self": 0.03
-        },
-        {
-          "frame": "parseObject",
-          "self": 0.03
-        },
-        {
-          "frame": "isContainedIn",
-          "self": 0.03
-        },
-        {
-          "frame": "findFirstValuelessEntry",
-          "self": 0.03
-        },
-        {
-          "frame": "findFirstInvalidBooleanInSection",
-          "self": 0.03
+          "frame": "isValidObjectIdHex",
+          "self": 0.11,
+          "ticks": 67
         },
         {
           "frame": "evaluate",
-          "self": 0.03
+          "self": 0.09,
+          "ticks": 57
         },
         {
-          "frame": "diff",
-          "self": 0.03
+          "frame": "readUtf8",
+          "self": 0.08,
+          "ticks": 50
         },
         {
-          "frame": "compareBytes",
-          "self": 0.03
+          "frame": "revParse",
+          "self": 0.07,
+          "ticks": 41
         },
         {
-          "frame": "resolveRead",
-          "self": 0.03
+          "frame": "resolveDirectChain",
+          "self": 0.07,
+          "ticks": 40
+        },
+        {
+          "frame": "parseTreeContent",
+          "self": 0.05,
+          "ticks": 29
         },
         {
           "frame": "resolveObjectBytes",
-          "self": 0.03
+          "self": 0.05,
+          "ticks": 28
         },
         {
-          "frame": "readObject",
-          "self": 0.03
+          "frame": "readlink",
+          "self": 0.03,
+          "ticks": 21
         },
         {
-          "frame": "parseLooseRef",
-          "self": 0.03
+          "frame": "diff",
+          "self": 0.03,
+          "ticks": 21
         },
         {
-          "frame": "parseCommitContent",
-          "self": 0.03
+          "frame": "isContainedIn",
+          "self": 0.02,
+          "ticks": 15
+        },
+        {
+          "frame": "resolveRead",
+          "self": 0.02,
+          "ticks": 12
         },
         {
           "frame": "findFirstRejectedBoolean",
-          "self": 0.03
+          "self": 0.02,
+          "ticks": 12
         },
         {
-          "frame": "exists",
-          "self": 0.03
+          "frame": "assertRepository",
+          "self": 0.02,
+          "ticks": 10
         },
         {
-          "frame": "emptyTreeOid",
-          "self": 0.03
+          "frame": "readObject",
+          "self": 0.01,
+          "ticks": 9
         },
         {
-          "frame": "assertLoadable",
-          "self": 0.03
+          "frame": "parseObject",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "parseLooseRef",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "resolveTreeish",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "getNthParent",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "verifyAndReturn",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "resolveAndDiff",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "parseCommitContent",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "findFirstInvalidBooleanInSection",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "assertValidPromisorRemoteConfig",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.01,
+          "ticks": 5
         }
-      ]
+      ],
+      "totalTicks": 615,
+      "underSampled": false
     },
     "blame": {
       "hotShares": [
         {
           "frame": "parseTreeContent",
-          "self": 0.59
+          "self": 0.43,
+          "ticks": 260
+        },
+        {
+          "frame": "fromRaw",
+          "self": 0.41,
+          "ticks": 248
         },
         {
           "frame": "processSuspect",
-          "self": 0.06
+          "self": 0.07,
+          "ticks": 43
         },
         {
-          "frame": "buildOffsetTable",
-          "self": 0.06
-        },
-        {
-          "frame": "readLooseCompressed",
-          "self": 0.06
-        },
-        {
-          "frame": "evict",
-          "self": 0.06
+          "frame": "findTreeEntry",
+          "self": 0.02,
+          "ticks": 14
         },
         {
           "frame": "splitLines",
-          "self": 0.06
+          "self": 0.01,
+          "ticks": 8
         },
         {
-          "frame": "decode$1",
-          "self": 0.06
+          "frame": "parseRequiredFields",
+          "self": 0.01,
+          "ticks": 8
         },
         {
-          "frame": "collectDeltaChain",
-          "self": 0.06
+          "frame": "isValidObjectIdHex",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.01,
+          "ticks": 4
         }
-      ]
+      ],
+      "totalTicks": 603,
+      "underSampled": false
     },
     "commit": {
       "hotShares": [
         {
-          "frame": "writeExclusive",
-          "self": 0.1
-        },
-        {
-          "frame": "runFs",
-          "self": 0.1
-        },
-        {
-          "frame": "resolveHooksDir",
-          "self": 0.1
-        },
-        {
-          "frame": "parseLooseRef",
-          "self": 0.1
-        },
-        {
-          "frame": "findLastInvalidMaxTreeDepth",
-          "self": 0.1
-        },
-        {
-          "frame": "findFirstValuelessEntry",
-          "self": 0.1
-        },
-        {
-          "frame": "commit$1",
-          "self": 0.1
-        },
-        {
-          "frame": "allLiteralsAreFiles",
-          "self": 0.1
-        },
-        {
-          "frame": "acquireIndexLock",
-          "self": 0.1
+          "frame": "resolveWrite",
+          "self": 0.17,
+          "ticks": 146
         },
         {
           "frame": "resolveRead",
-          "self": 0.1
+          "self": 0.07,
+          "ticks": 60
+        },
+        {
+          "frame": "guard",
+          "self": 0.05,
+          "ticks": 47
+        },
+        {
+          "frame": "exists",
+          "self": 0.05,
+          "ticks": 44
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.04,
+          "ticks": 39
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.03,
+          "ticks": 22
+        },
+        {
+          "frame": "hasUsableHead",
+          "self": 0.03,
+          "ticks": 22
+        },
+        {
+          "frame": "writeUtf8",
+          "self": 0.03,
+          "ticks": 22
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.03,
+          "ticks": 28
+        },
+        {
+          "frame": "mkdir",
+          "self": 0.02,
+          "ticks": 15
+        },
+        {
+          "frame": "readLooseContent",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "assertNoPendingOperation",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "appendUtf8",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "wrapFsValidator",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "lstat",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "rename",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "layoutRootsOf",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "tokenizeLine",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "reflogFileExists",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "invokeHook",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "commit$1",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "writeObject",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "readIndex",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "lstatOrMissing",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "findFirstRejectedBoolean",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "realpathNearestExisting",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "openRepository$1",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "hasValidHead",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.01,
+          "ticks": 5
         }
       ],
-      "setupShares": []
+      "setupShares": [
+        {
+          "frame": "cachedParentRealpath",
+          "self": 0.03,
+          "ticks": 24
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.02,
+          "ticks": 17
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "findLayout",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "assertRepository",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "openRepository",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "bootstrapRepository",
+          "self": 0.01,
+          "ticks": 5
+        }
+      ],
+      "totalTicks": 879,
+      "underSampled": false
     },
     "add": {
       "hotShares": [
         {
-          "frame": "isAbsolute",
-          "self": 0.22
+          "frame": "resolveWrite",
+          "self": 0.21,
+          "ticks": 119
         },
         {
-          "frame": "runFs",
-          "self": 0.11
-        },
-        {
-          "frame": "removeNode",
-          "self": 0.11
-        },
-        {
-          "frame": "layoutRootsOf",
-          "self": 0.11
-        },
-        {
-          "frame": "createLruCache",
-          "self": 0.11
-        },
-        {
-          "frame": "basename",
-          "self": 0.11
-        },
-        {
-          "frame": "addToHead",
-          "self": 0.11
+          "frame": "guard",
+          "self": 0.06,
+          "ticks": 32
         },
         {
           "frame": "<anonymous>",
-          "self": 0.11
+          "self": 0.06,
+          "ticks": 36
+        },
+        {
+          "frame": "resolveRead",
+          "self": 0.04,
+          "ticks": 23
+        },
+        {
+          "frame": "writeUtf8",
+          "self": 0.04,
+          "ticks": 22
+        },
+        {
+          "frame": "mkdir",
+          "self": 0.04,
+          "ticks": 20
+        },
+        {
+          "frame": "exists",
+          "self": 0.03,
+          "ticks": 18
+        },
+        {
+          "frame": "hasUsableHead",
+          "self": 0.03,
+          "ticks": 15
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.02,
+          "ticks": 14
+        },
+        {
+          "frame": "tokenizeLine",
+          "self": 0.02,
+          "ticks": 10
+        },
+        {
+          "frame": "walkWorkingTree",
+          "self": 0.02,
+          "ticks": 9
+        },
+        {
+          "frame": "addAll",
+          "self": 0.02,
+          "ticks": 9
+        },
+        {
+          "frame": "stageFromStat",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "layoutRootsOf",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "get",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "stat",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "openRepository$1",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "findFirstRejectedBoolean",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "findFirstInvalidBooleanInSection",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "wrapFsValidator",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "resolveFilterDriver",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "realpathNearestExisting",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "findLastInvalidMaxTreeDepth",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "buildIgnoreEvaluator",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "rename",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "hasValidHead",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "processWalkEntry",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "parseGitignore",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "loadConfigEntry",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "assertValidBooleanConfigInSection",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "assertDiscoveryBooleansValid",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "add",
+          "self": 0.01,
+          "ticks": 3
+        },
+        {
+          "frame": "requireWorkTree",
+          "self": 0.01,
+          "ticks": 3
         }
       ],
-      "setupShares": []
+      "setupShares": [
+        {
+          "frame": "cachedParentRealpath",
+          "self": 0.03,
+          "ticks": 19
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "runFs",
+          "self": 0.02,
+          "ticks": 9
+        },
+        {
+          "frame": "findLayout",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "openRepository",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "bootstrapRepository",
+          "self": 0.01,
+          "ticks": 3
+        }
+      ],
+      "totalTicks": 566,
+      "underSampled": false
     },
     "merge": {
       "hotShares": [
         {
-          "frame": "<anonymous>",
-          "self": 0.08
+          "frame": "resolveWrite",
+          "self": 0.14,
+          "ticks": 92
         },
         {
           "frame": "resolveRead",
-          "self": 0.07
+          "self": 0.1,
+          "ticks": 64
         },
         {
-          "frame": "runFs",
-          "self": 0.05
-        },
-        {
-          "frame": "resolveWrite",
-          "self": 0.05
-        },
-        {
-          "frame": "readIndex",
-          "self": 0.04
-        },
-        {
-          "frame": "cachedParentRealpath",
-          "self": 0.04
+          "frame": "<anonymous>",
+          "self": 0.06,
+          "ticks": 41
         },
         {
           "frame": "guard",
-          "self": 0.04
-        },
-        {
-          "frame": "set",
-          "self": 0.03
-        },
-        {
-          "frame": "readLooseCompressed",
-          "self": 0.03
-        },
-        {
-          "frame": "parseLooseRef",
-          "self": 0.03
-        },
-        {
-          "frame": "findFirstInvalidCompression",
-          "self": 0.03
-        },
-        {
-          "frame": "isContainedInAnyRoot",
-          "self": 0.03
-        },
-        {
-          "frame": "join",
-          "self": 0.03
-        },
-        {
-          "frame": "toAuthor",
-          "self": 0.01
-        },
-        {
-          "frame": "sourcesForPath",
-          "self": 0.01
-        },
-        {
-          "frame": "sortByPath",
-          "self": 0.01
-        },
-        {
-          "frame": "serializeAndHash",
-          "self": 0.01
-        },
-        {
-          "frame": "resolveRef",
-          "self": 0.01
-        },
-        {
-          "frame": "resolveLoose",
-          "self": 0.01
-        },
-        {
-          "frame": "resolveDirectChain",
-          "self": 0.01
-        },
-        {
-          "frame": "rename",
-          "self": 0.01
+          "self": 0.04,
+          "ticks": 27
         },
         {
           "frame": "readUtf8",
-          "self": 0.01
+          "self": 0.02,
+          "ticks": 12
         },
         {
-          "frame": "readHeadRaw",
-          "self": 0.01
-        },
-        {
-          "frame": "readExistingEntries",
-          "self": 0.01
-        },
-        {
-          "frame": "openBlobSource",
-          "self": 0.01
-        },
-        {
-          "frame": "normalizeAliasCandidate",
-          "self": 0.01
-        },
-        {
-          "frame": "isPerWorktreeRef",
-          "self": 0.01
-        },
-        {
-          "frame": "from",
-          "self": 0.01
-        },
-        {
-          "frame": "commitReflogMessage",
-          "self": 0.01
-        },
-        {
-          "frame": "commit$1",
-          "self": 0.01
-        },
-        {
-          "frame": "chmod",
-          "self": 0.01
-        },
-        {
-          "frame": "checkout",
-          "self": 0.01
-        },
-        {
-          "frame": "checkAborted$1",
-          "self": 0.01
-        },
-        {
-          "frame": "blobMatches",
-          "self": 0.01
-        },
-        {
-          "frame": "basename",
-          "self": 0.01
-        },
-        {
-          "frame": "assertEagerConfigValid",
-          "self": 0.01
-        },
-        {
-          "frame": "applyCommitMessageHooks",
-          "self": 0.01
-        },
-        {
-          "frame": "applyCleanFilter",
-          "self": 0.01
-        },
-        {
-          "frame": "TsgitError",
-          "self": 0.01
-        },
-        {
-          "frame": "validateRefName",
-          "self": 0.01
-        },
-        {
-          "frame": "realpathForCreation",
-          "self": 0.01
-        },
-        {
-          "frame": "hasIgnorableCodepoint",
-          "self": 0.01
+          "frame": "rename",
+          "self": 0.02,
+          "ticks": 12
         },
         {
           "frame": "exists",
-          "self": 0.01
+          "self": 0.02,
+          "ticks": 10
         },
         {
-          "frame": "containedByPrefix",
-          "self": 0.01
+          "frame": "loadAndParse$1",
+          "self": 0.02,
+          "ticks": 10
         },
         {
-          "frame": "commonDirOf",
-          "self": 0.01
+          "frame": "hasUsableHead",
+          "self": 0.02,
+          "ticks": 10
         },
         {
-          "frame": "bytesToHex",
-          "self": 0.01
+          "frame": "commit$1",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "assertNoPendingOperation",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "reflogFileExists",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "findFirstRejectedBoolean",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "appendUtf8",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "chmod",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "updateRef",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "resolveDirect",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "readLooseContent",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "parseRequiredFields",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "parseObject",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "lstat",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "buildAttributeProvider",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "basename",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "rm",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "resolveDirectChain",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "commit",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "writeExclusive",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "readIndex",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "writeObject",
+          "self": 0.01,
+          "ticks": 4
         }
       ],
-      "setupShares": []
+      "setupShares": [
+        {
+          "frame": "cachedParentRealpath",
+          "self": 0.04,
+          "ticks": 25
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.03,
+          "ticks": 17
+        },
+        {
+          "frame": "runFs",
+          "self": 0.02,
+          "ticks": 14
+        }
+      ],
+      "totalTicks": 666,
+      "underSampled": false
     }
   }
 }

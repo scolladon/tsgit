@@ -65,6 +65,32 @@ export function parseReflog(text: string, hexLength: 40 | 64): ReadonlyArray<Ref
     .map((line) => parseReflogLine(line, hexLength));
 }
 
+/**
+ * Parse a whole reflog file LINE-GRAINED: a line that does not parse is
+ * skipped, never discarding the file's OTHER valid entries the way
+ * `parseReflog`'s all-or-nothing `.map` does. Mirrors git's own reachability
+ * walk (`for_each_reflog_ent`), which skips a bad line and keeps going —
+ * pinned against git 2.55.0: `git gc --prune=now` still keeps an object
+ * reachable only from a valid entry that shares a reflog file with a
+ * garbage line. `parseReflog` stays strict for its own callers (`reflog
+ * show`/expire/delete — a malformed reflog IS reported there, not silently
+ * thinned); this is for gc's retention scan alone. Oldest-first, same as
+ * `parseReflog`.
+ */
+export function parseReflogLenient(text: string, hexLength: 40 | 64): ReadonlyArray<ReflogEntry> {
+  const entries: ReflogEntry[] = [];
+  for (const line of text.split('\n')) {
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — an empty `line` always fails parseReflogLine's `meta[hexLength] !== FIELD_SEPARATOR` check (undefined !== ' ') and is caught below exactly like any other malformed line, so skipping this guard changes nothing observable.
+    if (line === '') continue;
+    try {
+      entries.push(parseReflogLine(line, hexLength));
+    } catch {
+      // Malformed line — skipped, not fatal to the rest of the file.
+    }
+  }
+  return entries;
+}
+
 /** Collapse CR/LF to spaces and trim — defends the reflog's one-line invariant. */
 export function sanitizeReflogMessage(message: string): string {
   return message.replace(/[\r\n]+/g, ' ').trim();

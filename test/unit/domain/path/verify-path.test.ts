@@ -613,6 +613,47 @@ describe('isDotGitAlias', () => {
       });
     });
   });
+
+  describe('Given a hostile-path corpus probing the isObviouslyNotAnAlias fast path', () => {
+    describe('When checked', () => {
+      it.each([
+        { label: 'plain ASCII filename', component: 'index.ts', expected: false },
+        {
+          label: 'uppercase-G filename that is not an alias',
+          component: 'Gemfile',
+          expected: false,
+        },
+        {
+          label: 'backslash-disguised NTFS stream (abc\\.git)',
+          component: 'abc\\.git',
+          expected: true,
+        },
+        {
+          label: 'ignorable codepoint at the very FRONT of the component (invisible + .git)',
+          component: `${ZWNJ}.git`,
+          expected: true,
+        },
+        {
+          label: 'a lone `.` (matchShape territory, not this scan)',
+          component: '.',
+          expected: false,
+        },
+        { label: 'empty component', component: '', expected: false },
+        { label: 'NTFS short name, uppercase (GIT~1)', component: 'GIT~1', expected: true },
+        {
+          label: 'non-ASCII component with no alias meaning',
+          component: '日本語',
+          expected: false,
+        },
+      ])('Then $label resolves to $expected', ({ component, expected }) => {
+        // Arrange + Act
+        const result = isDotGitAlias(component);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
 });
 
 describe('isDotGitWalkEntry', () => {

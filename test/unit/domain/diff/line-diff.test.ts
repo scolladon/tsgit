@@ -5,6 +5,8 @@ import {
   BINARY_DETECTION_BYTES,
   diffLines,
   diffLinesWithBound,
+  diffPresplitLines,
+  diffPresplitLinesWithBound,
   isBinary,
   MAX_DIFF_EDIT_DISTANCE,
   MAX_DIFF_LINES,
@@ -708,6 +710,81 @@ describe('line-diff — diffLines', () => {
           { kind: 'theirs-only', oursStart: M, oursEnd: M, theirsStart: 0, theirsEnd: N },
         ]);
       }, 60_000);
+    });
+  });
+});
+
+describe('line-diff — diffPresplitLines', () => {
+  describe('Given already-split ours/theirs line arrays', () => {
+    describe('When diffPresplitLines is called', () => {
+      it('Then produces the identical LineDiff diffLines produces from the same bytes', () => {
+        // Arrange
+        const ours = enc('line1\nline2\nline3\n');
+        const theirs = enc('line1\nline2-mod\nline3\nline4\n');
+        const sut = diffPresplitLines;
+
+        // Act
+        const result = sut(splitLines(ours), splitLines(theirs));
+        const expected = diffLines(ours, theirs);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+
+    describe('When diffPresplitLines is called', () => {
+      it('Then the returned oursLines/theirsLines are the SAME array references passed in — no re-split', () => {
+        // Arrange
+        const oursLines = splitLines(enc('a\nb\n'));
+        const theirsLines = splitLines(enc('a\nc\n'));
+        const sut = diffPresplitLines;
+
+        // Act
+        const result = sut(oursLines, theirsLines);
+
+        // Assert
+        expect(result.oursLines).toBe(oursLines);
+        expect(result.theirsLines).toBe(theirsLines);
+      });
+    });
+  });
+
+  describe('Given both sides empty', () => {
+    describe('When diffPresplitLines is called', () => {
+      it('Then returns the single common empty-file hunk, matching diffLines', () => {
+        // Arrange
+        const sut = diffPresplitLines;
+
+        // Act
+        const result = sut([], []);
+
+        // Assert
+        expect(result).toEqual(diffLines(new Uint8Array(0), new Uint8Array(0)));
+      });
+    });
+  });
+
+  describe('Given a pair whose true edit distance exceeds the bound', () => {
+    describe('When diffPresplitLines is called', () => {
+      it('Then degrades to the whole-file fallback, matching diffLinesWithBound at the same bound', () => {
+        // Arrange
+        const SMALL_EDIT_DISTANCE = 3;
+        const oursLines = splitLines(enc(Array.from({ length: 20 }, (_, i) => `p${i}\n`).join('')));
+        const theirsLines = splitLines(
+          enc(Array.from({ length: 20 }, (_, i) => `q${i}\n`).join('')),
+        );
+
+        // Act
+        const result = diffPresplitLinesWithBound(
+          oursLines,
+          theirsLines,
+          undefined,
+          SMALL_EDIT_DISTANCE,
+        );
+
+        // Assert
+        expect(result.degraded).toBe(true);
+      });
     });
   });
 });

@@ -1,5 +1,6 @@
 import type { Context } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
+import { deriveContext } from '../derive-context.js';
 import { commonGitDir } from '../path-layout.js';
 import { inheritedAcceptanceVerdicts } from './layout-verdict.js';
 
@@ -24,6 +25,11 @@ export const worktreeScopedFs = (
  * `promisor` and `hooks` are dropped: both close over the parent `Context` and
  * would fire against the parent's gitdir if invoked while operating on the child
  * (mirrors `deriveSubmoduleContext`).
+ *
+ * The common dir is unchanged — a linked worktree is the SAME repository,
+ * just a different admin dir — so `deriveContext` keeps the session, and
+ * with it every commonDir-anchored cache (config, shallow set, commit graph,
+ * loose-oid fanout, pack registry, reftable stack, …).
  */
 export const deriveWorktreeContext = (
   ctx: Context,
@@ -33,8 +39,7 @@ export const deriveWorktreeContext = (
   const common = commonGitDir(ctx);
   const gitDir = `${common}/worktrees/${id}`;
   const { promisor: _promisor, hooks: _hooks, command: _command, ...rest } = ctx;
-  return Object.freeze({
-    ...rest,
+  return deriveContext(rest, {
     // The child reaches both the worktree path (working-tree files) and the
     // common dir (objects/admin); `worktreeFs` confines it to exactly those
     // (ADR-298). Falls back to the parent fs on sandboxed adapters.

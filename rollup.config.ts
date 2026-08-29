@@ -35,6 +35,7 @@ const entryPoints = {
   'commands/grep': 'src/application/commands/grep.ts',
   'commands/init': 'src/application/commands/init.ts',
   'commands/log': 'src/application/commands/log.ts',
+  'commands/maintenance': 'src/application/commands/maintenance.ts',
   'commands/merge': 'src/application/commands/merge.ts',
   'commands/mv': 'src/application/commands/mv.ts',
   'commands/name-rev': 'src/application/commands/name-rev.ts',

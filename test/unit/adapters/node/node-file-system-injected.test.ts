@@ -3526,3 +3526,93 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
     });
   });
 });
+
+describe('NodeFileSystem — resolveWrite `..`-and-separator prefilter (DI)', () => {
+  describe('Given a POSIX absolute path with no `..` segment', () => {
+    describe('When mkdir resolves it', () => {
+      it('Then policy.resolve is never called (fast path)', async () => {
+        // Arrange
+        const resolveSpy = vi.spyOn(posixPolicy, 'resolve');
+        const realpath = vi.fn().mockResolvedValue('/root');
+        const sut = new NodeFileSystem('/root', posixPolicy, fakeFsOps({ realpath }));
+
+        try {
+          // Act
+          await sut.mkdir('/root/sub');
+
+          // Assert
+          expect(resolveSpy).not.toHaveBeenCalled();
+        } finally {
+          resolveSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a Windows absolute path already in native-separator form with no `..`', () => {
+    describe('When mkdir resolves it', () => {
+      it('Then policy.resolve is never called (fast path)', async () => {
+        // Arrange
+        const resolveSpy = vi.spyOn(windowsPolicy, 'resolve');
+        const realpath = vi.fn().mockResolvedValue('C:\\Root');
+        const sut = new NodeFileSystem('C:\\Root', windowsPolicy, fakeFsOps({ realpath }));
+
+        try {
+          // Act
+          await sut.mkdir('C:\\Root\\sub');
+
+          // Assert
+          expect(resolveSpy).not.toHaveBeenCalled();
+        } finally {
+          resolveSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a Windows absolute path carrying a foreign `/` separator with no `..`', () => {
+    describe('When mkdir resolves it', () => {
+      it('Then policy.resolve still runs and the result is native-separator (the fold is not skipped)', async () => {
+        // Arrange — mixed separators are contractually accepted; skipping
+        // resolve() here would hand `realpathForCreation`'s fallback
+        // walk-up an un-splittable single segment (it splits on
+        // `policy.sep` alone), silently bypassing the per-ancestor
+        // realpath/symlink check.
+        const mkdirSpy = vi.fn().mockResolvedValue(undefined);
+        const realpath = vi.fn().mockResolvedValue('C:\\Root');
+        const sut = new NodeFileSystem(
+          'C:\\Root',
+          windowsPolicy,
+          fakeFsOps({ realpath, mkdir: mkdirSpy }),
+        );
+
+        // Act
+        await sut.mkdir('C:\\Root/sub');
+
+        // Assert
+        expect(mkdirSpy).toHaveBeenCalledWith('C:\\Root\\sub', { recursive: true });
+      });
+    });
+  });
+
+  describe('Given a POSIX absolute path with an embedded `..` segment', () => {
+    describe('When mkdir resolves it', () => {
+      it('Then policy.resolve still runs and the `..` is collapsed', async () => {
+        // Arrange
+        const mkdirSpy = vi.fn().mockResolvedValue(undefined);
+        const realpath = vi.fn().mockResolvedValue('/root');
+        const sut = new NodeFileSystem(
+          '/root',
+          posixPolicy,
+          fakeFsOps({ realpath, mkdir: mkdirSpy }),
+        );
+
+        // Act
+        await sut.mkdir('/root/sub/../other');
+
+        // Assert
+        expect(mkdirSpy).toHaveBeenCalledWith('/root/other', { recursive: true });
+      });
+    });
+  });
+});

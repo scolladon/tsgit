@@ -38,7 +38,7 @@ describe('parseDigest', () => {
         const result = parseDigest(digestText);
 
         // Assert
-        expect(result).toEqual([{ frame: 'walkCommitsByDate', self: 1 }]);
+        expect(result.hotShares).toEqual([{ frame: 'walkCommitsByDate', self: 1, ticks: 37 }]);
       });
     });
   });
@@ -62,9 +62,9 @@ describe('parseDigest', () => {
         const result = parseDigest(digestText);
 
         // Assert
-        expect(result).toEqual([
-          { frame: 'walkCommitsByDate', self: 0.75 },
-          { frame: 'readBlob', self: 0.25 },
+        expect(result.hotShares).toEqual([
+          { frame: 'walkCommitsByDate', self: 0.75, ticks: 30 },
+          { frame: 'readBlob', self: 0.25, ticks: 10 },
         ]);
       });
     });
@@ -98,7 +98,7 @@ describe('parseDigest', () => {
         const result = parseDigest(digestText);
 
         // Assert
-        expect(result).toEqual([]);
+        expect(result.hotShares).toEqual([]);
       });
     });
   });
@@ -125,7 +125,7 @@ describe('parseDigest', () => {
         const result = parseDigest(digestText);
 
         // Assert
-        expect(result).toEqual([{ frame: 'walkCommitsByDate', self: 1 }]);
+        expect(result.hotShares).toEqual([{ frame: 'walkCommitsByDate', self: 1, ticks: 999 }]);
       });
     });
   });
@@ -151,9 +151,9 @@ describe('parseDigest', () => {
         const result = parseDigest(digestText);
 
         // Assert
-        expect(result).toEqual([
-          { frame: 'walkCommitsByDate', self: 0.99 },
-          { frame: 'boundaryFrame', self: 0.01 },
+        expect(result.hotShares).toEqual([
+          { frame: 'walkCommitsByDate', self: 0.99, ticks: 99 },
+          { frame: 'boundaryFrame', self: 0.01, ticks: 1 },
         ]);
       });
     });
@@ -183,11 +183,108 @@ describe('parseDigest', () => {
         const result = parseDigest(digestText);
 
         // Assert
-        expect(result).toEqual([
-          { frame: 'walkTree', self: 0.6 },
-          { frame: 'readSlice', self: 0.4 },
+        expect(result.hotShares).toEqual([
+          { frame: 'walkTree', self: 0.6, ticks: 60 },
+          { frame: 'readSlice', self: 0.4, ticks: 40 },
         ]);
       });
+    });
+  });
+});
+
+describe('Given a digest with known tick counts', () => {
+  describe('When parseDigest runs', () => {
+    it("Then it reports each frame's raw tick count", () => {
+      // Arrange — 30:10 tick ratio; each returned share must carry its own
+      // raw ticks alongside the normalised self share.
+      const digestText = [
+        ...digestHeader,
+        ' [JavaScript]:',
+        '   ticks  total  nonlib   name',
+        `     30   75.0%    75.0%  LazyCompile: *walkCommitsByDate ${BUNDLE}:120:34`,
+        `     10   25.0%    25.0%  LazyCompile: *readBlob ${BUNDLE}:200:10`,
+        '',
+        ' [Summary]:',
+        '     40  100.0%   100.0%  JavaScript',
+      ].join('\n');
+
+      // Act
+      const result = parseDigest(digestText);
+
+      // Assert
+      expect(result.hotShares).toEqual([
+        { frame: 'walkCommitsByDate', self: 0.75, ticks: 30 },
+        { frame: 'readBlob', self: 0.25, ticks: 10 },
+      ]);
+    });
+
+    it('Then it reports the surviving tick total as totalTicks', () => {
+      // Arrange — same digest as above; totalTicks is the sum of ticks over
+      // every extracted tsgit frame, the denominator the shares were
+      // computed from.
+      const digestText = [
+        ...digestHeader,
+        ' [JavaScript]:',
+        '   ticks  total  nonlib   name',
+        `     30   75.0%    75.0%  LazyCompile: *walkCommitsByDate ${BUNDLE}:120:34`,
+        `     10   25.0%    25.0%  LazyCompile: *readBlob ${BUNDLE}:200:10`,
+        '',
+        ' [Summary]:',
+        '     40  100.0%   100.0%  JavaScript',
+      ].join('\n');
+
+      // Act
+      const result = parseDigest(digestText);
+
+      // Assert
+      expect(result.totalTicks).toBe(40);
+    });
+  });
+});
+
+describe('Given a digest whose surviving tick total is below the floor', () => {
+  describe('When parseDigest runs', () => {
+    it('Then the partition is marked under-sampled', () => {
+      // Arrange — 499 ticks, one below UNDER_SAMPLED_TICK_FLOOR (500).
+      const digestText = [
+        ...digestHeader,
+        ' [JavaScript]:',
+        '   ticks  total  nonlib   name',
+        `    499  100.0%   100.0%  LazyCompile: *walkCommitsByDate ${BUNDLE}:120:34`,
+        '',
+        ' [Summary]:',
+        '    499  100.0%   100.0%  JavaScript',
+      ].join('\n');
+
+      // Act
+      const result = parseDigest(digestText);
+
+      // Assert
+      expect(result.underSampled).toBe(true);
+    });
+  });
+});
+
+describe('Given a digest whose surviving tick total is exactly at the floor', () => {
+  describe('When parseDigest runs', () => {
+    it('Then the partition is not marked under-sampled, proving the boundary is strict (>= floor is not under-sampled)', () => {
+      // Arrange — exactly UNDER_SAMPLED_TICK_FLOOR (500) ticks. A `<`→`<=`
+      // mutant on the underSampled comparison would flip this case to true.
+      const digestText = [
+        ...digestHeader,
+        ' [JavaScript]:',
+        '   ticks  total  nonlib   name',
+        `    500  100.0%   100.0%  LazyCompile: *walkCommitsByDate ${BUNDLE}:120:34`,
+        '',
+        ' [Summary]:',
+        '    500  100.0%   100.0%  JavaScript',
+      ].join('\n');
+
+      // Act
+      const result = parseDigest(digestText);
+
+      // Assert
+      expect(result.underSampled).toBe(false);
     });
   });
 });
@@ -213,10 +310,10 @@ describe('partitionWriteDigest', () => {
         const result = partitionWriteDigest(digestText);
 
         // Assert
-        expect(result.hotShares).toEqual([{ frame: 'writeCommitObject', self: 0.6 }]);
+        expect(result.hotShares).toEqual([{ frame: 'writeCommitObject', self: 0.6, ticks: 30 }]);
         expect(result.setupShares).toEqual([
-          { frame: 'openRepository', self: 0.2 },
-          { frame: 'bootstrapRepository', self: 0.2 },
+          { frame: 'openRepository', self: 0.2, ticks: 10 },
+          { frame: 'bootstrapRepository', self: 0.2, ticks: 10 },
         ]);
       });
     });
@@ -242,8 +339,8 @@ describe('partitionWriteDigest', () => {
         const result = partitionWriteDigest(digestText, new Set(['customFrame']));
 
         // Assert
-        expect(result.hotShares).toEqual([{ frame: 'writeCommitObject', self: 0.8 }]);
-        expect(result.setupShares).toEqual([{ frame: 'customFrame', self: 0.2 }]);
+        expect(result.hotShares).toEqual([{ frame: 'writeCommitObject', self: 0.8, ticks: 40 }]);
+        expect(result.setupShares).toEqual([{ frame: 'customFrame', self: 0.2, ticks: 10 }]);
       });
     });
   });
@@ -266,7 +363,7 @@ describe('partitionWriteDigest', () => {
         const result = partitionWriteDigest(digestText);
 
         // Assert
-        expect(result.hotShares).toEqual([{ frame: 'writeObject', self: 1 }]);
+        expect(result.hotShares).toEqual([{ frame: 'writeObject', self: 1, ticks: 50 }]);
         expect(result.setupShares).toEqual([]);
       });
     });

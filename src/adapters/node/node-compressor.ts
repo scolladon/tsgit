@@ -1,6 +1,17 @@
-import { createInflate, deflateRawSync, deflateSync, inflateSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import {
+  createInflate,
+  deflate as deflateCallback,
+  deflateRaw as deflateRawCallback,
+  deflateRawSync,
+  deflateSync,
+  inflateSync,
+} from 'node:zlib';
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+
+const deflateAsync = promisify(deflateCallback);
+const deflateRawAsync = promisify(deflateRawCallback);
 
 /** @internal Exported so we can exercise the non-Error fallback branch under unit tests. */
 export function describeError(err: unknown): string {
@@ -12,6 +23,75 @@ export function describeError(err: unknown): string {
  * delta `targetLength` cap (2 GiB) so a single object cannot exhaust heap.
  */
 const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * This gate applies to `deflate`/`deflateRaw` ONLY — see the design note
+ * below for why. `inflate` always stays on `inflateSync`; it is never worth
+ * gating (measured table below).
+ *
+ * The callback zlib API is dispatched to the libuv threadpool and returns
+ * the JS thread to the event loop while it runs. Per call, that round trip
+ * costs MORE than the equivalent `*Sync` call — there is no in-repo caller
+ * that runs `deflate`/`deflateRaw` concurrently (the pack writer's own loop
+ * is sequential), so this is not a throughput win. The gate exists because a
+ * single large `deflateSync` call blocks the whole process — including
+ * unrelated work a host application has scheduled on the same event loop —
+ * for as long as it runs; the callback arm avoids that stall at the cost of
+ * its own per-call overhead. `inflate` is excluded because decompression is
+ * cheap enough per byte that the stall this trades away never gets large
+ * enough to be worth the overhead, at any size measured.
+ *
+ * MEASURED, not derived (concurrency 1 throughout — no concurrent producer
+ * to benchmark against):
+ *
+ * Per-call latency, median of 21 runs:
+ *
+ * | size    | deflate sync | deflate callback | inflate sync | inflate callback |
+ * |---------|--------------|-------------------|---------------|--------------------|
+ * | 4 KiB   | 0.039 ms     | 0.079 ms           | 0.005 ms      | 0.044 ms            |
+ * | 16 KiB  | 0.090 ms     | 0.131 ms           | 0.005 ms      | 0.041 ms            |
+ * | 64 KiB  | 0.516 ms     | 0.643 ms           | 0.011 ms      | 0.076 ms            |
+ *
+ * The callback arm is strictly slower per call at every size, for both
+ * `deflate` and `inflate` — this table alone would argue for gating neither.
+ * The `deflate` gate is justified by a second effect the above table can't
+ * show: how long an UNRELATED `setTimeout` scheduled at the same moment is
+ * delayed (median of 15 runs, nominal delay 5 ms):
+ *
+ * | size    | sync-path delay to unrelated timer | callback-path delay |
+ * |---------|-------------------------------------|-----------------------|
+ * | 16 KiB  | 6.454 ms (+1.454 stall)              | 6.582 ms (noise)       |
+ * | 256 KiB | 5.130 ms (noise)                     | 5.364 ms (noise)       |
+ * | 1 MiB   | 12.596 ms (+7.596 ms stall)           | 4.572 ms (no stall)    |
+ *
+ * At 16 KiB — the current threshold — the stall this buys back is
+ * indistinguishable from noise; the gate is not earning its keep yet at the
+ * boundary itself. It becomes real by 1 MiB (~8 ms of avoided stall to
+ * whatever else shares the event loop). The threshold is kept where it is
+ * — not raised to where the benefit first becomes measurable — because the
+ * per-call cost of gating early is small in absolute terms (tens of
+ * microseconds) and objects large enough to matter are rare enough that a
+ * more precise threshold is not worth tuning against a single measuring
+ * machine.
+ */
+export const CALLBACK_DISPATCH_THRESHOLD_BYTES = 16 * 1024;
+
+/**
+ * The reason `streamInflate` reports for a zlib stream that ends before its
+ * data does. Owned in-repo rather than passed through from node:zlib: node's
+ * own wording for this condition ("unexpected end of file") is node's to
+ * change at any point, but callers that classify `DECOMPRESS_FAILED` errors
+ * by reason (`fetch-pack.ts`'s window-growth retry) need a string this repo
+ * controls. Matches the zero-dependency decoder's wording for the identical
+ * condition (`inflateZlibMember`, `src/adapters/inflate.ts`) so both
+ * adapters report one reason regardless of which one decoded the stream.
+ */
+const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
+
+/** Whether `err` is node:zlib's own signal for "the stream ended before the
+ *  data did" — detected structurally via `code`, never via `message`, which
+ *  is the wording `TRUNCATED_STREAM_REASON` exists to stop depending on. */
+const isTruncatedStreamError = (err: NodeJS.ErrnoException): boolean => err.code === 'Z_BUF_ERROR';
 
 interface NodeCompressorOptions {
   /** Override the inflated-output cap. Tests use a small value to exercise the overflow branch. */
@@ -33,8 +113,25 @@ export class NodeCompressor implements Compressor {
       : Math.min(maxOutputBytes, this.maxInflatedBytes);
   }
 
+  /** Above the threshold, dispatch through Node's callback zlib API (libuv
+   *  threadpool) to keep the event loop free during a large compression
+   *  call; at or below it, that stall never gets big enough to be worth the
+   *  callback API's own per-call overhead. Consulted by `deflate`/
+   *  `deflateRaw` only — `inflate` never benefits from this trade (see
+   *  `CALLBACK_DISPATCH_THRESHOLD_BYTES` for the measured tables) and always
+   *  stays on `inflateSync`. */
+  private usesCallbackDispatch(data: Uint8Array): boolean {
+    return data.length > CALLBACK_DISPATCH_THRESHOLD_BYTES;
+  }
+
   deflate = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
+      if (this.usesCallbackDispatch(data)) {
+        return new Uint8Array(
+          // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateAsync(data, { level: undefined })`; node's callback zlib API shares the sync API's options-normalisation, so this is byte-for-byte identical to the no-options `deflateAsync(data)`, same as the sync arm below.
+          level === undefined ? await deflateAsync(data) : await deflateAsync(data, { level }),
+        );
+      }
       // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateSync(data, { level: undefined })`, which Node treats identically to the no-options `deflateSync(data)`, byte-for-byte across all inputs.
       return new Uint8Array(level === undefined ? deflateSync(data) : deflateSync(data, { level }));
     } catch (err) {
@@ -44,6 +141,14 @@ export class NodeCompressor implements Compressor {
 
   deflateRaw = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
+      if (this.usesCallbackDispatch(data)) {
+        return new Uint8Array(
+          // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateRawAsync(data, { level: undefined })`; node's callback zlib API shares the sync API's options-normalisation, so this is byte-for-byte identical to the no-options `deflateRawAsync(data)`, same as the sync arm below.
+          level === undefined
+            ? await deflateRawAsync(data)
+            : await deflateRawAsync(data, { level }),
+        );
+      }
       // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateRawSync(data, { level: undefined })`, which Node treats identically to the no-options `deflateRawSync(data)`, byte-for-byte across all inputs.
       return new Uint8Array(
         level === undefined ? deflateRawSync(data) : deflateRawSync(data, { level }),
@@ -53,6 +158,10 @@ export class NodeCompressor implements Compressor {
     }
   };
 
+  // Always synchronous: decompression is cheap enough per byte that the
+  // libuv threadpool hop never pays off in the measured range — see
+  // CALLBACK_DISPATCH_THRESHOLD_BYTES. Unlike deflate/deflateRaw, inflate
+  // does not gate on payload size.
   inflate = async (data: Uint8Array): Promise<Uint8Array> => {
     try {
       return new Uint8Array(inflateSync(data, { maxOutputLength: this.maxInflatedBytes }));
@@ -92,8 +201,10 @@ export class NodeCompressor implements Compressor {
         const output = concatUint8(chunks);
         resolve({ output, bytesConsumed: consumed });
       });
-      inflate.on('error', (err: Error) => {
-        reject(decompressFailed(err.message));
+      inflate.on('error', (err: NodeJS.ErrnoException) => {
+        reject(
+          decompressFailed(isTruncatedStreamError(err) ? TRUNCATED_STREAM_REASON : err.message),
+        );
       });
       // Write all available bytes; Node's inflate will stop at the zlib end
       // and any excess is left unread in the node stream's buffer.

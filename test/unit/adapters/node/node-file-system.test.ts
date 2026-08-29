@@ -1,7 +1,9 @@
+import type { Dirent, Stats } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
 import {
   interpretCreationLstat,
   isErrnoException,
@@ -18,6 +20,44 @@ import {
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
+
+/**
+ * A synthetic `FsOperations` for `removeTree` concurrency-boundary tests:
+ * `lstat`/`readdir` respond deterministically (no real disk I/O, so no
+ * OS-scheduling jitter) — `root` is a directory with `width` regular-file
+ * children; every other path is a leaf file. `rm` is instrumented to count
+ * in-flight calls, gated on a resolved-next-tick promise so a full worker
+ * burst is observable before any of them settle.
+ */
+function fakeRemoveTreeFsOps(
+  root: string,
+  width: number,
+): { readonly fsOps: FsOperations; readonly getMaxInFlight: () => number } {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const dirStat = { isDirectory: () => true, isSymbolicLink: () => false } as Stats;
+  const fileStat = { isDirectory: () => false, isSymbolicLink: () => false } as Stats;
+  const entries = Array.from(
+    { length: width },
+    (_unused, i) => ({ name: `f${i}.txt`, isDirectory: () => false }) as Dirent,
+  );
+  const fsOps: FsOperations = {
+    ...fsPromises,
+    lstat: (async (path: string) => (path === root ? dirStat : fileStat)) as FsOperations['lstat'],
+    readdir: (async (path: string) =>
+      path === root ? entries : []) as unknown as FsOperations['readdir'],
+    // The synthetic children (`f0.txt`, …) are never actually written to
+    // disk — only the (real, mkdtemp'd) root and this fake's own responses
+    // stand in for them — so this resolves without touching real fs.
+    rm: async () => {
+      inFlight += 1;
+      if (inFlight > maxInFlight) maxInFlight = inFlight;
+      await Promise.resolve();
+      inFlight -= 1;
+    },
+  };
+  return { fsOps, getMaxInFlight: () => maxInFlight };
+}
 
 describe('NodeFileSystem', () => {
   fileSystemContractTests(async () => {
@@ -645,6 +685,59 @@ describe('NodeFileSystem', () => {
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
           await cleanup();
+        });
+      });
+    });
+
+    describe('Given a NodeFileSystem constructed with an explicit removeTreeConcurrency', () => {
+      describe('When rmRecursive removes more sibling files than that bound', () => {
+        it('Then concurrent removals peak at exactly the bound', async () => {
+          // Arrange — a fully synthetic fsOps: `lstat`/`readdir` respond
+          // deterministically (no real disk I/O, so no OS-scheduling
+          // jitter) and `rm` is instrumented to count in-flight calls. A
+          // bound of 3, distinct from the historical default of 8, so a
+          // "still uses the default" regression fails loudly.
+          const concurrency = 3;
+          const width = concurrency + 4;
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, width);
+          const fs = new NodeFileSystem(rootDir, undefined, fsOps, undefined, concurrency);
+
+          // Act
+          try {
+            await fs.rmRecursive(rootDir);
+
+            // Assert
+            expect(getMaxInFlight()).toBe(concurrency);
+          } finally {
+            await fsPromises.rm(rootDir, { recursive: true, force: true });
+          }
+        });
+      });
+    });
+
+    describe('Given a NodeFileSystem constructed without removeTreeConcurrency', () => {
+      describe('When rmRecursive removes more sibling files than the historical default', () => {
+        it('Then concurrent removals peak at exactly 8, the default preserved for existing callers', async () => {
+          // Arrange — same synthetic fsOps, default constructor arity, so a
+          // regression that stops threading the constructor default (8)
+          // through to `mapConcurrent` fails loudly.
+          const width = 12;
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, width);
+          const fs = new NodeFileSystem(rootDir, undefined, fsOps);
+
+          // Act
+          try {
+            await fs.rmRecursive(rootDir);
+
+            // Assert
+            expect(getMaxInFlight()).toBe(8);
+          } finally {
+            await fsPromises.rm(rootDir, { recursive: true, force: true });
+          }
         });
       });
     });
@@ -1290,7 +1383,12 @@ describe('NodeFileSystem', () => {
             // Arrange & Act
             const result = mapStat(makeBigIntStat());
 
-            // Assert
+            // Assert — key PRESENCE, not just value: a mutant collapsing the
+            // conditional spread to an unconditional one would still pass a
+            // toBe(...) check on the present-fields case, so `in` is what
+            // actually pins the branch.
+            expect('ctimeNs' in result).toBe(true);
+            expect('mtimeNs' in result).toBe(true);
             expect(result.ctimeNs).toBe(BigInt(1_000_000_000));
             expect(result.mtimeNs).toBe(BigInt(2_000_000_000));
           });
@@ -1307,7 +1405,11 @@ describe('NodeFileSystem', () => {
             // Act
             const result = mapStat(rest);
 
-            // Assert
+            // Assert — key ABSENCE (`in`), not merely an undefined value: a
+            // mutant that assigns `mtimeNs: undefined` unconditionally would
+            // still pass a toBeUndefined() check alone.
+            expect('ctimeNs' in result).toBe(false);
+            expect('mtimeNs' in result).toBe(false);
             expect(result.ctimeNs).toBeUndefined();
             expect(result.mtimeNs).toBeUndefined();
             expect(result.size).toBe(42);

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -8,6 +8,7 @@ import { __resetConfigCacheForTests } from '../../../../src/application/primitiv
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../../../src/domain/objects/index.js';
@@ -1050,6 +1051,51 @@ describe('commit — signing', () => {
         const stored = await readObject(ctx, result.id);
         if (stored.type !== 'commit') throw new Error('expected a commit object');
         expect(stored.data.gpgSignature).toBe(signedArmor());
+      });
+    });
+  });
+
+  afterEach(() => __resetConfigCacheForTests());
+});
+
+describe('commit — bounded subtree writes', () => {
+  describe('Given staged files spread across more top-level directories than the ioBound limit', () => {
+    describe('When commit runs', () => {
+      it('Then sibling subtree writes peak at exactly the bound', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression (deriving the pool from the wrong bucket)
+        // fails loudly. Each file sits in its own top-level directory, so
+        // every one becomes a sibling subtree write fanning out together.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const files: Record<string, string> = {};
+        for (let i = 0; i < width; i++) files[`d${String(i).padStart(3, '0')}/f.txt`] = `c-${i}`;
+        const base = await seed(files);
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realWriteTree = writeTreeMod.writeTree;
+        const spy = vi
+          .spyOn(writeTreeMod, 'writeTree')
+          .mockImplementation(async (spyCtx, entries) => {
+            inFlight += 1;
+            if (inFlight > maxInFlight) maxInFlight = inFlight;
+            await Promise.resolve();
+            inFlight -= 1;
+            return realWriteTree(spyCtx, entries);
+          });
+
+        // Act
+        try {
+          const result = await commit(ctx, { message: 'm', author });
+
+          // Assert
+          const stored = await readObject(ctx, result.id);
+          expect(stored.type).toBe('commit');
+          expect(maxInFlight).toBe(ioBound);
+        } finally {
+          spy.mockRestore();
+        }
       });
     });
   });

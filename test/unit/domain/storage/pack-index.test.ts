@@ -6,13 +6,16 @@ import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
   allObjectIds,
   entryOffsets,
+  entryOffsetsF64,
   findByPrefix,
   lookupPackIndex,
   lookupPackIndexPosition,
   objectIdAt,
+  offsetAtPackPosition,
   parsePackIndex,
 } from '../../../../src/domain/storage/pack-index.js';
-import { arbObjectId, buildTestIndex, type TestIndexEntry } from './arbitraries.js';
+import { type PackRevIndex, parsePackRevIndex } from '../../../../src/domain/storage/rev-index.js';
+import { arbObjectId, buildRevIndex, buildTestIndex, type TestIndexEntry } from './arbitraries.js';
 
 /**
  * Captured from real `git init --object-format=sha256`, `printf 'hello\n' >
@@ -1107,6 +1110,138 @@ describe('pack-index', () => {
               }),
             );
           }
+        });
+      });
+    });
+  });
+
+  describe('entryOffsetsF64', () => {
+    describe('Given a pack index with 0 entries', () => {
+      describe('When entryOffsetsF64 is called', () => {
+        it('Then returns an empty Float64Array', () => {
+          // Arrange
+          const index = parsePackIndex(buildTestIndex([]), 20);
+
+          // Act
+          const result = entryOffsetsF64(index);
+
+          // Assert
+          expect(result).toEqual(new Float64Array(0));
+        });
+      });
+    });
+
+    describe('Given a pack index with 3 entries at known offsets', () => {
+      describe('When entryOffsetsF64 is called', () => {
+        it('Then returns all 3 offsets in index order, matching entryOffsets', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            makeEntry('aa' + '00'.repeat(19), 100),
+            makeEntry('bb' + '00'.repeat(19), 200),
+            makeEntry('cc' + '00'.repeat(19), 300),
+          ];
+          const index = parsePackIndex(buildTestIndex(entries), 20);
+
+          // Act
+          const result = entryOffsetsF64(index);
+
+          // Assert
+          expect(result).toEqual(Float64Array.of(100, 200, 300));
+          expect(Array.from(result)).toEqual(entryOffsets(index));
+        });
+      });
+    });
+
+    describe('Given a pack index with 1 entry whose small-offset slot has MSB set (large-offset table)', () => {
+      describe('When entryOffsetsF64 is called', () => {
+        it('Then returns the large offset value correctly', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            { id: '00'.repeat(20) as ObjectId, offset: 0x200000000, crc32: 0 },
+          ];
+          const index = parsePackIndex(buildTestIndex(entries), 20);
+
+          // Act
+          const result = entryOffsetsF64(index);
+
+          // Assert
+          expect(result).toEqual(Float64Array.of(0x200000000));
+        });
+      });
+    });
+  });
+
+  describe('offsetAtPackPosition', () => {
+    function buildRev(body: ReadonlyArray<number>): PackRevIndex {
+      const bytes = buildRevIndex({
+        hashId: 1,
+        digestLength: 20,
+        body,
+        packChecksum: new Uint8Array(20),
+      });
+      return parsePackRevIndex(bytes, 20, body.length);
+    }
+
+    describe('Given a 3-entry index and a .rev body naming index position 1 at pack position 0', () => {
+      describe('When offsetAtPackPosition is called for pack position 0', () => {
+        it('Then it returns the offset stored at index position 1', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            makeEntry('aa' + '00'.repeat(19), 100),
+            makeEntry('bb' + '00'.repeat(19), 200),
+            makeEntry('cc' + '00'.repeat(19), 300),
+          ];
+          const index = parsePackIndex(buildTestIndex(entries), 20);
+          const rev = buildRev([1, 0, 2]);
+          const sut = offsetAtPackPosition;
+
+          // Act
+          const result = sut(index, rev, 0);
+
+          // Assert
+          expect(result).toBe(200);
+        });
+      });
+    });
+
+    describe('Given a .rev body naming a large-offset entry (MSB set in the .idx)', () => {
+      describe('When offsetAtPackPosition is called for that position', () => {
+        it('Then it returns the large offset value, through the same indirection lookupPackIndex uses', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            makeEntry('aa' + '00'.repeat(19), 100),
+            { id: ('bb' + '00'.repeat(19)) as ObjectId, offset: 0x200000000, crc32: 0 },
+          ];
+          const index = parsePackIndex(buildTestIndex(entries), 20);
+          const rev = buildRev([0, 1]);
+          const sut = offsetAtPackPosition;
+
+          // Act
+          const result = sut(index, rev, 1);
+
+          // Assert
+          expect(result).toBe(0x200000000);
+        });
+      });
+    });
+
+    describe('Given a .rev body whose stored index position equals the index objectCount', () => {
+      describe('When offsetAtPackPosition is called for that pack position', () => {
+        it('Then it returns undefined rather than reading past the index', () => {
+          // Arrange
+          const entries: TestIndexEntry[] = [
+            makeEntry('aa' + '00'.repeat(19), 100),
+            makeEntry('bb' + '00'.repeat(19), 200),
+          ];
+          const index = parsePackIndex(buildTestIndex(entries), 20);
+          const rev = buildRev([2, 1]);
+          const sut = offsetAtPackPosition;
+
+          // Act
+          const result = sut(index, rev, 0);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
