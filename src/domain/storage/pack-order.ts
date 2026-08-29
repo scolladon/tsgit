@@ -1,5 +1,10 @@
 import { compareBytes, hexToBytes } from '../objects/encoding.js';
-import type { PackIndexWriterEntry } from './pack-writer.js';
+
+export interface PackIndexWriterEntry {
+  readonly id: string;
+  readonly crc32: number;
+  readonly offset: number;
+}
 
 export interface SortedEntry {
   readonly shaBytes: Uint8Array;

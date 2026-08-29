@@ -18,7 +18,9 @@ import {
   GENERATED_PACK_VERSION,
   serializePackHeader,
 } from './pack-entry.js';
-import { type SortedEntry, sortPackIndexEntries } from './pack-order.js';
+import { type PackIndexWriterEntry, type SortedEntry, sortPackIndexEntries } from './pack-order.js';
+
+export type { PackIndexWriterEntry };
 
 export interface PackWriterEntry {
   readonly type: BasePackEntryType;
@@ -34,12 +36,6 @@ export interface PackEntryMeta {
 export interface PackfileResult {
   readonly data: Uint8Array;
   readonly entries: ReadonlyArray<PackEntryMeta>;
-}
-
-export interface PackIndexWriterEntry {
-  readonly id: string;
-  readonly crc32: number;
-  readonly offset: number;
 }
 
 export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): PackfileResult {

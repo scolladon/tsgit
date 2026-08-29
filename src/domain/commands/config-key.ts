@@ -7,11 +7,7 @@ import { configKeyInvalid } from './error.js';
  */
 export type ConfigKey = string & { readonly __brand: 'ConfigKey' };
 
-/**
- * The four canonical git-config scopes. Order in the union is also the read
- * precedence (lowest precedence first): system → global → local → worktree.
- */
-export type ConfigScope = 'system' | 'global' | 'local' | 'worktree';
+export type { ConfigScope } from './config-scope.js';
 
 /**
  * Result of parsing a fully-qualified config key like `section.name` or

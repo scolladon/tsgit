@@ -36,6 +36,7 @@ import { getRefStore } from '../primitives/ref-store.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import {
   type ContainsPlan,
+  type DescribeOptions,
   parseContainsOptions,
   parseDescribeOptions,
   type ResolvedDescribePlan,
@@ -44,30 +45,7 @@ import { assertOperationalRepository } from './internal/repo-state.js';
 import { type NameRevResult, nameRev } from './name-rev.js';
 import { status } from './status.js';
 
-export interface DescribeOptions {
-  /** Include lightweight tags (priority ≥ 1), not just annotated ones. */
-  readonly tags?: boolean;
-  /** Consider every ref (branches, remotes; priority 0), not only tags. */
-  readonly all?: boolean;
-  /** Always emit a result even when no tag matches, falling back to the oid. */
-  readonly always?: boolean;
-  /** Only an exact tag on the target counts (≡ `candidates: 0`). */
-  readonly exactMatch?: boolean;
-  /** Maximum tags considered during the search. Default 10. */
-  readonly candidates?: number;
-  /** Follow only first parents through merges. */
-  readonly firstParent?: boolean;
-  /** Short-name globs a tag must match to be considered. */
-  readonly match?: string | ReadonlyArray<string>;
-  /** Short-name globs that drop a tag from consideration. */
-  readonly exclude?: string | ReadonlyArray<string>;
-  /** Report whether HEAD's working tree has tracked changes (HEAD only). */
-  readonly dirty?: boolean;
-  /** Tolerate a working tree whose state can't be read, reporting it dirty. */
-  readonly broken?: boolean;
-  /** Name the nearest ref that *contains* the commit (delegates to `name-rev`). */
-  readonly contains?: boolean;
-}
+export type { DescribeOptions };
 
 export interface DescribeResult {
   /** Chosen ref (a tag, or any ref under `all`); `undefined` on the `always` fallback. */

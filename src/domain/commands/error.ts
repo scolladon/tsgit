@@ -3,7 +3,7 @@ import type { HookName } from '../hooks/index.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 import type { PendingOperation } from '../sequencer/operation-labels.js';
-import type { ConfigScope } from './config-key.js';
+import type { ConfigScope } from './config-scope.js';
 
 /**
  * Per-reason fields `BUNDLE_BAD_HEADER` carries — exactly what each git line

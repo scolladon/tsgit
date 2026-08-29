@@ -1,7 +1,7 @@
 ---
 backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
-context: .claude/workflow/serena.md
+context: .claude/workflow/code-navigation.md
 gates:
   part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files>"
   phase: "npm run validate"

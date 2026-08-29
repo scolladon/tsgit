@@ -3,9 +3,9 @@ import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-syste
 import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
 import type { LayoutProbe } from '../../../src/ports/layout-probe.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
+import type { RepositoryLayoutInput } from '../../../src/repository/layout-input.js';
 import { layoutRootsOf } from '../../../src/repository/layout-roots.js';
 import { resolveLayout } from '../../../src/repository/resolve-layout.js';
-import type { RepositoryLayoutInput } from '../../../src/repository.js';
 
 // This file is load-bearing in a way no other test is: no interop row
 // re-proves any of it — the ownership-trust gate runs above the first

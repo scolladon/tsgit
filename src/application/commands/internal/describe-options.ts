@@ -5,9 +5,33 @@
  * Every field is a data/behavior selector — none drive output cosmetics.
  */
 import { invalidOption } from '../../../domain/commands/error.js';
-import type { DescribeOptions } from '../describe.js';
 
 const DEFAULT_CANDIDATES = 10;
+
+export interface DescribeOptions {
+  /** Include lightweight tags (priority ≥ 1), not just annotated ones. */
+  readonly tags?: boolean;
+  /** Consider every ref (branches, remotes; priority 0), not only tags. */
+  readonly all?: boolean;
+  /** Always emit a result even when no tag matches, falling back to the oid. */
+  readonly always?: boolean;
+  /** Only an exact tag on the target counts (≡ `candidates: 0`). */
+  readonly exactMatch?: boolean;
+  /** Maximum tags considered during the search. Default 10. */
+  readonly candidates?: number;
+  /** Follow only first parents through merges. */
+  readonly firstParent?: boolean;
+  /** Short-name globs a tag must match to be considered. */
+  readonly match?: string | ReadonlyArray<string>;
+  /** Short-name globs that drop a tag from consideration. */
+  readonly exclude?: string | ReadonlyArray<string>;
+  /** Report whether HEAD's working tree has tracked changes (HEAD only). */
+  readonly dirty?: boolean;
+  /** Tolerate a working tree whose state can't be read, reporting it dirty. */
+  readonly broken?: boolean;
+  /** Name the nearest ref that *contains* the commit (delegates to `name-rev`). */
+  readonly contains?: boolean;
+}
 
 export interface ResolvedDescribePlan {
   readonly tags: boolean;
