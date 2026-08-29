@@ -110,20 +110,29 @@ export function parseReflog(text: string, hexLength: 40 | 64): ReadonlyArray<Ref
 /**
  * Parse a whole reflog file LINE-GRAINED: a line that does not parse is
  * skipped, never discarding the file's OTHER valid entries the way
- * `parseReflog`'s all-or-nothing `.map` does. Mirrors git's own reachability
- * walk (`for_each_reflog_ent`), which skips a bad line and keeps going —
- * pinned against git 2.55.0: `git gc --prune=now` still keeps an object
- * reachable only from a valid entry that shares a reflog file with a
- * garbage line. `parseReflog` stays strict for its own callers (`reflog
- * show`/expire/delete — a malformed reflog IS reported there, not silently
- * thinned); this is for gc's retention scan alone. Oldest-first, same as
- * `parseReflog`.
+ * `parseReflog`'s all-or-nothing `.map` does. Mirrors git's per-line reflog
+ * machinery (`for_each_reflog_ent`), which skips a bad line and keeps
+ * going — pinned against git 2.55.0. This is the reader for every surface
+ * git reads leniently: the `reflog` command, `rev-parse @{n}`/`@{date}`,
+ * the stash stack, stash snapshots, and gc's retention scan. `parseReflog`
+ * stays strict for callers whose contract is strictness. Oldest-first,
+ * same as `parseReflog`.
  */
 export function parseReflogLenient(text: string, hexLength: 40 | 64): ReadonlyArray<ReflogEntry> {
   const entries: ReflogEntry[] = [];
   for (const line of splitReflogLines(text)) {
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — splitReflogLines can still yield an empty `line` (e.g. a blank line between two LFs); it always fails parseReflogLine's `meta[hexLength] !== FIELD_SEPARATOR` check (undefined !== ' ') and is caught below exactly like any other malformed line, so skipping this guard changes nothing observable.
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — splitReflogLines can still yield an empty `line` (e.g. a blank line between two LFs); it always fails the separator pre-check below (undefined !== ' ') exactly like any other malformed line, so skipping this guard changes nothing observable.
     if (line === '') continue;
+    // Cheap shape pre-check so a garbage line skips WITHOUT constructing a
+    // TsgitError: error allocation dominates on corrupt files (measured
+    // 67x — 18s vs 269ms on 16 MiB of garbage) now that user-facing
+    // commands read through this path. Same predicate parseReflogLine
+    // applies first; a line passing it but failing deeper (bad hex, bad
+    // identity) still takes the throwing path, which is the rare shape.
+    // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — any mutant that makes this pre-check skip FEWER lines (false; || to &&) only reroutes the same malformed line into parseReflogLine's identical separator throw caught below; every skip-MORE mutant is killed by the surviving-entry tests.
+    if (line[hexLength] !== FIELD_SEPARATOR || line[2 * hexLength + 1] !== FIELD_SEPARATOR) {
+      continue;
+    }
     try {
       entries.push(parseReflogLine(line, hexLength));
     } catch {

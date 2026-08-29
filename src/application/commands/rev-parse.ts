@@ -170,7 +170,12 @@ const pickByDate = (
     const entry = entries[i] as ReflogEntry;
     if (entry.identity.timestamp <= target) return entry.newId;
   }
-  return (entries[0] as ReflogEntry).oldId;
+  // A date before the log begins clamps to the oldest entry's pre-state;
+  // when that pre-state is the null oid (the ref's creation entry) git
+  // answers the entry's post-state instead (measured, git 2.55.0).
+  const oldest = entries[0] as ReflogEntry;
+  const nullOid = '0'.repeat(oldest.oldId.length);
+  return oldest.oldId === nullOid ? oldest.newId : oldest.oldId;
 };
 
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {

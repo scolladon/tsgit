@@ -11,6 +11,7 @@ import {
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type ObjectId, type RefName, ZERO_OID } from '../../../../src/domain/objects/index.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
+import { serializeReflogRewriteLine } from '../../../../src/domain/reflog/reflog-format.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const STASH_REF = 'refs/stash' as RefName;
@@ -299,6 +300,28 @@ describe('stash-ref primitive', () => {
 
         // Assert
         expect(result).toBe(W0);
+      });
+    });
+
+    describe('When dropStashEntry(1) drops the older surviving entry', () => {
+      it('Then the rewritten file holds only the newest entry — the malformed line is purged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedCorruptedStack(ctx);
+
+        // Act
+        await dropStashEntry(ctx, 1);
+
+        // Assert — on-disk bytes: exactly one surviving line in rewrite form,
+        // chain-repaired (the survivor inherits the dropped entry's oldId),
+        // no garbage line left behind.
+        const after = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/stash`);
+        expect(after).toBe(
+          serializeReflogRewriteLine(
+            { oldId: ZERO_OID, newId: W1, identity, message: 'WIP on main: 111 second' },
+            40,
+          ),
+        );
       });
     });
   });

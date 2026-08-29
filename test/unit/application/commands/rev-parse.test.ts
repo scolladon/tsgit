@@ -1179,6 +1179,45 @@ describe('revParse', () => {
       });
     });
 
+    describe('Given a reflog whose oldest entry is the ref-creation entry', () => {
+      describe('When revParse resolves a date before the log begins', () => {
+        it('Then it clamps to the oldest entry post-state, never the null oid', async () => {
+          // Arrange — oldest entry old=null(creation), new=c1; git answers c1
+          // for a before-log date, not the null pre-state (measured, 2.55.0).
+          const ctx = createMemoryContext();
+          const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': c1 } });
+          const raw = serializeReflogLine(reflogEntry(ZERO_OID, c1, 2_000_000_000), 40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
+
+          // Act
+          const result = await revParse(ctx, 'HEAD@{2000.years.ago}');
+
+          // Assert
+          expect(result).toBe(c1);
+        });
+      });
+
+      describe('When revParse resolves a date before a log whose oldest pre-state is real', () => {
+        it('Then it clamps to the oldest entry pre-state', async () => {
+          // Arrange — oldest surviving entry old=c1 (a truncated log): git
+          // answers the pre-state when it is not the null oid.
+          const ctx = createMemoryContext();
+          const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+          const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': c2 } });
+          const raw = serializeReflogLine(reflogEntry(c1, c2, 2_000_000_000), 40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
+
+          // Act
+          const result = await revParse(ctx, 'HEAD@{2000.years.ago}');
+
+          // Assert
+          expect(result).toBe(c1);
+        });
+      });
+    });
+
     describe('Given a base with no reflog file at all', () => {
       describe('When revParse(missing@{0})', () => {
         it('Then throws REVPARSE_UNRESOLVED', async () => {

@@ -362,8 +362,10 @@ describe.skipIf(!GIT_AVAILABLE)(
           );
           const result = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
 
-          // Assert — git's %gs (a NUL-terminated C-string read) truncates to empty;
-          // tsgit's message field is a plain JS string slice and keeps every byte.
+          // Assert — git's C-string read truncates the message at the NUL to
+          // 'A'; %gs then strips one trailing byte unconditionally, rendering
+          // EMPTY. tsgit's message field is a plain JS string slice and keeps
+          // every byte.
           expect(gitSubjects[1]).toBe('');
           expect(result.kind).toBe('show');
           if (result.kind !== 'show') throw new Error('unreachable');
@@ -865,6 +867,95 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
+      describe('When rev-parse resolves main@{0} over an unusable log', () => {
+        it.each([
+          { fixture: 'all-corrupt', content: 'garbage one\ngarbage two\n' },
+          { fixture: 'zero-byte', content: '' },
+        ])(
+          'Then git answers the current ref value while tsgit throws REVPARSE_UNRESOLVED — a recorded divergence ($fixture)',
+          async ({ fixture, content }) => {
+            // Arrange
+            const dir = await caseDir(`degenerate-revparse-${fixture}`);
+            await writeFile(mainLogPath(dir), content, 'utf8');
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitOid = git(dir, 'rev-parse', 'main@{0}').trim();
+            const tip = git(dir, 'rev-parse', 'main').trim();
+            let caught: unknown;
+            try {
+              await revParse(ctx, 'main@{0}');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert — git falls back to the ref's own value; tsgit refuses
+            // with a typed error. Neither side matches the other today.
+            expect(gitOid).toBe(tip);
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REVPARSE_UNRESOLVED',
+              expression: 'main@{0}',
+            });
+          },
+        );
+      });
+
+      describe('When reflog exists is asked about each degenerate shape', () => {
+        it.each([
+          { fixture: 'all-corrupt', content: 'garbage one\ngarbage two\n', expected: true },
+          { fixture: 'zero-byte', content: '', expected: true },
+        ])(
+          'Then both sides report presence from the file alone ($fixture)',
+          async ({ fixture, content, expected }) => {
+            // Arrange
+            const dir = await caseDir(`degenerate-exists-${fixture}`);
+            await writeFile(mainLogPath(dir), content, 'utf8');
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'exists', 'refs/heads/main']);
+            const result = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
+
+            // Assert — corruption never affects existence.
+            expect(gitResult.exitCode).toBe(0);
+            expect(result).toEqual({ kind: 'exists', exists: expected });
+          },
+        );
+
+        it('Then an absent log file reports absent on both sides', async () => {
+          // Arrange
+          const dir = await caseDir('degenerate-exists-absent');
+          await rm(mainLogPath(dir));
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'exists', 'refs/heads/main']);
+          const result = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(result).toEqual({ kind: 'exists', exists: false });
+        });
+      });
+
+      describe('When rev-parse resolves a date selector across the malformed gap', () => {
+        it('Then main@{50.years.ago} resolves to the same oid on both tools', async () => {
+          // Arrange — a date far past the oldest entry clamps to the oldest
+          // surviving one on both sides; git's only-goes-back warning is
+          // rendering and is not matched.
+          const dir = await caseDir('degenerate-date-selector');
+          await writeLine3(dir, 'this is not a reflog line at all\n');
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const gitOid = git(dir, 'rev-parse', 'main@{50.years.ago}').trim();
+          const tsgitOid = await revParse(ctx, 'main@{50.years.ago}');
+
+          // Assert
+          expect(tsgitOid).toBe(gitOid);
+        });
+      });
+
       describe('When expire runs on a ref that exists but has no reflog file at all', () => {
         it('Then both sides refuse and neither creates a log file (git exit 255, tsgit REFLOG_NOT_FOUND)', async () => {
           // Arrange
@@ -1097,6 +1188,48 @@ describe.skipIf(!GIT_AVAILABLE)(
           } finally {
             dateSpy.mockRestore();
           }
+
+          // Assert
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a SHA-256 repository with a corrupted refs/heads/main log', () => {
+      describe('When main@{1} is deleted on both sides', () => {
+        it('Then the rewritten logs are byte-identical at the 64-hex width', async () => {
+          // Arrange — a dedicated --object-format=sha256 twin pair: the parse
+          // offsets, the oid-width guard and the rewrite serializer all run at
+          // hexLength 64 here, so this is a measurement, not an inference from
+          // the SHA-1 rows.
+          const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-interop-sha256-'));
+          caseRoots.push(root);
+          runGit(['init', '-q', '-b', 'main', '--object-format=sha256', root]);
+          git(root, 'config', 'user.name', 'Ada');
+          git(root, 'config', 'user.email', 'ada@example.com');
+          git(root, 'config', 'commit.gpgsign', 'false');
+          disableAutoMaintenance(root);
+          for (let i = 0; i < 3; i += 1) {
+            await writeFile(path.join(root, 'f.txt'), `v${i}\n`);
+            git(root, 'add', '-A');
+            runGit(['-C', root, 'commit', '-q', '-m', `c${i}`], {
+              env: pinnedCommitterEnv(BASE_EPOCH + i),
+            });
+          }
+          const raw = await readFile(mainLogPath(root), 'utf8');
+          const lines = raw.split(/(?<=\n)/).filter((line) => line.length > 0);
+          const corrupted = `${lines[0]}this is not a reflog line at all\n${lines[2]}`;
+          const peer = await cloneRepo(root, 'sha256-delete-peer');
+          const ours = await cloneRepo(root, 'sha256-delete-ours');
+          await writeFile(mainLogPath(peer), corrupted, 'utf8');
+          await writeFile(mainLogPath(ours), corrupted, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'delete', 'main@{1}');
+          const ctx = createNodeContext({ workDir: ours, algorithm: 'sha256' });
+          await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 1 });
 
           // Assert
           const peerBytes = await readFile(mainLogPath(peer));

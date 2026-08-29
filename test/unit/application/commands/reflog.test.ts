@@ -1042,6 +1042,51 @@ describe('reflog command', () => {
       });
     });
 
+    describe('Given an entry far older than the default cutoff', () => {
+      describe('When expire runs with the never grammar', () => {
+        it.each([
+          { raw: 'never', label: 'never' },
+          { raw: ' NEVER ', label: 'NEVER with surrounding spaces' },
+          { raw: 'false', label: 'false (git synonym)' },
+        ])('Then the entry survives $label', async ({ raw }) => {
+          // Arrange — a 400-day-old entry that the 90-day default WOULD prune,
+          // so surviving proves the grammar, not the timestamps.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 400 * DAY), message: 'ancient' }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: raw });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+
+      describe('When expire runs with the all grammar', () => {
+        it('Then every entry is pruned (git synonym for now)', async () => {
+          // Arrange
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'recent' }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'all' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        });
+      });
+    });
+
     describe('Given no entry is stale enough to prune', () => {
       describe('When expire', () => {
         it('Then the reflog file is rewritten anyway and the entries are unchanged', async () => {

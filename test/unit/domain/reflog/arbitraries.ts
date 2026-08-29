@@ -1,21 +1,7 @@
 import fc from 'fast-check';
-import { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/reflog-format.js';
-
-// A single lowercase hex digit, generated from a numeric range rather than a
-// literal alphabet string — a literal hex/base64 alphabet trips the security
-// scanner's high-entropy-string check (CKV_SECRET_6).
-const arbHexDigit = (): fc.Arbitrary<string> =>
-  fc.integer({ min: 0, max: 15 }).map((n) => n.toString(16));
-
-const arbHex = (length: number): fc.Arbitrary<string> =>
-  fc
-    .array(arbHexDigit(), { minLength: length, maxLength: length })
-    .map((digits) => digits.join(''));
-
-export const arbObjectId = (length: 40 | 64 = 40): fc.Arbitrary<ObjectId> =>
-  arbHex(length).map((hex) => ObjectId.from(hex));
+import { arbObjectId } from '../objects/arbitraries.js';
 
 // Identity name/email exclude angle brackets, control chars, and the
 // surrounding-space ambiguity parseIdentity strips.
@@ -58,7 +44,9 @@ export const arbEntry = (
 // Printable ASCII plus the three whitespace controls a reflog file actually
 // carries (LF as the line terminator, TAB as the message separator, CR as a
 // message byte git never strips) — the safe subset a lenient parser must
-// never throw on. NUL is excluded: it is not a byte real reflog files carry.
+// never throw on. NUL is outside the DECLARED safe subset, not outside real
+// files: git's own reader truncates at a NUL, so totality over NUL is not a
+// property this parser claims.
 const arbReflogSafeUnit = (): fc.Arbitrary<string> =>
   fc.oneof(
     fc.constantFrom('\n', '\t', '\r'),

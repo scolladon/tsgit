@@ -690,11 +690,13 @@ describe('parseReflogLenient', () => {
     });
   });
 
-  describe('Given a reflog file that is a single unterminated line', () => {
+  describe('Given a reflog file that is a single VALID unterminated line', () => {
     describe('When parsing', () => {
-      it('Then returns an empty array', () => {
-        // Arrange
-        const content = 'garbage line';
+      it('Then returns an empty array — the LF rule alone drops it', () => {
+        // Arrange — a line the per-line predicate would ACCEPT, so only the
+        // file-level must-end-with-LF rule can be responsible for the drop
+        // (a garbage line here would pass with or without that rule).
+        const content = serializeReflogLine(ENTRY, 40).slice(0, -1);
 
         // Act
         const entries = parseReflogLenient(content, 40);

@@ -39,16 +39,18 @@ export async function reflogExists(ctx: Context, ref: RefName): Promise<boolean>
   return ctx.fs.exists(reflogPath(perWorktreeRefDir(ctx, ref), ref));
 }
 
-/** Replace `ref`'s reflog with exactly `entries`. Used by expire / delete. */
+/**
+ * Replace `ref`'s reflog with exactly `entries`, through the same store
+ * update the `reflog` command's expire/delete rewrites use — atomic
+ * (lock + rename on the files backend), backend-neutral, and emitting
+ * git's REWRITE byte form (the message TAB always present).
+ */
 export async function writeReflog(
   ctx: Context,
   ref: RefName,
   entries: ReadonlyArray<ReflogEntry>,
 ): Promise<void> {
-  const text = entries
-    .map((entry) => serializeReflogLine(entry, ctx.hashConfig.hexLength))
-    .join('');
-  await ctx.fs.writeUtf8(reflogPath(perWorktreeRefDir(ctx, ref), ref), text);
+  await getRefStore(ctx).applyRefUpdates([{ kind: 'reflogReplace', name: ref, entries }]);
 }
 
 /** Remove `ref`'s reflog file. A no-op when the file is already absent. */

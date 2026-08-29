@@ -7,12 +7,12 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogNotFound } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -199,13 +199,9 @@ const runExpire = async (
 };
 
 const resolveCutoff = (raw: string, now: number): number => {
-  // 'never' has no moment-in-time meaning outside expiry, so it is not part
-  // of parseApproxidate's grammar — mapped here to negative infinity so
-  // every entry, however old or however negative its own timestamp, is
-  // `>= cutoff` and none ever expires. Mirrors expiryCutoff's identical
-  // special-case for gc.pruneExpire.
-  if (raw.trim().toLowerCase() === 'never') return Number.NEGATIVE_INFINITY;
-  const cutoff = parseApproxidate(raw, now);
+  // One shared grammar with gc.pruneExpire (git's parse_expiry_date):
+  // never/false → nothing expires, all → everything, else approxidate.
+  const cutoff = resolveExpiryCutoff(raw, now);
   if (cutoff === undefined) throw revparseUnresolved(raw);
   return cutoff;
 };

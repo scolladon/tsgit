@@ -174,7 +174,7 @@ least one row under SHA-256 so that stays a measurement rather than an inference
 | 16 | no TAB / no message | line ends at the timezone | **keep**, message `""` | keep, message `''` | ✅ |
 | 17 | trailing blank line | file ends `\n\n` | keep all 4 | keep all 4 | ✅ |
 | 18 | CRLF line endings | every line `…\r\n` | keep all 4, `\r` trails the message | keep all 4, `\r` trails the message | ✅ |
-| 19 | NUL inside the message | `…+0200\tA\0B…` (NUL mid-message) | **keep**; message truncates at the NUL (`%gs` = `A`) | keep; message keeps the NUL and everything after it | ❌ message bytes |
+| 19 | NUL inside the message | `…+0200\tA\0B…` (NUL mid-message) | **keep**; the C-string message truncates at the NUL to `A`, and `%gs` renders EMPTY (git strips one trailing byte unconditionally) | keep; message keeps the NUL and everything after it | ❌ message bytes |
 | 20 | no opening `<` | `Probe probe@example.com> 1764… +0200` | **keep** | **reject** | ❌ |
 | 21 | `>` inside the name | `x>y <probe@example.com> 1764… +0200` | **skip** | **keep** (name `x>y`) | ❌ |
 | 22 | no space after `>` | `<probe@example.com>1764… +0200` | **skip** | **keep** | ❌ |
@@ -707,6 +707,13 @@ ADR-740 widen the diff past the command. Watch for:
   divergence; the only open sub-question is whether the *writer* should refuse a NUL
   in a message the way it already refuses `\n`/`\r`, which is a separate writer-side
   change.
+- **`rev-parse ref@{0}` over an unusable log.** With an all-corrupt or 0-byte
+  reflog, git answers the ref's CURRENT value (exit 0, `log … is empty` only
+  from `@{1}` up); tsgit throws `REVPARSE_UNRESOLVED`. A divergence the
+  lenient read surfaces (the strict read threw `INVALID_REFLOG_ENTRY` on the
+  all-corrupt shape); recorded and asserted-as-divergent in the interop
+  suite's degenerate cases rather than closed — the empty-log fallback is a
+  ref-resolution question that also binds refs with no log file at all.
 - **`reflog show` on a name with no ref at all.** git refuses with
   `fatal: ambiguous argument` and exit 128; tsgit returns an empty result.
   Pre-existing, unrelated to corruption, and a ref-resolution question.
