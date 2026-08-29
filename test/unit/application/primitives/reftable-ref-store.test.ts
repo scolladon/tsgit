@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
 import { fileNotFound, permissionDenied } from '../../../../src/domain/error.js';
+import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildRefBlock,
@@ -20,6 +22,21 @@ const ID_MAIN = oid(0x01);
 const ID_GONE = oid(0x02);
 const ID_TAG = oid(0x03);
 const ID_TAG_PEELED = oid(0x04);
+
+const IDENTITY: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+
+const reflogEntry = (overrides: Partial<ReflogEntry> = {}): ReflogEntry => ({
+  oldId: ObjectId.fromRaw(oid(0x00)),
+  newId: ObjectId.fromRaw(oid(0x01)),
+  identity: IDENTITY,
+  message: 'commit: seed',
+  ...overrides,
+});
 
 /**
  * A two-table stack: table 1 (older) carries `HEAD` (symbolic → main),
@@ -683,6 +700,35 @@ describe('reftable-ref-store', () => {
 
         // Assert
         expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a stack with a two-entry reflog for refs/heads/main', () => {
+    describe('When moveReflog moves it to refs/heads/renamed', () => {
+      it('Then the destination gets the source entries oldest-first and the source reflog is gone', async () => {
+        // Arrange — seeded through the real write path (reflogReplace), never
+        // hand-built binary tables: a length-prefixed log record has no
+        // malformed-line analogue, so re-keying the decoded entries IS the
+        // byte-preserving move for this backend.
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({
+          oldId: first.newId,
+          newId: ObjectId.fromRaw(oid(0x02)),
+          message: 'second',
+        });
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: ref('refs/heads/main'), entries: [first, second] },
+        ]);
+
+        // Act
+        await sut.moveReflog(ref('refs/heads/main'), ref('refs/heads/renamed'));
+
+        // Assert
+        expect(await sut.readReflog(ref('refs/heads/renamed'))).toEqual([first, second]);
+        expect(await sut.readReflog(ref('refs/heads/main'))).toEqual([]);
       });
     });
   });

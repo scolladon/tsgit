@@ -1347,6 +1347,50 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a files-backed reflog containing a malformed line', () => {
+    describe('When moveReflog moves it to a new ref name', () => {
+      it('Then the destination text is byte-identical to the source and the source is gone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({ oldId: first.newId, message: 'second' });
+        await appendReflog(ctx, 'refs/heads/main' as RefName, first);
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'this is not a valid reflog line at all\n',
+        );
+        await appendReflog(ctx, 'refs/heads/main' as RefName, second);
+        const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.moveReflog('refs/heads/main' as RefName, 'refs/heads/renamed' as RefName);
+
+        // Assert
+        const after = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/renamed`);
+        expect(after).toBe(before);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a source ref with no reflog and a destination ref that has one', () => {
+    describe('When moveReflog moves the source onto the destination', () => {
+      it('Then the destination reflog is removed rather than kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/trunk' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.moveReflog('refs/heads/main' as RefName, 'refs/heads/trunk' as RefName);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/trunk`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a reflogReplace update with a shorter entries list', () => {
     describe('When applyRefUpdates is called', () => {
       it('Then the reflog is replaced with exactly the given entries', async () => {

@@ -14,11 +14,12 @@
  *   unique:         per-line reflog tolerance and rewrite bytes against canonical git
  *   interopSurface: reflog
  */
-import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { branchRename } from '../../src/application/commands/branch.js';
 import type { ReflogShowEntry } from '../../src/application/commands/reflog.js';
 import { reflog } from '../../src/application/commands/reflog.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
@@ -53,6 +54,36 @@ const mainLogPath = (dir: string): string =>
 const stashLogPath = (dir: string): string => path.join(dir, '.git', 'logs', 'refs', 'stash');
 const headLogPath = (dir: string): string => path.join(dir, '.git', 'logs', 'HEAD');
 const refPath = (dir: string, ref: string): string => path.join(dir, '.git', ...ref.split('/'));
+/** `<dir>/.git/logs/refs/heads/<name>` — the branch-rename case moves this. */
+const branchLogPath = (dir: string, name: string): string =>
+  path.join(dir, '.git', 'logs', 'refs', 'heads', name);
+
+/** Whether `p` exists — `moveReflog`'s `rename(2)` leaves nothing behind at
+ *  the source path, so absence itself is part of what these cases assert. */
+const pathExists = async (p: string): Promise<boolean> => {
+  try {
+    await stat(p);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw err;
+  }
+};
+
+/**
+ * `runGitEnv` plus a pinned committer identity/timestamp, offset `+0000` to
+ * match `resolveReflogIdentity`'s own fixed offset — the branch-rename
+ * interop cases append a BRAND NEW reflog entry (unlike the purge/rewrite
+ * cases above, which never mint one), so byte-for-byte comparison needs
+ * git's write pinned to the exact instant tsgit's `Date.now()` is mocked to
+ * on the other side.
+ */
+const pinnedCommitterEnv = (epoch: number): NodeJS.ProcessEnv => ({
+  ...runGitEnv(),
+  GIT_COMMITTER_NAME: 'Ada',
+  GIT_COMMITTER_EMAIL: 'ada@example.com',
+  GIT_COMMITTER_DATE: `${epoch} +0000`,
+});
 
 /** Splits one `%format`'s multi-record stdout into exactly one string per
  *  record, preserving a genuinely EMPTY record (a tab-less line's empty
@@ -958,6 +989,90 @@ describe.skipIf(!GIT_AVAILABLE)(
           const peerBytes = await readFile(stashLogPath(peer));
           const oursBytes = await readFile(stashLogPath(ours));
           expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a corrupted refs/heads/main log with a malformed line', () => {
+      describe('When the branch is renamed', () => {
+        it("Then the destination log is byte-identical to git's own moved-and-appended log, and the source log is gone on both sides", async () => {
+          // Arrange — twin repos, corrupted identically; the rename entry's
+          // committer timestamp is pinned on both sides so the WHOLE file
+          // compares byte-for-byte, not just the moved malformed line.
+          const peer = await caseDir('branch-rename-peer');
+          const ours = await caseDir('branch-rename-ours');
+          await writeLine3(peer, 'this is not a reflog line at all\n');
+          await writeLine3(ours, 'this is not a reflog line at all\n');
+          const renameEpoch = BASE_EPOCH + 1_000;
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          runGit(['-C', peer, 'branch', '-m', 'main', 'renamed'], {
+            env: pinnedCommitterEnv(renameEpoch),
+          });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(renameEpoch * 1000);
+          try {
+            await branchRename(ctx, { from: 'main', to: 'renamed' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert — the moved malformed line and the appended rename entry
+          // both land byte-for-byte the same as git's, and the source log
+          // is gone entirely on both sides, never left as an empty file.
+          const peerBytes = await readFile(branchLogPath(peer, 'renamed'));
+          const oursBytes = await readFile(branchLogPath(ours, 'renamed'));
+          expect(oursBytes).toEqual(peerBytes);
+          expect(await pathExists(mainLogPath(peer))).toBe(false);
+          expect(await pathExists(mainLogPath(ours))).toBe(false);
+        });
+      });
+    });
+
+    describe('Given two branches each with their own reflog', () => {
+      describe('When the first is force-renamed onto the second', () => {
+        it("Then the destination log becomes exactly the source history plus the rename entry, byte-identical to git's own forced rename", async () => {
+          // Arrange — `left` and `right` each get one real creation reflog
+          // entry, built through git with pinned committer dates so the
+          // WHOLE destination file — not just the rename entry — compares
+          // byte-for-byte on both sides.
+          const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-interop-force-'));
+          caseRoots.push(root);
+          runGit(['init', '-q', '-b', 'main', root]);
+          git(root, 'config', 'user.name', 'Ada');
+          git(root, 'config', 'user.email', 'ada@example.com');
+          git(root, 'config', 'commit.gpgsign', 'false');
+          disableAutoMaintenance(root);
+          await writeFile(path.join(root, 'f.txt'), 'f\n');
+          git(root, 'add', '-A');
+          runGit(['-C', root, 'commit', '-q', '-m', 'base'], {
+            env: pinnedCommitterEnv(BASE_EPOCH),
+          });
+          runGit(['-C', root, 'branch', 'left'], { env: pinnedCommitterEnv(BASE_EPOCH + 100) });
+          runGit(['-C', root, 'branch', 'right'], { env: pinnedCommitterEnv(BASE_EPOCH + 200) });
+          const peer = await cloneRepo(root, 'branch-rename-force-peer');
+          const ours = await cloneRepo(root, 'branch-rename-force-ours');
+          const renameEpoch = BASE_EPOCH + 300;
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          runGit(['-C', peer, 'branch', '-M', 'left', 'right'], {
+            env: pinnedCommitterEnv(renameEpoch),
+          });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(renameEpoch * 1000);
+          try {
+            await branchRename(ctx, { from: 'left', to: 'right', force: true });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert — `right`'s own prior entry is replaced, not concatenated
+          // with, matching git's own delete_ref-then-move on a forced rename.
+          const peerBytes = await readFile(branchLogPath(peer, 'right'));
+          const oursBytes = await readFile(branchLogPath(ours, 'right'));
+          expect(oursBytes).toEqual(peerBytes);
+          expect(await pathExists(branchLogPath(peer, 'left'))).toBe(false);
+          expect(await pathExists(branchLogPath(ours, 'left'))).toBe(false);
         });
       });
     });

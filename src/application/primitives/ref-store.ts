@@ -119,6 +119,16 @@ export interface RefStore {
    */
   readReflogLenient(name: RefName): Promise<readonly ReflogEntry[]>;
   /**
+   * Moves `from`'s reflog onto `to`: after this call, `to`'s reflog is
+   * exactly what `from`'s was — byte-for-byte on the files backend, so a
+   * malformed line survives verbatim — and `from` has no reflog. When
+   * `from` had none, `to`'s existing reflog is REMOVED rather than kept
+   * (git's rename deletes the destination ref and its log first). This is
+   * a deliberate divergence from a read-concat-rewrite: a forced rename
+   * replaces the destination's history, it does not append to it.
+   */
+  moveReflog(from: RefName, to: RefName): Promise<void>;
+  /**
    * Whether `name` has a reflog at all — a file-presence question
    * independent of entry count (an emptied-but-present log still counts,
    * matching real git), and independent of `listReflogs`'s whole-tree walk:
@@ -669,6 +679,22 @@ function createFilesRefStore(ctx: Context): RefStore {
     return parseReflogLenient((await readReflogText(name)) ?? '', ctx.hashConfig.hexLength);
   }
 
+  /**
+   * `rename(2)`s `from`'s reflog file onto `to`'s — byte-preserving, so a
+   * malformed line moves verbatim without ever being parsed. When `from`
+   * has none, `to`'s own reflog file (if any) is removed instead of kept:
+   * `ctx.fs.rename` would otherwise leave it untouched, which is not git's
+   * `branch -m` contract (a forced rename replaces, never merges).
+   */
+  async function moveReflog(from: RefName, to: RefName): Promise<void> {
+    const src = reflogPath(refDir(from), from);
+    if (!(await ctx.fs.exists(src))) {
+      await removeReflogFile(to);
+      return;
+    }
+    await ctx.fs.rename(src, reflogPath(refDir(to), to));
+  }
+
   /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
    *  alone answers "does something live at this path" and returns `true`
    *  for a directory too, which a name like `refs/heads/feature` collides
@@ -862,6 +888,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     verifyIntegrity,
     readReflog,
     readReflogLenient,
+    moveReflog,
     hasReflog,
     listReflogs,
     packRefs,

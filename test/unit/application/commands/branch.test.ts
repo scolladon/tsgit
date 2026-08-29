@@ -193,6 +193,30 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a branch whose reflog contains a malformed line', () => {
+    describe('When branch rename', () => {
+      it('Then the malformed line survives verbatim under the new name, followed by the rename entry', async () => {
+        // Arrange — a strict read-then-rewrite would throw on this line, and
+        // a lenient read-then-rewrite would silently drop it; a
+        // byte-preserving move must never parse it at all.
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'this is not a valid reflog line at all\n',
+        );
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert
+        const raw = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/trunk`);
+        const lines = raw.split('\n').filter((line) => line.length > 0);
+        expect(lines[1]).toBe('this is not a valid reflog line at all');
+        expect(lines[2]).toContain('Branch: renamed refs/heads/main to refs/heads/trunk');
+      });
+    });
+  });
+
   describe('Given a branch with reflog history', () => {
     describe('When branch rename', () => {
       it('Then the new ref reflog is [...source-history, rename-entry] and the source reflog is gone', async () => {
@@ -490,6 +514,29 @@ describe('branch', () => {
         await branchRename(ctx, { from: 'a', to: 'b', force: true });
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/a`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an existing target branch with its own reflog + force=true', () => {
+    describe('When branch rename', () => {
+      it('Then the target reflog becomes the source history plus the rename entry, not a concatenation', async () => {
+        // Arrange — both `a` and `b` get their own one-entry creation reflog.
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'a' });
+        await branchCreate(ctx, { name: 'b' });
+        const sourceLog = await readReflog(ctx, 'refs/heads/a' as RefName);
+        expect(sourceLog).toHaveLength(1);
+
+        // Act
+        await branchRename(ctx, { from: 'a', to: 'b', force: true });
+
+        // Assert — b's own prior entry is gone; only a's history plus the
+        // rename entry remain, matching git's own delete_ref-then-move.
+        const targetLog = await readReflog(ctx, 'refs/heads/b' as RefName);
+        expect(targetLog).toHaveLength(2);
+        expect(targetLog[0]).toEqual(sourceLog[0]);
+        expect(targetLog[1]?.message).toBe('Branch: renamed refs/heads/a to refs/heads/b');
       });
     });
   });

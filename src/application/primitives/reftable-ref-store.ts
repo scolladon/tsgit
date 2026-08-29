@@ -301,6 +301,25 @@ export function createReftableRefStore(ctx: Context): RefStore {
    */
   const readReflogLenient = readReflog;
 
+  /**
+   * `RefStore.moveReflog`'s reftable implementation: there is no file to
+   * `rename(2)`, so `from`'s decoded entries are re-keyed onto `to` through
+   * the ordinary transaction machinery — `reflogReplace` tombstones every
+   * existing record for a name and re-emits `entries` at fresh indices, so
+   * this doubles as `to`'s replace (git's forced-rename semantics) and
+   * `from`'s own tombstone (an empty `entries` list) in one call. Log
+   * records are structured, so re-emitting the decoded entries IS the
+   * byte-preserving move for this backend — there is no malformed-line
+   * analogue to lose.
+   */
+  async function moveReflog(from: RefName, to: RefName): Promise<void> {
+    const entries = await readReflog(from);
+    await applyReftableUpdates(ctx, [
+      { kind: 'reflogReplace', name: to, entries },
+      { kind: 'reflogReplace', name: from, entries: [] },
+    ]);
+  }
+
   /** Whether `stack.logs(name)` — already tombstone-shadowed — yields at
    *  least one live entry. A name whose raw tables carry only shadowed-away
    *  entries has no reflog at all, matching the files backend's own
@@ -374,6 +393,7 @@ export function createReftableRefStore(ctx: Context): RefStore {
     verifyIntegrity,
     readReflog,
     readReflogLenient,
+    moveReflog,
     hasReflog,
     listReflogs,
     packRefs,
