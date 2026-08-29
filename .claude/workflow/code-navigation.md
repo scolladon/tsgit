@@ -6,17 +6,28 @@ Three tools, three jobs. They are not interchangeable; their blind spots differ.
 
 ## Routing — pick by task, not by habit
 
+**Ask first: is there a mechanical oracle?** If a compiler, a bundler or a doc generator already
+computes the answer, use it — it is exhaustive where a graph query is a sample, and it is ground
+truth where a graph is a model. Only when no oracle applies does the table below start.
+
 | Task | Tool |
 |---|---|
+| **"did the exported surface change?"** | **regenerate `reports/api.json`, diff it** — not a graph |
+| **anything about the build/emit pipeline** | **`tsc --noEmit`, `npm run build`** — graphs model source, not emit |
 | cold-start orientation, "how does X work", "where does Y live" | `graft ask` (Bash or `graft_find_code`) |
 | file shape, cheapest possible | `get_symbols_overview` (names only) |
 | file shape + signatures + line ranges | `graft skeleton` |
 | exact references before an edit | `find_referencing_symbols` |
-| **anything crossing a barrel / `export type *`** | **serena only** |
+| **navigating across a barrel / `export type *`** | **serena only** |
 | read one symbol's body | `find_symbol` (`include_body`) |
 | rename / replace a symbol body | serena — the only one that writes safely |
 | type errors after an edit | `get_diagnostics_for_file` |
-| import cycles, god classes, coupling, DSM, churn/blame | tokensave |
+| import cycles, god classes, coupling, DSM, churn/blame | tokensave — **verify every entry by hand** |
+
+The barrel row is about **navigation** — "who uses this re-exported symbol", before an edit. It is
+not the tool for **verification** — "did the surface change". Regenerating `api.json` and diffing
+the symbol set answers that over the whole surface at once; `find_referencing_symbols` answers it
+one symbol at a time and only for the symbols you thought to ask about.
 
 Loop: `graft ask` → `graft skeleton` → `serena find_symbol` / `find_referencing_symbols` → `serena replace_*`. tokensave is a **periodic audit**, not a per-task tool.
 
@@ -43,9 +54,23 @@ Cost ladder on a 1,254-line file — `get_symbols_overview` ~1.1 KB (no signatur
 ## tokensave — analytics, not navigation
 
 - Use for what the other two cannot compute: `circular`, `god_class`, `coupling`, `dsm`, `hotspots`, `blame`, `complexity`.
+- **Its findings are neither sound nor complete — verify each one against the source before acting.** A `circular` run here reported 7 cycles: 2 were noise (an SCC dumped alphabetically as if it were a path; a pair with no reverse edge), and one of the 5 real ones was actually 13 instances of the same shape, of which it listed one. A short list reads as reassurance and is the more dangerous error. It also cannot tell a `import type` edge (erased at build, harmless) from a value edge.
 - **Do not use `tokensave_context` for orientation** — measured at ~2× graft's cost with worse recall on this repo.
 - **Do not trust `dead_code` unfiltered** — 37,284 hits here, including `describe(...)` blocks in test files. Scope to `src/` or ignore.
 - A tokensave version bump implies a **DB schema migration and a full re-index**. Incremental `sync` will keep reporting success against a half-built graph. Run `tokensave doctor` after every upgrade.
+
+## Shared blind spot — the emit pipeline
+
+All three tools model the **source** graph. They are blind to what `tsc` and the bundler do to it,
+so two edits that are structurally identical in the source can diverge in the build. `tsgit` sets
+`stripInternal: true` in `tsconfig.build.json`: an `@internal` declaration is erased from the
+emitted `.d.ts`, but an `export type { X } from './y.js'` re-export of it is left dangling, and
+`rollup-plugin-dts` fails with `"X" is not exported by "y.ts"`. An `@internal` type therefore
+cannot be re-exported through a facade — its consumers import it from its own module. No graph
+query predicts this; `npm run build` is the only oracle.
+
+Related: the `.d.ts` bundle shares a wireit script with the JS bundles, so a dts-only failure is
+still labelled `[build:js]`. Read the rollup target header (`→ dist/types`), not the label.
 
 ## Shared blind spot — barrels
 
