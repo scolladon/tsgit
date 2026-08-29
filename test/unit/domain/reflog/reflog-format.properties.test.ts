@@ -1,14 +1,23 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import {
   parseReflog,
+  parseReflogBytes,
   parseReflogLenient,
   parseReflogLine,
   serializeReflogLine,
   serializeReflogRewriteLine,
+  serializeReflogRewriteLineBytes,
 } from '../../../../src/domain/reflog/reflog-format.js';
-import { arbCandidateLine, arbEntry, arbNonZeroTimestamp, arbReflogText } from './arbitraries.js';
+import {
+  arbCandidateLine,
+  arbEntry,
+  arbNonZeroTimestamp,
+  arbReflogLineBytes,
+  arbReflogText,
+} from './arbitraries.js';
 
 describe('Given an arbitrary ASCII text with no NUL', () => {
   describe('When parseReflogLenient parses it', () => {
@@ -86,6 +95,26 @@ describe('Given an arbitrary entry with a non-zero timestamp', () => {
           const line = serializeReflogRewriteLine(entry, 40);
 
           expect(parseReflog(line, 40)).toEqual([entry]);
+        }),
+        { numRuns: 200 },
+      );
+    });
+  });
+});
+
+describe('Given an arbitrary well-formed reflog line built directly in bytes', () => {
+  describe('When parsing then re-serializing with the byte-tier functions', () => {
+    it('Then the original bytes round-trip exactly, latin1-inclusive alphabet included', () => {
+      // Arrange + Act + Assert — the lens a UTF-8 string round trip cannot
+      // cover: identity/message bytes span the full 0x20-0xFF range,
+      // including values that are not valid UTF-8 on their own.
+      fc.assert(
+        fc.property(arbReflogLineBytes(), (line) => {
+          const entries = parseReflogBytes(line, 40);
+
+          const rewritten = serializeReflogRewriteLineBytes(entries[0] as ReflogEntry, 40);
+
+          expect(rewritten).toEqual(line);
         }),
         { numRuns: 200 },
       );

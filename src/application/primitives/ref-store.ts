@@ -6,9 +6,9 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import {
-  parseReflog,
-  parseReflogLenient,
-  serializeReflogRewriteLine,
+  parseReflogBytes,
+  parseReflogLenientBytes,
+  serializeReflogRewriteLineBytes,
 } from '../../domain/reflog/reflog-format.js';
 import {
   type ReftableCheck,
@@ -367,6 +367,19 @@ const EMPTY_PACKED_REFS: LoadedPackedRefs = {
   byName: () => EMPTY_BY_NAME_INDEX,
 };
 
+/** Concatenates a reflog rewrite's per-entry byte lines into one file buffer. */
+function concatReflogBytes(lines: ReadonlyArray<Uint8Array>): Uint8Array {
+  let total = 0;
+  for (const line of lines) total += line.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const line of lines) {
+    out.set(line, offset);
+    offset += line.length;
+  }
+  return out;
+}
+
 function createFilesRefStore(ctx: Context): RefStore {
   let packedCache: { readonly loaded: LoadedPackedRefs; readonly mtimeKey: string } | undefined;
 
@@ -627,40 +640,43 @@ function createFilesRefStore(ctx: Context): RefStore {
    * whole-file rewrite. `runExpire` runs this on every ref on every call, so
    * a torn write here would be routine rather than rare; locked-then-renamed
    * through {@link atomicWriteFile}, the same shape git itself takes for a
-   * reflog rewrite.
+   * reflog rewrite. Serializes in BYTES: an entry carrying `raw` (parsed
+   * from disk) re-emits its verbatim on-disk identity/message slices
+   * instead of round-tripping through a decode/re-encode that would mangle
+   * non-UTF-8 content.
    */
   async function applyReflogReplace(
     update: Extract<RefUpdate, { kind: 'reflogReplace' }>,
   ): Promise<void> {
-    const text = update.entries
-      .map((entry) => serializeReflogRewriteLine(entry, ctx.hashConfig.hexLength))
-      .join('');
-    await atomicWriteFile(
-      ctx,
-      reflogPath(refDir(update.name), update.name),
-      TEXT_ENCODER.encode(text),
-      () => refLocked(update.name),
+    const content = concatReflogBytes(
+      update.entries.map((entry) =>
+        serializeReflogRewriteLineBytes(entry, ctx.hashConfig.hexLength),
+      ),
+    );
+    await atomicWriteFile(ctx, reflogPath(refDir(update.name), update.name), content, () =>
+      refLocked(update.name),
     );
   }
 
-  /** `name`'s reflog text, or `undefined` when the file is absent. Refuses
+  /** `name`'s reflog bytes, or `undefined` when the file is absent. Refuses
    *  an over-cap file — the one preamble {@link readReflog} and {@link
    *  readReflogLenient} share, so the cap and the exists/stat probe are
    *  enforced exactly once regardless of which parse strictness the caller
    *  wants. */
-  async function readReflogText(name: RefName): Promise<string | undefined> {
+  async function readReflogBytes(name: RefName): Promise<Uint8Array | undefined> {
     const path = reflogPath(refDir(name), name);
     if (!(await ctx.fs.exists(path))) return undefined;
     const stat = await ctx.fs.stat(path);
     if (stat.size > MAX_REFLOG_BYTES) {
       throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
     }
-    return ctx.fs.readUtf8(path);
+    return ctx.fs.read(path);
   }
 
   /** `name`'s reflog, oldest-first. `[]` when the file is absent. */
   async function readReflog(name: RefName): Promise<readonly ReflogEntry[]> {
-    return parseReflog((await readReflogText(name)) ?? '', ctx.hashConfig.hexLength);
+    const bytes = await readReflogBytes(name);
+    return bytes === undefined ? [] : parseReflogBytes(bytes, ctx.hashConfig.hexLength);
   }
 
   /**
@@ -669,14 +685,15 @@ function createFilesRefStore(ctx: Context): RefStore {
    * readReflog}'s all-or-nothing parse does. Pinned against git 2.55.0:
    * `git gc --prune=now` keeps an object reachable only from a valid entry
    * that shares a reflog file with a garbage line. The `MAX_REFLOG_BYTES`
-   * cap is still enforced by the shared {@link readReflogText} preamble and
+   * cap is still enforced by the shared {@link readReflogBytes} preamble and
    * is NOT tolerated here: an over-cap reflog that silently rooted nothing
    * would be the exact silent-data-loss shape leniency must not create, so
    * that fault still throws and aborts the caller's run. `[]` when the file
    * is absent, matching `readReflog`.
    */
   async function readReflogLenient(name: RefName): Promise<readonly ReflogEntry[]> {
-    return parseReflogLenient((await readReflogText(name)) ?? '', ctx.hashConfig.hexLength);
+    const bytes = await readReflogBytes(name);
+    return bytes === undefined ? [] : parseReflogLenientBytes(bytes, ctx.hashConfig.hexLength);
   }
 
   /**

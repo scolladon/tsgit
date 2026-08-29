@@ -95,10 +95,12 @@ describe('reflog command', () => {
           expect(result.kind).toBe('show');
           if (result.kind !== 'show') throw new Error('unreachable');
           expect(result.ref).toBe(HEAD);
+          // A files-backend read attaches `raw` (the on-disk byte slices) to
+          // every entry, so each expected entry is matched as a superset.
           expect(result.entries).toEqual([
-            { index: 0, selector: 'HEAD@{0}', entry: third },
-            { index: 1, selector: 'HEAD@{1}', entry: second },
-            { index: 2, selector: 'HEAD@{2}', entry: first },
+            { index: 0, selector: 'HEAD@{0}', entry: expect.objectContaining(third) },
+            { index: 1, selector: 'HEAD@{1}', entry: expect.objectContaining(second) },
+            { index: 2, selector: 'HEAD@{2}', entry: expect.objectContaining(first) },
           ]);
         });
       });
@@ -166,10 +168,12 @@ describe('reflog command', () => {
           // Assert — newest-first survivors: third(@0), second(@1), first(@2).
           expect(result.kind).toBe('show');
           if (result.kind !== 'show') throw new Error('unreachable');
+          // A files-backend read attaches `raw` (the on-disk byte slices) to
+          // every entry, so each expected entry is matched as a superset.
           expect(result.entries).toEqual([
-            { index: 0, selector: 'HEAD@{0}', entry: third },
-            { index: 1, selector: 'HEAD@{1}', entry: second },
-            { index: 2, selector: 'HEAD@{2}', entry: first },
+            { index: 0, selector: 'HEAD@{0}', entry: expect.objectContaining(third) },
+            { index: 1, selector: 'HEAD@{1}', entry: expect.objectContaining(second) },
+            { index: 2, selector: 'HEAD@{2}', entry: expect.objectContaining(first) },
           ]);
         });
       });
@@ -260,13 +264,15 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
-          // Assert — `removed` is present, the optional field's other direction.
-          expect(result).toEqual({ kind: 'delete', removed: second });
+          // Assert — `removed` is present, the optional field's other
+          // direction. A files-backend read attaches `raw`, so the removed
+          // entry and every surviving entry are matched as a superset.
+          expect(result).toEqual({ kind: 'delete', removed: expect.objectContaining(second) });
           expect('removed' in result).toBe(true);
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
-            third,
-            first,
+            expect.objectContaining(third),
+            expect.objectContaining(first),
           ]);
         });
       });
@@ -285,10 +291,15 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
 
-          // Assert
-          expect(result.kind === 'delete' && result.removed).toEqual(second);
+          // Assert — a files-backend read attaches `raw`, so the removed and
+          // surviving entries are matched as a superset of the fixtures.
+          expect(result.kind === 'delete' && result.removed).toEqual(
+            expect.objectContaining(second),
+          );
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
-          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([first]);
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            expect.objectContaining(first),
+          ]);
         });
       });
     });
@@ -311,8 +322,12 @@ describe('reflog command', () => {
           // Assert
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           const repaired = after.kind === 'show' ? after.entries.map((e) => e.entry) : [];
-          // newest-first: third (repaired), first
-          expect(repaired).toEqual([{ ...third, oldId: OID_X }, first]);
+          // newest-first: third (repaired), first — a files-backend read
+          // attaches `raw`, so each entry is matched as a superset.
+          expect(repaired).toEqual([
+            expect.objectContaining({ ...third, oldId: OID_X }),
+            expect.objectContaining(first),
+          ]);
         });
       });
     });
@@ -331,9 +346,11 @@ describe('reflog command', () => {
           // Act
           await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0, rewrite: true });
 
-          // Assert
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
-          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([first]);
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            expect.objectContaining(first),
+          ]);
         });
       });
     });
@@ -352,11 +369,11 @@ describe('reflog command', () => {
           // Act
           await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
-          // Assert
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
-            third,
-            first,
+            expect.objectContaining(third),
+            expect.objectContaining(first),
           ]);
         });
       });
@@ -376,10 +393,13 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
-          // Assert — the oldest entry is removed, not rejected as out of range.
-          expect(result).toEqual({ kind: 'delete', removed: first });
+          // Assert — the oldest entry is removed, not rejected as out of
+          // range. A files-backend read attaches `raw`, matched as a superset.
+          expect(result).toEqual({ kind: 'delete', removed: expect.objectContaining(first) });
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
-          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([second]);
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            expect.objectContaining(second),
+          ]);
         });
       });
     });
@@ -583,10 +603,11 @@ describe('reflog command', () => {
           if (result.kind !== 'delete') expect.fail('expected a delete result');
           expect('removed' in result).toBe(false);
           expect(renameDestinations).toContain(reflogPath);
+          // A files-backend read attaches `raw`, matched as a superset.
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
-            second,
-            first,
+            expect.objectContaining(second),
+            expect.objectContaining(first),
           ]);
         });
       });

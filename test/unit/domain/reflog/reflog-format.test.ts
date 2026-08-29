@@ -5,12 +5,36 @@ import { ObjectId, ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import {
   parseReflog,
+  parseReflogBytes,
   parseReflogLenient,
+  parseReflogLenientBytes,
   parseReflogLine,
   sanitizeReflogMessage,
   serializeReflogLine,
   serializeReflogRewriteLine,
+  serializeReflogRewriteLineBytes,
 } from '../../../../src/domain/reflog/reflog-format.js';
+
+const ENCODER = new TextEncoder();
+
+/**
+ * Builds a Uint8Array from a mix of ASCII strings (UTF-8 encoded) and raw
+ * byte values, so a test can drop a specific non-UTF-8 byte (e.g. a latin1
+ * 0xE9) at an exact position without fighting string-literal escaping.
+ */
+function bytesFrom(...parts: ReadonlyArray<string | number>): Uint8Array {
+  const chunks = parts.map((part) =>
+    typeof part === 'number' ? Uint8Array.of(part) : ENCODER.encode(part),
+  );
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
 
 const OID_A = ObjectId.from('a'.repeat(40));
 const OID_B = ObjectId.from('b'.repeat(40));
@@ -703,6 +727,299 @@ describe('parseReflogLenient', () => {
 
         // Assert
         expect(entries).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('parseReflogBytes', () => {
+  describe('Given a line whose identity name and message each carry a non-UTF-8 byte', () => {
+    describe('When parsing', () => {
+      it('Then the display strings carry U+FFFD and raw carries the exact on-disk bytes', () => {
+        // Arrange — a latin1 0xE9 ("é" in ISO-8859-1) is not valid UTF-8 on
+        // its own, in both the identity name and the message.
+        const line = bytesFrom(
+          `${OID_A} ${OID_B} Ad`,
+          0xe9,
+          ' Lovelace <ada@example.com> 1716240000 +0000\tcommit: caf',
+          0xe9,
+          '\n',
+        );
+
+        // Act
+        const entries = parseReflogBytes(line, 40);
+
+        // Assert
+        expect(entries).toHaveLength(1);
+        const sut = entries[0] as ReflogEntry;
+        expect(sut.identity.name).toBe('Ad� Lovelace');
+        expect(sut.message).toBe('commit: caf�');
+        expect(sut.raw?.identity).toEqual(bytesFrom('Ad', 0xe9, ' Lovelace <ada@example.com>'));
+        expect(sut.raw?.message).toEqual(bytesFrom('commit: caf', 0xe9));
+      });
+    });
+  });
+
+  describe('Given a line whose identity name carries a legitimate multi-byte UTF-8 character', () => {
+    describe('When parsing', () => {
+      it('Then the character decodes correctly rather than mojibake', () => {
+        // Arrange — "é" as a valid 2-byte UTF-8 sequence (0xC3 0xA9), not a
+        // corruption; the byte parser must decode it, not latin1-mangle it.
+        const line = bytesFrom(
+          `${OID_A} ${OID_B} Café Owner <ada@example.com> 1716240000 +0000\tx\n`,
+        );
+
+        // Act
+        const entries = parseReflogBytes(line, 40);
+
+        // Assert
+        expect(entries[0]?.identity.name).toBe('Café Owner');
+      });
+    });
+  });
+
+  describe('Given a tab-less line (empty message)', () => {
+    describe('When parsing', () => {
+      it('Then raw.message is empty and the display message is the empty string', () => {
+        // Arrange
+        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\n`);
+
+        // Act
+        const entries = parseReflogBytes(line, 40);
+
+        // Assert
+        const sut = entries[0] as ReflogEntry;
+        expect(sut.message).toBe('');
+        expect(sut.raw?.message).toEqual(new Uint8Array(0));
+      });
+    });
+  });
+
+  describe('Given a trailing blank line', () => {
+    describe('When parsing', () => {
+      it('Then the blank line is tolerated', () => {
+        // Arrange
+        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+
+        // Act
+        const entries = parseReflogBytes(line, 40);
+
+        // Assert
+        expect(entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a reflog file with a malformed line', () => {
+    describe('When parsing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange
+        const line = bytesFrom(
+          `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`,
+          'garbage line\n',
+        );
+
+        // Act & Assert
+        expectInvalidReflogEntry(() => parseReflogBytes(line, 40), 'misplaced field separator');
+      });
+    });
+  });
+
+  describe('Given a line whose timestamp is zero', () => {
+    describe('When parsing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY with the zero-timestamp reason', () => {
+        // Arrange — the strict byte parser reuses parseReflogLine's grammar,
+        // so the zero-timestamp refusal is reachable through it directly.
+        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 0 +0000\tcommit: x\n`);
+
+        // Act & Assert
+        expectInvalidReflogEntry(() => parseReflogBytes(line, 40), 'zero timestamp');
+      });
+    });
+  });
+});
+
+describe('parseReflogLenientBytes', () => {
+  describe('Given a garbage line between two valid entries', () => {
+    describe('When parsing', () => {
+      it('Then the garbage line is skipped and both valid entries carry their raw bytes', () => {
+        // Arrange
+        const line = bytesFrom(
+          `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tfirst\n`,
+          'garbage line\n',
+          `${OID_B} ${OID_A} Ada <ada@example.com> 1716240000 +0000\tsecond\n`,
+        );
+
+        // Act
+        const entries = parseReflogLenientBytes(line, 40);
+
+        // Assert
+        expect(entries.map((e) => e.message)).toEqual(['first', 'second']);
+        expect(entries[0]?.raw).toBeDefined();
+        expect(entries[1]?.raw).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a line whose misplaced separator falls at the old/new id boundary', () => {
+    describe('When parsing', () => {
+      it('Then the line is skipped without constructing an error', () => {
+        // Arrange — the SP at index 40 (old/new id boundary) is replaced,
+        // isolating this guard from the second separator check.
+        const line = bytesFrom(
+          `${'a'.repeat(40)}X${'b'.repeat(40)} Ada <ada@example.com> 1716240000 +0000\tx\n`,
+        );
+
+        // Act
+        const entries = parseReflogLenientBytes(line, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a line whose misplaced separator falls at the new-id/identity boundary', () => {
+    describe('When parsing', () => {
+      it('Then the line is skipped without constructing an error', () => {
+        // Arrange — the SP at index 81 (new id/identity boundary) is
+        // replaced while the old/new id boundary stays correct, isolating
+        // this guard from the first separator check.
+        const line = bytesFrom(`${OID_A} ${OID_B}X Ada <ada@example.com> 1716240000 +0000\tx\n`);
+
+        // Act
+        const entries = parseReflogLenientBytes(line, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a line that passes the cheap separator pre-check but fails deeper validation', () => {
+    describe('When parsing', () => {
+      it('Then the line is skipped', () => {
+        // Arrange — non-hex characters in the old id; both separator
+        // positions are correct, so this only fails inside parseReflogLine.
+        const line = bytesFrom(
+          `${'g'.repeat(40)} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`,
+        );
+
+        // Act
+        const entries = parseReflogLenientBytes(line, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a trailing blank line', () => {
+    describe('When parsing', () => {
+      it('Then the blank line is tolerated', () => {
+        // Arrange
+        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+
+        // Act
+        const entries = parseReflogLenientBytes(line, 40);
+
+        // Assert
+        expect(entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a line whose timestamp is zero', () => {
+    describe('When parsing', () => {
+      it('Then the line is skipped rather than throwing', () => {
+        // Arrange — the isolated lenient-path counterpart to the strict
+        // zero-timestamp refusal above.
+        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 0 +0000\tcommit: x\n`);
+
+        // Act
+        const entries = parseReflogLenientBytes(line, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a `>` inside the identity name', () => {
+    describe('When parsing', () => {
+      it('Then the name is kept up to the LAST `>`, matching the string-tier parser', () => {
+        // Arrange — pinned against the string-tier divergence from git: the
+        // byte tier must not change which lines tsgit accepts or how it
+        // splits the identity.
+        const line = bytesFrom(
+          `${OID_A} ${OID_B} x>y <probe@example.com> 1700000002 +0200\tcommit: c2\n`,
+        );
+
+        // Act
+        const entries = parseReflogLenientBytes(line, 40);
+
+        // Assert
+        expect(entries[0]?.identity.name).toBe('x>y');
+        expect(entries[0]?.identity.email).toBe('probe@example.com');
+      });
+    });
+  });
+});
+
+describe('serializeReflogRewriteLineBytes', () => {
+  describe('Given an entry parsed from bytes carrying raw slices', () => {
+    describe('When serializing', () => {
+      it('Then the original on-disk bytes are re-emitted exactly', () => {
+        // Arrange
+        const original = bytesFrom(
+          `${OID_A} ${OID_B} Ad`,
+          0xe9,
+          ' Lovelace <ada@example.com> 1716240000 +0000\tcommit: caf',
+          0xe9,
+          '\n',
+        );
+        const [sut] = parseReflogBytes(original, 40);
+
+        // Act
+        const rewritten = serializeReflogRewriteLineBytes(sut as ReflogEntry, 40);
+
+        // Assert
+        expect(rewritten).toEqual(original);
+      });
+    });
+  });
+
+  describe('Given an entry with no raw slices', () => {
+    describe('When serializing', () => {
+      it('Then it falls back to the UTF-8-encoded string rewrite serializer', () => {
+        // Arrange
+        const entry: ReflogEntry = { ...ENTRY, message: '' };
+
+        // Act
+        const result = serializeReflogRewriteLineBytes(entry, 40);
+
+        // Assert
+        expect(result).toEqual(new TextEncoder().encode(serializeReflogRewriteLine(entry, 40)));
+      });
+    });
+  });
+
+  describe('Given an entry whose identity timestamp is zero', () => {
+    describe('When serializing with raw slices present', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange
+        const original = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        const [parsed] = parseReflogBytes(original, 40);
+        const entry: ReflogEntry = {
+          ...(parsed as ReflogEntry),
+          identity: { ...(parsed as ReflogEntry).identity, timestamp: 0 },
+        };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLineBytes(entry, 40),
+          'timestamp must be non-zero',
+        );
       });
     });
   });

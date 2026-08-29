@@ -661,6 +661,82 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a middle valid line carrying a non-UTF-8 byte in its identity name and message', () => {
+      /**
+       * A latin1 0xE9 in both the identity name and the message — a byte
+       * that is not valid UTF-8 on its own, but perfectly valid content to
+       * git's own byte-oriented reflog reader (it never validates encoding).
+       * Placed at line 2 (the c0→c1 move) rather than line 3: `main@{1}`
+       * deletes line 3 (e2), so line 2 survives that delete and must be
+       * re-serialized byte-identical rather than mangled by a decode/
+       * re-encode round trip.
+       */
+      const latin1Line2 = (): Buffer =>
+        Buffer.concat([
+          Buffer.from(`${c0} ${c1} Ad`, 'utf8'),
+          Buffer.from([0xe9]),
+          Buffer.from(' Lovelace <ada@example.com> 1700000001 +0200\tcommit: caf', 'utf8'),
+          Buffer.from([0xe9]),
+          Buffer.from('\n', 'utf8'),
+        ]);
+
+      /** Replaces line 2 of 4 (oldest-first, the c0→c1 move) with `line2`,
+       *  keeping the other three valid lines from the base fixture. */
+      const writeLine2 = async (dir: string, line2: Buffer): Promise<void> => {
+        const text = Buffer.concat([
+          Buffer.from(baseLines[0], 'utf8'),
+          line2,
+          Buffer.from(baseLines[2], 'utf8'),
+          Buffer.from(baseLines[3], 'utf8'),
+        ]);
+        await writeFile(mainLogPath(dir), text);
+      };
+
+      describe('When expire runs with --expire=never', () => {
+        it('Then git and tsgit both re-emit the non-UTF-8 line byte-identical', async () => {
+          // Arrange
+          const line2 = latin1Line2();
+          const peer = await caseDir('latin1-expire-peer');
+          const ours = await caseDir('latin1-expire-ours');
+          await writeLine2(peer, line2);
+          await writeLine2(ours, line2);
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'expire', ref: 'refs/heads/main', expire: 'never' });
+
+          // Assert — nothing expires on either side, but the rewrite still
+          // runs unconditionally; the non-UTF-8 bytes must survive it.
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When main@{1} is deleted', () => {
+        it('Then the surviving non-UTF-8 line round-trips byte-identical, same as git', async () => {
+          // Arrange — main@{1} targets line 3 (e2), leaving the latin1 line
+          // at line 2 among the survivors that get re-serialized.
+          const line2 = latin1Line2();
+          const peer = await caseDir('latin1-delete-peer');
+          const ours = await caseDir('latin1-delete-ours');
+          await writeLine2(peer, line2);
+          await writeLine2(ours, line2);
+
+          // Act
+          git(peer, 'reflog', 'delete', 'main@{1}');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 1 });
+
+          // Assert
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
     describe('Given a corrupted refs/heads/main log with an out-of-range delete', () => {
       describe('When main@{3} and main@{99} are deleted', () => {
         it.each([3, 99])(

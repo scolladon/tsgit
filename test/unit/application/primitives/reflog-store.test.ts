@@ -87,9 +87,13 @@ describe('reflog-store', () => {
           await appendReflog(ctx, HEAD, first);
           await appendReflog(ctx, HEAD, second);
 
-          // Assert
+          // Assert — a files-backend read attaches `raw` (the on-disk byte
+          // slices), so each entry is matched as a superset.
           const entries = await readReflog(ctx, HEAD);
-          expect(entries).toEqual([first, second]);
+          expect(entries).toEqual([
+            expect.objectContaining(first),
+            expect.objectContaining(second),
+          ]);
         });
       });
     });
@@ -122,8 +126,8 @@ describe('reflog-store', () => {
           // Act
           const result = await readReflog(ctx, BRANCH);
 
-          // Assert
-          expect(result).toEqual([reflogEntry]);
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
+          expect(result).toEqual([expect.objectContaining(reflogEntry)]);
         });
       });
     });
@@ -206,8 +210,8 @@ describe('reflog-store', () => {
           // Act
           const result = await readReflogLenient(ctx, HEAD);
 
-          // Assert
-          expect(result).toEqual([first, second]);
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
+          expect(result).toEqual([expect.objectContaining(first), expect.objectContaining(second)]);
         });
       });
     });
@@ -298,8 +302,10 @@ describe('reflog-store', () => {
           // Act
           await writeReflog(ctx, HEAD, written);
 
-          // Assert
-          expect(await readReflog(ctx, HEAD)).toEqual(written);
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
+          expect(await readReflog(ctx, HEAD)).toEqual(
+            written.map((w) => expect.objectContaining(w)),
+          );
         });
       });
     });

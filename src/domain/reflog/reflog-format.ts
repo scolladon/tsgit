@@ -8,6 +8,7 @@
  *   format:  git-reflog-line
  */
 import { parseIdentity, serializeIdentity } from '../objects/author-identity.js';
+import { decode } from '../objects/encoding.js';
 import { ObjectId } from '../objects/object-id.js';
 import { invalidReflogEntry } from './error.js';
 import type { ReflogEntry } from './reflog-entry.js';
@@ -15,24 +16,34 @@ import type { ReflogEntry } from './reflog-entry.js';
 const FIELD_SEPARATOR = ' ';
 const CONTROL_CHARS = /[\n\r]/;
 const LINE_FEED = /\n/;
+const TEXT_ENCODER = new TextEncoder();
 
 /**
- * Runs the two refusals shared by both reflog line serializers and builds
- * the meta portion (old id, new id, identity) common to both — everything
- * before the TAB/message. One path for every field but the trailing
- * TAB/message is what keeps the append and rewrite serializers from drifting
- * apart. Message refusals live in each serializer: the append writer refuses
- * CR and LF, the rewrite writer only LF (git's rewrite preserves a bare CR
- * byte in the message — measured, git 2.55.0, a CRLF reflog survives
- * `expire --expire=never` with every `\r` intact).
+ * The two refusals shared by every reflog line serializer, string or bytes:
+ * the object id width must match the repository's oid, and the timestamp
+ * must be non-zero (git's own rewrite never emits a zero timestamp — a line
+ * that did would fail to re-parse, see the zero-timestamp refusal below).
  */
-function reflogLineMeta(entry: ReflogEntry, hexLength: 40 | 64): string {
+function assertReflogLineFields(entry: ReflogEntry, hexLength: 40 | 64): void {
   if (entry.oldId.length !== hexLength || entry.newId.length !== hexLength) {
     throw invalidReflogEntry('object id does not match the repository oid width');
   }
   if (entry.identity.timestamp === 0) {
     throw invalidReflogEntry('timestamp must be non-zero');
   }
+}
+
+/**
+ * Builds the meta portion (old id, new id, identity) common to both STRING
+ * serializers — everything before the TAB/message. One path for every field
+ * but the trailing TAB/message is what keeps the append and rewrite string
+ * serializers from drifting apart. Message refusals live in each serializer:
+ * the append writer refuses CR and LF, the rewrite writer only LF (git's
+ * rewrite preserves a bare CR byte in the message — measured, git 2.55.0, a
+ * CRLF reflog survives `expire --expire=never` with every `\r` intact).
+ */
+function reflogLineMeta(entry: ReflogEntry, hexLength: 40 | 64): string {
+  assertReflogLineFields(entry, hexLength);
   const identity = serializeIdentity(entry.identity);
   return `${entry.oldId} ${entry.newId} ${identity}`;
 }
@@ -63,6 +74,47 @@ export function serializeReflogRewriteLine(entry: ReflogEntry, hexLength: 40 | 6
   }
   const meta = reflogLineMeta(entry, hexLength);
   return `${meta}\t${entry.message}\n`;
+}
+
+function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
+  let total = 0;
+  for (const part of parts) total += part.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+const LINE_FEED_BYTE = new Uint8Array([0x0a]);
+
+/**
+ * `serializeReflogRewriteLine`'s byte-faithful counterpart. When
+ * `entry.raw` is present — the files backend attaches it while parsing an
+ * entry from disk — the identity and message are re-emitted from their
+ * VERBATIM on-disk byte slices instead of the entry's decoded display
+ * strings: a display string that lost a non-UTF-8 byte to U+FFFD on read
+ * would otherwise re-encode that replacement character on write, mangling
+ * the file irreversibly. Only the timestamp/timezone are recomputed from
+ * the parsed identity fields (ASCII, decode-invariant either way), matching
+ * git's own rewrite recompute. A raw-less entry — built programmatically,
+ * never read from disk — falls back to the string serializer, UTF-8 encoded.
+ */
+export function serializeReflogRewriteLineBytes(
+  entry: ReflogEntry,
+  hexLength: 40 | 64,
+): Uint8Array {
+  if (entry.raw === undefined) {
+    return TEXT_ENCODER.encode(serializeReflogRewriteLine(entry, hexLength));
+  }
+  assertReflogLineFields(entry, hexLength);
+  const prefix = TEXT_ENCODER.encode(`${entry.oldId} ${entry.newId} `);
+  const suffix = TEXT_ENCODER.encode(
+    ` ${entry.identity.timestamp} ${entry.identity.timezoneOffset}\t`,
+  );
+  return concatBytes([prefix, entry.raw.identity, suffix, entry.raw.message, LINE_FEED_BYTE]);
 }
 
 /** Parse one reflog line (LF already stripped). Throws INVALID_REFLOG_ENTRY. */
@@ -135,6 +187,150 @@ export function parseReflogLenient(text: string, hexLength: 40 | 64): ReadonlyAr
     }
     try {
       entries.push(parseReflogLine(line, hexLength));
+    } catch {
+      // Malformed line — skipped, not fatal to the rest of the file.
+    }
+  }
+  return entries;
+}
+
+/**
+ * Code units built per `String.fromCharCode` call — comfortably under every
+ * engine's argument-count ceiling, so no file length can overflow the call.
+ */
+const LATIN1_DECODE_CHUNK = 8_192;
+
+/**
+ * One code unit per byte, chunked and joined — a lossless, position-
+ * preserving projection: byte value N always becomes code point N, so any
+ * string index found by scanning this projection IS the byte offset in the
+ * source array. The byte-tier parsers run their grammar on this projection
+ * rather than a UTF-8 decode, because a UTF-8 decode can collapse several
+ * invalid bytes into a single U+FFFD — that would silently shift every
+ * field offset after the invalid byte, making it impossible to recover
+ * which original bytes a field came from.
+ *
+ * `TextDecoder('latin1')` is NOT a substitute: the Encoding Standard aliases
+ * that label to windows-1252, which remaps 0x80–0x9F to other code points.
+ */
+function latin1Decode(bytes: Uint8Array): string {
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += LATIN1_DECODE_CHUNK) {
+    parts.push(String.fromCharCode(...bytes.subarray(i, i + LATIN1_DECODE_CHUNK)));
+  }
+  return parts.join('');
+}
+
+/**
+ * `splitReflogLines`, plus each line's starting byte offset. Offsets are
+ * recovered by walking the same LF-delimited layout the split already
+ * computed: cumulative `line.length + 1` (for the consumed LF) is an exact
+ * byte offset because `latin1Decode` never collapses bytes, so a code-unit
+ * length here IS a byte length.
+ */
+function reflogLineByteRanges(
+  bytes: Uint8Array,
+): ReadonlyArray<{ readonly line: string; readonly start: number }> {
+  const projected = latin1Decode(bytes);
+  const ranges: { line: string; start: number }[] = [];
+  let position = 0;
+  for (const line of splitReflogLines(projected)) {
+    ranges.push({ line, start: position });
+    position += line.length + 1;
+  }
+  return ranges;
+}
+
+/**
+ * Parses one line's grammar from its latin1 projection — `parseReflogLine`
+ * itself, unchanged, so there is exactly one grammar for both the string
+ * and byte tiers, zero-timestamp refusal included — then rebuilds the entry
+ * with display strings UTF-8-decoded from the line's own byte slices and
+ * the verbatim on-disk `raw` slices attached. The identity/message byte
+ * boundaries are recovered from the SAME latin1 projection the grammar
+ * parse just validated, so they always agree with what it accepted. Name's
+ * byte length is read off `grammar.identity.name` (itself latin1-decoded,
+ * so its `.length` already accounts for `parseIdentity`'s one-space trim)
+ * rather than re-deriving the trim rule here.
+ */
+function parseReflogEntryFromBytes(
+  bytes: Uint8Array,
+  projectedLine: string,
+  lineStart: number,
+  hexLength: 40 | 64,
+): ReflogEntry {
+  const grammar = parseReflogLine(projectedLine, hexLength);
+  const newIdStart = hexLength + 1;
+  const newIdEnd = newIdStart + hexLength;
+  const identityStart = newIdEnd + 1;
+  const tab = projectedLine.indexOf('\t');
+  const meta = tab === -1 ? projectedLine : projectedLine.slice(0, tab);
+  const identityRegion = meta.slice(identityStart);
+  const lastClose = identityRegion.lastIndexOf('>');
+  const lastOpen = identityRegion.lastIndexOf('<', lastClose);
+
+  const nameStart = lineStart + identityStart;
+  const nameEnd = nameStart + grammar.identity.name.length;
+  const emailStart = lineStart + identityStart + lastOpen + 1;
+  const emailEnd = lineStart + identityStart + lastClose;
+  const identityBytes = bytes.subarray(
+    lineStart + identityStart,
+    lineStart + identityStart + lastClose + 1,
+  );
+  const messageStart = tab === -1 ? projectedLine.length : tab + 1;
+  const messageBytes = bytes.subarray(lineStart + messageStart, lineStart + projectedLine.length);
+
+  return {
+    oldId: grammar.oldId,
+    newId: grammar.newId,
+    identity: {
+      name: decode(bytes.subarray(nameStart, nameEnd)),
+      email: decode(bytes.subarray(emailStart, emailEnd)),
+      timestamp: grammar.identity.timestamp,
+      timezoneOffset: grammar.identity.timezoneOffset,
+    },
+    message: decode(messageBytes),
+    raw: { identity: identityBytes, message: messageBytes },
+  };
+}
+
+/**
+ * `parseReflog`'s byte-faithful counterpart: same strict, all-or-nothing
+ * contract, but every returned entry carries its verbatim on-disk `raw`
+ * slices so a subsequent rewrite can re-emit non-UTF-8 content byte for
+ * byte. Display strings are UTF-8-decoded per-field from the file's own
+ * bytes rather than from one whole-file decode, so an invalid byte degrades
+ * to U+FFFD only where it occurs.
+ */
+export function parseReflogBytes(
+  bytes: Uint8Array,
+  hexLength: 40 | 64,
+): ReadonlyArray<ReflogEntry> {
+  return reflogLineByteRanges(bytes)
+    .filter(({ line }) => line !== '')
+    .map(({ line, start }) => parseReflogEntryFromBytes(bytes, line, start, hexLength));
+}
+
+/**
+ * `parseReflogLenient`'s byte-faithful counterpart: a line that does not
+ * parse is skipped, and every surviving entry carries its `raw` on-disk
+ * slices. Mirrors `parseReflogLenient`'s cheap shape pre-check so a corrupt
+ * file still skips a garbage line without constructing a `TsgitError` for
+ * it — an empty line needs no separate guard here: it fails that same
+ * pre-check (`''[hexLength]` is `undefined`, never a space) and is skipped
+ * exactly like any other malformed line.
+ */
+export function parseReflogLenientBytes(
+  bytes: Uint8Array,
+  hexLength: 40 | 64,
+): ReadonlyArray<ReflogEntry> {
+  const entries: ReflogEntry[] = [];
+  for (const { line, start } of reflogLineByteRanges(bytes)) {
+    if (line[hexLength] !== FIELD_SEPARATOR || line[2 * hexLength + 1] !== FIELD_SEPARATOR) {
+      continue;
+    }
+    try {
+      entries.push(parseReflogEntryFromBytes(bytes, line, start, hexLength));
     } catch {
       // Malformed line — skipped, not fatal to the rest of the file.
     }

@@ -1398,11 +1398,11 @@ describe('maintenance', () => {
         // Arrange
         const ctx = await seedOneCommit();
         const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
-        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const originalRead = ctx.fs.read.bind(ctx.fs);
         const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
           if (path === reflogPath) throw eacces;
-          return originalReadUtf8(path);
+          return originalRead(path);
         });
         const sut = maintenance;
 

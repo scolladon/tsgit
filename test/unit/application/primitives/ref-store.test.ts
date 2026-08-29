@@ -1143,8 +1143,9 @@ describe('ref-store', () => {
         // Act
         const result = await sut.readReflog('refs/heads/main' as RefName);
 
-        // Assert
-        expect(result).toEqual([first, second]);
+        // Assert — files-backend reads attach `raw` (the on-disk byte
+        // slices), so the entry is a superset of the appended fixture.
+        expect(result).toEqual([expect.objectContaining(first), expect.objectContaining(second)]);
       });
     });
   });
@@ -1299,8 +1300,9 @@ describe('ref-store', () => {
         // Act
         const result = await sut.readReflogLenient('refs/heads/main' as RefName);
 
-        // Assert
-        expect(result).toEqual([first, second]);
+        // Assert — files-backend reads attach `raw` (the on-disk byte
+        // slices), so each entry is a superset of the appended fixture.
+        expect(result).toEqual([expect.objectContaining(first), expect.objectContaining(second)]);
       });
     });
   });
@@ -1411,8 +1413,11 @@ describe('ref-store', () => {
           { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: [kept] },
         ]);
 
-        // Assert
-        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([kept]);
+        // Assert — reading back parses from disk, so the entry carries `raw`
+        // (the on-disk byte slices) on top of the written fields.
+        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([
+          expect.objectContaining(kept),
+        ]);
       });
     });
   });
@@ -1468,6 +1473,38 @@ describe('ref-store', () => {
         // Assert
         const raw = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
         expect(raw.endsWith('\t\n')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a reflogReplace update whose only survivor carries a non-UTF-8 byte', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then the reflog is rewritten byte-identical to the original on-disk bytes', async () => {
+        // Arrange — a latin1 0xE9 in the message; the files backend must
+        // carry it through the read-then-rewrite round trip untouched
+        // rather than mangling it through a decode/re-encode.
+        const ctx = await buildSeededContext();
+        const path = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+        const idA = 'a'.repeat(40) as ObjectId;
+        const idB = 'b'.repeat(40) as ObjectId;
+        const original = new Uint8Array([
+          ...new TextEncoder().encode(
+            `${idA} ${idB} Ada <ada@example.com> 1716240000 +0000\tmessage caf`,
+          ),
+          0xe9,
+          ...new TextEncoder().encode('\n'),
+        ]);
+        await ctx.fs.write(path, original);
+        const sut = createRefStore(ctx);
+        const survivors = await sut.readReflog('refs/heads/main' as RefName);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: survivors },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.read(path)).toEqual(original);
       });
     });
   });

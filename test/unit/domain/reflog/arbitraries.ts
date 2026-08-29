@@ -82,3 +82,59 @@ export const arbCandidateLine = (): fc.Arbitrary<string> =>
     ),
     arbGarbageLine(),
   );
+
+const BYTES_ENCODER = new TextEncoder();
+
+const concatByteArrays = (parts: ReadonlyArray<Uint8Array>): Uint8Array => {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};
+
+// A byte an identity name/email may carry: the full latin1-inclusive range
+// (printable ASCII through 0xFF), minus the bracket delimiters that would
+// shift where the byte-tier parser locates the identity boundaries.
+const arbIdentityByte = (): fc.Arbitrary<number> =>
+  fc.integer({ min: 0x20, max: 0xff }).filter((b) => b !== 0x3c && b !== 0x3e);
+
+// A byte a message may carry: the full latin1-inclusive range, which
+// excludes TAB/CR/LF/NUL by starting at 0x20 — none of those bytes has a
+// structural role inside a message once the line's own TAB has been found.
+const arbMessageByte = (): fc.Arbitrary<number> => fc.integer({ min: 0x20, max: 0xff });
+
+/**
+ * One well-formed reflog line, built directly in BYTES rather than through a
+ * UTF-8 string encode: the identity/message payloads are arbitrary bytes
+ * across the full latin1-inclusive range, including values (0x80–0xFF) that
+ * are not valid UTF-8 on their own. This is what a UTF-8 `serializeReflogLine`
+ * round trip cannot exercise — encoding a JS string codepoint 0x80–0xFF
+ * always produces a valid 2-byte UTF-8 sequence, never the lone invalid byte
+ * a corrupted or legacy-encoded reflog file actually carries.
+ */
+export const arbReflogLineBytes = (): fc.Arbitrary<Uint8Array> =>
+  fc
+    .record({
+      oldId: arbObjectId(40),
+      newId: arbObjectId(40),
+      nameBytes: fc.array(arbIdentityByte(), { minLength: 1, maxLength: 12 }),
+      emailBytes: fc.array(arbIdentityByte(), { minLength: 1, maxLength: 12 }),
+      timestamp: arbNonZeroTimestamp(),
+      timezoneOffset: fc.constantFrom(...TZ_OFFSETS),
+      messageBytes: fc.array(arbMessageByte(), { minLength: 0, maxLength: 16 }),
+    })
+    .map(({ oldId, newId, nameBytes, emailBytes, timestamp, timezoneOffset, messageBytes }) =>
+      concatByteArrays([
+        BYTES_ENCODER.encode(`${oldId} ${newId} `),
+        Uint8Array.from(nameBytes),
+        BYTES_ENCODER.encode(' <'),
+        Uint8Array.from(emailBytes),
+        BYTES_ENCODER.encode(`> ${timestamp} ${timezoneOffset}\t`),
+        Uint8Array.from(messageBytes),
+        BYTES_ENCODER.encode('\n'),
+      ]),
+    );
