@@ -5,6 +5,8 @@ import type { CommandRequest, CommandResult, CommandRunner } from '../../ports/c
 const SPAWN_ERROR_EXIT = 127;
 /** Exit code reported for a command killed by a signal (e.g. an abort). */
 const SIGNAL_KILLED_EXIT = 128;
+/** `errno` code raised when writing to a pipe whose reader has already gone. */
+const BROKEN_PIPE = 'EPIPE';
 
 /** Minimal child-process surface `NodeCommandRunner` consumes. */
 interface CommandChild {
@@ -12,6 +14,7 @@ interface CommandChild {
   on(event: 'close', listener: (code: number | null) => void): void;
   kill(): void;
   readonly stdin: {
+    on(event: 'error', listener: (err: NodeJS.ErrnoException) => void): void;
     write(chunk: Uint8Array): void;
     end(): void;
   };
@@ -68,10 +71,6 @@ const spawnCommand = (
     };
     signal?.addEventListener('abort', onAbort);
     if (signal?.aborted === true) child.kill();
-    if (request.stdin !== undefined) {
-      child.stdin.write(request.stdin);
-      child.stdin.end();
-    }
     const stdoutChunks: Uint8Array[] = [];
     child.stdout.on('data', (chunk: Uint8Array) => {
       stdoutChunks.push(chunk);
@@ -92,6 +91,18 @@ const spawnCommand = (
     child.on('close', (code) => {
       finish(code ?? SIGNAL_KILLED_EXIT);
     });
+    if (request.stdin !== undefined) {
+      // A command that exits before draining stdin leaves the pipe broken.
+      // Refusing without reading input is the command's prerogative — git does
+      // the same and reads the exit status — so a broken pipe is not a failure
+      // here; `close` still delivers the real exit code. Any other write error
+      // is genuine and surfaces the same way a failed spawn does.
+      child.stdin.on('error', (error) => {
+        if (error.code !== BROKEN_PIPE) finish(SPAWN_ERROR_EXIT);
+      });
+      child.stdin.write(request.stdin);
+      child.stdin.end();
+    }
   });
 
 /**

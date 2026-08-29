@@ -7,8 +7,13 @@ import {
 } from '../../../../src/adapters/node/node-command-runner.js';
 import type { CommandRequest } from '../../../../src/ports/command-runner.js';
 
-/** Writable side of the fake child stdin — records written bytes and end() calls. */
-class FakeStdin {
+/**
+ * Writable side of the fake child stdin — records written bytes and end() calls.
+ * Extends `EventEmitter` so the test can drive an `error` event exactly as Node
+ * does: emitting `error` with no listener attached throws, which is precisely
+ * how a broken pipe escalates to an unhandled exception in production.
+ */
+class FakeStdin extends EventEmitter {
   readonly chunks: Uint8Array[] = [];
   ended = false;
   write(chunk: Uint8Array): void {
@@ -18,6 +23,10 @@ class FakeStdin {
     this.ended = true;
   }
 }
+
+/** Build a stream error carrying `code`, mirroring Node's `ErrnoException`. */
+const streamError = (code: string): NodeJS.ErrnoException =>
+  Object.assign(new Error(`write ${code}`), { code });
 
 /** Readable side of the fake child stdout — an EventEmitter emitting `data` events. */
 class FakeStdout extends EventEmitter {}
@@ -224,6 +233,39 @@ describe('NodeCommandRunner', () => {
         expect(child.stdin.chunks).toEqual([inputBytes]);
         expect(child.stdin.ended).toBe(true);
         expect(result.stdout).toEqual(outputBytes);
+      });
+    });
+  });
+
+  describe('Given a command that exits without draining stdin', () => {
+    describe('When the stdin write fails with a broken pipe', () => {
+      it('Then ignores it and resolves with the exit code the command reported', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+
+        // Act
+        const promise = runner.run(baseRequest({ stdin: new Uint8Array([104, 105]) }));
+        child.stdin.emit('error', streamError('EPIPE'));
+        child.emit('close', 1);
+        const result = await promise;
+
+        // Assert
+        expect(result.exitCode).toBe(1);
+      });
+    });
+
+    describe('When the stdin write fails for a reason other than a broken pipe', () => {
+      it('Then resolves with the spawn-error exit code', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+
+        // Act
+        const promise = runner.run(baseRequest({ stdin: new Uint8Array([104, 105]) }));
+        child.stdin.emit('error', streamError('ENOSPC'));
+        const result = await promise;
+
+        // Assert
+        expect(result.exitCode).toBe(127);
       });
     });
   });
