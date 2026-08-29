@@ -2,11 +2,11 @@
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
+import { concatBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import {
-  concatBytes,
   parseReflogBytes,
   parseReflogLenientBytes,
   serializeReflogRewriteLineBytes,

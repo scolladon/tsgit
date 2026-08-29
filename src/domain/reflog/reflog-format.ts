@@ -8,7 +8,7 @@
  *   format:  git-reflog-line
  */
 import { parseIdentity, serializeIdentity } from '../objects/author-identity.js';
-import { decodePreservingBom } from '../objects/encoding.js';
+import { concatBytes, decodePreservingBom } from '../objects/encoding.js';
 import { ObjectId } from '../objects/object-id.js';
 import { invalidReflogEntry } from './error.js';
 import type { ReflogEntry } from './reflog-entry.js';
@@ -75,19 +75,6 @@ export function serializeReflogRewriteLine(entry: ReflogEntry, hexLength: 40 | 6
   }
   const meta = reflogLineMeta(entry, hexLength);
   return `${meta}\t${entry.message}\n`;
-}
-
-/** Concatenates byte parts into one buffer — shared by the reflog byte writers. */
-export function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
-  let total = 0;
-  for (const part of parts) total += part.length;
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
 }
 
 const LINE_FEED_BYTE = new Uint8Array([0x0a]);

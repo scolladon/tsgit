@@ -1,5 +1,5 @@
 import { diffLines, isBinary } from '../diff/line-diff.js';
-import { bytesEqual } from '../objects/encoding.js';
+import { bytesEqual, concatBytes } from '../objects/encoding.js';
 import { writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
 import { buildMergeSegments, changesFromHunks, type MergeSegment } from './region-merge.js';
@@ -7,18 +7,6 @@ import { buildMergeSegments, changesFromHunks, type MergeSegment } from './regio
 const LF = 0x0a;
 
 export type MergeContentOptions = ConflictMarkerOptions & { readonly favor?: MergeFavor };
-
-function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
-  let total = 0;
-  for (const p of parts) total += p.length;
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
-}
 
 function endsWithLf(line: Uint8Array): boolean {
   // Stryker disable next-line EqualityOperator: equivalent — length >= 0 always holds; at length 0 line[-1] is undefined !== LF, so both forms short-circuit to false

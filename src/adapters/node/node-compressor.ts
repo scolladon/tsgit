@@ -8,6 +8,7 @@ import {
   inflateSync,
 } from 'node:zlib';
 import { compressFailed, decompressFailed } from '../../domain/index.js';
+import { concatBytes } from '../../domain/objects/encoding.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
 
 const deflateAsync = promisify(deflateCallback);
@@ -198,7 +199,7 @@ export class NodeCompressor implements Compressor {
         // `bytesWritten` is the number of compressed bytes the decoder fully
         // accepted as part of the zlib stream.
         const consumed = (inflate as unknown as { bytesWritten: number }).bytesWritten;
-        const output = concatUint8(chunks);
+        const output = concatBytes(chunks);
         resolve({ output, bytesConsumed: consumed });
       });
       inflate.on('error', (err: NodeJS.ErrnoException) => {
@@ -321,15 +322,4 @@ export class NodeCompressor implements Compressor {
 
     return new TransformStream<Uint8Array, Uint8Array>(transformer);
   };
-}
-
-function concatUint8(chunks: ReadonlyArray<Uint8Array>): Uint8Array {
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    out.set(c, offset);
-    offset += c.length;
-  }
-  return out;
 }
