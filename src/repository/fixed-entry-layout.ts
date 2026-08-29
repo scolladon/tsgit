@@ -1,9 +1,9 @@
 import type { FileSystem } from '../ports/file-system.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
-import type { RepositoryLayoutInput } from '../repository.js';
 import { fileSystemLayoutProbe } from './file-system-layout-probe.js';
 import type { WalkOutcome } from './find-layout.js';
 import { layoutFromGitfile } from './find-layout.js';
+import type { RepositoryLayoutInput } from './layout-input.js';
 import { portablePosixPolicy } from './portable-posix-policy.js';
 import { finishLayout, resolveAgainst } from './resolve-layout.js';
 

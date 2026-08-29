@@ -314,3 +314,32 @@ inverting the back-edge. Five sites, behaviour-preserving, type-check is the gat
 
 **Do not trust the raw `cycle_count`** — 2 of 7 were noise, and the tool cannot distinguish a
 type-only edge from a value edge. Verify every cycle before acting.
+
+### Outcome (resolved)
+
+Five of the seven were broken by relocating the borrowed type: 1, 2, 5, 6, 7 above, plus the
+`config-key ⇄ commands/error` leg that listing 1 had collapsed into a 3-node path. The shared
+option type now lives in the module that parses it (`internal/*-options.ts`), in the module that
+orders the entries (`pack-order.ts`), or in a new leaf (`domain/commands/config-scope.ts`,
+`repository/layout-input.ts`); the original module re-exports it, so the exported surface is
+byte-identical — 5,071 `symbolIdMap` entries before and after, every diff line a paired path move
+of the same `qualifiedName`. `cycle_count` is now **3**: listings 3 and 4 (the bogus SCC and the
+false positive) plus the one deliberately left, below.
+
+**Left in place — `domain/commands/error.ts ⇄ domain/error.ts`.** Not one cycle but **thirteen**:
+every `domain/*/error.ts` imports the `TsgitError` value from `domain/error.ts`, which imports
+each module's error union back as a type. tokensave reported one of the thirteen, so its list is
+incomplete as well as noisy. Breaking it means severing `TsgitError` from `TsgitErrorData`, the
+discriminated union of all fourteen sub-unions that makes `new TsgitError({ code: … })` checkable
+at roughly 500 call sites. A base class over `{ readonly code: string }` would compile every typo.
+Trading a build-erased type edge for that is a bad deal — the cycle stays.
+
+**Two traps this uncovered.**
+
+- `stripInternal: true` (`tsconfig.build.json`) erases an `@internal` declaration from the emitted
+  `.d.ts`, but leaves a `export type { X } from './y.js'` re-export of it dangling —
+  `rollup-plugin-dts` then fails with `"X" is not exported by "y.ts"`. An `@internal` type cannot
+  be re-exported through a facade; its consumers must import it from its own module. Hit on
+  `RepositoryLayoutInput`; the four public types re-export fine.
+- The `.d.ts` bundle is built by the same wireit script as the JS bundles, so a dts-only failure is
+  still reported as `[build:js]`. Read the rollup target header (`→ dist/types`), not the label.

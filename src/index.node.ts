@@ -23,6 +23,7 @@ import { configFor } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
 import { canonicalizeTrustedDirectories } from './repository/canonicalize-trusted-directories.js';
+import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import {
   type ExplicitLayoutOptions,
@@ -34,7 +35,6 @@ import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
   type Repository,
-  type RepositoryLayoutInput,
 } from './repository.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;

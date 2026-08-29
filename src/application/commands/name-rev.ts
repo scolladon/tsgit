@@ -25,20 +25,11 @@ import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { parseNameRevOptions } from './internal/name-rev-options.js';
+import { type NameRevOptions, parseNameRevOptions } from './internal/name-rev-options.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 
-export type { NameRevStep };
-
-export interface NameRevOptions {
-  /** Restrict the naming sources to tags (`refs/tags/*`). */
-  readonly tags?: boolean;
-  /** Full-refname globs a ref must match to be a naming source (`*`/`?` cross `/`). */
-  readonly refs?: string | ReadonlyArray<string>;
-  /** Full-refname globs that drop a ref from the naming sources. */
-  readonly exclude?: string | ReadonlyArray<string>;
-}
+export type { NameRevOptions, NameRevStep };
 
 export interface NameRevResult {
   /** Full 40-hex oid of the named commit. */

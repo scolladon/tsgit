@@ -1,8 +1,8 @@
 import type { PathPolicy } from '../adapters/node/path-policy.js';
 import { workTreeUnresolvable } from '../domain/repository/error.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
-import type { RepositoryLayoutInput } from '../repository.js';
 import { findLayout, resolveCommonDir, resolvePointer, type WalkOutcome } from './find-layout.js';
+import type { RepositoryLayoutInput } from './layout-input.js';
 import { type RepositoryFormat, readRepositoryFormat } from './read-repository-format.js';
 import {
   evaluateTrust,

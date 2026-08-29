@@ -1,4 +1,4 @@
-import type { RepositoryLayoutInput } from '../repository.js';
+import type { RepositoryLayoutInput } from './layout-input.js';
 import { isContainedIn } from './wrap-fs-validator.js';
 
 /**
