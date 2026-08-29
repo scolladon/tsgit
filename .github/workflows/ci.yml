@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled` is not a default activity type, so without it the opt-in jobs
+    # gated on `mutation` / `bench` never see a label added after the PR was
+    # opened: no run is triggered, and the run already in flight evaluates its
+    # condition against a payload that predates the label.
+    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
   group: ci-${{ github.ref }}
