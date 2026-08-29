@@ -12,7 +12,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
-import { parseApproxidate } from '../../../../src/domain/reflog/index.js';
+import { parseApproxidate, serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -138,6 +138,39 @@ describe('reflog command', () => {
           // Assert
           expect(result.kind === 'show' && result.ref).toBe(BRANCH);
           expect(result.kind === 'show' && result.entries[0]?.selector).toBe('refs/heads/main@{0}');
+        });
+      });
+    });
+
+    describe('Given a reflog with a malformed line mid-file', () => {
+      describe('When reflog show', () => {
+        it('Then the malformed line is skipped and survivors are numbered contiguously', async () => {
+          // Arrange — a raw file: valid, garbage, valid, valid — the strict
+          // reader would throw on the whole file; the lenient one drops only
+          // the garbage line and keeps counting the rest.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          const first = entry({ message: 'commit (initial): first' });
+          const second = entry({ oldId: OID_X, newId: OID_Y, message: 'commit: second' });
+          const third = entry({ oldId: OID_Y, newId: OID_Z, message: 'commit: third' });
+          const raw =
+            serializeReflogLine(first, 40) +
+            'this is not a reflog line at all\n' +
+            serializeReflogLine(second, 40) +
+            serializeReflogLine(third, 40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
+
+          // Act
+          const result = await reflog(ctx, { action: 'show' });
+
+          // Assert — newest-first survivors: third(@0), second(@1), first(@2).
+          expect(result.kind).toBe('show');
+          if (result.kind !== 'show') throw new Error('unreachable');
+          expect(result.entries).toEqual([
+            { index: 0, selector: 'HEAD@{0}', entry: third },
+            { index: 1, selector: 'HEAD@{1}', entry: second },
+            { index: 2, selector: 'HEAD@{2}', entry: first },
+          ]);
         });
       });
     });

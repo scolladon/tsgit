@@ -14,7 +14,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { listReflogs, readReflog } from '../primitives/reflog-store.js';
+import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -75,7 +75,7 @@ export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<Ref
 
 const runShow = async (ctx: Context, refName: string): Promise<ReflogResult> => {
   const ref = resolveUserRef(refName);
-  const stored = await readReflog(ctx, ref);
+  const stored = await readReflogLenient(ctx, ref);
   const lastIndex = stored.length - 1;
   // Build newest-first directly: output position `index` (0 = newest) reads the
   // entry at file position `lastIndex - index` — no array mutation.
@@ -107,7 +107,7 @@ const runDelete = async (
 ): Promise<ReflogResult> => {
   const ref = resolveUserRef(opts.ref);
   if (!(await hasReflog(ctx, ref))) throw reflogNotFound(ref);
-  const stored = await readReflog(ctx, ref);
+  const stored = await readReflogLenient(ctx, ref);
   // A non-integer or negative index would bypass the range guard below
   // (`stored[NaN]` is `undefined`, silently returned as an entry).
   if (!Number.isInteger(opts.index) || opts.index < 0) {
@@ -160,7 +160,7 @@ const runExpire = async (
   let removed = 0;
   let kept = 0;
   for (const ref of targets) {
-    const stored = await readReflog(ctx, ref);
+    const stored = await readReflogLenient(ctx, ref);
     const survivors = stored.filter((entry) =>
       keepEntry(entry, reachable, expireCut, unreachableCut),
     );

@@ -19,7 +19,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { listReflogs, readReflog } from '../primitives/reflog-store.js';
+import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -83,7 +83,7 @@ const resolveReflogBase = async (
   raw: string,
 ): Promise<ObjectId> => {
   const ref = base === '' ? await currentBranchRef(ctx) : await canonicalizeRef(ctx, base);
-  const entries = await readReflog(ctx, ref);
+  const entries = await readReflogLenient(ctx, ref);
   if (entries.length === 0) throw revparseUnresolved(raw);
   if (selector.kind === 'index') return pickByIndex(entries, selector.n, ref);
   return pickByDate(entries, selector.raw, now, raw);

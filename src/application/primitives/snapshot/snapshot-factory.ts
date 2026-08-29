@@ -14,7 +14,7 @@ import type {
   WorkdirEnumerator,
 } from '../../../ports/snapshot-resolvers.js';
 import { readObject } from '../read-object.js';
-import { readReflog } from '../reflog-store.js';
+import { readReflogLenient } from '../reflog-store.js';
 import { resolveRef } from '../resolve-ref.js';
 import { createIndexSnapshot } from './index-snapshot.js';
 import type { IndexSnapshot, SnapshotOptions, TreeSnapshot, WorkdirSnapshot } from './snapshot.js';
@@ -166,7 +166,7 @@ const stashEntry = async (
   deps: SnapshotFactoryDeps,
   stashIndex: number,
 ): Promise<StashSnapshot | null> => {
-  const stored = await readReflog(deps.ctx, STASH_REF);
+  const stored = await readReflogLenient(deps.ctx, STASH_REF);
   const reflog = stored[stored.length - 1 - stashIndex];
   if (reflog === undefined) return null;
   const wObj = await readObject(deps.ctx, reflog.newId);
