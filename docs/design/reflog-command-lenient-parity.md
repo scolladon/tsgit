@@ -177,7 +177,7 @@ least one row under SHA-256 so that stays a measurement rather than an inference
 | 19 | NUL inside the message | `…+0200\tA\0B…` (NUL mid-message) | **keep**; the C-string message truncates at the NUL to `A`, and `%gs` renders EMPTY (git strips one trailing byte unconditionally) | keep; message keeps the NUL and everything after it | ❌ message bytes |
 | 20 | no opening `<` | `Probe probe@example.com> 1764… +0200` | **keep** | **reject** | ❌ |
 | 21 | `>` inside the name | `x>y <probe@example.com> 1764… +0200` | **skip** | **keep** (name `x>y`) | ❌ |
-| 22 | no space after `>` | `<probe@example.com>1764… +0200` | **skip** | **keep** | ❌ |
+| 22 | separator spacing around the timestamp | `<probe@example.com>1764… +0200` (no space), and `…> 1764…  +0200` (two spaces before the zone) | **skip** | **keep** — and the rewrite re-emits canonical single-space separators around the verbatim identity/message payload | ❌ |
 | 23 | timestamp `0` | `> 0 +0200` | **skip** | **keep** (timestamp 0) | ❌ |
 | 24 | negative timestamp | `> -5 +0200` | **keep**, value `18446744073709551611` | keep, value `-5` | ❌ value |
 | 25 | unterminated final line | last line has no `\n` | **skip** — the newest entry is lost | **keep** | ❌ |

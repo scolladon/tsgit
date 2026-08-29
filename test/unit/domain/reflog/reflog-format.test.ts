@@ -6,7 +6,6 @@ import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js'
 import {
   parseReflog,
   parseReflogBytes,
-  parseReflogLenient,
   parseReflogLenientBytes,
   parseReflogLine,
   sanitizeReflogMessage,
@@ -534,8 +533,9 @@ describe('parseReflog', () => {
   describe('Given a reflog file with a trailing blank line', () => {
     describe('When parsing', () => {
       it('Then the blank line is tolerated', () => {
-        // Arrange
-        const content = `${serializeReflogLine(ENTRY, 40)}`;
+        // Arrange — the file ends `\n\n`, so the split yields an empty final
+        // element the filter must drop (parseReflogLine('') throws).
+        const content = `${serializeReflogLine(ENTRY, 40)}\n`;
 
         // Act
         const entries = parseReflog(content, 40);
@@ -611,127 +611,6 @@ describe('parseReflog', () => {
   });
 });
 
-describe('parseReflogLenient', () => {
-  describe('Given a reflog file with a garbage line between two valid entries', () => {
-    describe('When parsing', () => {
-      it('Then the garbage line is skipped and both valid entries are returned', () => {
-        // Arrange — pinned against git 2.55.0: `git gc --prune=now` keeps an
-        // object reachable only through a valid entry that shares a reflog
-        // file with a garbage line (`for_each_reflog_ent` skips the bad
-        // line rather than discarding the whole file).
-        const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
-        const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
-        const content = `${serializeReflogLine(first, 40)}garbage line\n${serializeReflogLine(second, 40)}`;
-
-        // Act
-        const entries = parseReflogLenient(content, 40);
-
-        // Assert
-        expect(entries).toEqual([first, second]);
-      });
-    });
-  });
-
-  describe('Given a well-formed multi-line reflog file', () => {
-    describe('When parsing', () => {
-      it('Then returns every entry oldest-first, same as parseReflog', () => {
-        // Arrange
-        const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
-        const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
-        const content = `${serializeReflogLine(first, 40)}${serializeReflogLine(second, 40)}`;
-
-        // Act
-        const entries = parseReflogLenient(content, 40);
-
-        // Assert
-        expect(entries).toEqual([first, second]);
-      });
-    });
-  });
-
-  describe('Given a reflog file with a trailing blank line', () => {
-    describe('When parsing', () => {
-      it('Then the blank line is tolerated', () => {
-        // Arrange
-        const content = `${serializeReflogLine(ENTRY, 40)}`;
-
-        // Act
-        const entries = parseReflogLenient(content, 40);
-
-        // Assert
-        expect(entries).toEqual([ENTRY]);
-      });
-    });
-  });
-
-  describe('Given an empty string', () => {
-    describe('When parsing', () => {
-      it('Then returns an empty array', () => {
-        // Arrange
-        const content = '';
-
-        // Act
-        const entries = parseReflogLenient(content, 40);
-
-        // Assert
-        expect(entries).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a reflog file with ONLY a garbage line', () => {
-    describe('When parsing', () => {
-      it('Then returns an empty array rather than throwing', () => {
-        // Arrange
-        const content = 'garbage line\n';
-
-        // Act
-        const entries = parseReflogLenient(content, 40);
-
-        // Assert
-        expect(entries).toEqual([]);
-      });
-    });
-  });
-
-  describe('Given a reflog file whose final line has no terminating LF', () => {
-    describe('When parseReflogLenient parses it', () => {
-      it('Then the unterminated entry is absent and the terminated ones survive', () => {
-        // Arrange
-        const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
-        const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
-        const third: ReflogEntry = { ...ENTRY, message: 'commit: c' };
-        const content =
-          `${serializeReflogLine(first, 40)}${serializeReflogLine(second, 40)}` +
-          serializeReflogLine(third, 40).replace(/\n$/, '');
-
-        // Act
-        const entries = parseReflogLenient(content, 40);
-
-        // Assert
-        expect(entries).toEqual([first, second]);
-      });
-    });
-  });
-
-  describe('Given a reflog file that is a single VALID unterminated line', () => {
-    describe('When parsing', () => {
-      it('Then returns an empty array — the LF rule alone drops it', () => {
-        // Arrange — a line the per-line predicate would ACCEPT, so only the
-        // file-level must-end-with-LF rule can be responsible for the drop
-        // (a garbage line here would pass with or without that rule).
-        const content = serializeReflogLine(ENTRY, 40).slice(0, -1);
-
-        // Act
-        const entries = parseReflogLenient(content, 40);
-
-        // Assert
-        expect(entries).toEqual([]);
-      });
-    });
-  });
-});
-
 describe('parseReflogBytes', () => {
   describe('Given a line whose identity name and message each carry a non-UTF-8 byte', () => {
     describe('When parsing', () => {
@@ -799,7 +678,10 @@ describe('parseReflogBytes', () => {
     describe('When parsing', () => {
       it('Then the blank line is tolerated', () => {
         // Arrange
-        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        // A REAL trailing blank line: the file ends `\n\n`, so the split
+        // yields an empty final element the strict filter must drop —
+        // parseReflogLine('') throws, so this filter is load-bearing.
+        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n\n`);
 
         // Act
         const entries = parseReflogBytes(line, 40);
@@ -918,7 +800,9 @@ describe('parseReflogLenientBytes', () => {
     describe('When parsing', () => {
       it('Then the blank line is tolerated', () => {
         // Arrange
-        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        // A REAL trailing blank line (file ends `\n\n`): the empty final
+        // element fails the separator pre-check and is skipped.
+        const line = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n\n`);
 
         // Act
         const entries = parseReflogLenientBytes(line, 40);
@@ -961,6 +845,109 @@ describe('parseReflogLenientBytes', () => {
         // Assert
         expect(entries[0]?.identity.name).toBe('x>y');
         expect(entries[0]?.identity.email).toBe('probe@example.com');
+      });
+    });
+  });
+
+  describe('Given an empty byte array', () => {
+    describe('When parsing', () => {
+      it('Then returns an empty array', () => {
+        // Arrange
+        const content = new Uint8Array(0);
+
+        // Act
+        const entries = parseReflogLenientBytes(content, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a file holding ONLY garbage lines', () => {
+    describe('When parsing', () => {
+      it('Then returns an empty array', () => {
+        // Arrange
+        const content = bytesFrom('garbage one\ngarbage two\n');
+
+        // Act
+        const entries = parseReflogLenientBytes(content, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a file that is a single VALID unterminated line', () => {
+    describe('When parsing', () => {
+      it('Then returns an empty array — the LF rule alone drops it', () => {
+        // Arrange — a line the per-line predicate would ACCEPT, so only the
+        // file-level must-end-with-LF rule can be responsible for the drop.
+        const content = bytesFrom(serializeReflogLine(ENTRY, 40).slice(0, -1));
+
+        // Act
+        const entries = parseReflogLenientBytes(content, 40);
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a well-formed multi-line file', () => {
+    describe('When parsing', () => {
+      it('Then every entry survives in file order with its own raw slices', () => {
+        // Arrange
+        const second: ReflogEntry = { ...ENTRY, oldId: ENTRY.newId, newId: ENTRY.oldId };
+        const content = bytesFrom(serializeReflogLine(ENTRY, 40), serializeReflogLine(second, 40));
+
+        // Act
+        const entries = parseReflogLenientBytes(content, 40);
+
+        // Assert
+        expect(entries).toHaveLength(2);
+        expect(entries[0]?.newId).toBe(ENTRY.newId);
+        expect(entries[1]?.newId).toBe(second.newId);
+        expect(entries[1]?.raw?.message).toEqual(bytesFrom(second.message));
+      });
+    });
+  });
+
+  describe('Given a message opening with a UTF-8 byte-order mark', () => {
+    describe('When parsing', () => {
+      it('Then the display string keeps the BOM — it is file content, not decoder bookkeeping', () => {
+        // Arrange
+        const content = bytesFrom(
+          `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\t`,
+          0xef,
+          0xbb,
+          0xbf,
+          'wip\n',
+        );
+
+        // Act
+        const entries = parseReflogLenientBytes(content, 40);
+
+        // Assert
+        expect(entries[0]?.message).toBe('﻿wip');
+      });
+    });
+  });
+
+  describe('Given a parsed entry and the source buffer', () => {
+    describe('When the raw slices are inspected', () => {
+      it('Then they are copies that share no buffer with the file bytes', () => {
+        // Arrange — a view would pin the whole file alive through one
+        // retained entry and let a caller mutate a sibling's bytes.
+        const content = bytesFrom(serializeReflogLine(ENTRY, 40));
+
+        // Act
+        const entries = parseReflogLenientBytes(content, 40);
+
+        // Assert
+        expect(entries[0]?.raw?.message.buffer).not.toBe(content.buffer);
+        expect(entries[0]?.raw?.identity.buffer).not.toBe(content.buffer);
       });
     });
   });
@@ -1019,6 +1006,75 @@ describe('serializeReflogRewriteLineBytes', () => {
         expectInvalidReflogEntry(
           () => serializeReflogRewriteLineBytes(entry, 40),
           'timestamp must be non-zero',
+        );
+      });
+    });
+  });
+
+  describe('Given raw message bytes containing an LF', () => {
+    describe('When serializing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY — a raw LF would forge an extra reflog line', () => {
+        // Arrange
+        const original = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        const [parsed] = parseReflogBytes(original, 40);
+        const entry: ReflogEntry = {
+          ...(parsed as ReflogEntry),
+          raw: {
+            identity: (parsed as ReflogEntry).raw?.identity as Uint8Array,
+            message: bytesFrom('a\nforged'),
+          },
+        };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLineBytes(entry, 40),
+          'message contains a line break',
+        );
+      });
+    });
+  });
+
+  describe('Given raw identity bytes containing a TAB', () => {
+    describe('When serializing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY — a raw TAB would open a bogus message field', () => {
+        // Arrange
+        const original = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        const [parsed] = parseReflogBytes(original, 40);
+        const entry: ReflogEntry = {
+          ...(parsed as ReflogEntry),
+          raw: {
+            identity: bytesFrom('Ada\t<ada@example.com>'),
+            message: (parsed as ReflogEntry).raw?.message as Uint8Array,
+          },
+        };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLineBytes(entry, 40),
+          'invalid identity',
+        );
+      });
+    });
+  });
+
+  describe('Given an accepted line whose identity spacing is non-canonical', () => {
+    describe('When the rewrite re-serializes it', () => {
+      it('Then the separator spacing collapses to canonical single spaces — only identity and message PAYLOAD bytes are verbatim', () => {
+        // Arrange — two spaces between `>` and the timestamp: tsgit keeps
+        // the line (a recorded divergence: git skips it), and  the rewrite
+        // re-emits recomputed ` <timestamp> <zone>` separators around the
+        // verbatim identity payload.
+        const original = bytesFrom(
+          `${OID_A} ${OID_B} Ada <ada@example.com>  1716240000 +0000\tx\n`,
+        );
+        const [parsed] = parseReflogBytes(original, 40);
+
+        // Act
+        const result = serializeReflogRewriteLineBytes(parsed as ReflogEntry, 40);
+
+        // Assert
+        expect(result).toEqual(
+          bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`),
         );
       });
     });

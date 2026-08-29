@@ -1088,6 +1088,71 @@ describe('reflog command', () => {
         });
       });
 
+      describe('When expire runs with the all grammar on a FUTURE-dated entry', () => {
+        it.each([{ raw: 'all' }, { raw: 'now' }])(
+          'Then even an entry stamped ahead of the clock is pruned by $raw',
+          async ({ raw }) => {
+            // Arrange — git maps all/now to the maximum time, not the current
+            // one: an entry a year in the future is still deleted.
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [
+              entry({ newId: tip, identity: identityAt(now + 365 * DAY), message: 'future' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: raw });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          },
+        );
+      });
+
+      describe('When expire runs with an uppercase keyword', () => {
+        it.each([{ raw: 'ALL' }, { raw: 'FALSE' }])(
+          'Then $raw refuses — false/all are exact-match keywords, as in git',
+          async ({ raw }) => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [
+              entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'recent' }),
+            ]);
+
+            // Act & Assert
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: raw });
+              expect.unreachable('an uppercase keyword must refuse');
+            } catch (err) {
+              expect((err as TsgitError).data).toEqual({
+                code: 'REVPARSE_UNRESOLVED',
+                expression: raw,
+              });
+            }
+          },
+        );
+      });
+
+      describe('When expire runs with --all on a repository with no reflogs at all', () => {
+        it('Then it reports zero removed and kept and creates no files', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', all: true });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
+        });
+      });
+
       describe('When expire runs with the all grammar', () => {
         it('Then every entry is pruned (git synonym for now)', async () => {
           // Arrange

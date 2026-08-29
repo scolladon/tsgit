@@ -1503,8 +1503,13 @@ describe('ref-store', () => {
           { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: survivors },
         ]);
 
-        // Assert
+        // Assert — file bytes identical, and the read attached the verbatim
+        // raw slices the rewrite depends on (the display string carries the
+        // U+FFFD the invalid byte decodes to; raw carries the byte itself).
         expect(await ctx.fs.read(path)).toEqual(original);
+        expect(survivors[0]?.raw?.message).toEqual(
+          Uint8Array.from([...new TextEncoder().encode('message caf'), 0xe9]),
+        );
       });
     });
   });

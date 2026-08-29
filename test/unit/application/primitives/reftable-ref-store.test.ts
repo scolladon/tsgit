@@ -733,6 +733,26 @@ describe('reftable-ref-store', () => {
     });
   });
 
+  describe('Given a log-less source and a destination that has a reflog', () => {
+    describe('When moveReflog moves the source onto the destination', () => {
+      it('Then the destination reflog is kept untouched — the move is pure, as on the files backend', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const kept = reflogEntry({ message: 'kept' });
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: ref('refs/heads/trunk'), entries: [kept] },
+        ]);
+
+        // Act
+        await sut.moveReflog(ref('refs/heads/main'), ref('refs/heads/trunk'));
+
+        // Assert
+        expect(await sut.readReflog(ref('refs/heads/trunk'))).toEqual([kept]);
+      });
+    });
+  });
+
   describe('Given the reftable backend', () => {
     describe('When verifyIntegrity runs', () => {
       it('Then it reports no findings', async () => {

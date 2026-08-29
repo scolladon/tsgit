@@ -116,11 +116,11 @@ const arbMessageByte = (): fc.Arbitrary<number> => fc.integer({ min: 0x20, max: 
  * always produces a valid 2-byte UTF-8 sequence, never the lone invalid byte
  * a corrupted or legacy-encoded reflog file actually carries.
  */
-export const arbReflogLineBytes = (): fc.Arbitrary<Uint8Array> =>
+export const arbReflogLineBytes = (length: 40 | 64 = 40): fc.Arbitrary<Uint8Array> =>
   fc
     .record({
-      oldId: arbObjectId(40),
-      newId: arbObjectId(40),
+      oldId: arbObjectId(length),
+      newId: arbObjectId(length),
       nameBytes: fc.array(arbIdentityByte(), { minLength: 1, maxLength: 12 }),
       emailBytes: fc.array(arbIdentityByte(), { minLength: 1, maxLength: 12 }),
       timestamp: arbNonZeroTimestamp(),

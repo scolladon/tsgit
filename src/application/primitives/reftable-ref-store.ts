@@ -315,9 +315,10 @@ export function createReftableRefStore(ctx: Context): RefStore {
   async function moveReflog(from: RefName, to: RefName): Promise<void> {
     // Pure move, mirroring the files backend: an absent source leaves `to`'s
     // existing log untouched — dropping it on a forced rename is the
-    // caller's decision, not the move's.
+    // caller's decision, not the move's. Same seam verb as the files
+    // backend's guard, so both backends answer "has a reflog" one way.
+    if (!(await hasReflog(from))) return;
     const entries = await readReflog(from);
-    if (entries.length === 0) return;
     await applyReftableUpdates(ctx, [
       { kind: 'reflogReplace', name: to, entries },
       { kind: 'reflogReplace', name: from, entries: [] },

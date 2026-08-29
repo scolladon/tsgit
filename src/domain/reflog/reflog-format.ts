@@ -8,7 +8,7 @@
  *   format:  git-reflog-line
  */
 import { parseIdentity, serializeIdentity } from '../objects/author-identity.js';
-import { decode } from '../objects/encoding.js';
+import { decodePreservingBom } from '../objects/encoding.js';
 import { ObjectId } from '../objects/object-id.js';
 import { invalidReflogEntry } from './error.js';
 import type { ReflogEntry } from './reflog-entry.js';
@@ -76,7 +76,8 @@ export function serializeReflogRewriteLine(entry: ReflogEntry, hexLength: 40 | 6
   return `${meta}\t${entry.message}\n`;
 }
 
-function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
+/** Concatenates byte parts into one buffer — shared by the reflog byte writers. */
+export function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
   let total = 0;
   for (const part of parts) total += part.length;
   const out = new Uint8Array(total);
@@ -101,6 +102,13 @@ const LINE_FEED_BYTE = new Uint8Array([0x0a]);
  * the parsed identity fields (ASCII, decode-invariant either way), matching
  * git's own rewrite recompute. A raw-less entry — built programmatically,
  * never read from disk — falls back to the string serializer, UTF-8 encoded.
+ *
+ * When `raw` is present it WINS over the decoded `message`/`identity`
+ * display fields — editing those fields without dropping `raw` changes
+ * nothing on disk. The raw slices still carry the one-line invariant: an
+ * LF in either slice, or a TAB in the identity, would re-parse as extra
+ * fields or extra lines, so both are refused exactly as the string
+ * serializers refuse their decoded equivalents.
  */
 export function serializeReflogRewriteLineBytes(
   entry: ReflogEntry,
@@ -110,6 +118,12 @@ export function serializeReflogRewriteLineBytes(
     return TEXT_ENCODER.encode(serializeReflogRewriteLine(entry, hexLength));
   }
   assertReflogLineFields(entry, hexLength);
+  if (entry.raw.message.includes(0x0a)) {
+    throw invalidReflogEntry('message contains a line break');
+  }
+  if (entry.raw.identity.includes(0x0a) || entry.raw.identity.includes(0x09)) {
+    throw invalidReflogEntry('invalid identity');
+  }
   const prefix = TEXT_ENCODER.encode(`${entry.oldId} ${entry.newId} `);
   const suffix = TEXT_ENCODER.encode(
     ` ${entry.identity.timestamp} ${entry.identity.timezoneOffset}\t`,
@@ -160,41 +174,6 @@ export function parseReflog(text: string, hexLength: 40 | 64): ReadonlyArray<Ref
 }
 
 /**
- * Parse a whole reflog file LINE-GRAINED: a line that does not parse is
- * skipped, never discarding the file's OTHER valid entries the way
- * `parseReflog`'s all-or-nothing `.map` does. Mirrors git's per-line reflog
- * machinery (`for_each_reflog_ent`), which skips a bad line and keeps
- * going — pinned against git 2.55.0. This is the reader for every surface
- * git reads leniently: the `reflog` command, `rev-parse @{n}`/`@{date}`,
- * the stash stack, stash snapshots, and gc's retention scan. `parseReflog`
- * stays strict for callers whose contract is strictness. Oldest-first,
- * same as `parseReflog`.
- */
-export function parseReflogLenient(text: string, hexLength: 40 | 64): ReadonlyArray<ReflogEntry> {
-  const entries: ReflogEntry[] = [];
-  for (const line of splitReflogLines(text)) {
-    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — splitReflogLines can still yield an empty `line` (e.g. a blank line between two LFs); it always fails the separator pre-check below (undefined !== ' ') exactly like any other malformed line, so skipping this guard changes nothing observable.
-    if (line === '') continue;
-    // Cheap shape pre-check so a garbage line skips WITHOUT constructing a
-    // TsgitError: error allocation dominates on corrupt files (measured
-    // 67x — 18s vs 269ms on 16 MiB of garbage) now that user-facing
-    // commands read through this path. Same predicate parseReflogLine
-    // applies first; a line passing it but failing deeper (bad hex, bad
-    // identity) still takes the throwing path, which is the rare shape.
-    // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — any mutant that makes this pre-check skip FEWER lines (false; || to &&) only reroutes the same malformed line into parseReflogLine's identical separator throw caught below; every skip-MORE mutant is killed by the surviving-entry tests.
-    if (line[hexLength] !== FIELD_SEPARATOR || line[2 * hexLength + 1] !== FIELD_SEPARATOR) {
-      continue;
-    }
-    try {
-      entries.push(parseReflogLine(line, hexLength));
-    } catch {
-      // Malformed line — skipped, not fatal to the rest of the file.
-    }
-  }
-  return entries;
-}
-
-/**
  * Code units built per `String.fromCharCode` call — comfortably under every
  * engine's argument-count ceiling, so no file length can overflow the call.
  */
@@ -216,7 +195,13 @@ const LATIN1_DECODE_CHUNK = 8_192;
 function latin1Decode(bytes: Uint8Array): string {
   const parts: string[] = [];
   for (let i = 0; i < bytes.length; i += LATIN1_DECODE_CHUNK) {
-    parts.push(String.fromCharCode(...bytes.subarray(i, i + LATIN1_DECODE_CHUNK)));
+    // Reflect.apply instead of a spread: the typed-array spread walks the
+    // iterator protocol per element and dominates whole-file reads
+    // (measured 3-7x slower on multi-MB inputs); apply passes the chunk as
+    // arguments directly. Output is identical for every byte value.
+    parts.push(
+      Reflect.apply(String.fromCharCode, null, bytes.subarray(i, i + LATIN1_DECODE_CHUNK)),
+    );
   }
   return parts.join('');
 }
@@ -269,27 +254,49 @@ function parseReflogEntryFromBytes(
   const lastClose = identityRegion.lastIndexOf('>');
   const lastOpen = identityRegion.lastIndexOf('<', lastClose);
 
-  const nameStart = lineStart + identityStart;
+  // Display decode for one field, in LINE-relative coordinates. All-ASCII
+  // fields (the overwhelmingly common shape) slice the latin1 projection
+  // already in hand — byte-identical to a UTF-8 decode for bytes < 0x80 and
+  // measurably cheaper per entry. Non-ASCII fields decode from the bytes
+  // with the BOM-preserving decoder: each field is an independent sub-slice,
+  // and a plain decode() would treat its start as a stream start and
+  // silently strip a leading U+FEFF that IS file content.
+  const decodeField = (fieldStart: number, fieldEnd: number): string => {
+    let ascii = true;
+    for (let i = fieldStart; i < fieldEnd; i += 1) {
+      if (projectedLine.charCodeAt(i) > 0x7f) {
+        ascii = false;
+        break;
+      }
+    }
+    if (ascii) return projectedLine.slice(fieldStart, fieldEnd);
+    return decodePreservingBom(bytes.subarray(lineStart + fieldStart, lineStart + fieldEnd));
+  };
+
+  const nameStart = identityStart;
   const nameEnd = nameStart + grammar.identity.name.length;
-  const emailStart = lineStart + identityStart + lastOpen + 1;
-  const emailEnd = lineStart + identityStart + lastClose;
-  const identityBytes = bytes.subarray(
+  const emailStart = identityStart + lastOpen + 1;
+  const emailEnd = identityStart + lastClose;
+  const messageStart = tab === -1 ? projectedLine.length : tab + 1;
+  // `slice`, not `subarray`: raw slices are COPIES so a retained entry owns
+  // only its own bytes (a view would pin the whole file buffer, up to the
+  // read cap) and cannot alias — or mutate — a sibling entry's bytes.
+  const identityBytes = bytes.slice(
     lineStart + identityStart,
     lineStart + identityStart + lastClose + 1,
   );
-  const messageStart = tab === -1 ? projectedLine.length : tab + 1;
-  const messageBytes = bytes.subarray(lineStart + messageStart, lineStart + projectedLine.length);
+  const messageBytes = bytes.slice(lineStart + messageStart, lineStart + projectedLine.length);
 
   return {
     oldId: grammar.oldId,
     newId: grammar.newId,
     identity: {
-      name: decode(bytes.subarray(nameStart, nameEnd)),
-      email: decode(bytes.subarray(emailStart, emailEnd)),
+      name: decodeField(nameStart, nameEnd),
+      email: decodeField(emailStart, emailEnd),
       timestamp: grammar.identity.timestamp,
       timezoneOffset: grammar.identity.timezoneOffset,
     },
-    message: decode(messageBytes),
+    message: decodeField(messageStart, projectedLine.length),
     raw: { identity: identityBytes, message: messageBytes },
   };
 }
@@ -312,13 +319,17 @@ export function parseReflogBytes(
 }
 
 /**
- * `parseReflogLenient`'s byte-faithful counterpart: a line that does not
- * parse is skipped, and every surviving entry carries its `raw` on-disk
- * slices. Mirrors `parseReflogLenient`'s cheap shape pre-check so a corrupt
- * file still skips a garbage line without constructing a `TsgitError` for
- * it — an empty line needs no separate guard here: it fails that same
- * pre-check (`''[hexLength]` is `undefined`, never a space) and is skipped
- * exactly like any other malformed line.
+ * Parse a whole reflog file LINE-GRAINED: a line that does not parse is
+ * skipped, never discarding the file's OTHER valid entries the way
+ * `parseReflogBytes`'s all-or-nothing `.map` does. Mirrors git's per-line
+ * reflog machinery (`for_each_reflog_ent`), which skips a bad line and
+ * keeps going — pinned against git 2.55.0. This is the reader for every
+ * surface git reads leniently: the `reflog` command, `rev-parse
+ * @{n}`/`@{date}`, the stash stack, stash snapshots, and gc's retention
+ * scan. Every surviving entry carries its `raw` on-disk slices. An empty
+ * line needs no separate guard: it fails the separator pre-check
+ * (`''[hexLength]` is `undefined`, never a space) and is skipped exactly
+ * like any other malformed line.
  */
 export function parseReflogLenientBytes(
   bytes: Uint8Array,
@@ -326,6 +337,18 @@ export function parseReflogLenientBytes(
 ): ReadonlyArray<ReflogEntry> {
   const entries: ReflogEntry[] = [];
   for (const { line, start } of reflogLineByteRanges(bytes)) {
+    // Cheap shape pre-check so a garbage line skips WITHOUT constructing a
+    // TsgitError: error allocation dominates on corrupt files (measured on
+    // this byte tier: 3.0x on 16 MiB of garbage; the same pre-check on the
+    // former string tier measured 67x). A line passing it but failing
+    // deeper (bad hex, bad identity) still takes the throwing path, which
+    // is the rare shape. The ConditionalExpression false-variant and the
+    // LogicalOperator || to && mutants here are provably equivalent (they
+    // only reroute the same malformed line into the grammar throw caught
+    // below); only LogicalOperator is suppressed — the ConditionalExpression
+    // directive would also hide the KILLABLE true-variant, so its
+    // false-variant survivor is documented for triage instead.
+    // Stryker disable next-line LogicalOperator: equivalent — `||` to `&&` only makes the pre-check skip FEWER lines; the rerouted line throws inside the grammar parse and is caught below, observably identical.
     if (line[hexLength] !== FIELD_SEPARATOR || line[2 * hexLength + 1] !== FIELD_SEPARATOR) {
       continue;
     }

@@ -707,10 +707,13 @@ describe.skipIf(!GIT_AVAILABLE)(
           await reflog(ctx, { action: 'expire', ref: 'refs/heads/main', expire: 'never' });
 
           // Assert — nothing expires on either side, but the rewrite still
-          // runs unconditionally; the non-UTF-8 bytes must survive it.
+          // runs unconditionally; the non-UTF-8 bytes must survive it. The
+          // 0xE9 presence check keeps the comparison honest: identical files
+          // that both LOST the byte would otherwise still pass.
           const peerBytes = await readFile(mainLogPath(peer));
           const oursBytes = await readFile(mainLogPath(ours));
           expect(oursBytes).toEqual(peerBytes);
+          expect(oursBytes.includes(0xe9)).toBe(true);
         });
       });
 
@@ -732,6 +735,42 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           const peerBytes = await readFile(mainLogPath(peer));
           const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+          expect(oursBytes.includes(0xe9)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a reflog entry stamped a year in the FUTURE', () => {
+      describe('When expire runs with --expire=now on both sides', () => {
+        it('Then both sides delete it — the cutoff is the maximum time, not the clock', async () => {
+          // Arrange — hand-write a future-dated line; git maps now/all to
+          // TIME_MAX, so even a timestamp ahead of the wall clock expires.
+          const peer = await caseDir('future-expire-peer');
+          const ours = await caseDir('future-expire-ours');
+          const future = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
+          const raw = await readFile(mainLogPath(peer), 'utf8');
+          const first = raw.split(/(?<=\n)/)[0] as string;
+          const oldId = first.slice(0, 40);
+          const newId = first.slice(41, 81);
+          const futureLine = `${oldId} ${newId} Probe <probe@example.com> ${future} +0000\tfuture\n`;
+          await writeFile(mainLogPath(peer), futureLine, 'utf8');
+          await writeFile(mainLogPath(ours), futureLine, 'utf8');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=now', 'refs/heads/main');
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'now',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(peerBytes).toHaveLength(0);
           expect(oursBytes).toEqual(peerBytes);
         });
       });

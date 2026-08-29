@@ -6,6 +6,7 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import {
+  concatBytes,
   parseReflogBytes,
   parseReflogLenientBytes,
   serializeReflogRewriteLineBytes,
@@ -367,19 +368,6 @@ const EMPTY_PACKED_REFS: LoadedPackedRefs = {
   byName: () => EMPTY_BY_NAME_INDEX,
 };
 
-/** Concatenates a reflog rewrite's per-entry byte lines into one file buffer. */
-function concatReflogBytes(lines: ReadonlyArray<Uint8Array>): Uint8Array {
-  let total = 0;
-  for (const line of lines) total += line.length;
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const line of lines) {
-    out.set(line, offset);
-    offset += line.length;
-  }
-  return out;
-}
-
 function createFilesRefStore(ctx: Context): RefStore {
   let packedCache: { readonly loaded: LoadedPackedRefs; readonly mtimeKey: string } | undefined;
 
@@ -648,7 +636,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function applyReflogReplace(
     update: Extract<RefUpdate, { kind: 'reflogReplace' }>,
   ): Promise<void> {
-    const content = concatReflogBytes(
+    const content = concatBytes(
       update.entries.map((entry) =>
         serializeReflogRewriteLineBytes(entry, ctx.hashConfig.hexLength),
       ),
@@ -665,9 +653,20 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  wants. */
   async function readReflogBytes(name: RefName): Promise<Uint8Array | undefined> {
     const path = reflogPath(refDir(name), name);
-    if (!(await ctx.fs.exists(path))) return undefined;
-    const stat = await ctx.fs.stat(path);
-    if (stat.size > MAX_REFLOG_BYTES) {
+    // One stat instead of an exists probe (itself a stat) + stat: absent is
+    // the common miss, and a DIRECTORY at the path — the D/F shape a sibling
+    // `<name>/x` log creates — reads as "no reflog", the same answer
+    // `hasReflog` gives, never a raw EISDIR from the read below.
+    let size: number;
+    try {
+      const stat = await ctx.fs.stat(path);
+      if (!stat.isFile) return undefined;
+      size = stat.size;
+    } catch (err) {
+      if (isFileNotFound(err)) return undefined;
+      throw err;
+    }
+    if (size > MAX_REFLOG_BYTES) {
       throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
     }
     return ctx.fs.read(path);

@@ -162,11 +162,6 @@ export const branchRename = async (
   const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);
   const store = getRefStore(ctx);
-  // Probed BEFORE the CAS set below makes `to` exist: git's forced rename
-  // deletes the destination ref first, which drops its log; an orphan log
-  // with no live ref underneath survives and takes the rename entry as an
-  // append (measured, git 2.55.0).
-  const replacesLiveRef = input.force === true && (await refExists(ctx, to));
   if (from === to) {
     // git accepts a self-rename (`branch -m x x` and `-M x x` both exit 0):
     // the ref and its log stay put and only the rename entry is appended.
@@ -181,6 +176,11 @@ export const branchRename = async (
     ]);
     return { from, to };
   }
+  // Probed BEFORE the CAS set below makes `to` exist: git's forced rename
+  // deletes the destination ref first, which drops its log; an orphan log
+  // with no live ref underneath survives and takes the rename entry as an
+  // append (measured, git 2.55.0).
+  const replacesLiveRef = input.force === true && (await refExists(ctx, to));
   // The CAS conflict check runs BEFORE any log move: git checks and refuses
   // before touching anything. The failure window differs from git's: a throw
   // after moveReflog leaves `from` a live branch whose log already moved to

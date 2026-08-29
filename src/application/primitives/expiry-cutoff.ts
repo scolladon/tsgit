@@ -20,18 +20,25 @@ export interface ExpiryCutoffOptions {
 
 /**
  * git's `parse_expiry_date` grammar, shared by `gc.pruneExpire` and
- * `reflog expire`: `never` and `false` mean nothing ever expires, `all`
- * means everything does (measured, git 2.55.0: `--expire=false` keeps every
- * entry, `--expire=all` truncates to zero); everything else goes to
- * `parseApproxidate` (`now` included). Returns `undefined` when the
+ * `reflog expire`, pinned against git 2.55.0:
+ * - exact `false` never expires anything; exact `all`/`now` expire
+ *   EVERYTHING, future-dated entries included (git maps them to the
+ *   maximum time, not the current one — measured: an entry stamped a year
+ *   ahead is deleted by `--expire=all` and `--expire=now`).
+ * - the keyword match is exact: `FALSE`, `ALL`, `  all` are all
+ *   `fatal: invalid timestamp` in git (measured), so they fall through to
+ *   the date parser here and refuse.
+ * - `never` alone is case/whitespace tolerant (git's own date parser
+ *   accepts `NEVER` and ` never`; measured), so it is matched normalized.
+ * Everything else goes to `parseApproxidate`. Returns `undefined` when the
  * expression parses as nothing — each caller owns its own refusal, because
  * an expression this grammar mis-parses silently moves the cutoff, and
  * moving the cutoff destroys data.
  */
 export const resolveExpiryCutoff = (raw: string, nowSeconds: number): number | undefined => {
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === 'never' || normalized === 'false') return Number.NEGATIVE_INFINITY;
-  if (normalized === 'all') return nowSeconds;
+  if (raw === 'false') return Number.NEGATIVE_INFINITY;
+  if (raw === 'all' || raw === 'now') return Number.POSITIVE_INFINITY;
+  if (raw.trim().toLowerCase() === 'never') return Number.NEGATIVE_INFINITY;
   return parseApproxidate(raw, nowSeconds);
 };
 

@@ -2,10 +2,12 @@ import { revparseUnresolved } from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
+  type HashConfig,
   isOid,
   type ObjectId,
   ObjectId as ObjectIdFactory,
   type RefName,
+  zeroOid,
 } from '../../domain/objects/index.js';
 import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
@@ -86,7 +88,7 @@ const resolveReflogBase = async (
   const entries = await readReflogLenient(ctx, ref);
   if (entries.length === 0) throw revparseUnresolved(raw);
   if (selector.kind === 'index') return pickByIndex(entries, selector.n, ref);
-  return pickByDate(entries, selector.raw, now, raw);
+  return pickByDate(entries, selector.raw, now, raw, ctx.hashConfig);
 };
 
 /** HEAD's symbolic branch target, or the `HEAD` literal when HEAD is detached. */
@@ -163,6 +165,7 @@ const pickByDate = (
   rawDate: string,
   now: number,
   raw: string,
+  hashConfig: HashConfig,
 ): ObjectId => {
   const target = parseApproxidate(rawDate, now);
   if (target === undefined) throw revparseUnresolved(raw);
@@ -174,8 +177,7 @@ const pickByDate = (
   // when that pre-state is the null oid (the ref's creation entry) git
   // answers the entry's post-state instead (measured, git 2.55.0).
   const oldest = entries[0] as ReflogEntry;
-  const nullOid = '0'.repeat(oldest.oldId.length);
-  return oldest.oldId === nullOid ? oldest.newId : oldest.oldId;
+  return oldest.oldId === zeroOid(hashConfig) ? oldest.newId : oldest.oldId;
 };
 
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {

@@ -35,8 +35,11 @@ recorded here rather than silently widened.
 
 ### Positive
 
-- Any byte sequence a reflog file carries survives expire/delete/rename
-  unchanged, matching git exactly.
+- The identity and message PAYLOAD bytes a reflog file carries survive
+  expire/delete/rename unchanged, matching git exactly. Field separators
+  around them are re-emitted in canonical single-space form (recomputed
+  timestamp/zone) — also git's rewrite behaviour, and pinned by test for
+  the non-canonical spacing tsgit accepts where git skips the line.
 
 ### Negative
 

@@ -166,14 +166,14 @@ const runExpire = async (
   const expireCut = resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now);
   const unreachableCut = resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now);
   const reachable = await collectReachable(ctx);
-  const targets = opts.all === true ? await listReflogs(ctx) : [resolveUserRef(opts.ref ?? 'HEAD')];
-  if (opts.all !== true) {
+  const single = opts.all === true ? undefined : resolveUserRef(opts.ref ?? 'HEAD');
+  if (single !== undefined && !(await hasReflog(ctx, single))) {
     // git refuses a single-ref expire when no reflog exists (exit 255) and
     // creates nothing; without this guard the unconditional rewrite below
     // would manufacture an empty log file and its parent directories.
-    const only = targets[0] as RefName;
-    if (!(await hasReflog(ctx, only))) throw reflogNotFound(only);
+    throw reflogNotFound(single);
   }
+  const targets = single === undefined ? await listReflogs(ctx) : [single];
   let removed = 0;
   let kept = 0;
   const updates: RefUpdate[] = [];

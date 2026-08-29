@@ -309,6 +309,24 @@ describe('reflog-store', () => {
         });
       });
     });
+
+    describe('Given an entry with an empty message', () => {
+      describe('When writeReflog replaces the log with it', () => {
+        it('Then the on-disk line carries the rewrite TAB before the LF', async () => {
+          // Arrange — the REWRITE byte form, distinct from the append form
+          // (which ends a tab-less line at the timezone).
+          const ctx = createMemoryContext();
+          await appendReflog(ctx, HEAD, entry());
+
+          // Act
+          await writeReflog(ctx, HEAD, [entry({ message: '' })]);
+
+          // Assert
+          const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`);
+          expect(text.endsWith('\t\n')).toBe(true);
+        });
+      });
+    });
   });
 
   describe('deleteReflog', () => {

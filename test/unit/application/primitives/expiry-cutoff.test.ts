@@ -37,15 +37,69 @@ describe('expiryCutoff', () => {
 
   describe('Given gc.pruneExpire is "now"', () => {
     describe('When resolving the cutoff', () => {
-      it('Then the cutoff equals the clock reading in seconds', () => {
-        // Arrange
+      it('Then the cutoff is positive infinity — git expires even future-dated state', () => {
+        // Arrange — git maps `now` (and `all`) to the maximum time, not the
+        // clock: an mtime a year ahead still falls before the cutoff.
         const sut = expiryCutoff;
 
         // Act
         const result = sut('now', { now: () => 1_787_755_416_000 });
 
         // Assert
-        expect(result).toBe(1_787_755_416);
+        expect(result).toBe(Number.POSITIVE_INFINITY);
+      });
+    });
+  });
+
+  describe('Given gc.pruneExpire is "false"', () => {
+    describe('When resolving the cutoff', () => {
+      it('Then it resolves to negative infinity — the git synonym for never', () => {
+        // Arrange
+        const sut = expiryCutoff;
+
+        // Act
+        const result = sut('false', { now: () => 1_787_755_416_000 });
+
+        // Assert
+        expect(result).toBe(Number.NEGATIVE_INFINITY);
+      });
+    });
+  });
+
+  describe('Given gc.pruneExpire is "all"', () => {
+    describe('When resolving the cutoff', () => {
+      it('Then the cutoff is positive infinity', () => {
+        // Arrange
+        const sut = expiryCutoff;
+
+        // Act
+        const result = sut('all', { now: () => 1_787_755_416_000 });
+
+        // Assert
+        expect(result).toBe(Number.POSITIVE_INFINITY);
+      });
+    });
+  });
+
+  describe('Given gc.pruneExpire is "FALSE" in uppercase', () => {
+    describe('When resolving the cutoff', () => {
+      it('Then it refuses — the false/all keywords are exact-match, as in git', () => {
+        // Arrange
+        const sut = expiryCutoff;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut('FALSE', { now: () => 1_787_755_416_000 });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_BAD_DATE_VALUE',
+          value: 'FALSE',
+        });
       });
     });
   });
@@ -132,8 +186,8 @@ describe('expiryCutoff', () => {
         const nowMs = 1_787_755_416_789; // deliberately not a whole second
         const nowSeconds = Math.floor(nowMs / 1000);
 
-        // Act
-        const result = sut('now', { now: () => nowMs });
+        // Act — a relative form: `now` itself maps to +Infinity by grammar.
+        const result = sut('0.seconds.ago', { now: () => nowMs });
 
         // Assert
         expect(result).toBe(nowSeconds);
@@ -143,14 +197,14 @@ describe('expiryCutoff', () => {
   });
 
   describe('Given no clock override', () => {
-    describe('When resolving "now"', () => {
+    describe('When resolving a relative-form cutoff', () => {
       it('Then it falls back to Date.now, converted to seconds', () => {
         // Arrange
         const sut = expiryCutoff;
         const before = Math.floor(Date.now() / 1000);
 
         // Act
-        const result = sut('now');
+        const result = sut('0.seconds.ago');
 
         // Assert
         const after = Math.floor(Date.now() / 1000);
