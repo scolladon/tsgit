@@ -930,7 +930,7 @@ describe('parseReflogLenientBytes', () => {
         const entries = parseReflogLenientBytes(content, 40);
 
         // Assert
-        expect(entries[0]?.message).toBe('﻿wip');
+        expect(entries[0]?.message).toBe('\uFEFFwip');
       });
     });
   });
@@ -1029,6 +1029,70 @@ describe('serializeReflogRewriteLineBytes', () => {
         expectInvalidReflogEntry(
           () => serializeReflogRewriteLineBytes(entry, 40),
           'message contains a line break',
+        );
+      });
+    });
+  });
+
+  describe('Given raw identity bytes containing an LF', () => {
+    describe('When serializing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY — a raw LF would forge an extra reflog line', () => {
+        // Arrange
+        const original = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        const [parsed] = parseReflogBytes(original, 40);
+        const entry: ReflogEntry = {
+          ...(parsed as ReflogEntry),
+          raw: {
+            identity: bytesFrom('Ada\n<ada@example.com>'),
+            message: (parsed as ReflogEntry).raw?.message as Uint8Array,
+          },
+        };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLineBytes(entry, 40),
+          'invalid identity',
+        );
+      });
+    });
+  });
+
+  describe('Given a raw-carrying entry whose timezone offset is not a signed four-digit zone', () => {
+    describe('When serializing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY — the zone is re-emitted unvalidated by no other guard', () => {
+        // Arrange — a crafted zone could otherwise smuggle arbitrary bytes
+        // (even an LF and a forged second line) into the rewrite output.
+        const original = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        const [parsed] = parseReflogBytes(original, 40);
+        const entry: ReflogEntry = {
+          ...(parsed as ReflogEntry),
+          identity: { ...(parsed as ReflogEntry).identity, timezoneOffset: 'ZZZZ' },
+        };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLineBytes(entry, 40),
+          'invalid identity',
+        );
+      });
+    });
+  });
+
+  describe('Given a raw-carrying entry whose timestamp is not a safe integer', () => {
+    describe('When serializing', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange
+        const original = bytesFrom(`${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000\tx\n`);
+        const [parsed] = parseReflogBytes(original, 40);
+        const entry: ReflogEntry = {
+          ...(parsed as ReflogEntry),
+          identity: { ...(parsed as ReflogEntry).identity, timestamp: Number.NaN },
+        };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogRewriteLineBytes(entry, 40),
+          'invalid identity',
         );
       });
     });

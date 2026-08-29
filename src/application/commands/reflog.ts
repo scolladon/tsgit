@@ -200,7 +200,9 @@ const runExpire = async (
 
 const resolveCutoff = (raw: string, now: number): number => {
   // One shared grammar with gc.pruneExpire (git's parse_expiry_date):
-  // never/false → nothing expires, all → everything, else approxidate.
+  // never (case-tolerant) and exact false → nothing expires; exact
+  // all/now → everything, future-dated entries included; anything else —
+  // uppercase ALL/FALSE among it — goes to the date parser or refuses.
   const cutoff = resolveExpiryCutoff(raw, now);
   if (cutoff === undefined) throw revparseUnresolved(raw);
   return cutoff;

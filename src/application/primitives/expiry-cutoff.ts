@@ -1,10 +1,9 @@
 /**
- * Resolves `gc.pruneExpire`'s date-expression grammar to a unix-seconds
- * cutoff for the cruft-pack survival rule `mtime > cutoff`. Delegates to
- * `parseApproxidate` for every form it already covers (`now`, `yesterday`,
- * ISO-8601, `@<epoch>`, `<n>.<unit>.ago`) and adds the one form that has no
- * moment-in-time meaning outside expiry: `never`, mapped to negative
- * infinity so nothing is ever `<= cutoff`.
+ * Resolves the expiry date-expression grammar shared by `gc.pruneExpire`
+ * and `reflog expire` to a unix-seconds cutoff. The keyword layer
+ * (`never`/`false`/`all`/`now` — see `resolveExpiryCutoff`) is handled
+ * before delegation; every remaining form (`yesterday`, ISO-8601,
+ * `@<epoch>`, `<n>.<unit>.ago`) goes to `parseApproxidate`.
  *
  * Every other expression refuses rather than being approximated — an
  * expression this helper mis-parses silently moves the cutoff, and moving

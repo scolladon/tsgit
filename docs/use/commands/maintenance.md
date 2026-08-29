@@ -134,10 +134,13 @@ interface MaintenanceResult {
      under consolidation — the mtime of the NORMAL pack it is migrating out
      of. Never the wall clock.
    - Objects whose age is **more recent** than the cutoff derived from
-     `gc.pruneExpire` (default `2.weeks.ago`; accepts `never`, `now`,
-     `@<epoch>`, ISO-8601, `<n>.<unit>.ago`) survive in a cruft pack carrying
-     a `.mtimes` sidecar. `never` keeps everything; `now` destroys
-     everything and skips writing a cruft pack at all.
+     `gc.pruneExpire` (default `2.weeks.ago`; accepts `never`, `false`,
+     `all`, `now`, `@<epoch>`, ISO-8601, `<n>.<unit>.ago`) survive in a
+     cruft pack carrying a `.mtimes` sidecar. `never`/`false` keep
+     everything; `all`/`now` destroy everything — future-dated mtimes
+     included — and skip writing a cruft pack at all. `false`, `all` and
+     `now` are exact-match keywords (uppercase forms refuse, as in git);
+     `never` alone tolerates case and surrounding whitespace.
    - Objects at or older than the cutoff (`mtime <= cutoff`, a strict
      boundary) are **destroyed** — the one operation in this command that
      permanently removes data.

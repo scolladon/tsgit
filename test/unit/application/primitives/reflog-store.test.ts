@@ -321,9 +321,10 @@ describe('reflog-store', () => {
           // Act
           await writeReflog(ctx, HEAD, [entry({ message: '' })]);
 
-          // Assert
+          // Assert — the whole line, not just the suffix: meta, the always-
+          // present rewrite TAB, and nothing after it.
           const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`);
-          expect(text.endsWith('\t\n')).toBe(true);
+          expect(text).toBe(`${ZERO_OID} ${OID_A} Ada <ada@example.com> 1716240000 +0000\t\n`);
         });
       });
     });

@@ -41,24 +41,6 @@ export const arbEntry = (
     message: arbMessage(),
   });
 
-// Printable ASCII plus the three whitespace controls a reflog file actually
-// carries (LF as the line terminator, TAB as the message separator, CR as a
-// message byte git never strips) — the safe subset a lenient parser must
-// never throw on. NUL is outside the DECLARED safe subset, not outside real
-// files: git's own reader truncates at a NUL, so totality over NUL is not a
-// property this parser claims.
-const arbReflogSafeUnit = (): fc.Arbitrary<string> =>
-  fc.oneof(
-    fc.constantFrom('\n', '\t', '\r'),
-    fc.integer({ min: 0x20, max: 0x7e }).map((code) => String.fromCharCode(code)),
-  );
-
-/** Arbitrary reflog file text, with and without a terminating LF (mixed by construction). */
-export const arbReflogText = (): fc.Arbitrary<string> =>
-  fc
-    .tuple(fc.string({ unit: arbReflogSafeUnit(), maxLength: 200 }), fc.boolean())
-    .map(([body, hasTrailingLf]) => (hasTrailingLf ? `${body}\n` : body));
-
 // Single-line garbage: the same safe alphabet minus LF, so it can never
 // smuggle in an extra line when joined into a candidate-lines file.
 const arbGarbageLine = (): fc.Arbitrary<string> =>

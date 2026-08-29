@@ -251,10 +251,11 @@ async function removeIfStaleTempFile(ctx: Context, path: string, cutoff: number)
  * is the sole remaining protection against a DIFFERENT, concurrently
  * running process's own in-flight quarantine write — a fresh mtime keeps
  * it on the "survivor" side of the cutoff. That protection does not hold
- * at `gc.pruneExpire=now`: the cutoff resolves to the current second, and
- * the survival rule's strict `mtime > cutoff` dooms a write landing in
- * that same second — the identical exposure git carries at the same
- * second-granularity boundary. `cutoff` is the identical `gc.pruneExpire`-
+ * at `gc.pruneExpire=now` (or `all`): those resolve to the maximum time,
+ * so the age gate is fully disabled and every candidate — a concurrent
+ * process's in-flight quarantine write included — falls on the doomed
+ * side, exactly git's own `--expire=now` behaviour (measured: git prunes
+ * a future-mtime temp file under it). `cutoff` is the identical `gc.pruneExpire`-
  * derived value the cruft-pack survival rule uses: `never` resolves to
  * `-Infinity`, under which every candidate would survive the age gate
  * anyway, so the scan itself is skipped rather than run for nothing.

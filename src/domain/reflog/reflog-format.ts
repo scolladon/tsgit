@@ -16,6 +16,7 @@ import type { ReflogEntry } from './reflog-entry.js';
 const FIELD_SEPARATOR = ' ';
 const CONTROL_CHARS = /[\n\r]/;
 const LINE_FEED = /\n/;
+const TIMEZONE_SHAPE = /^[+-]\d{4}$/;
 const TEXT_ENCODER = new TextEncoder();
 
 /**
@@ -103,12 +104,15 @@ const LINE_FEED_BYTE = new Uint8Array([0x0a]);
  * git's own rewrite recompute. A raw-less entry — built programmatically,
  * never read from disk — falls back to the string serializer, UTF-8 encoded.
  *
- * When `raw` is present it WINS over the decoded `message`/`identity`
- * display fields — editing those fields without dropping `raw` changes
- * nothing on disk. The raw slices still carry the one-line invariant: an
- * LF in either slice, or a TAB in the identity, would re-parse as extra
- * fields or extra lines, so both are refused exactly as the string
- * serializers refuse their decoded equivalents.
+ * When `raw` is present it WINS over the decoded `message` and the
+ * identity's name/email PAYLOAD fields — editing those without dropping
+ * `raw` changes nothing on disk. The timestamp and timezone are the
+ * exception: they are re-emitted from the parsed identity, so they are
+ * validated here exactly because the string tier's `serializeIdentity`
+ * never sees them on this path. The raw slices carry the one-line
+ * invariant: an LF in either slice, or a TAB in the identity, would
+ * re-parse as extra fields or extra lines, so both are refused exactly as
+ * the string serializers refuse their decoded equivalents.
  */
 export function serializeReflogRewriteLineBytes(
   entry: ReflogEntry,
@@ -122,6 +126,12 @@ export function serializeReflogRewriteLineBytes(
     throw invalidReflogEntry('message contains a line break');
   }
   if (entry.raw.identity.includes(0x0a) || entry.raw.identity.includes(0x09)) {
+    throw invalidReflogEntry('invalid identity');
+  }
+  if (!Number.isSafeInteger(entry.identity.timestamp)) {
+    throw invalidReflogEntry('invalid identity');
+  }
+  if (!TIMEZONE_SHAPE.test(entry.identity.timezoneOffset)) {
     throw invalidReflogEntry('invalid identity');
   }
   const prefix = TEXT_ENCODER.encode(`${entry.oldId} ${entry.newId} `);
@@ -255,9 +265,11 @@ function parseReflogEntryFromBytes(
   const lastOpen = identityRegion.lastIndexOf('<', lastClose);
 
   // Display decode for one field, in LINE-relative coordinates. All-ASCII
-  // fields (the overwhelmingly common shape) slice the latin1 projection
-  // already in hand — byte-identical to a UTF-8 decode for bytes < 0x80 and
-  // measurably cheaper per entry. Non-ASCII fields decode from the bytes
+  // fields (the overwhelmingly common shape) rebuild a FLAT string from the
+  // field's own bytes — byte-identical to a UTF-8 decode for bytes < 0x80,
+  // measurably cheaper per entry, and never a slice of the whole-file
+  // projection (a V8 SlicedString would pin the entire projection alive
+  // through one retained entry). Non-ASCII fields decode from the bytes
   // with the BOM-preserving decoder: each field is an independent sub-slice,
   // and a plain decode() would treat its start as a stream start and
   // silently strip a leading U+FEFF that IS file content.
@@ -269,7 +281,7 @@ function parseReflogEntryFromBytes(
         break;
       }
     }
-    if (ascii) return projectedLine.slice(fieldStart, fieldEnd);
+    if (ascii) return latin1Decode(bytes.subarray(lineStart + fieldStart, lineStart + fieldEnd));
     return decodePreservingBom(bytes.subarray(lineStart + fieldStart, lineStart + fieldEnd));
   };
 
@@ -278,9 +290,10 @@ function parseReflogEntryFromBytes(
   const emailStart = identityStart + lastOpen + 1;
   const emailEnd = identityStart + lastClose;
   const messageStart = tab === -1 ? projectedLine.length : tab + 1;
-  // `slice`, not `subarray`: raw slices are COPIES so a retained entry owns
-  // only its own bytes (a view would pin the whole file buffer, up to the
-  // read cap) and cannot alias — or mutate — a sibling entry's bytes.
+  // `slice`, not `subarray`: raw slices are COPIES so no caller can alias —
+  // or mutate — a sibling entry's bytes through a shared buffer. (Retention
+  // is the secondary win, and only when a caller keeps a SUBSET of entries;
+  // a whole-array read pins comparable memory either way.)
   const identityBytes = bytes.slice(
     lineStart + identityStart,
     lineStart + identityStart + lastClose + 1,

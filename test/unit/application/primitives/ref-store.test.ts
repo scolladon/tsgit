@@ -1219,6 +1219,46 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a reflog path that is a directory because a sibling ref nests under it', () => {
+    describe('When readReflogLenient is called on the store', () => {
+      it('Then it answers no-reflog with an empty array, never a raw EISDIR', async () => {
+        // Arrange — same D/F shape hasReflog handles; the read path must
+        // give the same "absent" answer instead of surfacing an adapter
+        // fault from reading a directory.
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/feature/x' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflogLenient('refs/heads/feature' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a reflog stat fails for a reason other than FILE_NOT_FOUND', () => {
+    describe('When readReflog is called on the store', () => {
+      it('Then the fault propagates rather than reading as an empty reflog', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/main' as RefName, reflogEntry());
+        const reflogFilePath = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+        const fault = permissionDenied(reflogFilePath);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === reflogFilePath) throw fault;
+          return originalStat(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        await expect(sut.readReflog('refs/heads/main' as RefName)).rejects.toBe(fault);
+      });
+    });
+  });
+
   describe('Given a reflog stat fails for a reason other than FILE_NOT_FOUND', () => {
     describe('When hasReflog is called on the store', () => {
       it('Then the fault propagates rather than reading as no reflog', async () => {

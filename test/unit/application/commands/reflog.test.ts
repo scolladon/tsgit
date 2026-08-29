@@ -1111,6 +1111,28 @@ describe('reflog command', () => {
         );
       });
 
+      describe('When expire runs with uppercase NOW on a FUTURE-dated entry', () => {
+        it('Then the entry is KEPT — NOW is a date (the clock), not the exact-match now keyword', async () => {
+          // Arrange — the one input separating exact-match `now` (maximum
+          // time) from the date parser's tolerant casing (current clock):
+          // git keeps a future-dated entry under --expire=NOW and deletes it
+          // under --expire=now.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now + 365 * DAY), message: 'future' }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'NOW' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+
       describe('When expire runs with an uppercase keyword', () => {
         it.each([{ raw: 'ALL' }, { raw: 'FALSE' }])(
           'Then $raw refuses — false/all are exact-match keywords, as in git',
