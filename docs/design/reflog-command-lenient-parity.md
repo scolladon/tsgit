@@ -4,7 +4,11 @@
 > command's read path throws on the first one. Align the command on the existing
 > lenient primitives, reuse rather than duplicate, and pin the tolerated-vs-refused
 > matrix against real git.
-> Status: draft → self-reviewed ×3 → accepted
+> Status: accepted — every load-bearing choice is settled and recorded as
+> [ADR-737](../adr/737-reflog-lenient-read-is-a-ref-store-seam-verb.md) …
+> [ADR-746](../adr/746-reflog-results-carry-no-skipped-line-count.md). Nine landed as
+> recommended; **D8 was ratified against this document's own recommendation** and the
+> body below is written against the outcome, not the alternative.
 
 ## Context
 
@@ -75,7 +79,9 @@ entry through `serializeReflogLine`.
   L74–77; present in `reports/api.json` under `@scolladon/tsgit/application/primitives`,
   `index.default`, `index.browser`, `index.node`). Changing `readReflog`'s tolerance
   changes a published contract; *adding* an exported sibling gates on regenerating
-  `reports/api.json` before push.
+  `reports/api.json` before push. **`ReflogResult` is published the same way** (nine
+  occurrences in `reports/api.json`), and ADR-744 widens its `delete` arm — so the
+  regeneration is mandatory in this change, not conditional.
 - **The `MAX_REFLOG_BYTES` cap is never tolerated.** `roots.ts` L163–176 documents
   why: an over-cap reflog that silently rooted nothing is the exact silent-data-loss
   shape the strict mode exists to refuse. Git has no such cap (measured: it reads a
@@ -93,17 +99,22 @@ When this ships:
 1. `reflog show` on a reflog file containing one malformed line returns the file's
    **other** entries — same set, same order, same `@{n}` numbering as `git reflog show`,
    for every corruption class the two per-line predicates agree on (§1a, the ✅ rows).
-   The ❌ rows are governed by **D5**/**D6** and, wherever they stay divergent, are
-   asserted as such rather than left unpinned.
+   Of the ❌ rows, row 25 (unterminated final line) closes via ADR-741 and row 23
+   (timestamp `0`) via ADR-742; rows 19–22 and 24 stay divergent and each carries a
+   live assertion of the difference rather than being left unpinned.
 2. `reflog delete` and `reflog expire` operate over the surviving entries and leave a
    reflog file whose contents match what git leaves, including **purging the
-   malformed line** (git's rewrite drops it; see the pinned matrix).
+   malformed line** (git's rewrite drops it; see the pinned matrix). An out-of-range
+   `delete` index removes nothing and reports nothing — and still leaves that purged
+   file (ADR-744).
 3. `reflog exists` is unchanged — a file-presence question, already faithful.
 4. No second tolerance implementation is created. The command, and the gc retention
    walk that already needed leniency, read through **one** lenient seam.
 5. The strict `parseReflog` remains available and remains the reader for every caller
-   whose contract is strictness. No caller silently loses an error it relied on
-   without that being an explicit, recorded decision.
+   whose contract is strictness. Which readers leave it is enumerated by ADR-739 and
+   ADR-740; the one error the strict parser itself stops raising — the unterminated
+   final line — is ADR-741's recorded decision, not a silence. No caller loses an
+   error it relied on outside those two ADRs.
 6. The tolerated-vs-refused matrix in this document is pinned by a
    `test/integration/*-interop.test.ts` suite that spawns real git with `GIT_*`
    scrubbed and signing off. The matrix was measured against **git 2.55.0**; the
@@ -113,8 +124,9 @@ When this ships:
 7. No rendered reflog line leaves the library. Display parity is proven by
    reconstructing git's stdout from the structured fields inside the interop test.
 8. `npm run validate` green: 100 % line/branch/function/statement coverage on the
-   touched domain/adapter code, 0 killable mutants, `reports/api.json` regenerated
-   if the exported surface moves.
+   touched domain/adapter code, 0 killable mutants, and `reports/api.json`
+   regenerated — the exported surface moves twice here (the two new seam verbs of
+   ADR-737/ADR-740, and `ReflogResult`'s `delete` arm under ADR-744).
 
 ---
 
@@ -209,6 +221,25 @@ Every other refusing class in §1a produced identical command-level results.
 | `git fsck` | reports **nothing** about reflog corruption | 0 | ✅ tolerates |
 | `git gc --prune=now` | objects rooted by surviving entries are kept | 0 | ✅ already aligned |
 
+**What the settled design closes.** The `tsgit today` column above is a measurement of
+the shipped code. Every cell in it that names a tsgit behaviour becomes git's cell
+(the `git log -g` row has no tsgit surface and stays n/a): the reads
+(`reflog show`, `rev-parse @{n}` / `@{date}`, `stash list` / `drop`, the snapshot
+stash reads) through ADR-737 + ADR-739; the rewrites (`delete`, `delete --rewrite`,
+`expire` ×4) through ADR-743 + ADR-745; the two **out-of-range `delete`** rows through
+ADR-744 — both become silent no-ops, the corrupt fixture still rewritten and purged,
+the clean fixture left content-identical; `branch -m` through ADR-740's
+byte-preserving move. Two things tsgit still does not reproduce, both by charter
+rather than by omission:
+
+- git's stderr **text** — `warning: … has gap after`, `only goes back to`,
+  `fatal: log for 'main' only has 3 entries` — is rendering (ADR-249). The *refusal*
+  at `main@{3}` is reproduced, as a typed `REFLOG_ENTRY_OUT_OF_RANGE` from
+  `rev-parse`; the warnings have no structured counterpart because nothing about the
+  returned data differs.
+- the §1a rows that stay divergent (19–22, 24), which are message-byte and
+  identity-predicate differences, not command-level ones.
+
 #### 1c. Degenerate files
 
 | file state | `reflog show` | `reflog exists` | `rev-parse ref@{0}` | `rev-parse ref@{1}` | `reflog expire --expire=never` |
@@ -250,14 +281,22 @@ which always emits it. Two different git writers, two different rules.
 
 ### 2. What changes
 
-The mechanism is small; the surface it touches is not. The change has four parts.
+The mechanism is small; the surface it touches is not. The change has eight parts:
+seven of mechanism, one per settled decision cluster, plus the test that pins them.
+ADR-746 contributes a *non*-change — no skipped-line count anywhere, not on the seam
+verb and not on `ReflogResult` — which is a constraint on parts (c) and (d) rather
+than a part of its own.
 
 **(a) One lenient read seam, promoted out of `fsck/roots.ts`.**
 `roots.ts`'s private `readReflogLenient` (L177–185) is deleted and its behaviour —
 `exists` → `[]`, `MAX_REFLOG_BYTES` cap → throw, `parseReflogLenient` — moves to the
 `RefStore` layer, exposed through a `reflog-store.ts` dispatcher so callers stay
 backend-neutral. `roots.ts` then consumes the dispatcher instead of building
-`logs/**` paths itself. Placement is **D1**; the reftable half is **D2**.
+`logs/**` paths itself (ADR-737). The reftable backend implements the verb as an
+alias of its structural `readReflog` — a length-prefixed binary log record has no
+malformed-line analogue, and inventing a per-record tolerance would need an oracle
+that does not exist (ADR-738, §5). The `MAX_REFLOG_BYTES` cap still throws on the
+lenient path; only per-line faults go silent.
 
 > **A latent defect this closes.** `roots.ts`'s helper reads
 > `reflogPath(perWorktreeRefDir(ctx, ref), ref)` off the filesystem directly. The
@@ -268,7 +307,7 @@ backend-neutral. `roots.ts` then consumes the dispatcher instead of building
 > of them — an object reachable only from a reflog is not rooted and `gc --prune`
 > deletes it, silently. Routing through the store fixes this as a side effect.
 > The implementation must add a reftable-backed regression test rather than assume
-> the fix; if the maintainer would rather isolate that fix, it is **D3**'s business.
+> the fix — ADR-737 counts this gap as part of the change, not as an adjacent item.
 
 > **Derived-Context constraint.** `roots.ts` L406 reads HEAD's reflog on a
 > *per-worktree derived* `Context`. `getRefStore` memoises per `Context` in a
@@ -279,23 +318,89 @@ backend-neutral. `roots.ts` then consumes the dispatcher instead of building
 > `ctx` straight to `perWorktreeRefDir`; the store route must keep the same
 > derived Context all the way through.
 
-**(b) `commands/reflog.ts` reads leniently.** `runShow` L78, `runDelete` L110 and
-`runExpire` L163 switch to the lenient read. Nothing else in the command changes
-shape: `runShow`'s newest-first mapping, `runDelete`'s `length - 1 - index`
-arithmetic and `repairChain`, and `runExpire`'s filter all operate on the surviving
-array exactly as they do today, which is precisely what git's numbering does
-(§1b: `@{n}` counts only survivors).
+**(b) Every pinned reader reads leniently.** ADR-739 takes the change past the
+literal brief to the whole set git is lenient on: `commands/reflog.ts` (`runShow`
+L78, `runDelete` L110, `runExpire` L163), `commands/rev-parse.ts::resolveReflogBase`
+(L86), all three `primitives/stash-ref.ts` sites (L44, L54, L88) and
+`primitives/snapshot/snapshot-factory.ts::stashEntry` (L169). `branch.ts` is not on
+this list — it is part (e), and it loses its read entirely rather than converting it.
+`fsck/roots.ts`'s arms keep their current strictness; only the *helper* they call
+moves (part (a)).
 
-**(c) The rewrite paths must purge, not preserve.** `runExpire`'s
-`if (survivors.length !== stored.length)` guard (L169) compares two *parsed* counts.
-Once the read is lenient, a file whose only defect is a malformed line yields
-`survivors.length === stored.length` and **no write happens** — the malformed line
-stays on disk where git purges it (§1b, `--expire=never` row). The guard has to
-compare against what was on disk, not against what parsed. That is **D7**.
-`runDelete` always writes, so it needs no guard change — but it inherits **D8**
-(git's out-of-range delete is a silent no-op that *still* purges).
+Nothing in those readers changes shape: `runShow`'s newest-first mapping,
+`runDelete`'s `length - 1 - index` arithmetic and `repairChain`, `runExpire`'s
+filter, `pickByIndex`'s `entries[length - 1 - n]` and the stash selectors all operate
+on the surviving array exactly as they do today, which is precisely what git's
+numbering does (§1b: `@{n}` counts only survivors). The reason to move them together
+is stated in ADR-739: leaving half strict ships a repo where `reflog show` works and
+`stash list` throws on the same file.
 
-**(d) The pinned matrix becomes a test.** A new
+**(c) The rewrite paths purge, not preserve — and they write unconditionally.**
+`runExpire`'s `if (survivors.length !== stored.length)` guard (L169) compares two
+*parsed* counts. Once the read is lenient, a file whose only defect is a malformed
+line yields `survivors.length === stored.length` and **no write happens** — the
+malformed line stays on disk where git purges it (§1b, `--expire=never` row). ADR-743
+deletes the guard: `runExpire` rewrites every run, which is what git does, and a
+clean rewrite is byte-identical in content (§1d, measured). Two obligations ride
+with it — one write per target per run (one per reflog under `--all`), and the
+implementation must **confirm `applyReflogReplace`'s write is atomic** (git locks and
+renames; `ref-store.ts` L601–608 currently uses `ctx.fs.writeUtf8`) before turning it
+into an every-run write.
+
+`runDelete` already writes on every call, and under ADR-744 it keeps doing so on the
+out-of-range path too — see part (d).
+
+**(d) Out-of-range `delete` is a silent no-op (ADR-744 — the ratified deviation).**
+This document recommended keeping the typed `REFLOG_ENTRY_OUT_OF_RANGE`; the user
+ruled for faithfulness. Both throw sites in `runDelete` — the non-integer/negative
+guard (L113–115) and the `target < 0` guard (L119–121) — stop throwing. Instead:
+
+- nothing is removed, and the result is the `delete` arm with **`removed` absent**;
+- the reflog file is **still rewritten** with the full surviving set, so a corrupt
+  file is purged (§1b, corrupt-fixture row) and a clean one comes back
+  content-identical (§1b, clean-fixture row; §1d's byte-identical measurement is what
+  makes the write invisible there).
+
+That unconditional write is also what keeps ADR-744 and ADR-746 consistent: knowing
+*whether* to skip the write would require a skipped-line signal, and ADR-746 declines
+to carry one. Writing always needs no signal at all.
+
+`reflogNotFound` (L109, via `hasReflog`) is untouched — git errors there too
+(§1c, exit 255).
+
+**(e) `branch -m` moves the reflog instead of re-serializing it (ADR-740).** No parse
+tolerance reproduces git here: git does a `rename(2)` of the log file, so a malformed
+line survives verbatim under the new name (§1b). A second store-level verb,
+`moveReflog(from, to)`, carries that — the files backend moves the file
+byte-preserving, the reftable backend re-keys the log records — and `branch.ts`
+L157+ drops its read-concat-rewrite in favour of it. The appended rename entry still
+goes through the ordinary append serializer, so part (g) does not touch it. This
+*removes* a strict read site rather than converting it, which is why `branch.ts` is
+absent from part (b)'s list.
+
+**(f) Two per-line/per-file predicate changes, and only two.** ADR-741:
+**both** `parseReflog` and `parseReflogLenient` treat a final line with no
+terminating LF as absent (§1a row 25) — a file-level rule on the split, not a
+per-line predicate, so the two parsers keep agreeing about every file. This is a
+behaviour change to a *published* domain export: the strict parser now silently drops
+a torn final entry where it used to parse it; every other malformed line still throws
+there. ADR-742: `parseReflogLine` refuses a **zero timestamp** (§1a row 23), in
+`reflog-format.ts`, **without touching `parseIdentity`** — row 23 is the only one of
+rows 20–23 that breaks a round trip through tsgit's own writer
+(`serializeReflogLine` emits `… 0 +0000`; git reads that line as corrupt and drops
+the entry). Rows 20–22 stay divergent by decision, asserted in the interop suite.
+ADR-742's Neutral clause leaves the writer-side half open on purpose: **the
+round-trip property test (below) forces a writer-side refusal only if it actually
+fails**; the implementation does not add one speculatively.
+
+**(g) The rewrite serializer always emits the message TAB (ADR-745).**
+`applyReflogReplace` gets a rewrite-specific serialization that emits the TAB even
+for an empty message, leaving `serializeReflogLine`'s append rule — and
+`reflog-writers.test.ts`'s pinned append bytes — untouched. Two git writers, two
+rules, both encoded (§1d). The cost is two serialization paths that must stay in
+sync for every other field, which the byte-comparison interop cases police.
+
+**(h) The pinned matrix becomes a test.** A new
 `test/integration/reflog-interop.test.ts` with `bucket: cross-tool-interop` and
 `interopSurface: reflog`. Claiming a surface a second time is safe: the audit's
 `Coverage.coveredBy` is a list (`tooling/audit-write-surfaces/compute-gaps.ts`), so
@@ -304,8 +409,14 @@ compare against what was on disk, not against what parsed. That is **D7**.
 ### 3. Scope boundary — the other strict readers
 
 Every one of these is strict today and every one of them diverges from a git
-behaviour pinned above. Leaving one strict is a *choice*, not a silence; the
-decision is **D3** (and **D4** for the odd one out).
+behaviour pinned above. Leaving one strict would have been a *choice*, not a silence,
+so each one has a settled disposition: **ADR-739 moves the first five to the lenient
+read**
+(part (b)); **ADR-740 removes `branch.ts` from the list entirely** by replacing its
+read-concat-rewrite with `moveReflog` (part (e)); **`fsck/roots.ts`'s arms stay as
+they are** — leniency there would change which roots fsck *reports*, an independent
+question with its own oracle. The last column below records what leaving each one
+strict would have cost, which is why none of them stayed.
 
 | call site | lines | what it does with the array | git's pinned behaviour | effect of leaving it strict |
 |---|---|---|---|---|
@@ -314,58 +425,95 @@ decision is **D3** (and **D4** for the odd one out).
 | `primitives/stash-ref.ts::resolveStashEntry` | 53–58 (L54) | `stored[length - 1 - index]` | index counts survivors | `stash apply` throws |
 | `primitives/stash-ref.ts::dropStashEntry` | 87+ (L88) | drop + chain repair + rewrite | `stash drop` succeeds **and purges** the bad line | `stash drop` throws, corruption persists |
 | `primitives/snapshot/snapshot-factory.ts::stashEntry` | 165+ (L169) | `stored[length - 1 - stashIndex]` | same numbering | stash diff/show throws |
-| `commands/branch.ts::branchRename` | 157+ (L167, L192) | reads `from`'s log, concatenates onto `to`, re-serializes | git **renames the file**; the malformed line survives verbatim under the new name | rename throws; and even leniently, tsgit's parse-and-rewrite would *drop* a line git keeps — **D4** |
+| `commands/branch.ts::branchRename` | 157+ (L167, L192) | reads `from`'s log, concatenates onto `to`, re-serializes | git **renames the file**; the malformed line survives verbatim under the new name | rename throws; and even leniently, tsgit's parse-and-rewrite would *drop* a line git keeps — hence ADR-740 |
 | `fsck/roots.ts::addReflogRoots` non-strict arm | L207 | fsck's `collectRoots` | `git fsck` reports nothing about reflog corruption | already tolerated (the throw is caught upstream); leniency would change *which roots fsck sees*, not whether it errors |
 
 `branch.ts` is the one that leniency alone does not fix: git's rename is a
 byte-preserving `rename(2)` of the log file plus an appended entry, so *no* parse
-tolerance reproduces it. It needs a different mechanism (a store-level "move this
-reflog" verb) or an explicitly recorded divergence.
+tolerance reproduces it — a strict read refuses a rename git performs, and a lenient
+read silently drops a line git preserves. ADR-740 takes the only faithful answer, the
+store-level `moveReflog(from, to)` verb, at the cost of a second new seam with a
+reftable half. That is the largest scope add in this change and it is deliberate.
 
 ### 4. Error semantics after the change
 
 - `INVALID_REFLOG_ENTRY` is **still thrown** by the lenient read for the
   `MAX_REFLOG_BYTES` cap. Only per-line faults become silent.
+- `parseReflogLine` gains **one new refusal** — a zero timestamp (ADR-742). On the
+  strict path that is a new `INVALID_REFLOG_ENTRY`; on the lenient path it is one
+  more skipped line.
 - `parseReflog` (strict) keeps its callers and its published domain export
-  (`src/domain/reflog/index.ts`); it is not weakened.
+  (`src/domain/reflog/index.ts`). It is weakened in exactly one place and by
+  decision: ADR-741 makes it drop an unterminated final line instead of parsing it,
+  so a torn write stops surfacing as data. Every other malformed line still throws
+  there.
+- **`REFLOG_ENTRY_OUT_OF_RANGE` is no longer thrown by `runDelete`** (ADR-744).
+  Nothing replaces it — there is no new code, no warning channel and no counter. The
+  observable outcome is a `delete` result whose `removed` is **absent**, plus the
+  reflog rewrite described in §2(d): the malformed lines the lenient read skipped are
+  purged from disk on that same call, exactly as git's out-of-range delete purges
+  them. A caller that needs to know whether anything was deleted inspects `removed`.
+- The `reflogEntryOutOfRange` factory (`src/domain/reflog/error.ts` L20–24) and its
+  `REFLOG_ENTRY_OUT_OF_RANGE` code **stay live and exported**: `rev-parse`'s
+  `pickByIndex` (`rev-parse.ts` L153) remains its caller, and git refuses there too
+  (`fatal: log for 'main' only has 3 entries`, exit 128 — §1b). Only `reflog.ts`'s
+  two throw sites go. This is not a dead-code removal.
 - Every I/O fault (`EACCES`, `EIO`, `EMFILE`) still propagates — the lenient parser's
   `catch` wraps `parseReflogLine` only, never the read.
 - `runDelete`'s `reflogNotFound` precondition (L109, via `hasReflog`) is unchanged and
-  already matches git's `error: no reflog for '<ref>@{0}'`.
+  already matches git's `error: no reflog for '<ref>@{0}'`. ADR-744 narrows the
+  no-op to the *index*; a missing reflog is still an error on both sides.
 
 ### 5. Reftable
 
 "Malformed line" has no reftable analogue: log records are length-prefixed binary
 inside a block, so a damaged record damages the block, not one entry. The reftable
-backend's `readReflog` already skips non-`entry` records (L279). What the lenient
-verb *means* there is **D2**.
+backend's `readReflog` already skips non-`entry` records (L279). ADR-738 therefore
+makes `readReflogLenient` an **alias of the structural read** on this backend, with
+that reasoning in the method's doc comment — no invented tolerance, and gc's
+retention walk behaves identically on both backends. The second new verb does have
+real reftable work: `moveReflog` (ADR-740) re-keys the log records in the stack,
+since there is no file to rename.
 
 ---
 
-## Decision candidates
+## Settled decisions
 
-The item is small in mechanism and wide in pinned surface. Ten choices below;
-D1/D2/D3 set the shape, D5–D9 set how much of the pinned divergence this PR closes.
-A convenient cut line is noted after the table.
+The ten load-bearing choices this design raised are settled and recorded as ADRs.
+The ADRs are the authority; this table is the index, and the body above is written
+against these outcomes rather than against the alternatives. Nine were adopted as
+recommended. **D8 was ratified against this document's recommendation** and is marked
+⚑ — it is the one that reshaped the design.
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| **D1** | Where the lenient read lives | **(a)** new `RefStore.readReflogLenient(name)` interface method + `reflog-store.ts` dispatcher `readReflogLenient(ctx, ref)`; `roots.ts` consumes it. **(b)** dispatcher-level sibling in `reflog-store.ts` only, files-path-bound like `roots.ts` today — no interface change, stays reftable-blind. **(c)** option object on the existing `RefStore.readReflog(name, { lenient })`. | **(a)** | Only (a) satisfies "one implementation" *and* is backend-neutral; it closes the reftable gc gap in §2(a) for free. (b) preserves the defect. (c) is a boolean parameter on a seam verb — an Object-Calisthenics smell, and it makes every backend branch internally. Cost of (a): one new published export ⇒ `reports/api.json` must be regenerated before push. |
-| **D2** | What the reftable backend does for the lenient verb | **(a)** alias it to `readReflog` — the structural read is already the faithful shape. **(b)** per-record tolerance: skip a log record that fails to decode, keep the rest of the block. **(c)** throw `unsupported` for the lenient verb on reftable. | **(a)**, with the reasoning in the method's doc comment | There is no text line to be malformed. (b) invents a tolerance git has no counterpart for and would need its own pin against a reftable-format oracle. (c) breaks gc under reftable, which is the defect being fixed. |
-| **D3** | Which strict readers move to lenient now | **(a)** `commands/reflog.ts` only (the literal brief). **(b)** the command **+** every reader whose divergence is pinned above and is fixed by leniency alone: `rev-parse` `@{n}`/`@{date}`, `stash-ref` ×3, `snapshot-factory` — leaving `branch.ts` to D4. **(c)** everything including `fsck`'s non-strict arm. | **(b)** | The pins show git is lenient on all of them; (a) ships a repo where `reflog show` works and `stash list` throws on the same file, which is a worse contract than either end. (b) is still one seam and one behaviour. (c) changes *which roots fsck reports*, an independent question with its own oracle — keep it out. Note the standing preference for no follow-up items: whatever is excluded here is a recorded divergence, not a ticket. |
-| **D4** | `branch -m`'s reflog move | **(a)** add a store-level `moveReflog(from, to)` verb — files backend renames the file, reftable re-keys the log records — and drop `branch.ts`'s read-concat-rewrite. **(b)** make the read lenient and accept that the rename drops the malformed line git preserves; record the divergence. **(c)** leave `branch.ts` strict; rename refuses on a corrupt log; record the divergence. | **(a)** if D3 = (b) or (c); otherwise **(c)** | (a) is the only faithful answer (§1b: git preserves the line byte-for-byte) but it is a new seam verb with a reftable half — real scope. (b) is half-faithful and hides the loss. (c) at least fails loudly. This is the single biggest scope lever after D3. |
-| **D5** | Unterminated final line (row 25) — git drops the entry, tsgit keeps it | **(a)** drop it in **both** `parseReflog` and `parseReflogLenient` (file-level check: the text must end `\n`). **(b)** drop it in the lenient parser only. **(c)** leave as-is, record the divergence. | **(a)** | A torn write is the *likeliest* real corruption, and it is a file-level rule — no per-line predicate changes. (b) makes the two parsers disagree about the same bytes, which is exactly the class of trap this backlog item exists to remove. Note (a) changes a **published** domain export's behaviour (`parseReflog`). |
-| **D6** | Per-line predicate divergences (rows 20–23: `>`-only identity, `>` in name, no space after `>`, timestamp `0`) | **(a)** align `parseReflogLine`/`parseIdentity` on git's whole predicate (first `>`, `email_end[1] == ' '`, non-zero timestamp). **(b)** align **row 23 only** — refuse a zero timestamp — in `reflog-format.ts`, without touching `parseIdentity`; record 20–22. **(c)** align none; record all four. | **(b)** | Rows 20–22 are hand-corruption shapes no writer emits, and (a) reaches `parseIdentity`, which is shared with **commit and tag object parsing** — a far larger blast radius than a reflog PR should carry (git's commit parser is not its reflog parser, so "align on git" does not even mean one thing there). Row 23 is different in kind: it is the only member that breaks a **round trip through tsgit's own writer** — `serializeReflogLine` will happily emit `… <e@x> 0 +0000` for an entry whose timestamp is 0, and canonical git then reads that line as corrupt and silently drops the entry. That is tsgit writing a file git cannot fully read, which the prime directive does bind. Whether to also add a writer-side refusal is the sub-question (b) opens. |
-| **D7** | `runExpire`'s rewrite-suppression guard (L169) | **(a)** have the lenient read return `{ entries, skippedLines }` and rewrite when `skippedLines > 0 \|\| survivors.length !== entries.length`. **(b)** always rewrite unconditionally, matching git (a clean file rewrites byte-identically, so it is unobservable in content). **(c)** compare `survivors.length` against the raw `\n`-delimited line count read from disk. | **(b)** | git always rewrites and a clean rewrite is byte-identical (measured), so (b) is both the simplest and the most faithful. Costs: one write per target, i.e. one per reflog on `expire --all`; and `applyReflogReplace` uses `ctx.fs.writeUtf8` where git locks and renames — the implementation must confirm that write is atomic (or make it so) before turning it into an unconditional every-run write. (a) needs a richer return type on the new seam verb — reasonable if D10 = (c). (c) re-reads or re-splits the file just to count. |
-| **D8** | `reflog delete` with an out-of-range index — pre-existing on clean files (`main@{99}`: git exits 0 silently, tsgit throws); the lenient read *moves the boundary* on corrupt ones, since fewer surviving entries turn previously-valid indexes out-of-range | **(a)** keep throwing `REFLOG_ENTRY_OUT_OF_RANGE`; record the divergence (git: silent exit 0). **(b)** match git — no-op, which forces `ReflogResult.delete` to admit an absent `removed`. **(c)** purge corruption first (rewrite), then throw. | **(a)** | A typed library error beats git's silent exit 0 for a *library*, and (b) degrades the result type for every caller. (c) writes and then throws — a CQS violation, and it makes the error non-idempotent. This one genuinely needs the maintainer's call because it is a knowing divergence from the prime directive; if faithfulness wins, it is (b). |
-| **D9** | Empty-message TAB on the rewrite path (§1d) | **(a)** give `applyReflogReplace` a rewrite-specific serializer that always emits the TAB, leaving `serializeReflogLine` (append) as is. **(b)** change `serializeReflogLine` to always emit the TAB — wrong for append, breaks the writer pins. **(c)** leave it; record the divergence. | **(a)** | Two git writers, two rules; (a) encodes that honestly and is ~3 lines. (b) would regress `reflog-writers.test.ts`'s pinned append bytes. (c) is not available on reachability grounds: **measured**, `git update-ref refs/heads/probe <oid>` with no `-m` writes a tab-less line (`…+0200`), and a later `reflog expire` rewrites it to `…+0200\t`. (`git update-ref -m ''` is separately refused — `fatal: Refusing to perform update with empty message` — so the no-`-m` route is the one that reaches it.) |
-| **D10** | Does the result surface report skipped lines? | **(a)** no — git is silent; `ReflogResult` shape unchanged. **(b)** add `skippedLines: number` to the `show` result. **(c)** add it to the new seam verb's return only (internal), not to `ReflogResult`. | **(a)** if D7 = (b); **(c)** if D7 = (a) | A count is structured data, so ADR-249 permits it, but nothing consumes it and git offers no equivalent. (c) is the shape D7(a) needs internally without widening the public result. |
+| # | Settled decision | ADR |
+|---|---|---|
+| D1 | The lenient read is a `RefStore.readReflogLenient(name)` seam verb with a `reflog-store.ts` dispatcher; `fsck/roots.ts` deletes its private helper and consumes it. The `MAX_REFLOG_BYTES` cap still throws | [737](../adr/737-reflog-lenient-read-is-a-ref-store-seam-verb.md) |
+| D2 | The reftable backend implements the lenient verb as an **alias of its structural `readReflog`** — no invented per-record tolerance, no oracle to invent one against | [738](../adr/738-reftable-lenient-reflog-read-aliases-the-structural-read.md) |
+| D3 | The lenient read replaces the strict one in **every pinned reader**: `commands/reflog.ts`, `commands/rev-parse.ts`, all three `stash-ref.ts` sites, `snapshot-factory.ts`. fsck's arms are untouched | [739](../adr/739-lenient-reflog-reads-extend-to-every-pinned-reader.md) |
+| D4 | `branch -m` moves the reflog through a store-level **`moveReflog(from, to)`** verb (files: byte-preserving move; reftable: re-key the log records); `branch.ts` drops its read-concat-rewrite | [740](../adr/740-branch-rename-moves-the-reflog-through-a-move-reflog-verb.md) |
+| D5 | **Both** parsers treat an unterminated final line as absent — a file-level rule, so strict and lenient keep agreeing about every file. Changes published `parseReflog` behaviour | [741](../adr/741-reflog-parsers-drop-an-unterminated-final-line.md) |
+| D6 | `parseReflogLine` refuses a **zero timestamp** only; `parseIdentity` is untouched and §1a rows 20–22 stay recorded-and-asserted divergences | [742](../adr/742-reflog-line-parser-refuses-a-zero-timestamp.md) |
+| D7 | `runExpire` **rewrites unconditionally**, matching git; the implementation must first confirm the reflog replace write is atomic | [743](../adr/743-reflog-expire-always-rewrites.md) |
+| D8 ⚑ | Out-of-range `reflog delete` is a **silent no-op matching git** — no typed error, and the file is still rewritten and purged. `ReflogResult`'s `delete` arm admits an absent `removed` | [744](../adr/744-reflog-delete-out-of-range-is-a-silent-no-op.md) |
+| D9 | `applyReflogReplace` uses a **rewrite-specific serialization that always emits the message TAB**; `serializeReflogLine`'s append rule is untouched | [745](../adr/745-reflog-rewrite-serializer-always-emits-the-message-tab.md) |
+| D10 | **No skipped-line count anywhere** — not on the seam verb's return, not on `ReflogResult` | [746](../adr/746-reflog-results-carry-no-skipped-line-count.md) |
 
-**Suggested cut line.** D1(a) + D2(a) + D3(b) + D5(a) + D6(b) + D7(b) + D9(a) is one
-coherent change: one seam, one tolerance, faithful reads, faithful rewrite bytes, and
-no file tsgit writes that git would silently thin — all without touching
-`parseIdentity`. D4 and D8 are the two that need an explicit
-faithful-vs-typed-error ruling; rows 20–22 and D10 stay recorded-not-fixed.
+**Where D8 landed differently.** The recommendation was to keep the typed
+`REFLOG_ENTRY_OUT_OF_RANGE`, arguing that a library error beats git's silent exit 0
+and that admitting an absent `removed` degrades the result type for every caller. The
+ruling was faithfulness, consistent with the standing always-choose-the-git-faithful-fix
+principle. Three consequences run through the body: §2(d) replaces both `runDelete`
+throw sites with a no-op that still writes; §4 states that nothing replaces the
+error on that path while the error code itself stays live for `rev-parse`; and the
+`ReflogResult` change puts `reports/api.json` regeneration on the critical path. It
+also forces the D8 × D10 interaction to be resolved deliberately — writing
+unconditionally is what lets the purge happen without the skipped-line count D10
+declines to carry.
+
+**Shape of the resulting change.** One tolerance implementation, two new seam verbs,
+two parser predicate changes, two write-path changes, and one published type change —
+with `parseIdentity` and fsck's root set untouched. §1a rows 19–22 and 24 remain
+knowing divergences, asserted rather than fixed.
 
 ---
 
@@ -377,31 +525,53 @@ faithful-vs-typed-error ruling; rows 20–22 and D10 stay recorded-not-fixed.
   `parseReflogLenient`: one malformed line mid-file, at the head, at the tail, and
   every-line-malformed → `[]`. Each row asserts the **surviving entries**, not just a
   count, so a `StringLiteral`/`ArrayDeclaration` mutant cannot pass on length alone.
-  If **D5** lands, add the unterminated-final-line rows to *both* parsers, and assert
-  the strict parser's error `.data` (code + reason), never `toThrow(Class)`.
+  The unterminated-final-line rows (ADR-741) go to *both* parsers — the lenient one
+  drops the entry, the strict one drops it too rather than throwing — and every
+  remaining strict refusal asserts the error `.data` (code + reason), never
+  `toThrow(Class)`.
 - `test/unit/application/primitives/reflog-store.test.ts` — the new dispatcher:
   absent file → `[]`, over-cap → throws with the cap reason (isolated test, separate
   from the malformed-line test, so each guard is proven alone), malformed line →
   survivors.
-- If **D6(b)** lands: `parseReflogLine` refuses a zero timestamp, with an isolated
-  test per guard (zero timestamp alone; non-numeric alone) so neither proves the
+- `parseReflogLine` refuses a zero timestamp (ADR-742), with an isolated test per
+  guard (zero timestamp alone; non-numeric timestamp alone) so neither proves the
   other, plus a round-trip test showing `serializeReflogLine` no longer produces a
-  line the strict parser rejects.
+  line the strict parser rejects. **That round-trip is the arbiter of ADR-742's open
+  writer-side half**: if it can be made to fail — an entry whose timestamp is 0
+  reaching the append serializer — the writer gains a refusal; if it cannot, no
+  writer-side change ships. The decision is the test's, not the implementer's taste.
 - `test/unit/application/commands/reflog.test.ts` — `runShow` numbering over a
   corrupted log (`@{n}` skips the bad line); `runDelete` index arithmetic against the
-  *surviving* array; `runExpire` writes even when nothing expires (**D7**) — spy the
+  *surviving* array; `runExpire` writes even when nothing expires (ADR-743) — spy the
   `applyRefUpdates` call and assert the `entries` payload, since `toEqual` on the
   result cannot see a suppressed write.
-- Reftable: a `readReflogLenient` case through the reftable backend, plus the gc
-  retention-root regression from §2(a) (an object reachable only from a reftable
-  reflog survives `gc --prune=now`).
+- **Out-of-range `delete` (ADR-744) needs two unit assertions that do not overlap**,
+  because the throw they replace used to prove both at once:
+  1. *the result* — `runDelete` at an index past the oldest entry, at a negative
+     index, and at a non-integer index each resolve to a `delete` result with
+     `removed` **absent**, and none of them throws. Three isolated tests, one per
+     guard the old code had, so removing one guard cannot be covered by another.
+  2. *the write* — on a corrupted log, an out-of-range `runDelete` still calls
+     `applyRefUpdates` with a `reflogReplace` whose `entries` are the survivors.
+     Spy the call and assert the payload: the returned result is identical whether
+     or not the write happened, so it is the **only** observation that kills a
+     mutant deleting the write. Pair it with the clean-log case, where the same spy
+     shows the full stored set going back unchanged.
+- Both new seam verbs get a case **per backend**, not just on the files side:
+  `readReflogLenient` (files: skips the bad line; reftable: aliases the structural
+  read, ADR-738) and `moveReflog` (files: the file arrives byte-identical under the
+  new name; reftable: the log records are re-keyed, not re-serialized, ADR-740).
+- Reftable also carries the gc retention-root regression from §2(a) — an object
+  reachable only from a reftable reflog survives `gc --prune=now`. This is the latent
+  defect ADR-737 closes, so it is a regression test with a failing baseline, not a
+  confirmation test.
 
 ### Property tests
 
-Apply the four lenses to what actually changes. If **D5** lands, the file-level
-parsers change and two lenses fire — ship a `reflog-format.properties.test.ts`
-sibling (there is none today) with per-family arbitraries in a local
-`arbitraries.ts`:
+Apply the four lenses to what actually changes. ADR-741 changes the file-level
+parsers and ADR-742 the per-line predicate, so the lenses fire — a
+`reflog-format.properties.test.ts` sibling ships (there is none today) with
+per-family arbitraries in a local `arbitraries.ts`:
 
 - **Lens 3 — total function over a grammar.** `parseReflogLenient(anyText, 40)` never
   throws for any ASCII-no-NUL text. `numRuns: 100`.
@@ -410,11 +580,15 @@ sibling (there is none today) with per-family arbitraries in a local
   accepts individually — an invariant, not a re-implementation of the loop.
   `numRuns: 100`.
 - **Lens 1 — round trip.** `parseReflog(entries.map(serializeReflogLine).join(''))`
-  ≡ `entries`, which also pins D9's serializer split if it lands. `numRuns: 200`.
+  ≡ `entries`, over an arbitrary that can generate a **zero timestamp**. This is the
+  property that decides ADR-742's writer-side half (see Unit above): if it finds a
+  counterexample, the append writer gains a timestamp refusal. It also pins ADR-745's
+  serializer split — the rewrite path's always-TAB output must round-trip through the
+  same strict parser. `numRuns: 200`.
 
-If the design lands **without** D5, the parsers are untouched and none of the four
-lenses fire on the diff — say so in the review pass rather than adding a property for
-virtue.
+The unterminated-final-line rule is covered by lens 3's arbitrary, which generates
+text with and without a terminating LF; a property asserting only "the last line is
+dropped" would re-implement the production rule as its own oracle and prove nothing.
 
 ### Interop — `test/integration/reflog-interop.test.ts` (new)
 
@@ -436,49 +610,87 @@ Cases, one per pinned row:
    entries. Display parity is proven by *reconstructing* git's
    `<abbrev> <ref>@{n}: <message>` lines from `ReflogShowEntry` fields — the library
    emits no line (ADR-249).
-2. **Recorded-divergence rows — the ❌ rows.** Rows 19–25 are asserted **as they
-   actually resolve**, not skipped: whichever of D5/D6 lands flips a row from
-   "divergent, pinned" to "agreeing, pinned", and the row that does not land keeps a
-   live assertion of the difference (git keeps / tsgit drops, or the reverse). A
-   divergence with no test is the failure mode this backlog item exists to remove;
-   writing case 1 to sweep "every refusing class" would make the suite red unless
-   both D5 and D6 land, which is exactly the contradiction to avoid.
+2. **The ❌ rows, split by the settled decisions.** Rows 19–25 are all asserted, none
+   skipped, but in two groups. **Rows 23 and 25 join case 1's parity assertions** —
+   ADR-742 makes tsgit reject a zero timestamp as git does, ADR-741 makes both
+   parsers drop an unterminated final line as git does. **Rows 19–22 and 24 keep a
+   live assertion of the difference** (git keeps / tsgit rejects for 20; git rejects /
+   tsgit keeps for 21–22; message bytes for 19; timestamp value for 24). A divergence
+   with no test is the failure mode this backlog item exists to remove — and writing
+   case 1 to sweep "every refusing class" blindly would make the suite red on those
+   five, which is exactly the contradiction to avoid.
 3. **Accepted-line parity.** Rows 16–18 (tab-less empty message, trailing blank,
    CRLF) survive on both sides with identical fields. Row 16 is not hypothetical:
    git's own `update-ref` with no `-m` writes it.
 4. **Numbering.** `git rev-parse main@{n}` vs tsgit `revParse('main@{n}')` for
    `n = 0..3`, including git's `only has 3 entries` refusal at the boundary (exit 128
-   via `tryRunGitWithExit`) against tsgit's typed `REFLOG_ENTRY_OUT_OF_RANGE`. The
-   stderr `gap`/`only goes back to` warnings are git-side stdout decoration and are
-   **not** matched — record that in the test comment.
+   via `tryRunGitWithExit`) against tsgit's typed `REFLOG_ENTRY_OUT_OF_RANGE`. ADR-744
+   does **not** reach here — `rev-parse` refuses out-of-range on both sides, and only
+   the message text differs (rendering, ADR-249). The stderr `gap` / `only goes back
+   to` warnings are likewise not matched — record both facts in the test comment so a
+   later reader does not "fix" this case into a no-op.
 5. **`delete` rewrite.** `git reflog delete main@{1}` vs tsgit's; compare the
    resulting `.git/logs/refs/heads/main` **bytes**, which proves both the surviving
-   set and the §1d re-serialization (including D9's TAB if it lands).
-6. **`expire` rewrite.** `--expire=never` (nothing expires, file still purged),
+   set and the §1d re-serialization, ADR-745's always-TAB included.
+6. **Out-of-range `delete` — a parity case, not a divergence case (ADR-744).** Both
+   fixtures, both sides:
+   - *corrupt fixture* — `git reflog delete main@{3}` (and `main@{99}`) exits **0**
+     with empty stderr and leaves a file purged of the malformed line; tsgit's
+     `reflog({action:'delete', index: 3})` **resolves** — no throw — with `removed`
+     absent, and leaves the same bytes. Assert the exit code, the empty stderr, the
+     resolved result shape, and a byte comparison of the two files.
+   - *clean fixture* — `main@{4}`, `main@{99}` and a negative index exit 0 on both
+     sides and leave the file **content-identical** to its pre-command bytes.
+     Compare content, not `stat` — §1d measured that git's own clean rewrite changes
+     the inode, so an mtime/inode assertion would pin noise.
+
+   This case is the one that would have been written as an asserted divergence under
+   the original recommendation. It is now the direct oracle for §2(d), and the only
+   interop assertion that catches a regression back to the typed throw.
+7. **`expire` rewrite.** `--expire=never` (nothing expires, file still purged),
    `--expire=90.days.ago`, `--expire=now` (0 bytes, file present). Byte comparison
-   again; this is the case D7 exists for.
-7. **Degenerate files** (§1c): all-corrupt, 0-byte, absent-file, absent-ref — assert
+   again; this is the case ADR-743 exists for.
+8. **Degenerate files** (§1c): all-corrupt, 0-byte, absent-file, absent-ref — assert
    both the returned data and the refusal/exit shape, and note in-test every row
    where tsgit deliberately differs (`expire` on an absent reflog: git 255, tsgit
    treats as empty).
-8. **`--all`** purges `.git/logs/HEAD` on both sides.
-9. If **D3(b)** lands: `git stash list` / `stash drop` parity on a corrupted
-   `refs/stash` log. If **D4(a)** lands: `git branch -m` preserves the malformed line
-   byte-for-byte on both sides.
+9. **`--all`** purges `.git/logs/HEAD` on both sides.
+10. **`stash` and `branch -m`, both in scope.** ADR-739: `git stash list` /
+    `stash drop` parity on a corrupted `refs/stash` log — `drop` compares the
+    rewritten bytes, and git's six repeated gap warnings on stderr are rendering and
+    are not matched. ADR-740: `git branch -m` preserves the malformed line
+    byte-for-byte on both sides, and the appended rename entry matches — the
+    assertion that distinguishes a real move from a lenient parse-and-rewrite, which
+    would drop that line.
 
-Every case asserts error `.data` (code + reason) via `try`/`catch`, never bare
-`toThrow(TsgitError)`.
+Every case that expects a refusal asserts the error `.data` (code + reason) via
+`try`/`catch`, never bare `toThrow(TsgitError)`. Case 6 is the mirror image: it
+asserts a call **resolves**, and asserts the resolved shape and the file bytes —
+an "it did not throw" assertion alone would survive a mutant that returns the wrong
+result or skips the write.
 
 ### Mutation
 
 Scoped Stryker over `src/domain/reflog/`, `src/application/primitives/ref-store.ts`,
-`src/application/primitives/reflog-store.ts` and `src/application/commands/reflog.ts`
-per `.claude/workflow/mutation.md`. Watch for: the existing proven-equivalent
-suppression on `parseReflogLenient` L83 (do not disturb — and if D5 reshapes that
-loop, the equivalence proof is structure-specific and must be **re-proved**, not
-carried forward); boundary mutants on `length - 1 - index`; and the D7 guard, whose
-removal must be killed by interop case 6's `--expire=never` byte comparison — the
-only assertion that sees a suppressed write.
+`src/application/primitives/reflog-store.ts`, `src/application/primitives/stash-ref.ts`,
+`src/application/commands/reflog.ts`, `src/application/commands/rev-parse.ts` and
+`src/application/commands/branch.ts` per `.claude/workflow/mutation.md` — ADR-739 and
+ADR-740 widen the diff past the command. Watch for:
+
+- the existing proven-equivalent suppression on `parseReflogLenient` L83 — **do not
+  disturb it**, and note that ADR-741 reshapes that loop's file-level split, so the
+  equivalence proof is structure-specific and must be **re-proved against the new
+  shape**, never carried forward;
+- boundary mutants on `length - 1 - index` in `runDelete`, `pickByIndex` and the
+  stash selectors;
+- ADR-743's deleted guard: a mutant reinstating a conditional write is killed only by
+  interop case 7's `--expire=never` byte comparison, the one assertion that sees a
+  suppressed write;
+- ADR-744's two removed throw sites, where the risk runs the other way. A mutant that
+  deletes `runDelete`'s write on the out-of-range path is invisible to the result, so
+  the `applyRefUpdates` spy is its only killer; and a mutant flipping the range
+  comparison changes *which* entry is removed, which only the per-guard trio of unit
+  tests separates.
 
 ---
 
@@ -504,14 +716,19 @@ only assertion that sees a suppressed write.
   Pre-existing `dwim_log` behaviour, a resolution question, not a tolerance one.
 - **`reflog expire` on a ref with no reflog.** git refuses with
   `error: reflog could not be found: '<ref>'` (exit 255); tsgit treats it as empty.
-  Pre-existing; recorded in §1c and asserted-as-divergent in interop case 7 rather
+  Pre-existing; recorded in §1c and asserted-as-divergent in interop case 8 rather
   than silently skipped.
 - **`fsck`'s own reflog roots** (`roots.ts` L207, the non-strict arm). Making it
   lenient changes which roots fsck *reports*, which needs its own oracle — `git fsck`
   says nothing about reflog corruption at all (measured, exit 0).
-- **`parseIdentity` alignment** — see **D6**. It is shared with commit and tag object
-  parsing, where git uses a different parser; changing it from a reflog PR would
-  reach far outside this surface.
+- **`parseIdentity` alignment**, and with it §1a rows 20–22 — settled out by ADR-742.
+  It is shared with commit and tag object parsing, where git uses a different parser;
+  changing it from a reflog PR would reach far outside this surface. Row 23 is in
+  scope precisely because it is fixable *without* touching `parseIdentity`.
+- **Any skipped-line count or corruption diagnostic** — settled out by ADR-746. The
+  seam verb returns entries only and `ReflogResult` grows no counter; a caller that
+  wants the count diffs a strict parse against a lenient one itself. This is what
+  makes §2(c)/§2(d)'s unconditional writes necessary rather than merely simplest.
 - **`writeReflog`** (`reflog-store.ts` L35–44). Exported publicly but has no `src`
   caller; the command writes through `applyRefUpdates`/`reflogReplace`. Untouched.
 - **`reflogExists`'s reftable blindness** (`reflog-store.ts` L30–32). The published
