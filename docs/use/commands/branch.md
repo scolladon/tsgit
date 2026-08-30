@@ -38,6 +38,13 @@ Each method returns a concrete result — no discriminator to narrow on at the c
 | `delete({ name, force? })` | Delete a local branch. |
 | `rename({ from, to, force? })` | Rename a branch, moving its reflog; updates HEAD when the renamed branch is checked out. `force` overrides an existing `to`. |
 
+## Behaviour
+
+- **Reflog move, not rewrite.** `rename` moves the source's reflog file byte-for-byte instead of parsing and re-serializing it, so a malformed line survives verbatim under the new name; the rename entry is appended afterward.
+- **Renaming a branch onto its own name succeeds** — the ref and its log stay put, and only the rename entry is appended.
+- **`force` onto an existing branch replaces its reflog**, not concatenates it: the destination's prior history is dropped before the source's log moves in.
+- **An orphan reflog file under the destination name** (no live ref, left behind by an earlier delete) survives when the branch being renamed has no reflog of its own — the rename entry is appended onto it, matching git; when the source does have a reflog, moving it overwrites whatever log already sits at the destination.
+
 ## Examples
 
 ```ts
@@ -56,8 +63,7 @@ await repo.branch.delete({ name: 'feature/y' });
 
 ## See also
 
-- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`updateRef`](../primitives/update-ref.md)
+- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`updateRef`](../primitives/update-ref.md), [`RefStore.moveReflog`](../primitives/internals.md#refstore--getrefstore)
 - Related commands: [`checkout`](checkout.md), [`tag`](tag.md), [`merge`](merge.md)
-- ADRs: [181](../../adr/181-nested-namespace-porcelain.md), [192](../../adr/192-crud-namespace-per-verb-results.md), [193](../../adr/193-no-transition-shim-hard-remove-callable.md)
+- ADRs: [181](../../adr/181-nested-namespace-porcelain.md), [192](../../adr/192-crud-namespace-per-verb-results.md), [193](../../adr/193-no-transition-shim-hard-remove-callable.md), [740](../../adr/740-branch-rename-moves-the-reflog-through-a-move-reflog-verb.md)
 - Recipes: [navigate ref history](../recipes.md#navigate-ref-history)
-```

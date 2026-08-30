@@ -12,7 +12,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
-import { parseApproxidate } from '../../../../src/domain/reflog/index.js';
+import { parseApproxidate, serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -95,10 +95,12 @@ describe('reflog command', () => {
           expect(result.kind).toBe('show');
           if (result.kind !== 'show') throw new Error('unreachable');
           expect(result.ref).toBe(HEAD);
+          // A files-backend read attaches `raw` (the on-disk byte slices) to
+          // every entry, so each expected entry is matched as a superset.
           expect(result.entries).toEqual([
-            { index: 0, selector: 'HEAD@{0}', entry: third },
-            { index: 1, selector: 'HEAD@{1}', entry: second },
-            { index: 2, selector: 'HEAD@{2}', entry: first },
+            { index: 0, selector: 'HEAD@{0}', entry: expect.objectContaining(third) },
+            { index: 1, selector: 'HEAD@{1}', entry: expect.objectContaining(second) },
+            { index: 2, selector: 'HEAD@{2}', entry: expect.objectContaining(first) },
           ]);
         });
       });
@@ -138,6 +140,41 @@ describe('reflog command', () => {
           // Assert
           expect(result.kind === 'show' && result.ref).toBe(BRANCH);
           expect(result.kind === 'show' && result.entries[0]?.selector).toBe('refs/heads/main@{0}');
+        });
+      });
+    });
+
+    describe('Given a reflog with a malformed line mid-file', () => {
+      describe('When reflog show', () => {
+        it('Then the malformed line is skipped and survivors are numbered contiguously', async () => {
+          // Arrange — a raw file: valid, garbage, valid, valid — the strict
+          // reader would throw on the whole file; the lenient one drops only
+          // the garbage line and keeps counting the rest.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          const first = entry({ message: 'commit (initial): first' });
+          const second = entry({ oldId: OID_X, newId: OID_Y, message: 'commit: second' });
+          const third = entry({ oldId: OID_Y, newId: OID_Z, message: 'commit: third' });
+          const raw =
+            serializeReflogLine(first, 40) +
+            'this is not a reflog line at all\n' +
+            serializeReflogLine(second, 40) +
+            serializeReflogLine(third, 40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
+
+          // Act
+          const result = await reflog(ctx, { action: 'show' });
+
+          // Assert — newest-first survivors: third(@0), second(@1), first(@2).
+          expect(result.kind).toBe('show');
+          if (result.kind !== 'show') throw new Error('unreachable');
+          // A files-backend read attaches `raw` (the on-disk byte slices) to
+          // every entry, so each expected entry is matched as a superset.
+          expect(result.entries).toEqual([
+            { index: 0, selector: 'HEAD@{0}', entry: expect.objectContaining(third) },
+            { index: 1, selector: 'HEAD@{1}', entry: expect.objectContaining(second) },
+            { index: 2, selector: 'HEAD@{2}', entry: expect.objectContaining(first) },
+          ]);
         });
       });
     });
@@ -227,12 +264,15 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
-          // Assert
-          expect(result).toEqual({ kind: 'delete', removed: second });
+          // Assert — `removed` is present, the optional field's other
+          // direction. A files-backend read attaches `raw`, so the removed
+          // entry and every surviving entry are matched as a superset.
+          expect(result).toEqual({ kind: 'delete', removed: expect.objectContaining(second) });
+          expect('removed' in result).toBe(true);
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
-            third,
-            first,
+            expect.objectContaining(third),
+            expect.objectContaining(first),
           ]);
         });
       });
@@ -251,10 +291,15 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
 
-          // Assert
-          expect(result.kind === 'delete' && result.removed).toEqual(second);
+          // Assert — a files-backend read attaches `raw`, so the removed and
+          // surviving entries are matched as a superset of the fixtures.
+          expect(result.kind === 'delete' && result.removed).toEqual(
+            expect.objectContaining(second),
+          );
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
-          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([first]);
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            expect.objectContaining(first),
+          ]);
         });
       });
     });
@@ -277,8 +322,12 @@ describe('reflog command', () => {
           // Assert
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           const repaired = after.kind === 'show' ? after.entries.map((e) => e.entry) : [];
-          // newest-first: third (repaired), first
-          expect(repaired).toEqual([{ ...third, oldId: OID_X }, first]);
+          // newest-first: third (repaired), first — a files-backend read
+          // attaches `raw`, so each entry is matched as a superset.
+          expect(repaired).toEqual([
+            expect.objectContaining({ ...third, oldId: OID_X }),
+            expect.objectContaining(first),
+          ]);
         });
       });
     });
@@ -297,9 +346,11 @@ describe('reflog command', () => {
           // Act
           await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0, rewrite: true });
 
-          // Assert
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
-          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([first]);
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            expect.objectContaining(first),
+          ]);
         });
       });
     });
@@ -318,11 +369,11 @@ describe('reflog command', () => {
           // Act
           await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
-          // Assert
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
-            third,
-            first,
+            expect.objectContaining(third),
+            expect.objectContaining(first),
           ]);
         });
       });
@@ -342,10 +393,13 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1 });
 
-          // Assert — the oldest entry is removed, not rejected as out of range.
-          expect(result).toEqual({ kind: 'delete', removed: first });
+          // Assert — the oldest entry is removed, not rejected as out of
+          // range. A files-backend read attaches `raw`, matched as a superset.
+          expect(result).toEqual({ kind: 'delete', removed: expect.objectContaining(first) });
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
-          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([second]);
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            expect.objectContaining(second),
+          ]);
         });
       });
     });
@@ -405,89 +459,61 @@ describe('reflog command', () => {
 
     describe('Given an index past the last entry', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE with requested and available', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — two entries, index 2 is out of range.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, [entry(), entry({ oldId: OID_X, newId: OID_Y })]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 2 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 2 });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: 2,
-            available: 2,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given a negative index', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, [entry()]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: -1 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: -1 });
 
           // Assert
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: -1,
-            available: 1,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given an empty reflog file', () => {
       describe('When delete index 0', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — the file exists (so not REFLOG_NOT_FOUND) but holds no entries.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, []);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 });
 
           // Assert
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: 0,
-            available: 0,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given a NaN index', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE with the NaN requested', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — NaN would index `stored[NaN]` as `undefined` and bypass the
           // range guard; the integer guard must reject it.
           const ctx = createMemoryContext();
@@ -495,49 +521,94 @@ describe('reflog command', () => {
           await writeReflog(ctx, HEAD, [entry()]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: Number.NaN });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: Number.NaN });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: Number.NaN,
-            available: 1,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
         });
       });
     });
 
     describe('Given a fractional index', () => {
       describe('When delete', () => {
-        it('Then throws REFLOG_ENTRY_OUT_OF_RANGE', async () => {
+        it('Then resolves with removed absent', async () => {
           // Arrange — 1.5 is in range numerically but is not a valid entry index.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, HEAD, [entry(), entry({ oldId: OID_X, newId: OID_Y })]);
 
           // Act
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1.5 });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 1.5 });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data).toEqual({
-            code: 'REFLOG_ENTRY_OUT_OF_RANGE',
-            ref: 'HEAD',
-            requested: 1.5,
-            available: 2,
-          });
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a raw reflog file with a malformed line and an out-of-range index', () => {
+      describe('When delete', () => {
+        it('Then the malformed line is purged from disk and the valid entry survives', async () => {
+          // Arrange — seeded with a raw writeUtf8 (not writeReflog, which would
+          // refuse the malformed line itself), so the corruption actually lands
+          // on disk.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          const kept = entry({ message: 'kept' });
+          const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+          await ctx.fs.writeUtf8(reflogPath, `${serializeReflogLine(kept, 40)}garbage line\n`);
+
+          // Act
+          const result = await reflog(ctx, { action: 'delete', ref: 'HEAD', index: 99 });
+
+          // Assert — out of range is a no-op selection, but the write still
+          // happens and purges the malformed line.
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
+          const after = await ctx.fs.readUtf8(reflogPath);
+          expect(after).toBe(serializeReflogLine(kept, 40));
+        });
+      });
+    });
+
+    describe('Given a clean reflog and an out-of-range index', () => {
+      describe('When delete', () => {
+        it('Then the log is still rewritten and its content is unchanged', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          const first = entry({ message: 'first' });
+          const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
+          await writeReflog(ctx, HEAD, [first, second]);
+          const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+          const renameDestinations: string[] = [];
+          const spiedCtx: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              rename: (source: string, destination: string): Promise<void> => {
+                renameDestinations.push(destination);
+                return ctx.fs.rename(source, destination);
+              },
+            },
+          };
+
+          // Act
+          const result = await reflog(spiedCtx, { action: 'delete', ref: 'HEAD', index: 99 });
+
+          // Assert — the index named no entry, but the lock file was still
+          // renamed onto the log, and the content that landed is unchanged.
+          if (result.kind !== 'delete') expect.fail('expected a delete result');
+          expect('removed' in result).toBe(false);
+          expect(renameDestinations).toContain(reflogPath);
+          // A files-backend read attaches `raw`, matched as a superset.
+          const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
+          expect(after.kind === 'show' && after.entries.map((e) => e.entry)).toEqual([
+            expect.objectContaining(second),
+            expect.objectContaining(first),
+          ]);
         });
       });
     });
@@ -943,16 +1014,23 @@ describe('reflog command', () => {
 
     describe('Given a missing reflog', () => {
       describe('When expire', () => {
-        it('Then nothing is removed and kept is zero', async () => {
-          // Arrange
+        it('Then throws REFLOG_NOT_FOUND and creates no log file', async () => {
+          // Arrange — git refuses (exit 255) and creates nothing; the
+          // unconditional rewrite must not manufacture an empty log file.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
 
-          // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'refs/heads/missing' });
-
-          // Assert
-          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          // Act & Assert
+          try {
+            await reflog(ctx, { action: 'expire', ref: 'refs/heads/missing' });
+            expect.unreachable('expire on a missing reflog must refuse');
+          } catch (err) {
+            expect((err as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/missing',
+            });
+          }
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/missing`)).toBe(false);
         });
       });
     });
@@ -985,12 +1063,145 @@ describe('reflog command', () => {
       });
     });
 
+    describe('Given an entry far older than the default cutoff', () => {
+      describe('When expire runs with the never grammar', () => {
+        it.each([
+          { raw: 'never', label: 'never' },
+          { raw: ' NEVER ', label: 'NEVER with surrounding spaces' },
+          { raw: 'false', label: 'false (git synonym)' },
+        ])('Then the entry survives $label', async ({ raw }) => {
+          // Arrange — a 400-day-old entry that the 90-day default WOULD prune,
+          // so surviving proves the grammar, not the timestamps.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 400 * DAY), message: 'ancient' }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: raw });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+
+      describe('When expire runs with the all grammar on a FUTURE-dated entry', () => {
+        it.each([{ raw: 'all' }, { raw: 'now' }])(
+          'Then even an entry stamped ahead of the clock is pruned by $raw',
+          async ({ raw }) => {
+            // Arrange — git maps all/now to the maximum time, not the current
+            // one: an entry a year in the future is still deleted.
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [
+              entry({ newId: tip, identity: identityAt(now + 365 * DAY), message: 'future' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: raw });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          },
+        );
+      });
+
+      describe('When expire runs with uppercase NOW on a FUTURE-dated entry', () => {
+        it('Then the entry is KEPT — NOW is a date (the clock), not the exact-match now keyword', async () => {
+          // Arrange — the one input separating exact-match `now` (maximum
+          // time) from the date parser's tolerant casing (current clock):
+          // git keeps a future-dated entry under --expire=NOW and deletes it
+          // under --expire=now.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now + 365 * DAY), message: 'future' }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'NOW' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+
+      describe('When expire runs with an uppercase keyword', () => {
+        it.each([{ raw: 'ALL' }, { raw: 'FALSE' }])(
+          'Then $raw refuses — false/all are exact-match keywords, as in git',
+          async ({ raw }) => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [
+              entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'recent' }),
+            ]);
+
+            // Act & Assert
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: raw });
+              expect.unreachable('an uppercase keyword must refuse');
+            } catch (err) {
+              expect((err as TsgitError).data).toEqual({
+                code: 'REVPARSE_UNRESOLVED',
+                expression: raw,
+              });
+            }
+          },
+        );
+      });
+
+      describe('When expire runs with --all on a repository with no reflogs at all', () => {
+        it('Then it reports zero removed and kept and creates no files', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', all: true });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
+        });
+      });
+
+      describe('When expire runs with the all grammar', () => {
+        it('Then every entry is pruned (git synonym for now)', async () => {
+          // Arrange
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'recent' }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'all' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        });
+      });
+    });
+
     describe('Given no entry is stale enough to prune', () => {
       describe('When expire', () => {
-        it('Then the reflog file is not rewritten', async () => {
-          // Arrange — two recent reachable entries; nothing crosses the cutoff. The
-          // write-back must be skipped entirely (the count equality short-circuits
-          // it), so the reflog path receives no `writeUtf8` call.
+        it('Then the reflog file is rewritten anyway and the entries are unchanged', async () => {
+          // Arrange — two recent reachable entries; nothing crosses the cutoff.
+          // The rewrite runs on every call regardless — a lock-then-rename pair
+          // onto the reflog path is the proof it happened; `writeUtf8` no longer
+          // sees the write once the replace goes through `atomicWriteFile`.
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
@@ -1000,14 +1211,14 @@ describe('reflog command', () => {
             entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'second recent' }),
           ]);
           const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
-          const writes: string[] = [];
+          const renameDestinations: string[] = [];
           const spiedCtx: Context = {
             ...ctx,
             fs: {
               ...ctx.fs,
-              writeUtf8: (path: string, content: string): Promise<void> => {
-                writes.push(path);
-                return ctx.fs.writeUtf8(path, content);
+              rename: (source: string, destination: string): Promise<void> => {
+                renameDestinations.push(destination);
+                return ctx.fs.rename(source, destination);
               },
             },
           };
@@ -1015,14 +1226,41 @@ describe('reflog command', () => {
           // Act
           const result = await reflog(spiedCtx, { action: 'expire', ref: 'HEAD' });
 
-          // Assert — nothing pruned, and the reflog file was never rewritten.
+          // Assert — nothing pruned, but the lock file was renamed onto the log.
           expect(result).toEqual({ kind: 'expire', removed: 0, kept: 2 });
-          expect(writes).not.toContain(reflogPath);
+          expect(renameDestinations).toContain(reflogPath);
           const after = await reflog(ctx, { action: 'show', ref: 'HEAD' });
           expect(after.kind === 'show' && after.entries.map((e) => e.entry.message)).toEqual([
             'second recent',
             'first recent',
           ]);
+        });
+      });
+    });
+
+    describe('Given a raw reflog file with a malformed line and no entry stale enough to prune', () => {
+      describe('When expire runs with expire: never', () => {
+        it('Then the malformed line is purged from disk and the valid entry survives', async () => {
+          // Arrange — seeded with a raw writeUtf8 (not writeReflog, which would
+          // refuse the malformed line itself), so the corruption actually lands
+          // on disk. The old guard compared PARSED counts (1 stored === 1 kept,
+          // since the garbage line was never counted as an entry), which used
+          // to skip the write and leave the malformed line behind.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          const kept = entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'kept' });
+          const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
+          await ctx.fs.writeUtf8(reflogPath, `${serializeReflogLine(kept, 40)}garbage line\n`);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'never' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          const after = await ctx.fs.readUtf8(reflogPath);
+          expect(after).toBe(serializeReflogLine(kept, 40));
         });
       });
     });

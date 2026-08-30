@@ -10,6 +10,7 @@
  *   kind:    equivalent-under-readback
  *   format:  git-packfile-v2
  */
+import { concatBytes } from '../objects/encoding.js';
 import { crc32 } from './crc32.js';
 import { invalidPackIndex } from './error.js';
 import {
@@ -55,7 +56,7 @@ export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): Pack
     currentOffset += entryBytes.length;
   }
 
-  return { data: concatAll(chunks), entries: metas };
+  return { data: concatBytes(chunks), entries: metas };
 }
 
 export function serializePackIndex(
@@ -162,16 +163,5 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const result = new Uint8Array(a.length + b.length);
   result.set(a);
   result.set(b, a.length);
-  return result;
-}
-
-function concatAll(arrays: ReadonlyArray<Uint8Array>): Uint8Array {
-  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const arr of arrays) {
-    result.set(arr, offset);
-    offset += arr.length;
-  }
   return result;
 }

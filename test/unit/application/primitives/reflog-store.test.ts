@@ -5,6 +5,7 @@ import {
   deleteReflog,
   listReflogs,
   readReflog,
+  readReflogLenient,
   reflogExists,
   writeReflog,
 } from '../../../../src/application/primitives/reflog-store.js';
@@ -86,9 +87,13 @@ describe('reflog-store', () => {
           await appendReflog(ctx, HEAD, first);
           await appendReflog(ctx, HEAD, second);
 
-          // Assert
+          // Assert — a files-backend read attaches `raw` (the on-disk byte
+          // slices), so each entry is matched as a superset.
           const entries = await readReflog(ctx, HEAD);
-          expect(entries).toEqual([first, second]);
+          expect(entries).toEqual([
+            expect.objectContaining(first),
+            expect.objectContaining(second),
+          ]);
         });
       });
     });
@@ -121,8 +126,8 @@ describe('reflog-store', () => {
           // Act
           const result = await readReflog(ctx, BRANCH);
 
-          // Assert
-          expect(result).toEqual([reflogEntry]);
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
+          expect(result).toEqual([expect.objectContaining(reflogEntry)]);
         });
       });
     });
@@ -167,6 +172,69 @@ describe('reflog-store', () => {
 
           // Assert
           expect(result).toHaveLength(1);
+        });
+      });
+    });
+  });
+
+  describe('readReflogLenient', () => {
+    describe('Given a missing reflog file', () => {
+      describe('When readReflogLenient', () => {
+        it('Then returns an empty array', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+
+          // Act
+          const result = await readReflogLenient(ctx, HEAD);
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a reflog with a malformed line between two valid entries', () => {
+      describe('When readReflogLenient', () => {
+        it('Then the malformed line is skipped and both valid entries survive', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const first = entry({ message: 'first' });
+          const second = entry({ oldId: OID_A, message: 'second' });
+          await appendReflog(ctx, HEAD, first);
+          await ctx.fs.appendUtf8(
+            `${ctx.layout.gitDir}/logs/HEAD`,
+            'this is not a valid reflog line at all\n',
+          );
+          await appendReflog(ctx, HEAD, second);
+
+          // Act
+          const result = await readReflogLenient(ctx, HEAD);
+
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
+          expect(result).toEqual([expect.objectContaining(first), expect.objectContaining(second)]);
+        });
+      });
+    });
+
+    describe('Given a reflog file larger than MAX_REFLOG_BYTES', () => {
+      describe('When readReflogLenient', () => {
+        it('Then it still throws INVALID_REFLOG_ENTRY — the cap is not tolerated', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const padded = lineOfSize(MAX_REFLOG_BYTES + 1);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, padded);
+
+          // Act + Assert
+          try {
+            await readReflogLenient(ctx, HEAD);
+            expect.fail('expected INVALID_REFLOG_ENTRY');
+          } catch (err) {
+            expect(err).toBeInstanceOf(TsgitError);
+            expect((err as TsgitError).data).toEqual({
+              code: 'INVALID_REFLOG_ENTRY',
+              reason: `reflog file exceeds ${MAX_REFLOG_BYTES} bytes`,
+            });
+          }
         });
       });
     });
@@ -234,8 +302,29 @@ describe('reflog-store', () => {
           // Act
           await writeReflog(ctx, HEAD, written);
 
-          // Assert
-          expect(await readReflog(ctx, HEAD)).toEqual(written);
+          // Assert — a files-backend read attaches `raw`, matched as a superset.
+          expect(await readReflog(ctx, HEAD)).toEqual(
+            written.map((w) => expect.objectContaining(w)),
+          );
+        });
+      });
+    });
+
+    describe('Given an entry with an empty message', () => {
+      describe('When writeReflog replaces the log with it', () => {
+        it('Then the on-disk line carries the rewrite TAB before the LF', async () => {
+          // Arrange — the REWRITE byte form, distinct from the append form
+          // (which ends a tab-less line at the timezone).
+          const ctx = createMemoryContext();
+          await appendReflog(ctx, HEAD, entry());
+
+          // Act
+          await writeReflog(ctx, HEAD, [entry({ message: '' })]);
+
+          // Assert — the whole line, not just the suffix: meta, the always-
+          // present rewrite TAB, and nothing after it.
+          const text = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`);
+          expect(text).toBe(`${ZERO_OID} ${OID_A} Ada <ada@example.com> 1716240000 +0000\t\n`);
         });
       });
     });

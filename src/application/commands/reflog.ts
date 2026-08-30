@@ -7,14 +7,14 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { parseApproxidate } from '../../domain/reflog/approxidate.js';
-import { reflogEntryOutOfRange, reflogNotFound } from '../../domain/reflog/error.js';
+import { reflogNotFound } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { getRefStore } from '../primitives/ref-store.js';
-import { listReflogs, readReflog } from '../primitives/reflog-store.js';
+import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
+import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
+import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -53,7 +53,14 @@ export type ReflogResult =
     }
   | { readonly kind: 'exists'; readonly exists: boolean }
   | { readonly kind: 'expire'; readonly removed: number; readonly kept: number }
-  | { readonly kind: 'delete'; readonly removed: ReflogEntry };
+  | {
+      readonly kind: 'delete';
+      /**
+       * Absent when `index` named no entry — git's own silent no-op for an
+       * out-of-range `reflog delete`. The reflog is rewritten either way.
+       */
+      readonly removed?: ReflogEntry;
+    };
 
 const DEFAULT_EXPIRE = '90.days.ago';
 const DEFAULT_EXPIRE_UNREACHABLE = '30.days.ago';
@@ -75,7 +82,7 @@ export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<Ref
 
 const runShow = async (ctx: Context, refName: string): Promise<ReflogResult> => {
   const ref = resolveUserRef(refName);
-  const stored = await readReflog(ctx, ref);
+  const stored = await readReflogLenient(ctx, ref);
   const lastIndex = stored.length - 1;
   // Build newest-first directly: output position `index` (0 = newest) reads the
   // entry at file position `lastIndex - index` — no array mutation.
@@ -101,30 +108,33 @@ const runExists = async (ctx: Context, refName: string): Promise<ReflogResult> =
   return { kind: 'exists', exists: await hasReflog(ctx, resolveUserRef(refName)) };
 };
 
+/**
+ * The file-order position `index` names, counting newest-first — or undefined
+ * when it names no entry at all. git's own out-of-range delete is a silent
+ * no-op, so this is a selection, not a refusal. Three independent ways to
+ * miss: a non-integer index, a negative one, and one past the oldest entry.
+ */
+const selectTarget = (length: number, index: number): number | undefined => {
+  if (!Number.isInteger(index) || index < 0) return undefined;
+  const position = length - 1 - index;
+  return position < 0 ? undefined : position;
+};
+
 const runDelete = async (
   ctx: Context,
   opts: { readonly ref: string; readonly index: number; readonly rewrite?: boolean },
 ): Promise<ReflogResult> => {
   const ref = resolveUserRef(opts.ref);
   if (!(await hasReflog(ctx, ref))) throw reflogNotFound(ref);
-  const stored = await readReflog(ctx, ref);
-  // A non-integer or negative index would bypass the range guard below
-  // (`stored[NaN]` is `undefined`, silently returned as an entry).
-  if (!Number.isInteger(opts.index) || opts.index < 0) {
-    throw reflogEntryOutOfRange(ref, opts.index, stored.length);
-  }
-  // With `index` a non-negative integer, `target` cannot exceed `length - 1`;
-  // only the lower bound (index past the oldest entry) remains reachable.
-  const target = stored.length - 1 - opts.index;
-  if (target < 0) {
-    throw reflogEntryOutOfRange(ref, opts.index, stored.length);
-  }
-  const removed = stored[target] as ReflogEntry;
-  const survivors = repairChain(stored, target, opts.rewrite === true);
+  const stored = await readReflogLenient(ctx, ref);
+  const target = selectTarget(stored.length, opts.index);
+  const survivors =
+    target === undefined ? stored : repairChain(stored, target, opts.rewrite === true);
   await getRefStore(ctx).applyRefUpdates([
     { kind: 'reflogReplace', name: ref, entries: survivors },
   ]);
-  return { kind: 'delete', removed };
+  if (target === undefined) return { kind: 'delete' };
+  return { kind: 'delete', removed: stored[target] as ReflogEntry };
 };
 
 /**
@@ -156,27 +166,45 @@ const runExpire = async (
   const expireCut = resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now);
   const unreachableCut = resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now);
   const reachable = await collectReachable(ctx);
-  const targets = opts.all === true ? await listReflogs(ctx) : [resolveUserRef(opts.ref ?? 'HEAD')];
+  const single = opts.all === true ? undefined : resolveUserRef(opts.ref ?? 'HEAD');
+  if (single !== undefined && !(await hasReflog(ctx, single))) {
+    // git refuses a single-ref expire when no reflog exists (exit 255) and
+    // creates nothing; without this guard the unconditional rewrite below
+    // would manufacture an empty log file and its parent directories.
+    throw reflogNotFound(single);
+  }
+  const targets = single === undefined ? await listReflogs(ctx) : [single];
   let removed = 0;
   let kept = 0;
+  const updates: RefUpdate[] = [];
   for (const ref of targets) {
-    const stored = await readReflog(ctx, ref);
+    const stored = await readReflogLenient(ctx, ref);
     const survivors = stored.filter((entry) =>
       keepEntry(entry, reachable, expireCut, unreachableCut),
     );
     removed += stored.length - survivors.length;
     kept += survivors.length;
-    if (survivors.length !== stored.length) {
-      await getRefStore(ctx).applyRefUpdates([
-        { kind: 'reflogReplace', name: ref, entries: survivors },
-      ]);
-    }
+    // Unconditional: git rewrites the reflog on every `expire` run, even when
+    // nothing is pruned — the only way a malformed line (which a lenient read
+    // silently drops, leaving parsed counts equal) still gets purged from disk.
+    updates.push({ kind: 'reflogReplace', name: ref, entries: survivors });
   }
+  // One transaction for every target: on the reftable backend each
+  // applyRefUpdates call is a full stack transaction plus a compaction
+  // attempt, so a per-ref loop makes `expire --all` cost grow faster than linearly in ref count
+  // (measured 3.6-5x at 200-800 refs) and leaves a partial rewrite behind if
+  // one ref fails mid-loop. An empty list is a no-op on both backends, so
+  // zero targets need no guard.
+  await getRefStore(ctx).applyRefUpdates(updates);
   return { kind: 'expire', removed, kept };
 };
 
 const resolveCutoff = (raw: string, now: number): number => {
-  const cutoff = parseApproxidate(raw, now);
+  // One shared grammar with gc.pruneExpire (git's parse_expiry_date):
+  // never (case-tolerant) and exact false → nothing expires; exact
+  // all/now → everything, future-dated entries included; anything else —
+  // uppercase ALL/FALSE among it — goes to the date parser or refuses.
+  const cutoff = resolveExpiryCutoff(raw, now);
   if (cutoff === undefined) throw revparseUnresolved(raw);
   return cutoff;
 };

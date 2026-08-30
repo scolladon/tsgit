@@ -14,7 +14,6 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { errorDataCode } from '../primitives/internal/error-data-code.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
-import { readReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
@@ -162,21 +161,37 @@ export const branchRename = async (
   const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
   const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);
-  const reflogMessage = branchRenamed(from, to);
-  // Capture the source log before any write so the rename preserves history.
-  const movedLog = await readReflog(ctx, from);
   const store = getRefStore(ctx);
+  if (from === to) {
+    // git accepts a self-rename (`branch -m x x` and `-M x x` both exit 0):
+    // the ref and its log stay put and only the rename entry is appended.
+    // Without this arm the trailing delete below would remove the branch
+    // that was just "renamed" onto itself.
+    await store.applyRefUpdates([
+      {
+        kind: 'reflogOnly',
+        name: to,
+        reflog: { oldId: id, newId: id, message: branchRenamed(from, to) },
+      },
+    ]);
+    return { from, to };
+  }
+  // Probed BEFORE the CAS set below makes `to` exist: git's forced rename
+  // deletes the destination ref first, which drops its log; an orphan log
+  // with no live ref underneath survives and takes the rename entry as an
+  // append (measured, git 2.55.0).
+  const replacesLiveRef = input.force === true && (await refExists(ctx, to));
+  // The CAS conflict check runs BEFORE any log move: git checks and refuses
+  // before touching anything. The failure window differs from git's: a throw
+  // after moveReflog leaves `from` a live branch whose log already moved to
+  // `to`, where git stages the log through a temp path and rolls back.
   try {
-    // A rename entry notes the rename without moving the ref's value, so
-    // old/new are both the resolved tip (measured against real git's files
-    // backend) — not the zero id `updateRef`'s own creation path would infer.
     await store.applyRefUpdates([
       {
         kind: 'set',
         name: to,
         id,
         ...(input.force === true ? {} : { expected: 'absent' as const }),
-        reflog: { oldId: id, newId: id, message: reflogMessage },
       },
     ]);
   } catch (err) {
@@ -185,14 +200,22 @@ export const branchRename = async (
     }
     throw err;
   }
-  // Re-attach `from`'s history to `to` BEFORE deleting `from`: were the
-  // merged-log write to fail, `from`'s reflog must still be intact.
-  if (movedLog.length > 0) {
-    await store.applyRefUpdates([
-      { kind: 'reflogReplace', name: to, entries: [...movedLog, ...(await readReflog(ctx, to))] },
-    ]);
+  // Move the log byte-preserving (never parsed), then log the rename —
+  // git's own order (`rename(2)` the log, then log the rename). A rename
+  // entry notes the rename without moving the ref's value, so old/new are
+  // both the resolved tip.
+  if (replacesLiveRef) {
+    await store.applyRefUpdates([{ kind: 'reflogReplace', name: to, entries: [] }]);
   }
-  // The delete update drops `from`'s log; its history is already on `to`.
+  await store.moveReflog(from, to);
+  await store.applyRefUpdates([
+    {
+      kind: 'reflogOnly',
+      name: to,
+      reflog: { oldId: id, newId: id, message: branchRenamed(from, to) },
+    },
+  ]);
+  // The delete update drops `from`'s log; step 2 already moved it away.
   await updateRef(ctx, from, zeroOid(ctx.hashConfig), { delete: true });
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === from) {

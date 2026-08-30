@@ -2,13 +2,19 @@
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
+import { concatBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
-import { parseReflog, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
+import {
+  parseReflogBytes,
+  parseReflogLenientBytes,
+  serializeReflogRewriteLineBytes,
+} from '../../domain/reflog/reflog-format.js';
 import {
   type ReftableCheck,
   refChainTooDeep,
+  refLocked,
   refNotFound,
   refUpdateConflict,
 } from '../../domain/refs/error.js';
@@ -23,7 +29,7 @@ import {
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
-import { atomicWriteRef } from './atomic-write.js';
+import { atomicWriteFile, atomicWriteRef } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import {
@@ -103,6 +109,26 @@ export interface RefStore {
   verifyIntegrity(): Promise<readonly RefIntegrityFinding[]>;
   /** `name`'s reflog, oldest-first. Empty when the ref has no reflog. */
   readReflog(name: RefName): Promise<readonly ReflogEntry[]>;
+  /**
+   * Same contract as {@link readReflog}, except a line that does not parse is
+   * skipped instead of failing the whole file — an object reachable only
+   * from that ONE entry stays rooted rather than silently falling out of a
+   * retention scan over one malformed neighbour. The `MAX_REFLOG_BYTES` cap
+   * still throws: an over-cap reflog that silently rooted nothing would be
+   * the exact silent-data-loss shape leniency must not create. Every I/O
+   * fault still propagates.
+   */
+  readReflogLenient(name: RefName): Promise<readonly ReflogEntry[]>;
+  /**
+   * Moves `from`'s reflog onto `to`: after this call, `to`'s reflog is
+   * exactly what `from`'s was — byte-for-byte on the files backend, so a
+   * malformed line survives verbatim — and `from` has no reflog. When
+   * `from` had none, `to`'s existing reflog is REMOVED rather than kept
+   * (git's rename deletes the destination ref and its log first). This is
+   * a deliberate divergence from a read-concat-rewrite: a forced rename
+   * replaces the destination's history, it does not append to it.
+   */
+  moveReflog(from: RefName, to: RefName): Promise<void>;
   /**
    * Whether `name` has a reflog at all — a file-presence question
    * independent of entry count (an emptied-but-present log still counts,
@@ -597,25 +623,93 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
-  /** Replace `name`'s reflog with exactly `entries` — the files backend's whole-file rewrite. */
+  /**
+   * Replace `name`'s reflog with exactly `entries` — the files backend's
+   * whole-file rewrite. `runExpire` runs this on every ref on every call, so
+   * a torn write here would be routine rather than rare; locked-then-renamed
+   * through {@link atomicWriteFile}, the same shape git itself takes for a
+   * reflog rewrite. Serializes in BYTES: an entry carrying `raw` (parsed
+   * from disk) re-emits its verbatim on-disk identity/message slices
+   * instead of round-tripping through a decode/re-encode that would mangle
+   * non-UTF-8 content.
+   */
   async function applyReflogReplace(
     update: Extract<RefUpdate, { kind: 'reflogReplace' }>,
   ): Promise<void> {
-    const text = update.entries
-      .map((entry) => serializeReflogLine(entry, ctx.hashConfig.hexLength))
-      .join('');
-    await ctx.fs.writeUtf8(reflogPath(refDir(update.name), update.name), text);
+    const content = concatBytes(
+      update.entries.map((entry) =>
+        serializeReflogRewriteLineBytes(entry, ctx.hashConfig.hexLength),
+      ),
+    );
+    await atomicWriteFile(ctx, reflogPath(refDir(update.name), update.name), content, () =>
+      refLocked(update.name),
+    );
+  }
+
+  /** `name`'s reflog bytes, or `undefined` when the file is absent. Refuses
+   *  an over-cap file — the one preamble {@link readReflog} and {@link
+   *  readReflogLenient} share, so the cap and the exists/stat probe are
+   *  enforced exactly once regardless of which parse strictness the caller
+   *  wants. */
+  async function readReflogBytes(name: RefName): Promise<Uint8Array | undefined> {
+    const path = reflogPath(refDir(name), name);
+    // One stat instead of an exists probe (itself a stat) + stat: absent is
+    // the common miss, and a DIRECTORY at the path — the D/F shape a sibling
+    // `<name>/x` log creates — reads as "no reflog", the same answer
+    // `hasReflog` gives, never a raw EISDIR from the read below.
+    let size: number;
+    try {
+      const stat = await ctx.fs.stat(path);
+      if (!stat.isFile) return undefined;
+      size = stat.size;
+    } catch (err) {
+      if (isFileNotFound(err)) return undefined;
+      throw err;
+    }
+    if (size > MAX_REFLOG_BYTES) {
+      throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
+    }
+    return ctx.fs.read(path);
   }
 
   /** `name`'s reflog, oldest-first. `[]` when the file is absent. */
   async function readReflog(name: RefName): Promise<readonly ReflogEntry[]> {
-    const path = reflogPath(refDir(name), name);
-    if (!(await ctx.fs.exists(path))) return [];
-    const stat = await ctx.fs.stat(path);
-    if (stat.size > MAX_REFLOG_BYTES) {
-      throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
-    }
-    return parseReflog(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
+    const bytes = await readReflogBytes(name);
+    return bytes === undefined ? [] : parseReflogBytes(bytes, ctx.hashConfig.hexLength);
+  }
+
+  /**
+   * `name`'s reflog, oldest-first, tolerating a malformed LINE — skipped,
+   * never discarding the file's other valid entries the way {@link
+   * readReflog}'s all-or-nothing parse does. Pinned against git 2.55.0:
+   * `git gc --prune=now` keeps an object reachable only from a valid entry
+   * that shares a reflog file with a garbage line. The `MAX_REFLOG_BYTES`
+   * cap is still enforced by the shared {@link readReflogBytes} preamble and
+   * is NOT tolerated here: an over-cap reflog that silently rooted nothing
+   * would be the exact silent-data-loss shape leniency must not create, so
+   * that fault still throws and aborts the caller's run. `[]` when the file
+   * is absent, matching `readReflog`.
+   */
+  async function readReflogLenient(name: RefName): Promise<readonly ReflogEntry[]> {
+    const bytes = await readReflogBytes(name);
+    return bytes === undefined ? [] : parseReflogLenientBytes(bytes, ctx.hashConfig.hexLength);
+  }
+
+  /**
+   * `rename(2)`s `from`'s reflog file onto `to`'s — byte-preserving, so a
+   * malformed line moves verbatim without ever being parsed. When `from`
+   * has none this is a pure no-op: whether `to`'s existing log survives is
+   * the CALLER's question, not the move's — git keeps an orphan log (no
+   * live ref underneath) and appends to it, while a forced rename over a
+   * live ref drops the old log via its ref delete (measured, git 2.55.0).
+   * The `hasReflog` probe (not a bare `exists`) keeps a directory at
+   * `logs/<from>` — the D/F shape a sibling `<from>/x` log creates — from
+   * being renamed wholesale.
+   */
+  async function moveReflog(from: RefName, to: RefName): Promise<void> {
+    if (!(await hasReflog(from))) return;
+    const src = reflogPath(refDir(from), from);
+    await ctx.fs.rename(src, reflogPath(refDir(to), to));
   }
 
   /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
@@ -810,6 +904,8 @@ function createFilesRefStore(ctx: Context): RefStore {
     listRefNames,
     verifyIntegrity,
     readReflog,
+    readReflogLenient,
+    moveReflog,
     hasReflog,
     listReflogs,
     packRefs,

@@ -5,6 +5,7 @@ import {
   bytesEqual,
   bytesToHex,
   compareBytes,
+  concatBytes,
   decode,
   decodePreservingBom,
   encode,
@@ -503,6 +504,43 @@ describe('encoding', () => {
               },
             ),
           );
+        });
+      });
+    });
+  });
+
+  describe('concatBytes', () => {
+    describe('Given an empty list of parts', () => {
+      describe('When concatenating', () => {
+        it('Then returns a zero-length buffer', () => {
+          // Arrange
+          const parts: ReadonlyArray<Uint8Array> = [];
+
+          // Act
+          const result = concatBytes(parts);
+
+          // Assert
+          expect(result).toEqual(new Uint8Array(0));
+        });
+      });
+    });
+
+    describe('Given several byte parts', () => {
+      describe('When concatenating', () => {
+        it('Then the parts land in order with additive length', () => {
+          // Arrange
+          const parts = [
+            Uint8Array.of(1, 2),
+            new Uint8Array(0),
+            Uint8Array.of(3),
+            Uint8Array.of(4, 5),
+          ];
+
+          // Act
+          const result = concatBytes(parts);
+
+          // Assert
+          expect(result).toEqual(Uint8Array.of(1, 2, 3, 4, 5));
         });
       });
     });

@@ -289,6 +289,42 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return entries.reverse();
   }
 
+  /**
+   * `RefStore.readReflogLenient`'s reftable implementation: a plain alias of
+   * {@link readReflog}. A reftable log record is length-prefixed binary
+   * inside a block, so a damaged record damages the whole BLOCK, not one
+   * entry — there is no per-line grammar to be lenient about the way the
+   * files backend's text format has one. `readReflog` already skips
+   * non-`entry` records (tombstones), and inventing a per-record tolerance
+   * beyond that would need an oracle real git's reftable format does not
+   * provide.
+   */
+  const readReflogLenient = readReflog;
+
+  /**
+   * `RefStore.moveReflog`'s reftable implementation: there is no file to
+   * `rename(2)`, so `from`'s decoded entries are re-keyed onto `to` through
+   * the ordinary transaction machinery — `reflogReplace` tombstones every
+   * existing record for a name and re-emits `entries` at fresh indices, so
+   * this doubles as `to`'s replace (git's forced-rename semantics) and
+   * `from`'s own tombstone (an empty `entries` list) in one call. Log
+   * records are structured, so re-emitting the decoded entries IS the
+   * byte-preserving move for this backend — there is no malformed-line
+   * analogue to lose.
+   */
+  async function moveReflog(from: RefName, to: RefName): Promise<void> {
+    // Pure move, mirroring the files backend: an absent source leaves `to`'s
+    // existing log untouched — dropping it on a forced rename is the
+    // caller's decision, not the move's. Same seam verb as the files
+    // backend's guard, so both backends answer "has a reflog" one way.
+    if (!(await hasReflog(from))) return;
+    const entries = await readReflog(from);
+    await applyReftableUpdates(ctx, [
+      { kind: 'reflogReplace', name: to, entries },
+      { kind: 'reflogReplace', name: from, entries: [] },
+    ]);
+  }
+
   /** Whether `stack.logs(name)` — already tombstone-shadowed — yields at
    *  least one live entry. A name whose raw tables carry only shadowed-away
    *  entries has no reflog at all, matching the files backend's own
@@ -361,6 +397,8 @@ export function createReftableRefStore(ctx: Context): RefStore {
     listRefNames,
     verifyIntegrity,
     readReflog,
+    readReflogLenient,
+    moveReflog,
     hasReflog,
     listReflogs,
     packRefs,

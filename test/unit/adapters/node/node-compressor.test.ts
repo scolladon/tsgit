@@ -375,7 +375,7 @@ describe('NodeCompressor', () => {
       describe('When streamInflate runs', () => {
         it('Then all chunks are concatenated in order (offset advances forward)', async () => {
           // Arrange — 256 KiB exceeds Node's inflate chunk buffer, forcing several
-          // 'data' events. concatUint8 must advance `offset` forward; a `-=` mutant
+          // 'data' events. concatBytes must advance `offset` forward; a `-=` mutant
           // would compute a negative offset and make out.set() throw RangeError.
           const sut = new NodeCompressor();
           const size = 256 * 1024;

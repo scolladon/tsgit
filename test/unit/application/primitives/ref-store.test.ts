@@ -6,6 +6,7 @@ import {
   getRefStore,
 } from '../../../../src/application/primitives/ref-store.js';
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -1142,8 +1143,9 @@ describe('ref-store', () => {
         // Act
         const result = await sut.readReflog('refs/heads/main' as RefName);
 
-        // Assert
-        expect(result).toEqual([first, second]);
+        // Assert — files-backend reads attach `raw` (the on-disk byte
+        // slices), so the entry is a superset of the appended fixture.
+        expect(result).toEqual([expect.objectContaining(first), expect.objectContaining(second)]);
       });
     });
   });
@@ -1217,6 +1219,46 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a reflog path that is a directory because a sibling ref nests under it', () => {
+    describe('When readReflogLenient is called on the store', () => {
+      it('Then it answers no-reflog with an empty array, never a raw EISDIR', async () => {
+        // Arrange — same D/F shape hasReflog handles; the read path must
+        // give the same "absent" answer instead of surfacing an adapter
+        // fault from reading a directory.
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/feature/x' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflogLenient('refs/heads/feature' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a reflog stat fails for a reason other than FILE_NOT_FOUND', () => {
+    describe('When readReflog is called on the store', () => {
+      it('Then the fault propagates rather than reading as an empty reflog', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/main' as RefName, reflogEntry());
+        const reflogFilePath = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+        const fault = permissionDenied(reflogFilePath);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === reflogFilePath) throw fault;
+          return originalStat(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        await expect(sut.readReflog('refs/heads/main' as RefName)).rejects.toBe(fault);
+      });
+    });
+  });
+
   describe('Given a reflog stat fails for a reason other than FILE_NOT_FOUND', () => {
     describe('When hasReflog is called on the store', () => {
       it('Then the fault propagates rather than reading as no reflog', async () => {
@@ -1280,6 +1322,120 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a files-backed reflog with a garbage line between two valid entries', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then both valid entries are returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({ oldId: first.newId, message: 'second' });
+        await appendReflog(ctx, 'refs/heads/main' as RefName, first);
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'this is not a valid reflog line at all\n',
+        );
+        await appendReflog(ctx, 'refs/heads/main' as RefName, second);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflogLenient('refs/heads/main' as RefName);
+
+        // Assert — files-backend reads attach `raw` (the on-disk byte
+        // slices), so each entry is a superset of the appended fixture.
+        expect(result).toEqual([expect.objectContaining(first), expect.objectContaining(second)]);
+      });
+    });
+  });
+
+  describe('Given a files-backed reflog file one byte past MAX_REFLOG_BYTES', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it still throws INVALID_REFLOG_ENTRY — the cap is not tolerated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'x'.repeat(MAX_REFLOG_BYTES + 1),
+        );
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        try {
+          await sut.readReflogLenient('refs/heads/main' as RefName);
+          expect.fail('expected INVALID_REFLOG_ENTRY');
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as TsgitError).data).toEqual({
+            code: 'INVALID_REFLOG_ENTRY',
+            reason: `reflog file exceeds ${MAX_REFLOG_BYTES} bytes`,
+          });
+        }
+      });
+    });
+  });
+
+  describe('Given no reflog file for the ref', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it returns an empty array', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflogLenient('refs/heads/absent' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a files-backed reflog containing a malformed line', () => {
+    describe('When moveReflog moves it to a new ref name', () => {
+      it('Then the destination text is byte-identical to the source and the source is gone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({ oldId: first.newId, message: 'second' });
+        await appendReflog(ctx, 'refs/heads/main' as RefName, first);
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'this is not a valid reflog line at all\n',
+        );
+        await appendReflog(ctx, 'refs/heads/main' as RefName, second);
+        const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.moveReflog('refs/heads/main' as RefName, 'refs/heads/renamed' as RefName);
+
+        // Assert
+        const after = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/renamed`);
+        expect(after).toBe(before);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a source ref with no reflog and a destination ref that has one', () => {
+    describe('When moveReflog moves the source onto the destination', () => {
+      it('Then the destination reflog is kept untouched', async () => {
+        // Arrange — the move is pure: dropping the destination's log on a
+        // forced rename is the caller's decision (git keeps an orphan log
+        // and appends to it; measured, 2.55.0).
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/trunk' as RefName, reflogEntry());
+        const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/trunk`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.moveReflog('refs/heads/main' as RefName, 'refs/heads/trunk' as RefName);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/trunk`)).toBe(before);
+      });
+    });
+  });
+
   describe('Given a reflogReplace update with a shorter entries list', () => {
     describe('When applyRefUpdates is called', () => {
       it('Then the reflog is replaced with exactly the given entries', async () => {
@@ -1297,8 +1453,103 @@ describe('ref-store', () => {
           { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: [kept] },
         ]);
 
+        // Assert — reading back parses from disk, so the entry carries `raw`
+        // (the on-disk byte slices) on top of the written fields.
+        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([
+          expect.objectContaining(kept),
+        ]);
+      });
+    });
+  });
+
+  describe('Given a pre-existing logs/<ref>.lock file', () => {
+    describe('When applyRefUpdates applies a reflogReplace update', () => {
+      it('Then it refuses with REF_LOCKED', async () => {
+        // Arrange — git locks and renames the rewrite; a bare writeUtf8 would
+        // ignore the lock file entirely.
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/main' as RefName, reflogEntry());
+        await ctx.fs.write(`${ctx.layout.gitDir}/logs/refs/heads/main.lock`, new Uint8Array([0]));
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([
+            {
+              kind: 'reflogReplace',
+              name: 'refs/heads/main' as RefName,
+              entries: [reflogEntry({ message: 'kept' })],
+            },
+          ]);
+          expect.fail('expected REF_LOCKED');
+        } catch (error) {
+          caught = error;
+        }
+
         // Assert
-        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([kept]);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_LOCKED',
+          name: 'refs/heads/main',
+        });
+      });
+    });
+  });
+
+  describe('Given a reflogReplace update with an entry whose message is empty', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then the on-disk bytes end with a trailing TAB before the line feed', async () => {
+        // Arrange — the rewrite serializer always emits the message TAB, unlike
+        // the append writer, which omits it for an empty message.
+        const ctx = await buildSeededContext();
+        const empty = reflogEntry({ message: '' });
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: [empty] },
+        ]);
+
+        // Assert
+        const raw = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+        expect(raw.endsWith('\t\n')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a reflogReplace update whose only survivor carries a non-UTF-8 byte', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then the reflog is rewritten byte-identical to the original on-disk bytes', async () => {
+        // Arrange — a latin1 0xE9 in the message; the files backend must
+        // carry it through the read-then-rewrite round trip untouched
+        // rather than mangling it through a decode/re-encode.
+        const ctx = await buildSeededContext();
+        const path = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+        const idA = 'a'.repeat(40) as ObjectId;
+        const idB = 'b'.repeat(40) as ObjectId;
+        const original = new Uint8Array([
+          ...new TextEncoder().encode(
+            `${idA} ${idB} Ada <ada@example.com> 1716240000 +0000\tmessage caf`,
+          ),
+          0xe9,
+          ...new TextEncoder().encode('\n'),
+        ]);
+        await ctx.fs.write(path, original);
+        const sut = createRefStore(ctx);
+        const survivors = await sut.readReflog('refs/heads/main' as RefName);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: survivors },
+        ]);
+
+        // Assert — file bytes identical, and the read attached the verbatim
+        // raw slices the rewrite depends on (the display string carries the
+        // U+FFFD the invalid byte decodes to; raw carries the byte itself).
+        expect(await ctx.fs.read(path)).toEqual(original);
+        expect(survivors[0]?.raw?.message).toEqual(
+          Uint8Array.from([...new TextEncoder().encode('message caf'), 0xe9]),
+        );
       });
     });
   });

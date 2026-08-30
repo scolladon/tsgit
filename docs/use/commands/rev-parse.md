@@ -23,6 +23,11 @@ repo.revParse(expression: string): Promise<ObjectId>;
 | `^` / `^N` | `main^2` | Nth parent (1-based) |
 | Combined | `HEAD~3^2` | parent of the third ancestor |
 
+## Behaviour
+
+- **Lenient reflog reads.** `@{N}` and `@{date}` read the reflog leniently: a malformed line is skipped, and `@{N}`'s numbering counts only the surviving entries — matching git.
+- **`@{date}` before the log begins** clamps to the oldest surviving entry's pre-state (`oldId`), or its post-state (`newId`) when that pre-state is the null id — the ref's creation entry — matching git.
+
 ## Examples
 
 ```ts
@@ -40,5 +45,5 @@ const second = await repo.revParse('main^2');
 
 ## See also
 
-- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`readReflog`](../primitives/internals.md#readreflog)
+- Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`readReflogLenient`](../primitives/internals.md#readrefloglenient)
 - Related commands: [`log`](log.md), [`reflog`](reflog.md), [`checkout`](checkout.md)

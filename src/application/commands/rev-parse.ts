@@ -2,10 +2,12 @@ import { revparseUnresolved } from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
+  type HashConfig,
   isOid,
   type ObjectId,
   ObjectId as ObjectIdFactory,
   type RefName,
+  zeroOid,
 } from '../../domain/objects/index.js';
 import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
@@ -19,7 +21,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { listReflogs, readReflog } from '../primitives/reflog-store.js';
+import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -83,10 +85,10 @@ const resolveReflogBase = async (
   raw: string,
 ): Promise<ObjectId> => {
   const ref = base === '' ? await currentBranchRef(ctx) : await canonicalizeRef(ctx, base);
-  const entries = await readReflog(ctx, ref);
+  const entries = await readReflogLenient(ctx, ref);
   if (entries.length === 0) throw revparseUnresolved(raw);
   if (selector.kind === 'index') return pickByIndex(entries, selector.n, ref);
-  return pickByDate(entries, selector.raw, now, raw);
+  return pickByDate(entries, selector.raw, now, raw, ctx.hashConfig);
 };
 
 /** HEAD's symbolic branch target, or the `HEAD` literal when HEAD is detached. */
@@ -163,6 +165,7 @@ const pickByDate = (
   rawDate: string,
   now: number,
   raw: string,
+  hashConfig: HashConfig,
 ): ObjectId => {
   const target = parseApproxidate(rawDate, now);
   if (target === undefined) throw revparseUnresolved(raw);
@@ -170,7 +173,11 @@ const pickByDate = (
     const entry = entries[i] as ReflogEntry;
     if (entry.identity.timestamp <= target) return entry.newId;
   }
-  return (entries[0] as ReflogEntry).oldId;
+  // A date before the log begins clamps to the oldest entry's pre-state;
+  // when that pre-state is the null oid (the ref's creation entry) git
+  // answers the entry's post-state instead (measured, git 2.55.0).
+  const oldest = entries[0] as ReflogEntry;
+  return oldest.oldId === zeroOid(hashConfig) ? oldest.newId : oldest.oldId;
 };
 
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {

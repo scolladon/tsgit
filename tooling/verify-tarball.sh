@@ -33,7 +33,12 @@ done
 # disk-windowed quarantine pack walk, the gc temp-litter rules, and the
 # cross-hop delta-depth accounting — all runtime code shipped in every
 # distribution form, none removable without dropping the behaviour.
-SIZE_CAP=$((884 * 1024))
+# Raised 884 -> 885 KiB by the reflog malformed-line parity work: the
+# measured pack landed at 905 458 B, 242 B over the old cap, attributable
+# to the lenient read seam, the rewrite/move store verbs and the
+# byte-faithful rewrite tier — runtime code shipped in every distribution
+# form, none removable without dropping the behaviour.
+SIZE_CAP=$((885 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

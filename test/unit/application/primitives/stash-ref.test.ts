@@ -10,6 +10,8 @@ import {
 } from '../../../../src/application/primitives/stash-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type ObjectId, type RefName, ZERO_OID } from '../../../../src/domain/objects/index.js';
+import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
+import { serializeReflogRewriteLine } from '../../../../src/domain/reflog/reflog-format.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const STASH_REF = 'refs/stash' as RefName;
@@ -245,6 +247,81 @@ describe('stash-ref primitive', () => {
           expect(err.data).toEqual({ code: 'STASH_NOT_FOUND', index: 5, stackSize: 1 });
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+
+  describe('Given a corrupted refs/stash log with a malformed line mid-file', () => {
+    const identity = {
+      name: 'Ada',
+      email: 'ada@example.com',
+      timestamp: 1_700_000_000,
+      timezoneOffset: '+0000',
+    };
+    const seedCorruptedStack = async (ctx: Context): Promise<void> => {
+      const raw =
+        serializeReflogLine(
+          { oldId: ZERO_OID, newId: W0, identity, message: 'WIP on main: 000 first' },
+          40,
+        ) +
+        'this is not a reflog line at all\n' +
+        serializeReflogLine(
+          { oldId: W0, newId: W1, identity, message: 'WIP on main: 111 second' },
+          40,
+        );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/stash`, raw);
+    };
+
+    describe('When the stash stack is read', () => {
+      it('Then the malformed line is skipped and survivors are numbered contiguously', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedCorruptedStack(ctx);
+
+        // Act
+        const stack = await readStashStack(ctx);
+
+        // Assert — newest-first survivors: W1(@0), W0(@1).
+        expect(stack).toEqual([
+          { index: 0, selector: 'stash@{0}', stash: W1, message: 'WIP on main: 111 second' },
+          { index: 1, selector: 'stash@{1}', stash: W0, message: 'WIP on main: 000 first' },
+        ]);
+      });
+    });
+
+    describe('When resolveStashEntry(1) is called', () => {
+      it('Then it resolves the older surviving entry, skipping the malformed line', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedCorruptedStack(ctx);
+
+        // Act
+        const result = await resolveStashEntry(ctx, 1);
+
+        // Assert
+        expect(result).toBe(W0);
+      });
+    });
+
+    describe('When dropStashEntry(1) drops the older surviving entry', () => {
+      it('Then the rewritten file holds only the newest entry — the malformed line is purged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedCorruptedStack(ctx);
+
+        // Act
+        await dropStashEntry(ctx, 1);
+
+        // Assert — on-disk bytes: exactly one surviving line in rewrite form,
+        // chain-repaired (the survivor inherits the dropped entry's oldId),
+        // no garbage line left behind.
+        const after = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/stash`);
+        expect(after).toBe(
+          serializeReflogRewriteLine(
+            { oldId: ZERO_OID, newId: W1, identity, message: 'WIP on main: 111 second' },
+            40,
+          ),
+        );
       });
     });
   });

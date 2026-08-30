@@ -72,6 +72,7 @@ export {
   deleteReflog,
   listReflogs,
   readReflog,
+  readReflogLenient,
   reflogExists,
   writeReflog,
 } from './reflog-store.js';

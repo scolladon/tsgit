@@ -3,9 +3,7 @@ import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/inde
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
-import { invalidReflogEntry } from '../../../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../../../domain/reflog/reflog-entry.js';
-import { parseReflogLenient } from '../../../../domain/reflog/reflog-format.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
@@ -13,11 +11,10 @@ import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { errorDataCode } from '../../../primitives/internal/error-data-code.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
-import { commonGitDir, perWorktreeRefDir, reflogPath } from '../../../primitives/path-layout.js';
+import { commonGitDir } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
-import { listReflogs, readReflog } from '../../../primitives/reflog-store.js';
+import { listReflogs, readReflog, readReflogLenient } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
-import { MAX_REFLOG_BYTES } from '../../../primitives/types.js';
 import { objectIsPresent } from './object-presence.js';
 import type { FsckOptions } from './types.js';
 
@@ -158,30 +155,6 @@ function addReflogEntryRoots(
     if (entry.oldId !== zero) roots.add(entry.oldId);
     if (entry.newId !== zero) roots.add(entry.newId);
   }
-}
-
-/**
- * `ref`'s reflog entries for gc's retention scan, tolerating a malformed
- * LINE — skipped, never discarding the file's OTHER valid entries the way
- * `readReflog`'s own strict `parseReflog` does (pinned against git 2.55.0:
- * `git gc --prune=now` keeps an object reachable only from a valid entry
- * that shares a reflog file with a garbage line). The size cap is enforced
- * here directly, same limit and same error `readReflog` throws, because
- * bypassing `readReflog`'s all-or-nothing parse for line-grained tolerance
- * also bypasses the cap check bundled inside it — and that cap must NOT be
- * tolerated: an over-cap reflog silently rooting nothing would be the exact
- * silent-data-loss shape gc's strict mode exists to refuse, so this throws
- * (uncaught by anything in this module) and aborts the run instead. An
- * absent file contributes no entries, matching `readReflog`.
- */
-async function readReflogLenient(ctx: Context, ref: RefName): Promise<ReadonlyArray<ReflogEntry>> {
-  const path = reflogPath(perWorktreeRefDir(ctx, ref), ref);
-  if (!(await ctx.fs.exists(path))) return [];
-  const stat = await ctx.fs.stat(path);
-  if (stat.size > MAX_REFLOG_BYTES) {
-    throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
-  }
-  return parseReflogLenient(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
 }
 
 /**

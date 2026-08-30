@@ -13,7 +13,8 @@ import type {
   FilePath,
   ObjectId,
 } from '../../../../../src/domain/objects/index.js';
-import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
+import { FILE_MODE, ZERO_OID } from '../../../../../src/domain/objects/index.js';
+import { serializeReflogLine } from '../../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext } from '../fixtures.js';
 
@@ -404,6 +405,49 @@ describe('createSnapshotFactory', () => {
         const entry = await sut.stashEntry(1);
 
         // Assert — index 1 is the older push (old.txt), not the newest (new.txt).
+        expect(entry).not.toBeNull();
+        if (entry === null) return;
+        expect((await collect(entry.workdir.entries())).map((r) => r.path)).toEqual(['old.txt']);
+      });
+    });
+  });
+
+  describe('Given a stash stack with a malformed reflog line mid-file', () => {
+    describe('When sut.stashEntry(1) is awaited (the older entry, past the malformed line)', () => {
+      it('Then it resolves the surviving older entry, skipping the malformed line', async () => {
+        // Arrange — newer entry holds `new.txt`, older holds `old.txt`; a
+        // garbage line sits between the two reflog entries.
+        const ctx = await buildSeededContext();
+        const oldBlob = await writeBlob(ctx, new Uint8Array([1]));
+        const newBlob = await writeBlob(ctx, new Uint8Array([2]));
+        const baseTree = await writeTree(ctx, []);
+        const oldTree = await writeTree(ctx, [
+          { name: 'old.txt', mode: FILE_MODE.REGULAR as FileMode, id: oldBlob },
+        ]);
+        const newTree = await writeTree(ctx, [
+          { name: 'new.txt', mode: FILE_MODE.REGULAR as FileMode, id: newBlob },
+        ]);
+        const b = await writeCommitWithParents(ctx, baseTree, []);
+        const olderW = await writeCommitWithParents(ctx, oldTree, [b, b]);
+        const newerW = await writeCommitWithParents(ctx, newTree, [b, b]);
+        const identity = { name: 'a', email: 'b@c', timestamp: 1, timezoneOffset: '+0000' };
+        const raw =
+          serializeReflogLine(
+            { oldId: ZERO_OID, newId: olderW, identity, message: 'WIP on main: 000 older' },
+            40,
+          ) +
+          'this is not a reflog line at all\n' +
+          serializeReflogLine(
+            { oldId: olderW, newId: newerW, identity, message: 'WIP on main: 111 newer' },
+            40,
+          );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/refs/stash`, raw);
+        const sut = factoryFor(ctx);
+
+        // Act
+        const entry = await sut.stashEntry(1);
+
+        // Assert — index 1 is the older push (old.txt), skipping the malformed line.
         expect(entry).not.toBeNull();
         if (entry === null) return;
         expect((await collect(entry.workdir.entries())).map((r) => r.path)).toEqual(['old.txt']);

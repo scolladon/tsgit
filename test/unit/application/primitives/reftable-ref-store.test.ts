@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
 import { fileNotFound, permissionDenied } from '../../../../src/domain/error.js';
+import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildRefBlock,
@@ -20,6 +22,21 @@ const ID_MAIN = oid(0x01);
 const ID_GONE = oid(0x02);
 const ID_TAG = oid(0x03);
 const ID_TAG_PEELED = oid(0x04);
+
+const IDENTITY: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+
+const reflogEntry = (overrides: Partial<ReflogEntry> = {}): ReflogEntry => ({
+  oldId: ObjectId.fromRaw(oid(0x00)),
+  newId: ObjectId.fromRaw(oid(0x01)),
+  identity: IDENTITY,
+  message: 'commit: seed',
+  ...overrides,
+});
 
 /**
  * A two-table stack: table 1 (older) carries `HEAD` (symbolic → main),
@@ -548,6 +565,190 @@ describe('reftable-ref-store', () => {
 
         // Assert
         expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a stack with a reflog for refs/heads/main', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it returns the same entries as readReflog, oldest-first', async () => {
+        // Arrange — a length-prefixed binary log record has no malformed-line
+        // analogue, so the lenient verb is a structural alias of readReflog
+        // rather than an independently tolerant reader.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 2n };
+        const header = buildReftableHeader(headerSpec);
+        const logBlock = await buildReftableLogBlock(
+          {
+            records: [
+              {
+                refName: 'refs/heads/main',
+                updateIndex: 2n,
+                entry: {
+                  kind: 'entry',
+                  oldId: ID_MAIN,
+                  newId: ID_GONE,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_001_000,
+                  tzOffset: '+0000',
+                  message: 'commit: second',
+                },
+              },
+              {
+                refName: 'refs/heads/main',
+                updateIndex: 1n,
+                entry: {
+                  kind: 'entry',
+                  oldId: oid(0x00),
+                  newId: ID_MAIN,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_000_000,
+                  tzOffset: '+0000',
+                  message: 'commit (initial): first',
+                },
+              },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const bytes = buildReftable({
+          ...headerSpec,
+          blocks: [logBlock],
+          logPosition: header.length,
+          logIndexPosition: 0,
+        });
+        await writeReftableFiles(ctx, dir, [{ name: 'table1.ref', bytes }]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const lenient = await sut.readReflogLenient(ref('refs/heads/main'));
+        const strict = await sut.readReflog(ref('refs/heads/main'));
+
+        // Assert
+        expect(lenient).toEqual(strict);
+        expect(lenient.map((entry) => entry.message)).toEqual([
+          'commit (initial): first',
+          'commit: second',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a ref whose entire reflog is tombstoned by a newer table', () => {
+    describe('When readReflogLenient runs', () => {
+      it('Then it returns an empty array, matching readReflog over the tombstone-shadowing path', async () => {
+        // Arrange — table1 carries one live log record for refs/heads/topic;
+        // table2 tombstones it at the same update_index.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+        const header = buildReftableHeader(headerSpec);
+        const logBlock = await buildReftableLogBlock(
+          {
+            records: [
+              {
+                refName: 'refs/heads/topic',
+                updateIndex: 1n,
+                entry: {
+                  kind: 'entry',
+                  oldId: oid(0x00),
+                  newId: ID_MAIN,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_000_000,
+                  tzOffset: '+0000',
+                  message: 'commit (initial): first',
+                },
+              },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const bytes = buildReftable({
+          ...headerSpec,
+          blocks: [logBlock],
+          logPosition: header.length,
+          logIndexPosition: 0,
+        });
+        const tombstoneHeaderSpec = { version: 1 as const, minUpdateIndex: 2n, maxUpdateIndex: 2n };
+        const tombstoneHeader = buildReftableHeader(tombstoneHeaderSpec);
+        const tombstoneBlock = await buildReftableLogBlock(
+          {
+            records: [
+              { refName: 'refs/heads/topic', updateIndex: 1n, entry: { kind: 'deletion' } },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const tombstoneBytes = buildReftable({
+          ...tombstoneHeaderSpec,
+          blocks: [tombstoneBlock],
+          logPosition: tombstoneHeader.length,
+          logIndexPosition: 0,
+        });
+        await writeReftableFiles(ctx, dir, [
+          { name: 'table1.ref', bytes },
+          { name: 'table2.ref', bytes: tombstoneBytes },
+        ]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const entries = await sut.readReflogLenient(ref('refs/heads/topic'));
+
+        // Assert
+        expect(entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a stack with a two-entry reflog for refs/heads/main', () => {
+    describe('When moveReflog moves it to refs/heads/renamed', () => {
+      it('Then the destination gets the source entries oldest-first and the source reflog is gone', async () => {
+        // Arrange — seeded through the real write path (reflogReplace), never
+        // hand-built binary tables: a length-prefixed log record has no
+        // malformed-line analogue, so re-keying the decoded entries IS the
+        // byte-preserving move for this backend.
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({
+          oldId: first.newId,
+          newId: ObjectId.fromRaw(oid(0x02)),
+          message: 'second',
+        });
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: ref('refs/heads/main'), entries: [first, second] },
+        ]);
+
+        // Act
+        await sut.moveReflog(ref('refs/heads/main'), ref('refs/heads/renamed'));
+
+        // Assert
+        expect(await sut.readReflog(ref('refs/heads/renamed'))).toEqual([first, second]);
+        expect(await sut.readReflog(ref('refs/heads/main'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a log-less source and a destination that has a reflog', () => {
+    describe('When moveReflog moves the source onto the destination', () => {
+      it('Then the destination reflog is kept untouched — the move is pure, as on the files backend', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const kept = reflogEntry({ message: 'kept' });
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: ref('refs/heads/trunk'), entries: [kept] },
+        ]);
+
+        // Act
+        await sut.moveReflog(ref('refs/heads/main'), ref('refs/heads/trunk'));
+
+        // Assert
+        expect(await sut.readReflog(ref('refs/heads/trunk'))).toEqual([kept]);
       });
     });
   });

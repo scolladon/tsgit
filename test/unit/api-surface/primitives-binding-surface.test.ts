@@ -108,6 +108,11 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
       'internal reflog-store primitive reused by branch/reflog/rev-parse/fsck-roots/stash/snapshot-factory',
   },
   {
+    name: 'readReflogLenient',
+    reason:
+      'internal reflog-store primitive reused by reflog/rev-parse/stash/snapshot-factory/fsck-roots',
+  },
+  {
     name: 'readShallow',
     reason: 'internal shallow-file primitive with no current Tier-1 consumer (write side only)',
   },

@@ -12,6 +12,7 @@ import type { AuthorIdentity, CommitData, ObjectId } from '../../../../src/domai
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { FilePath, RefName } from '../../../../src/domain/objects/object-id.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
+import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -1148,6 +1149,71 @@ describe('revParse', () => {
             code: 'REVPARSE_UNRESOLVED',
             expression: 'HEAD@{0}',
           });
+        });
+      });
+    });
+
+    describe('Given a HEAD reflog with a malformed line mid-file', () => {
+      describe('When revParse(HEAD@{1})', () => {
+        it('Then it resolves to the second-newest SURVIVING entry, skipping the malformed line', async () => {
+          // Arrange — raw file: valid(0→c1), garbage, valid(c1→c2), valid(c2→c3).
+          // Survivors newest-first: c3(@0), c2(@1), c1(@2).
+          const ctx = createMemoryContext();
+          const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+          const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+          const c3 = await writeCommit(ctx, TREE_OID as ObjectId, [c2]);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': c3 } });
+          const raw =
+            serializeReflogLine(reflogEntry(ZERO_OID, c1, 1_000), 40) +
+            'this is not a reflog line at all\n' +
+            serializeReflogLine(reflogEntry(c1, c2, 2_000), 40) +
+            serializeReflogLine(reflogEntry(c2, c3, 3_000), 40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
+
+          // Act
+          const result = await revParse(ctx, 'HEAD@{1}');
+
+          // Assert
+          expect(result).toBe(c2);
+        });
+      });
+    });
+
+    describe('Given a reflog whose oldest entry is the ref-creation entry', () => {
+      describe('When revParse resolves a date before the log begins', () => {
+        it('Then it clamps to the oldest entry post-state, never the null oid', async () => {
+          // Arrange — oldest entry old=null(creation), new=c1; git answers c1
+          // for a before-log date, not the null pre-state (measured, 2.55.0).
+          const ctx = createMemoryContext();
+          const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': c1 } });
+          const raw = serializeReflogLine(reflogEntry(ZERO_OID, c1, 2_000_000_000), 40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
+
+          // Act
+          const result = await revParse(ctx, 'HEAD@{2000.years.ago}');
+
+          // Assert
+          expect(result).toBe(c1);
+        });
+      });
+
+      describe('When revParse resolves a date before a log whose oldest pre-state is real', () => {
+        it('Then it clamps to the oldest entry pre-state', async () => {
+          // Arrange — oldest surviving entry old=c1 (a truncated log): git
+          // answers the pre-state when it is not the null oid.
+          const ctx = createMemoryContext();
+          const c1 = await writeCommit(ctx, TREE_OID as ObjectId, []);
+          const c2 = await writeCommit(ctx, TREE_OID as ObjectId, [c1]);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': c2 } });
+          const raw = serializeReflogLine(reflogEntry(c1, c2, 2_000_000_000), 40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
+
+          // Act
+          const result = await revParse(ctx, 'HEAD@{2000.years.ago}');
+
+          // Assert
+          expect(result).toBe(c1);
         });
       });
     });

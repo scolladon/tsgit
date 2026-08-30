@@ -21,7 +21,7 @@ import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import type { Context } from '../../ports/context.js';
 import { getRefStore } from './ref-store.js';
-import { readReflog } from './reflog-store.js';
+import { readReflogLenient } from './reflog-store.js';
 
 const STASH_REF = 'refs/stash' as RefName;
 
@@ -41,7 +41,7 @@ const currentTip = async (ctx: Context): Promise<ObjectId> => {
 
 /** Read the stash stack newest-first. Empty when `refs/stash` has no reflog. */
 export const readStashStack = async (ctx: Context): Promise<ReadonlyArray<StashStackEntry>> => {
-  const stored = await readReflog(ctx, STASH_REF);
+  const stored = await readReflogLenient(ctx, STASH_REF);
   const last = stored.length - 1;
   return stored.map((_, index) => {
     const entry = stored[last - index] as ReflogEntry;
@@ -51,7 +51,7 @@ export const readStashStack = async (ctx: Context): Promise<ReadonlyArray<StashS
 
 /** Resolve `stash@{index}` to its W commit oid. Throws `STASH_NOT_FOUND` when out of range. */
 export const resolveStashEntry = async (ctx: Context, index: number): Promise<ObjectId> => {
-  const stored = await readReflog(ctx, STASH_REF);
+  const stored = await readReflogLenient(ctx, STASH_REF);
   const entry = stored[stored.length - 1 - index];
   if (entry === undefined) throw stashNotFound(index, stored.length);
   return entry.newId;
@@ -85,7 +85,7 @@ export interface StashDropResult {
  * when the stack empties. Throws `STASH_NOT_FOUND` when out of range.
  */
 export const dropStashEntry = async (ctx: Context, index: number): Promise<StashDropResult> => {
-  const stored = await readReflog(ctx, STASH_REF);
+  const stored = await readReflogLenient(ctx, STASH_REF);
   const filePos = stored.length - 1 - index;
   const removed = stored[filePos];
   if (removed === undefined) throw stashNotFound(index, stored.length);
