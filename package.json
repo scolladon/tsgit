@@ -1368,7 +1368,7 @@
     "fast-check": "4.9.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.41.9",
-    "jscpd": "5.0.16",
+    "jscpd": "5.1.0",
     "knip": "6.33.0",
     "lint-staged": "17.4.1",
     "minimatch": "10.2.6",
