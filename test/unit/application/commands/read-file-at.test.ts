@@ -116,6 +116,30 @@ describe('readFileAt', () => {
     });
   });
 
+  describe('Given a literal entry name containing a slash', () => {
+    describe('When readFileAt reads it', () => {
+      it('Then it resolves the literal entry, not a two-level descent', async () => {
+        // Arrange — a root entry literally named `a/b` (no `a` directory
+        // exists at all); the whole-remaining-path fallback matches it
+        // directly against the query's full remaining path.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const literalId = await writeBlob(ctx, 'literal\n');
+        const tree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a/b', literalId)]);
+        const commit = await mkCommit(ctx, tree, []);
+        await setRef(ctx, 'refs/heads/main', commit);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await readFileAt(ctx, 'HEAD', 'a/b');
+
+        // Assert
+        expect(result.id).toBe(literalId);
+        expect(dec(result.content)).toBe('literal\n');
+      });
+    });
+  });
+
   describe('Given a short branch name as rev', () => {
     describe('When readFileAt reads a file', () => {
       it('Then the full rev grammar resolves the branch', async () => {

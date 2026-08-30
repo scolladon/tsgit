@@ -535,6 +535,29 @@ describe('revParse', () => {
         expect(data.code).toBe('PATH_NOT_IN_TREE');
       });
     });
+
+    describe('When the path is a literal entry name containing a slash', () => {
+      it('Then it resolves the literal entry, not a two-level descent', async () => {
+        // Arrange — a root entry literally named `a/b` (no `a` directory
+        // exists at all); the whole-remaining-path fallback matches it
+        // directly against the query's full remaining path.
+        const ctx = createMemoryContext();
+        const literalId = await writeBlob(ctx, 'literal\n');
+        const root = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, 'a/b', literalId)],
+        });
+        const commit = await writeCommit(ctx, root, []);
+        await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
+
+        // Act
+        const result = await revParse(ctx, 'main:a/b');
+
+        // Assert
+        expect(result).toBe(literalId);
+      });
+    });
   });
 
   describe('Given a non-commit object', () => {

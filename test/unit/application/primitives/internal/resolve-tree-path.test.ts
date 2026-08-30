@@ -42,10 +42,6 @@ function rawEntry(mode: string, name: string, id: ObjectId = ARBITRARY_OID): Uin
   return concatBytes(encode(`${mode} ${name}\0`), hexToBytes(id));
 }
 
-function rawEntryByteLength(mode: string, name: string): number {
-  return encode(`${mode} ${name}\0`).length + 20;
-}
-
 describe('descendTreePath', () => {
   describe('Given a root tree with a top-level file', () => {
     describe('When descendTreePath walks the file name', () => {
@@ -215,6 +211,36 @@ describe('findTreeEntry', () => {
         const result = await findTreeEntry(ctx, root, 'file');
         // Assert
         expect(result?.id).toBe(fileId);
+      });
+    });
+  });
+
+  describe('Given an already-resolved root Tree with two entries that decode to the same string but differ in raw bytes', () => {
+    describe('When findTreeEntry searches using the lossy-decoded replacement character', () => {
+      it('Then it resolves only the entry whose raw bytes actually match, not the byte-distinct entry that merely decodes to the same string', async () => {
+        // Arrange — a lone 0xFF byte is not valid UTF-8 on its own and
+        // decodes to U+FFFD, same as the second entry whose name IS the
+        // real 3-byte UTF-8 encoding of U+FFFD; a string-based root
+        // comparison (`candidate.name === segments[0]`) cannot tell these
+        // two entries apart even though their on-disk bytes differ, and
+        // (being first-wins) would wrongly return the FF-named entry.
+        const ctx = await buildSeededContext();
+        const rawFfId = await writeObject(ctx, blobOf(4));
+        const realReplacementCharId = await writeObject(ctx, blobOf(5));
+        const root: Tree = {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [
+            treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xff]), rawFfId),
+            treeEntry(FILE_MODE.REGULAR, '�', realReplacementCharId),
+          ],
+        };
+
+        // Act
+        const result = await findTreeEntry(ctx, root, '�');
+
+        // Assert
+        expect(result?.id).toBe(realReplacementCharId);
       });
     });
   });
@@ -414,8 +440,8 @@ describe('findTreeEntry', () => {
     });
   });
 
-  describe('Given a shape-invalid sibling entry in a raw-scanned directory', () => {
-    describe('When another entry in the same directory is resolved', () => {
+  describe('Given a sibling entry named one of the shapes an earlier refusal used to reject, in a raw-scanned directory', () => {
+    describe('When the sibling `good` and the odd-named entry are each resolved', () => {
       it.each([
         { label: "'.'", name: '.' },
         { label: "'..'", name: '..' },
@@ -427,36 +453,35 @@ describe('findTreeEntry', () => {
         { label: "'./'", name: './' },
         { label: "'/.'", name: '/.' },
       ])(
-        'Then $label refuses eagerly with the invalid-entry-name reason, matching the parsed-root refusal',
+        'Then $label resolves under its own literal name, and `good` still resolves',
         async ({ name }) => {
-          // Arrange — the invalid entry sits alongside a valid, differently-
-          // named 'good' entry the query actually targets: the full-directory
-          // scan (needed for the duplicate-name refusal) sees it regardless
-          // of what is being searched for.
+          // Arrange — the odd-named entry sits alongside a valid,
+          // differently-named 'good' entry; neither refuses the other. A
+          // name containing '/' (e.g. 'a/b') resolves through the
+          // whole-remaining-path fallback: `dir/${name}` splits into
+          // ['dir', ...name.split('/')], the segment-by-segment scan
+          // misses, and the miss re-scans for the whole remainder, which is
+          // exactly `name` (split then join with the same separator is an
+          // identity).
           const ctx = await buildSeededContext();
           const content = concatBytes(rawEntry('100644', name), rawEntry('100644', 'good'));
           const dirId = await writeRawObjectBytes(ctx, 'tree', content);
           const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
-          // Act / Assert
-          try {
-            await findTreeEntry(ctx, rootId, 'dir/good');
-            expect.unreachable();
-          } catch (error) {
-            expect(error).toBeInstanceOf(TsgitError);
-            const data = (error as TsgitError).data;
-            expect(data.code).toBe('INVALID_TREE_ENTRY');
-            if (data.code === 'INVALID_TREE_ENTRY') {
-              expect(data.reason).toBe(`invalid entry name: ${name}`);
-            }
-          }
+          // Act
+          const good = await findTreeEntry(ctx, rootId, 'dir/good');
+          const odd = await findTreeEntry(ctx, rootId, `dir/${name}`);
+
+          // Assert
+          expect(good?.name).toBe('good');
+          expect(odd?.name).toBe(name);
         },
       );
     });
   });
 
-  describe('Given a shape-invalid entry at the tree ROOT (chain-descent scan)', () => {
-    describe('When findTreeEntryChain scans the root level', () => {
+  describe('Given an entry at the tree ROOT named one of the shapes an earlier refusal used to reject (chain-descent scan)', () => {
+    describe('When findTreeEntryChain scans the root level for it, and for the sibling `good`', () => {
       it.each([
         { label: "'.'", name: '.' },
         { label: "'..'", name: '..' },
@@ -468,28 +493,25 @@ describe('findTreeEntry', () => {
         { label: "'./'", name: './' },
         { label: "'/.'", name: '/.' },
       ])(
-        'Then $label refuses eagerly with the invalid-entry-name reason, at the root — not just an intermediate level',
+        'Then $label resolves under its own literal name at the root, and `good` still resolves',
         async ({ name }) => {
           // Arrange — `descendMatchingTreeChain`'s root-level scan
-          // (`scanRootLevel`) shares the same raw-cursor shape check as an
-          // intermediate level's `descendOneLevel`, but is a DIFFERENT call
-          // site — this pins the refusal fires there too.
+          // (`scanRootLevelRaw`) is a DIFFERENT call site than an
+          // intermediate level's; this pins the same byte-level resolution
+          // at the root, not just an intermediate level. Each odd name is
+          // passed as its own single pre-split segment (chain-descent
+          // callers hand `findTreeEntryChain` an already-split path).
           const ctx = await buildSeededContext();
           const content = concatBytes(rawEntry('100644', name), rawEntry('100644', 'good'));
           const rootId = await writeRawObjectBytes(ctx, 'tree', content);
 
-          // Act / Assert
-          try {
-            await findTreeEntryChain(ctx, rootId, ['good']);
-            expect.unreachable();
-          } catch (error) {
-            expect(error).toBeInstanceOf(TsgitError);
-            const data = (error as TsgitError).data;
-            expect(data.code).toBe('INVALID_TREE_ENTRY');
-            if (data.code === 'INVALID_TREE_ENTRY') {
-              expect(data.reason).toBe(`invalid entry name: ${name}`);
-            }
-          }
+          // Act
+          const good = await findTreeEntryChain(ctx, rootId, ['good']);
+          const odd = await findTreeEntryChain(ctx, rootId, [name]);
+
+          // Assert
+          expect(good?.entry.name).toBe('good');
+          expect(odd?.entry.name).toBe(name);
         },
       );
     });
@@ -526,7 +548,11 @@ describe('findTreeEntry', () => {
 
   describe('Given a raw-scanned directory with two entries sharing a name', () => {
     describe('When the path descends into it', () => {
-      it('Then it refuses with the duplicate-entry-name reason and offset', async () => {
+      // This is the only test that kills the `matched ??= …` (vs `matched =
+      // … ?? matched`) mutant — every test with a unique target name is
+      // blind to it, since both accumulation orders return the same result
+      // when there is only one match.
+      it('Then it resolves the FIRST entry, not the last', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const dupOidA = 'a'.repeat(40) as ObjectId;
@@ -537,21 +563,12 @@ describe('findTreeEntry', () => {
         );
         const dirId = await writeRawObjectBytes(ctx, 'tree', content);
         const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
-        const expectedOffset = rawEntryByteLength('100644', 'dup');
 
-        // Act / Assert
-        try {
-          await findTreeEntry(ctx, rootId, 'dir/dup');
-          expect.unreachable();
-        } catch (error) {
-          expect(error).toBeInstanceOf(TsgitError);
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('INVALID_TREE_ENTRY');
-          if (data.code === 'INVALID_TREE_ENTRY') {
-            expect(data.reason).toBe('duplicate entry name: dup');
-            expect(data.offset).toBe(expectedOffset);
-          }
-        }
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'dir/dup');
+
+        // Assert
+        expect(result?.id).toBe(dupOidA);
       });
     });
   });
@@ -600,6 +617,80 @@ describe('findTreeEntry', () => {
       });
     });
   });
+
+  describe('Given a tree whose sole entry is literally named a/b', () => {
+    describe('When findTreeEntry searches for the whole literal path', () => {
+      it('Then it resolves the literal entry through the whole-remaining-path fallback', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leafId = await writeObject(ctx, blobOf(1));
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a/b', leafId)]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'a/b');
+
+        // Assert
+        expect(result?.id).toBe(leafId);
+      });
+    });
+
+    describe('When findTreeEntry searches for only the first segment', () => {
+      it('Then it returns undefined — a single-segment path never falls back to the whole remaining path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leafId = await writeObject(ctx, blobOf(1));
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a/b', leafId)]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'a');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a tree where a real a/b subtree path exists alongside a sibling entry literally named a/b', () => {
+    describe('When findTreeEntry searches for a/b', () => {
+      it('Then the real segment-by-segment path wins — the fallback only ever runs on a miss', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const realLeafId = await writeObject(ctx, blobOf(2));
+        const literalLeafId = await writeObject(ctx, blobOf(3));
+        const bTreeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'b', realLeafId)]);
+        const rootId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'a', bTreeId),
+          treeEntry(FILE_MODE.REGULAR, 'a/b', literalLeafId),
+        ]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'a/b');
+
+        // Assert
+        expect(result?.id).toBe(realLeafId);
+      });
+    });
+  });
+
+  describe('Given a tree containing entries literally named . and ..', () => {
+    describe('When findTreeEntry searches for each at the top level', () => {
+      it.each([
+        { label: "'.'", name: '.' },
+        { label: "'..'", name: '..' },
+      ])('Then $label resolves under its own literal name', async ({ name }) => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leafId = await writeObject(ctx, blobOf(6));
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, name, leafId)]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, name);
+
+        // Assert
+        expect(result?.id).toBe(leafId);
+      });
+    });
+  });
 });
 
 describe('findTreeEntryChain', () => {
@@ -619,6 +710,29 @@ describe('findTreeEntryChain', () => {
         // Assert
         expect(result?.entry.id).toBe(cId);
         expect(result?.oidChain).toEqual([rootId, aId, bId, cId]);
+      });
+    });
+  });
+
+  describe('Given a tree where a real a/b subtree path exists alongside a sibling entry literally named a/b', () => {
+    describe('When findTreeEntryChain resolves the path', () => {
+      it('Then the oid chain reflects the real segment-by-segment descent, not the literal-entry shortcut', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const realLeafId = await writeObject(ctx, blobOf(2));
+        const literalLeafId = await writeObject(ctx, blobOf(3));
+        const bTreeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'b', realLeafId)]);
+        const rootId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'a', bTreeId),
+          treeEntry(FILE_MODE.REGULAR, 'a/b', literalLeafId),
+        ]);
+
+        // Act
+        const result = await findTreeEntryChain(ctx, rootId, ['a', 'b']);
+
+        // Assert
+        expect(result?.entry.id).toBe(realLeafId);
+        expect(result?.oidChain).toEqual([rootId, bTreeId, realLeafId]);
       });
     });
   });

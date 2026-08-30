@@ -5,7 +5,6 @@ import { findTreeEntry } from '../../../../../src/application/primitives/interna
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
-import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { ObjectId, Tree, TreeEntry } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
@@ -24,6 +23,15 @@ import {
 // paraphrased, and never the production code under test. Descends through
 // `readObject`'s fully-parsed `Tree` at every level, the way the production
 // implementation did before this part.
+//
+// Still a faithful model of the production descent below: `TREE_PATH_NAME_POOL`
+// (arbitraries.ts) holds only plain ASCII names with no `/`, and each level's
+// names are drawn without replacement, so the round-trip property below never
+// generates a byte-distinct-but-lossily-equal name pair, a duplicate name
+// within one directory, or a literal entry name containing `/` — the three
+// cases where a string-keyed `.find` and the production byte-cursor descent
+// (first-wins, whole-remaining-path fallback) could disagree. Those cases are
+// each covered by their own dedicated tests instead.
 // ---------------------------------------------------------------------------
 async function findTreeEntryOracle(
   ctx: Context,
@@ -125,8 +133,13 @@ describe('findTreeEntry properties', () => {
 
   describe('Given a tree whose directory holds a duplicate entry name', () => {
     describe('When findTreeEntry scans that directory', () => {
-      it('Then it always refuses', async () => {
-        // Arrange + Act + Assert
+      it('Then it always resolves the FIRST entry sharing the searched name', async () => {
+        // Arrange + Act + Assert — a plain array `.find` over the same
+        // entries, in the same on-disk (sorted, insertion-stable) order, is
+        // the independent first-wins oracle: `writeTree`'s sort is a plain
+        // `Array.prototype.sort`, stable since ES2019, so two entries
+        // sharing a sort key (an exact duplicate name) keep the relative
+        // order they were passed in.
         await fc.assert(
           fc.asyncProperty(
             duplicateDirectoryArb(),
@@ -142,26 +155,21 @@ describe('findTreeEntry properties', () => {
                 content: new TextEncoder().encode('dup-b'),
                 id: '' as ObjectId,
               });
-              const siblingEntries: TreeEntry[] = siblings.map((name) =>
-                treeEntry(FILE_MODE.REGULAR, name, dupBlobIdA),
+              const orderedEntries = [
+                ...siblings.map((name) => ({ name, id: dupBlobIdA })),
+                { name: duplicateName, id: dupBlobIdA },
+                { name: duplicateName, id: dupBlobIdB },
+              ];
+              const dirId = await writeTree(
+                ctx,
+                orderedEntries.map(({ name, id }) => treeEntry(FILE_MODE.REGULAR, name, id)),
               );
-              const dirId = await writeTree(ctx, [
-                ...siblingEntries,
-                treeEntry(FILE_MODE.REGULAR, duplicateName, dupBlobIdA),
-                treeEntry(FILE_MODE.REGULAR, duplicateName, dupBlobIdB),
-              ]);
               const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
+              const expected = orderedEntries.find((candidate) => candidate.name === searchSegment);
 
-              let caught: unknown;
-              try {
-                await findTreeEntry(ctx, rootId, `dir/${searchSegment}`);
-                expect.unreachable();
-              } catch (error) {
-                caught = error;
-              }
-              expect(caught).toBeInstanceOf(TsgitError);
-              const data = (caught as TsgitError).data;
-              expect(data.code).toBe('INVALID_TREE_ENTRY');
+              const result = await findTreeEntry(ctx, rootId, `dir/${searchSegment}`);
+
+              expect(result?.id).toBe(expected?.id);
             },
           ),
           { numRuns: 100 },
