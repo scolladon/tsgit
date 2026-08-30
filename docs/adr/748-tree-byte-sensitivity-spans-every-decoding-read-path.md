@@ -4,6 +4,7 @@ subjects:
   - src/domain/fsck/validate-tree.ts
   - src/application/primitives/internal/flatten-raw.ts
   - src/application/primitives/internal/resolve-tree-path.ts
+  - src/domain/diff/tree-diff.ts
 ---
 # 748 — Tree byte-sensitivity unification spans every decoding read path
 
@@ -37,6 +38,9 @@ writing a fourth copy.
 ## Consequences
 
 The backlog entry's stated scope (`tree.ts` only) is superseded by this decision and is
-recorded as incomplete rather than followed. `TreeCursor` and `raw-tree-diff.ts` remain
+recorded as incomplete rather than followed. Planning then found a fifth site the design
+had not counted: the non-recursive tree diff builds its ordering and equality key by
+re-encoding the decoded name, so two entries whose names differ only in invalid UTF-8
+collapse into one key there too. It is bound by this decision like the other four. `TreeCursor` and `raw-tree-diff.ts` remain
 out of scope — their narrower refusal surface is deliberate and already pinned. The
 review surface is genuinely wide; the interop suite is the gate.
