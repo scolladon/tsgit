@@ -198,6 +198,34 @@ describe('primitives/walk-submodules', () => {
       });
     });
 
+    describe('Given a gitlink entry whose own name escapes the work tree, When the walk recurses', () => {
+      it('Then it refuses rather than deriving a child work directory outside the parent', async () => {
+        // Arrange — the entry name, not the .gitmodules section name, is what
+        // builds the child's work directory. The object-parse layer no longer
+        // refuses a '..' name, so this is the boundary that has to.
+        const ctx = await buildSeededContext();
+        const text = '[submodule "escape"]\n\tpath = ../escape\n\turl = https://e/x.git\n';
+        const blobId = await writeBlobText(ctx, text);
+        const entries: TreeEntry[] = [
+          treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId),
+          treeEntry(FILE_MODE.GITLINK, '../escape', FAKE_COMMIT_A),
+        ];
+        const treeId = await writeTreeAt(ctx, entries);
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(walkSubmodules(ctx, { ref: treeId, recursive: true }));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+      });
+    });
+
     describe('Given a .gitmodules row with no matching gitlink', () => {
       describe('When walkSubmodules', () => {
         it('Then it is not yielded', async () => {
