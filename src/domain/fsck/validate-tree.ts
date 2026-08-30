@@ -1,5 +1,5 @@
 import { compareBytes, indexOf } from '../objects/encoding.js';
-import { entryNameKey, hasNonOctalByte } from '../objects/tree-entry-bytes.js';
+import { entryNameKey, hasNonOctalByte, matchesDotgitAlias } from '../objects/tree-entry-bytes.js';
 import {
   MSG_BAD_FILEMODE,
   MSG_BAD_TREE,
@@ -104,6 +104,9 @@ function treeEntrySortKey(raw: Uint8Array, entry: TreeEntry): Uint8Array {
 }
 
 function checkNameFaults(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
   key: string,
   byteLength: number,
   strict: boolean,
@@ -115,7 +118,7 @@ function checkNameFaults(
   if (key === '..') {
     findings.push({ msgId: MSG_HAS_DOTDOT, severity: resolveSeverity(MSG_HAS_DOTDOT, strict) });
   }
-  if (key === '.git') {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'git')) {
     findings.push({ msgId: MSG_HAS_DOTGIT, severity: resolveSeverity(MSG_HAS_DOTGIT, strict) });
   }
   if (key.includes('/')) {
@@ -134,15 +137,17 @@ function checkNameFaults(
 }
 
 function checkSpecialFileName(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
   mode: string,
-  key: string,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
   const findings: TreeFinding[] = [];
   const isSymlink = mode === '120000';
   const isRegular = mode === '100644' || mode === '100755';
 
-  if (key === '.gitmodules') {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitmodules')) {
     if (isSymlink) {
       findings.push({
         msgId: MSG_GITMODULES_SYMLINK,
@@ -155,7 +160,7 @@ function checkSpecialFileName(
       });
     }
   }
-  if (key === '.gitattributes') {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitattributes')) {
     if (isSymlink) {
       findings.push({
         msgId: MSG_GITATTRIBUTES_SYMLINK,
@@ -168,13 +173,13 @@ function checkSpecialFileName(
       });
     }
   }
-  if (key === '.gitignore' && isSymlink) {
+  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'gitignore')) {
     findings.push({
       msgId: MSG_GITIGNORE_SYMLINK,
       severity: resolveSeverity(MSG_GITIGNORE_SYMLINK, strict),
     });
   }
-  if (key === '.mailmap' && isSymlink) {
+  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'mailmap')) {
     findings.push({
       msgId: MSG_MAILMAP_SYMLINK,
       severity: resolveSeverity(MSG_MAILMAP_SYMLINK, strict),
@@ -207,7 +212,16 @@ function checkEntryFaults(
   if (isZeroSha(sha)) {
     findings.push({ msgId: MSG_NULL_SHA1, severity: resolveSeverity(MSG_NULL_SHA1, strict) });
   }
-  for (const finding of checkNameFaults(key, nameEnd - nameStart, strict)) findings.push(finding);
+  for (const finding of checkNameFaults(
+    raw,
+    nameStart,
+    nameEnd,
+    key,
+    nameEnd - nameStart,
+    strict,
+  )) {
+    findings.push(finding);
+  }
 
   if (seenNames.has(key)) {
     findings.push({
@@ -226,7 +240,9 @@ function checkEntryFaults(
     });
   }
 
-  for (const finding of checkSpecialFileName(mode, key, strict)) findings.push(finding);
+  for (const finding of checkSpecialFileName(raw, nameStart, nameEnd, mode, strict)) {
+    findings.push(finding);
+  }
 
   return findings;
 }

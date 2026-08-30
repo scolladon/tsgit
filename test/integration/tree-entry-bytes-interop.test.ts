@@ -1027,6 +1027,119 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
         expect(dangling?.objectType).toBe('tree');
       });
     });
+
+    // -------------------------------------------------------------------
+    // Case 12 — the dotgit alias fold: git's is_hfs_dotgit/is_ntfs_dotgit
+    // rule folds a case variant, an NTFS 8.3 short name and an HFS-ignorable
+    // code point at a mid-position onto '.git', and does NOT fold either
+    // negative control. The .gitattributes family folds the same way
+    // (re-measured against git 2.55.0, resolving the round-2 open question:
+    // a case-folded ".GITATTRIBUTES" symlink still reports
+    // gitattributesSymlink, at the INFO severity that is never upgraded
+    // under --strict).
+    // -------------------------------------------------------------------
+
+    describe('Given the dotgit alias matrix (case-fold, NTFS short name, HFS mid-position, two negative controls), When both tools fsck it', () => {
+      let aliasDir = '';
+      let caseFoldTreeId = '';
+      let ntfsShortNameTreeId = '';
+      let hfsMidTreeId = '';
+      let negativeDotDotGitTreeId = '';
+      let negativeShortNameTreeId = '';
+      let gitattributesCaseFoldTreeId = '';
+
+      beforeAll(async () => {
+        aliasDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-tree-bytes-fsck-alias-'));
+        runGit(['init', '-q', '-b', 'main', aliasDir]);
+        const blob = runGit(['-C', aliasDir, 'hash-object', '-w', '--stdin'], {
+          input: 'one\n',
+        }).trim();
+
+        caseFoldTreeId = buildLiteralTreeIn(aliasDir, rawEntry('100644', '.GIT', blob));
+        ntfsShortNameTreeId = buildLiteralTreeIn(aliasDir, rawEntry('100644', 'git~1', blob));
+        hfsMidTreeId = buildLiteralTreeIn(
+          aliasDir,
+          rawEntryBytes(
+            FILE_MODE.REGULAR,
+            concatBytes(encode('.g'), Uint8Array.of(0xe2, 0x80, 0x8c), encode('it')),
+            blob,
+          ),
+        );
+        negativeDotDotGitTreeId = buildTreeIn(aliasDir, rawEntry('100644', '..git', blob));
+        negativeShortNameTreeId = buildTreeIn(aliasDir, rawEntry('100644', 'gi~1', blob));
+        gitattributesCaseFoldTreeId = buildLiteralTreeIn(
+          aliasDir,
+          rawEntryBytes(FILE_MODE.SYMLINK, encode('.GITATTRIBUTES'), blob),
+        );
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await rm(aliasDir, { recursive: true, force: true });
+      });
+
+      const strictRows: ReadonlyArray<{ readonly label: string; readonly strict: boolean }> = [
+        { label: 'without --strict', strict: false },
+        { label: 'with --strict', strict: true },
+      ];
+
+      it.each(strictRows)(
+        'Then git and tsgit fsck agree on every aliased and non-aliased row $label',
+        async ({ strict }) => {
+          // Arrange — one whole-directory fsck call: passing a specific oid
+          // to `git fsck` does not scope the scan to that object, it still
+          // walks every loose object, so the repo-wide exit code and
+          // stderr are what both tools are compared against.
+          const gitFlags = strict ? ['--strict'] : [];
+          const gitResult = tryRunGitWithExit(['-C', aliasDir, 'fsck', ...gitFlags]);
+          const ctx = createNodeContext({ workDir: aliasDir });
+
+          // Act
+          const result = await fsck(ctx, { strict });
+
+          // Assert — every hasDotgit alias upgrades the exit code together
+          // under --strict (WARN → ERROR); gitattributesSymlink is INFO and
+          // never does, so the repo's worst finding without --strict is
+          // still just a warning.
+          expect(gitResult.exitCode).toBe(strict ? 1 : 0);
+          expect(result.exitCode).toBe(strict ? 1 : 0);
+
+          // Assert — case-fold, NTFS short name and HFS mid-position all
+          // alias '.git', at hasDotgit's own severity (WARN, upgraded to
+          // ERROR only under --strict).
+          const expectedSeverity = strict ? 'error' : 'warning';
+          for (const id of [caseFoldTreeId, ntfsShortNameTreeId, hfsMidTreeId]) {
+            const finding = result.findings.find((f) => isBadObjectFor(f, id));
+            expect(finding?.msgId).toBe('hasDotgit');
+            expect(finding?.severity).toBe(expectedSeverity);
+            expect(gitResult.stderr).toContain(
+              reconstructTreeLine(expectedSeverity, id, 'hasDotgit', "contains '.git'"),
+            );
+          }
+
+          // Assert — the two negative controls never alias '.git' on either
+          // side: an over-matching fold is worse than the gap it closes.
+          for (const id of [negativeDotDotGitTreeId, negativeShortNameTreeId]) {
+            expect(gitResult.stderr).not.toContain(`in tree ${id}: hasDotgit`);
+            expect(result.findings.filter((f) => isBadObjectFor(f, id))).toEqual([]);
+          }
+
+          // Assert — the .gitattributes family folds case the same way.
+          const gitattributesFinding = result.findings.find((f) =>
+            isBadObjectFor(f, gitattributesCaseFoldTreeId),
+          );
+          expect(gitattributesFinding?.msgId).toBe('gitattributesSymlink');
+          expect(gitattributesFinding?.severity).toBe('info');
+          expect(gitResult.stderr).toContain(
+            reconstructTreeLine(
+              'warning',
+              gitattributesCaseFoldTreeId,
+              'gitattributesSymlink',
+              '.gitattributes is a symlink',
+            ),
+          );
+        },
+      );
+    });
   });
 
   // ---------------------------------------------------------------------

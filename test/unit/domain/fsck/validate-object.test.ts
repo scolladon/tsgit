@@ -1152,15 +1152,14 @@ describe('Given tree with an entry named "//"', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tree — checkSpecialFileName narrowing: a BOM-prefixed special name no
-// longer collides with the real one now that the comparison is byte-exact.
-// Real git still flags this case (U+FEFF is HFS-ignorable), which tsgit does
-// not replicate here — that parity gap is a separate, out-of-scope item.
+// tree — checkSpecialFileName folds a leading BOM the way git's HFS fold
+// does for every dotgit alias: U+FEFF is HFS-ignorable at any position, so a
+// BOM-prefixed ".gitmodules" is still an alias of it.
 // ---------------------------------------------------------------------------
 
-describe('Given tree with a symlink entry named BOM + ".gitmodules" (decodes to ".gitmodules" but is not)', () => {
+describe('Given tree with a symlink entry named BOM + ".gitmodules" (HFS-folds to ".gitmodules")', () => {
   describe('When validateObject runs', () => {
-    it('Then emits no gitmodulesSymlink finding', () => {
+    it('Then emits gitmodulesSymlink', () => {
       // Arrange
       const nameBytes = concatBytes([BOM_BYTES, encode('.gitmodules')]);
       const rawBytes = buildTree(buildTreeEntryBytes('120000', nameBytes, BLOB_SHA));
@@ -1174,7 +1173,7 @@ describe('Given tree with a symlink entry named BOM + ".gitmodules" (decodes to 
       });
 
       // Assert
-      expect(result).toEqual([]);
+      expect(result).toContainEqual({ msgId: 'gitmodulesSymlink', severity: 'error' });
     });
   });
 });
