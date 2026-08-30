@@ -672,8 +672,8 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
   // stay exact (an unrelated finding in a shared store would inflate them).
   // ---------------------------------------------------------------------
 
-  describe("Given the tree write-surface's fsck-only faults", () => {
-    describe('Given a repo with every ERROR-tier fault (badTree, duplicateEntries, treeNotSorted)', () => {
+  describe('fsck-only faults', () => {
+    describe('Given a repo with every ERROR-tier fault (badTree, duplicateEntries, treeNotSorted), When both tools fsck it', () => {
       let errorTierDir = '';
       let errorTierBlob = '';
       let emptyNameTreeId = '';
@@ -805,7 +805,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
       );
     });
 
-    describe('Given a repo with only a badFilemode fault (mode 777777)', () => {
+    describe('Given a repo with only a badFilemode fault (mode 777777), When both tools fsck it', () => {
       let badFilemodeDir = '';
       let badFilemodeTreeId = '';
 
@@ -853,7 +853,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
       );
     });
 
-    describe('Given a repo with the largePathname boundary (raw-byte and multi-byte-UTF-8 encodings)', () => {
+    describe('Given a repo with the largePathname boundary (raw-byte and multi-byte-UTF-8 encodings), When both tools fsck it', () => {
       let largePathnameDir = '';
       let blob = '';
       let acceptedRawTreeId = '';
@@ -941,7 +941,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
       );
     });
 
-    describe('Given a repo with a single, clean, BOM-named tree (the fsck two-pass agreement)', () => {
+    describe('Given a repo with a single, clean, BOM-named tree, When both fsck passes run', () => {
       let bomAgreementDir = '';
       let bomTreeId = '';
 
@@ -991,7 +991,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
   // parse-tier refusal row re-run under --object-format=sha256.
   // ---------------------------------------------------------------------
 
-  describe('Given a --object-format=sha256 repository', () => {
+  describe('Given a --object-format=sha256 repository, When an exotic entry name round-trips', () => {
     let sha256Dir = '';
 
     beforeAll(async () => {
