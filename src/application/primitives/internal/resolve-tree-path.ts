@@ -24,6 +24,15 @@ import { readTree } from '../read-tree.js';
  * `PATH_NOT_IN_TREE`. The caller decides what the final entry must be (a blob,
  * for `readFileAt`; any object, for `rev-parse`'s `<tree-ish>:<path>`).
  *
+ * A segment that matches nothing falls back to comparing the whole remaining
+ * path against this level's entry names, so an entry whose name literally
+ * contains `/` is addressable by its full text — git's tree walk compares the
+ * remaining path the same way. The fallback runs only on a miss, so a real
+ * sub-tree always wins over a sibling that merely spells the same path.
+ *
+ * Entry names are compared as raw bytes, and a directory carrying two entries
+ * of the same name resolves to the first, as git's own path lookup does.
+ *
  * `rev` is carried only to populate the refusal's display fields.
  */
 export const descendTreePath = async (
