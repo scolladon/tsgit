@@ -5,7 +5,13 @@ subjects:
 ---
 # 723 — Cursor descent keeps the duplicate-name refusal
 
-- **Status:** accepted
+> **Superseded by [ADR-752](752-tree-read-paths-accept-duplicate-entry-names.md)** for the
+> duplicate-entry-name refusal on read paths and the unpinned premise it rested on. The
+> probe this ADR asked for was run: git accepts duplicate names on every read surface and
+> refuses only in `fsck`. Everything else here — the cursor-scan boundary, the per-consumer
+> re-implementation rule, and the whole mode-tier addendum — still stands.
+
+- **Status:** superseded by ADR-752
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-11) · **Supersedes/Refines:** none
 
