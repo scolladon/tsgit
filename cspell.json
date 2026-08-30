@@ -522,6 +522,7 @@
     "lookups",
     "loopable",
     "loosecompression",
+    "lossily",
     "lslint",
     "lstat",
     "lstats",
