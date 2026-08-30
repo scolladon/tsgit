@@ -9,6 +9,7 @@ import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import {
   buildSeededContext,
   buildTreeChain,
@@ -186,11 +187,11 @@ describe('synthesizeTreeFromIndex', () => {
         const idB = await writeBlob(ctx, 'B');
         // Build a nested tree manually so we have a canonical reference.
         const subId = await writeTree(ctx, [
-          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt' as FilePath, idB),
         ]);
         const expectedRootId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'dir' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.DIRECTORY, 'dir' as FilePath, subId),
         ]);
 
         // The index that this tree corresponds to (flat, stage-0).
@@ -252,9 +253,9 @@ describe('synthesizeTreeFromIndex', () => {
         const idM = await writeBlob(ctx, 'M');
         const idZ = await writeBlob(ctx, 'Z');
         const expectedRootId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'm.txt' as FilePath, id: idM, mode: FILE_MODE.REGULAR },
-          { name: 'z.txt' as FilePath, id: idZ, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.REGULAR, 'm.txt' as FilePath, idM),
+          treeEntry(FILE_MODE.REGULAR, 'z.txt' as FilePath, idZ),
         ]);
         const index: GitIndex = {
           ...EMPTY_INDEX,

@@ -38,6 +38,7 @@ import type {
   Tree,
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import {
   buildSeededContext,
   buildTreeChain,
@@ -921,7 +922,7 @@ describe('merge', () => {
           id: '' as ObjectId,
         });
         const otherTreeId = await writeTree(ctx, [
-          { name: 'shared.txt' as never, id: otherBlobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'shared.txt' as never, otherBlobId),
         ]);
         const otherCommitId = await createCommit(ctx, {
           tree: otherTreeId,
@@ -3283,7 +3284,7 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         );
         const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
         const theirsTreeId = await writeTree(ctx, [
-          { name: 'f.txt' as FilePath, id: theirsBlobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as FilePath, theirsBlobId),
         ]);
         const theirsCommitId = await createCommitPrim(ctx, {
           tree: theirsTreeId,
@@ -3331,7 +3332,7 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         );
         const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
         const oursTreeId = await writeTree(ctx, [
-          { name: 'link' as FilePath, id: oursBlobId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'link' as FilePath, oursBlobId),
         ]);
         const oursCommitId = await createCommitPrim(ctx, {
           tree: oursTreeId,
@@ -3356,7 +3357,7 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
           id: '' as ObjectId,
         });
         const theirsTreeId = await writeTree(ctx, [
-          { name: 'link' as FilePath, id: theirsBlobId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'link' as FilePath, theirsBlobId),
         ]);
         const theirsCommitId = await createCommitPrim(ctx, {
           tree: theirsTreeId,
@@ -3402,7 +3403,7 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
           content: new TextEncoder().encode(content),
           id: '' as ObjectId,
         });
-        return { name: name as FilePath, id, mode: mode as never };
+        return treeEntry(mode as never, name as FilePath, id);
       }),
     );
     const treeId = await writeTree(ctx, treeEntries);
@@ -3478,7 +3479,7 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
           id: '' as ObjectId,
         });
         const oursTreeId = await writeTree(ctx, [
-          { name: 'f.txt' as FilePath, id: oursBlobId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f.txt' as FilePath, oursBlobId),
         ]);
         const oursCommitId = await createCommitPrim(ctx, {
           tree: oursTreeId,
@@ -3549,7 +3550,7 @@ describe('merge — labels threading (slice 4)', () => {
         );
         const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
         const theirsTreeId = await writeTree(ctx, [
-          { name: 'f.txt' as FilePath, id: theirsBlobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as FilePath, theirsBlobId),
         ]);
         const theirsCommitId = await createCommitPrim(ctx, {
           tree: theirsTreeId,

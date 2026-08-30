@@ -29,6 +29,7 @@ import type {
   ObjectId,
   Tag,
 } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import { lookupPackIndex, parsePackIndex } from '../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import {
@@ -54,10 +55,10 @@ const AUTHOR: AuthorIdentity = {
 const buildDeepTree = async (ctx: Context, levels: number): Promise<ObjectId> => {
   const leafBlob = await writeBlob(ctx, 'deep-not-leaf');
   let current: ObjectId = await writeTree(ctx, [
-    { name: 'f.txt', mode: '100644' as FileMode, id: leafBlob },
+    treeEntry('100644' as FileMode, 'f.txt', leafBlob),
   ]);
   for (let i = 0; i < levels; i += 1) {
-    current = await writeTree(ctx, [{ name: 'sub', mode: '40000' as FileMode, id: current }]);
+    current = await writeTree(ctx, [treeEntry('40000' as FileMode, 'sub', current)]);
   }
   return current;
 };
@@ -121,13 +122,13 @@ interface LinearChain {
 /** A 3-commit chain, each generation with its own tree and blob. */
 const buildLinearChain = async (ctx: Context): Promise<LinearChain> => {
   const b1 = await writeBlob(ctx, 'gen-1');
-  const t1 = await writeTree(ctx, [{ name: 'file.txt', mode: '100644' as FileMode, id: b1 }]);
+  const t1 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'file.txt', b1)]);
   const c1 = await writeCommit(ctx, t1, [], 'gen-1');
   const b2 = await writeBlob(ctx, 'gen-2');
-  const t2 = await writeTree(ctx, [{ name: 'file.txt', mode: '100644' as FileMode, id: b2 }]);
+  const t2 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'file.txt', b2)]);
   const c2 = await writeCommit(ctx, t2, [c1], 'gen-2');
   const b3 = await writeBlob(ctx, 'gen-3');
-  const t3 = await writeTree(ctx, [{ name: 'file.txt', mode: '100644' as FileMode, id: b3 }]);
+  const t3 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'file.txt', b3)]);
   const c3 = await writeCommit(ctx, t3, [c2], 'gen-3');
   return { c1, c2, c3, t1, t2, t3, b1, b2, b3 };
 };
@@ -172,13 +173,13 @@ const buildHavesFixture = async (): Promise<HavesFixture> => {
   const ctx = await buildSeededContext();
   const sharedBlob = await writeBlob(ctx, 'shared');
   const rootTree = await writeTree(ctx, [
-    { name: 'shared.txt', mode: '100644' as FileMode, id: sharedBlob },
+    treeEntry('100644' as FileMode, 'shared.txt', sharedBlob),
   ]);
   const root = await writeCommit(ctx, rootTree, [], 'root');
 
   const changedBlob = await writeBlob(ctx, 'changed');
   const haveTree = await writeTree(ctx, [
-    { name: 'shared.txt', mode: '100644' as FileMode, id: changedBlob },
+    treeEntry('100644' as FileMode, 'shared.txt', changedBlob),
   ]);
   const have = await writeCommit(ctx, haveTree, [root], 'have');
 
@@ -250,9 +251,7 @@ describe('computeClosure', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'tagged');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'tagged');
         const tagId = await writeTag(ctx, commitId, 'commit', 'v1.0');
         const sut = computeClosure;
@@ -274,9 +273,7 @@ describe('computeClosure', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'deep-tagged');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'deep-tagged');
         const innerTagId = await writeTag(ctx, commitId, 'commit', 'v1');
         const outerTagId = await writeTag(ctx, innerTagId, 'tag', 'v1-release');
@@ -305,12 +302,12 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const nestedBlobId = await writeBlob(ctx, 'nested');
         const subTreeId = await writeTree(ctx, [
-          { name: 'deep.txt', mode: '100644' as FileMode, id: nestedBlobId },
+          treeEntry('100644' as FileMode, 'deep.txt', nestedBlobId),
         ]);
         const topBlobId = await writeBlob(ctx, 'top');
         const rootTreeId = await writeTree(ctx, [
-          { name: 'top.txt', mode: '100644' as FileMode, id: topBlobId },
-          { name: 'sub', mode: '40000' as FileMode, id: subTreeId },
+          treeEntry('100644' as FileMode, 'top.txt', topBlobId),
+          treeEntry('40000' as FileMode, 'sub', subTreeId),
         ]);
         const sut = computeClosure;
 
@@ -356,8 +353,8 @@ describe('computeClosure', () => {
         const blobId = await writeBlob(ctx, 'normal');
         const gitlinkOid = 'c'.repeat(40) as ObjectId;
         const treeId = await writeTree(ctx, [
-          { name: 'submodule', mode: '160000' as FileMode, id: gitlinkOid },
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
+          treeEntry('160000' as FileMode, 'submodule', gitlinkOid),
+          treeEntry('100644' as FileMode, 'f.txt', blobId),
         ]);
         const commitId = await writeCommit(ctx, treeId, [], 'with submodule');
         const sut = computeClosure;
@@ -381,12 +378,12 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const nestedBlobId = await writeBlob(ctx, 'nested');
         const innerTreeId = await writeTree(ctx, [
-          { name: 'deep.txt', mode: '100644' as FileMode, id: nestedBlobId },
+          treeEntry('100644' as FileMode, 'deep.txt', nestedBlobId),
         ]);
         const directBlobId = await writeBlob(ctx, 'direct');
         const outerTreeId = await writeTree(ctx, [
-          { name: 'top.txt', mode: '100644' as FileMode, id: directBlobId },
-          { name: 'sub', mode: '40000' as FileMode, id: innerTreeId },
+          treeEntry('100644' as FileMode, 'top.txt', directBlobId),
+          treeEntry('40000' as FileMode, 'sub', innerTreeId),
         ]);
         const commitId = await writeCommit(ctx, outerTreeId, [], 'owns the tree');
         const sut = computeClosure;
@@ -414,8 +411,8 @@ describe('computeClosure', () => {
         const markedBlobId = await writeBlob(ctx, 'excluded directly');
         const otherBlobId = await writeBlob(ctx, 'kept');
         const treeId = await writeTree(ctx, [
-          { name: 'z.txt', mode: '100644' as FileMode, id: markedBlobId },
-          { name: 'other.txt', mode: '100644' as FileMode, id: otherBlobId },
+          treeEntry('100644' as FileMode, 'z.txt', markedBlobId),
+          treeEntry('100644' as FileMode, 'other.txt', otherBlobId),
         ]);
         const commitId = await writeCommit(ctx, treeId, [], 'with one excluded blob');
         const sut = computeClosure;
@@ -445,11 +442,11 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const sharedBlobId = await writeBlob(ctx, 'shared-leaf');
         const sharedTreeId = await writeTree(ctx, [
-          { name: 'leaf.txt', mode: '100644' as FileMode, id: sharedBlobId },
+          treeEntry('100644' as FileMode, 'leaf.txt', sharedBlobId),
         ]);
         const outerTreeId = await writeTree(ctx, [
-          { name: 'a', mode: '40000' as FileMode, id: sharedTreeId },
-          { name: 'b', mode: '40000' as FileMode, id: sharedTreeId },
+          treeEntry('40000' as FileMode, 'a', sharedTreeId),
+          treeEntry('40000' as FileMode, 'b', sharedTreeId),
         ]);
         const commitId = await writeCommit(ctx, outerTreeId, [], 'shared subtree twice');
         const sut = computeClosure;
@@ -477,11 +474,11 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const sharedBlobId = await writeBlob(ctx, 'shared-leaf');
         const sharedTreeId = await writeTree(ctx, [
-          { name: 'leaf.txt', mode: '100644' as FileMode, id: sharedBlobId },
+          treeEntry('100644' as FileMode, 'leaf.txt', sharedBlobId),
         ]);
         const outerTreeId = await writeTree(ctx, [
-          { name: 'a', mode: '40000' as FileMode, id: sharedTreeId },
-          { name: 'b', mode: '40000' as FileMode, id: sharedTreeId },
+          treeEntry('40000' as FileMode, 'a', sharedTreeId),
+          treeEntry('40000' as FileMode, 'b', sharedTreeId),
         ]);
         const commitId = await writeCommit(ctx, outerTreeId, [], 'shared subtree twice');
         const sut = computeClosure;
@@ -504,7 +501,7 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const markedBlobId = await writeBlob(ctx, 'excluded directly');
         const treeId = await writeTree(ctx, [
-          { name: 'z.txt', mode: '100644' as FileMode, id: markedBlobId },
+          treeEntry('100644' as FileMode, 'z.txt', markedBlobId),
         ]);
         const commitId = await writeCommit(ctx, treeId, [], 'with one excluded blob');
         const sut = computeClosure;
@@ -528,10 +525,10 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const sharedId = await writeBlob(ctx, 'not a submodule');
         const notTreeId = await writeTree(ctx, [
-          { name: 'submodule', mode: '160000' as FileMode, id: sharedId },
+          treeEntry('160000' as FileMode, 'submodule', sharedId),
         ]);
         const wantTreeId = await writeTree(ctx, [
-          { name: 'kept.txt', mode: '100644' as FileMode, id: sharedId },
+          treeEntry('100644' as FileMode, 'kept.txt', sharedId),
         ]);
         const commitId = await writeCommit(ctx, wantTreeId, [], 'shares the gitlink oid');
         const sut = computeClosure;
@@ -559,11 +556,11 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const absentId = 'd'.repeat(40) as ObjectId;
         const notTreeId = await writeTree(ctx, [
-          { name: 'absent.txt', mode: '100644' as FileMode, id: absentId },
+          treeEntry('100644' as FileMode, 'absent.txt', absentId),
         ]);
         const keptBlobId = await writeBlob(ctx, 'kept');
         const wantTreeId = await writeTree(ctx, [
-          { name: 'kept.txt', mode: '100644' as FileMode, id: keptBlobId },
+          treeEntry('100644' as FileMode, 'kept.txt', keptBlobId),
         ]);
         const commitId = await writeCommit(ctx, wantTreeId, [], 'blobless not side');
         const sut = computeClosure;
@@ -593,12 +590,12 @@ describe('computeClosure', () => {
         const absentParent = 'e'.repeat(40) as ObjectId;
         const notBlobId = await writeBlob(ctx, 'have');
         const notTreeId = await writeTree(ctx, [
-          { name: 'h.txt', mode: '100644' as FileMode, id: notBlobId },
+          treeEntry('100644' as FileMode, 'h.txt', notBlobId),
         ]);
         const notTipId = await writeCommit(ctx, notTreeId, [absentParent], 'grafted have');
         const wantBlobId = await writeBlob(ctx, 'want');
         const wantTreeId = await writeTree(ctx, [
-          { name: 'w.txt', mode: '100644' as FileMode, id: wantBlobId },
+          treeEntry('100644' as FileMode, 'w.txt', wantBlobId),
         ]);
         const wantId = await writeCommit(ctx, wantTreeId, [notTipId], 'want');
         const sut = computeClosure;
@@ -628,12 +625,12 @@ describe('computeClosure', () => {
         const markedBlobId = await writeBlob(ctx, 'not-side marked');
         const gitlinkOid = 'f'.repeat(40) as ObjectId;
         const notTreeId = await writeTree(ctx, [
-          { name: 'submodule', mode: '160000' as FileMode, id: gitlinkOid },
-          { name: 'marked.txt', mode: '100644' as FileMode, id: markedBlobId },
+          treeEntry('160000' as FileMode, 'submodule', gitlinkOid),
+          treeEntry('100644' as FileMode, 'marked.txt', markedBlobId),
         ]);
         const wantTreeId = await writeTree(ctx, [
-          { name: 'marked.txt', mode: '100644' as FileMode, id: markedBlobId },
-          { name: 'kept.txt', mode: '100644' as FileMode, id: keptBlobId },
+          treeEntry('100644' as FileMode, 'marked.txt', markedBlobId),
+          treeEntry('100644' as FileMode, 'kept.txt', keptBlobId),
         ]);
         const commitId = await writeCommit(ctx, wantTreeId, [], 'with gitlink in not tree');
         const sut = computeClosure;
@@ -663,9 +660,7 @@ describe('computeClosure', () => {
         await seedMaxTreeDepth(ctx, '4');
         const notTreeId = await buildDeepTree(ctx, 4);
         const blobId = await writeBlob(ctx, 'shallow want leaf');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'shallow want');
         const sut = computeClosure;
 
@@ -689,9 +684,7 @@ describe('computeClosure', () => {
         await seedMaxTreeDepth(ctx, '4');
         const notTreeId = await buildDeepTree(ctx, 5);
         const blobId = await writeBlob(ctx, 'unreachable want');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'shallow want');
         const sut = computeClosure;
 
@@ -722,9 +715,7 @@ describe('computeClosure', () => {
         await seedMaxTreeDepth(ctx, '4');
         const notTreeId = await buildDeepTree(ctx, 80);
         const blobId = await writeBlob(ctx, 'unreachable want');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'shallow want');
         const sut = computeClosure;
 
@@ -755,9 +746,7 @@ describe('computeClosure', () => {
         await seedMaxTreeDepth(ctx, '4');
         const notTreeId = await buildDeepTree(ctx, 4);
         const blobId = await writeBlob(ctx, 'boundary want leaf');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'boundary want');
         const sut = computeClosure;
 
@@ -781,9 +770,7 @@ describe('computeClosure', () => {
         await seedMaxTreeDepth(ctx, '3');
         const notTreeId = await buildDeepTree(ctx, 4);
         const blobId = await writeBlob(ctx, 'boundary want leaf');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'boundary want');
         const sut = computeClosure;
 
@@ -814,9 +801,7 @@ describe('computeClosure', () => {
         // not" already proves for a plain commit boundary.
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'tag-excluded');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'tag-excluded commit');
         const tagId = await writeTag(ctx, commitId, 'commit', 'boundary');
         const sut = computeClosure;
@@ -858,9 +843,7 @@ describe('computeClosure', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'covered');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'covered');
         const sut = computeClosure;
 
@@ -909,9 +892,7 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const absentParent = 'b'.repeat(40) as ObjectId;
         const blobId = await writeBlob(ctx, 'grafted');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [absentParent], 'grafted tip');
         const sut = computeClosure;
 
@@ -939,12 +920,12 @@ describe('computeClosure', () => {
         const rootId = await writeCommit(ctx, absentTreeId, [], 'root');
         const haveBlobId = await writeBlob(ctx, 'have');
         const haveTreeId = await writeTree(ctx, [
-          { name: 'h.txt', mode: '100644' as FileMode, id: haveBlobId },
+          treeEntry('100644' as FileMode, 'h.txt', haveBlobId),
         ]);
         const haveId = await writeCommit(ctx, haveTreeId, [rootId], 'have');
         const wantBlobId = await writeBlob(ctx, 'want');
         const wantTreeId = await writeTree(ctx, [
-          { name: 'w.txt', mode: '100644' as FileMode, id: wantBlobId },
+          treeEntry('100644' as FileMode, 'w.txt', wantBlobId),
         ]);
         const wantId = await writeCommit(ctx, wantTreeId, [rootId], 'want');
         const sut = computeClosure;
@@ -1092,20 +1073,20 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const sharedBlob = await writeBlob(ctx, 'shared');
         const rootTree = await writeTree(ctx, [
-          { name: 'shared.txt', mode: '100644' as FileMode, id: sharedBlob },
+          treeEntry('100644' as FileMode, 'shared.txt', sharedBlob),
         ]);
         const root = await writeCommit(ctx, rootTree, [], 'root');
 
         const haveOnlyBlob = await writeBlob(ctx, 'have-only');
         const haveTree = await writeTree(ctx, [
-          { name: 'have-only.txt', mode: '100644' as FileMode, id: haveOnlyBlob },
+          treeEntry('100644' as FileMode, 'have-only.txt', haveOnlyBlob),
         ]);
         const have = await writeCommit(ctx, haveTree, [root], 'have');
 
         const wantOnlyBlob = await writeBlob(ctx, 'want-only');
         const wantTree = await writeTree(ctx, [
-          { name: 'shared.txt', mode: '100644' as FileMode, id: sharedBlob },
-          { name: 'want-only.txt', mode: '100644' as FileMode, id: wantOnlyBlob },
+          treeEntry('100644' as FileMode, 'shared.txt', sharedBlob),
+          treeEntry('100644' as FileMode, 'want-only.txt', wantOnlyBlob),
         ]);
         const want = await writeCommit(ctx, wantTree, [root], 'want');
         const sut = computeClosure;
@@ -1135,25 +1116,25 @@ describe('computeClosure', () => {
         const ctx = await buildSeededContext();
         const boundaryOnlyBlob = await writeBlob(ctx, 'boundary-only');
         const boundaryTree = await writeTree(ctx, [
-          { name: 'boundary-only.txt', mode: '100644' as FileMode, id: boundaryOnlyBlob },
+          treeEntry('100644' as FileMode, 'boundary-only.txt', boundaryOnlyBlob),
         ]);
         const boundary = await writeCommit(ctx, boundaryTree, [], 'boundary');
 
         const haveOnlyBlob = await writeBlob(ctx, 'have-only');
         const haveTree = await writeTree(ctx, [
-          { name: 'have-only.txt', mode: '100644' as FileMode, id: haveOnlyBlob },
+          treeEntry('100644' as FileMode, 'have-only.txt', haveOnlyBlob),
         ]);
         const have = await writeCommit(ctx, haveTree, [boundary], 'have');
 
         const leftBlob = await writeBlob(ctx, 'left');
         const leftTree = await writeTree(ctx, [
-          { name: 'left.txt', mode: '100644' as FileMode, id: leftBlob },
+          treeEntry('100644' as FileMode, 'left.txt', leftBlob),
         ]);
         const left = await writeCommit(ctx, leftTree, [boundary], 'left');
 
         const rightBlob = await writeBlob(ctx, 'right');
         const rightTree = await writeTree(ctx, [
-          { name: 'right.txt', mode: '100644' as FileMode, id: rightBlob },
+          treeEntry('100644' as FileMode, 'right.txt', rightBlob),
         ]);
         const right = await writeCommit(ctx, rightTree, [boundary], 'right');
         const sut = computeClosure;
@@ -1208,9 +1189,7 @@ describe('computeClosure', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'ok');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const commitId = await writeCommit(ctx, treeId, [], 'ok');
         const missing = 'e'.repeat(40) as ObjectId;
         const sut = computeClosure;
@@ -1238,9 +1217,7 @@ describe('computeClosure', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'shared');
-        const treeId = await writeTree(ctx, [
-          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
         const parentId = await writeCommit(ctx, treeId, [], 'gen-1');
         const childId = await writeCommit(ctx, treeId, [parentId], 'gen-2');
         const sut = computeClosure;
@@ -1296,7 +1273,7 @@ describe('computeClosure', () => {
           };
           const blobId = await scopedWriteObject(ctx, blob);
           const treeId = await scopedWriteTree(ctx, [
-            { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
+            treeEntry('100644' as FileMode, 'f.txt', blobId),
           ]);
           const commit: Commit = {
             type: 'commit',

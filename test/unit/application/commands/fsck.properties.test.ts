@@ -20,6 +20,8 @@ import { fsck } from '../../../../src/application/commands/fsck.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
@@ -45,14 +47,10 @@ const makeBlob = (content: string) => ({
   content: enc.encode(content),
 });
 
-const makeTree = (entries: ReadonlyArray<{ mode: string; name: string; id: ObjectId }>) => ({
+const makeTree = (entries: ReadonlyArray<TreeEntry>) => ({
   type: 'tree' as const,
   id: '' as ObjectId,
-  entries: entries.map((e) => ({
-    mode: e.mode as typeof FILE_MODE.REGULAR,
-    name: e.name,
-    id: e.id,
-  })),
+  entries,
 });
 
 const makeCommit = (tree: ObjectId, parents: ReadonlyArray<ObjectId>, msg: string) => ({
@@ -94,7 +92,7 @@ describe('Given an arbitrary healthy repo (all objects reachable)', () => {
           const blobId = await writeObject(ctx, makeBlob(content));
           const treeId = await writeObject(
             ctx,
-            makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+            makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
           );
           const commitId = await writeObject(ctx, makeCommit(treeId, [], 'init'));
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -137,7 +135,7 @@ describe('Given a healthy repo plus one orphan blob tip', () => {
             const reachableBlobId = await writeObject(ctx, makeBlob(reachableContent));
             const treeId = await writeObject(
               ctx,
-              makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: reachableBlobId }]),
+              makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', reachableBlobId)]),
             );
             const commitId = await writeObject(ctx, makeCommit(treeId, [], 'init'));
             await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -226,7 +224,7 @@ describe('Given an arbitrary repo state', () => {
           const blobId = await writeObject(ctx, makeBlob(content));
           const treeId = await writeObject(
             ctx,
-            makeTree([{ mode: FILE_MODE.REGULAR, name: 'f.txt', id: blobId }]),
+            makeTree([treeEntry(FILE_MODE.REGULAR, 'f.txt', blobId)]),
           );
           const commitId = await writeObject(ctx, makeCommit(treeId, [], 'c'));
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -301,7 +299,7 @@ describe('Given a repo with a mix of reachable and unreachable objects', () => {
           const blobId = await writeObject(ctx, makeBlob(reachable));
           const treeId = await writeObject(
             ctx,
-            makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+            makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
           );
           const commitId = await writeObject(ctx, makeCommit(treeId, [], 'c'));
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -409,7 +407,7 @@ async function seedHealthyRepo(ctx: Context, content: string): Promise<void> {
   const blobId = await writeObject(ctx, makeBlob(content));
   const treeId = await writeObject(
     ctx,
-    makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+    makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
   );
   const commitId = await writeObject(ctx, makeCommit(treeId, [], 'init'));
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);

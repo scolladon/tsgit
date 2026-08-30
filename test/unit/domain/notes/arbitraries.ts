@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import type { TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const HEX = [...'0123456789abcdef'];
 
@@ -32,8 +33,8 @@ export interface RootEntriesSpec {
 const slottedEntry = (spec: SlottedSpec): TreeEntry => {
   const head = spec.nibble.toString(16);
   return spec.isNote
-    ? { mode: FILE_MODE.REGULAR, name: head + spec.tail.slice(1), id: spec.id }
-    : { mode: FILE_MODE.DIRECTORY, name: head + spec.tail.slice(1, 2), id: spec.id };
+    ? treeEntry(FILE_MODE.REGULAR, head + spec.tail.slice(1), spec.id)
+    : treeEntry(FILE_MODE.DIRECTORY, head + spec.tail.slice(1, 2), spec.id);
 };
 
 const arbSlotted = (): fc.Arbitrary<ReadonlyArray<SlottedSpec>> =>
@@ -51,7 +52,7 @@ const arbPreserved = (): fc.Arbitrary<ReadonlyArray<TreeEntry>> =>
   fc.array(
     fc
       .record({ name: fc.stringMatching(/^[g-z]{3,8}$/), id: arbOid() })
-      .map((record): TreeEntry => ({ mode: FILE_MODE.REGULAR, name: record.name, id: record.id })),
+      .map((record): TreeEntry => treeEntry(FILE_MODE.REGULAR, record.name, record.id)),
     { maxLength: 4 },
   );
 

@@ -59,6 +59,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { parseCruftMtimes } from '../../../../src/domain/storage/index.js';
 import { allObjectIds } from '../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -198,7 +199,7 @@ async function seedDoomedBlob(ctx: Context, content: string): Promise<ObjectId> 
   const treeId = await writeObject(ctx, {
     type: 'tree' as const,
     id: '' as ObjectId,
-    entries: [{ mode: FILE_MODE.REGULAR, name: 'doomed.txt', id: blobId }],
+    entries: [treeEntry(FILE_MODE.REGULAR, 'doomed.txt', blobId)],
   });
   const commitId = await writeObject(ctx, {
     type: 'commit' as const,
@@ -655,7 +656,7 @@ describe('maintenance', () => {
         const wtTreeId = await writeObject(ctx, {
           type: 'tree' as const,
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'wt.txt', id: wtBlobId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'wt.txt', wtBlobId)],
         });
         const wtCommitId = await writeObject(ctx, {
           type: 'commit' as const,
@@ -697,7 +698,7 @@ describe('maintenance', () => {
         const wtTreeId = await writeObject(ctx, {
           type: 'tree' as const,
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'wt.txt', id: wtBlobId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'wt.txt', wtBlobId)],
         });
         const wtCommitId = await writeObject(ctx, {
           type: 'commit' as const,
@@ -745,7 +746,7 @@ describe('maintenance', () => {
         const mainTreeId = await writeObject(ctx, {
           type: 'tree' as const,
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'main.txt', id: mainBlobId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'main.txt', mainBlobId)],
         });
         const mainCommitId = await writeObject(ctx, {
           type: 'commit' as const,

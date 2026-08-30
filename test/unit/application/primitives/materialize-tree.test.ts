@@ -7,6 +7,7 @@ import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/inde
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { recordingProgress } from '../commands/fixtures.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -51,13 +52,13 @@ const writeNestedTree = async (
   const byDir = new Map<string, TreeEntry[]>();
   for (const f of files) {
     const list = byDir.get(f.dir) ?? [];
-    list.push({ name: f.name as FilePath, id: f.id, mode: FILE_MODE.REGULAR });
+    list.push(treeEntry(FILE_MODE.REGULAR, f.name as FilePath, f.id));
     byDir.set(f.dir, list);
   }
   const rootEntries: TreeEntry[] = [];
   for (const [dir, entries] of byDir) {
     const subId = await writeTree(ctx, entries);
-    rootEntries.push({ name: dir as FilePath, id: subId, mode: FILE_MODE.DIRECTORY });
+    rootEntries.push(treeEntry(FILE_MODE.DIRECTORY, dir as FilePath, subId));
   }
   return writeTree(ctx, rootEntries);
 };
@@ -70,7 +71,7 @@ describe('materializeTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeEntries: TreeEntry[] = [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ];
         const treeId = await writeTree(ctx, treeEntries);
 
@@ -125,7 +126,7 @@ describe('materializeTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'committed');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
         const indexWithMatch: GitIndex = {
           ...EMPTY_INDEX,
@@ -165,7 +166,7 @@ describe('materializeTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'committed');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
         const indexWithMatch: GitIndex = {
           ...EMPTY_INDEX,
@@ -196,7 +197,7 @@ describe('materializeTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'committed');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
         const indexWithMatch: GitIndex = {
           ...EMPTY_INDEX,
@@ -234,9 +235,9 @@ describe('materializeTree', () => {
         const idB = await writeBlob(ctxWithProgress, 'B');
         const idC = await writeBlob(ctxWithProgress, 'C');
         const treeId = await writeTree(ctxWithProgress, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
-          { name: 'c.txt' as FilePath, id: idC, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt' as FilePath, idB),
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, idC),
         ]);
         const indexWithAllMatches: GitIndex = {
           ...EMPTY_INDEX,
@@ -280,7 +281,7 @@ describe('materializeTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idConflict = await writeBlob(ctx, 'conflict');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
         ]);
         const index: GitIndex = {
           ...EMPTY_INDEX,
@@ -311,7 +312,7 @@ describe('materializeTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idKeep = await writeBlob(ctx, 'keep');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
         ]);
         const index: GitIndex = {
           ...EMPTY_INDEX,
@@ -343,7 +344,7 @@ describe('materializeTree', () => {
         const idOld = await writeBlob(ctx, 'old');
         const idNew = await writeBlob(ctx, 'new');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idNew, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idNew),
         ]);
         const index: GitIndex = {
           ...EMPTY_INDEX,
@@ -378,9 +379,9 @@ describe('materializeTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idB = await writeBlob(ctx, 'B');
         const treeId = await writeTree(ctx, [
-          { name: 'c.txt' as FilePath, id: idC, mode: FILE_MODE.REGULAR },
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, idC),
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt' as FilePath, idB),
         ]);
 
         // Act
@@ -407,7 +408,7 @@ describe('materializeTree', () => {
         const idM = await writeBlob(ctx, 'M');
         const idZ = await writeBlob(ctx, 'Z');
         const treeId = await writeTree(ctx, [
-          { name: 'm.txt' as FilePath, id: idM, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'm.txt' as FilePath, idM),
         ]);
         const index: GitIndex = {
           ...EMPTY_INDEX,
@@ -439,7 +440,7 @@ describe('materializeTree', () => {
         const blobId = await writeBlob(ctx, 'incoming');
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('untracked'));
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
 
         // Act / Assert
@@ -480,7 +481,7 @@ describe('materializeTree', () => {
         const blobId = await writeBlob(ctx, 'incoming');
         await ctx.fs.write(`${ctx.layout.workDir}/a.txt`, new TextEncoder().encode('untracked'));
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
 
         // Act
@@ -506,8 +507,8 @@ describe('materializeTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idB = await writeBlob(ctx, 'B');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt' as FilePath, idB),
         ]);
 
         // Act — restore only 'a.txt'
@@ -648,8 +649,8 @@ describe('materializeTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idB = await writeBlob(ctx, 'B');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt' as FilePath, idB),
         ]);
 
         // Act
@@ -679,8 +680,8 @@ describe('materializeTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idB = await writeBlob(ctx, 'B');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'b.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt' as FilePath, idB),
         ]);
 
         // Act

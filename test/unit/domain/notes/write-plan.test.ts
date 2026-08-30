@@ -8,6 +8,7 @@ import {
   setSlot,
 } from '../../../../src/domain/notes/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const oid = (s: string) => ObjectId.from(s);
 const oid40 = (c: string) => ObjectId.from(c.repeat(40));
@@ -97,15 +98,15 @@ describe('Given a flat trie carrying a stray subtree', () => {
   const innerBlob = oid40('a');
   const buildTrie = () =>
     loadTrieRoot([
-      { mode: FILE_MODE.DIRECTORY, name: '00', id: subtreeOid },
-      { mode: FILE_MODE.REGULAR, name: `1${'0'.repeat(39)}`, id: oid40('c') },
+      treeEntry(FILE_MODE.DIRECTORY, '00', subtreeOid),
+      treeEntry(FILE_MODE.REGULAR, `1${'0'.repeat(39)}`, oid40('c')),
     ]);
 
   describe('When it is written below the fanout threshold', () => {
     it('Then the stray subtree is unpacked and its note flattened to the top level', async () => {
       // Arrange
       const read = vi.fn<SubtreeReader>(async () => [
-        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
       ]);
       // Act
       const result = await planWrite(buildTrie(), read);
@@ -121,8 +122,8 @@ describe('Given a flat trie carrying a stray subtree', () => {
       // Arrange
       const readmeId = oid40('d');
       const read = vi.fn<SubtreeReader>(async () => [
-        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
-        { mode: FILE_MODE.REGULAR, name: 'README', id: readmeId },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
+        treeEntry(FILE_MODE.REGULAR, 'README', readmeId),
       ]);
       // Act
       const result = await planWrite(buildTrie(), read);
@@ -141,7 +142,7 @@ describe('Given a notes trie with a preserved non-note entry', () => {
     it('Then the preserved entry is emitted verbatim at the root level', async () => {
       // Arrange
       const readmeId = oid40('d');
-      const trie = loadTrieRoot([{ mode: FILE_MODE.REGULAR, name: 'README', id: readmeId }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, 'README', readmeId)]);
       // Act
       const result = await planWrite(trie, never());
       // Assert
@@ -167,7 +168,7 @@ describe('Given an internal node wrapping a stray subtree', () => {
       });
       const trie = setSlot(createEmptyTrie(), 0, { kind: 'internal', node: innerNode });
       const read = vi.fn<SubtreeReader>(async () => [
-        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
       ]);
       // Act
       await planWrite(trie, read);

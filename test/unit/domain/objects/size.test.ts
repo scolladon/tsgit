@@ -9,6 +9,7 @@ import { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import { payloadByteLength } from '../../../../src/domain/objects/size.js';
 import type { Tag } from '../../../../src/domain/objects/tag.js';
 import type { Tree, TreeEntry } from '../../../../src/domain/objects/tree.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const DUMMY_ID = ObjectId.from('a'.repeat(40));
 const OTHER_ID = ObjectId.from('b'.repeat(40));
@@ -22,8 +23,8 @@ const IDENTITY = {
 
 const buildTree = (): Tree => {
   const entries: ReadonlyArray<TreeEntry> = [
-    { mode: FILE_MODE.REGULAR, name: 'README.md', id: OTHER_ID },
-    { mode: FILE_MODE.REGULAR, name: 'package.json', id: OTHER_ID },
+    treeEntry(FILE_MODE.REGULAR, 'README.md', OTHER_ID),
+    treeEntry(FILE_MODE.REGULAR, 'package.json', OTHER_ID),
   ];
   return { type: 'tree', id: DUMMY_ID, entries };
 };

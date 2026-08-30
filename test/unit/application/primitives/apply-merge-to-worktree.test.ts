@@ -18,6 +18,7 @@ import type {
   ObjectId,
   TreeEntry,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -69,13 +70,9 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'one\n');
         const v2 = await writeBlob(ctx, 'two\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1)]);
         const ours = base;
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v2, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
 
         // Act
@@ -101,15 +98,9 @@ describe('applyMergeToWorktree', () => {
         const b = await writeBlob(ctx, 'a\nb\nc\n');
         const o = await writeBlob(ctx, 'A\nb\nc\n');
         const t = await writeBlob(ctx, 'a\nb\nC\n');
-        const base = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: o, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, t)]);
         await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('A\nb\nc\n'));
 
         // Act
@@ -135,12 +126,10 @@ describe('applyMergeToWorktree', () => {
         const x = await writeBlob(ctx, 'x\n');
         const y = await writeBlob(ctx, 'y\n');
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: x, mode: FILE_MODE.REGULAR },
-          { name: 'b' as FilePath, id: y, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, x),
+          treeEntry(FILE_MODE.REGULAR, 'b' as FilePath, y),
         ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: x, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, x)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('x\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('y\n'));
 
@@ -165,9 +154,7 @@ describe('applyMergeToWorktree', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'one\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
 
         // Act
@@ -193,15 +180,9 @@ describe('applyMergeToWorktree', () => {
         const b = await writeBlob(ctx, 'base\n');
         const o = await writeBlob(ctx, 'ours\n');
         const t = await writeBlob(ctx, 'theirs\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: o, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, t)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
 
         // Act
@@ -235,15 +216,9 @@ describe('applyMergeToWorktree', () => {
         const b = await writeBlob(ctx, 'base\n');
         const o = await writeBlob(ctx, 'ours\n');
         const t = await writeBlob(ctx, 'theirs\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: o, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, t)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
 
         // Act
@@ -271,12 +246,8 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'one\n');
         const v2 = await writeBlob(ctx, 'two\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v2, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('local edit\n'));
 
         // Act
@@ -305,9 +276,7 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'added\n');
         const base = await treeWith(ctx, []);
-        const theirs = await treeWith(ctx, [
-          { name: 'new' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'new' as FilePath, v1)]);
         await ctx.fs.write(`${ctx.layout.workDir}/new`, new TextEncoder().encode('in the way\n'));
 
         // Act
@@ -338,13 +307,9 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const b = await writeBlob(ctx, 'base\n');
         const t = await writeBlob(ctx, 'theirs\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, b)]);
         const ours = await treeWith(ctx, []);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, t)]);
         // ours deleted `a`, so the working tree has no `a`.
 
         // Act
@@ -381,21 +346,21 @@ describe('applyMergeToWorktree', () => {
         const dTheirs = await writeBlob(ctx, 'd1\nd2\nD3\n');
         const reg = FILE_MODE.REGULAR;
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
-          { name: 'c' as FilePath, id: cId, mode: reg },
-          { name: 'd' as FilePath, id: dBase, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bId),
+          treeEntry(reg, 'c' as FilePath, cId),
+          treeEntry(reg, 'd' as FilePath, dBase),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
-          { name: 'c' as FilePath, id: cId, mode: reg },
-          { name: 'd' as FilePath, id: dOurs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bId),
+          treeEntry(reg, 'c' as FilePath, cId),
+          treeEntry(reg, 'd' as FilePath, dOurs),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'b' as FilePath, id: bNew, mode: reg },
-          { name: 'd' as FilePath, id: dTheirs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, bNew),
+          treeEntry(reg, 'd' as FilePath, dTheirs),
         ]);
         for (const [p, c] of [
           ['a', 'a-ours\n'],
@@ -447,10 +412,10 @@ describe('applyMergeToWorktree', () => {
         const theirsId = await writeBlob(ctx, 'shared\ntheirs\n');
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, theirsId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('shared\nours\n'));
 
@@ -491,10 +456,10 @@ describe('applyMergeToWorktree', () => {
         const theirsId = await writeBlob(ctx, 'target-theirs');
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         await ctx.fs.symlink('target-ours', `${ctx.layout.workDir}/f`);
 
@@ -539,10 +504,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
 
@@ -602,10 +567,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, theirsId),
         ]);
         // ours is a symlink; working tree has no regular file at 'f'
 
@@ -661,10 +626,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         // The rename target f~HEAD is already occupied by an untracked file
         await ctx.fs.write(
@@ -714,10 +679,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         // f~HEAD is tracked but the working file is dirty
         await ctx.fs.write(
@@ -751,15 +716,9 @@ describe('applyMergeToWorktree', () => {
         const g0 = '0'.repeat(40) as ObjectId;
         const g1 = '1'.repeat(40) as ObjectId;
         const g2 = '2'.repeat(40) as ObjectId;
-        const base = await treeWith(ctx, [
-          { name: 'm' as FilePath, id: g0, mode: FILE_MODE.GITLINK },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'm' as FilePath, id: g1, mode: FILE_MODE.GITLINK },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'm' as FilePath, id: g2, mode: FILE_MODE.GITLINK },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.GITLINK, 'm' as FilePath, g0)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.GITLINK, 'm' as FilePath, g1)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.GITLINK, 'm' as FilePath, g2)]);
 
         // Act
         const act = applyMergeToWorktree(ctx, {
@@ -799,16 +758,16 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const bNew = await writeBlob(ctx, 'b-new\n');
         const reg = FILE_MODE.REGULAR;
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bId),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bId),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'b' as FilePath, id: bNew, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, bNew),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
@@ -859,16 +818,16 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const reg = FILE_MODE.REGULAR;
         // base: b=bBase; ours: b=bBase (unchanged); theirs: b=bNew → resolved-known at bNew
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'b' as FilePath, id: bBaseId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bBaseId),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'b' as FilePath, id: bBaseId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bBaseId),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'b' as FilePath, id: bNewId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, bNewId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, bBaseContent);
@@ -911,16 +870,16 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const dTheirs = await writeBlob(ctx, 'd1\nd2\nD3\n');
         const reg = FILE_MODE.REGULAR;
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'd' as FilePath, id: dBase, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'd' as FilePath, dBase),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'd' as FilePath, id: dOurs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'd' as FilePath, dOurs),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'd' as FilePath, id: dTheirs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'd' as FilePath, dTheirs),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/d`, new TextEncoder().encode('D1\nd2\nd3\n'));

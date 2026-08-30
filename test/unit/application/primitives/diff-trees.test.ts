@@ -27,7 +27,11 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import { serializeTreeContent } from '../../../../src/domain/objects/tree.js';
+import {
+  serializeTreeContent,
+  type TreeEntry,
+  treeEntry,
+} from '../../../../src/domain/objects/tree.js';
 import type { CommandRunner } from '../../../../src/ports/command-runner.js';
 import { buildSeededContext, instrumentedContext, seedMaxTreeDepth } from './fixtures.js';
 
@@ -48,7 +52,7 @@ const blob = (ctx: Ctx, content: string): Promise<ObjectId> =>
   });
 
 const subTree = (ctx: Ctx, name: string, id: ObjectId, mode: FileMode): Promise<ObjectId> =>
-  writeTree(ctx, [{ name, mode, id }]);
+  writeTree(ctx, [treeEntry(mode, name, id)]);
 
 /** Build a chain of `hops` real nested directory-modify levels whose
  *  innermost entry points to a phantom (never-written) id on each side — a
@@ -133,7 +137,7 @@ describe('diffTrees', () => {
         const blobId = await writeObject(ctx, blob);
         const emptyId = await writeTree(ctx, []);
         const withEntryId = await writeTree(ctx, [
-          { name: 'a.txt', mode: '100644' as FileMode, id: blobId },
+          treeEntry('100644' as FileMode, 'a.txt', blobId),
         ]);
 
         // Act
@@ -174,12 +178,8 @@ describe('diffTrees', () => {
           content,
           id: '' as ObjectId,
         });
-        const before = await writeTree(ctx, [
-          { name: 'src.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'dst.txt', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry('100644' as FileMode, 'src.txt', blobId)]);
+        const after = await writeTree(ctx, [treeEntry('100644' as FileMode, 'dst.txt', blobId)]);
 
         // Act
         const withDetect = await diffTrees(ctx, before, after, { detectRenames: true });
@@ -207,12 +207,12 @@ describe('diffTrees', () => {
         const oldSub = await subTree(ctx, 'f.txt', oldInner, FILE_MODE.REGULAR);
         const newSub = await subTree(ctx, 'f.txt', newInner, FILE_MODE.REGULAR);
         const before = await writeTree(ctx, [
-          { name: 'x', mode: FILE_MODE.DIRECTORY, id: oldSub },
-          { name: 'y', mode: FILE_MODE.DIRECTORY, id: oldSub },
+          treeEntry(FILE_MODE.DIRECTORY, 'x', oldSub),
+          treeEntry(FILE_MODE.DIRECTORY, 'y', oldSub),
         ]);
         const after = await writeTree(ctx, [
-          { name: 'x', mode: FILE_MODE.DIRECTORY, id: newSub },
-          { name: 'y', mode: FILE_MODE.DIRECTORY, id: newSub },
+          treeEntry(FILE_MODE.DIRECTORY, 'x', newSub),
+          treeEntry(FILE_MODE.DIRECTORY, 'y', newSub),
         ]);
 
         // Act
@@ -235,9 +235,7 @@ describe('diffTrees', () => {
         const innerId = await blob(ctx, 'inner');
         const subId = await subTree(ctx, 'inner.txt', innerId, FILE_MODE.REGULAR);
         const empty = await writeTree(ctx, []);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
 
         // Act
         const result = await diffTrees(ctx, empty, withSub, { recursive: true });
@@ -263,11 +261,11 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const innerId = await blob(ctx, 'inner');
         const withSub = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', innerId, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', innerId, FILE_MODE.REGULAR),
+          ),
         ]);
 
         // Act
@@ -295,18 +293,18 @@ describe('diffTrees', () => {
         const oldBlob = await blob(ctx, 'old');
         const newBlob = await blob(ctx, 'new');
         const before = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', oldBlob, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', oldBlob, FILE_MODE.REGULAR),
+          ),
         ]);
         const after = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', newBlob, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', newBlob, FILE_MODE.REGULAR),
+          ),
         ]);
 
         // Act
@@ -334,11 +332,11 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const innerId = await blob(ctx, 'inner');
         const withSub = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', innerId, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', innerId, FILE_MODE.REGULAR),
+          ),
         ]);
         const empty = await writeTree(ctx, []);
 
@@ -366,18 +364,10 @@ describe('diffTrees', () => {
         const fileId = await blob(ctx, 'contents');
         const linkId = await blob(ctx, 'target/path');
         const before = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'x', fileId, FILE_MODE.REGULAR),
-          },
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', await subTree(ctx, 'x', fileId, FILE_MODE.REGULAR)),
         ]);
         const after = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'x', linkId, FILE_MODE.SYMLINK),
-          },
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', await subTree(ctx, 'x', linkId, FILE_MODE.SYMLINK)),
         ]);
 
         // Act
@@ -406,13 +396,11 @@ describe('diffTrees', () => {
         const aId = await blob(ctx, 'a');
         const bId = await blob(ctx, 'b');
         const subId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
-          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', aId),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', bId),
         ]);
         const empty = await writeTree(ctx, []);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
 
         // Act
         const result = await diffTrees(ctx, empty, withSub, { recursive: true });
@@ -434,12 +422,10 @@ describe('diffTrees', () => {
         const aId = await blob(ctx, 'a');
         const bId = await blob(ctx, 'b');
         const subId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
-          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', aId),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', bId),
         ]);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
         const empty = await writeTree(ctx, []);
 
         // Act
@@ -464,13 +450,11 @@ describe('diffTrees', () => {
         const dupAId = await blob(ctx, 'a');
         const dupBId = await blob(ctx, 'b');
         const subId = await writeTree(ctx, [
-          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupAId },
-          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupBId },
+          treeEntry(FILE_MODE.REGULAR, 'dup.txt', dupAId),
+          treeEntry(FILE_MODE.REGULAR, 'dup.txt', dupBId),
         ]);
         const empty = await writeTree(ctx, []);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
 
         // Act
         const result = await diffTrees(ctx, empty, withSub, { recursive: true });
@@ -492,12 +476,10 @@ describe('diffTrees', () => {
         const dupAId = await blob(ctx, 'a');
         const dupBId = await blob(ctx, 'b');
         const subId = await writeTree(ctx, [
-          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupAId },
-          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupBId },
+          treeEntry(FILE_MODE.REGULAR, 'dup.txt', dupAId),
+          treeEntry(FILE_MODE.REGULAR, 'dup.txt', dupBId),
         ]);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
         const empty = await writeTree(ctx, []);
 
         // Act
@@ -526,18 +508,10 @@ describe('diffTrees', () => {
         const oldB = await subTree(ctx, 'c', oldC, FILE_MODE.DIRECTORY);
         const newB = await subTree(ctx, 'c', newC, FILE_MODE.DIRECTORY);
         const before = await writeTree(ctx, [
-          {
-            name: 'a',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'b', oldB, FILE_MODE.DIRECTORY),
-          },
+          treeEntry(FILE_MODE.DIRECTORY, 'a', await subTree(ctx, 'b', oldB, FILE_MODE.DIRECTORY)),
         ]);
         const after = await writeTree(ctx, [
-          {
-            name: 'a',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'b', newB, FILE_MODE.DIRECTORY),
-          },
+          treeEntry(FILE_MODE.DIRECTORY, 'a', await subTree(ctx, 'b', newB, FILE_MODE.DIRECTORY)),
         ]);
 
         // Act
@@ -567,10 +541,10 @@ describe('diffTrees', () => {
         const oldFileId = await blob(ctx, 'old');
         const newFileId = await blob(ctx, 'new');
         const oldTreeId = await writeTree(ctx, [
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', oldFileId),
         ]);
         const newTreeId = await writeTree(ctx, [
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', newFileId),
         ]);
         const oldCommitId = await writeObject(ctx, {
           type: 'commit',
@@ -630,12 +604,12 @@ describe('diffTrees', () => {
         const oldFileId = await blob(ctx, 'old');
         const newFileId = await blob(ctx, 'new');
         const before = await writeTree(ctx, [
-          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+          treeEntry(FILE_MODE.DIRECTORY, 'big', unchangedSubId),
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', oldFileId),
         ]);
         const after = await writeTree(ctx, [
-          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+          treeEntry(FILE_MODE.DIRECTORY, 'big', unchangedSubId),
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', newFileId),
         ]);
         const walkSpy = vi.spyOn(walkRawSubtreeMod, 'walkRawSubtree');
         const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
@@ -671,22 +645,20 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const manyEntries = [];
         for (let i = 0; i < 20; i++) {
-          manyEntries.push({
-            name: `f${i}.txt`,
-            mode: FILE_MODE.REGULAR,
-            id: await blob(ctx, `content-${i}`),
-          });
+          manyEntries.push(
+            treeEntry(FILE_MODE.REGULAR, `f${i}.txt`, await blob(ctx, `content-${i}`)),
+          );
         }
         const unchangedSubId = await writeTree(ctx, manyEntries);
         const oldFileId = await blob(ctx, 'old');
         const newFileId = await blob(ctx, 'new');
         const before = await writeTree(ctx, [
-          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+          treeEntry(FILE_MODE.DIRECTORY, 'big', unchangedSubId),
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', oldFileId),
         ]);
         const after = await writeTree(ctx, [
-          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+          treeEntry(FILE_MODE.DIRECTORY, 'big', unchangedSubId),
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', newFileId),
         ]);
         const bytesToHexSpy = vi.spyOn(encodingMod, 'bytesToHex');
         const decodeSpy = vi.spyOn(encodingMod, 'decode');
@@ -718,18 +690,18 @@ describe('diffTrees', () => {
         const content = 'unique content that the rename detector will match exactly\n'.repeat(4);
         const blobId = await blob(ctx, content);
         const before = await writeTree(ctx, [
-          {
-            name: 'a',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'old.txt', blobId, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'a',
+            await subTree(ctx, 'old.txt', blobId, FILE_MODE.REGULAR),
+          ),
         ]);
         const after = await writeTree(ctx, [
-          {
-            name: 'b',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'new.txt', blobId, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'b',
+            await subTree(ctx, 'new.txt', blobId, FILE_MODE.REGULAR),
+          ),
         ]);
 
         // Act
@@ -765,12 +737,8 @@ describe('diffTrees', () => {
         const dstContent = srcContent.replace('line 0\n', 'changed line 0\n');
         const srcId = await blob(ctx, srcContent);
         const dstId = await blob(ctx, dstContent);
-        const before = await writeTree(ctx, [
-          { name: 'original.txt', mode: FILE_MODE.REGULAR, id: srcId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'moved.txt', mode: FILE_MODE.REGULAR, id: dstId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'original.txt', srcId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'moved.txt', dstId)]);
 
         // Act — with detectRenames and a low threshold
         const result = await diffTrees(ctx, before, after, {
@@ -807,12 +775,8 @@ describe('diffTrees', () => {
           FILE_MODE.REGULAR,
         );
         const subAfter = await subTree(ctx, 'inner.txt', await blob(ctx, 'new'), FILE_MODE.REGULAR);
-        const before = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subBefore)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subAfter)]);
 
         // Act
         const result = await diffTrees(ctx, before, after);
@@ -849,7 +813,7 @@ describe('diffTrees', () => {
         const treeB = {
           type: 'tree' as const,
           id: '' as ObjectId,
-          entries: [{ name: 'f.txt', mode: '100644' as FileMode, id: blobId }],
+          entries: [treeEntry('100644' as FileMode, 'f.txt', blobId)],
         };
 
         // Act
@@ -870,18 +834,18 @@ describe('diffTrees', () => {
         const oldLeaf = await blob(ctx, 'old');
         const newLeaf = await blob(ctx, 'new');
         const beforeId = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', oldLeaf, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', oldLeaf, FILE_MODE.REGULAR),
+          ),
         ]);
         const afterId = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', newLeaf, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', newLeaf, FILE_MODE.REGULAR),
+          ),
         ]);
         const beforeObject = (await readObject(ctx, beforeId)) as Tree;
         const afterObject = (await readObject(ctx, afterId)) as Tree;
@@ -937,9 +901,7 @@ describe('diffTrees', () => {
           build: async (ctx: Ctx): Promise<{ before: ObjectId; after: ObjectId }> => {
             const blobId = await blob(ctx, 'only line\n');
             const empty = await writeTree(ctx, []);
-            const withEntry = await writeTree(ctx, [
-              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
-            ]);
+            const withEntry = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]);
             return { before: empty, after: withEntry };
           },
           expected: { type: 'add', added: 1, deleted: 0, binary: false },
@@ -948,10 +910,10 @@ describe('diffTrees', () => {
           label: 'modified',
           build: async (ctx: Ctx): Promise<{ before: ObjectId; after: ObjectId }> => {
             const before = await writeTree(ctx, [
-              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'a\n') },
+              treeEntry(FILE_MODE.REGULAR, 'a.txt', await blob(ctx, 'a\n')),
             ]);
             const after = await writeTree(ctx, [
-              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'b\n') },
+              treeEntry(FILE_MODE.REGULAR, 'a.txt', await blob(ctx, 'b\n')),
             ]);
             return { before, after };
           },
@@ -962,9 +924,7 @@ describe('diffTrees', () => {
           label: 'deleted',
           build: async (ctx: Ctx): Promise<{ before: ObjectId; after: ObjectId }> => {
             const blobId = await blob(ctx, 'gone\n');
-            const withEntry = await writeTree(ctx, [
-              { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
-            ]);
+            const withEntry = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]);
             const empty = await writeTree(ctx, []);
             return { before: withEntry, after: empty };
           },
@@ -1001,12 +961,10 @@ describe('diffTrees', () => {
         );
         const dstId = await blob(ctx, dstLines);
 
-        const treeA = await writeTree(ctx, [
-          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
-        ]);
+        const treeA = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId)]);
         const treeB = await writeTree(ctx, [
-          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId }, // unchanged
-          { name: 'copy.txt', mode: FILE_MODE.REGULAR, id: dstId }, // new, similar to orig
+          treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId), // unchanged
+          treeEntry(FILE_MODE.REGULAR, 'copy.txt', dstId), // new, similar to orig
         ]);
 
         // Act — without copies:'harder': should not detect copy (unchanged excluded)
@@ -1045,9 +1003,7 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const blobId = await blob(ctx, 'file content\n');
         // treeB only; no treeA (undefined)
-        const treeB = await writeTree(ctx, [
-          { name: 'file.txt', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
+        const treeB = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]);
 
         // Act — copies:'on', treeA=undefined: buildPreimage must return undefined (guard fires)
         const result = await diffTrees(ctx, undefined, treeB, {
@@ -1069,9 +1025,7 @@ describe('diffTrees', () => {
         // must prevent flattenTree from being called with undefined (which would crash)
         const ctx = await buildSeededContext();
         const blobId = await blob(ctx, 'content for harder test\n');
-        const treeB = await writeTree(ctx, [
-          { name: 'file.txt', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
+        const treeB = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]);
 
         // Act — copies:'harder' but treeA=undefined → preimage=undefined → no crash
         const result = await diffTrees(ctx, undefined, treeB, {
@@ -1096,12 +1050,10 @@ describe('diffTrees', () => {
         // calls) — not the legacy `flattenTree`, which this path stopped using.
         const ctx = await buildSeededContext();
         const blobId = await blob(ctx, 'file content\n');
-        const treeA = await writeTree(ctx, [
-          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
+        const treeA = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'orig.txt', blobId)]);
         const treeB = await writeTree(ctx, [
-          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: blobId },
-          { name: 'new.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'new\n') },
+          treeEntry(FILE_MODE.REGULAR, 'orig.txt', blobId),
+          treeEntry(FILE_MODE.REGULAR, 'new.txt', await blob(ctx, 'new\n')),
         ]);
         const flattenSpy = vi.spyOn(flattenRawMod, 'flattenRawTree');
 
@@ -1141,11 +1093,11 @@ describe('diffTrees', () => {
           );
           const dstId = await blob(ctx, dstLines);
           const treeA = await writeTree(ctx, [
-            { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
+            treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId),
           ]);
           const treeB = await writeTree(ctx, [
-            { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
-            { name: 'copy.txt', mode: FILE_MODE.REGULAR, id: dstId },
+            treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId),
+            treeEntry(FILE_MODE.REGULAR, 'copy.txt', dstId),
           ]);
           const commitA = await writeObject(ctx, {
             type: 'commit',
@@ -1193,12 +1145,8 @@ describe('diffTrees', () => {
         // the same tree object a second time.
         const ctx = await buildSeededContext();
         const unchangedId = await blob(ctx, 'shared content\n');
-        const treeA = await writeTree(ctx, [
-          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
-        ]);
-        const treeB = await writeTree(ctx, [
-          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
-        ]);
+        const treeA = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId)]);
+        const treeB = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId)]);
         const commitA = await writeObject(ctx, {
           type: 'commit',
           id: '' as ObjectId,
@@ -1235,9 +1183,7 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const blobId = await blob(ctx, 'only line\n');
         const empty = await writeTree(ctx, []);
-        const withEntry = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
+        const withEntry = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]);
 
         // Act
         const result = await diffTrees(ctx, empty, withEntry);
@@ -1256,10 +1202,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello world\n');
         const newId = await blob(ctx, 'hello  world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
@@ -1323,10 +1267,8 @@ describe('diffTrees', () => {
           content: newBytes,
           id: '' as ObjectId,
         });
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, options);
@@ -1348,12 +1290,12 @@ describe('diffTrees', () => {
         const gOldId = await blob(ctx, 'alpha\n');
         const gNewId = await blob(ctx, 'beta\n');
         const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: fOldId },
-          { name: 'g.txt', mode: FILE_MODE.REGULAR, id: gOldId },
+          treeEntry(FILE_MODE.REGULAR, 'f.txt', fOldId),
+          treeEntry(FILE_MODE.REGULAR, 'g.txt', gOldId),
         ]);
         const after = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: fNewId },
-          { name: 'g.txt', mode: FILE_MODE.REGULAR, id: gNewId },
+          treeEntry(FILE_MODE.REGULAR, 'f.txt', fNewId),
+          treeEntry(FILE_MODE.REGULAR, 'g.txt', gNewId),
         ]);
 
         // Act
@@ -1377,10 +1319,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'content\n');
         const newId = await blob(ctx, 'content\n   \n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1401,8 +1341,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const fileId = await blob(ctx, '   ');
         const linkId = await blob(ctx, '   ');
-        const before = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.REGULAR, id: fileId }]);
-        const after = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.SYMLINK, id: linkId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x', fileId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.SYMLINK, 'x', linkId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
@@ -1423,12 +1363,8 @@ describe('diffTrees', () => {
         const content = Array.from({ length: 10 }, (_, i) => `line ${i} content\n`).join('');
         const srcId = await blob(ctx, content);
         const dstId = srcId; // identical blob → rename with score MAX_SCORE
-        const before = await writeTree(ctx, [
-          { name: 'src.txt', mode: FILE_MODE.REGULAR, id: srcId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'dst.txt', mode: FILE_MODE.REGULAR, id: dstId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'src.txt', srcId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'dst.txt', dstId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1452,18 +1388,18 @@ describe('diffTrees', () => {
         const oldId = await blob(ctx, 'a b\n');
         const newId = await blob(ctx, 'a  b\n');
         const before = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'f.txt', oldId, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'f.txt', oldId, FILE_MODE.REGULAR),
+          ),
         ]);
         const after = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'f.txt', newId, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'f.txt', newId, FILE_MODE.REGULAR),
+          ),
         ]);
 
         // Act
@@ -1485,10 +1421,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello world\n');
         const newId = await blob(ctx, 'hello  world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1509,10 +1443,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'real old\nhello world\n');
         const newId = await blob(ctx, 'real new\nhello  world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1543,8 +1475,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const fileId = await blob(ctx, '   ');
         const linkId = await blob(ctx, '   ');
-        const before = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.REGULAR, id: fileId }]);
-        const after = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.SYMLINK, id: linkId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x', fileId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.SYMLINK, 'x', linkId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1568,10 +1500,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'a\nXYZ\n');
         const newId = await blob(ctx, 'a\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1602,10 +1532,8 @@ describe('diffTrees', () => {
         const filler = 'x\n'.repeat(lineCount - 1);
         const oldId = await blob(ctx, `mid line\n${filler}`);
         const newId = await blob(ctx, `mid  line\n${filler}`);
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1633,10 +1561,8 @@ describe('diffTrees', () => {
         const filler = 'x\n'.repeat(lineCount - 1);
         const oldId = await blob(ctx, `mid line\n${filler}`);
         const newId = await blob(ctx, `CHANGED\n${filler}`);
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1672,10 +1598,8 @@ describe('diffTrees', () => {
           content: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 32, 119, 111, 114, 108, 100]),
           id: '' as ObjectId,
         });
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -1698,12 +1622,8 @@ describe('diffTrees', () => {
         const { ctx, calls } = instrumentedContext(base);
         const oldId = await blob(base, 'hello\n');
         const newId = await blob(base, 'world\n');
-        const before = await writeTree(base, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(base, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId },
-        ]);
+        const before = await writeTree(base, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(base, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act — reset call log then call diffTrees with no options
         const readsBefore = calls().length;
@@ -1765,12 +1685,8 @@ describe('diffTrees', () => {
 
         const oldBlobId = await writeBlobId(rawOld);
         const newBlobId = await writeBlobId(rawNew);
-        const before = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldBlobId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newBlobId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', oldBlobId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', newBlobId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { withStat: true });
@@ -1802,12 +1718,8 @@ describe('diffTrees', () => {
           writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
         const oldId = await writeBlobId(enc.encode('line-a\nline-b\n'));
         const newId = await writeBlobId(enc.encode('line-x\nline-y\n'));
-        const before = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { withStat: true });
@@ -1836,8 +1748,8 @@ describe('diffTrees', () => {
           writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
         const oldId = await writeBlobId(NUL_OLD);
         const newId = await writeBlobId(NUL_NEW);
-        const before = await writeTree(ctx, [{ name: 'g', mode: FILE_MODE.REGULAR, id: oldId }]);
-        const after = await writeTree(ctx, [{ name: 'g', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'g', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'g', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { withStat: true });
@@ -1866,12 +1778,8 @@ describe('diffTrees', () => {
         // Blobs differ only in whitespace (spaces vs tabs) — distinct OIDs
         const oldId = await writeBlobId(enc.encode('hello world\n'));
         const newId = await writeBlobId(enc.encode('hello  world\n')); // extra space
-        const before = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', newId)]);
 
         // Act — ignoreWhitespace:all would drop a whitespace-only text change; -diff makes it binary
         const result = await diffTrees(ctx, before, after, {
@@ -1915,8 +1823,8 @@ describe('diffTrees', () => {
           0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x09, 0x0a,
         ]),
       );
-      const before = await writeTree(ctx, [{ name: 'f.bin', mode: FILE_MODE.REGULAR, id: oldId }]);
-      const after = await writeTree(ctx, [{ name: 'f.bin', mode: FILE_MODE.REGULAR, id: newId }]);
+      const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.bin', oldId)]);
+      const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.bin', newId)]);
       return { ctx, before, after };
     };
 
@@ -1976,10 +1884,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello world\n');
         const newId = await blob(ctx, 'hello  world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
         const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
 
         // Act
@@ -2004,12 +1910,12 @@ describe('diffTrees', () => {
         const realOld = await blob(ctx, 'alpha\n');
         const realNew = await blob(ctx, 'beta\n');
         const before = await writeTree(ctx, [
-          { name: 'real.txt', mode: FILE_MODE.REGULAR, id: realOld },
-          { name: 'ws.txt', mode: FILE_MODE.REGULAR, id: wsOld },
+          treeEntry(FILE_MODE.REGULAR, 'real.txt', realOld),
+          treeEntry(FILE_MODE.REGULAR, 'ws.txt', wsOld),
         ]);
         const after = await writeTree(ctx, [
-          { name: 'real.txt', mode: FILE_MODE.REGULAR, id: realNew },
-          { name: 'ws.txt', mode: FILE_MODE.REGULAR, id: wsNew },
+          treeEntry(FILE_MODE.REGULAR, 'real.txt', realNew),
+          treeEntry(FILE_MODE.REGULAR, 'ws.txt', wsNew),
         ]);
         const statFieldsSpy = vi.spyOn(statFieldsMod, 'computeStatFields');
 
@@ -2039,12 +1945,8 @@ describe('diffTrees', () => {
         const longLine = 'x'.repeat(70_000);
         const oldId = await blob(ctx, `${longLine} a`);
         const newId = await blob(ctx, `${longLine}  a`);
-        const before = await writeTree(ctx, [
-          { name: 'big.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'big.txt', mode: FILE_MODE.REGULAR, id: newId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'big.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'big.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
@@ -2062,10 +1964,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello\n');
         const newId = await blob(ctx, 'world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
         const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
 
         // Act
@@ -2087,10 +1987,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello world\n');
         const newId = await blob(ctx, 'hello  world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
         const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
 
         // Act
@@ -2166,12 +2064,8 @@ describe('diffTrees', () => {
               content: pair.newBytes,
               id: '' as ObjectId,
             });
-            const before = await writeTree(ctx, [
-              { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-            ]);
-            const after = await writeTree(ctx, [
-              { name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId },
-            ]);
+            const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+            const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
             // Act
             const predicateResult = await diffTrees(ctx, before, after, options);
@@ -2192,10 +2086,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello\n');
         const newId = await blob(ctx, 'hello\n   \n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
         const options = { ignoreWhitespace: 'all' as const, ignoreBlankLines: true };
 
         // Act
@@ -2216,10 +2108,8 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello\n');
         const newId = await blob(ctx, 'hello\n\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
         const options = { ignoreWhitespace: 'all' as const };
 
         // Act
@@ -2250,12 +2140,8 @@ describe('diffTrees', () => {
           await blob(ctx, 'new content\n'),
           FILE_MODE.REGULAR,
         );
-        const before = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subBefore)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subAfter)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
@@ -2286,12 +2172,12 @@ describe('diffTrees', () => {
         const oldFileId = await blob(ctx, 'alpha\n');
         const newFileId = await blob(ctx, 'beta\n');
         const before = await writeTree(ctx, [
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', oldFileId),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', subBefore),
         ]);
         const after = await writeTree(ctx, [
-          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+          treeEntry(FILE_MODE.REGULAR, 'root.txt', newFileId),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', subAfter),
         ]);
 
         // Act
@@ -2324,9 +2210,7 @@ describe('diffTrees', () => {
           FILE_MODE.REGULAR,
         );
         const empty = await writeTree(ctx, []);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
 
         // Act
         const result = await diffTrees(ctx, empty, withSub, { ignoreWhitespace: 'all' });
@@ -2348,9 +2232,7 @@ describe('diffTrees', () => {
           await blob(ctx, 'line1\n'),
           FILE_MODE.REGULAR,
         );
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
         const empty = await writeTree(ctx, []);
 
         // Act
@@ -2379,12 +2261,8 @@ describe('diffTrees', () => {
           await blob(ctx, 'new content\n'),
           FILE_MODE.REGULAR,
         );
-        const before = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subBefore)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subAfter)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { withStat: true });
@@ -2410,13 +2288,11 @@ describe('diffTrees', () => {
         const aId = await blob(ctx, 'line1\n');
         const bId = await blob(ctx, 'line2\n');
         const subId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
-          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', aId),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', bId),
         ]);
         const empty = await writeTree(ctx, []);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
 
         // Act
         const result = await diffTrees(ctx, empty, withSub, { withStat: true });
@@ -2453,12 +2329,10 @@ describe('diffTrees', () => {
         const aId = await blob(ctx, 'line1\n');
         const bId = await blob(ctx, 'line2\n');
         const subId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
-          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', aId),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', bId),
         ]);
-        const withSub = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
-        ]);
+        const withSub = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
         const empty = await writeTree(ctx, []);
 
         // Act
@@ -2505,12 +2379,8 @@ describe('diffTrees', () => {
           await blob(ctx, 'new content\n'),
           FILE_MODE.REGULAR,
         );
-        const before = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subBefore)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subAfter)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -2548,12 +2418,8 @@ describe('diffTrees', () => {
           await blob(ctx, 'hello  world\n'),
           FILE_MODE.REGULAR,
         );
-        const before = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subBefore)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subAfter)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, {
@@ -2580,10 +2446,8 @@ describe('diffTrees', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.txt -diff\n');
         const oldId = await blob(ctx, 'hello world\n');
         const newId = await blob(ctx, 'hello  world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
@@ -2603,10 +2467,8 @@ describe('diffTrees', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.txt diff\n');
         const oldId = await blob(ctx, 'hello world\n');
         const newId = await blob(ctx, 'hello  world\n');
-        const before = await writeTree(ctx, [
-          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
@@ -2634,12 +2496,8 @@ describe('diffTrees', () => {
         );
         const oldId = await blob(ctx, 'apple\n');
         const newId = await blob(ctx, 'banana\n');
-        const before = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', newId)]);
 
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
@@ -2789,9 +2647,7 @@ describe('diffTrees', () => {
         await seedMaxTreeDepth(ctx, '4');
         const oldRoot = await writeTree(ctx, []);
         const addedId = await buildDirectoryChain(ctx, 4);
-        const newRoot = await writeTree(ctx, [
-          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
-        ]);
+        const newRoot = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'added', addedId)]);
 
         // Act
         const result = await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
@@ -2810,9 +2666,7 @@ describe('diffTrees', () => {
         await seedMaxTreeDepth(ctx, '4');
         const oldRoot = await writeTree(ctx, []);
         const addedId = await buildDirectoryChain(ctx, 5);
-        const newRoot = await writeTree(ctx, [
-          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
-        ]);
+        const newRoot = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'added', addedId)]);
 
         // Act + Assert
         try {
@@ -2835,9 +2689,7 @@ describe('diffTrees', () => {
         await seedMaxTreeDepth(ctx, '4');
         const oldRoot = await writeTree(ctx, []);
         const addedId = await buildDirectoryChain(ctx, 80);
-        const newRoot = await writeTree(ctx, [
-          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
-        ]);
+        const newRoot = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'added', addedId)]);
 
         // Act + Assert
         try {
@@ -2860,9 +2712,7 @@ describe('diffTrees', () => {
         await seedMaxTreeDepth(ctx, '4');
         const oldRoot = await writeTree(ctx, []);
         const addedId = await buildDirectoryChain(ctx, 4);
-        const newRoot = await writeTree(ctx, [
-          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
-        ]);
+        const newRoot = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'added', addedId)]);
 
         // Act
         const result = await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
@@ -2879,9 +2729,7 @@ describe('diffTrees', () => {
         await seedMaxTreeDepth(ctx, '3');
         const oldRoot = await writeTree(ctx, []);
         const addedId = await buildDirectoryChain(ctx, 4);
-        const newRoot = await writeTree(ctx, [
-          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
-        ]);
+        const newRoot = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'added', addedId)]);
 
         // Act + Assert
         try {
@@ -2910,7 +2758,7 @@ describe('diffTrees', () => {
         const loopTree: Tree = {
           type: 'tree',
           id: LOOP_ID,
-          entries: [{ name: 'inner', mode: FILE_MODE.DIRECTORY, id: LOOP_ID }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'inner', LOOP_ID)],
         };
         const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
@@ -2953,7 +2801,7 @@ describe('diffTrees', () => {
         const loopTree: Tree = {
           type: 'tree',
           id: LOOP_ID,
-          entries: [{ name: 'inner', mode: FILE_MODE.DIRECTORY, id: LOOP_ID }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'inner', LOOP_ID)],
         };
         const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
@@ -3000,12 +2848,12 @@ describe('diffTrees', () => {
         const oldLoopTree: Tree = {
           type: 'tree',
           id: OLD_LOOP_ID,
-          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_LOOP_ID }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'x', OLD_LOOP_ID)],
         };
         const newLoopTree: Tree = {
           type: 'tree',
           id: NEW_LOOP_ID,
-          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'x', NEW_LOOP_ID)],
         };
         const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
@@ -3056,17 +2904,17 @@ describe('diffTrees', () => {
         const oldATree: Tree = {
           type: 'tree',
           id: OLD_A,
-          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_B }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'x', OLD_B)],
         };
         const oldBTree: Tree = {
           type: 'tree',
           id: OLD_B,
-          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_A }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'x', OLD_A)],
         };
         const newLoopTree: Tree = {
           type: 'tree',
           id: NEW_LOOP_ID,
-          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'x', NEW_LOOP_ID)],
         };
         const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
@@ -3133,9 +2981,7 @@ describe('diffTrees', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const fileId = await blob(ctx, 'content');
-        const treeId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: fileId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', fileId)]);
         const tagId = await writeObject(ctx, {
           type: 'tag',
           id: '' as ObjectId,
@@ -3213,12 +3059,8 @@ describe('diffTrees', () => {
           FILE_MODE.REGULAR,
         );
         const notATreeId = await blob(ctx, 'not a tree');
-        const before = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: oldSubId },
-        ]);
-        const after = await writeTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: notATreeId },
-        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', oldSubId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', notATreeId)]);
 
         // Act
         let thrown: unknown;
@@ -3246,18 +3088,18 @@ describe('diffTrees', () => {
         const oldLeaf = await blob(ctx, 'old');
         const newLeaf = await blob(ctx, 'new');
         const before = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', oldLeaf, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', oldLeaf, FILE_MODE.REGULAR),
+          ),
         ]);
         const after = await writeTree(ctx, [
-          {
-            name: 'sub',
-            mode: FILE_MODE.DIRECTORY,
-            id: await subTree(ctx, 'inner.txt', newLeaf, FILE_MODE.REGULAR),
-          },
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await subTree(ctx, 'inner.txt', newLeaf, FILE_MODE.REGULAR),
+          ),
         ]);
 
         // Act
@@ -3292,12 +3134,12 @@ describe('diffTrees', () => {
         const sharedOld = await subTree(ctx, 'leaf.txt', oldLeaf, FILE_MODE.REGULAR);
         const sharedNew = await subTree(ctx, 'leaf.txt', newLeaf, FILE_MODE.REGULAR);
         const oldRoot = await writeTree(ctx, [
-          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedOld },
-          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedOld },
+          treeEntry(FILE_MODE.DIRECTORY, 'd1', sharedOld),
+          treeEntry(FILE_MODE.DIRECTORY, 'd2', sharedOld),
         ]);
         const newRoot = await writeTree(ctx, [
-          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedNew },
-          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedNew },
+          treeEntry(FILE_MODE.DIRECTORY, 'd1', sharedNew),
+          treeEntry(FILE_MODE.DIRECTORY, 'd2', sharedNew),
         ]);
         const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
         const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
@@ -3328,12 +3170,12 @@ describe('diffTrees', () => {
         const sharedOld = await subTree(ctx, 'leaf.txt', oldLeaf, FILE_MODE.REGULAR);
         const sharedNew = await subTree(ctx, 'leaf.txt', newLeaf, FILE_MODE.REGULAR);
         const oldRoot = await writeTree(ctx, [
-          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedOld },
-          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedOld },
+          treeEntry(FILE_MODE.DIRECTORY, 'd1', sharedOld),
+          treeEntry(FILE_MODE.DIRECTORY, 'd2', sharedOld),
         ]);
         const newRoot = await writeTree(ctx, [
-          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedNew },
-          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedNew },
+          treeEntry(FILE_MODE.DIRECTORY, 'd1', sharedNew),
+          treeEntry(FILE_MODE.DIRECTORY, 'd2', sharedNew),
         ]);
         const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
         const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
@@ -3376,10 +3218,10 @@ describe('diffTrees', () => {
         const leaf = await blob(ctx, 'shared');
         const sharedSubtree = await subTree(ctx, 'leaf.txt', leaf, FILE_MODE.REGULAR);
         const oldRoot = await writeTree(ctx, [
-          { name: 'dDel', mode: FILE_MODE.DIRECTORY, id: sharedSubtree },
+          treeEntry(FILE_MODE.DIRECTORY, 'dDel', sharedSubtree),
         ]);
         const newRoot = await writeTree(ctx, [
-          { name: 'dAdd', mode: FILE_MODE.DIRECTORY, id: sharedSubtree },
+          treeEntry(FILE_MODE.DIRECTORY, 'dAdd', sharedSubtree),
         ]);
         const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
         const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
@@ -3411,11 +3253,11 @@ describe('diffTrees', () => {
         const ctx = await buildSeededContext();
         const oldRoot = await writeTree(ctx, []);
         const newRoot = await writeTree(ctx, [
-          { name: 'a', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'a') },
-          { name: 'b', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'b') },
-          { name: 'c', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'c') },
-          { name: 'd', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'd') },
-          { name: 'e', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'e') },
+          treeEntry(FILE_MODE.REGULAR, 'a', await blob(ctx, 'a')),
+          treeEntry(FILE_MODE.REGULAR, 'b', await blob(ctx, 'b')),
+          treeEntry(FILE_MODE.REGULAR, 'c', await blob(ctx, 'c')),
+          treeEntry(FILE_MODE.REGULAR, 'd', await blob(ctx, 'd')),
+          treeEntry(FILE_MODE.REGULAR, 'e', await blob(ctx, 'e')),
         ]);
         const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
         const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
@@ -3453,11 +3295,9 @@ describe('diffTrees', () => {
         const addedSubId = await subTree(ctx, 'f', await blob(ctx, 'added'), FILE_MODE.REGULAR);
         const deletedSubId = await subTree(ctx, 'f', await blob(ctx, 'deleted'), FILE_MODE.REGULAR);
         const oldRoot = await writeTree(ctx, [
-          { name: 'dDel', mode: FILE_MODE.DIRECTORY, id: deletedSubId },
+          treeEntry(FILE_MODE.DIRECTORY, 'dDel', deletedSubId),
         ]);
-        const newRoot = await writeTree(ctx, [
-          { name: 'dAdd', mode: FILE_MODE.DIRECTORY, id: addedSubId },
-        ]);
+        const newRoot = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dAdd', addedSubId)]);
         const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
         const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
         const walkSpy = vi.spyOn(walkRawSubtreeMod, 'walkRawSubtree');
@@ -3491,7 +3331,7 @@ describe('diffTrees', () => {
         const ioBound = 3;
         const width = ioBound + 4;
         const base = await buildSeededContext();
-        const entries: Array<{ name: string; mode: FileMode; id: ObjectId }> = [];
+        const entries: TreeEntry[] = [];
         for (let i = 0; i < width; i++) {
           const subId = await subTree(
             base,
@@ -3499,11 +3339,7 @@ describe('diffTrees', () => {
             await blob(base, `content-${i}`),
             FILE_MODE.REGULAR,
           );
-          entries.push({
-            name: `d${String(i).padStart(3, '0')}`,
-            mode: FILE_MODE.DIRECTORY,
-            id: subId,
-          });
+          entries.push(treeEntry(FILE_MODE.DIRECTORY, `d${String(i).padStart(3, '0')}`, subId));
         }
         const oldRoot = await writeTree(base, []);
         const newRoot = await writeTree(base, entries);

@@ -20,6 +20,7 @@ import type {
   ObjectId,
   Tag,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -112,7 +113,7 @@ const buildTwoCommitRepo = async (): Promise<TwoCommitRepo> => {
   const tree1 = await writeTree(ctx, []);
   const commit1 = await makeCommitObj(ctx, tree1, [], 'first commit', 1);
   const blob = await makeBlob(ctx, 'hello');
-  const tree2 = await writeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blob }]);
+  const tree2 = await writeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blob)]);
   const commit2 = await makeCommitObj(ctx, tree2, [commit1], 'second commit', 2);
   await setRef(ctx, 'refs/heads/main', commit2);
   return { ctx, commit1, commit2 };
@@ -130,10 +131,10 @@ const buildDivergentRepo = async (): Promise<DivergentRepo> => {
   const tree0 = await writeTree(ctx, []);
   const base = await makeCommitObj(ctx, tree0, [], 'base commit', 1);
   const blobM = await makeBlob(ctx, 'main');
-  const treeM = await writeTree(ctx, [{ mode: BLOB_MODE, name: 'm.txt', id: blobM }]);
+  const treeM = await writeTree(ctx, [treeEntry(BLOB_MODE, 'm.txt', blobM)]);
   const mainCommit = await makeCommitObj(ctx, treeM, [base], 'main change', 2);
   const blobF = await makeBlob(ctx, 'feat');
-  const treeF = await writeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: blobF }]);
+  const treeF = await writeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blobF)]);
   const featureCommit = await makeCommitObj(ctx, treeF, [base], 'feature change', 3);
   await setRef(ctx, 'refs/heads/main', mainCommit);
   await setRef(ctx, 'refs/heads/feature', featureCommit);
@@ -404,7 +405,7 @@ describe('bundleCreate', () => {
           1,
         );
         const blob = await makeBlob(ctx, 'hello');
-        const tree2 = await writeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blob }]);
+        const tree2 = await writeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blob)]);
         const commit2 = await makeCommitObj(ctx, tree2, [commit1], 'second commit', 2);
         await setRef(ctx, 'refs/heads/main', commit2);
         const opts: BundleCreateOptions = {
@@ -564,7 +565,7 @@ describe('bundleCreate', () => {
         // Arrange
         const { ctx, base, mainCommit, featureCommit } = await buildDivergentRepo();
         const blobT = await makeBlob(ctx, 'tag');
-        const treeT = await writeTree(ctx, [{ mode: BLOB_MODE, name: 't.txt', id: blobT }]);
+        const treeT = await writeTree(ctx, [treeEntry(BLOB_MODE, 't.txt', blobT)]);
         const tagCommit = await makeCommitObj(ctx, treeT, [base], 'tag commit', 4);
         await setRef(ctx, 'refs/tags/v1', tagCommit);
 

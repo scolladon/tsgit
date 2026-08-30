@@ -26,6 +26,7 @@ import {
   type Tree,
   type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { type TreeShapeEntry, treeShapeArb } from './arbitraries.js';
 import { buildSeededContext } from './fixtures.js';
@@ -134,7 +135,7 @@ const materializeTreeShapeEntries = async (
         content: new TextEncoder().encode(entry.content),
         id: '' as ObjectId,
       });
-      out.push({ name: entry.name as FilePath, id, mode: FILE_MODE.REGULAR });
+      out.push(treeEntry(FILE_MODE.REGULAR, entry.name as FilePath, id));
       continue;
     }
     if (entry.kind === 'gitlink') {
@@ -145,12 +146,12 @@ const materializeTreeShapeEntries = async (
         content: new TextEncoder().encode(`gitlink:${entry.name}`),
         id: '' as ObjectId,
       });
-      out.push({ name: entry.name as FilePath, id, mode: FILE_MODE.GITLINK });
+      out.push(treeEntry(FILE_MODE.GITLINK, entry.name as FilePath, id));
       continue;
     }
     const childEntries = await materializeTreeShapeEntries(ctx, entry.children);
     const id = await writeTree(ctx, childEntries);
-    out.push({ name: entry.name as FilePath, id, mode: FILE_MODE.DIRECTORY });
+    out.push(treeEntry(FILE_MODE.DIRECTORY, entry.name as FilePath, id));
   }
   return out;
 };

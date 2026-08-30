@@ -10,6 +10,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, RefName } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -40,7 +41,7 @@ const writeRootTreeWithGitmodules = async (
   const entries: TreeEntry[] = [];
   if (gitmodulesText !== undefined) {
     const blobId = await writeBlobText(ctx, gitmodulesText);
-    entries.push({ name: '.gitmodules', mode: FILE_MODE.REGULAR, id: blobId });
+    entries.push(treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId));
   }
   // walkTree visits subdirectories — nested gitlinks (a/b) need an intermediate tree.
   const direct: TreeEntry[] = [];
@@ -48,16 +49,12 @@ const writeRootTreeWithGitmodules = async (
   for (const link of gitlinks) {
     const segments = link.path.split('/');
     if (segments.length === 1) {
-      direct.push({ name: link.path, mode: FILE_MODE.GITLINK, id: link.id });
+      direct.push(treeEntry(FILE_MODE.GITLINK, link.path, link.id));
     } else {
       const [head, ...rest] = segments;
       const key = head as string;
       const bucket = nested.get(key) ?? [];
-      bucket.push({
-        name: rest.join('/'),
-        mode: FILE_MODE.GITLINK,
-        id: link.id,
-      });
+      bucket.push(treeEntry(FILE_MODE.GITLINK, rest.join('/'), link.id));
       nested.set(key, bucket);
     }
   }
@@ -65,7 +62,7 @@ const writeRootTreeWithGitmodules = async (
   for (const [dirName, dirEntries] of nested) {
     // Recursively materialise sub-trees one level only (sufficient for these tests).
     const subId = await writeTreeAt(ctx, dirEntries);
-    entries.push({ name: dirName, mode: FILE_MODE.DIRECTORY, id: subId });
+    entries.push(treeEntry(FILE_MODE.DIRECTORY, dirName, subId));
   }
   return writeTreeAt(ctx, entries);
 };
@@ -263,8 +260,8 @@ describe('primitives/walk-submodules', () => {
           const text = '[submodule "vendor-foo"]\n\tpath = vendorfoo\n\turl = https://e/foo.git\n';
           const blobId = await writeBlobText(ctx, text);
           const treeId = await writeTreeAt(ctx, [
-            { name: '.gitmodules', mode: FILE_MODE.EXECUTABLE, id: blobId },
-            { name: 'vendorfoo', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+            treeEntry(FILE_MODE.EXECUTABLE, '.gitmodules', blobId),
+            treeEntry(FILE_MODE.GITLINK, 'vendorfoo', FAKE_COMMIT_A),
           ]);
 
           // Act
@@ -295,8 +292,8 @@ describe('primitives/walk-submodules', () => {
             '[submodule "gitlink"]\n\tpath = gitlink\n\turl = https://attacker/x.git\n';
           const linkId = await writeBlobText(ctx, iniText);
           const treeId = await writeTreeAt(ctx, [
-            { name: '.gitmodules', mode: FILE_MODE.SYMLINK, id: linkId },
-            { name: 'gitlink', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+            treeEntry(FILE_MODE.SYMLINK, '.gitmodules', linkId),
+            treeEntry(FILE_MODE.GITLINK, 'gitlink', FAKE_COMMIT_A),
           ]);
 
           // Act
@@ -354,9 +351,9 @@ describe('primitives/walk-submodules', () => {
           const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
           const modulesBlob = await writeBlobText(ctx, text);
           const treeId = await writeTreeAt(ctx, [
-            { name: '.gitignore', mode: FILE_MODE.REGULAR, id: ignoreBlob },
-            { name: '.gitmodules', mode: FILE_MODE.REGULAR, id: modulesBlob },
-            { name: 'foo', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+            treeEntry(FILE_MODE.REGULAR, '.gitignore', ignoreBlob),
+            treeEntry(FILE_MODE.REGULAR, '.gitmodules', modulesBlob),
+            treeEntry(FILE_MODE.GITLINK, 'foo', FAKE_COMMIT_A),
           ]);
 
           // Act

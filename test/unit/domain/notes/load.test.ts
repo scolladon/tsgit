@@ -3,6 +3,7 @@ import type { InternalSlot } from '../../../../src/domain/notes/index.js';
 import { loadTrieRoot, unpackSubtree } from '../../../../src/domain/notes/index.js';
 import type { TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const oid = (c: string) => ObjectId.from(c.repeat(40));
 
@@ -14,10 +15,10 @@ describe('Given a root notes tree to load', () => {
     const readmeId = oid('c');
     const subdirId = oid('d');
     const entries: TreeEntry[] = [
-      { mode: FILE_MODE.REGULAR, name: noteName, id: noteBlob },
-      { mode: FILE_MODE.DIRECTORY, name: '2a', id: subtreeOid },
-      { mode: FILE_MODE.REGULAR, name: 'README', id: readmeId },
-      { mode: FILE_MODE.DIRECTORY, name: 'sub', id: subdirId },
+      treeEntry(FILE_MODE.REGULAR, noteName, noteBlob),
+      treeEntry(FILE_MODE.DIRECTORY, '2a', subtreeOid),
+      treeEntry(FILE_MODE.REGULAR, 'README', readmeId),
+      treeEntry(FILE_MODE.DIRECTORY, 'sub', subdirId),
     ];
 
     it('Then the blob becomes a note in its nibble slot', () => {
@@ -43,8 +44,8 @@ describe('Given a root notes tree to load', () => {
       const result = loadTrieRoot(entries);
       // Assert
       expect(result.preserved).toEqual([
-        { mode: FILE_MODE.REGULAR, name: 'README', id: readmeId },
-        { mode: FILE_MODE.DIRECTORY, name: 'sub', id: subdirId },
+        treeEntry(FILE_MODE.REGULAR, 'README', readmeId),
+        treeEntry(FILE_MODE.DIRECTORY, 'sub', subdirId),
       ]);
     });
   });
@@ -54,9 +55,9 @@ describe('Given a root notes tree to load', () => {
     const o2 = oid('2');
     const o3 = oid('3');
     const entries: TreeEntry[] = [
-      { mode: FILE_MODE.DIRECTORY, name: 'a1', id: o1 },
-      { mode: FILE_MODE.DIRECTORY, name: 'a2', id: o2 },
-      { mode: FILE_MODE.DIRECTORY, name: 'a3', id: o3 },
+      treeEntry(FILE_MODE.DIRECTORY, 'a1', o1),
+      treeEntry(FILE_MODE.DIRECTORY, 'a2', o2),
+      treeEntry(FILE_MODE.DIRECTORY, 'a3', o3),
     ];
 
     it('Then they split into an internal node keyed by their second nibble', () => {
@@ -78,7 +79,7 @@ describe('Given a lazy subtree placeholder', () => {
       // Arrange
       const read = vi.fn();
       // Act
-      loadTrieRoot([{ mode: FILE_MODE.DIRECTORY, name: '2a', id: oid('b') }]);
+      loadTrieRoot([treeEntry(FILE_MODE.DIRECTORY, '2a', oid('b'))]);
       // Assert
       expect(read).not.toHaveBeenCalled();
     });
@@ -89,9 +90,7 @@ describe('Given a lazy subtree placeholder', () => {
       // Arrange
       const subtreeOid = oid('f');
       const noteBlob = oid('a');
-      const read = vi.fn(async () => [
-        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: noteBlob },
-      ]);
+      const read = vi.fn(async () => [treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), noteBlob)]);
       // Act
       const result = await unpackSubtree({ kind: 'subtree', prefix: 'ab', oid: subtreeOid }, read);
       // Assert

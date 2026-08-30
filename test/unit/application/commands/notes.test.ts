@@ -18,6 +18,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const encoder = new TextEncoder();
 
@@ -86,10 +87,8 @@ const seedFannedNotesRef = async (
   const oids: ObjectId[] = [];
   for (let nibble = 0; nibble < 16; nibble += 1) {
     const dir = `${nibble.toString(16)}0`;
-    const subtreeOid = await writeTree(ctx, [
-      { id: noteBlob, mode: FILE_MODE.REGULAR, name: FANNED_LEAF },
-    ]);
-    rootEntries.push({ id: subtreeOid, mode: FILE_MODE.DIRECTORY, name: dir });
+    const subtreeOid = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, FANNED_LEAF, noteBlob)]);
+    rootEntries.push(treeEntry(FILE_MODE.DIRECTORY, dir, subtreeOid));
     oids.push(ObjectId.from(`${dir}${FANNED_LEAF}`));
   }
   const rootTreeOid = await writeTree(ctx, rootEntries);
@@ -645,8 +644,8 @@ describe('notes', () => {
         });
         const noteName = 'a'.repeat(40);
         const rootTree = await writeTree(ctx, [
-          { id: noteBlob, mode: FILE_MODE.REGULAR, name: 'README' },
-          { id: noteBlob, mode: FILE_MODE.REGULAR, name: noteName },
+          treeEntry(FILE_MODE.REGULAR, 'README', noteBlob),
+          treeEntry(FILE_MODE.REGULAR, noteName, noteBlob),
         ]);
         const notesCommit = await createCommit(ctx, {
           tree: rootTree,
@@ -679,12 +678,10 @@ describe('notes', () => {
         });
         const noteName = 'a'.repeat(40);
         const dirName = 'c'.repeat(40);
-        const innerTree = await writeTree(ctx, [
-          { id: noteBlob, mode: FILE_MODE.REGULAR, name: 'inner' },
-        ]);
+        const innerTree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'inner', noteBlob)]);
         const rootTree = await writeTree(ctx, [
-          { id: noteBlob, mode: FILE_MODE.REGULAR, name: noteName },
-          { id: innerTree, mode: FILE_MODE.DIRECTORY, name: dirName },
+          treeEntry(FILE_MODE.REGULAR, noteName, noteBlob),
+          treeEntry(FILE_MODE.DIRECTORY, dirName, innerTree),
         ]);
         const notesCommit = await createCommit(ctx, {
           tree: rootTree,

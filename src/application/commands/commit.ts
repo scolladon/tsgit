@@ -6,6 +6,7 @@ import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { serializeCommitContent, zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
+import { treeEntry } from '../../domain/objects/tree.js';
 import {
   commitCherryPickReflog,
   commitInitialReflog,
@@ -436,7 +437,7 @@ const insertEntry = (node: SubtreeNode, parts: ReadonlyArray<string>, entry: Ind
 const writeSubtree = async (ctx: Context, node: SubtreeNode): Promise<ObjectId> => {
   const treeEntries: TreeEntry[] = [];
   for (const [name, leaf] of node.files) {
-    treeEntries.push({ mode: leaf.mode as TreeEntry['mode'], name, id: leaf.id });
+    treeEntries.push(treeEntry(leaf.mode as TreeEntry['mode'], name, leaf.id));
   }
   // Subtrees at the same level are independent — write them in parallel,
   // bounded by the ioBound policy.
@@ -450,7 +451,7 @@ const writeSubtree = async (ctx: Context, node: SubtreeNode): Promise<ObjectId> 
     }),
   );
   for (const { name, id } of subdirs) {
-    treeEntries.push({ mode: '40000', name, id });
+    treeEntries.push(treeEntry('40000', name, id));
   }
   // Sorting is done by the domain serializer with the correct git tree comparator
   // (directories sort as if their name ended with `/`); pre-sorting here would be

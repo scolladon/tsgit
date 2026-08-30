@@ -34,6 +34,7 @@ import type {
   ObjectId,
   RefName,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type {
   HttpRequest,
@@ -170,9 +171,7 @@ const seedCommit = async (
     id: '' as ObjectId,
   };
   const blobId = await writeObject(ctx, blob);
-  const treeId = await writeTree(ctx, [
-    { name: 'README.md', mode: '100644' as FileMode, id: blobId },
-  ]);
+  const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'README.md', blobId)]);
   const author = {
     name: 'A',
     email: 'a@a',

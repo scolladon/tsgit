@@ -11,6 +11,7 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { FilePath, RefName } from '../../../../src/domain/objects/object-id.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -443,14 +444,14 @@ describe('revParse', () => {
       const sub = await writeObject(ctx, {
         type: 'tree',
         id: '' as ObjectId,
-        entries: [{ name: 'b.txt', id: blobB, mode: FILE_MODE.REGULAR }],
+        entries: [treeEntry(FILE_MODE.REGULAR, 'b.txt', blobB)],
       });
       const root = await writeObject(ctx, {
         type: 'tree',
         id: '' as ObjectId,
         entries: [
-          { name: 'a.txt', id: blobA, mode: FILE_MODE.REGULAR },
-          { name: 'sub', id: sub, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', blobA),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', sub),
         ],
       });
       const commit = await writeCommit(ctx, root, []);

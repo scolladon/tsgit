@@ -8,6 +8,7 @@ import {
   parseTreeContent,
   serializeTreeContent,
   sortTreeEntries,
+  treeEntry,
   treeEntryCompare,
 } from '../../../../src/domain/objects/tree.js';
 
@@ -37,6 +38,28 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
 }
 
 describe('tree', () => {
+  describe('treeEntry', () => {
+    describe('Given a mode, a name and an id', () => {
+      describe('When treeEntry mints an entry', () => {
+        it('Then the entry carries them verbatim', () => {
+          // Arrange
+          const sut = treeEntry;
+          const mode = '100644' as const;
+          const name = 'hello.txt';
+          const id = DUMMY_ID;
+
+          // Act
+          const result = sut(mode, name, id);
+
+          // Assert
+          expect(result.mode).toBe(mode);
+          expect(result.name).toBe(name);
+          expect(result.id).toBe(id);
+        });
+      });
+    });
+  });
+
   describe('parseTreeContent', () => {
     describe("Given a single entry '100644 hello.txt\\\\0<20-byte-sha>'", () => {
       describe('When parsing with SHA1_CONFIG', () => {
@@ -289,8 +312,8 @@ describe('tree', () => {
             type: 'tree' as const,
             id: DUMMY_ID,
             entries: [
-              { mode: '100644' as const, name: 'z.txt', id: id1 },
-              { mode: '100644' as const, name: 'a.txt', id: id2 },
+              treeEntry('100644' as const, 'z.txt', id1),
+              treeEntry('100644' as const, 'a.txt', id2),
             ],
           };
 
@@ -338,33 +361,33 @@ describe('tree', () => {
         it.each([
           {
             entries: [
-              { mode: '100644' as const, name: 'foo.c', id: DUMMY_ID },
-              { mode: '100644' as const, name: 'foo', id: DUMMY_ID },
+              treeEntry('100644' as const, 'foo.c', DUMMY_ID),
+              treeEntry('100644' as const, 'foo', DUMMY_ID),
             ],
             expected: ['foo', 'foo.c'],
             label: "'foo' (file) comes before 'foo.c' (file)",
           },
           {
             entries: [
-              { mode: '40000' as const, name: 'foo', id: DUMMY_ID },
-              { mode: '100644' as const, name: 'foo.c', id: DUMMY_ID },
+              treeEntry('40000' as const, 'foo', DUMMY_ID),
+              treeEntry('100644' as const, 'foo.c', DUMMY_ID),
             ],
             expected: ['foo.c', 'foo'],
             label: "'foo.c' (file) comes before 'foo' (dir gets virtual '/')",
           },
           {
             entries: [
-              { mode: '40000' as const, name: 'foo', id: DUMMY_ID },
-              { mode: '100644' as const, name: 'foo-bar', id: DUMMY_ID },
+              treeEntry('40000' as const, 'foo', DUMMY_ID),
+              treeEntry('100644' as const, 'foo-bar', DUMMY_ID),
             ],
             expected: ['foo-bar', 'foo'],
             label: "'foo-bar' (file) comes before 'foo' (dir)",
           },
           {
             entries: [
-              { mode: '40000' as const, name: 'lib', id: DUMMY_ID },
-              { mode: '40000' as const, name: 'doc', id: DUMMY_ID },
-              { mode: '40000' as const, name: 'bin', id: DUMMY_ID },
+              treeEntry('40000' as const, 'lib', DUMMY_ID),
+              treeEntry('40000' as const, 'doc', DUMMY_ID),
+              treeEntry('40000' as const, 'bin', DUMMY_ID),
             ],
             expected: ['bin', 'doc', 'lib'],
             label: 'multiple directories sort by byte-level comparison with trailing "/"',
@@ -383,8 +406,8 @@ describe('tree', () => {
       describe('When comparing with treeEntryCompare', () => {
         it('Then returns negative for alphabetically first', () => {
           // Arrange
-          const a: TreeEntry = { mode: '100644', name: 'abc', id: DUMMY_ID };
-          const b: TreeEntry = { mode: '100644', name: 'xyz', id: DUMMY_ID };
+          const a: TreeEntry = treeEntry('100644', 'abc', DUMMY_ID);
+          const b: TreeEntry = treeEntry('100644', 'xyz', DUMMY_ID);
 
           // Act
           const result = treeEntryCompare(a, b);
@@ -396,8 +419,8 @@ describe('tree', () => {
       describe('When comparing in reverse', () => {
         it('Then returns positive', () => {
           // Arrange
-          const a: TreeEntry = { mode: '100644', name: 'xyz', id: DUMMY_ID };
-          const b: TreeEntry = { mode: '100644', name: 'abc', id: DUMMY_ID };
+          const a: TreeEntry = treeEntry('100644', 'xyz', DUMMY_ID);
+          const b: TreeEntry = treeEntry('100644', 'abc', DUMMY_ID);
 
           // Act
           const result = treeEntryCompare(a, b);
@@ -412,8 +435,8 @@ describe('tree', () => {
       describe('When comparing with treeEntryCompare', () => {
         it('Then returns 0', () => {
           // Arrange
-          const a: TreeEntry = { mode: '100644', name: 'same', id: DUMMY_ID };
-          const b: TreeEntry = { mode: '100644', name: 'same', id: DUMMY_ID };
+          const a: TreeEntry = treeEntry('100644', 'same', DUMMY_ID);
+          const b: TreeEntry = treeEntry('100644', 'same', DUMMY_ID);
 
           // Act
           const result = treeEntryCompare(a, b);
@@ -428,8 +451,8 @@ describe('tree', () => {
       describe('When comparing', () => {
         it('Then directory sorts after due to trailing slash', () => {
           // Arrange
-          const dir: TreeEntry = { mode: '40000', name: 'abc', id: DUMMY_ID };
-          const file: TreeEntry = { mode: '100644', name: 'abc', id: DUMMY_ID };
+          const dir: TreeEntry = treeEntry('40000', 'abc', DUMMY_ID);
+          const file: TreeEntry = treeEntry('100644', 'abc', DUMMY_ID);
 
           // Act
           const result = treeEntryCompare(dir, file);

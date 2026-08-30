@@ -15,6 +15,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import type { FlatTree } from '../../../../src/domain/diff/flat-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { LruCache } from '../../../../src/domain/storage/index.js';
 import { seedMaxTreeDepth } from './fixtures.js';
 
@@ -261,7 +262,7 @@ describe('readHeadTree', () => {
         const treeId = await writeObject(ctx, {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.GITLINK, name: 'sub', id: gitlinkTarget }],
+          entries: [treeEntry(FILE_MODE.GITLINK, 'sub', gitlinkTarget)],
         });
         const commitId = await writeObject(ctx, {
           type: 'commit',

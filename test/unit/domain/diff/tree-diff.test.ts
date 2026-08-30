@@ -4,6 +4,7 @@ import { diffTrees } from '../../../../src/domain/diff/tree-diff.js';
 import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import type { FileMode, ObjectId, Tree, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { arbTree } from './arbitraries.js';
 
 const ID_A = 'a'.repeat(40) as ObjectId;
@@ -19,7 +20,7 @@ function tree(entries: ReadonlyArray<TreeEntry>): Tree {
 }
 
 function entry(name: string, mode: FileMode, id: ObjectId): TreeEntry {
-  return { name, mode, id };
+  return treeEntry(mode, name, id);
 }
 
 describe('diffTrees', () => {

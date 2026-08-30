@@ -11,6 +11,7 @@ import { TsgitError } from '../../../../../src/domain/error.js';
 import { encode, hexToBytes } from '../../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { Blob, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import * as treeCursorMod from '../../../../../src/domain/objects/tree-cursor.js';
 import { buildSeededContext, writeRawObjectBytes } from '../fixtures.js';
 
@@ -55,7 +56,7 @@ describe('descendTreePath', () => {
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'file', fileId)],
         };
         // Act
         const result = await descendTreePath(ctx, root, 'file', 'HEAD');
@@ -75,17 +76,17 @@ describe('descendTreePath', () => {
         const bId = await writeObject(ctx, {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'c', id: cId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'c', cId)],
         } as Tree);
         const aId = await writeObject(ctx, {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.DIRECTORY, name: 'b', id: bId }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'b', bId)],
         } as Tree);
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.DIRECTORY, name: 'a', id: aId }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'a', aId)],
         };
         // Act
         const result = await descendTreePath(ctx, root, 'a/b/c', 'HEAD');
@@ -144,7 +145,7 @@ describe('descendTreePath', () => {
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'file', fileId)],
         };
         // Act / Assert
         try {
@@ -166,7 +167,7 @@ describe('descendTreePath', () => {
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.EXECUTABLE, name: 'run', id: fileId }],
+          entries: [treeEntry(FILE_MODE.EXECUTABLE, 'run', fileId)],
         };
         // Act
         const result = await descendTreePath(ctx, root, 'run', 'HEAD');
@@ -187,7 +188,7 @@ describe('findTreeEntry', () => {
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'file', fileId)],
         };
         const rootId = await writeObject(ctx, root);
         // Act
@@ -208,7 +209,7 @@ describe('findTreeEntry', () => {
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'file', fileId)],
         };
         // Act
         const result = await findTreeEntry(ctx, root, 'file');
@@ -227,17 +228,17 @@ describe('findTreeEntry', () => {
         const bId = await writeObject(ctx, {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.REGULAR, name: 'c', id: cId }],
+          entries: [treeEntry(FILE_MODE.REGULAR, 'c', cId)],
         } as Tree);
         const aId = await writeObject(ctx, {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.DIRECTORY, name: 'b', id: bId }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'b', bId)],
         } as Tree);
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.DIRECTORY, name: 'a', id: aId }],
+          entries: [treeEntry(FILE_MODE.DIRECTORY, 'a', aId)],
         };
         const rootId = await writeObject(ctx, root);
         // Act
@@ -275,7 +276,7 @@ describe('findTreeEntry', () => {
               root: {
                 type: 'tree',
                 id: '' as ObjectId,
-                entries: [{ mode: FILE_MODE.REGULAR, name: 'file', id: fileId }],
+                entries: [treeEntry(FILE_MODE.REGULAR, 'file', fileId)],
               },
               path: 'file/leaf',
             };
@@ -304,7 +305,7 @@ describe('findTreeEntry', () => {
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.GITLINK, name: 'sub', id: linkId }],
+          entries: [treeEntry(FILE_MODE.GITLINK, 'sub', linkId)],
         };
         // Act
         const result = await findTreeEntry(ctx, root, 'sub');
@@ -324,7 +325,7 @@ describe('findTreeEntry', () => {
         const root: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [{ mode: FILE_MODE.SYMLINK, name: 'link', id: linkId }],
+          entries: [treeEntry(FILE_MODE.SYMLINK, 'link', linkId)],
         };
         // Act
         const result = await findTreeEntry(ctx, root, 'link');
@@ -343,12 +344,10 @@ describe('findTreeEntry', () => {
         const abId = await writeObject(ctx, blobOf(1));
         const abTxtId = await writeObject(ctx, blobOf(2));
         const dirId = await writeTree(ctx, [
-          { mode: FILE_MODE.REGULAR, name: 'ab', id: abId },
-          { mode: FILE_MODE.REGULAR, name: 'ab.txt', id: abTxtId },
+          treeEntry(FILE_MODE.REGULAR, 'ab', abId),
+          treeEntry(FILE_MODE.REGULAR, 'ab.txt', abTxtId),
         ]);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
         // Act
         const result = await findTreeEntry(ctx, rootId, 'dir/ab');
         // Assert
@@ -365,15 +364,13 @@ describe('findTreeEntry', () => {
         const ctx = await buildSeededContext();
         const cursorNameSpy = vi.spyOn(treeCursorMod, 'cursorName');
         const dirId = await writeTree(ctx, [
-          { mode: FILE_MODE.REGULAR, name: 'a', id: await writeObject(ctx, blobOf(1)) },
-          { mode: FILE_MODE.REGULAR, name: 'b', id: await writeObject(ctx, blobOf(2)) },
-          { mode: FILE_MODE.REGULAR, name: 'c', id: await writeObject(ctx, blobOf(3)) },
-          { mode: FILE_MODE.REGULAR, name: 'ab.txt', id: await writeObject(ctx, blobOf(4)) },
-          { mode: FILE_MODE.REGULAR, name: 'ab', id: await writeObject(ctx, blobOf(5)) },
+          treeEntry(FILE_MODE.REGULAR, 'a', await writeObject(ctx, blobOf(1))),
+          treeEntry(FILE_MODE.REGULAR, 'b', await writeObject(ctx, blobOf(2))),
+          treeEntry(FILE_MODE.REGULAR, 'c', await writeObject(ctx, blobOf(3))),
+          treeEntry(FILE_MODE.REGULAR, 'ab.txt', await writeObject(ctx, blobOf(4))),
+          treeEntry(FILE_MODE.REGULAR, 'ab', await writeObject(ctx, blobOf(5))),
         ]);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
         cursorNameSpy.mockClear();
 
         // Act
@@ -401,10 +398,8 @@ describe('findTreeEntry', () => {
         // '.' or '..'; only the exact match should ever refuse.
         const ctx = await buildSeededContext();
         const fileId = await writeObject(ctx, blobOf(9));
-        const dirId = await writeTree(ctx, [{ mode: FILE_MODE.REGULAR, name, id: fileId }]);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+        const dirId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, name, fileId)]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
         // Act
         const result = await findTreeEntry(ctx, rootId, `dir/${name}`);
@@ -438,9 +433,7 @@ describe('findTreeEntry', () => {
           const ctx = await buildSeededContext();
           const content = concatBytes(rawEntry('100644', name), rawEntry('100644', 'good'));
           const dirId = await writeRawObjectBytes(ctx, 'tree', content);
-          const rootId = await writeTree(ctx, [
-            { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-          ]);
+          const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
           // Act / Assert
           try {
@@ -510,9 +503,7 @@ describe('findTreeEntry', () => {
         const ctx = await buildSeededContext();
         const content = concatBytes(rawEntry('100644', ''), rawEntry('100644', 'good'));
         const dirId = await writeRawObjectBytes(ctx, 'tree', content);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
         // Act / Assert
         try {
@@ -542,9 +533,7 @@ describe('findTreeEntry', () => {
           rawEntry('100644', 'dup', dupOidB),
         );
         const dirId = await writeRawObjectBytes(ctx, 'tree', content);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
         const expectedOffset = rawEntryByteLength('100644', 'dup');
 
         // Act / Assert
@@ -571,9 +560,7 @@ describe('findTreeEntry', () => {
         const ctx = await buildSeededContext();
         const content = concatBytes(rawEntry('77777', 'bad'), rawEntry('100644', 'good'));
         const dirId = await writeRawObjectBytes(ctx, 'tree', content);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
         // Act / Assert
         try {
@@ -600,9 +587,7 @@ describe('findTreeEntry', () => {
         const oidZ = '9'.repeat(40) as ObjectId;
         const content = concatBytes(rawEntry('100644', 'z', oidZ), rawEntry('100644', 'a', oidA));
         const dirId = await writeRawObjectBytes(ctx, 'tree', content);
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
         // Act
         const result = await findTreeEntry(ctx, rootId, 'dir/a');
@@ -621,9 +606,9 @@ describe('findTreeEntryChain', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const cId = await writeObject(ctx, blobOf(3));
-        const bId = await writeTree(ctx, [{ mode: FILE_MODE.REGULAR, name: 'c', id: cId }]);
-        const aId = await writeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'b', id: bId }]);
-        const rootId = await writeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'a', id: aId }]);
+        const bId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'c', cId)]);
+        const aId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'b', bId)]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'a', aId)]);
 
         // Act
         const result = await findTreeEntryChain(ctx, rootId, ['a', 'b', 'c']);
@@ -641,9 +626,7 @@ describe('findTreeEntryChain', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const fileId = await writeObject(ctx, blobOf(1));
-        const rootId = await writeTree(ctx, [
-          { mode: FILE_MODE.REGULAR, name: 'file', id: fileId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file', fileId)]);
 
         // Act
         const result = await findTreeEntryChain(ctx, rootId, ['file']);
@@ -747,15 +730,13 @@ describe('descendMatchingTreeChain', () => {
         // subtree they both point at, and its leaf, are identical.
         const ctx = await buildSeededContext();
         const leafId = await writeObject(ctx, blobOf(2));
-        const sharedSubId = await writeTree(ctx, [
-          { mode: FILE_MODE.REGULAR, name: 'c', id: leafId },
-        ]);
+        const sharedSubId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'c', leafId)]);
         const childRootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'a', id: sharedSubId },
-          { mode: FILE_MODE.REGULAR, name: 'only-in-child', id: leafId },
+          treeEntry(FILE_MODE.DIRECTORY, 'a', sharedSubId),
+          treeEntry(FILE_MODE.REGULAR, 'only-in-child', leafId),
         ]);
         const parentRootId = await writeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'a', id: sharedSubId },
+          treeEntry(FILE_MODE.DIRECTORY, 'a', sharedSubId),
         ]);
         const childChain = [childRootId, sharedSubId, leafId];
 
@@ -779,9 +760,7 @@ describe('descendMatchingTreeChain', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const leafId = await writeObject(ctx, blobOf(5));
-        const parentRootId = await writeTree(ctx, [
-          { mode: FILE_MODE.REGULAR, name: 'file', id: leafId },
-        ]);
+        const parentRootId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file', leafId)]);
         const unrelatedChain = [ARBITRARY_OID, ARBITRARY_OID];
 
         // Act

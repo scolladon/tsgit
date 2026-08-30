@@ -11,6 +11,7 @@ import {
 import type { ObjectType } from '../../../../src/domain/objects/header.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 export function arbObjectId(length: 40 | 64 = 40): fc.Arbitrary<ObjectId> {
   return fc
@@ -118,7 +119,7 @@ export function arbTreeEntryAnyMode(): fc.Arbitrary<TreeEntry> {
         .filter((s) => !s.includes('\0') && !s.includes('/') && s !== '.' && s !== '..'),
       arbObjectId(40),
     )
-    .map(([mode, name, id]) => ({ mode, name, id }));
+    .map(([mode, name, id]) => treeEntry(mode, name, id));
 }
 
 // Git trees cannot contain duplicate entry names — dedupe by name (first

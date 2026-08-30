@@ -8,6 +8,8 @@
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
   HttpRequest,
@@ -101,7 +103,7 @@ export const buildSubmoduleRemote = async (
       {
         type: 'tree',
         id: '' as ObjectId,
-        entries: [{ mode: FILE_MODE.REGULAR, name: branch.file, id: blobId }],
+        entries: [treeEntry(FILE_MODE.REGULAR, branch.file, blobId)],
       },
       ctx.hashConfig,
     );
@@ -140,12 +142,6 @@ export const buildSubmoduleRemote = async (
   return { transport: makeTransport(refs, capabilities, packBytes), commits };
 };
 
-interface TreeEntrySpec {
-  readonly mode: typeof FILE_MODE.REGULAR;
-  readonly name: string;
-  readonly id: ObjectId;
-}
-
 /** Accumulate unique objects (deduped by id) for a multi-commit pack. */
 const createPackBuilder = (ctx: Context) => {
   const byId = new Map<string, EntrySpec>();
@@ -159,7 +155,7 @@ const createPackBuilder = (ctx: Context) => {
   return {
     blob: (content: string): Promise<ObjectId> =>
       add({ type: 'blob', id: '' as ObjectId, content: ENCODER.encode(content) }),
-    tree: (entries: ReadonlyArray<TreeEntrySpec>): Promise<ObjectId> =>
+    tree: (entries: ReadonlyArray<TreeEntry>): Promise<ObjectId> =>
       add({ type: 'tree', id: '' as ObjectId, entries: [...entries] }),
     commit: (
       tree: ObjectId,
@@ -204,27 +200,17 @@ export const buildDivergentRemote = async (ctx: Context): Promise<DivergentRemot
   const b = createPackBuilder(ctx);
   const REGULAR = FILE_MODE.REGULAR;
   const baseF = await b.blob('base\n');
-  const base = await b.commit(
-    await b.tree([{ mode: REGULAR, name: 'f.txt', id: baseF }]),
-    [],
-    'base',
-  );
+  const base = await b.commit(await b.tree([treeEntry(REGULAR, 'f.txt', baseF)]), [], 'base');
   const mainF = await b.blob('main change\n');
   const aBlob = await b.blob('a only\n');
   const m1 = await b.commit(
-    await b.tree([
-      { mode: REGULAR, name: 'a.txt', id: aBlob },
-      { mode: REGULAR, name: 'f.txt', id: mainF },
-    ]),
+    await b.tree([treeEntry(REGULAR, 'a.txt', aBlob), treeEntry(REGULAR, 'f.txt', mainF)]),
     [base],
     'm1',
   );
   const mBlob = await b.blob('m only\n');
   const m2 = await b.commit(
-    await b.tree([
-      { mode: REGULAR, name: 'f.txt', id: baseF },
-      { mode: REGULAR, name: 'm.txt', id: mBlob },
-    ]),
+    await b.tree([treeEntry(REGULAR, 'f.txt', baseF), treeEntry(REGULAR, 'm.txt', mBlob)]),
     [base],
     'm2',
   );

@@ -10,6 +10,7 @@ import { createEmptyTrie } from '../../../../src/domain/notes/trie.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { RefName } from '../../../../src/domain/objects/object-id.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const NOTES_REF = 'refs/notes/commits' as RefName;
 const OID_A = ObjectId.from('a'.repeat(40));
@@ -72,7 +73,7 @@ describe('Given loadNotesTree', () => {
       });
 
       // Write a notes tree with one direct note entry (fanout=0)
-      const treeOid = await writeTree(ctx, [{ id: noteOid, mode: FILE_MODE.REGULAR, name: OID_A }]);
+      const treeOid = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, OID_A, noteOid)]);
 
       const commitOid = await makeNotesCommit(ctx, treeOid);
       await seedRef(ctx, NOTES_REF, commitOid);
@@ -132,13 +133,11 @@ describe('Given loadNotesTree', () => {
       const leafOid = ObjectId.from(`ab${'0'.repeat(38)}`);
 
       // Write the subtree — name is the leaf within the 'ab/' prefix
-      const subtreeTreeOid = await writeTree(ctx, [
-        { id: noteOid, mode: FILE_MODE.REGULAR, name: leafOid },
-      ]);
+      const subtreeTreeOid = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, leafOid, noteOid)]);
 
       // Write the root notes tree referencing the subtree
       const rootTreeOid = await writeTree(ctx, [
-        { id: subtreeTreeOid, mode: FILE_MODE.DIRECTORY, name: 'ab' as ObjectId },
+        treeEntry(FILE_MODE.DIRECTORY, 'ab' as ObjectId, subtreeTreeOid),
       ]);
 
       const commitOid = await makeNotesCommit(ctx, rootTreeOid);
@@ -166,11 +165,9 @@ describe('Given loadNotesTree', () => {
         content: new TextEncoder().encode('memoized'),
       });
       const leafOid = ObjectId.from(`cd${'0'.repeat(38)}`);
-      const subtreeTreeOid = await writeTree(ctx, [
-        { id: noteOid, mode: FILE_MODE.REGULAR, name: leafOid },
-      ]);
+      const subtreeTreeOid = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, leafOid, noteOid)]);
       const rootTreeOid = await writeTree(ctx, [
-        { id: subtreeTreeOid, mode: FILE_MODE.DIRECTORY, name: 'cd' as ObjectId },
+        treeEntry(FILE_MODE.DIRECTORY, 'cd' as ObjectId, subtreeTreeOid),
       ]);
       const commitOid = await makeNotesCommit(ctx, rootTreeOid);
       await seedRef(ctx, NOTES_REF, commitOid);

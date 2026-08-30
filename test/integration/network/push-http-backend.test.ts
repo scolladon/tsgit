@@ -36,6 +36,7 @@ import type {
   ObjectId,
   RefName,
 } from '../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../src/domain/objects/tree.js';
 import { openRepository, type Repository } from '../../../src/index.node.js';
 import { git, gitAsync, runGit, runGitEnv, tryRunGit } from '../interop-helpers.js';
 
@@ -245,7 +246,7 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
       };
       const blobId = await writeObject(repo.ctx, blob);
       const treeId = await writeTree(repo.ctx, [
-        { name: 'pushed.txt', mode: '100644' as FileMode, id: blobId },
+        treeEntry('100644' as FileMode, 'pushed.txt', blobId),
       ]);
       const author = {
         name: 'Push',

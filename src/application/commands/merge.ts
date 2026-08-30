@@ -28,6 +28,7 @@ import {
   type RefName,
   type TreeEntry,
 } from '../../domain/objects/index.js';
+import { treeEntry } from '../../domain/objects/tree.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
@@ -484,7 +485,7 @@ const buildLeafTrie = (rootLeaves: ReadonlyArray<LeafRecord>, maxDepth: number):
 };
 
 const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
-  files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
+  files.map((f) => treeEntry(f.mode, f.path, f.id));
 
 /**
  * Write the leaf trie deepest-level-first. Every frame WITHIN a level is
@@ -518,11 +519,7 @@ const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> =>
         frame.parentIndex === ROOT_PARENT_LEVEL_INDEX
           ? rootTreeEntries
           : treeEntries[frame.parentIndex]!;
-      parentEntries.push({
-        name: frame.name,
-        id,
-        mode: FILE_MODE.DIRECTORY,
-      });
+      parentEntries.push(treeEntry(FILE_MODE.DIRECTORY, frame.name, id));
     }
   }
   return writeTree(ctx, rootTreeEntries);

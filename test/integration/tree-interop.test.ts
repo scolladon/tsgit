@@ -17,6 +17,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import { writeTree } from '../../src/application/primitives/write-tree.js';
 import { FILE_MODE, type ObjectId } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import {
   GIT_AVAILABLE,
   initBothRepos,
@@ -59,8 +60,8 @@ describe.skipIf(!GIT_AVAILABLE)('tree interop', () => {
           content: new TextEncoder().encode('B\n'),
         });
         const oursTreeSha = await writeTree(ctx, [
-          { mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobA },
-          { mode: FILE_MODE.REGULAR, name: 'b.txt', id: blobB },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', blobA),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', blobB),
         ]);
 
         // Assert — SHA matches, and `git ls-tree` on our object returns the

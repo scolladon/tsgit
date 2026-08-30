@@ -8,6 +8,7 @@ import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import { encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import {
   buildSeededContext,
   instrumentedContext,
@@ -29,13 +30,9 @@ const writeBlob = async (ctx: Ctx, content: string): Promise<ObjectId> =>
  *  1000+-level fixtures a hardcoded 1024/2048 cap used to require. */
 const buildDirectoryChain = async (ctx: Ctx, levels: number): Promise<ObjectId> => {
   const blobId = await writeBlob(ctx, 'leaf');
-  let current = await writeTree(ctx, [
-    { name: 'leaf' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
-  ]);
+  let current = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf' as FilePath, blobId)]);
   for (let i = 0; i < levels; i++) {
-    current = await writeTree(ctx, [
-      { name: `d${i}` as FilePath, id: current, mode: FILE_MODE.DIRECTORY },
-    ]);
+    current = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, `d${i}` as FilePath, current)]);
   }
   return current;
 };
@@ -82,7 +79,7 @@ describe('flattenTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
 
         // Act
@@ -106,11 +103,11 @@ describe('flattenTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idB = await writeBlob(ctx, 'B');
         const subId = await writeTree(ctx, [
-          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt' as FilePath, idB),
         ]);
         const rootId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subId),
         ]);
 
         // Act
@@ -132,8 +129,8 @@ describe('flattenTree', () => {
         const execId = await writeBlob(ctx, '#!/bin/sh');
         const linkId = await writeBlob(ctx, 'target/path');
         const treeId = await writeTree(ctx, [
-          { name: 'run.sh' as FilePath, id: execId, mode: FILE_MODE.EXECUTABLE },
-          { name: 'link' as FilePath, id: linkId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.EXECUTABLE, 'run.sh' as FilePath, execId),
+          treeEntry(FILE_MODE.SYMLINK, 'link' as FilePath, linkId),
         ]);
 
         // Act
@@ -154,13 +151,13 @@ describe('flattenTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'deep');
         const subTreeId = await writeTree(ctx, [
-          { name: 'leaf.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'leaf.txt' as FilePath, blobId),
         ]);
         const dirTreeId = await writeTree(ctx, [
-          { name: 'sub' as FilePath, id: subTreeId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subTreeId),
         ]);
         const rootId = await writeTree(ctx, [
-          { name: 'dir' as FilePath, id: dirTreeId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.DIRECTORY, 'dir' as FilePath, dirTreeId),
         ]);
 
         // Act
@@ -181,11 +178,11 @@ describe('flattenTree', () => {
         const idA = await writeBlob(ctx, 'A');
         const idB = await writeBlob(ctx, 'B');
         const subId = await writeTree(ctx, [
-          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt' as FilePath, idB),
         ]);
         const rootId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subId),
         ]);
         const rootObject = (await readObject(ctx, rootId)) as Tree;
 
@@ -210,7 +207,7 @@ describe('flattenTree', () => {
         const ctx = await buildSeededContext();
         const submoduleOid = 'cccccccccccccccccccccccccccccccccccccccc' as ObjectId;
         const treeId = await writeTree(ctx, [
-          { name: 'submodule' as FilePath, id: submoduleOid, mode: FILE_MODE.GITLINK },
+          treeEntry(FILE_MODE.GITLINK, 'submodule' as FilePath, submoduleOid),
         ]);
 
         // Act
@@ -233,11 +230,11 @@ describe('flattenTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'shared');
         const sharedSubId = await writeTree(ctx, [
-          { name: 'f' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, blobId),
         ]);
         const rootId = await writeTree(ctx, [
-          { name: 'x' as FilePath, id: sharedSubId, mode: FILE_MODE.DIRECTORY },
-          { name: 'y' as FilePath, id: sharedSubId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.DIRECTORY, 'x' as FilePath, sharedSubId),
+          treeEntry(FILE_MODE.DIRECTORY, 'y' as FilePath, sharedSubId),
         ]);
 
         // Act
@@ -259,12 +256,12 @@ describe('flattenTree', () => {
         const idB = await writeBlob(ctx, 'B');
         const idC = await writeBlob(ctx, 'C');
         const subId = await writeTree(ctx, [
-          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt' as FilePath, idB),
         ]);
         const rootId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'c.txt' as FilePath, id: idC, mode: FILE_MODE.REGULAR },
-          { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, idC),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subId),
         ]);
         const walked = new Map<FilePath, FlatTreeEntry>();
         for await (const entry of walkTree(ctx, rootId)) {
@@ -287,11 +284,11 @@ describe('flattenTree', () => {
         const idA = await writeBlob(base, 'A');
         const idB = await writeBlob(base, 'B');
         const subId = await writeTree(base, [
-          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt' as FilePath, idB),
         ]);
         const rootId = await writeTree(base, [
-          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
-          { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subId),
         ]);
         const walkInstrument = instrumentedContext(base);
         for await (const _ of walkTree(walkInstrument.ctx, rootId)) {
@@ -345,8 +342,8 @@ describe('flattenTree', () => {
         const blobId = await writeBlob(ctx, 'not a tree');
         const otherBlobId = await writeBlob(ctx, 'sibling');
         const treeId = await writeTree(ctx, [
-          { name: 'd' as FilePath, id: blobId, mode: FILE_MODE.DIRECTORY },
-          { name: 'sibling.txt' as FilePath, id: otherBlobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.DIRECTORY, 'd' as FilePath, blobId),
+          treeEntry(FILE_MODE.REGULAR, 'sibling.txt' as FilePath, otherBlobId),
         ]);
 
         // Act
@@ -514,7 +511,7 @@ describe('flattenTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
         const controller = new AbortController();
         controller.abort();

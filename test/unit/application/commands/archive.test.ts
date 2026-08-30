@@ -5,6 +5,7 @@ import { archive } from '../../../../src/application/commands/archive.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
 
@@ -314,16 +315,16 @@ describe('Given a commit with a mixed tree (regular, exec, symlink, dir with con
 
       const dirTreeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'nested.txt', id: nestedBlobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'nested.txt', nestedBlobId)]),
       );
       const rootTreeId = await writeObject(
         ctx,
         makeTree([
-          { mode: FILE_MODE.REGULAR, name: 'a.txt', id: regularId },
-          { mode: FILE_MODE.GITLINK, name: 'mysub', id: submoduleOid },
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirTreeId },
-          { mode: FILE_MODE.EXECUTABLE, name: 'run.sh', id: execId },
-          { mode: FILE_MODE.SYMLINK, name: 'link', id: symlinkId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', regularId),
+          treeEntry(FILE_MODE.GITLINK, 'mysub', submoduleOid),
+          treeEntry(FILE_MODE.DIRECTORY, 'dir', dirTreeId),
+          treeEntry(FILE_MODE.EXECUTABLE, 'run.sh', execId),
+          treeEntry(FILE_MODE.SYMLINK, 'link', symlinkId),
         ]),
       );
       const commitId = await writeObject(ctx, makeCommit(rootTreeId));
@@ -393,8 +394,8 @@ describe('Given a tree with a directory and a gitlink entry', () => {
       const rootTreeId = await writeObject(
         ctx,
         makeTree([
-          { mode: FILE_MODE.DIRECTORY, name: 'emptydir', id: innerTreeId },
-          { mode: FILE_MODE.GITLINK, name: 'sub', id: submoduleOid },
+          treeEntry(FILE_MODE.DIRECTORY, 'emptydir', innerTreeId),
+          treeEntry(FILE_MODE.GITLINK, 'sub', submoduleOid),
         ]),
       );
       const commitId = await writeObject(ctx, makeCommit(rootTreeId));
@@ -433,9 +434,9 @@ describe('Given a commit with 3 blob entries', () => {
       const treeId = await writeObject(
         base,
         makeTree([
-          { mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobAId },
-          { mode: FILE_MODE.REGULAR, name: 'b.txt', id: blobBId },
-          { mode: FILE_MODE.REGULAR, name: 'c.txt', id: blobCId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', blobAId),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', blobBId),
+          treeEntry(FILE_MODE.REGULAR, 'c.txt', blobCId),
         ]),
       );
       const commitId = await writeObject(base, makeCommit(treeId));

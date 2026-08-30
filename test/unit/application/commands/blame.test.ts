@@ -21,6 +21,7 @@ import * as lineDiffMod from '../../../../src/domain/diff/line-diff.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, Blob, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { refuseReadOnSymlink } from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
@@ -212,7 +213,7 @@ describe('Given a path that cannot resolve to a blob in the tree', () => {
           const treeId = await writeObject(ctx, {
             type: 'tree',
             id: '' as ObjectId,
-            entries: [{ mode: FILE_MODE.GITLINK, name: 'mysub', id: base }],
+            entries: [treeEntry(FILE_MODE.GITLINK, 'mysub', base)],
           } as Tree);
           clock += 60;
           const rev = await createCommit(ctx, {
@@ -676,7 +677,7 @@ describe('Given a gitlink at the blamed path in an ancestor commit', () => {
       const gitlinkTreeId = await writeObject(ctx, {
         type: 'tree',
         id: '' as ObjectId,
-        entries: [{ mode: FILE_MODE.GITLINK, name: 'mysub', id: base }],
+        entries: [treeEntry(FILE_MODE.GITLINK, 'mysub', base)],
       } as Tree);
       clock += 60;
       const c1 = await createCommit(ctx, {
@@ -694,7 +695,7 @@ describe('Given a gitlink at the blamed path in an ancestor commit', () => {
       const regularTreeId = await writeObject(ctx, {
         type: 'tree',
         id: '' as ObjectId,
-        entries: [{ mode: FILE_MODE.REGULAR, name: 'mysub', id: blobId }],
+        entries: [treeEntry(FILE_MODE.REGULAR, 'mysub', blobId)],
       } as Tree);
       clock += 60;
       const c2 = await createCommit(ctx, {

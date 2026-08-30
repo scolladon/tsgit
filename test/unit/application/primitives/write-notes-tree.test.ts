@@ -11,6 +11,7 @@ import { createEmptyTrie } from '../../../../src/domain/notes/trie.js';
 import type { SubtreeReader } from '../../../../src/domain/notes/types.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const OID_A = ObjectId.from('a'.repeat(40));
 
@@ -77,7 +78,7 @@ describe('Given writeNotesTree', () => {
         content: noteContent,
       });
 
-      const trie = loadTrieRoot([{ id: noteOid, mode: FILE_MODE.REGULAR, name: OID_A }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, OID_A, noteOid)]);
       const sut = writeNotesTree;
 
       // Act
@@ -124,7 +125,7 @@ describe('Given writeNotesTree', () => {
 
       // Build trie with a note whose oid requires fanout=1 (need ≥2 notes for fanout)
       // Use a single note to verify fanout=0 (no fanout with just 1 note)
-      const trie = loadTrieRoot([{ id: noteBlobOid, mode: FILE_MODE.REGULAR, name: noteOid }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, noteOid, noteBlobOid)]);
       const sut = writeNotesTree;
 
       // Act
@@ -203,10 +204,10 @@ describe('Given writeNotesTree', () => {
       });
       // A fanout subtree '00/' holding a note leaf plus a non-note 'README' (preserved verbatim).
       const subtreeOid = await writeTree(ctx, [
-        { id: innerBlob, mode: FILE_MODE.REGULAR, name: '0'.repeat(38) },
-        { id: readmeBlob, mode: FILE_MODE.REGULAR, name: 'README' },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
+        treeEntry(FILE_MODE.REGULAR, 'README', readmeBlob),
       ]);
-      const trie = loadTrieRoot([{ id: subtreeOid, mode: FILE_MODE.DIRECTORY, name: '00' }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.DIRECTORY, '00', subtreeOid)]);
       const read: SubtreeReader = async (oid) => {
         const obj = await readObject(ctx, oid);
         return obj.type === 'tree' ? obj.entries : [];

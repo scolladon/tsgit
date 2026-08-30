@@ -8,6 +8,7 @@ import { writeTree } from '../../../../../src/application/primitives/write-tree.
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { ObjectId, Tree, TreeEntry } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext } from '../fixtures.js';
 import {
@@ -74,7 +75,7 @@ async function materializeEntry(ctx: Context, entry: TreePathShapeEntry): Promis
       content: new TextEncoder().encode(entry.content),
       id: '' as ObjectId,
     });
-    return { name: entry.name, id, mode: FILE_MODE.REGULAR };
+    return treeEntry(FILE_MODE.REGULAR, entry.name, id);
   }
   if (entry.kind === 'gitlink') {
     const id = await writeObject(ctx, {
@@ -82,7 +83,7 @@ async function materializeEntry(ctx: Context, entry: TreePathShapeEntry): Promis
       content: new TextEncoder().encode(`gitlink:${entry.name}`),
       id: '' as ObjectId,
     });
-    return { name: entry.name, id, mode: FILE_MODE.GITLINK };
+    return treeEntry(FILE_MODE.GITLINK, entry.name, id);
   }
   if (entry.kind === 'symlink') {
     const id = await writeObject(ctx, {
@@ -90,11 +91,11 @@ async function materializeEntry(ctx: Context, entry: TreePathShapeEntry): Promis
       content: new TextEncoder().encode(entry.target),
       id: '' as ObjectId,
     });
-    return { name: entry.name, id, mode: FILE_MODE.SYMLINK };
+    return treeEntry(FILE_MODE.SYMLINK, entry.name, id);
   }
   const children = await materialize(ctx, entry.children);
   const id = await writeTree(ctx, children);
-  return { name: entry.name, id, mode: FILE_MODE.DIRECTORY };
+  return treeEntry(FILE_MODE.DIRECTORY, entry.name, id);
 }
 
 describe('findTreeEntry properties', () => {
@@ -141,19 +142,15 @@ describe('findTreeEntry properties', () => {
                 content: new TextEncoder().encode('dup-b'),
                 id: '' as ObjectId,
               });
-              const siblingEntries: TreeEntry[] = siblings.map((name) => ({
-                name,
-                id: dupBlobIdA,
-                mode: FILE_MODE.REGULAR,
-              }));
+              const siblingEntries: TreeEntry[] = siblings.map((name) =>
+                treeEntry(FILE_MODE.REGULAR, name, dupBlobIdA),
+              );
               const dirId = await writeTree(ctx, [
                 ...siblingEntries,
-                { name: duplicateName, id: dupBlobIdA, mode: FILE_MODE.REGULAR },
-                { name: duplicateName, id: dupBlobIdB, mode: FILE_MODE.REGULAR },
+                treeEntry(FILE_MODE.REGULAR, duplicateName, dupBlobIdA),
+                treeEntry(FILE_MODE.REGULAR, duplicateName, dupBlobIdB),
               ]);
-              const rootId = await writeTree(ctx, [
-                { name: 'dir', id: dirId, mode: FILE_MODE.DIRECTORY },
-              ]);
+              const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
               let caught: unknown;
               try {

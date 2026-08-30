@@ -55,5 +55,6 @@ export {
   parseTreeContent,
   serializeTreeContent,
   sortTreeEntries,
+  treeEntry,
   treeEntryCompare,
 } from './tree.js';

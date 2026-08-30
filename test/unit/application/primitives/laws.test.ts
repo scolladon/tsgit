@@ -10,6 +10,7 @@ import {
   writeTree,
 } from '../../../../src/application/primitives/index.js';
 import type { Blob, FileMode, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { buildSeededContext } from './fixtures.js';
 
 describe('composition laws', () => {
@@ -80,12 +81,12 @@ describe('composition laws', () => {
 
         // Act
         const idA = await writeTree(ctx, [
-          { name: 'a', mode: '100644' as FileMode, id: b1 },
-          { name: 'b', mode: '100644' as FileMode, id: b2 },
+          treeEntry('100644' as FileMode, 'a', b1),
+          treeEntry('100644' as FileMode, 'b', b2),
         ]);
         const idB = await writeTree(ctx, [
-          { name: 'b', mode: '100644' as FileMode, id: b2 },
-          { name: 'a', mode: '100644' as FileMode, id: b1 },
+          treeEntry('100644' as FileMode, 'b', b2),
+          treeEntry('100644' as FileMode, 'a', b1),
         ]);
 
         // Assert
@@ -120,7 +121,7 @@ describe('composition laws', () => {
           content: new Uint8Array([7]),
           id: '' as ObjectId,
         } satisfies Blob);
-        const entries = [{ name: 'f', mode: '100644' as FileMode, id: b1 }];
+        const entries = [treeEntry('100644' as FileMode, 'f', b1)];
 
         // Act
         const id = await writeTree(ctx, entries);

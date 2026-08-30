@@ -15,6 +15,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { Blob, Commit, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -35,9 +36,7 @@ const seedCommit = async (
     id: '' as ObjectId,
   };
   const blobId = await writeObject(ctx, blob);
-  const treeId = await writeTree(ctx, [
-    { name: 'README.md', mode: '100644' as FileMode, id: blobId },
-  ]);
+  const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'README.md', blobId)]);
   const author = {
     name: 'A',
     email: 'a@a',
@@ -181,8 +180,8 @@ describe('enumeratePushObjects', () => {
         const blobId = await writeObject(ctx, blob);
         const submoduleOid = 'c'.repeat(40) as ObjectId;
         const treeId = await writeTree(ctx, [
-          { name: 'submodule', mode: '160000' as FileMode, id: submoduleOid },
-          { name: 'README.md', mode: '100644' as FileMode, id: blobId },
+          treeEntry('160000' as FileMode, 'submodule', submoduleOid),
+          treeEntry('100644' as FileMode, 'README.md', blobId),
         ]);
         const author = {
           name: 'A',
@@ -303,9 +302,7 @@ describe('enumeratePushObjects', () => {
           id: '' as ObjectId,
         };
         const blobId = await writeObject(ctx, blob);
-        const treeId = await writeTree(ctx, [
-          { name: 'README.md', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'README.md', blobId)]);
         // Parent and child point at the SAME tree (an empty/no-op commit).
         const parentId = await writeCommitForTree(ctx, treeId, undefined, 'gen-1');
         const childId = await writeCommitForTree(ctx, treeId, parentId, 'gen-2');
@@ -335,9 +332,7 @@ describe('enumeratePushObjects', () => {
           id: '' as ObjectId,
         };
         const blobId = await writeObject(ctx, blob);
-        const treeId = await writeTree(ctx, [
-          { name: 'README.md', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'README.md', blobId)]);
         const missingParent = 'e'.repeat(40) as ObjectId;
         const tipId = await writeCommitForTree(ctx, treeId, missingParent, 'tip');
 
@@ -402,11 +397,9 @@ describe('enumeratePushObjects', () => {
         };
         const nestedBlobId = await writeObject(ctx, nestedBlob);
         const subTreeId = await writeTree(ctx, [
-          { name: 'deep.txt', mode: '100644' as FileMode, id: nestedBlobId },
+          treeEntry('100644' as FileMode, 'deep.txt', nestedBlobId),
         ]);
-        const rootTreeId = await writeTree(ctx, [
-          { name: 'sub', mode: '40000' as FileMode, id: subTreeId },
-        ]);
+        const rootTreeId = await writeTree(ctx, [treeEntry('40000' as FileMode, 'sub', subTreeId)]);
         const commitId = await writeCommitForTree(ctx, rootTreeId, undefined, 'with subdir');
 
         // Act

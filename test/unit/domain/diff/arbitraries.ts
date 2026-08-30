@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
 import type { FileMode, ObjectId, Tree, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import {
   arbObjectId,
   arbTreeEntryAnyMode,
@@ -43,11 +44,13 @@ export function arbEntryName(): fc.Arbitrary<string> {
 }
 
 export function arbTreeEntry(): fc.Arbitrary<TreeEntry> {
-  return fc.record({
-    name: arbEntryName(),
-    mode: arbNonDirMode(),
-    id: arbObjectId(),
-  });
+  return fc
+    .record({
+      name: arbEntryName(),
+      mode: arbNonDirMode(),
+      id: arbObjectId(),
+    })
+    .map(({ mode, name, id }) => treeEntry(mode, name, id));
 }
 
 export function arbTree(): fc.Arbitrary<Tree> {

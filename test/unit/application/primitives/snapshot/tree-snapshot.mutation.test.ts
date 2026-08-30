@@ -14,6 +14,7 @@ import {
   FilePath,
   type ObjectId,
 } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import type { TreeResolver } from '../../../../../src/ports/snapshot-resolvers.js';
 import { buildSeededContext } from '../fixtures.js';
@@ -28,7 +29,7 @@ const buildTree = async (
   writeObject(ctx, {
     type: 'tree',
     id: '' as ObjectId,
-    entries: entries.map((e) => ({ name: FilePath.from(e.name), mode: e.mode, id: e.id })),
+    entries: entries.map((e) => treeEntry(e.mode, FilePath.from(e.name), e.id)),
   });
 
 const collect = async <T>(it: AsyncIterable<T>): Promise<T[]> => {
@@ -93,7 +94,7 @@ describe('tree-snapshot — bypassCache forwarding to TreeResolver', () => {
         const ctx = await buildSeededContext();
         const blob = await writeBlob(ctx, new Uint8Array([1]));
         const treeId = await buildTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'a.txt', blob),
         ]);
         const recordedOpts: Array<unknown> = [];
         const real = realResolver;
@@ -119,7 +120,7 @@ describe('tree-snapshot — bypassCache forwarding to TreeResolver', () => {
         const ctx = await buildSeededContext();
         const blob = await writeBlob(ctx, new Uint8Array([1]));
         const treeId = await buildTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'a.txt', blob),
         ]);
         const recordedOpts: Array<unknown> = [];
         const real = realResolver;
@@ -149,11 +150,11 @@ describe('tree-snapshot — walkTree opts forwarding', () => {
         const ctx = await buildSeededContext();
         const blob = await writeBlob(ctx, new Uint8Array([1]));
         const subTreeId = await buildTree(ctx, [
-          { name: 'inner.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'inner.txt', blob),
         ]);
         const rootId = await buildTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY as FileMode, id: subTreeId },
-          { name: 'top.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
+          treeEntry(FILE_MODE.DIRECTORY as FileMode, 'sub', subTreeId),
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'top.txt', blob),
         ]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, rootId);
 
@@ -174,10 +175,10 @@ describe('tree-snapshot — walkTree opts forwarding', () => {
         const ctx = await buildSeededContext();
         const blob = await writeBlob(ctx, new Uint8Array([1]));
         const subTreeId = await buildTree(ctx, [
-          { name: 'inner.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'inner.txt', blob),
         ]);
         const rootId = await buildTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY as FileMode, id: subTreeId },
+          treeEntry(FILE_MODE.DIRECTORY as FileMode, 'sub', subTreeId),
         ]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, rootId);
 
@@ -201,9 +202,9 @@ describe('tree-snapshot — walkTree opts forwarding', () => {
         const ctx = await buildSeededContext();
         const blob = await writeBlob(ctx, new Uint8Array([1]));
         const treeId = await buildTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
-          { name: 'b.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
-          { name: 'c.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'a.txt', blob),
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'b.txt', blob),
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'c.txt', blob),
         ]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, treeId);
 

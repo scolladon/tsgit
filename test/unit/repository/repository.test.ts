@@ -16,6 +16,7 @@ import { TsgitError } from '../../../src/domain/error.js';
 import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import type { Blob, FilePath, ObjectId } from '../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../src/domain/objects/tree.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
@@ -965,7 +966,7 @@ describe('openRepository — round-trip via memory adapter', () => {
           content: new TextEncoder().encode('hi'),
         } satisfies Blob);
         const treeId = await sut.primitives.writeTree([
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
 
         // Act

@@ -8,6 +8,7 @@ import { type LineKey, NONE_KEY } from '../../../../../src/domain/diff/whitespac
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { Blob, FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Compressor } from '../../../../../src/ports/compressor.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -565,9 +566,7 @@ describe('isWhitespaceOnlyModify', () => {
         // Arrange
         const { ctx, streamCount } = await countingContext();
         const leafId = await writeBlob(ctx, enc.encode('leaf\n'));
-        const treeId = await writeTree(ctx, [
-          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf.txt', leafId)]);
         const change = changeFor(treeId, treeId);
 
         // Act + Assert
@@ -623,9 +622,7 @@ describe('isWhitespaceOnlyModify', () => {
         // Arrange
         const { ctx, cancelCount } = await cancelTrackingContext();
         const leafId = await writeBlob(ctx, enc.encode('leaf\n'));
-        const treeId = await writeTree(ctx, [
-          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf.txt', leafId)]);
         const blobId = await writeBlob(ctx, enc.encode('content\n'));
         const change = changeFor(treeId, blobId);
 

@@ -6,6 +6,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { buildSeededContext, buildTreeChain, seedMaxTreeDepth } from './fixtures.js';
 
 async function collect(iter: AsyncIterable<WTE>): Promise<WTE[]> {
@@ -45,8 +46,8 @@ describe('walkTree', () => {
           id: '' as ObjectId,
         } satisfies Blob);
         const entries: TreeEntry[] = [
-          { name: 'a', mode: '100644' as FileMode, id: b1 },
-          { name: 'b', mode: '100644' as FileMode, id: b2 },
+          treeEntry('100644' as FileMode, 'a', b1),
+          treeEntry('100644' as FileMode, 'b', b2),
         ];
         const id = await writeTree(ctx, entries);
         // Act
@@ -67,10 +68,8 @@ describe('walkTree', () => {
           content: new Uint8Array([1]),
           id: '' as ObjectId,
         } satisfies Blob);
-        const subId = await writeTree(ctx, [{ name: 'inner', mode: '100644' as FileMode, id: b1 }]);
-        const rootId = await writeTree(ctx, [
-          { name: 'sub', mode: '040000' as FileMode, id: subId },
-        ]);
+        const subId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', b1)]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'sub', subId)]);
         // Act
         const out = await collect(walkTree(ctx, rootId, { recursive: false }));
         // Assert
@@ -91,9 +90,9 @@ describe('walkTree', () => {
           id: '' as ObjectId,
         } satisfies Blob);
         const entries: TreeEntry[] = [
-          { name: 'a', mode: '100644' as FileMode, id: b1 },
-          { name: 'b', mode: '100644' as FileMode, id: b1 },
-          { name: 'c', mode: '100644' as FileMode, id: b1 },
+          treeEntry('100644' as FileMode, 'a', b1),
+          treeEntry('100644' as FileMode, 'b', b1),
+          treeEntry('100644' as FileMode, 'c', b1),
         ];
         const id = await writeTree(ctx, entries);
         // Act + Assert
@@ -119,9 +118,9 @@ describe('walkTree', () => {
           id: '' as ObjectId,
         } satisfies Blob);
         const entries: TreeEntry[] = [
-          { name: 'a', mode: '100644' as FileMode, id: b1 },
-          { name: 'b', mode: '100644' as FileMode, id: b1 },
-          { name: 'c', mode: '100644' as FileMode, id: b1 },
+          treeEntry('100644' as FileMode, 'a', b1),
+          treeEntry('100644' as FileMode, 'b', b1),
+          treeEntry('100644' as FileMode, 'c', b1),
         ];
         const id = await writeTree(ctx, entries);
         // Act
@@ -144,14 +143,10 @@ describe('walkTree', () => {
           content: new Uint8Array([7]),
           id: '' as ObjectId,
         } satisfies Blob);
-        const subTreeId = await writeTree(ctx, [
-          { name: 'inner', mode: '100644' as FileMode, id: b1 },
-        ]);
+        const subTreeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', b1)]);
         // The gitlink entry points at a real tree id — a mutated isGitlink guard
         // would cause walkTree to recurse and yield 'sub/inner'.
-        const rootId = await writeTree(ctx, [
-          { name: 'sub', mode: '160000' as FileMode, id: subTreeId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry('160000' as FileMode, 'sub', subTreeId)]);
         // Act
         const out = await collect(walkTree(ctx, rootId));
         // Assert
@@ -170,9 +165,7 @@ describe('walkTree', () => {
           content: new Uint8Array([1]),
           id: '' as ObjectId,
         } satisfies Blob);
-        const id = await writeTree(ctx, [
-          { name: 'submodule', mode: '160000' as FileMode, id: b1 },
-        ]);
+        const id = await writeTree(ctx, [treeEntry('160000' as FileMode, 'submodule', b1)]);
         // Act
         const out = await collect(walkTree(ctx, id));
         // Assert
@@ -192,7 +185,7 @@ describe('walkTree', () => {
           content: new Uint8Array([1]),
           id: '' as ObjectId,
         } satisfies Blob);
-        const id = await writeTree(ctx, [{ name: 'a', mode: '100644' as FileMode, id: b1 }]);
+        const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
         const controller = new AbortController();
         controller.abort();
         const aborted = { ...ctx, signal: controller.signal };
@@ -220,10 +213,8 @@ describe('walkTree', () => {
           content: new Uint8Array([1]),
           id: '' as ObjectId,
         } satisfies Blob);
-        const subId = await writeTree(ctx, [{ name: 'inner', mode: '100644' as FileMode, id: b1 }]);
-        const rootId = await writeTree(ctx, [
-          { name: 'sub', mode: '040000' as FileMode, id: subId },
-        ]);
+        const subId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', b1)]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'sub', subId)]);
         // Act
         const out = await collect(walkTree(ctx, rootId));
         // Assert
@@ -247,7 +238,7 @@ describe('walkTree', () => {
         const syntheticRoot = {
           type: 'tree' as const,
           id: realTreeId, // matches what readObject will return for the entry's id
-          entries: [{ name: 'loop', mode: '40000' as FileMode, id: realTreeId }],
+          entries: [treeEntry('40000' as FileMode, 'loop', realTreeId)],
         };
 
         // Act + Assert
@@ -273,13 +264,9 @@ describe('walkTree', () => {
           content: new Uint8Array([1]),
           id: '' as ObjectId,
         } satisfies Blob);
-        const leafId = await writeTree(ctx, [{ name: 'leaf', mode: '100644' as FileMode, id: b1 }]);
-        const midId = await writeTree(ctx, [
-          { name: 'mid', mode: '040000' as FileMode, id: leafId },
-        ]);
-        const rootId = await writeTree(ctx, [
-          { name: 'root', mode: '040000' as FileMode, id: midId },
-        ]);
+        const leafId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'leaf', b1)]);
+        const midId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'mid', leafId)]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'root', midId)]);
         // Act + Assert
         try {
           await collect(walkTree(ctx, rootId, { maxDepth: 1 }));
@@ -304,8 +291,8 @@ describe('walkTree', () => {
           id: '' as ObjectId,
         } satisfies Blob);
         const entries: TreeEntry[] = [
-          { name: 'a', mode: '100644' as FileMode, id: b1 },
-          { name: 'b', mode: '100644' as FileMode, id: b1 },
+          treeEntry('100644' as FileMode, 'a', b1),
+          treeEntry('100644' as FileMode, 'b', b1),
         ];
         const id = await writeTree(ctx, entries);
         const controller = new AbortController();

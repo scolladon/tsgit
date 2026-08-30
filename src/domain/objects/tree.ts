@@ -16,10 +16,14 @@ import type { HashConfig } from './hash-config.js';
 import type { ObjectId } from './object-id.js';
 import { ObjectId as ObjectIdFactory } from './object-id.js';
 
-export interface TreeEntry {
+export type TreeEntry = {
   readonly mode: FileMode;
   readonly name: string;
   readonly id: ObjectId;
+} & { readonly __brand: unique symbol };
+
+export function treeEntry(mode: FileMode, name: string, id: ObjectId): TreeEntry {
+  return { mode, name, id } as TreeEntry;
 }
 
 export interface Tree {
@@ -65,7 +69,7 @@ export function parseTreeContent(id: ObjectId, content: Uint8Array, hash: HashCo
       throw invalidTreeEntry(offset, `duplicate entry name: ${name}`);
     }
     names.add(name);
-    entries.push({ mode, name, id: entryId });
+    entries.push(treeEntry(mode, name, entryId));
     offset = hashEnd;
   }
 

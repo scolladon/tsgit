@@ -4,6 +4,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { buildSeededContext } from './fixtures.js';
 
 describe('writeTree', () => {
@@ -27,7 +28,7 @@ describe('writeTree', () => {
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
         const blobId = await writeObject(ctx, blob);
-        const entries: TreeEntry[] = [{ name: 'a.txt', mode: '100644' as never, id: blobId }];
+        const entries: TreeEntry[] = [treeEntry('100644' as never, 'a.txt', blobId)];
         // Act
         const treeId = await writeTree(ctx, entries);
         const tree = await readTree(ctx, treeId);

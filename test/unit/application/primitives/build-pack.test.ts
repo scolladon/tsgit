@@ -14,6 +14,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import {
   PACK_ENTRY_TYPE,
   parsePackEntryHeader,
@@ -81,9 +82,7 @@ describe('buildPack', () => {
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([1, 2, 3]), id: '' as ObjectId };
         const blobId = await writeObject(ctx, blob);
-        const treeId = await writeTree(ctx, [
-          { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a.bin', blobId)]);
 
         // Act
         const result = await buildPack(ctx, { oids: [blobId, treeId] });
@@ -107,7 +106,7 @@ describe('buildPack', () => {
           // Kills the `packEntryTypeFor("tree")` mutant: dropping the `case
           // 'tree'` body falls through to `'blob'`, mislabeling the entry.
           buildOid: async (ctx: Awaited<ReturnType<typeof buildSeededContext>>, blobId: ObjectId) =>
-            writeTree(ctx, [{ name: 'a.bin', mode: '100644' as FileMode, id: blobId }]),
+            writeTree(ctx, [treeEntry('100644' as FileMode, 'a.bin', blobId)]),
         },
         {
           label: 'COMMIT',
@@ -118,9 +117,7 @@ describe('buildPack', () => {
             ctx: Awaited<ReturnType<typeof buildSeededContext>>,
             blobId: ObjectId,
           ) => {
-            const treeId = await writeTree(ctx, [
-              { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
-            ]);
+            const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a.bin', blobId)]);
             return writeObject(ctx, {
               type: 'commit' as const,
               id: '' as ObjectId,
@@ -199,9 +196,7 @@ describe('buildPack', () => {
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([1, 2, 3]), id: '' as ObjectId };
         const blobId = await writeObject(ctx, blob);
-        const treeId = await writeTree(ctx, [
-          { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a.bin', blobId)]);
 
         // Act
         const result = await buildPack(ctx, { oids: [blobId, treeId] });

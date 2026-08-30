@@ -23,6 +23,7 @@ import type {
   RefName,
 } from '../../../../src/domain/objects/index.js';
 import { serializeHeader } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { type PackedRefEntry, serializePackedRefs } from '../../../../src/domain/refs/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -76,9 +77,7 @@ export async function buildTreeChain(ctx: Context, depth: number): Promise<Objec
   let childId: ObjectId = leafId;
   let childMode: FileMode = FILE_MODE.REGULAR;
   for (let segment = depth; segment >= 0; segment -= 1) {
-    childId = await writeTree(ctx, [
-      { name: `d${segment}` as FilePath, id: childId, mode: childMode },
-    ]);
+    childId = await writeTree(ctx, [treeEntry(childMode, `d${segment}` as FilePath, childId)]);
     childMode = FILE_MODE.DIRECTORY;
   }
   return childId;

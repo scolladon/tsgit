@@ -10,6 +10,7 @@
  *   primitives: writeTree, createCommit
  */
 import { FILE_MODE, type ObjectId } from '../../../src/domain/objects/index.ts';
+import { treeEntry } from '../../../src/domain/objects/tree.js';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 
@@ -53,9 +54,7 @@ export const writePipelineScenario: Scenario<WritePipelineResult> = {
       content: blobBytes,
     });
 
-    const treeId = await repo.primitives.writeTree([
-      { mode: BLOB_MODE, name: file.path, id: blobId },
-    ]);
+    const treeId = await repo.primitives.writeTree([treeEntry(BLOB_MODE, file.path, blobId)]);
 
     const commitId = await repo.primitives.createCommit({
       tree: treeId,

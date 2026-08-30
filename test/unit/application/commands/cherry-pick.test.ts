@@ -29,6 +29,7 @@ import type {
   ObjectId,
   RefName,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { asBareContext } from './fixtures.js';
 
@@ -241,7 +242,7 @@ const makeCleanRootPick = async (
     id: '' as ObjectId,
     content: new TextEncoder().encode('x\n'),
   });
-  const tree = await writeTree(ctx, [{ name: fileName, id: blob, mode: FILE_MODE.REGULAR }]);
+  const tree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, fileName, blob)]);
   return createCommit(ctx, {
     tree,
     parents: [],
@@ -772,7 +773,7 @@ describe('cherryPickRun', () => {
           id: '' as ObjectId,
           content: new TextEncoder().encode('r\n'),
         });
-        const rTree = await writeTree(ctx, [{ name: 'r.txt', id: blob, mode: FILE_MODE.REGULAR }]);
+        const rTree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'r.txt', blob)]);
         const root = await createCommit(ctx, {
           tree: rTree,
           parents: [],

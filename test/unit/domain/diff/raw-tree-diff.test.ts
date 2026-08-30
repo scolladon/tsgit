@@ -7,7 +7,7 @@ import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mo
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { Tree, TreeEntry } from '../../../../src/domain/objects/tree.js';
-import { serializeTreeContent } from '../../../../src/domain/objects/tree.js';
+import { serializeTreeContent, treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const ID_A = 'a'.repeat(40) as ObjectId;
 const ID_B = 'b'.repeat(40) as ObjectId;
@@ -27,7 +27,7 @@ function concatBytes(...parts: ReadonlyArray<Uint8Array>): Uint8Array {
 }
 
 function entry(name: string, mode: FileMode, id: ObjectId): TreeEntry {
-  return { name, mode, id };
+  return treeEntry(mode, name, id);
 }
 
 function tree(entries: ReadonlyArray<TreeEntry>): Tree {

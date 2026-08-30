@@ -3,6 +3,7 @@ import { encode } from '../../../domain/objects/encoding.js';
 import { invalidTreeEntry, unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { HashConfig } from '../../../domain/objects/hash-config.js';
 import type { ObjectId, Tree, TreeEntry } from '../../../domain/objects/index.js';
+import { treeEntry } from '../../../domain/objects/tree.js';
 import {
   advanceCursor,
   cursorMode,
@@ -215,7 +216,7 @@ const scanEntry = (
   }
   seenNames.push([nameStart, nameEnd]);
   if (!cursorNameEquals(cursor, target)) return undefined;
-  return { mode, name: cursorName(cursor), id: cursorOid(cursor) };
+  return treeEntry(mode, cursorName(cursor), cursorOid(cursor));
 };
 
 /**
