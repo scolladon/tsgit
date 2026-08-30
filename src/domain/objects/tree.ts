@@ -45,6 +45,19 @@ export function treeEntry(mode: FileMode, name: string | Uint8Array, id: ObjectI
   return { mode, name: decodePreservingBom(nameBytes), nameBytes, id } as TreeEntry;
 }
 
+/**
+ * Mints an entry as a VIEW onto `parseTreeContent`'s own private copy of the
+ * tree body — never a per-entry copy. Safe only because that copy is
+ * exclusive to this parse and outlives every entry built from it: entries
+ * parsed from one tree share that tree's buffer lifetime, the accepted
+ * trade for recovering most of the retained memory a per-entry copy cost.
+ * Not exported — every OTHER construction path keeps the defensive copy in
+ * `treeEntry` above, because those sources are not the parser's to trust.
+ */
+function treeEntryFromParsedView(mode: FileMode, nameView: Uint8Array, id: ObjectId): TreeEntry {
+  return { mode, name: decodePreservingBom(nameView), nameBytes: nameView, id } as TreeEntry;
+}
+
 export interface Tree {
   readonly type: 'tree';
   readonly id: ObjectId;
@@ -53,18 +66,21 @@ export interface Tree {
 
 export function parseTreeContent(id: ObjectId, content: Uint8Array, hash: HashConfig): Tree {
   const entries: TreeEntry[] = [];
+  // One private copy of the whole body, owned by this parse — every entry
+  // below views into it rather than copying its own name span.
+  const body = new Uint8Array(content);
   let offset = 0;
 
-  while (offset < content.length) {
-    const spaceIndex = indexOf(content, 0x20, offset);
+  while (offset < body.length) {
+    const spaceIndex = indexOf(body, 0x20, offset);
     if (spaceIndex === -1) {
       throw invalidTreeEntry(offset, 'missing space after mode');
     }
-    if (spaceIndex === offset || hasNonOctalByte(content, offset, spaceIndex)) {
+    if (spaceIndex === offset || hasNonOctalByte(body, offset, spaceIndex)) {
       throw invalidTreeEntry(offset, 'malformed mode');
     }
 
-    const nullIndex = indexOf(content, 0x00, spaceIndex + 1);
+    const nullIndex = indexOf(body, 0x00, spaceIndex + 1);
     if (nullIndex === -1) {
       throw invalidTreeEntry(offset, 'missing null after name');
     }
@@ -74,17 +90,17 @@ export function parseTreeContent(id: ObjectId, content: Uint8Array, hash: HashCo
 
     const hashStart = nullIndex + 1;
     const hashEnd = hashStart + hash.digestLength;
-    if (hashEnd > content.length) {
+    if (hashEnd > body.length) {
       throw invalidTreeEntry(offset, 'truncated hash');
     }
 
-    const nameSpan = content.subarray(spaceIndex + 1, nullIndex);
-    const rawHash = content.subarray(hashStart, hashEnd);
+    const nameSpan = body.subarray(spaceIndex + 1, nullIndex);
+    const rawHash = body.subarray(hashStart, hashEnd);
     const entryId = ObjectIdFactory.fromRaw(rawHash);
-    const modeStr = decode(content.subarray(offset, spaceIndex));
+    const modeStr = decode(body.subarray(offset, spaceIndex));
     const mode = normalizeFileMode(modeStr);
 
-    entries.push(treeEntry(mode, nameSpan, entryId));
+    entries.push(treeEntryFromParsedView(mode, nameSpan, entryId));
     offset = hashEnd;
   }
 

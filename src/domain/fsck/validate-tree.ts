@@ -52,6 +52,17 @@ function isZeroSha(sha: Uint8Array): boolean {
   return true;
 }
 
+/**
+ * Strips every leading zero, matching git's `canon_mode` — `0040000`
+ * normalises to `40000`, not `040000`. Keeps at least one character so an
+ * all-zero mode never normalises to the empty string.
+ */
+function stripLeadingZeros(mode: string): string {
+  let i = 0;
+  while (i < mode.length - 1 && mode[i] === '0') i++;
+  return mode.slice(i);
+}
+
 /** Parse tree bytes tolerantly, returning entries and any badTree fault. */
 function parseTreeEntriesTolerant(
   raw: Uint8Array,
@@ -191,13 +202,13 @@ function checkSpecialFileName(
 function checkEntryFaults(
   raw: Uint8Array,
   entry: TreeEntry,
+  key: string,
   prevEntry: TreeEntry | undefined,
   seenNames: Set<string>,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
   const findings: TreeFinding[] = [];
   const { mode, nameStart, nameEnd, sha } = entry;
-  const key = entryNameKey(raw, nameStart, nameEnd);
 
   if (mode.startsWith('0')) {
     findings.push({
@@ -205,7 +216,7 @@ function checkEntryFaults(
       severity: resolveSeverity(MSG_ZERO_PADDED_FILEMODE, strict),
     });
   }
-  const normMode = mode.startsWith('0') ? mode.slice(1) : mode;
+  const normMode = stripLeadingZeros(mode);
   if (!VALID_MODES.has(normMode)) {
     findings.push({ msgId: MSG_BAD_FILEMODE, severity: resolveSeverity(MSG_BAD_FILEMODE, strict) });
   }
@@ -240,7 +251,7 @@ function checkEntryFaults(
     });
   }
 
-  for (const finding of checkSpecialFileName(raw, nameStart, nameEnd, mode, strict)) {
+  for (const finding of checkSpecialFileName(raw, nameStart, nameEnd, normMode, strict)) {
     findings.push(finding);
   }
 
@@ -263,10 +274,11 @@ export function validateTree(
   let prevEntry: TreeEntry | undefined;
 
   for (const entry of entries) {
-    for (const finding of checkEntryFaults(raw, entry, prevEntry, seenNames, strict)) {
+    const key = entryNameKey(raw, entry.nameStart, entry.nameEnd);
+    for (const finding of checkEntryFaults(raw, entry, key, prevEntry, seenNames, strict)) {
       findings.push(finding);
     }
-    seenNames.add(entryNameKey(raw, entry.nameStart, entry.nameEnd));
+    seenNames.add(key);
     prevEntry = entry;
   }
 

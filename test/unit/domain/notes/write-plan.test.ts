@@ -7,6 +7,7 @@ import {
   planWrite,
   setSlot,
 } from '../../../../src/domain/notes/index.js';
+import { encode } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
@@ -118,7 +119,7 @@ describe('Given a flat trie carrying a stray subtree', () => {
   });
 
   describe('When the unpacked subtree carries a preserved entry', () => {
-    it('Then the preserved entry keeps its directory-qualified name', async () => {
+    it('Then the preserved entry keeps its directory-qualified grouping path, its leaf name carried verbatim in nameBytes', async () => {
       // Arrange
       const readmeId = oid40('d');
       const read = vi.fn<SubtreeReader>(async () => [
@@ -127,9 +128,11 @@ describe('Given a flat trie carrying a stray subtree', () => {
       ]);
       // Act
       const result = await planWrite(buildTrie(), read);
-      // Assert
+      // Assert — name is the grouping path only ('00/'); the raw leaf name
+      // never re-enters the string the bridge splits on '/'.
       expect(result.entries).toContainEqual({
-        name: '00/README',
+        name: '00/',
+        nameBytes: encode('README'),
         mode: FILE_MODE.REGULAR,
         oid: readmeId,
       });
@@ -145,9 +148,10 @@ describe('Given a notes trie with a preserved non-note entry', () => {
       const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, 'README', readmeId)]);
       // Act
       const result = await planWrite(trie, never());
-      // Assert
+      // Assert — root prefix is the empty string; the raw leaf name lives in nameBytes
       expect(result.entries).toContainEqual({
-        name: 'README',
+        name: '',
+        nameBytes: encode('README'),
         mode: FILE_MODE.REGULAR,
         oid: readmeId,
       });

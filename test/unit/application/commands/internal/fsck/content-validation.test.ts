@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
-import { runContentValidationPass } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
-import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
-import { serializeObject } from '../../../../../../src/domain/objects/index.js';
+import {
+  buildBlobFilenameMap,
+  runContentValidationPass,
+} from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
+import type { ObjectId, TreeEntry } from '../../../../../../src/domain/objects/index.js';
+import { FILE_MODE, serializeObject } from '../../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../../src/domain/objects/tree.js';
 import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
 
 const sut = runContentValidationPass;
@@ -237,6 +241,46 @@ describe('Given a packed tree whose entries are not sorted', () => {
       expect(result.findings.some((f) => f.type === 'hash-mismatch' && f.id === treeId)).toBe(
         false,
       );
+    });
+  });
+});
+
+describe('Given a tree entry whose nameBytes are ".gitmodules" but whose decoded name field disagrees', () => {
+  describe('When buildBlobFilenameMap runs', () => {
+    it('Then the blob is mapped under ".gitmodules" — the decision reads nameBytes, not name', () => {
+      // Arrange — a spread can override `name` while `nameBytes` stays correct
+      // (TypeScript's brand check does not catch it); the map must still
+      // decide from nameBytes.
+      const blobId = '0000000000000000000000000000000000000003' as ObjectId;
+      const treeId = '0000000000000000000000000000000000000004' as ObjectId;
+      const real = treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId);
+      const spoofed = { ...real, name: 'config.txt' } as TreeEntry;
+      const cache = new Map([[treeId, { type: 'tree' as const, entries: [spoofed] }]]);
+
+      // Act
+      const result = buildBlobFilenameMap(new Set([treeId]), cache);
+
+      // Assert
+      expect(result.get(blobId)).toBe('.gitmodules');
+    });
+  });
+});
+
+describe('Given a tree entry whose decoded name field reads ".gitmodules" but whose nameBytes disagree', () => {
+  describe('When buildBlobFilenameMap runs', () => {
+    it('Then the blob is NOT mapped as a special filename — the decision reads nameBytes, not name', () => {
+      // Arrange
+      const blobId = '0000000000000000000000000000000000000005' as ObjectId;
+      const treeId = '0000000000000000000000000000000000000006' as ObjectId;
+      const real = treeEntry(FILE_MODE.REGULAR, 'config.txt', blobId);
+      const spoofed = { ...real, name: '.gitmodules' } as TreeEntry;
+      const cache = new Map([[treeId, { type: 'tree' as const, entries: [spoofed] }]]);
+
+      // Act
+      const result = buildBlobFilenameMap(new Set([treeId]), cache);
+
+      // Assert
+      expect(result.has(blobId)).toBe(false);
     });
   });
 });

@@ -4,6 +4,7 @@
  * available.
  */
 import { TsgitError } from '../../domain/error.js';
+import { bytesEqual, encode } from '../../domain/objects/encoding.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -104,11 +105,13 @@ const buildEntry = (
   ...(parent !== undefined ? { parent } : {}),
 });
 
+const GITMODULES_NAME_BYTES = encode('.gitmodules');
+
 const readGitmodules = async (
   ctx: Context,
   tree: Tree,
 ): Promise<ReadonlyMap<string, GitmodulesRow>> => {
-  const file = tree.entries.find((e) => e.name === '.gitmodules');
+  const file = tree.entries.find((e) => bytesEqual(e.nameBytes, GITMODULES_NAME_BYTES));
   if (file === undefined) return new Map();
   if (file.mode !== FILE_MODE.REGULAR && file.mode !== FILE_MODE.EXECUTABLE) return new Map();
   const blob = await readBlob(ctx, file.id, { maxBytes: MAX_GITMODULES_BYTES });

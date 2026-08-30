@@ -7,8 +7,17 @@ import type { NotesTrie, Slot, SubtreeReader, WritePlan, WritePlanEntry } from '
 
 const HEX_PER_BYTE = 2;
 
+// The name is the grouping PATH only (pure-hex fanout dirs, or '' at the
+// root) — never the entry's own leaf name. Concatenating the two into one
+// string, as before, let the bridge's '/'-split regroup a preserved entry
+// whose OWN raw name happened to contain a '/' byte, destroying it. A
+// trailing '/' forces one more split per directory level even for a
+// single-segment prefix (`'00'` alone has no slash to split on) — the
+// bridge always bottoms out on an empty `name`, at which point it mints
+// the leaf from `nameBytes` rather than continuing to split.
 const preservedEntry = (entry: TreeEntry, prefix: string): WritePlanEntry => ({
-  name: prefix === '' ? entry.name : `${constructSubtreePath(prefix)}/${entry.name}`,
+  name: prefix === '' ? '' : `${constructSubtreePath(prefix)}/`,
+  nameBytes: entry.nameBytes,
   mode: entry.mode,
   oid: entry.id,
 });

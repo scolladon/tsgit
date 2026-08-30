@@ -165,6 +165,41 @@ describe('tree', () => {
           expect(result.entries[0]!.name).toBe('a.txt');
           expect(result.entries[1]!.name).toBe('b.sh');
         });
+
+        it('Then their nameBytes view one shared private buffer, not one copy each', () => {
+          // Arrange
+          const sha1 = new Uint8Array(20).fill(0x01);
+          const sha2 = new Uint8Array(20).fill(0x02);
+          const content = concatBytes(
+            buildTreeEntry('100644', 'a.txt', sha1),
+            buildTreeEntry('100755', 'b.sh', sha2),
+          );
+
+          // Act
+          const result = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+
+          // Assert
+          expect(result.entries[0]!.nameBytes.buffer).toBe(result.entries[1]!.nameBytes.buffer);
+          expect(result.entries[0]!.nameBytes.buffer).not.toBe(content.buffer);
+        });
+      });
+    });
+
+    describe('Given a tree already parsed', () => {
+      describe('When the caller mutates the original content buffer afterwards', () => {
+        it('Then parsed entries are unaffected — parseTreeContent keeps its own private copy', () => {
+          // Arrange
+          const sha = new Uint8Array(20).fill(0xab);
+          const content = buildTreeEntry('100644', 'hello.txt', sha);
+          const result = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+
+          // Act — mutate the name span in the CALLER's own buffer, post-parse
+          content[7] = 0x62; // 'h' -> 'b' ("100644 " is 7 bytes, name starts at index 7)
+
+          // Assert
+          expect(result.entries[0]!.name).toBe('hello.txt');
+          expect(result.entries[0]!.nameBytes).toEqual(encode('hello.txt'));
+        });
       });
     });
 

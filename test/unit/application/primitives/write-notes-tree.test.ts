@@ -237,4 +237,86 @@ describe('Given writeNotesTree', () => {
       }
     });
   });
+
+  describe('When writing a trie with a preserved entry whose own raw name contains a "/" byte', () => {
+    it('Then the entry is written verbatim, never split into a nested subtree', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const blob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('preserved verbatim'),
+      });
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, 'a/b', blob)]);
+      const sut = writeNotesTree;
+
+      // Act
+      const notesCommitOid = await sut(ctx, {
+        trie,
+        read: noopRead,
+        prevCommitOid: undefined,
+        message: "Notes added by 'git notes add'",
+        author: IDENTITY,
+      });
+
+      // Assert — one entry named 'a/b' verbatim, not a subtree 'a' containing 'b'
+      const commit = await readObject(ctx, notesCommitOid);
+      expect(commit.type).toBe('commit');
+      if (commit.type === 'commit') {
+        const root = await readObject(ctx, commit.data.tree);
+        expect(root.type).toBe('tree');
+        if (root.type === 'tree') {
+          expect(root.entries).toHaveLength(1);
+          expect(root.entries[0]?.nameBytes).toEqual(new TextEncoder().encode('a/b'));
+          expect(root.entries[0]?.mode).toBe(FILE_MODE.REGULAR);
+        }
+      }
+    });
+  });
+
+  describe('When writing a trie with two preserved entries whose raw bytes are invalid UTF-8 and collide once decoded', () => {
+    it('Then both entries are written distinctly, never collapsed to one', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const blobA = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('blob a'),
+      });
+      const blobB = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('blob b'),
+      });
+      // 0xFE and 0xFF both decode to U+FFFD (the same string) but are distinct bytes.
+      const trie = loadTrieRoot([
+        treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xfe]), blobA),
+        treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xff]), blobB),
+      ]);
+      const sut = writeNotesTree;
+
+      // Act
+      const notesCommitOid = await sut(ctx, {
+        trie,
+        read: noopRead,
+        prevCommitOid: undefined,
+        message: "Notes added by 'git notes add'",
+        author: IDENTITY,
+      });
+
+      // Assert — two distinct entries, not one overwriting the other
+      const commit = await readObject(ctx, notesCommitOid);
+      expect(commit.type).toBe('commit');
+      if (commit.type === 'commit') {
+        const root = await readObject(ctx, commit.data.tree);
+        expect(root.type).toBe('tree');
+        if (root.type === 'tree') {
+          expect(root.entries).toHaveLength(2);
+          const nameBytesSet = root.entries.map((entry) => entry.nameBytes);
+          expect(nameBytesSet).toContainEqual(Uint8Array.of(0xfe));
+          expect(nameBytesSet).toContainEqual(Uint8Array.of(0xff));
+        }
+      }
+    });
+  });
 });

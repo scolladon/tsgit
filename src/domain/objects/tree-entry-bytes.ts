@@ -32,7 +32,11 @@ export function entryNameKey(buf: Uint8Array, start: number, end: number): strin
   let key = '';
   for (let chunkStart = start; chunkStart < end; chunkStart += KEY_CHUNK_SIZE) {
     const chunkEnd = Math.min(chunkStart + KEY_CHUNK_SIZE, end);
-    key += String.fromCharCode(...buf.subarray(chunkStart, chunkEnd));
+    // Reflect.apply instead of a spread: the typed-array spread walks the
+    // iterator protocol per element and dominates a name-heavy tree's fsck
+    // pass (measured 5-8x slower); apply passes the chunk as arguments
+    // directly. Output is identical for every byte value.
+    key += Reflect.apply(String.fromCharCode, null, buf.subarray(chunkStart, chunkEnd));
   }
   return key;
 }

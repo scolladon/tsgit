@@ -57,12 +57,20 @@ async function buildTree(ctx: Context, entries: ReadonlyArray<WritePlanEntry>): 
   for (const entry of entries) {
     const slashIdx = entry.name.indexOf('/');
     if (slashIdx === -1) {
-      direct.push(treeEntry(entry.mode, entry.name, entry.oid));
+      // A preserved entry's raw leaf name lives in nameBytes and is minted
+      // verbatim; a plan-synthesised note leaf has none and falls back to
+      // its pure-hex `name`.
+      direct.push(treeEntry(entry.mode, entry.nameBytes ?? entry.name, entry.oid));
     } else {
       const prefix = entry.name.slice(0, slashIdx);
       const rest = entry.name.slice(slashIdx + 1);
       const group = groups.get(prefix) ?? [];
-      group.push({ name: rest, mode: entry.mode, oid: entry.oid });
+      group.push({
+        name: rest,
+        mode: entry.mode,
+        oid: entry.oid,
+        ...(entry.nameBytes !== undefined ? { nameBytes: entry.nameBytes } : {}),
+      });
       groups.set(prefix, group);
     }
   }

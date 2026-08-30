@@ -4238,6 +4238,61 @@ describe('Given tree entry with canonical directory mode "40000"', () => {
 });
 
 // ---------------------------------------------------------------------------
+// tree — normMode must strip ALL leading zeros, not just one
+// Real git 2.55.0 reports zeroPaddedFilemode alone for a double-zero-padded
+// directory mode; stripping only one zero leaves '040000', which VALID_MODES
+// does not contain, and used to emit a spurious badFilemode on top of it.
+// ---------------------------------------------------------------------------
+
+describe('Given tree with double-zero-padded directory mode "0040000"', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits zeroPaddedFilemode but NOT badFilemode (every leading zero is stripped)', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('0040000', 'subdir', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'warning' });
+      expect(result.filter((f) => f.msgId === 'badFilemode')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — isSymlink/isRegular must compare the NORMALISED mode, not the raw one
+// The old code compared the raw (still zero-padded) mode against '120000',
+// so a zero-padded symlink mode never satisfied isSymlink and its dedicated
+// checks (gitignoreSymlink, mailmapSymlink, …) silently never fired.
+// ---------------------------------------------------------------------------
+
+describe('Given tree where ".gitignore" is a symlink with zero-padded mode "0120000"', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitignoreSymlink at info severity (symlink detection normalises the mode first)', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('0120000', '.gitignore', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'gitignoreSymlink', severity: 'info' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // tree — SHA-256 (32-byte) oid framing (digestLength threaded from the caller,
 // not read off the file's own bytes — see validate-tree.ts).
 // ---------------------------------------------------------------------------
