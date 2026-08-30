@@ -1175,6 +1175,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
       // Assert
       expect(tree.entries).toHaveLength(1);
       expect(tree.entries[0]?.id).toBe(blob);
+      expect(tree.entries[0]?.nameBytes).toEqual(concatBytes(BOM, encode('a')));
     });
 
     it('Then an empty entry name is refused by git ls-tree (exit 128) and by tsgit readTree (row 13, SHA-256 width)', async () => {

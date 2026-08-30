@@ -449,6 +449,125 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  // The counterpart to the test above: THERE the hostile name was the
+  // conflict and the clean sibling was innocuous; HERE the hostile name is
+  // itself the CLEAN (`resolved-known`) outcome, reached only through
+  // `validateConflictWorktreePaths`'s `outcomes` loop, never its `conflicts`
+  // loop — a gap neither existing hostile-name test exercises, since both
+  // arrange `sub/.`/`..` as the conflict itself.
+  describe('Given only theirs changes a "sub/."-named path while a sibling genuinely conflicts', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any working-tree write', async () => {
+        // Arrange — `sub/.` is unchanged by ours (clean, resolved-known to
+        // theirs' value); `x` conflicts (both sides change it differently).
+        const ctx = await buildSeededContext();
+        const dotBase = await writeBlob(ctx, 'base\n');
+        const dotTheirs = await writeBlob(ctx, 'theirs\n');
+        const dotEntry = (id: ObjectId): TreeEntry =>
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, id);
+        const xBase = await writeBlob(ctx, 'x-base\n');
+        const xOurs = await writeBlob(ctx, 'x-ours\n');
+        const xTheirs = await writeBlob(ctx, 'x-theirs\n');
+        const base = await treeWith(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotBase)]),
+          ),
+          treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, xBase),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotBase)]),
+          ),
+          treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, xOurs),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotTheirs)]),
+          ),
+          treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, xTheirs),
+        ]);
+        const streamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+        const entrySpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('sub/.', dotBase), indexEntry('x', xOurs)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          streamSpy.mockRestore();
+          entrySpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(streamSpy).not.toHaveBeenCalled();
+        expect(entrySpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // No test exercised a `distinct-types` conflict at a hostile path: the
+  // dispatch to `writeDistinctTypesSides` writes at the conflict's renamed
+  // `ourPath`/`theirPath` (e.g. `..~ours`), which are themselves NOT
+  // hostile — only the un-renamed `conflict.path` carries the hostile name,
+  // so this pins that a distinct-types conflict is refused there too, the
+  // same as every other conflict type.
+  describe('Given a distinct-types conflict at a ".."-named path', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY before writing either side', async () => {
+        // Arrange — ours turns '..' into a symlink while theirs edits its
+        // content differently, both away from base: a distinct-types
+        // conflict whose recorded `path` is the hostile name itself.
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const symlinkTarget = await writeBlob(ctx, 'target');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, b)]);
+        const ours = await treeWith(ctx, [
+          treeEntry(FILE_MODE.SYMLINK, '..' as FilePath, symlinkTarget),
+        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, t)]);
+        const entrySpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('..', symlinkTarget, FILE_MODE.SYMLINK)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          entrySpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(entrySpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a changed path that is dirty in the working tree', () => {
     describe('When the merge is applied', () => {
       it('Then it refuses with would-overwrite and writes nothing', async () => {

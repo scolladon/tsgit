@@ -20,10 +20,12 @@ import { fsck } from '../../../../src/application/commands/fsck.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { validateTree } from '../../../../src/domain/fsck/validate-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
-import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { serializeTreeContent, treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { arbTreeEntryRawName } from '../../domain/objects/arbitraries.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
 import { findingIds } from './fsck-finding-ids.js';
@@ -577,13 +579,42 @@ describe('Given an arbitrary healthy repo plus one pack-layer-faulted pack whose
 // Lens 3 (weak): validateTree never throws for arbitrary byte input. The
 // contract already promises this; the byte-level rewrite touches every
 // branch it depends on.
+//
+// Serialized from well-formed TreeEntry values (arbTreeEntryRawName's raw,
+// NUL-free names over the five accepted modes) rather than pure random byte
+// arrays: a purely random array almost never assembles the
+// mode-space-name-NUL-sha shape parseTreeEntriesTolerant requires before it
+// ever reaches entryNameKey / checkNameFaults / treeEntrySortKey /
+// checkSpecialFileName or the duplicate/sort passes — the exact code this
+// property exists to protect. A minority of runs additionally flip one byte
+// of the serialized body, so the malformed-tree (early `badTree` return)
+// tier stays sampled too.
 // ---------------------------------------------------------------------------
+
+const arbTreeBytesForValidation = (): fc.Arbitrary<Uint8Array> =>
+  fc
+    .tuple(
+      fc.array(arbTreeEntryRawName(), { maxLength: 8 }),
+      fc.oneof(
+        { weight: 3, arbitrary: fc.constant(undefined) },
+        { weight: 1, arbitrary: fc.nat() },
+      ),
+    )
+    .map(([entries, corruptionSeed]) => {
+      const raw = serializeTreeContent({ type: 'tree', id: '' as ObjectId, entries }, SHA1_CONFIG);
+      if (corruptionSeed === undefined || raw.length === 0) return raw;
+      const mutated = new Uint8Array(raw);
+      const index = corruptionSeed % mutated.length;
+      const current = mutated[index] ?? 0;
+      mutated[index] = (current + 1) % 256;
+      return mutated;
+    });
 
 describe('Given arbitrary tree object bytes', () => {
   describe('When validateTree runs', () => {
     it('Then it never throws', () => {
       fc.assert(
-        fc.property(fc.uint8Array({ maxLength: 512 }), fc.boolean(), (raw, strict) => {
+        fc.property(arbTreeBytesForValidation(), fc.boolean(), (raw, strict) => {
           // Arrange
           const sut = validateTree;
 

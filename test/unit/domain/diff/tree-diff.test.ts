@@ -292,11 +292,16 @@ describe('diffTrees', () => {
         const encodeSpy = vi.spyOn(encodingMod, 'encode');
 
         // Act
-        diffTrees(oldTree, newTree);
+        const result = diffTrees(oldTree, newTree);
 
         // Assert — the sort/comparison key is each entry's own nameBytes, so
-        // no name is ever run back through a TextEncoder.
+        // no name is ever run back through a TextEncoder, and the merge-join
+        // still computes the correct diff (a/b TREESAME, c deletes, d adds).
         expect(encodeSpy).toHaveBeenCalledTimes(0);
+        expect(result.changes).toEqual([
+          { type: 'delete', oldPath: 'c', oldId: ID_A, oldMode: FILE_MODE.REGULAR },
+          { type: 'add', newPath: 'd', newId: ID_A, newMode: FILE_MODE.REGULAR },
+        ]);
         encodeSpy.mockRestore();
       });
     });

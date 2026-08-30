@@ -22,6 +22,7 @@ type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
 // string literal) so the fixture's on-disk name bytes are unambiguous.
 const BOM_NAME_BYTES = new Uint8Array([0xef, 0xbb, 0xbf]);
 const BOM_CHAR = String.fromCharCode(0xfeff);
+const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
 
 const writeBlob = async (ctx: Ctx, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
@@ -551,8 +552,13 @@ describe('flattenTree', () => {
         // Act
         const result = await flattenTree(ctx, treeId);
 
-        // Assert
+        // Assert — the second on-disk entry (0xFF) collapses onto the first's
+        // key; without this, a regression to first-wins would still pass.
         expect(result.entries.size).toBe(1);
+        expect(result.entries.get(REPLACEMENT_CHAR as FilePath)).toEqual({
+          id: ffId,
+          mode: FILE_MODE.REGULAR,
+        });
       });
     });
   });

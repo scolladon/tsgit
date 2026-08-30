@@ -681,6 +681,33 @@ describe('buildIndexFromTree', () => {
     });
   });
 
+  describe('Given a target tree with an entry literally named "a/b" (embedded separator)', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then it accepts the entry and indexes it at path "a/b", unlike `.`/`..`', async () => {
+        // Arrange — the parse tier accepts an embedded separator as a single
+        // literal name (unit-level pin for the interop row under
+        // describe.skipIf(!GIT_AVAILABLE): `git read-tree` indexes it at
+        // "a/b" too, not as a nested directory).
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a/b' as FilePath, blobId),
+        ]);
+
+        // Act
+        const result = await buildIndexFromTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+        });
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.path).toBe('a/b');
+        expect(result[0]?.id).toBe(blobId);
+      });
+    });
+  });
+
   describe('Given a `.gitmodules` leaf entry with symlink mode', () => {
     describe('When buildIndexFromTree runs', () => {
       it('Then throws INVALID_INDEX_ENTRY with the gitmodules-not-regular reason', async () => {

@@ -155,8 +155,21 @@ describe('findTreeEntry properties', () => {
                 content: new TextEncoder().encode('dup-b'),
                 id: '' as ObjectId,
               });
+              // Each sibling gets its OWN blob id (never `dupBlobIdA`): resolving to
+              // the wrong candidate must be observable even when the search never
+              // touches the duplicate at all.
+              const siblingEntries = await Promise.all(
+                siblings.map(async (name, index) => ({
+                  name,
+                  id: await writeObject(ctx, {
+                    type: 'blob',
+                    content: new TextEncoder().encode(`sibling-${index}`),
+                    id: '' as ObjectId,
+                  }),
+                })),
+              );
               const orderedEntries = [
-                ...siblings.map((name) => ({ name, id: dupBlobIdA })),
+                ...siblingEntries,
                 { name: duplicateName, id: dupBlobIdA },
                 { name: duplicateName, id: dupBlobIdB },
               ];
