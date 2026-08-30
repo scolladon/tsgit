@@ -447,6 +447,49 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
         expect(gitResult.stdout.trim()).toBe(blobA);
         expect(tsgitResult).toBe(blobA);
       });
+
+      it('Then git rev-parse <tree>:a/b/c resolves through a separator-bearing TREE name, and tsgit revParse descends it too', async () => {
+        // Arrange — root's sole entry is a TREE literally named "a/b",
+        // holding "c": the segment 'a' misses and the whole path 'a/b/c'
+        // misses too, so only the intermediate prefix boundary 'a/b' —
+        // itself a tree — lets the descent continue with the unconsumed
+        // tail 'c'.
+        const innerTree = buildTreeIn(dir, rawEntry('100644', 'c', blobA));
+        const slashDirTree = buildLiteralTreeIn(dir, rawEntry('40000', 'a/b', innerTree));
+        const ctx = freshCtx();
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', `${slashDirTree}:a/b/c`]);
+        const tsgitResult = await revParse(ctx, `${slashDirTree}:a/b/c`);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stdout.trim()).toBe(blobA);
+        expect(tsgitResult).toBe(blobA);
+      });
+
+      it('Then git rev-parse <tree>:a/b/c refuses when "a/b" is a BLOB, and tsgit revParse refuses too (parity)', async () => {
+        // Arrange — root's sole entry is literally named "a/b" but is a
+        // regular file: the boundary 'a/b' matches by name but is not a
+        // tree, so it cannot be descended into, and no entry is literally
+        // named 'a/b/c' either — a prefix boundary only ever completes a
+        // descent through a tree.
+        const slashBlobTree = buildLiteralTreeIn(dir, rawEntry('100644', 'a/b', blobA));
+        const ctx = freshCtx();
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', `${slashBlobTree}:a/b/c`]);
+        const tsgitError = await captureThrow(() => revParse(ctx, `${slashBlobTree}:a/b/c`));
+
+        // Assert
+        expect(gitResult.exitCode).not.toBe(0);
+        expect(tsgitError).toBeInstanceOf(TsgitError);
+        expect((tsgitError as TsgitError).data).toEqual({
+          code: 'PATH_NOT_IN_TREE',
+          rev: slashBlobTree,
+          path: 'a/b/c',
+        });
+      });
     });
 
     describe('When the materialisation layer (buildIndexFromTree) indexes them', () => {

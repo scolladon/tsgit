@@ -548,10 +548,9 @@ describe('findTreeEntry', () => {
 
   describe('Given a raw-scanned directory with two entries sharing a name', () => {
     describe('When the path descends into it', () => {
-      // This is the only test that kills the `matched ??= …` (vs `matched =
-      // … ?? matched`) mutant — every test with a unique target name is
-      // blind to it, since both accumulation orders return the same result
-      // when there is only one match.
+      // Duplicate names resolve to the FIRST entry, matching git's own
+      // first-wins lookup — the scan below returns at that entry, before a
+      // later duplicate is ever reached.
       it('Then it resolves the FIRST entry, not the last', async () => {
         // Arrange
         const ctx = await buildSeededContext();
@@ -594,6 +593,27 @@ describe('findTreeEntry', () => {
             expect(data.value).toBe('77777');
           }
         }
+      });
+    });
+  });
+
+  describe('Given a sibling entry with a malformed mode AFTER the match in a raw-scanned directory', () => {
+    describe('When the earlier, well-formed entry is resolved', () => {
+      it('Then it resolves cleanly — a malformed sibling beyond the match is not validated', async () => {
+        // Arrange — the mirror of the BEFORE case above: `good` sorts first
+        // and is the match, `bad` sits after it. Stopping at the match means
+        // `bad`'s mode is never visited, so this must NOT throw, regardless
+        // of where `bad` sits relative to the target.
+        const ctx = await buildSeededContext();
+        const content = concatBytes(rawEntry('100644', 'good'), rawEntry('77777', 'bad'));
+        const dirId = await writeRawObjectBytes(ctx, 'tree', content);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'dir/good');
+
+        // Assert
+        expect(result?.name).toBe('good');
       });
     });
   });
@@ -668,6 +688,45 @@ describe('findTreeEntry', () => {
 
         // Assert
         expect(result?.id).toBe(realLeafId);
+      });
+    });
+  });
+
+  describe('Given a tree whose sole entry is a TREE literally named a/b, holding c', () => {
+    describe('When findTreeEntry searches for a/b/c', () => {
+      it('Then it descends through the separator-bearing tree name via the prefix-boundary walk', async () => {
+        // Arrange — 'a' alone misses, the whole path 'a/b/c' misses too;
+        // only the intermediate boundary 'a/b' (a tree) matches, and the
+        // walk continues below it with the unconsumed tail 'c'.
+        const ctx = await buildSeededContext();
+        const leafId = await writeObject(ctx, blobOf(1));
+        const bcTreeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'c', leafId)]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'a/b', bcTreeId)]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'a/b/c');
+
+        // Assert
+        expect(result?.id).toBe(leafId);
+      });
+    });
+  });
+
+  describe('Given a tree whose sole entry is literally named a/b but is a BLOB, not a tree', () => {
+    describe('When findTreeEntry searches for a/b/c', () => {
+      it('Then it returns undefined — a prefix boundary only descends through a tree', async () => {
+        // Arrange — 'a/b' matches the boundary text exactly but is a blob,
+        // so it cannot be descended into; the whole path 'a/b/c' has no
+        // entry either, so the level-0 search misses entirely.
+        const ctx = await buildSeededContext();
+        const leafId = await writeObject(ctx, blobOf(1));
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a/b', leafId)]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'a/b/c');
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

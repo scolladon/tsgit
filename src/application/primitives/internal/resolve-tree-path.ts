@@ -1,6 +1,7 @@
 import { pathNotInTree } from '../../../domain/commands/error.js';
 import { bytesEqual, encode } from '../../../domain/objects/encoding.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
+import { isDirectory } from '../../../domain/objects/file-mode.js';
 import type { HashConfig } from '../../../domain/objects/hash-config.js';
 import type { ObjectId, Tree, TreeEntry } from '../../../domain/objects/index.js';
 import { treeEntry } from '../../../domain/objects/tree.js';
@@ -24,11 +25,15 @@ import { readTree } from '../read-tree.js';
  * `PATH_NOT_IN_TREE`. The caller decides what the final entry must be (a blob,
  * for `readFileAt`; any object, for `rev-parse`'s `<tree-ish>:<path>`).
  *
- * A segment that matches nothing falls back to comparing the whole remaining
- * path against this level's entry names, so an entry whose name literally
- * contains `/` is addressable by its full text — git's tree walk compares the
- * remaining path the same way. The fallback runs only on a miss, so a real
- * sub-tree always wins over a sibling that merely spells the same path.
+ * A segment that matches nothing falls back to git's own prefix-boundary
+ * walk: progressively longer joins of the remaining segments are tried
+ * against this level's entry names. A join spanning the WHOLE remaining
+ * path is accepted outright and ends the descent, so an entry whose name
+ * literally contains `/` is addressable by its full text. A shorter join is
+ * accepted only when the matched entry is itself a tree, and the descent
+ * continues below it with the segments the join did not consume. The
+ * fallback runs only on a miss, so a real sub-tree always wins over a
+ * sibling that merely spells the same path.
  *
  * Entry names are compared as raw bytes, and a directory carrying two entries
  * of the same name resolves to the first, as git's own path lookup does.
@@ -66,8 +71,10 @@ export const findTreeEntry = async (
   const segments = path.split('/');
   const rootTree = typeof root === 'string' ? await readTree(ctx, root) : root;
   let match = matchRootLevel(rootTree, segments);
-  for (let i = 1; match !== undefined && !match.consumedAll; i += 1) {
-    match = await matchRawLevel(ctx, match.entry.id, segments, i);
+  let index = match?.consumed ?? 0;
+  while (match !== undefined && index < segments.length) {
+    match = await matchRawLevel(ctx, match.entry.id, segments, index);
+    if (match !== undefined) index += match.consumed;
   }
   return match?.entry;
 };
@@ -116,13 +123,15 @@ export const descendMatchingTreeChain = async (
   if (rootId === childChain[0]) return { kind: 'treesame', oidChain: childChain };
   let match = await matchRawRootLevel(ctx, rootId, segments);
   const chain: ObjectId[] = [rootId];
-  for (let i = 0; match !== undefined; i += 1) {
+  let segIndex = 0;
+  while (match !== undefined) {
     chain.push(match.entry.id);
     if (match.entry.id === childChain[chain.length - 1]) {
       return { kind: 'treesame', oidChain: chain.concat(childChain.slice(chain.length)) };
     }
-    if (match.consumedAll || i + 1 >= segments.length) break;
-    match = await matchRawLevel(ctx, match.entry.id, segments, i + 1);
+    segIndex += match.consumed;
+    if (segIndex >= segments.length) break;
+    match = await matchRawLevel(ctx, match.entry.id, segments, segIndex);
   }
   if (match === undefined) return undefined;
   return { kind: 'changed', entry: match.entry, oidChain: chain };
@@ -147,24 +156,28 @@ export const findTreeEntryChain = async (
 };
 
 /** The result of matching one path level against a directory's entries: the
- *  entry found (first-wins) and whether it consumed the WHOLE remaining
- *  path — a literal entry name containing `/`, e.g. `a/b` — rather than
- *  just this level's own segment. */
+ *  entry found (first-wins), and how many of `segments`, counting from that
+ *  level's own index, its name accounted for — 1 for an ordinary
+ *  single-segment match, or more when the entry's own name spans a `/`
+ *  (git's prefix-boundary walk, see `matchLevel`). The descent resumes at
+ *  the level's index plus `consumed`. */
 interface LevelMatch {
   readonly entry: TreeEntry;
-  readonly consumedAll: boolean;
+  readonly consumed: number;
 }
 
 /**
  * Match level `i` of `segments` against one directory's entries via `scan`
  * (a byte-target lookup already scoped to that directory's content): first
  * try `segments[i]` alone — the hit path, unconditionally cheap, run for
- * every level of every descent. On a miss, and only when `i` is not the
- * last segment, retry `scan` against the WHOLE remaining path joined back
- * with `/` — git's own tree walk compares an entry name against a prefix of
- * the whole remaining path, so a literal entry name containing `/` can
- * match a multi-segment query directly, even though no segment-by-segment
- * subtree chain leads to it.
+ * every level of every descent. On a miss, walk git's own prefix-boundary
+ * loop: for `take` from 2 up to the number of remaining segments, retry
+ * `scan` against `segments[i..i+take)` joined with `/`. A join spanning the
+ * WHOLE remaining path (`take` equal to the remaining count) is accepted
+ * regardless of the matched entry's type and ends the descent there. A
+ * shorter join is only accepted when the matched entry is itself a tree —
+ * it cannot be the final entry, since path remains unconsumed — and the
+ * descent continues below it with the segments the join did not consume.
  */
 const matchLevel = (
   scan: (target: Uint8Array) => TreeEntry | undefined,
@@ -172,10 +185,15 @@ const matchLevel = (
   i: number,
 ): LevelMatch | undefined => {
   const hit = scan(encode(segments[i] as string));
-  if (hit !== undefined) return { entry: hit, consumedAll: i === segments.length - 1 };
-  if (i >= segments.length - 1) return undefined;
-  const fallback = scan(encode(segments.slice(i).join('/')));
-  return fallback === undefined ? undefined : { entry: fallback, consumedAll: true };
+  if (hit !== undefined) return { entry: hit, consumed: 1 };
+  const remaining = segments.length - i;
+  for (let take = 2; take <= remaining; take += 1) {
+    const candidate = scan(encode(segments.slice(i, i + take).join('/')));
+    if (candidate === undefined) continue;
+    if (take === remaining || isDirectory(candidate.mode))
+      return { entry: candidate, consumed: take };
+  }
+  return undefined;
 };
 
 /** `findTreeEntry`'s root level: the root `Tree` is already parsed, so the
@@ -219,14 +237,16 @@ const matchRawLevel = async (
 };
 
 /**
- * Byte-level scan of one directory's raw entries for `target`. Walks every
- * entry unconditionally, never stopping at the first match: mode is
- * validated eagerly per entry (`cursorMode`), so a malformed sibling mode
- * refuses immediately rather than only when that sibling is later visited —
- * breaking out as soon as `target` is found would silently skip that check
- * for every entry after it. Returns the FIRST matching entry when a
- * directory holds more than one entry with the same name, matching git's
- * own first-wins resolution.
+ * Byte-level scan of one directory's raw entries for `target`, stopping at
+ * the first match: mode is validated (`cursorMode`) for every entry visited
+ * on the way there, including the match itself, but never for a sibling
+ * beyond it — a malformed sibling past the match is not this descent's
+ * business, matching git's own `find_tree_entry` loop, which compares names
+ * and stops. Returns the FIRST matching entry when a directory holds more
+ * than one entry with the same name — but unlike git, this scan does not
+ * rely on tree order and does not break early when an entry sorts past
+ * `target`, so on an unsorted (fsck-invalid) tree it can resolve a name git
+ * itself would report missing.
  *
  * The byte compare below runs on raw bytes, not decoded strings — decoding
  * (a `TextDecoder` call) is deliberately deferred until an entry actually
@@ -240,12 +260,12 @@ const scanRawTreeFor = (
   target: Uint8Array,
 ): TreeEntry | undefined => {
   const cursor = openTreeCursor(content, hash);
-  let matched: TreeEntry | undefined;
   while (!cursor.done) {
-    matched ??= scanEntry(cursor, target);
+    const matched = scanEntry(cursor, target);
+    if (matched !== undefined) return matched;
     advanceCursor(cursor);
   }
-  return matched;
+  return undefined;
 };
 
 const scanEntry = (cursor: TreeCursor, target: Uint8Array): TreeEntry | undefined => {
