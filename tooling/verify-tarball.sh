@@ -38,7 +38,13 @@ done
 # to the lenient read seam, the rewrite/move store verbs and the
 # byte-faithful rewrite tier — runtime code shipped in every distribution
 # form, none removable without dropping the behaviour.
-SIZE_CAP=$((885 * 1024))
+# Raised 885 -> 886 KiB by the tree entry-name byte-sensitivity work: the
+# measured pack landed at 906 622 B, 382 B over the old cap, attributable to
+# the raw name bytes every tree entry now carries, the factory that copies
+# them, the shared entry-byte module and the whole-remaining-path descent
+# fallback — runtime code shipped in every distribution form, none removable
+# without dropping byte fidelity.
+SIZE_CAP=$((886 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
