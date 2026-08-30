@@ -205,7 +205,7 @@ reconstructed from git's stderr text.
   does. An absent index, or one with no cache-tree extension, contributes
   nothing — a bare or never-staged repository is not a fault.
 - **`--strict` upgrade.** Only the WARN-class msg-ids are affected:
-  `emptyName`, `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`,
+  `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`,
   `largePathname`, `nulInCommit`, `nullSha1`, `zeroPaddedFilemode`. ERROR-class
   ids (`treeNotSorted`, `missingSpaceBeforeEmail`, …) and INFO-class ids are
   unchanged by `--strict`.

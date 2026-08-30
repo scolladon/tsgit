@@ -18,6 +18,7 @@ import fc from 'fast-check';
 import { describe, it } from 'vitest';
 import { fsck } from '../../../../src/application/commands/fsck.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { validateTree } from '../../../../src/domain/fsck/validate-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
@@ -567,6 +568,32 @@ describe('Given an arbitrary healthy repo plus one pack-layer-faulted pack whose
           },
         ),
         { numRuns: 50 },
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lens 3 (weak): validateTree never throws for arbitrary byte input. The
+// contract already promises this; the byte-level rewrite touches every
+// branch it depends on.
+// ---------------------------------------------------------------------------
+
+describe('Given arbitrary tree object bytes', () => {
+  describe('When validateTree runs', () => {
+    it('Then it never throws', () => {
+      fc.assert(
+        fc.property(fc.uint8Array({ maxLength: 512 }), fc.boolean(), (raw, strict) => {
+          // Arrange
+          const sut = validateTree;
+
+          // Act
+          sut(raw, strict, 20);
+
+          // Assert — reaching here without throwing is the property.
+          return true;
+        }),
+        { numRuns: 100 },
       );
     });
   });

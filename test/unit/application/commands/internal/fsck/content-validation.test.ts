@@ -134,6 +134,26 @@ describe('Given a packed tree with a duplicate entry name', () => {
   });
 });
 
+describe('Given a packed tree with a non-octal byte in the mode', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits a badTree finding instead of badType', async () => {
+      // Arrange
+      const treeBody = buildTree(buildTreeEntry('10064a', 'a.txt', BLOB_SHA_A));
+      const { ctx, treeId } = await writePackedTree(treeBody);
+
+      // Act
+      const result = await sut(ctx, new Set([treeId]), false, new Map());
+
+      // Assert
+      const msgIds = result.findings
+        .filter((f) => f.type === 'bad-object' && f.id === treeId)
+        .map((f) => (f.type === 'bad-object' ? f.msgId : undefined));
+      expect(msgIds).toContain('badTree');
+      expect(msgIds).not.toContain('badType');
+    });
+  });
+});
+
 describe('Given a packed tree with an entry named "."', () => {
   describe('When runContentValidationPass validates that object', () => {
     it('Then emits a hasDot finding instead of badType', async () => {

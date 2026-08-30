@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { encode } from '../../../../src/domain/objects/encoding.js';
-import { hasNonOctalByte } from '../../../../src/domain/objects/tree-entry-bytes.js';
+import { entryNameKey, hasNonOctalByte } from '../../../../src/domain/objects/tree-entry-bytes.js';
 
 describe('hasNonOctalByte', () => {
   describe("Given a single-byte span at the low octal boundary (0x30, '0')", () => {
@@ -112,6 +112,66 @@ describe('hasNonOctalByte', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+});
+
+describe('entryNameKey', () => {
+  describe(
+    'Given the six bytes that a windows-1252-aliased latin1 decoder would remap ' +
+      '(0xFF, 0xFE, 0x81, 0x8D, 0x90, 0x9D)',
+    () => {
+      describe('When keying each one-byte span', () => {
+        it('Then every byte produces a distinct key', () => {
+          // Arrange
+          const sut = entryNameKey;
+          const bytes = [0xff, 0xfe, 0x81, 0x8d, 0x90, 0x9d];
+
+          // Act
+          const keys = bytes.map((byte) => sut(Uint8Array.of(byte), 0, 1));
+
+          // Assert
+          expect(new Set(keys).size).toBe(bytes.length);
+        });
+      });
+    },
+  );
+
+  describe('Given a 4097-byte name spanning multiple chunk boundaries', () => {
+    describe('When keying the whole span', () => {
+      it('Then returns a 4097-code-unit key with the right byte at each chunk edge', () => {
+        // Arrange — a loop that drops, duplicates, or shifts a byte at a chunk
+        // boundary (chunk size 1024) would corrupt content, not just length.
+        const sut = entryNameKey;
+        const buf = new Uint8Array(4097);
+        for (let i = 0; i < buf.length; i++) buf[i] = i % 256;
+
+        // Act
+        const result = sut(buf, 0, buf.length);
+
+        // Assert
+        expect(result).toHaveLength(4097);
+        expect(result.charCodeAt(0)).toBe(0);
+        expect(result.charCodeAt(1023)).toBe(1023 % 256);
+        expect(result.charCodeAt(1024)).toBe(1024 % 256);
+        expect(result.charCodeAt(4096)).toBe(4096 % 256);
+      });
+    });
+  });
+
+  describe('Given an empty span (start === end)', () => {
+    describe('When keying', () => {
+      it('Then returns the empty string', () => {
+        // Arrange
+        const sut = entryNameKey;
+        const buf = Uint8Array.of(0x61);
+
+        // Act
+        const result = sut(buf, 0, 0);
+
+        // Assert
+        expect(result).toBe('');
       });
     });
   });

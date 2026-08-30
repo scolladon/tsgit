@@ -3,7 +3,7 @@ import { MSG_EXTRA_HEADER_ENTRY } from '../../../../src/domain/fsck/msg-ids.js';
 import { resolveSeverity } from '../../../../src/domain/fsck/severity.js';
 import type { ValidateObjectInput } from '../../../../src/domain/fsck/validate-object.js';
 import { validateObject } from '../../../../src/domain/fsck/validate-object.js';
-import { encode } from '../../../../src/domain/objects/encoding.js';
+import { concatBytes, encode } from '../../../../src/domain/objects/encoding.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 
 // ---------------------------------------------------------------------------
@@ -24,8 +24,14 @@ const NULL_SHA = new Uint8Array(20);
 const EMPTY_TREE_SHA = sha('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
 
 function buildTreeEntry(mode: string, name: string, rawSha: Uint8Array): Uint8Array {
+  return buildTreeEntryBytes(mode, encode(name), rawSha);
+}
+
+/** Like {@link buildTreeEntry}, but the name span is raw bytes — the only way
+ * to plant a name that isn't valid UTF-8 (a lone continuation byte, a bare
+ * byte-order mark) or that decodes to a different string than its bytes. */
+function buildTreeEntryBytes(mode: string, nameBytes: Uint8Array, rawSha: Uint8Array): Uint8Array {
   const modeBytes = encode(mode);
-  const nameBytes = encode(name);
   const entry = new Uint8Array(modeBytes.length + 1 + nameBytes.length + 1 + rawSha.length);
   let offset = 0;
   entry.set(modeBytes, offset);
@@ -363,7 +369,7 @@ describe('Given a valid object', () => {
 
 describe('Given tree with empty entry name', () => {
   describe('When validateObject runs with default severity', () => {
-    it('Then emits emptyName at warning severity', () => {
+    it('Then emits badTree at error severity', () => {
       // Arrange
       // entry: "100644 \0<sha>" — name is empty string
       const rawBytes = buildTree(buildTreeEntry('100644', '', BLOB_SHA));
@@ -377,12 +383,12 @@ describe('Given tree with empty entry name', () => {
       });
 
       // Assert
-      expect(result).toContainEqual({ msgId: 'emptyName', severity: 'warning' });
+      expect(result).toEqual([{ msgId: 'badTree', severity: 'error' }]);
     });
   });
 
   describe('When validateObject runs with strict mode', () => {
-    it('Then emits emptyName at error severity', () => {
+    it('Then emits badTree at error severity unchanged', () => {
       // Arrange
       const rawBytes = buildTree(buildTreeEntry('100644', '', BLOB_SHA));
 
@@ -395,7 +401,45 @@ describe('Given tree with empty entry name', () => {
       });
 
       // Assert
-      expect(result).toContainEqual({ msgId: 'emptyName', severity: 'error' });
+      expect(result).toEqual([{ msgId: 'badTree', severity: 'error' }]);
+    });
+  });
+});
+
+describe('Given tree with a non-octal byte in the mode ("10064a")', () => {
+  describe('When validateObject runs with default severity', () => {
+    it('Then emits badTree at error severity (not badFilemode)', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('10064a', 'file', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'badTree', severity: 'error' }]);
+    });
+  });
+
+  describe('When validateObject runs with strict mode', () => {
+    it('Then emits badTree at error severity unchanged', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('10064a', 'file', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'badTree', severity: 'error' }]);
     });
   });
 });
@@ -765,6 +809,372 @@ describe('Given tree with duplicate entry names', () => {
 
       // Assert
       expect(result).toContainEqual({ msgId: 'duplicateEntries', severity: 'error' });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — byte-exact name comparisons (raw-byte fixtures git accepts that a
+// decode-then-compare implementation misclassifies)
+// ---------------------------------------------------------------------------
+
+const BOM_BYTES = Uint8Array.of(0xef, 0xbb, 0xbf);
+
+describe('Given tree with an entry named exactly the byte-order mark', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no finding (git accepts the BOM as the whole name)', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntryBytes('100644', BOM_BYTES, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given tree with an entry named BOM + "." (decodes to "." but is not)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no hasDot finding', () => {
+      // Arrange
+      const nameBytes = concatBytes([BOM_BYTES, Uint8Array.of(0x2e)]);
+      const rawBytes = buildTree(buildTreeEntryBytes('100644', nameBytes, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given tree with an entry named BOM + ".." (decodes to ".." but is not)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no hasDotdot finding', () => {
+      // Arrange
+      const nameBytes = concatBytes([BOM_BYTES, Uint8Array.of(0x2e, 0x2e)]);
+      const rawBytes = buildTree(buildTreeEntryBytes('100644', nameBytes, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given tree with two entries named the lone invalid bytes 0xFE then 0xFF', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits neither duplicateEntries nor treeNotSorted (distinct, correctly-ordered raw bytes)', () => {
+      // Arrange — a decoder that maps both invalid bytes to U+FFFD would
+      // collide them into one duplicate key.
+      const rawBytes = buildTree(
+        buildTreeEntryBytes('100644', Uint8Array.of(0xfe), BLOB_SHA),
+        buildTreeEntryBytes('100644', Uint8Array.of(0xff), BLOB_SHA),
+      );
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given tree with two entries named 0xFF then 0xFE (reverse of the sorted byte order)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits treeNotSorted', () => {
+      // Arrange — the absent half of the previous fixture: without this, a
+      // sort key that always reports "sorted" would still pass.
+      const rawBytes = buildTree(
+        buildTreeEntryBytes('100644', Uint8Array.of(0xff), BLOB_SHA),
+        buildTreeEntryBytes('100644', Uint8Array.of(0xfe), BLOB_SHA),
+      );
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
+    });
+  });
+});
+
+describe('Given tree with entries "a" then BOM + "a" (decode collapses both to "a")', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits neither duplicateEntries nor treeNotSorted', () => {
+      // Arrange
+      const rawBytes = buildTree(
+        buildTreeEntry('100644', 'a', BLOB_SHA),
+        buildTreeEntryBytes('100644', concatBytes([BOM_BYTES, Uint8Array.of(0x61)]), BLOB_SHA),
+      );
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given tree with entries BOM + "a" then "a" (reverse of the sorted byte order)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits treeNotSorted', () => {
+      // Arrange
+      const rawBytes = buildTree(
+        buildTreeEntryBytes('100644', concatBytes([BOM_BYTES, Uint8Array.of(0x61)]), BLOB_SHA),
+        buildTreeEntry('100644', 'a', BLOB_SHA),
+      );
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
+    });
+  });
+});
+
+describe('Given tree with an entry name of 1400 raw 0xFF bytes', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no largePathname (1400 raw bytes is under the limit, even though a replacement-character decode of each byte would inflate the count past it)', () => {
+      // Arrange
+      const nameBytes = new Uint8Array(1400).fill(0xff);
+      const rawBytes = buildTree(buildTreeEntryBytes('100644', nameBytes, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given tree with an entry name of a BOM followed by 4095 "x" bytes (4098 raw bytes)', () => {
+  describe('When validateObject runs', () => {
+    it("Then emits largePathname (the BOM's 3 bytes must not vanish from the count)", () => {
+      // Arrange
+      const nameBytes = concatBytes([BOM_BYTES, new Uint8Array(4095).fill(0x78)]);
+      const rawBytes = buildTree(buildTreeEntryBytes('100644', nameBytes, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'largePathname', severity: 'warning' }]);
+    });
+  });
+});
+
+describe('Given tree with an entry name of 2048 "é" (C3 A9) pairs — exactly 4096 raw bytes', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no largePathname (at the boundary, not over it)', () => {
+      // Arrange
+      const pair = Uint8Array.of(0xc3, 0xa9);
+      const parts: Uint8Array[] = [];
+      for (let i = 0; i < 2048; i++) parts.push(pair);
+      const nameBytes = concatBytes(parts);
+      const rawBytes = buildTree(buildTreeEntryBytes('100644', nameBytes, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given tree with an entry name of 1366 "€" (E2 82 AC) triples — 4098 raw bytes', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits largePathname', () => {
+      // Arrange
+      const triple = Uint8Array.of(0xe2, 0x82, 0xac);
+      const parts: Uint8Array[] = [];
+      for (let i = 0; i < 1366; i++) parts.push(triple);
+      const nameBytes = concatBytes(parts);
+      const rawBytes = buildTree(buildTreeEntryBytes('100644', nameBytes, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'largePathname', severity: 'warning' }]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — name-shape guard isolation: each fixture triggers exactly its own
+// finding, proving no guard leans on another guard's condition
+// ---------------------------------------------------------------------------
+
+describe('Given tree with an entry named a lone "/"', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits only fullPathname', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('100644', '/', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'fullPathname', severity: 'warning' }]);
+    });
+  });
+});
+
+describe('Given tree with an entry name starting with "/"', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits only fullPathname', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('100644', '/foo', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'fullPathname', severity: 'warning' }]);
+    });
+  });
+});
+
+describe('Given tree with an entry name ending with "/"', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits only fullPathname', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('100644', 'foo/', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'fullPathname', severity: 'warning' }]);
+    });
+  });
+});
+
+describe('Given tree with an entry named "//"', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits only fullPathname', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('100644', '//', BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'fullPathname', severity: 'warning' }]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — checkSpecialFileName narrowing: a BOM-prefixed special name no
+// longer collides with the real one now that the comparison is byte-exact.
+// Real git still flags this case (U+FEFF is HFS-ignorable), which tsgit does
+// not replicate here — that parity gap is a separate, out-of-scope item.
+// ---------------------------------------------------------------------------
+
+describe('Given tree with a symlink entry named BOM + ".gitmodules" (decodes to ".gitmodules" but is not)', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits no gitmodulesSymlink finding', () => {
+      // Arrange
+      const nameBytes = concatBytes([BOM_BYTES, encode('.gitmodules')]);
+      const rawBytes = buildTree(buildTreeEntryBytes('120000', nameBytes, BLOB_SHA));
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
     });
   });
 });

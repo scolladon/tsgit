@@ -6720,11 +6720,11 @@ describe('Given a shallow-boundary root commit whose true (unfetched) parent is 
   });
 });
 
-describe('Given a dangling loose tree with a duplicate entry name (full decode fails, stored header still recovers), connectivityOnly: true', () => {
+describe('Given a dangling loose tree with a non-octal byte in the mode (full decode fails, stored header still recovers), connectivityOnly: true', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the findings array carries the header-recovered type, not "unknown"', async () => {
       // Arrange — buildObjectCache's primary readObject call throws
-      // INVALID_TREE_ENTRY (duplicate name), so the cache entry is null; the
+      // INVALID_TREE_ENTRY (malformed mode), so the cache entry is null; the
       // header-recovery probe still reads a valid `tree <size>\0` header from
       // the same bytes, populating the `recovered` map with the real type.
       // NOTE: on this path project() is never invoked — this case pins the
@@ -6732,15 +6732,13 @@ describe('Given a dangling loose tree with a duplicate entry name (full decode f
       // a projected field; the three cases above carry the field-preservation
       // load.
       const ctx = await initBareCtx();
-      const entryA = 'b'.repeat(40) as ObjectId;
-      const entryB = 'c'.repeat(40) as ObjectId;
-      const treeId = await writeObject(
-        ctx,
-        makeTree([
-          treeEntry(FILE_MODE.REGULAR, 'dup.txt', entryA),
-          treeEntry(FILE_MODE.REGULAR, 'dup.txt', entryB),
-        ]),
-      );
+      const entrySha = new Uint8Array(20).fill(0xab);
+      const modeBytes = enc2.encode('10064a file.txt\0');
+      const treeBody = new Uint8Array(modeBytes.length + 20);
+      treeBody.set(modeBytes, 0);
+      treeBody.set(entrySha, modeBytes.length);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
 
       // Act
       const result = await fsck(ctx, { connectivityOnly: true });
@@ -6751,6 +6749,41 @@ describe('Given a dangling loose tree with a duplicate entry name (full decode f
         { type: 'unreachable', id: treeId, objectType: 'tree' },
         { type: 'dangling', id: treeId, objectType: 'tree' },
       ]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a repo whose only object graph contains a BOM-named tree', () => {
+  describe('When fsck runs', () => {
+    it('Then neither validation pass emits a finding and the exit code is clean', async () => {
+      // Arrange — the content-validation pass (raw bytes) and the
+      // object-cache pass (decoded parse) must agree: real git accepts a
+      // byte-order mark as a whole entry name.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('content'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, Uint8Array.of(0xef, 0xbb, 0xbf), blobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const faultTypes = [
+        'dangling',
+        'unreachable',
+        'missing',
+        'broken-link',
+        'bad-object',
+        'hash-mismatch',
+        'bad-ref',
+      ];
+      const faults = result.findings.filter((f) => faultTypes.includes(f.type));
+      expect(faults).toHaveLength(0);
       expect(result.exitCode).toBe(0);
     });
   });
