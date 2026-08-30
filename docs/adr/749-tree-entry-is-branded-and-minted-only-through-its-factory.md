@@ -48,6 +48,7 @@ the same factory. Serialisation, sorting and comparison read `nameBytes`; nothin
 ### Negative
 
 - A breaking change for anyone constructing tree entries: `{ name, mode, id }` literals become factory calls. Internally that is roughly twenty `src` sites and entry-shaped literals across many test files.
+- The brand stops a literal, not a spread. `{ ...entry, name: 'x' }` still type-checks, because the spread carries the brand property along with everything else, so an inconsistent pair can be built that way. Measured: the tree holds exactly two such spreads, both in a benchmark fixture and both overriding `id` only, so nothing is inconsistent today. This is a known limit of the technique, accepted rather than worked around — the alternative is a class with private state, which the domain layer does not use.
 
 ### Neutral
 

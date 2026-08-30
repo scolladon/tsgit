@@ -34,6 +34,22 @@ none. Each consumer owns the policy: the parse paths translate a fault into thei
 existing error, `fsck` translates it into a message id and severity. The classifier
 knows bytes and nothing about errors, findings or severities.
 
+## Re-derivation after ADR-752 and ADR-753
+
+This decision was taken before the duplicate and name-shape refusals were ruled. Both
+were then dropped from the parse layer, which removed most of this classifier's
+consumers: after ADR-752 and ADR-753, the name-shape fault set and the byte key each
+have exactly **one** consumer left — `fsck` — and only the octal-digit scan has three.
+A shared module whose main export serves a single caller does not earn its keep.
+
+The module therefore ships smaller than this decision first described: it exports the
+octal-digit scan (genuinely shared by the parse sites and the cursor) and the byte key
+(shared by fsck's duplicate and sort passes). Deciding what a fault *means* moves into
+`fsck`, which is now its only consumer. The principle this decision records is
+unchanged — byte semantics live in one place, refusal policy lives with each consumer —
+but the honest partition after the later rulings puts less in the shared module and more
+in `fsck`.
+
 ## Consequences
 
 The classifier is deliberately a helper the consumers call, not a check inside

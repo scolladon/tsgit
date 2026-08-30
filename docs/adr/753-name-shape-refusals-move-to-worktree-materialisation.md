@@ -3,8 +3,9 @@ subjects:
   - src/domain/objects/tree.ts
   - src/application/primitives/internal/flatten-raw.ts
   - src/application/primitives/internal/resolve-tree-path.ts
-  - src/application/primitives/materialize-tree.ts
   - src/application/primitives/build-index-from-tree.ts
+  - src/application/primitives/apply-changeset.ts
+  - src/application/commands/merge.ts
 ---
 # 753 — Name-shape refusals move to worktree materialisation
 
@@ -54,4 +55,20 @@ them there.
 
 ### Negative
 
-- Two application primitives gain a refusal they did not carry, and the parse layer loses one, so the same fault surfaces with a different error at a different depth. Every row is pinned in the interop suite.
+- The parse layer loses a refusal, so the same fault surfaces with a different error at a different depth. Every row is pinned in the interop suite.
+
+### Correction — where the refusal already lives, and the one place it does not
+
+The first draft of this decision assumed materialisation and index construction would
+gain a new check. Measured, they do not: `validateIndexPath` — this repo's mirror of
+git's `verify_path` — is already called on the index-write path, on the changeset-apply
+path, on tree synthesis and on `add`. Dropping the parse-layer refusal makes those
+existing branches **reachable**, it does not add code.
+
+The exception is the merge conflict writer, which writes working-tree files without
+routing through that validation. Today the parse layer refuses such a name long before
+merge sees it; once it does not, that writer is the one path on which a `.` or `..`
+entry name would reach the filesystem unchecked. It therefore adopts the same
+`validateIndexPath` call the changeset-apply path already makes. This is the single
+piece of genuinely new enforcement this decision requires, and it closes a hole the
+decision itself opens.
