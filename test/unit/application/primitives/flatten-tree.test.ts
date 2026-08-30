@@ -18,6 +18,11 @@ import {
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
 
+// The raw UTF-8 byte-order mark. Passed as `Uint8Array` (never as a source
+// string literal) so the fixture's on-disk name bytes are unambiguous.
+const BOM_NAME_BYTES = new Uint8Array([0xef, 0xbb, 0xbf]);
+const BOM_CHAR = String.fromCharCode(0xfeff);
+
 const writeBlob = async (ctx: Ctx, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
     type: 'blob',
@@ -384,94 +389,170 @@ describe('flattenTree', () => {
 
   describe('Given a tree entry named "."', () => {
     describe('When flattenTree runs', () => {
-      it('Then throws INVALID_TREE_ENTRY with the invalid-name reason', async () => {
+      it('Then the entry is flattened at path "." (name-shape refusals moved to materialisation)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const content = rawEntry(FILE_MODE.REGULAR, '.', blobId);
         const treeId = await writeRawObjectBytes(ctx, 'tree', content);
 
-        // Act + Assert
-        try {
-          await flattenTree(ctx, treeId);
-          expect.unreachable();
-        } catch (error) {
-          const { data } = error as { data: { code: string; offset: number; reason: string } };
-          expect(data.code).toBe('INVALID_TREE_ENTRY');
-          expect(data.offset).toBe(0);
-          expect(data.reason).toBe('invalid entry name: .');
-        }
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+        expect(result.entries.get('.' as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
       });
     });
   });
 
   describe('Given a tree entry named ".."', () => {
     describe('When flattenTree runs', () => {
-      it('Then throws INVALID_TREE_ENTRY with the invalid-name reason', async () => {
+      it('Then the entry is flattened at path ".." (name-shape refusals moved to materialisation)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const content = rawEntry(FILE_MODE.REGULAR, '..', blobId);
         const treeId = await writeRawObjectBytes(ctx, 'tree', content);
 
-        // Act + Assert
-        try {
-          await flattenTree(ctx, treeId);
-          expect.unreachable();
-        } catch (error) {
-          const { data } = error as { data: { code: string; offset: number; reason: string } };
-          expect(data.code).toBe('INVALID_TREE_ENTRY');
-          expect(data.offset).toBe(0);
-          expect(data.reason).toBe('invalid entry name: ..');
-        }
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+        expect(result.entries.get('..' as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
       });
     });
   });
 
   describe('Given a DIRECTORY-mode tree entry named ".."', () => {
     describe('When flattenTree runs', () => {
-      it('Then throws INVALID_TREE_ENTRY with the invalid-name reason (name validation covers directories too)', async () => {
-        // Arrange — validatedName runs unconditionally for every entry, before
-        // the directory/non-directory branch, so a directory-mode entry with
-        // an invalid name must refuse exactly like a blob-mode one.
+      it('Then the entry descends at path ".." (name validation removed for directories too)', async () => {
+        // Arrange — the removed validatedName ran unconditionally, before the
+        // directory/non-directory branch, so a directory-mode entry with a
+        // "shape" name must be accepted exactly like a blob-mode one.
         const ctx = await buildSeededContext();
-        const subTreeId = await writeTree(ctx, []);
+        const blobId = await writeBlob(ctx, 'nested');
+        const subTreeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt' as FilePath, blobId),
+        ]);
         const content = rawEntry(FILE_MODE.DIRECTORY, '..', subTreeId);
         const treeId = await writeRawObjectBytes(ctx, 'tree', content);
 
-        // Act + Assert
-        try {
-          await flattenTree(ctx, treeId);
-          expect.unreachable();
-        } catch (error) {
-          const { data } = error as { data: { code: string; offset: number; reason: string } };
-          expect(data.code).toBe('INVALID_TREE_ENTRY');
-          expect(data.offset).toBe(0);
-          expect(data.reason).toBe('invalid entry name: ..');
-        }
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+        expect(result.entries.get('../inner.txt' as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
       });
     });
   });
 
   describe('Given a tree entry named "a/b"', () => {
     describe('When flattenTree runs', () => {
-      it('Then throws INVALID_TREE_ENTRY with the invalid-name reason', async () => {
+      it('Then the entry is flattened at the two-segment path "a/b" (git\'s index stores it this way)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const content = rawEntry(FILE_MODE.REGULAR, 'a/b', blobId);
         const treeId = await writeRawObjectBytes(ctx, 'tree', content);
 
-        // Act + Assert
-        try {
-          await flattenTree(ctx, treeId);
-          expect.unreachable();
-        } catch (error) {
-          const { data } = error as { data: { code: string; offset: number; reason: string } };
-          expect(data.code).toBe('INVALID_TREE_ENTRY');
-          expect(data.offset).toBe(0);
-          expect(data.reason).toBe('invalid entry name: a/b');
-        }
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+        expect(result.entries.get('a/b' as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
+      });
+    });
+  });
+
+  describe('Given a tree entry named exactly the raw byte-order-mark bytes', () => {
+    describe('When flattenTree runs', () => {
+      it('Then the entry is flattened at the BOM-carrying path, not the empty string', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, BOM_NAME_BYTES, blobId)]);
+
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+        expect(result.entries.get(BOM_CHAR as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
+        expect(result.entries.has('' as FilePath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a directory whose sole child is named exactly the raw byte-order-mark bytes', () => {
+    describe('When flattenTree runs', () => {
+      it('Then the leaf materialises at "sub/<BOM>", not "sub/" (verifyPath no longer sees an empty segment)', async () => {
+        // Arrange — before the decoder swap, this leaf was keyed at 'sub/'
+        // (the BOM decoded away to an empty final segment) and verifyPath
+        // refused it as an empty-segment path; after the swap the BOM
+        // survives into the path and the entry materialises, matching git.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'nested');
+        const subTreeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, BOM_NAME_BYTES, blobId),
+        ]);
+        const rootId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subTreeId),
+        ]);
+
+        // Act
+        const result = await flattenTree(ctx, rootId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+        expect(result.entries.get(`sub/${BOM_CHAR}` as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
+        expect(result.entries.has('sub/' as FilePath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given two sibling entries whose raw names both decode to the Unicode replacement character', () => {
+    describe('When flattenTree runs', () => {
+      it("Then the FlatTree carries only one entry, though git's own index keeps two (asserted limit)", async () => {
+        // Arrange — 0xFE and 0xFF are each invalid as a standalone UTF-8
+        // sequence, so both decode to U+FFFD. git's index is keyed on raw
+        // bytes and holds both entries distinctly; FlatTree's FilePath-string
+        // keys cannot tell them apart, so the second write collapses the
+        // first. This is a known, accepted limit — not a bug this part fixes.
+        const ctx = await buildSeededContext();
+        const feId = await writeBlob(ctx, 'fe');
+        const ffId = await writeBlob(ctx, 'ff');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xfe]), feId),
+          treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xff]), ffId),
+        ]);
+
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
       });
     });
   });
@@ -481,7 +562,8 @@ describe('flattenTree', () => {
       it('Then the last entry on disk wins (duplicate detection moved to fsck)', async () => {
         // Arrange — `parseTreeContent` used to refuse this outright; the raw
         // descent drops the `Set<string>` duplicate check (fsck's job now),
-        // so the Map resolves last-wins in on-disk order.
+        // so the Map resolves last-wins in on-disk order — matching git
+        // `read-tree`'s own behaviour on a duplicate-name tree.
         const ctx = await buildSeededContext();
         const firstId = await writeBlob(ctx, 'first');
         const secondId = await writeBlob(ctx, 'second');

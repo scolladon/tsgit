@@ -563,12 +563,16 @@ describe('flattenRawTree', () => {
 
   describe('Given an early entry named ".." and a later truncated entry', () => {
     describe('When flattenRawTree runs', () => {
-      it("Then throws the name refusal at offset 0 — flatten's own name validation trips before the truncated tail is ever scanned", async () => {
-        // Arrange
+      it("Then the '..' entry is accepted and the truncated tail still refuses (a later structural fault still fires)", async () => {
+        // Arrange — the name-shape refusal is gone, so the '..' entry is now
+        // accepted; the second entry's truncated hash is a structural fault
+        // the cursor scan still catches, at the offset where that entry
+        // begins.
         const ctx = await buildSeededContext();
         const rootId = await writeTree(ctx, []);
+        const firstEntry = rawEntry(FILE_MODE.REGULAR, '..', LEAF_OID);
         const content = concatBytes(
-          rawEntry(FILE_MODE.REGULAR, '..', LEAF_OID),
+          firstEntry,
           truncatedEntry(FILE_MODE.REGULAR, 'b', LEAF_OID, 5),
         );
         const spy = stubRootContent(rootId, content);
@@ -581,8 +585,8 @@ describe('flattenRawTree', () => {
         } catch (error) {
           const { data } = error as { data: { code: string; offset: number; reason: string } };
           expect(data.code).toBe('INVALID_TREE_ENTRY');
-          expect(data.offset).toBe(0);
-          expect(data.reason).toBe('invalid entry name: ..');
+          expect(data.offset).toBe(firstEntry.length);
+          expect(data.reason).toBe('truncated hash');
         } finally {
           spy.mockRestore();
         }

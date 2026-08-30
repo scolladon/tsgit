@@ -10,7 +10,7 @@
  * `ObjectId`, a `FileMode`, a decoded name — is a fresh immutable value
  * built by one of the `cursor*` emit helpers below.
  */
-import { decode, indexOf } from './encoding.js';
+import { decodePreservingBom, indexOf } from './encoding.js';
 import { invalidTreeEntry } from './error.js';
 import { type FileMode, matchFileModeBytes } from './file-mode.js';
 import type { HashConfig } from './hash-config.js';
@@ -190,7 +190,7 @@ function skipLeadingZeros(buf: Uint8Array, start: number, end: number): number {
 }
 
 export function cursorName(c: TreeCursor): string {
-  return decode(c.buf.subarray(c.nameStart, c.nameEnd));
+  return decodePreservingBom(c.buf.subarray(c.nameStart, c.nameEnd));
 }
 
 export function cursorOid(c: TreeCursor): ObjectId {

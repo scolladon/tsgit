@@ -662,6 +662,7 @@ describe('diffTrees', () => {
         ]);
         const bytesToHexSpy = vi.spyOn(encodingMod, 'bytesToHex');
         const decodeSpy = vi.spyOn(encodingMod, 'decode');
+        const decodePreservingBomSpy = vi.spyOn(encodingMod, 'decodePreservingBom');
 
         // Act
         const result = await diffTrees(ctx, before, after, { recursive: true });
@@ -669,15 +670,18 @@ describe('diffTrees', () => {
         // Assert — well under the 20-entry unchanged subtree: only the emitted
         // `root.txt` entry's two oids are ever hex-converted (the unchanged
         // `big/` comparison is byte-level, no conversion at all) — one call for
-        // oldId, one for newId (cursorOid on each side of `root.txt`); decode
-        // runs exactly 3 times — one per raw object header read at the root
-        // level (old side + new side, via peelToTree/splitObject) plus one to
-        // build the emitted `root.txt` entry's name (cursorName).
+        // oldId, one for newId (cursorOid on each side of `root.txt`); `decode`
+        // runs exactly 2 times — one per raw object header read at the root
+        // level (old side + new side, via peelToTree/splitObject); building the
+        // emitted `root.txt` entry's name now goes through the BOM-preserving
+        // decoder (cursorName), one call.
         expect(result.changes).toHaveLength(1);
         expect(bytesToHexSpy.mock.calls.length).toBe(2);
-        expect(decodeSpy.mock.calls.length).toBe(3);
+        expect(decodeSpy.mock.calls.length).toBe(2);
+        expect(decodePreservingBomSpy.mock.calls.length).toBe(1);
         bytesToHexSpy.mockRestore();
         decodeSpy.mockRestore();
+        decodePreservingBomSpy.mockRestore();
       });
     });
   });

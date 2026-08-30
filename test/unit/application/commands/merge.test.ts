@@ -29,6 +29,7 @@ import * as writeTreeMod from '../../../../src/application/primitives/write-tree
 import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
@@ -2320,6 +2321,83 @@ describe('writeOutcomeToTree (direct)', () => {
       });
     });
   });
+
+  // Once flatten-raw stops refusing `.`/`..` at parse, a merged tree carrying
+  // such a name reaches this writer for the first time — it must refuse
+  // before anything touches the working tree.
+  describe('Given an outcome named "."', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const outcome: MergeOutcome = {
+          status: 'unchanged',
+          path: '.' as FilePath,
+          id: await seedBlob(ctx, 'DOT-BYTES'),
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        let caught: unknown;
+        let streamBlobCallCount: number;
+        try {
+          await writeOutcomeToTree(ctx, outcome, undefined);
+        } catch (err) {
+          caught = err;
+        } finally {
+          streamBlobCallCount = streamBlobSpy.mock.calls.length;
+          streamBlobSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(streamBlobCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an outcome named ".."', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const outcome: MergeOutcome = {
+          status: 'unchanged',
+          path: '..' as FilePath,
+          id: await seedBlob(ctx, 'DOTDOT-BYTES'),
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        let caught: unknown;
+        let streamBlobCallCount: number;
+        try {
+          await writeOutcomeToTree(ctx, outcome, undefined);
+        } catch (err) {
+          caught = err;
+        } finally {
+          streamBlobCallCount = streamBlobSpy.mock.calls.length;
+          streamBlobSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(streamBlobCallCount).toBe(0);
+      });
+    });
+  });
 });
 
 describe('writeOutcomeToTree (direct) — streaming', () => {
@@ -3744,6 +3822,87 @@ describe('writeConflictToTree (direct)', () => {
 
         // Assert — no file materialised
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+
+  // Once flatten-raw stops refusing `.`/`..` at parse, a merged tree carrying
+  // such a name reaches this writer for the first time — it must refuse
+  // before any blob is read or any bytes are written.
+  describe('Given a conflict path named "."', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+        const conflict = conflictOf({
+          path: '.' as FilePath,
+          type: 'add-add',
+          ourId: await seedBlob(ctx, 'ours'),
+          ourMode: FILE_MODE.REGULAR,
+          theirId: await seedBlob(ctx, 'theirs'),
+          theirMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await writeConflictToTree(ctx, conflict);
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a conflict path named ".."', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+        const conflict = conflictOf({
+          path: '..' as FilePath,
+          type: 'add-add',
+          ourId: await seedBlob(ctx, 'ours'),
+          ourMode: FILE_MODE.REGULAR,
+          theirId: await seedBlob(ctx, 'theirs'),
+          theirMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await writeConflictToTree(ctx, conflict);
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(writeCallCount).toBe(0);
       });
     });
   });

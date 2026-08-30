@@ -19,6 +19,7 @@
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import {
   type ConflictType,
   MAX_CONFLICT_OUTPUT_BYTES,
@@ -159,6 +160,60 @@ export const writeMarkedConflict = async (
   await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode, scanner);
 };
 
+/** A `MergeOutcome` known to change a path the merge actually writes — the
+ *  'conflict' variant is excluded before this type is ever reached (its own
+ *  path lives on `MergeConflict`, handled separately). */
+type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
+
+/**
+ * Validate then materialise one changed clean outcome. `resolved-deleted` is
+ * skipped: a delete creates no file, and its path already passed this same
+ * check when the current index was parsed.
+ */
+const writeChangedOutcome = async (
+  ctx: Context,
+  outcome: ChangedOutcome,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  if (outcome.status !== 'resolved-deleted') {
+    validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
+  }
+  if (outcome.status === 'resolved-deleted') {
+    await removeWorkingTreeFile(ctx, outcome.path);
+    return;
+  }
+  if (outcome.status === 'resolved-merged') {
+    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
+    return;
+  }
+  // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
+  if (outcome.status === 'resolved-known') {
+    const stream = await streamBlob(ctx, outcome.id);
+    await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
+  }
+};
+
+/**
+ * Validate then materialise one conflict's working-tree marker/sides.
+ * Validated ahead of the `distinct-types` dispatch (using the resolved mode's
+ * fallback chain) so one call covers both branches below.
+ */
+const writeValidatedConflict = async (
+  ctx: Context,
+  conflict: MergeConflict,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  if (mode !== undefined) {
+    validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode);
+  }
+  if (conflict.type === 'distinct-types') {
+    await writeDistinctTypesSides(ctx, conflict, scanner);
+    return;
+  }
+  await writeMarkedConflict(ctx, conflict, scanner);
+};
+
 /**
  * Write the changed clean outcomes + conflict markers to the working tree.
  * One scanner for the whole call: its per-directory memo serves every write
@@ -176,26 +231,10 @@ const writeConflictWorktree = async (
   for (const outcome of outcomes) {
     // Stryker disable next-line ConditionalExpression: equivalent — the `!changed.has` half only skips outcomes that equal `ours` (writing them reproduces working bytes); the `if(true)` skip-all variant is killed by the multi-path conflict test that asserts the clean side is written.
     if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    if (outcome.status === 'resolved-deleted') {
-      await removeWorkingTreeFile(ctx, outcome.path);
-      continue;
-    }
-    if (outcome.status === 'resolved-merged') {
-      await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
-      continue;
-    }
-    // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
-    if (outcome.status === 'resolved-known') {
-      const stream = await streamBlob(ctx, outcome.id);
-      await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
-    }
+    await writeChangedOutcome(ctx, outcome, scanner);
   }
   for (const conflict of conflicts) {
-    if (conflict.type === 'distinct-types') {
-      await writeDistinctTypesSides(ctx, conflict, scanner);
-      continue;
-    }
-    await writeMarkedConflict(ctx, conflict, scanner);
+    await writeValidatedConflict(ctx, conflict, scanner);
   }
 };
 

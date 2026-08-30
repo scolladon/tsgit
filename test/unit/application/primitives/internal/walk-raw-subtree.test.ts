@@ -88,6 +88,31 @@ describe('walkRawSubtree', () => {
     });
   });
 
+  describe('Given a tree entry named exactly the raw byte-order-mark bytes', () => {
+    describe('When walkRawSubtree runs', () => {
+      it('Then the emitted path carries the BOM, not an empty final segment', async () => {
+        // Arrange — raw byte name, not a source string literal.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xef, 0xbb, 0xbf]), blobId),
+        ]);
+
+        // Act
+        const entries = await collect(ctx, treeId);
+
+        // Assert
+        expect(entries).toEqual([
+          {
+            path: `top/${String.fromCharCode(0xfeff)}` as FilePath,
+            id: blobId,
+            mode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a directory-mode entry whose oid resolves to a blob', () => {
     describe('When walkRawSubtree runs', () => {
       it('Then the entry is skipped rather than thrown', async () => {

@@ -239,6 +239,99 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  // Once flatten-raw stops refusing `.`/`..` at parse, a merged tree carrying
+  // such a name reaches this writer for the first time — it must refuse
+  // before any conflict marker touches the working tree. Nested under
+  // `sub/` (rather than top-level) so the conflicting path never collides
+  // with the work directory's own root, which the top-level case would.
+  describe('Given ours and theirs both changed a "sub/."-named path differently', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and writes no conflict marker', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const o = await writeBlob(ctx, 'ours\n');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const dotEntry = (id: ObjectId): TreeEntry =>
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, id);
+        const base = await treeWith(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, await treeWith(ctx, [dotEntry(b)])),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, await treeWith(ctx, [dotEntry(o)])),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, await treeWith(ctx, [dotEntry(t)])),
+        ]);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('sub/.', o)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given ours and theirs both changed a ".."-named path differently', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and writes no conflict marker', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const o = await writeBlob(ctx, 'ours\n');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, t)]);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('..', o)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
   describe('Given a changed path that is dirty in the working tree', () => {
     describe('When the merge is applied', () => {
       it('Then it refuses with would-overwrite and writes nothing', async () => {

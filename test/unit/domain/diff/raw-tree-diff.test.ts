@@ -203,6 +203,31 @@ describe('diffRawTrees', () => {
     });
   });
 
+  describe('Given a new-side entry named exactly the raw byte-order-mark bytes', () => {
+    describe('When diffRawTrees is called', () => {
+      it('Then the emitted add carries the BOM in newPath, not an empty string', () => {
+        // Arrange — raw byte name, not a source string literal.
+        const newContent = canonicalContent([
+          treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xef, 0xbb, 0xbf]), ID_A),
+        ]);
+        const sut = diffRawTrees;
+
+        // Act
+        const result = sut(undefined, newContent, SHA1_CONFIG);
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'add',
+            newPath: String.fromCharCode(0xfeff),
+            newId: ID_A,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given the same path with a different oid (same mode)', () => {
     describe('When diffRawTrees is called', () => {
       it('Then emits a single modify', () => {

@@ -7,6 +7,7 @@ import {
   type StatData,
   skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
@@ -673,6 +674,13 @@ export const writeOutcomeToTree = async (
   matcher: SparseMatcher | undefined,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
+  // `resolved-deleted` is skipped (a delete creates no file, and its path
+  // already passed this same check when the current index was parsed);
+  // `conflict` is skipped because this function no-ops on it (the conflict
+  // itself is validated by the parallel conflicts batch instead).
+  if (outcome.status !== 'resolved-deleted' && outcome.status !== 'conflict') {
+    validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
+  }
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     if (isExcluded(matcher, outcome.path)) return;
     const stream = await streamBlob(ctx, outcome.id);
@@ -696,16 +704,19 @@ export const writeConflictToTree = async (
   conflict: MergeConflict,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
-  if (conflict.type === 'distinct-types') {
-    await writeDistinctTypesSides(ctx, conflict, scanner);
-    return;
-  }
   // Materialise with the merged mode when the merge resolved one, else the
   // surviving side's (ours, or theirs for modify-delete with ours deleted) so
   // the kind (symlink / exec bit) is preserved. Every conflict constructor
   // pairs ids with modes, so bytes being derivable implies a mode exists; the
   // guard checks anyway and skips the blob read when no mode is present.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  if (mode !== undefined) {
+    validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode);
+  }
+  if (conflict.type === 'distinct-types') {
+    await writeDistinctTypesSides(ctx, conflict, scanner);
+    return;
+  }
   if (mode === undefined) return;
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;

@@ -22,7 +22,6 @@ import type { FlatTree, FlatTreeEntry } from '../../../domain/diff/flat-tree.js'
 import { MAX_FLAT_TREE_ENTRIES } from '../../../domain/diff/index.js';
 import { operationAborted } from '../../../domain/error.js';
 import {
-  invalidTreeEntry,
   treeCycleDetected,
   treeDepthExceeded,
   treeEntryLimitExceeded,
@@ -158,11 +157,15 @@ async function flattenLevel(
 }
 
 /**
- * Leaf-level work for one entry — abort check, name validation, counter/cap
- * check, and (for a leaf) the `Map` write — all synchronous: no promise is
- * allocated for an entry that turns out to be a leaf. Returns the child id
- * and path to descend into when the entry is a directory, `undefined`
- * otherwise (the leaf is already recorded).
+ * Leaf-level work for one entry — abort check, counter/cap check, and (for a
+ * leaf) the `Map` write — all synchronous: no promise is allocated for an
+ * entry that turns out to be a leaf. Name-shape refusals (`.`, `..`, an
+ * embedded separator) do not live here — they move to worktree
+ * materialisation and index construction. An empty name never
+ * reaches here regardless: the cursor's own structural scan already refuses
+ * it (nameEnd === nameStart) before a caller can observe it. Returns the
+ * child id and path to descend into when the entry is a directory,
+ * `undefined` otherwise (the leaf is already recorded).
  */
 function flattenEntry(
   config: FlattenConfig,
@@ -171,7 +174,7 @@ function flattenEntry(
   prefix: string,
 ): { readonly id: ObjectId; readonly path: FilePath } | undefined {
   if (config.ctx.signal?.aborted) throw operationAborted();
-  const path = joinPath(prefix, validatedName(cursor));
+  const path = joinPath(prefix, cursorName(cursor));
   state.counter.value += 1;
   if (exceedsMaxTreeEntries(state.counter.value, config.bounds.maxEntries)) {
     throw treeEntryLimitExceeded(state.counter.value, config.bounds.maxEntries);
@@ -183,20 +186,6 @@ function flattenEntry(
     return undefined;
   }
   return { id, path };
-}
-
-// Name validation stays on this path (unlike the raw merge-join diff, which
-// drops it) because flatten feeds worktree materialisation. An empty name
-// never reaches here — the cursor's own structural scan already refuses it
-// (nameEnd === nameStart) before a caller can observe it — so only the
-// shape checks `parseTreeContent` layered on top of its own null-terminator
-// scan are repeated here, with the identical reason string.
-function validatedName(cursor: TreeCursor): string {
-  const name = cursorName(cursor);
-  if (name === '.' || name === '..' || name.includes('/')) {
-    throw invalidTreeEntry(cursor.offset, `invalid entry name: ${name}`);
-  }
-  return name;
 }
 
 async function descendIfTree(
