@@ -277,7 +277,7 @@ describe('diffTrees', () => {
 
   describe('Given entries that participate in the merge-join', () => {
     describe('When diffTrees is called', () => {
-      it('Then each entry name is encoded exactly once (no double TextEncoder pass)', () => {
+      it('Then no entry name is ever re-encoded — the merge-join keys off nameBytes directly', () => {
         // Arrange — 3 entries per side; 'a'/'b' match (TREESAME), 'c' deletes, 'd' adds.
         const oldTree = tree([
           entry('a', FILE_MODE.REGULAR, ID_A),
@@ -294,10 +294,33 @@ describe('diffTrees', () => {
         // Act
         diffTrees(oldTree, newTree);
 
-        // Assert — 6 entries total (3 old + 3 new); each name is encoded once,
-        // sorted once, then compared via the precomputed key (no re-encode).
-        expect(encodeSpy).toHaveBeenCalledTimes(6);
+        // Assert — the sort/comparison key is each entry's own nameBytes, so
+        // no name is ever run back through a TextEncoder.
+        expect(encodeSpy).toHaveBeenCalledTimes(0);
         encodeSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given an old tree entry and a new tree entry whose raw name bytes are each invalid UTF-8 on their own', () => {
+    describe('When diffTrees compares them', () => {
+      it('Then reports a delete and an add — not a single spurious modify — because the merge-join keys on raw bytes, not the decoded name', () => {
+        // Arrange — FE and FF both decode to the replacement character;
+        // keying the merge-join on the decoded name would treat them as the
+        // same path and report one 'modify' instead of a delete + an add.
+        const oldTree = tree([treeEntry(FILE_MODE.REGULAR, Uint8Array.of(0xfe), ID_A)]);
+        const newTree = tree([treeEntry(FILE_MODE.REGULAR, Uint8Array.of(0xff), ID_B)]);
+
+        // Act
+        const result = diffTrees(oldTree, newTree);
+
+        // Assert — the collapse-proof assertion: two changes, two distinct
+        // ids; the paths themselves collide by design and must not be the oracle.
+        expect(result.changes).toHaveLength(2);
+        const ids = result.changes.map((c) =>
+          c.type === 'delete' ? c.oldId : c.type === 'add' ? c.newId : undefined,
+        );
+        expect(ids).toEqual([ID_A, ID_B]);
       });
     });
   });

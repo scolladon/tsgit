@@ -376,10 +376,13 @@ describe('findTreeEntry', () => {
         // Act
         const result = await findTreeEntry(ctx, rootId, 'dir/ab');
 
-        // Assert — one decode, for the matched 'ab' entry; the other four
-        // siblings never need a string at all.
+        // Assert — the descent no longer decodes any sibling to find the
+        // match: the raw byte-cursor compares candidates directly, and the
+        // one decode that does happen lives inside the factory, once, for
+        // the entry that is actually returned.
         expect(result?.name).toBe('ab');
-        expect(cursorNameSpy).toHaveBeenCalledTimes(1);
+        expect(result?.nameBytes).toEqual(encode('ab'));
+        expect(cursorNameSpy).toHaveBeenCalledTimes(0);
         cursorNameSpy.mockRestore();
       });
     });
@@ -769,7 +772,7 @@ describe('descendMatchingTreeChain', () => {
         // Assert
         expect(result).toEqual({
           kind: 'changed',
-          entry: { mode: FILE_MODE.REGULAR, name: 'file', id: leafId },
+          entry: treeEntry(FILE_MODE.REGULAR, 'file', leafId),
           oidChain: [parentRootId, leafId],
         });
       });

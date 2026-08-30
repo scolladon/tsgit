@@ -1,4 +1,4 @@
-import { compareBytes, encode } from '../objects/encoding.js';
+import { compareBytes } from '../objects/encoding.js';
 import { isDirectory } from '../objects/file-mode.js';
 import type { FilePath, Tree, TreeEntry } from '../objects/index.js';
 import type { DiffChange, TreeDiff } from './diff-change.js';
@@ -59,7 +59,7 @@ interface KeyedEntry {
  * re-encode approach pays.
  */
 function entryKey(entry: TreeEntry): Uint8Array {
-  const nameBytes = encode(entry.name);
+  const nameBytes = entry.nameBytes;
   if (!isDirectory(entry.mode)) return nameBytes;
   const withSlash = new Uint8Array(nameBytes.length + 1);
   withSlash.set(nameBytes);

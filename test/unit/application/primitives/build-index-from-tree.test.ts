@@ -587,13 +587,12 @@ describe('buildIndexFromTree', () => {
 
   describe('Given a target tree with a `.git`-alias entry name', () => {
     describe('When buildIndexFromTree runs', () => {
-      // `..`/`.`/empty/`/` names never reach this boundary through a real
-      // tree read: `parseTreeContent` already refuses to parse a tree
-      // containing one of those (pre-existing, stricter than git's own
-      // index-write refusal stage). `.git` and its NTFS short name are NOT
-      // rejected there — git accepts them at `mktree`/tree-parse and only
-      // refuses at index write — so these are the families this boundary's
-      // new check actually intercepts.
+      // `.git` and its NTFS short name are never refused by the parse tier —
+      // git accepts them at `mktree`/tree-parse and only refuses at index
+      // write — so this boundary is where they are first intercepted. `.`
+      // and `..` are exercised by their own describe blocks above: the parse
+      // tier accepts those name shapes too, so this same boundary is what
+      // catches them, just with a different reason string.
       it.each([
         { label: 'a `.git` entry', name: '.git' },
         { label: 'a `git~1` entry', name: 'git~1' },
@@ -617,6 +616,67 @@ describe('buildIndexFromTree', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+      });
+    });
+  });
+
+  describe('Given a target tree with a `.`-named entry, reachable now that the parse tier accepts it', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it("Then throws INVALID_INDEX_ENTRY with the '.' segment reason", async () => {
+        // Arrange — the parse tier no longer refuses this name shape; the
+        // refusal moves to this boundary, the layer git itself refuses it at.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, blobId),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'.' segment rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a target tree with a `..`-named entry, reachable now that the parse tier accepts it', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it("Then throws INVALID_INDEX_ENTRY with the '..' segment reason", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '..' as FilePath, blobId),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'..' segment rejected",
+        });
       });
     });
   });

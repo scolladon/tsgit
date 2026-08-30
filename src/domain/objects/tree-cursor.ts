@@ -15,11 +15,11 @@ import { invalidTreeEntry } from './error.js';
 import { type FileMode, matchFileModeBytes } from './file-mode.js';
 import type { HashConfig } from './hash-config.js';
 import { ObjectId } from './object-id.js';
+import { hasNonOctalByte } from './tree-entry-bytes.js';
 
 const SPACE = 0x20;
 const NUL = 0x00;
 const OCTAL_ZERO = 0x30;
-const OCTAL_SEVEN = 0x37;
 const VIRTUAL_SLASH = 0x2f;
 
 export interface TreeCursor {
@@ -75,14 +75,6 @@ function scanMode(c: TreeCursor, start: number): void {
     throw invalidTreeEntry(start, 'malformed mode');
   }
   c.modeEnd = modeEnd;
-}
-
-function hasNonOctalByte(buf: Uint8Array, start: number, end: number): boolean {
-  for (let i = start; i < end; i++) {
-    const byte = buf[i]!;
-    if (byte < OCTAL_ZERO || byte > OCTAL_SEVEN) return true;
-  }
-  return false;
 }
 
 function scanName(c: TreeCursor): void {

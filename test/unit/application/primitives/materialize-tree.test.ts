@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { materializeTree } from '../../../../src/application/primitives/materialize-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -695,6 +696,67 @@ describe('materializeTree', () => {
         // Assert — only the path-scoped `a.txt`; no skip-worktree `b.txt` synthesised.
         expect(result.newIndexEntries.map((e) => e.path)).toEqual(['a.txt']);
         expect(result.written).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a target tree with a `.`-named entry, reachable now that the parse tier accepts it', () => {
+    describe('When materializeTree runs', () => {
+      it("Then throws INVALID_INDEX_ENTRY with the '.' segment reason", async () => {
+        // Arrange — the parse tier no longer refuses this name shape; the
+        // refusal moves to this boundary, the layer git itself refuses it at.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, blobId),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await materializeTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'.' segment rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a target tree with a `..`-named entry, reachable now that the parse tier accepts it', () => {
+    describe('When materializeTree runs', () => {
+      it("Then throws INVALID_INDEX_ENTRY with the '..' segment reason", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '..' as FilePath, blobId),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await materializeTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'..' segment rejected",
+        });
       });
     });
   });

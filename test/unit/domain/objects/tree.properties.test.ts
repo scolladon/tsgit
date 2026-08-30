@@ -11,7 +11,11 @@ import {
   sortTreeEntries,
   treeEntryCompare,
 } from '../../../../src/domain/objects/tree.js';
-import { arbTreeEntryAnyMode, dedupeTreeEntriesByName } from './arbitraries.js';
+import {
+  arbTreeEntryAnyMode,
+  arbTreeEntryRawName,
+  dedupeTreeEntriesByName,
+} from './arbitraries.js';
 
 const DUMMY_ID = ObjectId.from('a'.repeat(40));
 
@@ -56,17 +60,36 @@ describe('tree — property-based tests', () => {
     });
   });
 
-  describe('Given the tree roundtrip property "parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries"', () => {
+  describe('Given the byte-name tree roundtrip property "parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves every entry\'s raw name bytes"', () => {
     describe('When checked', () => {
       it('Then it holds', () => {
         // Arrange + Assert
         fc.assert(
-          fc.property(fc.array(arbTreeEntryAnyMode()), (rawEntries) => {
-            const entries = dedupeTreeEntriesByName(rawEntries);
+          fc.property(fc.array(arbTreeEntryRawName()), (entries) => {
             const result = parseBuilt(entries);
             const sorted = sortTreeEntries(entries);
-            expect(result.entries).toEqual(sorted);
+            const project = (list: ReadonlyArray<TreeEntry>) =>
+              list.map(({ mode, nameBytes, id }) => ({ mode, nameBytes, id }));
+            expect(project(result.entries)).toEqual(project(sorted));
           }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given the entry-count invariant "parseTreeContent(serializeTreeContent(t)).entries.length equals the input length" (duplicates included)', () => {
+    describe('When checked', () => {
+      it('Then it holds', () => {
+        // Arrange + Assert — no dedupe: a duplicate name is no longer
+        // refused, so the count comes straight from the arbitrary's own
+        // generation rather than re-implementing the parse loop.
+        fc.assert(
+          fc.property(fc.array(arbTreeEntryRawName()), (entries) => {
+            const result = parseBuilt(entries);
+            expect(result.entries.length).toBe(entries.length);
+          }),
+          { numRuns: 100 },
         );
       });
     });

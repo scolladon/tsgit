@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InternalSlot } from '../../../../src/domain/notes/index.js';
 import { loadTrieRoot, unpackSubtree } from '../../../../src/domain/notes/index.js';
+import { concatBytes, encode } from '../../../../src/domain/objects/encoding.js';
 import type { TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -69,6 +70,22 @@ describe('Given a root notes tree to load', () => {
       expect(branch.node.slots[1]).toEqual({ kind: 'subtree', prefix: 'a1', oid: o1 });
       expect(branch.node.slots[2]).toEqual({ kind: 'subtree', prefix: 'a2', oid: o2 });
       expect(branch.node.slots[3]).toEqual({ kind: 'subtree', prefix: 'a3', oid: o3 });
+    });
+  });
+});
+
+describe('Given a two-hex directory name prefixed with a byte-order mark', () => {
+  describe('When the root tree is loaded', () => {
+    it('Then it is preserved verbatim, not classified as a fanout subtree — git compares raw bytes', () => {
+      // Arrange
+      const bomPrefixedName = concatBytes([Uint8Array.of(0xef, 0xbb, 0xbf), encode('2a')]);
+      const entry = treeEntry(FILE_MODE.DIRECTORY, bomPrefixedName, oid('b'));
+
+      // Act
+      const result = loadTrieRoot([entry]);
+
+      // Assert
+      expect(result.preserved).toEqual([entry]);
     });
   });
 });

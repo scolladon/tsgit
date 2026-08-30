@@ -216,7 +216,7 @@ const scanEntry = (
   }
   seenNames.push([nameStart, nameEnd]);
   if (!cursorNameEquals(cursor, target)) return undefined;
-  return treeEntry(mode, cursorName(cursor), cursorOid(cursor));
+  return treeEntry(mode, cursor.buf.subarray(nameStart, nameEnd), cursorOid(cursor));
 };
 
 /**

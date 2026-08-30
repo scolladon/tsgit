@@ -8,6 +8,7 @@ import { walkSubmodules } from '../../../../src/application/primitives/walk-subm
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { concatBytes, encode } from '../../../../src/domain/objects/encoding.js';
 import type { Blob, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, RefName } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -167,6 +168,32 @@ describe('primitives/walk-submodules', () => {
           expect(result).toEqual([
             { name: 'orphan', path: 'orphan', commit: FAKE_COMMIT_A, depth: 0 },
           ]);
+        });
+      });
+    });
+
+    describe('Given a .gitmodules entry whose name carries a leading byte-order mark', () => {
+      describe('When walkSubmodules looks it up', () => {
+        it('Then the file does not match — git compares raw bytes, not decoded names', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
+          const blobId = await writeBlobText(ctx, text);
+          const gitmodulesName = concatBytes([
+            Uint8Array.of(0xef, 0xbb, 0xbf),
+            encode('.gitmodules'),
+          ]);
+          const entries: TreeEntry[] = [
+            treeEntry(FILE_MODE.REGULAR, gitmodulesName, blobId),
+            treeEntry(FILE_MODE.GITLINK, 'foo', FAKE_COMMIT_A),
+          ];
+          const treeId = await writeTreeAt(ctx, entries);
+
+          // Act
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
+
+          // Assert — the BOM-prefixed name never matches '.gitmodules', so no row is found
+          expect(result).toEqual([{ name: 'foo', path: 'foo', commit: FAKE_COMMIT_A, depth: 0 }]);
         });
       });
     });
