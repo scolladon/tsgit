@@ -44,7 +44,6 @@ export function isDirectory(mode: FileMode): boolean {
 // length first, then compare bytes directly against the mode's own encoding
 // (computed once at module load, not per call).
 const DIRECTORY_5_BYTES = encode(FILE_MODE.DIRECTORY);
-const DIRECTORY_6_BYTES = encode('040000');
 const REGULAR_6_BYTES = encode(FILE_MODE.REGULAR);
 const EXECUTABLE_6_BYTES = encode(FILE_MODE.EXECUTABLE);
 const SYMLINK_6_BYTES = encode(FILE_MODE.SYMLINK);
@@ -83,12 +82,14 @@ function decodeModeForError(buf: Uint8Array, start: number, end: number): string
   return `${decode(buf.subarray(start, start + MAX_INVALID_MODE_ERROR_BYTES))}…`;
 }
 
+// No six-byte directory form here: the caller strips leading zeros first, so a
+// six-byte span can never start with `0` and `040000` always arrives as the
+// five-byte `40000`.
 function matchSixByteMode(buf: Uint8Array, start: number): FileMode | undefined {
   if (matchesBytes(buf, start, REGULAR_6_BYTES)) return FILE_MODE.REGULAR;
   if (matchesBytes(buf, start, EXECUTABLE_6_BYTES)) return FILE_MODE.EXECUTABLE;
   if (matchesBytes(buf, start, SYMLINK_6_BYTES)) return FILE_MODE.SYMLINK;
   if (matchesBytes(buf, start, GITLINK_6_BYTES)) return FILE_MODE.GITLINK;
-  if (matchesBytes(buf, start, DIRECTORY_6_BYTES)) return FILE_MODE.DIRECTORY;
   return undefined;
 }
 
