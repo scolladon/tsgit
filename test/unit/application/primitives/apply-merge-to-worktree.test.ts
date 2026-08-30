@@ -332,6 +332,123 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  // A `resolved-deleted` outcome's path is sourced from the merge's `ours`
+  // tree flatten, never from a parsed index — the path has NOT already
+  // passed validation anywhere upstream, so it must be validated like every
+  // other outcome. A genuine content conflict on a sibling path forces the
+  // conflict-write route (a clean merge never reaches `writeChangedOutcome`).
+  describe('Given theirs deletes a ".."-named path while a sibling genuinely conflicts', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and does not remove the working-tree file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dotdot = await writeBlob(ctx, 'dotdot\n');
+        const cb = await writeBlob(ctx, 'base\n');
+        const co = await writeBlob(ctx, 'ours\n');
+        const ct = await writeBlob(ctx, 'theirs\n');
+        const dotdotEntry = treeEntry(FILE_MODE.REGULAR, '..' as FilePath, dotdot);
+        const base = await treeWith(ctx, [
+          dotdotEntry,
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, cb),
+        ]);
+        const ours = await treeWith(ctx, [
+          dotdotEntry,
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, co),
+        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, ct)]);
+        await ctx.fs.write(`${ctx.layout.workDir}/c.txt`, new TextEncoder().encode('ours\n'));
+        const removeSpy = vi.spyOn(writeFileMod, 'removeWorkingTreeFile');
+
+        // Act
+        let caught: unknown;
+        let removeCallCount: number;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('..', dotdot), indexEntry('c.txt', co)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          removeCallCount = removeSpy.mock.calls.length;
+          removeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(removeCallCount).toBe(0);
+      });
+    });
+  });
+
+  // Multi-entry atomicity: under the previous per-outcome-inside-the-write-
+  // loop guard, `clean.txt`'s batch ran and completed to disk BEFORE the
+  // conflicts batch ever reached the hostile path's refusal. The hoisted
+  // whole-set gate must refuse before either path is written.
+  describe('Given a conflicting merge where one changed path is hostile and a sibling path is clean', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and the clean sibling is never written', async () => {
+        // Arrange — `sub/.` conflicts (both sides change it differently from
+        // base); `clean.txt` is changed by theirs only and resolves cleanly.
+        const ctx = await buildSeededContext();
+        const cleanBase = await writeBlob(ctx, 'base-clean\n');
+        const cleanTheirs = await writeBlob(ctx, 'THEIRS-CLEAN\n');
+        const dotBase = await writeBlob(ctx, 'base\n');
+        const dotOurs = await writeBlob(ctx, 'ours\n');
+        const dotTheirs = await writeBlob(ctx, 'theirs\n');
+        const dotEntry = (id: ObjectId): TreeEntry =>
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, id);
+        const base = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt' as FilePath, cleanBase),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotBase)]),
+          ),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt' as FilePath, cleanBase),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotOurs)]),
+          ),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt' as FilePath, cleanTheirs),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotTheirs)]),
+          ),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('clean.txt', cleanBase), indexEntry('sub/.', dotOurs)]),
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/clean.txt`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a changed path that is dirty in the working tree', () => {
     describe('When the merge is applied', () => {
       it('Then it refuses with would-overwrite and writes nothing', async () => {

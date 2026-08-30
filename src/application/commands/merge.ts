@@ -539,9 +539,10 @@ export const writeNestedTree = async (
  * Persist the conflicting-merge state on disk's write order:
  * working-tree files → ORIG_HEAD → MERGE_HEAD → MERGE_MSG → index.
  *
- * Unsupported conflict types and would-overwrite refusals are checked upfront
- * BEFORE any disk write so the operation fails atomically (HEAD/index/working-
- * tree untouched, no MERGE_HEAD, no leaked index lock).
+ * Unsupported conflict types, would-overwrite refusals, and hostile
+ * entry-path refusals are checked upfront BEFORE any disk write so the
+ * operation fails atomically (HEAD/index/working-tree untouched, no
+ * MERGE_HEAD, no leaked index lock).
  */
 const persistConflictState = async (
   ctx: Context,
@@ -562,6 +563,14 @@ const persistConflictState = async (
   if (localChanges.length > 0 || untracked.length > 0) {
     throw workingTreeDirty({ localChanges, untracked });
   }
+
+  // Whole-set path gate, hoisted above the write wave and above
+  // `acquireIndexLock`: every outcome/conflict path this call is about to
+  // write is validated in one upfront pass, so a hostile name anywhere in
+  // the batch refuses before the FIRST byte is written, not partway through
+  // the concurrent write wave — mirrors `validateChangesetPaths`
+  // (apply-changeset.ts) and `restoreUntracked`'s pre-pass (stash.ts).
+  validateConflictWorktreePaths(result.outcomes, result.conflicts, changed);
 
   // loadSparseMatcher is a pure config/pattern-file read — no lock needed. A
   // defined matcher keeps excluded blob-backed paths out of the working tree
@@ -612,6 +621,38 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
 /** True iff a sparse matcher is active AND rejects the path. */
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
+
+/**
+ * Whole-set path gate for the conflicting merge's working-tree write.
+ * Mirrors `writeConflictingWorkingTree`'s own `touched`/`conflicts`
+ * selection, so every path that write is about to touch is validated here,
+ * in one pass, before any of them are.
+ *
+ * `resolved-deleted` carries no mode of its own (a delete writes nothing),
+ * so `REGULAR` stands in: the only mode-sensitive rule `validateIndexPath`
+ * can apply — the `.gitmodules`-symlink rejection — is a write-time concern
+ * that does not apply to a removal. A conflict with no derivable mode is
+ * still validated for the same reason: `conflictsToIndexEntries` writes an
+ * index entry for it regardless of whether any working-tree bytes follow.
+ */
+const validateConflictWorktreePaths = (
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+  changed: ReadonlySet<FilePath>,
+): void => {
+  for (const outcome of outcomes) {
+    if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
+    validateIndexPath(
+      outcome.path,
+      NO_PARSER_OFFSET,
+      outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
+    );
+  }
+  for (const conflict of conflicts) {
+    const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+    validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
+  }
+};
 
 const writeConflictingWorkingTree = async (
   ctx: Context,
@@ -674,12 +715,21 @@ export const writeOutcomeToTree = async (
   matcher: SparseMatcher | undefined,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
-  // `resolved-deleted` is skipped (a delete creates no file, and its path
-  // already passed this same check when the current index was parsed);
+  // Every outcome path is sourced from a tree walk (the merge's `ours`/
+  // `theirs` flatten), never from a parsed index, so it is validated here
+  // regardless of status — a `resolved-deleted` path has NOT already passed
+  // this check anywhere upstream. `resolved-deleted` carries no mode of its
+  // own (a delete writes nothing); REGULAR stands in because the only
+  // mode-sensitive rule this call can trigger — the `.gitmodules`-symlink
+  // rejection — is a write-time concern that does not apply to a removal.
   // `conflict` is skipped because this function no-ops on it (the conflict
   // itself is validated by the parallel conflicts batch instead).
-  if (outcome.status !== 'resolved-deleted' && outcome.status !== 'conflict') {
-    validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
+  if (outcome.status !== 'conflict') {
+    validateIndexPath(
+      outcome.path,
+      NO_PARSER_OFFSET,
+      outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
+    );
   }
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     if (isExcluded(matcher, outcome.path)) return;
@@ -709,10 +759,15 @@ export const writeConflictToTree = async (
   // the kind (symlink / exec bit) is preserved. Every conflict constructor
   // pairs ids with modes, so bytes being derivable implies a mode exists; the
   // guard checks anyway and skips the blob read when no mode is present.
+  //
+  // Path validation runs unconditionally, whether or not a mode is derivable:
+  // `conflictsToIndexEntries` still writes an index entry for a mode-less
+  // conflict, so its path reaches `.git/index` regardless of whether this
+  // function goes on to write working-tree bytes. REGULAR stands in when no
+  // mode is derivable — the only mode-sensitive rule is the write-time-only
+  // `.gitmodules`-symlink rejection, inapplicable when nothing is written.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  if (mode !== undefined) {
-    validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode);
-  }
+  validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
   if (conflict.type === 'distinct-types') {
     await writeDistinctTypesSides(ctx, conflict, scanner);
     return;
