@@ -597,23 +597,64 @@ describe('findTreeEntry', () => {
     });
   });
 
-  describe('Given a sibling entry with a malformed mode AFTER the match in a raw-scanned directory', () => {
+  describe('Given an unrecognised-mode sibling AFTER the match in a raw-scanned directory', () => {
     describe('When the earlier, well-formed entry is resolved', () => {
-      it('Then it resolves cleanly — a malformed sibling beyond the match is not validated', async () => {
+      it('Then it refuses, symmetrically with the same sibling placed before the match', async () => {
         // Arrange — the mirror of the BEFORE case above: `good` sorts first
-        // and is the match, `bad` sits after it. Stopping at the match means
-        // `bad`'s mode is never visited, so this must NOT throw, regardless
-        // of where `bad` sits relative to the target.
+        // and is the match, `bad` sits after it. The scan runs to the end of
+        // the directory, so the verdict cannot depend on which side of the
+        // match the bad sibling sits.
         const ctx = await buildSeededContext();
         const content = concatBytes(rawEntry('100644', 'good'), rawEntry('77777', 'bad'));
         const dirId = await writeRawObjectBytes(ctx, 'tree', content);
         const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
 
         // Act
-        const result = await findTreeEntry(ctx, rootId, 'dir/good');
+        let caught: unknown;
+        try {
+          await findTreeEntry(ctx, rootId, 'dir/good');
+        } catch (error) {
+          caught = error;
+        }
 
         // Assert
-        expect(result?.name).toBe('good');
+        expect(caught).toBeInstanceOf(TsgitError);
+        const modeData = (caught as TsgitError).data;
+        expect(modeData.code).toBe('INVALID_FILE_MODE');
+        if (modeData.code === 'INVALID_FILE_MODE') {
+          expect(modeData.value).toBe('77777');
+        }
+      });
+    });
+  });
+
+  describe('Given a structurally malformed mode AFTER the match in a raw-scanned directory', () => {
+    describe('When the earlier, well-formed entry is resolved', () => {
+      it('Then it refuses with a malformed mode, as git refuses the same tree', async () => {
+        // Arrange — a non-octal mode byte is the parse tier, not the check
+        // tier. Real git refuses `rev-parse <tree>:good` on this tree whether
+        // the bad sibling sits before or after the match, so the walk must
+        // reach it either way.
+        const ctx = await buildSeededContext();
+        const content = concatBytes(rawEntry('100644', 'good'), rawEntry('10064a', 'bad'));
+        const dirId = await writeRawObjectBytes(ctx, 'tree', content);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId)]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await findTreeEntry(ctx, rootId, 'dir/good');
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const treeData = (caught as TsgitError).data;
+        expect(treeData.code).toBe('INVALID_TREE_ENTRY');
+        if (treeData.code === 'INVALID_TREE_ENTRY') {
+          expect(treeData.reason).toBe('malformed mode');
+        }
       });
     });
   });

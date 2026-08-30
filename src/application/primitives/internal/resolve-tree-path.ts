@@ -237,16 +237,23 @@ const matchRawLevel = async (
 };
 
 /**
- * Byte-level scan of one directory's raw entries for `target`, stopping at
- * the first match: mode is validated (`cursorMode`) for every entry visited
- * on the way there, including the match itself, but never for a sibling
- * beyond it — a malformed sibling past the match is not this descent's
- * business, matching git's own `find_tree_entry` loop, which compares names
- * and stops. Returns the FIRST matching entry when a directory holds more
- * than one entry with the same name — but unlike git, this scan does not
- * rely on tree order and does not break early when an entry sorts past
- * `target`, so on an unsorted (fsck-invalid) tree it can resolve a name git
- * itself would report missing.
+ * Byte-level scan of one directory's raw entries for `target`. The walk runs
+ * to the end of the directory and returns the FIRST name match, so a
+ * directory holding the same name twice resolves to the earlier entry.
+ *
+ * It does not stop at the match, and that is deliberate: git validates a
+ * tree's structure across the whole object, so a mode it cannot parse
+ * refuses the lookup whether it sits before or after the matched name
+ * (measured — `rev-parse <tree>:good` fails on a `10064a` sibling in either
+ * position). Stopping early would drop that refusal for trailing entries.
+ * The eager per-entry `cursorMode` call is a different tier: git resolves
+ * happily past an octal-but-unrecognised mode, so refusing one is a
+ * divergence — a pre-existing, recorded one that the parsed root level
+ * shares, kept here so the two levels agree with each other.
+ *
+ * Unlike git, this scan does not rely on tree order and does not break early
+ * when an entry sorts past `target`, so on an unsorted (fsck-invalid) tree
+ * it can resolve a name git itself would report missing.
  *
  * The byte compare below runs on raw bytes, not decoded strings — decoding
  * (a `TextDecoder` call) is deliberately deferred until an entry actually
@@ -260,12 +267,13 @@ const scanRawTreeFor = (
   target: Uint8Array,
 ): TreeEntry | undefined => {
   const cursor = openTreeCursor(content, hash);
+  let matched: TreeEntry | undefined;
   while (!cursor.done) {
-    const matched = scanEntry(cursor, target);
-    if (matched !== undefined) return matched;
+    const hit = scanEntry(cursor, target);
+    matched ??= hit;
     advanceCursor(cursor);
   }
-  return undefined;
+  return matched;
 };
 
 const scanEntry = (cursor: TreeCursor, target: Uint8Array): TreeEntry | undefined => {

@@ -1,62 +1,65 @@
 ---
 subjects:
   - src/application/primitives/internal/resolve-tree-path.ts
-supersedes:
-  - adr: "723"
-    scope: "the carried-forward requirement that the descent validate every entry's mode eagerly, past the matched entry"
 ---
-# 761 — Path descent stops at the first match
+# 761 — Path descent scans the whole directory and returns the first match
 
 - **Status:** accepted
 - **Date:** 2026-08-30
-- **Design:** docs/design/tree-entry-byte-sensitivity.md (review round 1) · **Supersedes/Refines:** supersedes ADR-723 (eager per-entry mode validation only)
+- **Design:** docs/design/tree-entry-byte-sensitivity.md (review round 1) · **Supersedes/Refines:** none — ADR-723's eager-validation ruling stands
 
 ## Context
 
-The descent walked every entry of a directory even after finding its target, because
-ADR-723 carried forward a requirement that each visited entry's mode be validated
-eagerly. Review found the shipped code does not actually do that — `matched ??=`
-short-circuits, so entries after the match are advanced but never validated. All four
-review dimensions found it independently.
+The descent walked every entry of a directory even after finding its target. Review found
+the shipped code did not actually validate those trailing entries — `matched ??=`
+short-circuits, so entries after the match were advanced but never checked. All four
+review dimensions found it independently, and the resulting refusal was
+position-dependent: a bad-mode sibling raised `INVALID_FILE_MODE` before the target and
+was ignored after it.
 
-That leaves the refusal **position-dependent**: an octal-but-unrecognised mode on a
-sibling raises `INVALID_FILE_MODE` when it sorts before the target and is silently
-ignored when it sorts after. Measured on this branch, with the sibling before the target
-the descent throws; with the identical tree content and the sibling after, it resolves
-cleanly.
+The first attempt at a decision here recorded that git "validates neither sibling" and
+therefore ratified stopping at the match. **A direct probe of git 2.55.0 shows that is
+only half true, and the wrong half.** Over a single-level tree searched with
+`git rev-parse <tree>:good`:
 
-Two facts decide the direction. Canonical git validates **neither** sibling's mode during
-a path lookup — `find_tree_entry` compares names and stops. And the full scan is
-expensive: the descent is a measured hot path, and stopping at the match roughly halves
-the average directory scan.
+| fault on a sibling | before the match | after the match |
+|---|---|---|
+| non-octal mode `10064a` (**parse tier**) | `fatal: malformed mode in tree entry` | `fatal: malformed mode in tree entry` |
+| octal-but-unrecognised `777777` (**check tier**) | resolves, exit 0 | resolves, exit 0 |
+
+So git never applies the *check* tier during a path lookup, and always applies the *parse*
+tier across the whole tree regardless of where the match sits. Stopping at the match is
+faithful on the tier git ignores and unfaithful on the tier git enforces.
 
 ## Options considered
 
-1. **Stop at the first match, matching git** — pros: faithful, and roughly halves the average scan on the hottest descent path / cons: a refusal-set change; an `INVALID_FILE_MODE` that fires today stops firing.
-2. **Restore unconditional validation** — pros: keeps today's refusal set and the documented invariant, no new decision / cons: preserves a refusal git does not have, and pays a full scan for it.
-3. **Stop at the match without recording it** — cons: an unrecorded refusal-set change, which is the failure ADR-723 exists to prevent.
+1. **Scan the whole directory, return the first match** — pros: keeps git's structural parity, and the refusal stops depending on sibling order / cons: no scan saving.
+2. **Stop at the first match** — cons: measured to lose parse-tier parity; a malformed sibling after the match stops refusing, where git refuses.
+3. **Stop at the match and drop the check tier from the scan** — cons: matches git for the descent alone, but makes the descent disagree with the root level, which validates every entry through the parse path; it trades one divergence for an internal inconsistency.
 
 ## Decision
 
-**Ratified by the user: option 1.** The descent stops at the first matching entry. Mode
-validation happens for the entries actually visited on the way to the match and for the
-matched entry itself, exactly as git does; a malformed sibling beyond the match is not the
-descent's business. The structural scan still runs for every entry the walk advances
-through, so a tree that cannot be parsed is still refused.
+**Option 1, on the measurement above.** The descent scans every entry of the directory,
+remembers the **first** name match, and returns it after the walk completes. The structural
+scan therefore covers the whole directory, matching git; the check tier stays applied per
+visited entry, which keeps the raw descent consistent with the parsed root level.
 
-**Superseded from ADR-723:** the carried-forward requirement that mode validation stay
-eager per visited entry across the whole directory.
-
-**Carried forward from ADR-723:** the cursor-scan boundary, the per-consumer
-re-implementation rule, and the mode-tier split — all unchanged.
+The check tier's own divergence from git — tsgit refuses an octal-but-unrecognised mode on
+read where git resolves — is **pre-existing and already recorded** as one of the two
+surviving read-path divergences. It is not created or widened here, and it is not this
+decision to change.
 
 ## Consequences
 
 ### Positive
 
-- Path lookup matches git's own loop, and the position-dependence disappears: the same tree gives the same answer regardless of sibling order.
-- The average directory scan on the hot descent path roughly halves.
+- The position-dependent refusal is gone: the same tree gives the same answer regardless of sibling order.
+- Structural parity with git holds across the whole directory.
 
 ### Negative
 
-- A tree whose malformed sibling sorts after the target now resolves where it previously refused. `fsck` remains the surface that reports such a tree, which is where git reports it.
+- No scan saving; the walk is the full directory width, as before.
+
+### Neutral
+
+- The earlier framing of this decision — that stopping at the match was both faster and more faithful — was wrong, and is preserved here rather than quietly replaced. Measuring both tiers separately is what distinguishes them; a single probe of "does git refuse" cannot.

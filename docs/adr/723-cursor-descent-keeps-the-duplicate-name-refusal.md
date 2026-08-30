@@ -11,7 +11,7 @@ subjects:
 > refuses only in `fsck`. Everything else here — the cursor-scan boundary, the per-consumer
 > re-implementation rule, and the whole mode-tier addendum — still stands.
 
-- **Status:** superseded by ADR-752 and ADR-761
+- **Status:** superseded by ADR-752
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-11) · **Supersedes/Refines:** none
 
