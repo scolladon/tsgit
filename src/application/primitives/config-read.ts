@@ -3,6 +3,7 @@ import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js'
 import {
   GIT_C_INT_MAX,
   GIT_C_INT_MIN,
+  GIT_UINT64_MAX,
   parseGitBoolean,
   parseGitInt,
   parseIniSectionsFromTokens,
@@ -686,7 +687,7 @@ export const findFirstInvalidPackInt = async (
     const lowered = token.key.toLowerCase();
     const check = packIntChecker(lowered);
     if (check === undefined) continue;
-    const checked = check(parseGitInt(token.value));
+    const checked = check(token.value);
     if (checked.ok) continue;
     return {
       key: `pack.${lowered}`,
@@ -1217,9 +1218,10 @@ const PACK_WINDOW_KEY = 'window';
 const PACK_DEPTH_KEY = 'depth';
 const PACK_WINDOW_MEMORY_KEY = 'windowmemory';
 
-type PackIntCheck = (parsed: ReturnType<typeof parseGitInt>) => ReturnType<typeof parseGitInt>;
+type PackIntCheck = (value: string | null) => ReturnType<typeof parseGitInt>;
 
-const checkPackCIntBound: PackIntCheck = (parsed) => {
+const checkPackCIntBound: PackIntCheck = (value) => {
+  const parsed = parseGitInt(value);
   if (!parsed.ok) return parsed;
   if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) {
     return { ok: false, reason: 'out of range' };
@@ -1230,7 +1232,11 @@ const checkPackCIntBound: PackIntCheck = (parsed) => {
 // git's own unsigned-long grammar: a negative value is a syntax refusal
 // ('invalid unit'), not a magnitude refusal — unlike `window`/`depth`'s C
 // `int`, this key has no signed representation to be "out of range" of.
-const checkPackWindowMemoryBound: PackIntCheck = (parsed) => {
+// `parseGitInt` is given the unsigned-long ceiling (GIT_UINT64_MAX) instead
+// of its own int64 default, so a magnitude between int64-max and uint64-max
+// — refused for window/depth — reads as valid here.
+const checkPackWindowMemoryBound: PackIntCheck = (value) => {
+  const parsed = parseGitInt(value, GIT_UINT64_MAX);
   if (!parsed.ok) return parsed;
   if (parsed.value < 0) return { ok: false, reason: 'invalid unit' };
   return parsed;
@@ -1262,7 +1268,7 @@ const applyPackIntEntry = (
   value: string | null,
   check: PackIntCheck,
 ): MutablePack | undefined => {
-  const checked = check(parseGitInt(value));
+  const checked = check(value);
   return checked.ok ? { ...pack, [field]: checked.value } : undefined;
 };
 

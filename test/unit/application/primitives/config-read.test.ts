@@ -7170,13 +7170,62 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('Given [pack] windowMemory in the documented int64-vs-unsigned-long divergence gap', () => {
-    describe('When findFirstInvalidPackInt', () => {
-      it('Then it reports out of range — real git accepts this value, tsgit does not (documented divergence)', async () => {
-        // Arrange — 18446744073709551615 is inside [2**63, 2**64), which real
-        // git's unsigned long accepts but tsgit's int64-bounded parseGitInt cannot.
+  describe('Given [pack] windowMemory = 18446744073709551615 (2**64-1, the unsigned long max)', () => {
+    describe('When readConfig', () => {
+      it("Then pack.windowMemory is accepted — real git's unsigned long allows the full 64-bit range", async () => {
+        // Arrange — pinned against git 2.55.0: exit 0, accepted, unlike the
+        // int64-bounded C `int` window/depth share. Precision above 2**53 is
+        // known and acceptable — the value is a byte budget, and any figure
+        // this large is unlimited in practice.
         const ctx = createMemoryContext();
         await seed(ctx, '[pack]\n  windowMemory = 18446744073709551615\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.windowMemory).toBe(Number(BigInt('18446744073709551615')));
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — within the unsigned long bound, not int64', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 18446744073709551615\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory = 9223372036854775808 (int64 max + 1, the bound-separating value)', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — accepted, proving the bound is unsigned long, not int64', async () => {
+        // Arrange — one past parseGitInt's own int64 ceiling; pack.depth
+        // refuses this exact value as out of range, windowMemory must not.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 9223372036854775808\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory = 18446744073709551616 (2**64, one past the unsigned long max)', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it reports out of range — the uint64 ceiling, proving the bound is not unlimited', async () => {
+        // Arrange — pinned against git 2.55.0: fatal, out of range.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 18446744073709551616\n');
 
         // Act
         const result = await findFirstInvalidPackInt(ctx);

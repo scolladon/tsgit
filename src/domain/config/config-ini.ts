@@ -691,6 +691,12 @@ type GitIntResult =
 const GIT_INT_MAX = BigInt('9223372036854775807');
 const GIT_INT_MIN = BigInt('-9223372036854775808');
 
+// git's `unsigned long` ceiling (2**64-1): the upper bound a caller passes to
+// `parseGitInt`'s `max` parameter for a key whose own grammar is unsigned long
+// rather than `--type=int`'s int64 (e.g. `pack.windowMemory`). Pinned against
+// git 2.55.0: 18446744073709551615 is accepted, 18446744073709551616 is not.
+export const GIT_UINT64_MAX = BigInt('18446744073709551615');
+
 // Unit multipliers accepted by git_parse_signed (k/K/m/M/g/G = ×1024^n).
 // t/T are NOT accepted by git 2.54.0 (pinned empirically).
 const UNIT_SCALE: ReadonlyMap<string, bigint> = new Map([
@@ -746,8 +752,12 @@ const magnitudeOf = (token: string, radix: 8 | 10 | 16): bigint | null => {
 
 // Total pure function: mirrors git's strtoimax base-0 grammar (decimal, `0x` hex,
 // leading-`0` octal, sign, single k/m/g unit ×1024^n). Returns ok+value on success,
-// or not-ok+reason on failure — never throws.
-export const parseGitInt = (value: string | null): GitIntResult => {
+// or not-ok+reason on failure — never throws. `max` defaults to git's own
+// `--type=int` ceiling (GIT_INT_MAX); a caller whose key is `unsigned long`
+// rather than int64 passes `GIT_UINT64_MAX` instead. The lower bound never
+// varies by caller — every git integer grammar shares one negative floor —
+// so a negative magnitude beyond it stays `out of range` regardless of `max`.
+export const parseGitInt = (value: string | null, max: bigint = GIT_INT_MAX): GitIntResult => {
   // Trim leading ASCII whitespace (git's behaviour), then strip one optional sign.
   // equivalent-mutant: the `''` null-fallback only matters when `value` is null (a valueless key);
   // Stryker's non-numeric "Stryker was here!" replacement is rejected by `matchDigits` exactly as the
@@ -767,7 +777,7 @@ export const parseGitInt = (value: string | null): GitIntResult => {
   if (magnitude === null) return { ok: false, reason: 'out of range' };
 
   const result = (trimmed[0] === '-' ? -magnitude : magnitude) * multiplier;
-  if (result < GIT_INT_MIN || result > GIT_INT_MAX) return { ok: false, reason: 'out of range' };
+  if (result < GIT_INT_MIN || result > max) return { ok: false, reason: 'out of range' };
   return { ok: true, value: Number(result) };
 };
 
