@@ -81,6 +81,15 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   first file — a stash carrying a hostile name (a `.git` alias, or a
   traversal) is refused wholesale with `INVALID_INDEX_ENTRY`, and nothing is
   written to the working tree.
+- **The tracked 3-way merge gets the same whole-set, pre-write check,
+  separately.** Before any conflict is materialised, every outcome/conflict
+  path the tracked merge (base = stash base, ours = current index, theirs =
+  stashed tree) is about to write is checked in one pass against the same
+  index-entry name rules — a hostile path anywhere in that set refuses the
+  whole write with `INVALID_INDEX_ENTRY`, atomically, whether or not it is the
+  path a straightforward per-entry write would reach first. This runs on
+  every `apply`/`pop`, independent of `includeUntracked` and the untracked
+  check above.
 
 ## Examples
 
@@ -110,7 +119,10 @@ await repo.stash.apply({ restoreIndex: true });
 - `STASH_APPLY_WOULD_OVERWRITE` — `apply`/`pop` would overwrite uncommitted
   working-tree changes or an existing untracked file.
 - `INVALID_INDEX_ENTRY` — an untracked entry in the stash fails git's own
-  index-entry name rules. `apply`/`pop` restores nothing.
+  index-entry name rules (`apply`/`pop` restores nothing); or, separately, a
+  conflicting tracked-merge outcome/conflict path fails the same rules (every
+  path in that batch is checked before any of them is written, so a hostile
+  path anywhere refuses the whole conflict write, atomically).
 - `INVALID_COMMIT` — `refs/stash` points at a commit that is not a stash entry.
 
 See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.

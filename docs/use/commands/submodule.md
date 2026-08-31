@@ -41,7 +41,16 @@ interface SubmoduleEntry {
 - **Source of truth = the tree.** Every gitlink (mode `160000`) at any depth becomes one entry; joined with `submodule.<name>.{path,url,branch}` from the tree's `.gitmodules` blob.
 - **Network is never touched.** `url` is opaque data carried through from `.gitmodules`.
 - **Nested recursion** descends only when the absorbed gitdir (`<gitDir>/modules/<name>`) is locally available. Uninitialised, missing-commit, cycle-detected, and depth-capped submodules yield their own entry but no children — git-faithful with `git submodule status --recursive`.
-- **Name validation** rejects CVE-2018-17456-style attacks (empty / `.` / `..` segments, backslash, absolute, drive-prefixed, leading `-`, control characters).
+- **A hostile gitlink path refuses instead of being silently skipped.** The
+  "yields its own entry but no children" skip above covers only local
+  *availability* — it does not cover the gitlink entry's own tree path. That
+  path is checked against git's index-entry name rules (absolute path; `.`,
+  `..`, or empty segment; `.git`/`.gitmodules` alias) *before* the
+  local-availability probe runs, so `list({ recursive: true })` over a tree
+  carrying one throws `INVALID_INDEX_ENTRY`, regardless of whether the
+  submodule at that path happens to be initialised locally. `sync` and
+  `deinit` derive the same submodule context and inherit the same refusal.
+- **Name validation** rejects CVE-2018-17456-style attacks (empty / `.` / `..` segments, backslash, absolute, drive-prefixed, leading `-`, control characters) — this is a check on the `.gitmodules` **subsection name**, distinct from the gitlink tree-path check above.
 - **CVE-2018-11235 hardening:** `.gitmodules` is only read when the tree entry mode is `100644` / `100755` (symlink / directory / gitlink modes are ignored).
 - **A malformed `submodule.<name>.active` value throws.** Checked once per call across every `submodule.<n>.active` entry in `.git/config`; a value git's boolean grammar refuses throws `CONFIG_BAD_BOOLEAN_VALUE`. The subsectionless `[submodule] active` is inert in git and is never checked.
 
@@ -214,7 +223,10 @@ interface SubmoduleSyncEntry {
 
 Re-points `submodule.<name>.url` from the current `.gitmodules` — overwriting the
 existing value (unlike `init`). Operates only on **initialised** submodules (a
-fresh clone with nothing initialised is a no-op). When the submodule is checked
+fresh clone with nothing initialised is a no-op) — but the gitlink path's own
+name check (see `list` above) runs before that initialised-vs-not probe, so a
+hostile gitlink path still throws `INVALID_INDEX_ENTRY` even for a submodule
+that would otherwise be a silent no-op. When the submodule is checked
 out, its own `remote.origin.url` is updated to the same resolved url. With
 `recursive`, descends into each checked-out submodule and syncs its nested ones
 (depth-capped + cycle-guarded). The result lists the top level; nested syncs are
@@ -244,7 +256,9 @@ config section and clears its working-tree directory (the empty directory,
 submodule with local modifications (modified tracked content **or** untracked
 files) refuses with `SUBMODULE_HAS_MODIFICATIONS` unless `force: true`. Each
 submodule is fully deinit-ed before the next, so a later dirty one leaves earlier
-ones completely deinit-ed (git's incremental behaviour).
+ones completely deinit-ed (git's incremental behaviour). The cleanliness check
+derives the same submodule context `list` does, so a hostile gitlink path
+throws `INVALID_INDEX_ENTRY` there too — see `list` above.
 
 ```ts
 await repo.submodule.deinit({ paths: ['libs/a'] });
