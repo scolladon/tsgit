@@ -83,6 +83,8 @@ export type {
   PackEntryMeta,
   PackfileResult,
   PackIndexWriterEntry,
+  PackWriterBaseEntry,
+  PackWriterDeltaEntry,
   PackWriterEntry,
 } from './pack-writer.js';
 export { serializePackfile, serializePackIndex } from './pack-writer.js';

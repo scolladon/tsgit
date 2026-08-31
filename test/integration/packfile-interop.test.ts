@@ -21,8 +21,10 @@ import { writeObject } from '../../src/application/primitives/write-object.js';
 import { bytesToHex, hexToBytes } from '../../src/domain/objects/encoding.js';
 import { type ObjectId, serializeObject } from '../../src/domain/objects/index.js';
 import { crc32 } from '../../src/domain/storage/crc32.js';
+import { encodeDelta } from '../../src/domain/storage/delta-encode.js';
 import { encodePackEntryHeader, PACK_ENTRY_TYPE } from '../../src/domain/storage/pack-entry.js';
 import {
+  type PackWriterBaseEntry,
   type PackWriterEntry,
   serializePackfile,
   serializePackIndex,
@@ -66,7 +68,7 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
 
         // Act — assemble pack + idx in lockstep so per-entry crc/offset
         // metadata feeds the idx writer directly.
-        const writerEntries: PackWriterEntry[] = [];
+        const writerEntries: PackWriterBaseEntry[] = [];
         const indexEntries: Array<{ id: string; crc32: number; offset: number }> = [];
         for (const id of ids) {
           const blob = {
@@ -120,6 +122,84 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
         expect(typeof crc32).toBe('function');
         expect(typeof hexToBytes).toBe('function');
         expect(typeof encodePackEntryHeader).toBe('function');
+      });
+    });
+  });
+
+  describe('Given a base blob and an OFS_DELTA entry derived from it', () => {
+    describe('When the .pack and .idx are dropped into a clean repo', () => {
+      it('Then git fsck accepts the pack and cat-file reconstructs the delta target', async () => {
+        // Arrange — a base blob and a longer target blob that shares most
+        // of the base's bytes, so encodeDelta emits a real COPY, not just
+        // literal INSERTs.
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const baseText = 'The quick brown fox jumps over the lazy dog\n';
+        const targetText = `${baseText}Now with an extra sentence appended after.\n`;
+        const baseBytes = new TextEncoder().encode(baseText);
+        const targetBytes = new TextEncoder().encode(targetText);
+        const baseId = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: baseBytes,
+        });
+        const targetId = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: targetBytes,
+        });
+
+        // Act — a base entry plus an OFS_DELTA entry whose payload is the
+        // deflated delta instruction stream against the base's raw content.
+        const baseCompressed = await ctx.compressor.deflate(baseBytes);
+        const deltaInstructions = encodeDelta(baseBytes, targetBytes)!;
+        const deltaCompressed = await ctx.compressor.deflate(deltaInstructions);
+        const writerEntries: PackWriterEntry[] = [
+          {
+            type: PACK_ENTRY_TYPE.BLOB,
+            uncompressedSize: baseBytes.length,
+            compressedData: baseCompressed,
+          },
+          {
+            type: PACK_ENTRY_TYPE.OFS_DELTA,
+            uncompressedSize: deltaInstructions.length,
+            compressedData: deltaCompressed,
+            baseIndex: 0,
+          },
+        ];
+        const packResult = serializePackfile(writerEntries);
+        const packTrailer = await ctx.hash.hash(packResult.data);
+        const packBytes = new Uint8Array(packResult.data.length + packTrailer.length);
+        packBytes.set(packResult.data, 0);
+        packBytes.set(packTrailer, packResult.data.length);
+        const packSha = bytesToHex(packTrailer);
+        const indexEntries = [
+          {
+            id: baseId as string,
+            crc32: packResult.entries[0]!.crc32,
+            offset: packResult.entries[0]!.offset,
+          },
+          {
+            id: targetId as string,
+            crc32: packResult.entries[1]!.crc32,
+            offset: packResult.entries[1]!.offset,
+          },
+        ];
+        const idxBody = serializePackIndex(indexEntries, packTrailer);
+        const idxTrailerBytes = await ctx.hash.hash(idxBody);
+        const idxBytes = new Uint8Array(idxBody.length + idxTrailerBytes.length);
+        idxBytes.set(idxBody, 0);
+        idxBytes.set(idxTrailerBytes, idxBody.length);
+
+        // Drop both into peer and validate.
+        runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);
+        const packDir = path.join(pair.peer, '.git/objects/pack');
+        await writeFile(path.join(packDir, `pack-${packSha}.pack`), packBytes);
+        await writeFile(path.join(packDir, `pack-${packSha}.idx`), idxBytes);
+
+        // Assert
+        runGit(['-C', pair.peer, 'fsck', '--strict']);
+        const out = runGit(['-C', pair.peer, 'cat-file', '-p', targetId as string]);
+        expect(out).toBe(targetText);
       });
     });
   });

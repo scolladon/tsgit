@@ -16,7 +16,7 @@ import { type GitObject, type ObjectId, serializeObject } from '../../domain/obj
 import {
   PACK_ENTRY_TYPE,
   type PackEntryMeta,
-  type PackWriterEntry,
+  type PackWriterBaseEntry,
   serializePackfile,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
@@ -38,7 +38,7 @@ export interface BuildPackResult {
 }
 
 export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<BuildPackResult> => {
-  const writerEntries: PackWriterEntry[] = [];
+  const writerEntries: PackWriterBaseEntry[] = [];
   for (const oid of input.oids) {
     const object = await readObject(ctx, oid);
     writerEntries.push(await encodeEntry(ctx, object));
@@ -52,7 +52,7 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
   return { bytes, sha, objectCount: writerEntries.length, entries: packfile.entries };
 };
 
-const encodeEntry = async (ctx: Context, object: GitObject): Promise<PackWriterEntry> => {
+const encodeEntry = async (ctx: Context, object: GitObject): Promise<PackWriterBaseEntry> => {
   const loose = serializeObject(object, ctx.hashConfig);
   const nul = loose.indexOf(0);
   // loose came from our own serializeObject which always writes
