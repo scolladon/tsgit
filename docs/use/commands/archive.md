@@ -62,8 +62,9 @@ interface ArchiveEntry {
   - Unresolvable treeish (unborn HEAD, bad ref) → from `revParse`.
   - Treeish resolves to a blob → `UNEXPECTED_OBJECT_TYPE`.
   - (Not pre-stream — see below.) A tree past `core.maxTreeDepth` → `TREE_DEPTH_EXCEEDED`. `archive` had **no** depth refusal at any input before this change — git caps `archive`'s traversal exactly like every other traversal (`git archive --format=tar` on a tree past the cap exits 128). Its `maxEntries` override is unrelated and stays: git does **not** cap `archive`'s entry count, only its depth, so `archive` passes `walkTree` an effectively-unbounded `maxEntries` while leaving `maxDepth` at `walkTree`'s own `core.maxTreeDepth` default.
+  - (Not pre-stream — see below.) An unsafe entry path (an absolute path; a `.`, `..`, or empty segment; a `.git`/`.gitmodules` alias) → `INVALID_INDEX_ENTRY`. **Newly refused by this version** — `walkTree` never validates entry names (that is git's `mktree` escape hatch), so `archive` previously wrote a raw tree entry's name straight into a tar/zip member path unchecked; a `../../etc/evil`-named entry archived to a member of exactly that name. Each entry is now checked by the same path validator the index and working-tree sinks use, at the same boundary git's own `archive` refuses it (`git archive` exits 128 with `error: invalid path '…'`). `data.offset` is always `NO_PARSER_OFFSET` (`-1`), since the path was not sourced from a parsed index buffer.
 
-  **This one refusal is raised while the entry stream is consumed, not before it is opened.** `archive` returns `entries` as a lazy async generator, so the depth guard fires on the iteration that reaches the offending level. A caller that awaits `archive(...)` inside a `try` but iterates `entries` outside it will see the refusal escape as an unhandled rejection — iterate inside the `try`.
+  **These two refusals are raised while the entry stream is consumed, not before it is opened.** `archive` returns `entries` as a lazy async generator, so the depth guard and the path check both fire on the iteration that reaches the offending entry. A caller that awaits `archive(...)` inside a `try` but iterates `entries` outside it will see either refusal escape as an unhandled rejection — iterate inside the `try`.
 
 ## Examples
 
@@ -108,6 +109,7 @@ console.log(tagResult.commitTime); // <committer epoch>
 - `REVPARSE_UNRESOLVED` — `treeish` uses a reflog-selector form (`@{n}`, `@{date}`) that cannot be resolved (e.g. empty reflog).
 - `UNEXPECTED_OBJECT_TYPE` — `treeish` resolves to a blob; only tree, commit, and tag are accepted.
 - `TREE_DEPTH_EXCEEDED` — the tree exceeds `core.maxTreeDepth` (default 2048). Newly refused by this version — `archive` previously imposed no depth cap at any input.
+- `INVALID_INDEX_ENTRY` — an entry's path is an absolute path, or carries a `.`, `..`, or empty segment, or a `.git`/`.gitmodules` alias. Newly refused by this version — `archive` previously wrote any entry name straight into a tar/zip member path unchecked.
 
 ## Serializers
 

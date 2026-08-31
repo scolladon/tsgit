@@ -12,7 +12,10 @@ repo.primitives.readTree(ref: RefName | ObjectId): Promise<Tree>;
 
 ```ts
 const tree = await repo.primitives.readTree('HEAD');
-for (const entry of tree.data.entries) console.log(entry.name, entry.mode, entry.id);
+for (const entry of tree.entries) {
+  // `name` is the display view; `nameBytes` is what git stored.
+  console.log(entry.name, entry.nameBytes, entry.mode, entry.id);
+}
 ```
 
 ## See also

@@ -214,6 +214,20 @@ reconstructed from git's stderr text.
   `.gitattributes` blob-content checks (`gitmodulesUrl`, `gitmodulesParse`,
   `gitattributesLineLength`, …) and `badDateOverflow` on overflowing
   commit/tag dates.
+- **The `.git`/`.gitmodules`/`.gitattributes`/`.gitignore`/`.mailmap` name
+  checks fold aliases the way git does, not a literal-byte match.**
+  `hasDotgit`, `gitmodulesSymlink`, `gitmodulesBlob`, `gitattributesSymlink`,
+  `gitattributesBlob`, `gitignoreSymlink` and `mailmapSymlink` each compare the
+  entry name through git's `is_hfs_dotgit` / `is_ntfs_dotgit` fold before
+  testing it against the literal: every HFS-ignorable code point (U+200C–
+  U+200F, U+202A–U+202E, U+206A–U+206F, U+FEFF) is dropped at any position,
+  the NTFS 8.3 short-name and stream-suffix forms (`git~1`, `gitmod~1`…`~4`,
+  each optionally followed by trailing dots/spaces) are recognised, and the
+  comparison is case-insensitive — so `.GIT`, `git~1` and a mark-obfuscated
+  `.git` all report `hasDotgit`, not only the exact lower-case name. The fold
+  applies only to these seven alias checks; the duplicate key, the sort key
+  and the length count (`duplicateEntries`, `treeNotSorted`, `largePathname`)
+  stay raw-byte comparisons, matching how git compares those.
 - **Oid width follows the repository's hash algorithm.** A commit's `tree` and
   `parent` lines, a tag's `object` line, and a tree entry's binary sha are only
   well-formed at the width `extensions.objectFormat` declares — 40 hex (20

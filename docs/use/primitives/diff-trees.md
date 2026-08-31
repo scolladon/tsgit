@@ -54,13 +54,15 @@ for the full behaviour and the numstat omit rule.
 With `recursive: true`, the walk enforces only the structural checks a tree
 object needs to be readable at all — missing space after mode, malformed or
 empty mode, missing NUL after name, empty filename, truncated hash — throwing
-`INVALID_TREE_ENTRY` when one is hit, in either tree, at any depth. An
-unsorted tree, a duplicate entry name, or a `.`/`..`/embedded-`/` entry name is
-walked and diffed exactly as `git diff-tree -r` does, not refused. (The
-non-recursive path still refuses invalid or duplicate names via the parsed
-`Tree`'s own validation, but silently re-sorts an unsorted tree rather than
-diffing it in on-disk order or refusing it — a pre-existing divergence,
-unrelated to `recursive: true`.)
+`INVALID_TREE_ENTRY` when one is hit, in either tree, at any depth. A
+duplicate entry name, or a `.`/`..`/embedded-`/` entry name, is walked and
+diffed exactly as `git diff-tree -r` does, not refused — on the recursive
+merge-join, and on the non-recursive path too, since neither `readTree` nor
+the parsed `Tree` it returns refuses those classes either (no git read path
+does). The one remaining asymmetry: an unsorted tree is diffed in on-disk
+order by the recursive merge-join, but silently re-sorted by the non-recursive
+path before diffing — a pre-existing divergence, unrelated to `recursive:
+true`.
 
 ## Throws
 
