@@ -3124,12 +3124,16 @@ well-deltified pack can use to keep tsgit's `gc` off it entirely.
 
 **Retired.** `docs/design/delta-writing-packer.md` (ADRs 767–778) ships the delta-capable writer
 this note called for. Re-measured on the same three corpora, against
-`git -c pack.threads=1 repack -a -d` on the same object set: **×1.58** on the barely-deltifiable
-corpus, **×2.05** on tsgit's own real history — not `×1.00`, because `buildPack`'s window orders
-delta-base candidates by size, not git's path/name-hash — and **×5.43** on the deep-delta-chain
-corpus, the shape where that ordering gap bites hardest (a long run of same-size versions of one
-file ties under size ordering, so the window samples the wrong neighbours). See
-`docs/use/commands/maintenance.md` §"The size trade" for the class a caller should plan against.
+`git -c pack.threads=1 repack -a -d -f` (`-f` forces a fresh delta search rather than reusing
+whichever deltas the corpus's own pack already carries) on the same object set: **×1.58** on the
+barely-deltifiable corpus, **×2.05** on tsgit's own real history — not `×1.00`, because
+`buildPack`'s window orders delta-base candidates by size, not git's path/name-hash — and
+**×5.43** on the deep-delta-chain corpus, the shape where that ordering gap bites hardest (a long
+run of same-size versions of one file ties under size ordering, so the window samples the wrong
+neighbours). Re-checked after `8f03cf12` (`fix(storage): flush delta literal runs incrementally
+instead of spreading them`) — a `RangeError`-avoiding rewrite that deliberately changes emitted
+delta bytes at the margin: the brackets land unchanged. See `docs/use/commands/maintenance.md`
+§"The size trade" for the class a caller should plan against.
 
 `ctx.fs.rm` throwing `FILE_NOT_FOUND` on an already-gone path (`ports/file-system.ts:106-107`) must
 be tolerated **by code, not by a bare catch**: narrow to that one code and rethrow the rest.
@@ -3555,7 +3559,7 @@ fraction) and its entry-cap and sizer-omission fixes.
 - ~~**A delta-capable pack writer.**~~ **Shipped** — `docs/design/delta-writing-packer.md`
   (ADRs 767–778). `buildPack` now selects and writes `OFS_DELTA` chains; consolidation no longer
   re-emits existing delta chains as full bases. Re-measured against
-  `git -c pack.threads=1 repack -a -d` on the same corpora: **×1.58** barely-deltifiable,
+  `git -c pack.threads=1 repack -a -d -f` on the same corpora: **×1.58** barely-deltifiable,
   **×2.05** real history, **×5.43** worst-case deep-delta-chain (§the size trade, measured) —
   down from the **×1.29 … ×6.91** base-only brackets this row predicted. `*.keep` (Pin V) remains
   the caller's escape hatch for a pack they want left alone.

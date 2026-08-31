@@ -212,7 +212,7 @@ interface MaintenanceResult {
 tsgit's pack writer selects and writes delta chains (`OFS_DELTA`), the same
 format git uses, so consolidating a repository no longer inflates it the way
 a base-entries-only writer would. Measured against
-`git -c pack.threads=1 repack -a -d` on the same object set: **×1.58** on
+`git -c pack.threads=1 repack -a -d -f` on the same object set: **×1.58** on
 content that barely deltifies to begin with, **×2.05** on tsgit's own real
 history (all branches) — both classes to plan against for an ordinary
 repository. The gap stays wide, up to **×5.43**, for one shape specifically:
