@@ -31,7 +31,11 @@ import {
   type PackWriterEntry,
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readObjectMetadata, readRawObject } from '../read-object.js';
+import {
+  type ObjectMetadataWithContent,
+  readObjectMetadataWithContent,
+  readRawObject,
+} from '../read-object.js';
 import { boundedMapFor } from './concurrency.js';
 
 export interface DeltifiedEntry {
@@ -41,6 +45,11 @@ export interface DeltifiedEntry {
 
 interface EmissionEntry extends PackEmissionKey {
   readonly id: ObjectId;
+  /** The loose route's already-inflated content, when `buildEmissionOrder`
+   *  could afford to carry it forward (see `boundCarriedContent`) — absent
+   *  for every packed object and for any loose object beyond the residency
+   *  bound, both of which the emission loop re-reads instead. */
+  readonly content?: Uint8Array;
 }
 
 interface PendingMember {
@@ -61,16 +70,51 @@ interface Candidate {
   readonly emissionIndex: number;
 }
 
+/**
+ * Threads the loose route's already-inflated content (see
+ * `readObjectMetadataWithContent`) into each `EmissionEntry`, capped at
+ * `budget` total carried bytes so one `deltifyEntries` call never holds
+ * materially more loose content resident at once than `ctx.deltaCache`
+ * itself is configured to — the same "how much raw object content this
+ * session keeps resident to avoid a redundant read" policy, reused rather
+ * than duplicated as an unrelated second constant. Objects beyond the cap,
+ * and every packed object (whose `content` is always `undefined`), fall
+ * back to the plain second read the emission loop already had — never a
+ * regression, only a bounded improvement.
+ */
+function boundCarriedContent(
+  oids: ReadonlyArray<ObjectId>,
+  metas: ReadonlyArray<ObjectMetadataWithContent>,
+  budget: number,
+): EmissionEntry[] {
+  const entries: EmissionEntry[] = [];
+  let carriedBytes = 0;
+  for (const [i, id] of oids.entries()) {
+    const meta = metas[i]!;
+    const key = {
+      id,
+      type: objectTypeToPackEntryType(meta.type),
+      uncompressedSize: meta.uncompressedSize,
+    };
+    const content = meta.content;
+    if (content === undefined || carriedBytes + content.length > budget) {
+      entries.push(key);
+      continue;
+    }
+    carriedBytes += content.length;
+    entries.push({ ...key, content });
+  }
+  return entries;
+}
+
 async function buildEmissionOrder(
   ctx: Context,
   oids: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<EmissionEntry>> {
-  const metas = await boundedMapFor(ctx, 'ioBound', oids, (id) => readObjectMetadata(ctx, id));
-  const keys = oids.map((id, i) => ({
-    id,
-    type: objectTypeToPackEntryType(metas[i]!.type),
-    uncompressedSize: metas[i]!.uncompressedSize,
-  }));
+  const metas = await boundedMapFor(ctx, 'ioBound', oids, (id) =>
+    readObjectMetadataWithContent(ctx, id),
+  );
+  const keys = boundCarriedContent(oids, metas, ctx.deltaCache.maxSize);
   return [...keys].sort(comparePackEmissionOrder);
 }
 
@@ -174,43 +218,60 @@ function memberWeight(member: Pick<WindowMember, 'content' | 'index'>): number {
   return member.content.length + member.index.heads.byteLength + member.index.next.byteLength;
 }
 
-/** Evicts the oldest member (FIFO `shift`) while either bound is violated —
- *  both checks run on every admission. */
+/** The window array and its resident-byte total, encapsulated as one value
+ *  so the two can never drift apart the way two hand-kept variables can.
+ *  `window` stays a plain array walked back to front — never a hash-keyed
+ *  container — `evictToFit`/`admitToWindow` just stop mutating it in place
+ *  and return a new one instead (CQS: query in, new value out). */
+interface WindowState {
+  readonly window: ReadonlyArray<WindowMember>;
+  readonly residentBytes: number;
+}
+
+/** Evicts the oldest member (index 0, FIFO) while either bound is violated —
+ *  both checks run on every admission. Pure: returns a new `WindowState`,
+ *  never mutates `window`. */
 function evictToFit(
-  window: WindowMember[],
+  window: ReadonlyArray<WindowMember>,
   residentBytes: number,
   policy: DeltaPolicy,
   incomingBytes: number,
-): number {
+): WindowState {
+  let members = window;
   let bytes = residentBytes;
-  while (window.length > 0 && exceedsCount(window, policy)) {
-    bytes -= memberWeight(window.shift()!);
+  while (members.length > 0 && exceedsCount(members, policy)) {
+    bytes -= memberWeight(members[0]!);
+    members = members.slice(1);
   }
-  while (window.length > 0 && exceedsBudget(bytes, incomingBytes, policy)) {
-    bytes -= memberWeight(window.shift()!);
+  while (members.length > 0 && exceedsBudget(bytes, incomingBytes, policy)) {
+    bytes -= memberWeight(members[0]!);
+    members = members.slice(1);
   }
-  return bytes;
+  return { window: members, residentBytes: bytes };
 }
 
 /**
  * Admits `pending` to the window unless it — content PLUS its built index —
  * alone exceeds the whole memory budget: a candidate that large is never
  * admitted, so nothing ever offers it as a base. The index is built here, on
- * admission, and dropped whenever `evictToFit` shifts a member out.
+ * admission, and dropped whenever `evictToFit` drops a member. Pure: returns
+ * a new `WindowState`, never mutates `window`.
  */
 function admitToWindow(
-  window: WindowMember[],
+  window: ReadonlyArray<WindowMember>,
   residentBytes: number,
   policy: DeltaPolicy,
   pending: PendingMember,
-): number {
+): WindowState {
   const member: WindowMember = { ...pending, index: createDeltaIndex(pending.content) };
   const memberBytes = memberWeight(member);
   const overBudget = policy.windowMemoryBudget > 0 && memberBytes > policy.windowMemoryBudget;
-  if (overBudget) return residentBytes;
+  if (overBudget) return { window, residentBytes };
   const afterEviction = evictToFit(window, residentBytes, policy, memberBytes);
-  window.push(member);
-  return afterEviction + memberBytes;
+  return {
+    window: [...afterEviction.window, member],
+    residentBytes: afterEviction.residentBytes + memberBytes,
+  };
 }
 
 export async function deltifyEntries(
@@ -219,15 +280,14 @@ export async function deltifyEntries(
   policy: DeltaPolicy,
 ): Promise<ReadonlyArray<DeltifiedEntry>> {
   const order = await buildEmissionOrder(ctx, oids);
-  const window: WindowMember[] = [];
-  let residentBytes = 0;
+  let state: WindowState = { window: [], residentBytes: 0 };
   const results: DeltifiedEntry[] = [];
   for (const [emissionIndex, key] of order.entries()) {
-    const { content } = await readRawObject(ctx, key.id);
-    const candidate = selectBestCandidate(content, window, key.type, policy);
+    const content = key.content ?? (await readRawObject(ctx, key.id)).content;
+    const candidate = selectBestCandidate(content, state.window, key.type, policy);
     const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
     results.push({ id: key.id, entry: outcome.entry });
-    residentBytes = admitToWindow(window, residentBytes, policy, {
+    state = admitToWindow(state.window, state.residentBytes, policy, {
       id: key.id,
       type: key.type,
       chainDepth: outcome.chainDepth,

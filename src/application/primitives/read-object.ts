@@ -188,6 +188,18 @@ export interface ObjectMetadata {
   readonly uncompressedSize: number;
 }
 
+/**
+ * `ObjectMetadata` plus the content the loose route already inflated to
+ * compute `uncompressedSize` — see `readObjectMetadataWithContent`. Every
+ * packed route leaves `content` `undefined`: a packed base entry gets its
+ * size straight from the pack header (zero inflate) and a packed delta gets
+ * it from the delta instruction stream (not the target's own bytes), so
+ * neither ever has final content to hand back.
+ */
+export interface ObjectMetadataWithContent extends ObjectMetadata {
+  readonly content?: Uint8Array;
+}
+
 type DeltaEntryHeader = OfsPackEntryHeader | RefPackEntryHeader;
 
 /** `isBase`'s own predicate type is an intersection, which TypeScript won't
@@ -198,21 +210,39 @@ function isDeltaHeader(header: PackEntryHeader): header is DeltaEntryHeader {
 }
 
 export async function readObjectMetadata(ctx: Context, id: ObjectId): Promise<ObjectMetadata> {
-  const registry = getPackRegistry(ctx);
-  return withLazyFetchRetry(ctx, id, registry, () => resolveObjectMetadata(ctx, registry, id));
+  const { type, uncompressedSize } = await readObjectMetadataWithContent(ctx, id);
+  return { type, uncompressedSize };
 }
 
-async function resolveObjectMetadata(
+/**
+ * Like `readObjectMetadata`, but surfaces the loose route's already-inflated
+ * content instead of discarding it. A caller that needs both metadata and
+ * content for the same object (deltify's emission-order pass) reads a loose
+ * object once instead of twice; packed routes are untouched and never carry
+ * content (see `ObjectMetadataWithContent`).
+ */
+export async function readObjectMetadataWithContent(
+  ctx: Context,
+  id: ObjectId,
+): Promise<ObjectMetadataWithContent> {
+  const registry = getPackRegistry(ctx);
+  return withLazyFetchRetry(ctx, id, registry, () =>
+    resolveObjectMetadataWithContent(ctx, registry, id),
+  );
+}
+
+async function resolveObjectMetadataWithContent(
   ctx: Context,
   registry: PackRegistry,
   id: ObjectId,
-): Promise<ObjectMetadata> {
+): Promise<ObjectMetadataWithContent> {
   const hit = await registry.lookup(id);
   if (hit === undefined) {
     // No pack claims this id: a full inflate is the cheapest route left, and
-    // it inherits readRawObject's own partial-clone lazy-fetch retry.
+    // it inherits readRawObject's own partial-clone lazy-fetch retry. Hand
+    // the inflated content back too — the loose route already paid for it.
     const raw = await readRawObject(ctx, id);
-    return { type: raw.type, uncompressedSize: raw.content.length };
+    return { type: raw.type, uncompressedSize: raw.content.length, content: raw.content };
   }
   return readPackedMetadata(ctx, registry, hit, id);
 }
