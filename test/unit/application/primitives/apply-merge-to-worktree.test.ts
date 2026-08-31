@@ -935,6 +935,48 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  // The distinct-types mode-selection chain (mergedMode ?? ourMode ??
+  // theirMode) must pick ours over theirs when mergedMode is absent (only
+  // `content` conflicts carry one) — otherwise a hostile ".gitmodules"
+  // symlink from ours could be validated against theirs' (safe) mode
+  // instead, or a safe ours mode could be wrongly rejected using theirs'.
+  // This case pins the "wrongly rejected" direction: ours is the safe,
+  // regular side and must be the one validateIndexPath sees.
+  describe('Given a distinct-types conflict at ".gitmodules" (regular ours, symlink theirs)', () => {
+    describe('When the merge is applied', () => {
+      it('Then it does not refuse the write — ours (regular) is the mode validateIndexPath sees', async () => {
+        // Arrange — no base entry; ours adds `.gitmodules` as a regular
+        // file, theirs adds it as a symlink.
+        const ctx = await buildSeededContext();
+        const fileContent = new TextEncoder().encode('[submodule "x"]\n');
+        const linkTarget = new TextEncoder().encode('/etc/target');
+        const oursId = await writeBlob(ctx, new TextDecoder().decode(fileContent));
+        const theirsId = await writeBlob(ctx, new TextDecoder().decode(linkTarget));
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '.gitmodules' as FilePath, oursId),
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.SYMLINK, '.gitmodules' as FilePath, theirsId),
+        ]);
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts[0]?.type).toBe('distinct-types');
+      });
+    });
+  });
+
   describe('Given an untracked file sits at the distinct-types rename target', () => {
     describe('When the merge is applied', () => {
       it('Then it refuses with would-overwrite naming the rename target path, nothing is written', async () => {

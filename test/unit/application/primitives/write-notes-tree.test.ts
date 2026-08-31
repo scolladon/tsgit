@@ -233,6 +233,19 @@ describe('Given writeNotesTree', () => {
           const grouped = root.entries.find((entry) => entry.name === '00');
           expect(grouped?.mode).toBe(FILE_MODE.DIRECTORY);
           expect(root.entries.every((entry) => !entry.name.includes('/'))).toBe(true);
+
+          // The preserved 'README' leaf's nameBytes must survive the
+          // fanout-group recursion (write-notes-tree's buildTree) intact —
+          // dropping it during regrouping would mint an empty-named entry.
+          if (grouped !== undefined) {
+            const subtree = await readObject(ctx, grouped.id);
+            expect(subtree.type).toBe('tree');
+            if (subtree.type === 'tree') {
+              expect(subtree.entries).toHaveLength(1);
+              expect(subtree.entries[0]?.name).toBe('README');
+              expect(subtree.entries[0]?.id).toBe(readmeBlob);
+            }
+          }
         }
       }
     });
