@@ -6,6 +6,7 @@ import {
   type BasePackEntryType,
   encodeOfsDistance,
   encodePackEntryHeader,
+  objectTypeToPackEntryType,
   PACK_ENTRY_TYPE,
   packEntryTypeToObjectType,
   parsePackEntryHeader,
@@ -522,6 +523,25 @@ describe('pack-entry', () => {
         ])('Then $label maps to $expected', ({ type, expected }) => {
           // Arrange & Act
           const result = packEntryTypeToObjectType(type);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('objectTypeToPackEntryType', () => {
+    describe('Given an object type', () => {
+      describe('When mapping', () => {
+        it.each([
+          { objectType: 'commit' as const, expected: PACK_ENTRY_TYPE.COMMIT, label: 'commit' },
+          { objectType: 'tree' as const, expected: PACK_ENTRY_TYPE.TREE, label: 'tree' },
+          { objectType: 'blob' as const, expected: PACK_ENTRY_TYPE.BLOB, label: 'blob' },
+          { objectType: 'tag' as const, expected: PACK_ENTRY_TYPE.TAG, label: 'tag' },
+        ])('Then $label maps to the mirrored pack entry type', ({ objectType, expected }) => {
+          // Arrange & Act
+          const result = objectTypeToPackEntryType(objectType);
 
           // Assert
           expect(result).toBe(expected);

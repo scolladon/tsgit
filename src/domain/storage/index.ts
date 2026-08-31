@@ -59,6 +59,7 @@ export type {
 export {
   encodeOfsDistance,
   encodePackEntryHeader,
+  objectTypeToPackEntryType,
   PACK_ENTRY_TYPE,
   packEntryTypeToObjectType,
   parsePackEntryHeader,
