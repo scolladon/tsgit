@@ -9,6 +9,7 @@ import {
   type ObjectId,
   type Tree,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { buildSeededContext } from '../../application/primitives/fixtures.js';
 
 const SAMPLE_OID = '0123456789abcdef0123456789abcdef01234567' as ObjectId;
@@ -23,11 +24,7 @@ describe('createRawTreeResolver', () => {
           type: 'tree',
           id: '' as ObjectId,
           entries: [
-            {
-              name: FilePath.from('hello.txt'),
-              mode: FILE_MODE.REGULAR as FileMode,
-              id: SAMPLE_OID,
-            },
+            treeEntry(FILE_MODE.REGULAR as FileMode, FilePath.from('hello.txt'), SAMPLE_OID),
           ],
         };
         const treeId = await writeObject(ctx, tree);

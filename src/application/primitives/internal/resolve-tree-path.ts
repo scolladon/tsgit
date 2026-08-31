@@ -1,12 +1,13 @@
 import { pathNotInTree } from '../../../domain/commands/error.js';
-import { encode } from '../../../domain/objects/encoding.js';
-import { invalidTreeEntry, unexpectedObjectType } from '../../../domain/objects/error.js';
+import { bytesEqual, encode } from '../../../domain/objects/encoding.js';
+import { unexpectedObjectType } from '../../../domain/objects/error.js';
+import { isDirectory } from '../../../domain/objects/file-mode.js';
 import type { HashConfig } from '../../../domain/objects/hash-config.js';
 import type { ObjectId, Tree, TreeEntry } from '../../../domain/objects/index.js';
+import { treeEntry } from '../../../domain/objects/tree.js';
 import {
   advanceCursor,
   cursorMode,
-  cursorName,
   cursorNameEquals,
   cursorOid,
   openTreeCursor,
@@ -23,6 +24,19 @@ import { readTree } from '../read-tree.js';
  * and a sub-tree; a missing segment or a non-tree intermediate refuses with
  * `PATH_NOT_IN_TREE`. The caller decides what the final entry must be (a blob,
  * for `readFileAt`; any object, for `rev-parse`'s `<tree-ish>:<path>`).
+ *
+ * A segment that matches nothing falls back to git's own prefix-boundary
+ * walk: progressively longer joins of the remaining segments are tried
+ * against this level's entry names. A join spanning the WHOLE remaining
+ * path is accepted outright and ends the descent, so an entry whose name
+ * literally contains `/` is addressable by its full text. A shorter join is
+ * accepted only when the matched entry is itself a tree, and the descent
+ * continues below it with the segments the join did not consume. The
+ * fallback runs only on a miss, so a real sub-tree always wins over a
+ * sibling that merely spells the same path.
+ *
+ * Entry names are compared as raw bytes, and a directory carrying two entries
+ * of the same name resolves to the first, as git's own path lookup does.
  *
  * `rev` is carried only to populate the refusal's display fields.
  */
@@ -56,11 +70,13 @@ export const findTreeEntry = async (
 ): Promise<TreeEntry | undefined> => {
   const segments = path.split('/');
   const rootTree = typeof root === 'string' ? await readTree(ctx, root) : root;
-  let entry = rootTree.entries.find((candidate) => candidate.name === segments[0]);
-  for (let i = 1; i < segments.length && entry !== undefined; i += 1) {
-    entry = await descendOneLevel(ctx, entry.id, segments[i] as string);
+  let match = matchRootLevel(rootTree, segments);
+  let index = match?.consumed ?? 0;
+  while (match !== undefined && index < segments.length) {
+    match = await matchRawLevel(ctx, match.entry.id, segments, index);
+    if (match !== undefined) index += match.consumed;
   }
-  return entry;
+  return match?.entry;
 };
 
 /** The leaf entry a chain descent reached, plus the per-level oid chain
@@ -105,18 +121,20 @@ export const descendMatchingTreeChain = async (
   childChain: ReadonlyArray<ObjectId>,
 ): Promise<TreeChainMatch | undefined> => {
   if (rootId === childChain[0]) return { kind: 'treesame', oidChain: childChain };
-  let entry = await scanRootLevel(ctx, rootId, segments[0] as string);
+  let match = await matchRawRootLevel(ctx, rootId, segments);
   const chain: ObjectId[] = [rootId];
-  for (let i = 0; entry !== undefined; i += 1) {
-    chain.push(entry.id);
-    if (entry.id === childChain[chain.length - 1]) {
+  let segIndex = 0;
+  while (match !== undefined) {
+    chain.push(match.entry.id);
+    if (match.entry.id === childChain[chain.length - 1]) {
       return { kind: 'treesame', oidChain: chain.concat(childChain.slice(chain.length)) };
     }
-    if (i + 1 >= segments.length) break;
-    entry = await descendOneLevel(ctx, entry.id, segments[i + 1] as string);
+    segIndex += match.consumed;
+    if (segIndex >= segments.length) break;
+    match = await matchRawLevel(ctx, match.entry.id, segments, segIndex);
   }
-  if (entry === undefined) return undefined;
-  return { kind: 'changed', entry, oidChain: chain };
+  if (match === undefined) return undefined;
+  return { kind: 'changed', entry: match.entry, oidChain: chain };
 };
 
 /**
@@ -137,112 +155,130 @@ export const findTreeEntryChain = async (
   return result?.kind === 'changed' ? result : undefined;
 };
 
-/** Read `rootId`'s raw object bytes and scan for `name` — `unexpectedObjectType`
- *  when `rootId` isn't a tree, the root-only counterpart to `descendOneLevel`'s
- *  intermediate-level `undefined`. */
-const scanRootLevel = async (
+/** The result of matching one path level against a directory's entries: the
+ *  entry found (first-wins), and how many of `segments`, counting from that
+ *  level's own index, its name accounted for — 1 for an ordinary
+ *  single-segment match, or more when the entry's own name spans a `/`
+ *  (git's prefix-boundary walk, see `matchLevel`). The descent resumes at
+ *  the level's index plus `consumed`. */
+interface LevelMatch {
+  readonly entry: TreeEntry;
+  readonly consumed: number;
+}
+
+/**
+ * Match level `i` of `segments` against one directory's entries via `scan`
+ * (a byte-target lookup already scoped to that directory's content): first
+ * try `segments[i]` alone — the hit path, unconditionally cheap, run for
+ * every level of every descent. On a miss, walk git's own prefix-boundary
+ * loop: for `take` from 2 up to the number of remaining segments, retry
+ * `scan` against `segments[i..i+take)` joined with `/`. A join spanning the
+ * WHOLE remaining path (`take` equal to the remaining count) is accepted
+ * regardless of the matched entry's type and ends the descent there. A
+ * shorter join is only accepted when the matched entry is itself a tree —
+ * it cannot be the final entry, since path remains unconsumed — and the
+ * descent continues below it with the segments the join did not consume.
+ */
+const matchLevel = (
+  scan: (target: Uint8Array) => TreeEntry | undefined,
+  segments: ReadonlyArray<string>,
+  i: number,
+): LevelMatch | undefined => {
+  const hit = scan(encode(segments[i] as string));
+  if (hit !== undefined) return { entry: hit, consumed: 1 };
+  // Stryker disable next-line ArithmeticOperator: equivalent — inflating `remaining` only adds loop iterations past the true remaining count; `segments.slice(i, i + take)` clamps its end to segments.length for every such `take`, so `scan` re-queries the SAME byte span already tried at take===trueRemaining and returns the identical candidate. The deferred `take === remaining` accept therefore returns that same full-span entry, and since it spans the whole true remaining path, `index` lands at/after segments.length either way — the outer descent loop exits right after in both branches, so the inflated `consumed` value never reaches another iteration — confirmed empirically.
+  const remaining = segments.length - i;
+  for (let take = 2; take <= remaining; take += 1) {
+    const candidate = scan(encode(segments.slice(i, i + take).join('/')));
+    if (candidate === undefined) continue;
+    if (take === remaining || isDirectory(candidate.mode))
+      return { entry: candidate, consumed: take };
+  }
+  return undefined;
+};
+
+/** `findTreeEntry`'s root level: the root `Tree` is already parsed, so the
+ *  scan is a linear `find` over its decoded entries, compared byte-for-byte
+ *  on `nameBytes` (never the derived, lossily-decoded `name`). */
+const matchRootLevel = (rootTree: Tree, segments: ReadonlyArray<string>): LevelMatch | undefined =>
+  matchLevel(
+    (target) => rootTree.entries.find((candidate) => bytesEqual(candidate.nameBytes, target)),
+    segments,
+    0,
+  );
+
+/** Read `rootId`'s raw object bytes and match level 0 of `segments` —
+ *  `unexpectedObjectType` when `rootId` isn't a tree, the root-only
+ *  counterpart to `matchRawLevel`'s intermediate-level `undefined`. */
+const matchRawRootLevel = async (
   ctx: Context,
   rootId: ObjectId,
-  name: string,
-): Promise<TreeEntry | undefined> => {
+  segments: ReadonlyArray<string>,
+): Promise<LevelMatch | undefined> => {
   const raw = await readRawObject(ctx, rootId);
   if (raw.type !== 'tree') throw unexpectedObjectType('tree', raw.type, rootId);
-  return scanRawTreeFor(raw.content, ctx.hashConfig, name);
+  return matchLevel((target) => scanRawTreeFor(raw.content, ctx.hashConfig, target), segments, 0);
 };
 
 /**
- * Read `parentId`'s raw object bytes and scan its content for `name` —
+ * Read `parentId`'s raw object bytes and match level `i` of `segments` —
  * `undefined` when `parentId` isn't a tree (a blob/gitlink/symlink used as an
  * intermediate path segment), matching the parsed-tree descent this
  * replaces, which checked the same thing on the parsed object's `type`.
  */
-const descendOneLevel = async (
+const matchRawLevel = async (
   ctx: Context,
   parentId: ObjectId,
-  name: string,
-): Promise<TreeEntry | undefined> => {
+  segments: ReadonlyArray<string>,
+  i: number,
+): Promise<LevelMatch | undefined> => {
   const raw = await readRawObject(ctx, parentId);
   if (raw.type !== 'tree') return undefined;
-  return scanRawTreeFor(raw.content, ctx.hashConfig, name);
+  return matchLevel((target) => scanRawTreeFor(raw.content, ctx.hashConfig, target), segments, i);
 };
 
 /**
- * Byte-level scan of one directory's raw entries for `name`. Walks every
- * entry unconditionally, never stopping at the first match: the duplicate
- * name refusal a full parse applies to the whole directory has to fire
- * identically here, including for a duplicate elsewhere in the directory
- * that has nothing to do with `name`. Mode is validated eagerly per entry
- * (`cursorMode`) for the same reason — a malformed sibling mode refuses
- * immediately rather than only when that sibling is later visited.
+ * Byte-level scan of one directory's raw entries for `target`. The walk runs
+ * to the end of the directory and returns the FIRST name match, so a
+ * directory holding the same name twice resolves to the earlier entry.
  *
- * The duplicate-name and shape checks below run on raw bytes, not decoded
- * strings — `cursorName` (a `TextDecoder` call) is deliberately deferred
- * until an entry actually needs a string: it matched `name`, or it's on a
- * refusal's message. A directory of N entries searched for one name decodes
- * at most one of them on the common, refusal-free path.
+ * It does not stop at the match, and that is deliberate: git validates a
+ * tree's structure across the whole object, so a mode it cannot parse
+ * refuses the lookup whether it sits before or after the matched name
+ * (measured — `rev-parse <tree>:good` fails on a `10064a` sibling in either
+ * position). Stopping early would drop that refusal for trailing entries.
+ * The eager per-entry `cursorMode` call is a different tier: git resolves
+ * happily past an octal-but-unrecognised mode, so refusing one is a
+ * divergence — a pre-existing, recorded one that the parsed root level
+ * shares, kept here so the two levels agree with each other.
+ *
+ * Unlike git, this scan does not rely on tree order and does not break early
+ * when an entry sorts past `target`, so on an unsorted (fsck-invalid) tree
+ * it can resolve a name git itself would report missing.
+ *
+ * The byte compare below runs on raw bytes, not decoded strings — decoding
+ * (a `TextDecoder` call) is deliberately deferred until an entry actually
+ * needs a string, inside `treeEntry`'s own factory, and only for an entry
+ * that matched `target`. A directory of N entries searched for one target
+ * decodes at most one of them.
  */
 const scanRawTreeFor = (
   content: Uint8Array,
   hash: HashConfig,
-  name: string,
+  target: Uint8Array,
 ): TreeEntry | undefined => {
   const cursor = openTreeCursor(content, hash);
-  const target = encode(name);
-  const seenNames: NameSpan[] = [];
   let matched: TreeEntry | undefined;
   while (!cursor.done) {
-    matched = scanEntry(cursor, seenNames, target) ?? matched;
+    const hit = scanEntry(cursor, target);
+    matched ??= hit;
     advanceCursor(cursor);
   }
   return matched;
 };
 
-/** One entry's raw name bytes within a directory's shared content buffer. */
-type NameSpan = readonly [start: number, end: number];
-
-const scanEntry = (
-  cursor: TreeCursor,
-  seenNames: NameSpan[],
-  target: Uint8Array,
-): TreeEntry | undefined => {
+const scanEntry = (cursor: TreeCursor, target: Uint8Array): TreeEntry | undefined => {
   const mode = cursorMode(cursor);
-  const { nameStart, nameEnd } = cursor;
-  if (isInvalidEntryNameBytes(cursor.buf, nameStart, nameEnd)) {
-    throw invalidTreeEntry(cursor.offset, `invalid entry name: ${cursorName(cursor)}`);
-  }
-  if (seenNames.some(([s, e]) => cursorNameEquals(cursor, cursor.buf.subarray(s, e)))) {
-    throw invalidTreeEntry(cursor.offset, `duplicate entry name: ${cursorName(cursor)}`);
-  }
-  seenNames.push([nameStart, nameEnd]);
   if (!cursorNameEquals(cursor, target)) return undefined;
-  return { mode, name: cursorName(cursor), id: cursorOid(cursor) };
-};
-
-/**
- * Byte-cursor counterpart to `parseTreeContent`'s `name === '' || name ===
- * '.' || name === '..' || name.includes('/')` (tree.ts) — the empty case is
- * already refused structurally by the cursor's own null-terminator scan
- * (`tree-cursor.ts`'s `scanName`) before a caller ever observes the entry,
- * so only the remaining three shape checks are repeated here, on raw bytes:
- * an exact `.` or `..`, or a `/` ANYWHERE in the name (a lone `/`, a leading
- * or trailing `/` alongside other bytes, `//`, …) — the slash scan runs
- * unconditionally, at every length, so a short name can never short-circuit
- * past it the way an early `return` keyed on length alone once did. This
- * check is deliberately NOT shared inside `TreeCursor` itself: the raw
- * merge-join diff (`raw-tree-diff.ts`) streams a diff over on-disk order
- * without it, matching git's own `diff-tree`, which does not validate name
- * shape during a diff walk.
- */
-const DOT = 0x2e;
-const SLASH = 0x2f;
-
-const isInvalidEntryNameBytes = (buf: Uint8Array, start: number, end: number): boolean => {
-  const length = end - start;
-  if (length === 1 && buf[start] === DOT) return true;
-  if (length === 2 && buf[start] === DOT && buf[start + 1] === DOT) return true;
-  // Stryker disable next-line EqualityOperator: equivalent — buf[end] is always the TreeCursor's NUL name-terminator (nameEnd = indexOf(buf, NUL, nameStart) in tree-cursor.ts), never SLASH, for any real caller; the extra iteration always compares NUL against SLASH and never changes the result (hand-verified: full covering set — resolve-tree-path ×2 incl. the .properties fast-check suite, blame, rev-parse, read-file-at — passes unmutated).
-  for (let i = start; i < end; i++) {
-    if (buf[i] === SLASH) return true;
-  }
-  return false;
+  return treeEntry(mode, cursor.buf.subarray(cursor.nameStart, cursor.nameEnd), cursorOid(cursor));
 };

@@ -18,6 +18,7 @@ import { createCommit } from '../../src/application/primitives/create-commit.js'
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import { writeTree } from '../../src/application/primitives/write-tree.js';
 import { type AuthorIdentity, FILE_MODE, type ObjectId } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import {
   GIT_AVAILABLE,
   initBothRepos,
@@ -70,7 +71,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit interop', () => {
           id: '' as ObjectId,
           content: new TextEncoder().encode('hello\n'),
         });
-        const tree = await writeTree(sut, [{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blob }]);
+        const tree = await writeTree(sut, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blob)]);
 
         // Act
         const oursCommitSha = await createCommit(sut, {

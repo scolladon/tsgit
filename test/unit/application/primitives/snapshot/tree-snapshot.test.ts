@@ -8,6 +8,7 @@ import {
   FilePath,
   type ObjectId,
 } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import { compilePathspec } from '../../../../../src/domain/pathspec/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import type { TreeResolver } from '../../../../../src/ports/snapshot-resolvers.js';
@@ -23,7 +24,7 @@ const buildTree = async (
   writeObject(ctx, {
     type: 'tree',
     id: '' as ObjectId,
-    entries: entries.map((e) => ({ name: FilePath.from(e.name), mode: e.mode, id: e.id })),
+    entries: entries.map((e) => treeEntry(e.mode, FilePath.from(e.name), e.id)),
   });
 
 const collect = async <T>(it: AsyncIterable<T>): Promise<T[]> => {
@@ -52,9 +53,9 @@ describe('createTreeSnapshot', () => {
         const b = await writeBlob(ctx, new Uint8Array([2]));
         const c = await writeBlob(ctx, new Uint8Array([3]));
         const treeId = await buildTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: a },
-          { name: 'b.txt', mode: FILE_MODE.REGULAR as FileMode, id: b },
-          { name: 'c.txt', mode: FILE_MODE.REGULAR as FileMode, id: c },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'a.txt', a),
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'b.txt', b),
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'c.txt', c),
         ]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, treeId);
 
@@ -77,10 +78,10 @@ describe('createTreeSnapshot', () => {
         const ctx = await buildSeededContext();
         const leafOid = await writeBlob(ctx, new Uint8Array([42]));
         const subTreeId = await buildTree(ctx, [
-          { name: 'b.txt', mode: FILE_MODE.REGULAR as FileMode, id: leafOid },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'b.txt', leafOid),
         ]);
         const rootId = await buildTree(ctx, [
-          { name: 'sub', mode: FILE_MODE.DIRECTORY as FileMode, id: subTreeId },
+          treeEntry(FILE_MODE.DIRECTORY as FileMode, 'sub', subTreeId),
         ]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, rootId);
 
@@ -100,7 +101,7 @@ describe('createTreeSnapshot', () => {
         const ctx = await buildSeededContext();
         const blob = await writeBlob(ctx, new Uint8Array([1]));
         const treeId = await buildTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: blob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'a.txt', blob),
         ]);
         let calls = 0;
         const counting: TreeResolver = {
@@ -129,8 +130,8 @@ describe('createTreeSnapshot', () => {
         const a = await writeBlob(ctx, new Uint8Array([1]));
         const b = await writeBlob(ctx, new Uint8Array([2]));
         const treeId = await buildTree(ctx, [
-          { name: 'a.md', mode: FILE_MODE.REGULAR as FileMode, id: a },
-          { name: 'b.ts', mode: FILE_MODE.REGULAR as FileMode, id: b },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'a.md', a),
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'b.ts', b),
         ]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, treeId);
 
@@ -150,7 +151,7 @@ describe('createTreeSnapshot', () => {
         const ctx = await buildSeededContext();
         const subOid = '0123456789abcdef0123456789abcdef01234567' as ObjectId;
         const treeId = await buildTree(ctx, [
-          { name: 'vendor', mode: FILE_MODE.GITLINK as FileMode, id: subOid },
+          treeEntry(FILE_MODE.GITLINK as FileMode, 'vendor', subOid),
         ]);
         const sut = createTreeSnapshot({ ctx, treeResolver: realResolver }, treeId);
 

@@ -32,6 +32,7 @@ import type {
   TreeEntry,
 } from '../../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import {
   type BitmapEntrySpec,
@@ -173,8 +174,8 @@ async function buildTreeTipFixture(
   const ctx = createMemoryContext();
   const blob = blobOf('leaf');
   const blobId = await idOf(ctx, blob);
-  const entries: TreeEntry[] = [{ name: 'f.txt', mode: REGULAR_FILE, id: blobId }];
-  if (withGitlink) entries.push({ name: 'sub', mode: GITLINK, id: missingOid(ctx) });
+  const entries: TreeEntry[] = [treeEntry(REGULAR_FILE, 'f.txt', blobId)];
+  if (withGitlink) entries.push(treeEntry(GITLINK, 'sub', missingOid(ctx)));
   const tree = treeOf(entries);
   const treeId = await idOf(ctx, tree);
 
@@ -484,11 +485,7 @@ describe('Given an artefact whose object count fills its last lane exactly', () 
       const blobs = Array.from({ length: 31 }, (_unused, i) => blobOf(`leaf-${i}`));
       const blobIds = await Promise.all(blobs.map((blob) => idOf(ctx, blob)));
       const tree = treeOf(
-        blobIds.map((id, i) => ({
-          name: `b${String(i).padStart(2, '0')}`,
-          mode: REGULAR_FILE,
-          id,
-        })),
+        blobIds.map((id, i) => treeEntry(REGULAR_FILE, `b${String(i).padStart(2, '0')}`, id)),
       );
       const treeId = await idOf(ctx, tree);
       await writeSyntheticPack(ctx, 'full-lane', [

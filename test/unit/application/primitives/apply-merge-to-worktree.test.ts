@@ -18,6 +18,7 @@ import type {
   ObjectId,
   TreeEntry,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -69,13 +70,9 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'one\n');
         const v2 = await writeBlob(ctx, 'two\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1)]);
         const ours = base;
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v2, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
 
         // Act
@@ -101,15 +98,9 @@ describe('applyMergeToWorktree', () => {
         const b = await writeBlob(ctx, 'a\nb\nc\n');
         const o = await writeBlob(ctx, 'A\nb\nc\n');
         const t = await writeBlob(ctx, 'a\nb\nC\n');
-        const base = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: o, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, t)]);
         await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('A\nb\nc\n'));
 
         // Act
@@ -135,12 +126,10 @@ describe('applyMergeToWorktree', () => {
         const x = await writeBlob(ctx, 'x\n');
         const y = await writeBlob(ctx, 'y\n');
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: x, mode: FILE_MODE.REGULAR },
-          { name: 'b' as FilePath, id: y, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, x),
+          treeEntry(FILE_MODE.REGULAR, 'b' as FilePath, y),
         ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: x, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, x)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('x\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('y\n'));
 
@@ -165,9 +154,7 @@ describe('applyMergeToWorktree', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'one\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('one\n'));
 
         // Act
@@ -193,15 +180,9 @@ describe('applyMergeToWorktree', () => {
         const b = await writeBlob(ctx, 'base\n');
         const o = await writeBlob(ctx, 'ours\n');
         const t = await writeBlob(ctx, 'theirs\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: o, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, t)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
 
         // Act
@@ -235,15 +216,9 @@ describe('applyMergeToWorktree', () => {
         const b = await writeBlob(ctx, 'base\n');
         const o = await writeBlob(ctx, 'ours\n');
         const t = await writeBlob(ctx, 'theirs\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: o, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, t)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
 
         // Act
@@ -264,6 +239,335 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  // Once flatten-raw stops refusing `.`/`..` at parse, a merged tree carrying
+  // such a name reaches this writer for the first time — it must refuse
+  // before any conflict marker touches the working tree. Nested under
+  // `sub/` (rather than top-level) so the conflicting path never collides
+  // with the work directory's own root, which the top-level case would.
+  describe('Given ours and theirs both changed a "sub/."-named path differently', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and writes no conflict marker', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const o = await writeBlob(ctx, 'ours\n');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const dotEntry = (id: ObjectId): TreeEntry =>
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, id);
+        const base = await treeWith(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, await treeWith(ctx, [dotEntry(b)])),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, await treeWith(ctx, [dotEntry(o)])),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, await treeWith(ctx, [dotEntry(t)])),
+        ]);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('sub/.', o)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given ours and theirs both changed a ".."-named path differently', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and writes no conflict marker', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const o = await writeBlob(ctx, 'ours\n');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, b)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, o)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, t)]);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('..', o)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
+  // A `resolved-deleted` outcome's path is sourced from the merge's `ours`
+  // tree flatten, never from a parsed index — the path has NOT already
+  // passed validation anywhere upstream, so it must be validated like every
+  // other outcome. A genuine content conflict on a sibling path forces the
+  // conflict-write route (a clean merge never reaches `writeChangedOutcome`).
+  describe('Given theirs deletes a ".."-named path while a sibling genuinely conflicts', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and does not remove the working-tree file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dotdot = await writeBlob(ctx, 'dotdot\n');
+        const cb = await writeBlob(ctx, 'base\n');
+        const co = await writeBlob(ctx, 'ours\n');
+        const ct = await writeBlob(ctx, 'theirs\n');
+        const dotdotEntry = treeEntry(FILE_MODE.REGULAR, '..' as FilePath, dotdot);
+        const base = await treeWith(ctx, [
+          dotdotEntry,
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, cb),
+        ]);
+        const ours = await treeWith(ctx, [
+          dotdotEntry,
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, co),
+        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, ct)]);
+        await ctx.fs.write(`${ctx.layout.workDir}/c.txt`, new TextEncoder().encode('ours\n'));
+        const removeSpy = vi.spyOn(writeFileMod, 'removeWorkingTreeFile');
+
+        // Act
+        let caught: unknown;
+        let removeCallCount: number;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('..', dotdot), indexEntry('c.txt', co)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          removeCallCount = removeSpy.mock.calls.length;
+          removeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(removeCallCount).toBe(0);
+      });
+    });
+  });
+
+  // Multi-entry atomicity: under the previous per-outcome-inside-the-write-
+  // loop guard, `clean.txt`'s batch ran and completed to disk BEFORE the
+  // conflicts batch ever reached the hostile path's refusal. The hoisted
+  // whole-set gate must refuse before either path is written.
+  describe('Given a conflicting merge where one changed path is hostile and a sibling path is clean', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY and the clean sibling is never written', async () => {
+        // Arrange — `sub/.` conflicts (both sides change it differently from
+        // base); `clean.txt` is changed by theirs only and resolves cleanly.
+        const ctx = await buildSeededContext();
+        const cleanBase = await writeBlob(ctx, 'base-clean\n');
+        const cleanTheirs = await writeBlob(ctx, 'THEIRS-CLEAN\n');
+        const dotBase = await writeBlob(ctx, 'base\n');
+        const dotOurs = await writeBlob(ctx, 'ours\n');
+        const dotTheirs = await writeBlob(ctx, 'theirs\n');
+        const dotEntry = (id: ObjectId): TreeEntry =>
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, id);
+        const base = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt' as FilePath, cleanBase),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotBase)]),
+          ),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt' as FilePath, cleanBase),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotOurs)]),
+          ),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt' as FilePath, cleanTheirs),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotTheirs)]),
+          ),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('clean.txt', cleanBase), indexEntry('sub/.', dotOurs)]),
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/clean.txt`)).toBe(false);
+      });
+    });
+  });
+
+  // The counterpart to the test above: THERE the hostile name was the
+  // conflict and the clean sibling was innocuous; HERE the hostile name is
+  // itself the CLEAN (`resolved-known`) outcome, reached only through
+  // `validateConflictWorktreePaths`'s `outcomes` loop, never its `conflicts`
+  // loop — a gap neither existing hostile-name test exercises, since both
+  // arrange `sub/.`/`..` as the conflict itself.
+  describe('Given only theirs changes a "sub/."-named path while a sibling genuinely conflicts', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any working-tree write', async () => {
+        // Arrange — `sub/.` is unchanged by ours (clean, resolved-known to
+        // theirs' value); `x` conflicts (both sides change it differently).
+        const ctx = await buildSeededContext();
+        const dotBase = await writeBlob(ctx, 'base\n');
+        const dotTheirs = await writeBlob(ctx, 'theirs\n');
+        const dotEntry = (id: ObjectId): TreeEntry =>
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, id);
+        const xBase = await writeBlob(ctx, 'x-base\n');
+        const xOurs = await writeBlob(ctx, 'x-ours\n');
+        const xTheirs = await writeBlob(ctx, 'x-theirs\n');
+        const base = await treeWith(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotBase)]),
+          ),
+          treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, xBase),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotBase)]),
+          ),
+          treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, xOurs),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub' as FilePath,
+            await treeWith(ctx, [dotEntry(dotTheirs)]),
+          ),
+          treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, xTheirs),
+        ]);
+        const streamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+        const entrySpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('sub/.', dotBase), indexEntry('x', xOurs)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          streamSpy.mockRestore();
+          entrySpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(streamSpy).not.toHaveBeenCalled();
+        expect(entrySpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // No test exercised a `distinct-types` conflict at a hostile path: the
+  // dispatch to `writeDistinctTypesSides` writes at the conflict's renamed
+  // `ourPath`/`theirPath` (e.g. `..~ours`), which are themselves NOT
+  // hostile — only the un-renamed `conflict.path` carries the hostile name,
+  // so this pins that a distinct-types conflict is refused there too, the
+  // same as every other conflict type.
+  describe('Given a distinct-types conflict at a ".."-named path', () => {
+    describe('When the merge is applied', () => {
+      it('Then throws INVALID_INDEX_ENTRY before writing either side', async () => {
+        // Arrange — ours turns '..' into a symlink while theirs edits its
+        // content differently, both away from base: a distinct-types
+        // conflict whose recorded `path` is the hostile name itself.
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const symlinkTarget = await writeBlob(ctx, 'target');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, b)]);
+        const ours = await treeWith(ctx, [
+          treeEntry(FILE_MODE.SYMLINK, '..' as FilePath, symlinkTarget),
+        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, '..' as FilePath, t)]);
+        const entrySpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('..', symlinkTarget, FILE_MODE.SYMLINK)]),
+          });
+        } catch (err) {
+          caught = err;
+        } finally {
+          entrySpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(entrySpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a changed path that is dirty in the working tree', () => {
     describe('When the merge is applied', () => {
       it('Then it refuses with would-overwrite and writes nothing', async () => {
@@ -271,12 +575,8 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'one\n');
         const v2 = await writeBlob(ctx, 'two\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: v2, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v1)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, v2)]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('local edit\n'));
 
         // Act
@@ -305,9 +605,7 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const v1 = await writeBlob(ctx, 'added\n');
         const base = await treeWith(ctx, []);
-        const theirs = await treeWith(ctx, [
-          { name: 'new' as FilePath, id: v1, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'new' as FilePath, v1)]);
         await ctx.fs.write(`${ctx.layout.workDir}/new`, new TextEncoder().encode('in the way\n'));
 
         // Act
@@ -338,13 +636,9 @@ describe('applyMergeToWorktree', () => {
         const ctx = await buildSeededContext();
         const b = await writeBlob(ctx, 'base\n');
         const t = await writeBlob(ctx, 'theirs\n');
-        const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: b, mode: FILE_MODE.REGULAR },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, b)]);
         const ours = await treeWith(ctx, []);
-        const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: t, mode: FILE_MODE.REGULAR },
-        ]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, t)]);
         // ours deleted `a`, so the working tree has no `a`.
 
         // Act
@@ -381,21 +675,21 @@ describe('applyMergeToWorktree', () => {
         const dTheirs = await writeBlob(ctx, 'd1\nd2\nD3\n');
         const reg = FILE_MODE.REGULAR;
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
-          { name: 'c' as FilePath, id: cId, mode: reg },
-          { name: 'd' as FilePath, id: dBase, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bId),
+          treeEntry(reg, 'c' as FilePath, cId),
+          treeEntry(reg, 'd' as FilePath, dBase),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
-          { name: 'c' as FilePath, id: cId, mode: reg },
-          { name: 'd' as FilePath, id: dOurs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bId),
+          treeEntry(reg, 'c' as FilePath, cId),
+          treeEntry(reg, 'd' as FilePath, dOurs),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'b' as FilePath, id: bNew, mode: reg },
-          { name: 'd' as FilePath, id: dTheirs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, bNew),
+          treeEntry(reg, 'd' as FilePath, dTheirs),
         ]);
         for (const [p, c] of [
           ['a', 'a-ours\n'],
@@ -447,10 +741,10 @@ describe('applyMergeToWorktree', () => {
         const theirsId = await writeBlob(ctx, 'shared\ntheirs\n');
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, theirsId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('shared\nours\n'));
 
@@ -491,10 +785,10 @@ describe('applyMergeToWorktree', () => {
         const theirsId = await writeBlob(ctx, 'target-theirs');
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         await ctx.fs.symlink('target-ours', `${ctx.layout.workDir}/f`);
 
@@ -539,10 +833,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/f`, fileContent);
 
@@ -602,10 +896,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, theirsId),
         ]);
         // ours is a symlink; working tree has no regular file at 'f'
 
@@ -641,6 +935,48 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  // The distinct-types mode-selection chain (mergedMode ?? ourMode ??
+  // theirMode) must pick ours over theirs when mergedMode is absent (only
+  // `content` conflicts carry one) — otherwise a hostile ".gitmodules"
+  // symlink from ours could be validated against theirs' (safe) mode
+  // instead, or a safe ours mode could be wrongly rejected using theirs'.
+  // This case pins the "wrongly rejected" direction: ours is the safe,
+  // regular side and must be the one validateIndexPath sees.
+  describe('Given a distinct-types conflict at ".gitmodules" (regular ours, symlink theirs)', () => {
+    describe('When the merge is applied', () => {
+      it('Then it does not refuse the write — ours (regular) is the mode validateIndexPath sees', async () => {
+        // Arrange — no base entry; ours adds `.gitmodules` as a regular
+        // file, theirs adds it as a symlink.
+        const ctx = await buildSeededContext();
+        const fileContent = new TextEncoder().encode('[submodule "x"]\n');
+        const linkTarget = new TextEncoder().encode('/etc/target');
+        const oursId = await writeBlob(ctx, new TextDecoder().decode(fileContent));
+        const theirsId = await writeBlob(ctx, new TextDecoder().decode(linkTarget));
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '.gitmodules' as FilePath, oursId),
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.SYMLINK, '.gitmodules' as FilePath, theirsId),
+        ]);
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.conflicts[0]?.type).toBe('distinct-types');
+      });
+    });
+  });
+
   describe('Given an untracked file sits at the distinct-types rename target', () => {
     describe('When the merge is applied', () => {
       it('Then it refuses with would-overwrite naming the rename target path, nothing is written', async () => {
@@ -661,10 +997,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         // The rename target f~HEAD is already occupied by an untracked file
         await ctx.fs.write(
@@ -714,10 +1050,10 @@ describe('applyMergeToWorktree', () => {
         });
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: oursId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, oursId),
         ]);
         const theirsTree = await treeWith(ctx, [
-          { name: 'f' as FilePath, id: theirsId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f' as FilePath, theirsId),
         ]);
         // f~HEAD is tracked but the working file is dirty
         await ctx.fs.write(
@@ -751,15 +1087,9 @@ describe('applyMergeToWorktree', () => {
         const g0 = '0'.repeat(40) as ObjectId;
         const g1 = '1'.repeat(40) as ObjectId;
         const g2 = '2'.repeat(40) as ObjectId;
-        const base = await treeWith(ctx, [
-          { name: 'm' as FilePath, id: g0, mode: FILE_MODE.GITLINK },
-        ]);
-        const ours = await treeWith(ctx, [
-          { name: 'm' as FilePath, id: g1, mode: FILE_MODE.GITLINK },
-        ]);
-        const theirs = await treeWith(ctx, [
-          { name: 'm' as FilePath, id: g2, mode: FILE_MODE.GITLINK },
-        ]);
+        const base = await treeWith(ctx, [treeEntry(FILE_MODE.GITLINK, 'm' as FilePath, g0)]);
+        const ours = await treeWith(ctx, [treeEntry(FILE_MODE.GITLINK, 'm' as FilePath, g1)]);
+        const theirs = await treeWith(ctx, [treeEntry(FILE_MODE.GITLINK, 'm' as FilePath, g2)]);
 
         // Act
         const act = applyMergeToWorktree(ctx, {
@@ -799,16 +1129,16 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const bNew = await writeBlob(ctx, 'b-new\n');
         const reg = FILE_MODE.REGULAR;
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bId),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'b' as FilePath, id: bId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bId),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'b' as FilePath, id: bNew, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, bNew),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
@@ -859,16 +1189,16 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const reg = FILE_MODE.REGULAR;
         // base: b=bBase; ours: b=bBase (unchanged); theirs: b=bNew → resolved-known at bNew
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'b' as FilePath, id: bBaseId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bBaseId),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'b' as FilePath, id: bBaseId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bBaseId),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'b' as FilePath, id: bNewId, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, bNewId),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, bBaseContent);
@@ -911,16 +1241,16 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         const dTheirs = await writeBlob(ctx, 'd1\nd2\nD3\n');
         const reg = FILE_MODE.REGULAR;
         const base = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aBase, mode: reg },
-          { name: 'd' as FilePath, id: dBase, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'd' as FilePath, dBase),
         ]);
         const ours = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aOurs, mode: reg },
-          { name: 'd' as FilePath, id: dOurs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'd' as FilePath, dOurs),
         ]);
         const theirs = await treeWith(ctx, [
-          { name: 'a' as FilePath, id: aTheirs, mode: reg },
-          { name: 'd' as FilePath, id: dTheirs, mode: reg },
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'd' as FilePath, dTheirs),
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/d`, new TextEncoder().encode('D1\nd2\nd3\n'));

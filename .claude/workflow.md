@@ -3,7 +3,7 @@ backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/code-navigation.md
 gates:
-  part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files>"
+  part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling"
   phase: "npm run validate"
   review-batch: "npm run check:spelling"
 phases:
@@ -39,16 +39,64 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   7.x is the native ("tsgo") compiler — an API-breaking major whose main export is a version
   stub and whose programmatic API moved under `./unstable/*`, so `@rollup/plugin-typescript`
   and `rollup-plugin-dts` cannot load it (the `tsc` CLI still works). Unpin once the rollup
-  toolchain supports TS 7. `knip` is also skipped; the reason was never recorded.
+  toolchain supports TS 7. `knip` is also skipped; the reason was never recorded. **`jscpd` is pinned to
+  5.0.16**: release 5.1.0 declares all seven of its optional platform packages at version
+  `5.0.16`, but `jscpd-windows-arm64-msvc` was only ever published at `5.1.0` — so
+  `npm install` silently skips an unresolvable optional dep while `npm ci` computes it as
+  required and fails with `Missing: jscpd-windows-arm64-msvc@ from lock file`. A local
+  `npm run validate` cannot catch this, because local `node_modules` is already correct;
+  only `npm ci` sees it. Unpin when a release ships coherent optional-dependency versions.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,
   and for every entry either land a `docs(<scope>): …` fix or record why it is
   intentionally code-only. It is informational today and blocking soon, so an unread
   comment is a merge-time surprise waiting to happen.
-- **`review-batch: check:spelling`** — the md-scoped commit hook misses words in TS test
-  titles/comments and doc filenames; per-batch spelling beats a failed validate. The
-  cspell dict lags on some British `-ising/-ised` forms — full validate is the authority.
+- **Tool bootstrap in agent spawns** — every spawn prompt for an agent that will *edit
+  code* carries a short block with the two literal `ToolSearch` calls (graft's five tools,
+  serena's six) plus one worked example per tool, pre-filled from that part's own context,
+  above the context-file references. Measured over one full run: agents that edit code made
+  321 MCP calls across 16 spawns, against 0 across 6 read-only spawns — and three read-only
+  agents ran the ToolSearch calls and then used nothing. So the block is worth its prompt
+  space for implementers and refactor executors, and is not worth it for reviewers, planners or
+  docs writers, whose natural instrument is Bash over a diff. Evidence and the full split:
+  `.claude/workflow/code-navigation.md`.
+
+- **`check:spelling` is in BOTH `gates.part` and `review-batch`** — it was review-batch-only,
+  and an unknown word once rode two commits before anything noticed, because the part gate
+  never ran it. The md-scoped commit hook misses words in TS test titles, comments and doc
+  filenames, so per-part spelling is the cheapest place to catch them. The cspell dictionary
+  lags on some British `-ising/-ised` forms; full validate remains the authority.
+- **Gate results can be stale — `wireit` caches them.** `npm run check:types` and
+  `npm run check:spelling` both return `Ran 0 scripts and skipped 1` when inputs look
+  unchanged, and that reads exactly like a pass. A cached green preceded a red pre-push
+  once, and a commit went out on a cached spelling result. Before trusting either as a
+  gate, `rm -rf .wireit`, or bypass wireit entirely:
+  `npx tsc --noEmit -p tsconfig.json` and `npx cspell --no-progress <files>`.
+- **Never re-sort `cspell.json`.** Its order tiebreaks uppercase-first for case-equal
+  pairs, which `localeCompare` does not reproduce — a re-sort churned 42 unrelated lines.
+  Insert the one new word at its alphabetical position and leave the rest alone. Better
+  still, reword the comment: a term used once rarely earns a dictionary entry.
+- **The harness LSP is rooted at the MAIN checkout, not the worktree.** It produced about
+  thirty confirmed-false errors across one feature branch — symbols it called missing that
+  were three lines away, properties it called absent that were declared in the file it was
+  reading — while `tsc` on the same tree was clean throughout. Never gate on it and never
+  source a review finding from it; `npx tsc --noEmit -p tsconfig.json` is the oracle.
+- **Search interception — both causes are fixed, and here is what they looked like.** Two
+  separate defects blocked searches during one feature run, and both failed in ways that
+  read as a legitimate empty result rather than an error. `rtk` installed a shell wrapper
+  named `grep` that returned `Error: claude native binary not installed` instead of matches
+  — it failed *closed*, so "no output" meant "broken", not "no matches"; fixed by repairing
+  the missing `@anthropic-ai/claude-code` install. And tokensave's PreToolUse hook blocked
+  symbol-shaped searches on `grep` **and** `rg` — it matches the command text, not the tool
+  — while naming replacement tools that do not exist, because its MCP server is not
+  registered here; fixed by setting `TOKENSAVE_DISABLE_GREP_HOOK=1` globally in
+  `~/.claude/settings.json`'s `env` block.
+  Narrowing that hook's matcher instead would not have held: `tokensave doctor` rewrites
+  `~/.claude/settings.json` — it widened the matcher to include `Glob` on its own — so a
+  matcher edit is reverted the next time anyone runs it. Prefer the env override.
+  If a search ever returns nothing again, confirm the tool works before believing the
+  result: `command grep`, `rg` (no `-E` flag), or `rtk proxy grep` all bypass a wrapper.
 
 ## Backlog conventions
 

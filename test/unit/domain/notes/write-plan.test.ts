@@ -7,7 +7,9 @@ import {
   planWrite,
   setSlot,
 } from '../../../../src/domain/notes/index.js';
+import { encode } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const oid = (s: string) => ObjectId.from(s);
 const oid40 = (c: string) => ObjectId.from(c.repeat(40));
@@ -97,15 +99,15 @@ describe('Given a flat trie carrying a stray subtree', () => {
   const innerBlob = oid40('a');
   const buildTrie = () =>
     loadTrieRoot([
-      { mode: FILE_MODE.DIRECTORY, name: '00', id: subtreeOid },
-      { mode: FILE_MODE.REGULAR, name: `1${'0'.repeat(39)}`, id: oid40('c') },
+      treeEntry(FILE_MODE.DIRECTORY, '00', subtreeOid),
+      treeEntry(FILE_MODE.REGULAR, `1${'0'.repeat(39)}`, oid40('c')),
     ]);
 
   describe('When it is written below the fanout threshold', () => {
     it('Then the stray subtree is unpacked and its note flattened to the top level', async () => {
       // Arrange
       const read = vi.fn<SubtreeReader>(async () => [
-        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
       ]);
       // Act
       const result = await planWrite(buildTrie(), read);
@@ -117,18 +119,20 @@ describe('Given a flat trie carrying a stray subtree', () => {
   });
 
   describe('When the unpacked subtree carries a preserved entry', () => {
-    it('Then the preserved entry keeps its directory-qualified name', async () => {
+    it('Then the preserved entry keeps its directory-qualified grouping path, its leaf name carried verbatim in nameBytes', async () => {
       // Arrange
       const readmeId = oid40('d');
       const read = vi.fn<SubtreeReader>(async () => [
-        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
-        { mode: FILE_MODE.REGULAR, name: 'README', id: readmeId },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
+        treeEntry(FILE_MODE.REGULAR, 'README', readmeId),
       ]);
       // Act
       const result = await planWrite(buildTrie(), read);
-      // Assert
+      // Assert — name is the grouping path only ('00/'); the raw leaf name
+      // never re-enters the string the bridge splits on '/'.
       expect(result.entries).toContainEqual({
-        name: '00/README',
+        name: '00/',
+        nameBytes: encode('README'),
         mode: FILE_MODE.REGULAR,
         oid: readmeId,
       });
@@ -141,12 +145,13 @@ describe('Given a notes trie with a preserved non-note entry', () => {
     it('Then the preserved entry is emitted verbatim at the root level', async () => {
       // Arrange
       const readmeId = oid40('d');
-      const trie = loadTrieRoot([{ mode: FILE_MODE.REGULAR, name: 'README', id: readmeId }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, 'README', readmeId)]);
       // Act
       const result = await planWrite(trie, never());
-      // Assert
+      // Assert — root prefix is the empty string; the raw leaf name lives in nameBytes
       expect(result.entries).toContainEqual({
-        name: 'README',
+        name: '',
+        nameBytes: encode('README'),
         mode: FILE_MODE.REGULAR,
         oid: readmeId,
       });
@@ -167,7 +172,7 @@ describe('Given an internal node wrapping a stray subtree', () => {
       });
       const trie = setSlot(createEmptyTrie(), 0, { kind: 'internal', node: innerNode });
       const read = vi.fn<SubtreeReader>(async () => [
-        { mode: FILE_MODE.REGULAR, name: '0'.repeat(38), id: innerBlob },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
       ]);
       // Act
       await planWrite(trie, read);

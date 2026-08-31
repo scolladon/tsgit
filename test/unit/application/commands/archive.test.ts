@@ -5,6 +5,7 @@ import { archive } from '../../../../src/application/commands/archive.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
 
@@ -314,16 +315,16 @@ describe('Given a commit with a mixed tree (regular, exec, symlink, dir with con
 
       const dirTreeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'nested.txt', id: nestedBlobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'nested.txt', nestedBlobId)]),
       );
       const rootTreeId = await writeObject(
         ctx,
         makeTree([
-          { mode: FILE_MODE.REGULAR, name: 'a.txt', id: regularId },
-          { mode: FILE_MODE.GITLINK, name: 'mysub', id: submoduleOid },
-          { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirTreeId },
-          { mode: FILE_MODE.EXECUTABLE, name: 'run.sh', id: execId },
-          { mode: FILE_MODE.SYMLINK, name: 'link', id: symlinkId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', regularId),
+          treeEntry(FILE_MODE.GITLINK, 'mysub', submoduleOid),
+          treeEntry(FILE_MODE.DIRECTORY, 'dir', dirTreeId),
+          treeEntry(FILE_MODE.EXECUTABLE, 'run.sh', execId),
+          treeEntry(FILE_MODE.SYMLINK, 'link', symlinkId),
         ]),
       );
       const commitId = await writeObject(ctx, makeCommit(rootTreeId));
@@ -393,8 +394,8 @@ describe('Given a tree with a directory and a gitlink entry', () => {
       const rootTreeId = await writeObject(
         ctx,
         makeTree([
-          { mode: FILE_MODE.DIRECTORY, name: 'emptydir', id: innerTreeId },
-          { mode: FILE_MODE.GITLINK, name: 'sub', id: submoduleOid },
+          treeEntry(FILE_MODE.DIRECTORY, 'emptydir', innerTreeId),
+          treeEntry(FILE_MODE.GITLINK, 'sub', submoduleOid),
         ]),
       );
       const commitId = await writeObject(ctx, makeCommit(rootTreeId));
@@ -419,6 +420,137 @@ describe('Given a tree with a directory and a gitlink entry', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Entry-path validation — archive is a traversal sink: walkTree never
+// validates a tree entry's name, and archive never touches the index or the
+// filesystem, so a hostile name must be refused here or it reaches whoever
+// extracts the produced archive.
+// ---------------------------------------------------------------------------
+
+describe('Given a root-level tree entry named "../../etc/evil"', () => {
+  describe('When archive iterates entries', () => {
+    it('Then throws INVALID_INDEX_ENTRY and yields no entry', async () => {
+      // Arrange
+      const ctx = await initUnbornCtx();
+      const evilBlobId = await writeObject(ctx, makeBlob('evil\n'));
+      const rootTreeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, '../../etc/evil', evilBlobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(rootTreeId));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await archive(ctx, { treeish: 'HEAD' });
+      let caught: unknown;
+      const entries: ArchiveEntry[] = [];
+      try {
+        for await (const entry of result.entries) {
+          entries.push(entry);
+        }
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+      expect(entries).toHaveLength(0);
+    });
+  });
+});
+
+describe('Given a root-level tree entry named "." (git refuses it at materialisation, not parse)', () => {
+  describe('When archive iterates entries', () => {
+    it('Then throws INVALID_INDEX_ENTRY with the dot-segment reason', async () => {
+      // Arrange
+      const ctx = await initUnbornCtx();
+      const blobId = await writeObject(ctx, makeBlob('dot\n'));
+      const rootTreeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, '.', blobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(rootTreeId));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await archive(ctx, { treeish: 'HEAD' });
+      let caught: unknown;
+      try {
+        for await (const _entry of result.entries) {
+          // drain
+        }
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+      expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+      expect(data?.reason).toBe("'.' segment rejected");
+    });
+  });
+});
+
+describe('Given a root-level tree entry named ".." (git refuses it at materialisation, not parse)', () => {
+  describe('When archive iterates entries', () => {
+    it('Then throws INVALID_INDEX_ENTRY with the dotdot-segment reason', async () => {
+      // Arrange
+      const ctx = await initUnbornCtx();
+      const blobId = await writeObject(ctx, makeBlob('dotdot\n'));
+      const rootTreeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, '..', blobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(rootTreeId));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await archive(ctx, { treeish: 'HEAD' });
+      let caught: unknown;
+      try {
+        for await (const _entry of result.entries) {
+          // drain
+        }
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+      expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+      expect(data?.reason).toBe("'..' segment rejected");
+    });
+  });
+});
+
+describe('Given a tree entry literally named "a/b" (embedded separator, git accepts it)', () => {
+  describe('When archive iterates entries', () => {
+    it('Then no refusal is thrown and the entry keeps its literal path', async () => {
+      // Arrange
+      const ctx = await initUnbornCtx();
+      const blobId = await writeObject(ctx, makeBlob('nested-by-name\n'));
+      const rootTreeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a/b', blobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(rootTreeId));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await archive(ctx, { treeish: 'HEAD' });
+      const entries: ArchiveEntry[] = [];
+      for await (const entry of result.entries) {
+        entries.push(entry);
+      }
+
+      // Assert
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.path).toBe('a/b');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Laziness probe — blob reads happen only during iteration
 // ---------------------------------------------------------------------------
 
@@ -433,9 +565,9 @@ describe('Given a commit with 3 blob entries', () => {
       const treeId = await writeObject(
         base,
         makeTree([
-          { mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobAId },
-          { mode: FILE_MODE.REGULAR, name: 'b.txt', id: blobBId },
-          { mode: FILE_MODE.REGULAR, name: 'c.txt', id: blobCId },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', blobAId),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', blobBId),
+          treeEntry(FILE_MODE.REGULAR, 'c.txt', blobCId),
         ]),
       );
       const commitId = await writeObject(base, makeCommit(treeId));

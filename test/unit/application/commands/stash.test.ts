@@ -21,6 +21,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type {
   CommandRequest,
   CommandResult,
@@ -750,17 +751,17 @@ describe('stash apply', () => {
             const hooksTree = await writeObject(ctx, {
               type: 'tree',
               id: '' as ObjectId,
-              entries: [{ mode: FILE_MODE.REGULAR, name: 'pre-commit', id: hookBlob }],
+              entries: [treeEntry(FILE_MODE.REGULAR, 'pre-commit', hookBlob)],
             });
             const gitDirTree = await writeObject(ctx, {
               type: 'tree',
               id: '' as ObjectId,
-              entries: [{ mode: FILE_MODE.DIRECTORY, name: 'hooks', id: hooksTree }],
+              entries: [treeEntry(FILE_MODE.DIRECTORY, 'hooks', hooksTree)],
             });
             return writeObject(ctx, {
               type: 'tree',
               id: '' as ObjectId,
-              entries: [{ mode: FILE_MODE.DIRECTORY, name: '.git', id: gitDirTree }],
+              entries: [treeEntry(FILE_MODE.DIRECTORY, '.git', gitDirTree)],
             });
           },
         },
@@ -776,7 +777,7 @@ describe('stash apply', () => {
             return writeObject(ctx, {
               type: 'tree',
               id: '' as ObjectId,
-              entries: [{ mode: FILE_MODE.REGULAR, name: 'git~1', id: blob }],
+              entries: [treeEntry(FILE_MODE.REGULAR, 'git~1', blob)],
             });
           },
         },

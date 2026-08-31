@@ -14,6 +14,7 @@ import type {
   ObjectId,
 } from '../../../../../src/domain/objects/index.js';
 import { FILE_MODE, ZERO_OID } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import { serializeReflogLine } from '../../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext } from '../fixtures.js';
@@ -28,7 +29,7 @@ const writeTree = async (
   writeObject(ctx, {
     type: 'tree',
     id: '' as ObjectId,
-    entries: entries.map((e) => ({ name: e.name as FilePath, mode: e.mode, id: e.id })),
+    entries: entries.map((e) => treeEntry(e.mode, e.name as FilePath, e.id)),
   });
 
 const writeCommit = async (ctx: Context, treeId: ObjectId): Promise<ObjectId> => {
@@ -94,7 +95,7 @@ describe('createSnapshotFactory', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, new Uint8Array([1]));
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'a.txt', blobId),
         ]);
         const commitId = await writeCommit(ctx, treeId);
         await setHead(ctx, commitId);
@@ -116,7 +117,7 @@ describe('createSnapshotFactory', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, new Uint8Array([1]));
         const treeId = await writeTree(ctx, [
-          { name: 'b.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'b.txt', blobId),
         ]);
         const commitId = await writeCommit(ctx, treeId);
         const sut = factoryFor(ctx);
@@ -137,7 +138,7 @@ describe('createSnapshotFactory', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, new Uint8Array([42]));
         const treeId = await writeTree(ctx, [
-          { name: 'c.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'c.txt', blobId),
         ]);
         const sut = factoryFor(ctx);
 
@@ -173,7 +174,7 @@ describe('createSnapshotFactory', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, new Uint8Array([7]));
         const treeId = await writeTree(ctx, [
-          { name: 'm.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'm.txt', blobId),
         ]);
         const commitId = await writeCommit(ctx, treeId);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${commitId}\n`);
@@ -197,7 +198,7 @@ describe('createSnapshotFactory', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, new Uint8Array([1]));
         const treeId = await writeTree(ctx, [
-          { name: 't.txt', mode: FILE_MODE.REGULAR as FileMode, id: blobId },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 't.txt', blobId),
         ]);
         const commitId = await writeCommit(ctx, treeId);
         const tagId = await writeObject(ctx, {
@@ -305,10 +306,10 @@ describe('createSnapshotFactory', () => {
         const wBlob = await writeBlob(ctx, new Uint8Array([2]));
         const baseTree = await writeTree(ctx, []);
         const iTree = await writeTree(ctx, [
-          { name: 'i.txt', mode: FILE_MODE.REGULAR as FileMode, id: iBlob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'i.txt', iBlob),
         ]);
         const wTree = await writeTree(ctx, [
-          { name: 'w.txt', mode: FILE_MODE.REGULAR as FileMode, id: wBlob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'w.txt', wBlob),
         ]);
         const b = await writeCommitWithParents(ctx, baseTree, []);
         const i = await writeCommitWithParents(ctx, iTree, [b]);
@@ -338,7 +339,7 @@ describe('createSnapshotFactory', () => {
         const uBlob = await writeBlob(ctx, new Uint8Array([3]));
         const baseTree = await writeTree(ctx, []);
         const uTree = await writeTree(ctx, [
-          { name: 'u.txt', mode: FILE_MODE.REGULAR as FileMode, id: uBlob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'u.txt', uBlob),
         ]);
         const b = await writeCommitWithParents(ctx, baseTree, []);
         const i = await writeCommitWithParents(ctx, baseTree, [b]);
@@ -389,10 +390,10 @@ describe('createSnapshotFactory', () => {
         const newBlob = await writeBlob(ctx, new Uint8Array([2]));
         const baseTree = await writeTree(ctx, []);
         const oldTree = await writeTree(ctx, [
-          { name: 'old.txt', mode: FILE_MODE.REGULAR as FileMode, id: oldBlob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'old.txt', oldBlob),
         ]);
         const newTree = await writeTree(ctx, [
-          { name: 'new.txt', mode: FILE_MODE.REGULAR as FileMode, id: newBlob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'new.txt', newBlob),
         ]);
         const b = await writeCommitWithParents(ctx, baseTree, []);
         const olderW = await writeCommitWithParents(ctx, oldTree, [b, b]);
@@ -422,10 +423,10 @@ describe('createSnapshotFactory', () => {
         const newBlob = await writeBlob(ctx, new Uint8Array([2]));
         const baseTree = await writeTree(ctx, []);
         const oldTree = await writeTree(ctx, [
-          { name: 'old.txt', mode: FILE_MODE.REGULAR as FileMode, id: oldBlob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'old.txt', oldBlob),
         ]);
         const newTree = await writeTree(ctx, [
-          { name: 'new.txt', mode: FILE_MODE.REGULAR as FileMode, id: newBlob },
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'new.txt', newBlob),
         ]);
         const b = await writeCommitWithParents(ctx, baseTree, []);
         const olderW = await writeCommitWithParents(ctx, oldTree, [b, b]);

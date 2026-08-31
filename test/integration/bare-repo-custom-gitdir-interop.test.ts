@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { AuthorIdentity, ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -1504,7 +1505,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
             content: new TextEncoder().encode('hello\n'),
           });
           const treeId = await repo.primitives.writeTree([
-            { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+            treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId),
           ]);
           const commitId = await repo.primitives.writeObject({
             type: 'commit',

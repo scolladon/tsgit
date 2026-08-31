@@ -49,6 +49,7 @@ import {
   type ObjectId,
   type TreeEntry,
 } from '../../domain/objects/index.js';
+import { treeEntry } from '../../domain/objects/tree.js';
 import type { Context } from '../../ports/context.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { writeTree } from './write-tree.js';
@@ -172,7 +173,7 @@ const buildTrieFrames = (rootEntries: ReadonlyArray<PendingEntry>): Trie => {
 };
 
 const filesToTreeEntries = (files: ReadonlyArray<PendingEntry>): TreeEntry[] =>
-  files.map((file) => ({ name: file.path as FilePath, id: file.id, mode: file.mode }));
+  files.map((file) => treeEntry(file.mode, file.path as FilePath, file.id));
 
 /**
  * Write every frame bottom-up: a plain reverse scan over `frames` visits
@@ -191,11 +192,7 @@ const writeTrieFrames = async (ctx: Context, trie: Trie): Promise<ObjectId> => {
     const subId = await writeTree(ctx, treeEntries[index]!);
     const parentEntries =
       frame.parentIndex === ROOT_PARENT_INDEX ? rootTreeEntries : treeEntries[frame.parentIndex]!;
-    parentEntries.push({
-      name: frame.name,
-      id: subId,
-      mode: FILE_MODE.DIRECTORY,
-    });
+    parentEntries.push(treeEntry(FILE_MODE.DIRECTORY, frame.name, subId));
   }
   return writeTree(ctx, rootTreeEntries);
 };

@@ -42,6 +42,7 @@ import type {
   Tree,
 } from '../../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import {
   lookupPackIndex,
   midxOidAt,
@@ -122,7 +123,7 @@ async function buildChain(ctx: Context, length: number, prefix = 'gen'): Promise
     const tree: Tree = {
       type: 'tree',
       id: '' as ObjectId,
-      entries: [{ name: 'f.txt', mode: '100644' as FileMode, id: blobId as ObjectId }],
+      entries: [treeEntry('100644' as FileMode, 'f.txt', blobId as ObjectId)],
     };
     const treeId = await idOf(ctx, tree);
     entries.push({ kind: 'base', type: 'tree', content: rawContentOf(ctx, tree) });
@@ -598,7 +599,7 @@ describe('Given a want reachable only through a loose object', () => {
       const tipTree: Tree = {
         type: 'tree',
         id: '' as ObjectId,
-        entries: [{ name: 'loose.txt', mode: '100644' as FileMode, id: looseBlobId as ObjectId }],
+        entries: [treeEntry('100644' as FileMode, 'loose.txt', looseBlobId as ObjectId)],
       };
       const tipTreeId = await idOf(ctx, tipTree);
       const tipCommit: Commit = {

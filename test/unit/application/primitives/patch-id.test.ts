@@ -7,6 +7,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -25,7 +26,7 @@ const commitGitlink = async (
   gitlinkOid: ObjectId,
   parents: ReadonlyArray<ObjectId>,
 ): Promise<ObjectId> => {
-  const tree = await writeTree(ctx, [{ mode: FILE_MODE.GITLINK, name: 'sub', id: gitlinkOid }]);
+  const tree = await writeTree(ctx, [treeEntry(FILE_MODE.GITLINK, 'sub', gitlinkOid)]);
   return createCommit(ctx, {
     tree,
     parents: [...parents],
@@ -46,7 +47,7 @@ const commitFile = async (
     id: '' as ObjectId,
     content: encoder.encode(content),
   });
-  const tree = await writeTree(ctx, [{ mode: FILE_MODE.REGULAR, name: 'f', id: blob }]);
+  const tree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f', blob)]);
   return createCommit(ctx, {
     tree,
     parents: [...parents],
@@ -67,8 +68,8 @@ const commitNestedFile = async (
     id: '' as ObjectId,
     content: encoder.encode(content),
   });
-  const subtree = await writeTree(ctx, [{ mode: FILE_MODE.REGULAR, name: 'f', id: blob }]);
-  const tree = await writeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'dir', id: subtree }]);
+  const subtree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f', blob)]);
+  const tree = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', subtree)]);
   return createCommit(ctx, {
     tree,
     parents: [...parents],

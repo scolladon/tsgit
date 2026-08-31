@@ -12,6 +12,7 @@ import { parseBundleHeader, serializeBundleHeader } from '../../../../src/domain
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { RefName } from '../../../../src/domain/objects/object-id.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
 import { buildSyntheticPack, type EntrySpec } from '../primitives/pack-fixture.js';
@@ -96,7 +97,7 @@ const buildTwoCommitRepo = async (): Promise<TwoCommitRepo> => {
   const tree1 = await writeTree(ctx, []);
   const commit1 = await makeCommitObj(ctx, tree1, [], 'first commit', 1);
   const blob = await makeBlob(ctx, 'hello');
-  const tree2 = await writeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blob }]);
+  const tree2 = await writeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blob)]);
   const commit2 = await makeCommitObj(ctx, tree2, [commit1], 'second commit', 2);
   await setRef(ctx, 'refs/heads/main', commit2);
   return { ctx, commit1, commit2 };

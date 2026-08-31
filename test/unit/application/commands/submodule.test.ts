@@ -6,6 +6,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 
@@ -27,10 +28,10 @@ const writeRoot = async (
   const entries: TreeEntry[] = [];
   if (gitmodulesText !== undefined) {
     const blobId = await writeBlobText(ctx, gitmodulesText);
-    entries.push({ name: '.gitmodules', mode: FILE_MODE.REGULAR, id: blobId });
+    entries.push(treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId));
   }
   for (const g of gitlinks) {
-    entries.push({ name: g.name, mode: FILE_MODE.GITLINK, id: g.id });
+    entries.push(treeEntry(FILE_MODE.GITLINK, g.name, g.id));
   }
   return writeTree(ctx, entries);
 };

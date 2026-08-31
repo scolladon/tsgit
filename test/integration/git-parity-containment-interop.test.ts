@@ -305,12 +305,10 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
           expect(workingTreeEntries(fixture.peerDestDir)).toEqual([]);
           // Assert — tsgit refuses too, and nothing was partially written:
           // the destination keeps only the seed file and HEAD never moved.
-          // `..` is caught one stage earlier (tree parse — pre-existing,
-          // stricter than git) than the three `.git` aliases (index write —
-          // this feature's new check): same outcome, different internal code.
-          expect(fixture.oursCode).toBe(
-            name === '..' ? 'INVALID_TREE_ENTRY' : 'INVALID_INDEX_ENTRY',
-          );
+          // All four names are refused at the same stage — index write — because
+          // the tree parse accepts every name byte-sequence git's own parser
+          // accepts, and the path validator is what refuses to materialise one.
+          expect(fixture.oursCode).toBe('INVALID_INDEX_ENTRY');
           expect(workingTreeEntries(fixture.oursDir)).toEqual(['seed.txt']);
           expect(git(fixture.oursDir, 'rev-parse', 'HEAD').trim()).toBe(fixture.oursSeedOid);
         },

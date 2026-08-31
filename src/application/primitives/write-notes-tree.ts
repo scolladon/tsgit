@@ -2,6 +2,7 @@ import type { NotesTrie, SubtreeReader, WritePlanEntry } from '../../domain/note
 import { planWrite } from '../../domain/notes/write-plan.js';
 import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { FILE_MODE, sortTreeEntries } from '../../domain/objects/index.js';
+import { treeEntry } from '../../domain/objects/tree.js';
 import type { Context } from '../../ports/context.js';
 import { createCommit } from './create-commit.js';
 import { writeTree } from './write-tree.js';
@@ -56,12 +57,20 @@ async function buildTree(ctx: Context, entries: ReadonlyArray<WritePlanEntry>): 
   for (const entry of entries) {
     const slashIdx = entry.name.indexOf('/');
     if (slashIdx === -1) {
-      direct.push({ id: entry.oid, mode: entry.mode, name: entry.name });
+      // A preserved entry's raw leaf name lives in nameBytes and is minted
+      // verbatim; a plan-synthesised note leaf has none and falls back to
+      // its pure-hex `name`.
+      direct.push(treeEntry(entry.mode, entry.nameBytes ?? entry.name, entry.oid));
     } else {
       const prefix = entry.name.slice(0, slashIdx);
       const rest = entry.name.slice(slashIdx + 1);
       const group = groups.get(prefix) ?? [];
-      group.push({ name: rest, mode: entry.mode, oid: entry.oid });
+      group.push({
+        name: rest,
+        mode: entry.mode,
+        oid: entry.oid,
+        ...(entry.nameBytes !== undefined ? { nameBytes: entry.nameBytes } : {}),
+      });
       groups.set(prefix, group);
     }
   }
@@ -69,7 +78,7 @@ async function buildTree(ctx: Context, entries: ReadonlyArray<WritePlanEntry>): 
   const subtreeEntries: TreeEntry[] = [];
   for (const [prefix, groupEntries] of groups) {
     const subtreeOid = await buildTree(ctx, groupEntries);
-    subtreeEntries.push({ id: subtreeOid, mode: FILE_MODE.DIRECTORY, name: prefix });
+    subtreeEntries.push(treeEntry(FILE_MODE.DIRECTORY, prefix, subtreeOid));
   }
 
   const sorted = sortTreeEntries([...direct, ...subtreeEntries]);

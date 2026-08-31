@@ -14,13 +14,14 @@ import {
 import { encode } from '../../../../../src/domain/objects/encoding.js';
 import {
   FILE_MODE,
-  type FileMode,
   type FilePath,
   hexToBytes,
   type ObjectId,
   SHA1_CONFIG,
   serializeTreeContent,
 } from '../../../../../src/domain/objects/index.js';
+import type { TreeEntry } from '../../../../../src/domain/objects/tree.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import { buildSeededContext } from '../fixtures.js';
 
 async function writeBlob(
@@ -94,9 +95,9 @@ describe('flattenRawTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const treeId = await writeTree(ctx, [
-          { name: 'a', mode: FILE_MODE.REGULAR, id: blobId },
-          { name: 'b', mode: FILE_MODE.REGULAR, id: blobId },
-          { name: 'c', mode: FILE_MODE.REGULAR, id: blobId },
+          treeEntry(FILE_MODE.REGULAR, 'a', blobId),
+          treeEntry(FILE_MODE.REGULAR, 'b', blobId),
+          treeEntry(FILE_MODE.REGULAR, 'c', blobId),
         ]);
         const bounds: FlattenBounds = { maxDepth: 1024, maxEntries: 2 };
         const sut = flattenRawTree;
@@ -122,9 +123,9 @@ describe('flattenRawTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const treeId = await writeTree(ctx, [
-          { name: 'a', mode: FILE_MODE.REGULAR, id: blobId },
-          { name: 'b', mode: FILE_MODE.REGULAR, id: blobId },
-          { name: 'c', mode: FILE_MODE.REGULAR, id: blobId },
+          treeEntry(FILE_MODE.REGULAR, 'a', blobId),
+          treeEntry(FILE_MODE.REGULAR, 'b', blobId),
+          treeEntry(FILE_MODE.REGULAR, 'c', blobId),
         ]);
         const bounds: FlattenBounds = { maxDepth: 1024, maxEntries: 3 };
         const sut = flattenRawTree;
@@ -148,8 +149,8 @@ describe('flattenRawTree', () => {
         const emptySubtreeId = await writeTree(ctx, []);
         const blobId = await writeBlob(ctx, 'x');
         const treeId = await writeTree(ctx, [
-          { name: 'a', mode: FILE_MODE.DIRECTORY, id: emptySubtreeId },
-          { name: 'b', mode: FILE_MODE.REGULAR, id: blobId },
+          treeEntry(FILE_MODE.DIRECTORY, 'a', emptySubtreeId),
+          treeEntry(FILE_MODE.REGULAR, 'b', blobId),
         ]);
         const bounds: FlattenBounds = { maxDepth: 1024, maxEntries: 1 };
         const sut = flattenRawTree;
@@ -174,15 +175,9 @@ describe('flattenRawTree', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
-        const leafId = await writeTree(ctx, [
-          { name: 'leaf', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
-        const midId = await writeTree(ctx, [
-          { name: 'mid', mode: FILE_MODE.DIRECTORY, id: leafId },
-        ]);
-        const rootId = await writeTree(ctx, [
-          { name: 'root', mode: FILE_MODE.DIRECTORY, id: midId },
-        ]);
+        const leafId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf', blobId)]);
+        const midId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'mid', leafId)]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'root', midId)]);
         const bounds: FlattenBounds = {
           maxDepth: 1,
           maxEntries: TEST_BOUNDS.maxEntries,
@@ -210,15 +205,9 @@ describe('flattenRawTree', () => {
         // `depth > cap`, not `depth >= cap`.
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
-        const leafId = await writeTree(ctx, [
-          { name: 'leaf', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
-        const midId = await writeTree(ctx, [
-          { name: 'mid', mode: FILE_MODE.DIRECTORY, id: leafId },
-        ]);
-        const rootId = await writeTree(ctx, [
-          { name: 'root', mode: FILE_MODE.DIRECTORY, id: midId },
-        ]);
+        const leafId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf', blobId)]);
+        const midId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'mid', leafId)]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'root', midId)]);
         const bounds: FlattenBounds = {
           maxDepth: 2,
           maxEntries: TEST_BOUNDS.maxEntries,
@@ -244,11 +233,9 @@ describe('flattenRawTree', () => {
         // read boundary and made to resolve to a tree that loops back to it.
         const ctx = await buildSeededContext();
         const realTreeId = await writeTree(ctx, []);
-        const loopEntry: ReadonlyArray<{
-          readonly name: string;
-          readonly mode: FileMode;
-          readonly id: ObjectId;
-        }> = [{ name: 'loop', mode: FILE_MODE.DIRECTORY, id: realTreeId }];
+        const loopEntry: ReadonlyArray<TreeEntry> = [
+          treeEntry(FILE_MODE.DIRECTORY, 'loop', realTreeId),
+        ];
         const loopContent = serializeTreeContent(
           { type: 'tree', id: realTreeId, entries: loopEntry },
           SHA1_CONFIG,
@@ -292,8 +279,8 @@ describe('flattenRawTree', () => {
         const blobA = await writeBlob(ctx, 'a');
         const blobB = await writeBlob(ctx, 'b');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobA },
-          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: blobB },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt', blobA),
+          treeEntry(FILE_MODE.REGULAR, 'b.txt', blobB),
         ]);
         const controller = new AbortController();
         const aborted = { ...ctx, signal: controller.signal };
@@ -331,9 +318,7 @@ describe('flattenRawTree', () => {
         const controller = new AbortController();
         const ctx = await buildSeededContext({ signal: controller.signal });
         const blobId = await writeBlob(ctx, 'x');
-        const treeId = await writeTree(ctx, [
-          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
-        ]);
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]);
         const sut = flattenRawTree;
 
         // Act
@@ -356,19 +341,15 @@ describe('flattenRawTree', () => {
           concurrency: { cpuBound: 1, ioBound },
         };
         const width = ioBound + 8;
-        const dirEntries: Array<{ name: string; mode: FileMode; id: ObjectId }> = [];
+        const dirEntries: TreeEntry[] = [];
         const subtreeIds = new Set<ObjectId>();
         for (let i = 0; i < width; i++) {
           const blobId = await writeBlob(ctx, `content-${i}`);
-          const subtreeId = await writeTree(ctx, [
-            { name: 'f', mode: FILE_MODE.REGULAR, id: blobId },
-          ]);
+          const subtreeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f', blobId)]);
           subtreeIds.add(subtreeId);
-          dirEntries.push({
-            name: `d${String(i).padStart(3, '0')}`,
-            mode: FILE_MODE.DIRECTORY,
-            id: subtreeId,
-          });
+          dirEntries.push(
+            treeEntry(FILE_MODE.DIRECTORY, `d${String(i).padStart(3, '0')}`, subtreeId),
+          );
         }
         const rootId = await writeTree(ctx, dirEntries);
         let inFlight = 0;
@@ -413,23 +394,17 @@ describe('flattenRawTree', () => {
         const leafAI = await writeBlob(ctx, 'ai');
         const leafB = await writeBlob(ctx, 'b');
         const leafC = await writeBlob(ctx, 'c');
-        const innerId = await writeTree(ctx, [
-          { name: 'x.txt', mode: FILE_MODE.REGULAR, id: leafAI },
-        ]);
+        const innerId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x.txt', leafAI)]);
         const dirAId = await writeTree(ctx, [
-          { name: '1-leaf.txt', mode: FILE_MODE.REGULAR, id: leafA },
-          { name: '2-inner', mode: FILE_MODE.DIRECTORY, id: innerId },
+          treeEntry(FILE_MODE.REGULAR, '1-leaf.txt', leafA),
+          treeEntry(FILE_MODE.DIRECTORY, '2-inner', innerId),
         ]);
-        const dirBId = await writeTree(ctx, [
-          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafB },
-        ]);
-        const dirCId = await writeTree(ctx, [
-          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafC },
-        ]);
+        const dirBId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf.txt', leafB)]);
+        const dirCId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf.txt', leafC)]);
         const rootId = await writeTree(ctx, [
-          { name: 'a-dirA', mode: FILE_MODE.DIRECTORY, id: dirAId },
-          { name: 'b-dirB', mode: FILE_MODE.DIRECTORY, id: dirBId },
-          { name: 'c-dirC', mode: FILE_MODE.DIRECTORY, id: dirCId },
+          treeEntry(FILE_MODE.DIRECTORY, 'a-dirA', dirAId),
+          treeEntry(FILE_MODE.DIRECTORY, 'b-dirB', dirBId),
+          treeEntry(FILE_MODE.DIRECTORY, 'c-dirC', dirCId),
         ]);
         // dirA is requested first but settles LAST; dirC is requested last but
         // settles FIRST — proves emission order tracks the entry loop, not
@@ -476,13 +451,9 @@ describe('flattenRawTree', () => {
         const ctx = await buildSeededContext();
         const realTreeId = await writeTree(ctx, []);
         const failingSubtreeId = await writeTree(ctx, []);
-        const loopEntries: ReadonlyArray<{
-          readonly name: string;
-          readonly mode: FileMode;
-          readonly id: ObjectId;
-        }> = [
-          { name: 'aaa-loop', mode: FILE_MODE.DIRECTORY, id: realTreeId },
-          { name: 'zzz-other', mode: FILE_MODE.DIRECTORY, id: failingSubtreeId },
+        const loopEntries: ReadonlyArray<TreeEntry> = [
+          treeEntry(FILE_MODE.DIRECTORY, 'aaa-loop', realTreeId),
+          treeEntry(FILE_MODE.DIRECTORY, 'zzz-other', failingSubtreeId),
         ];
         const loopContent = serializeTreeContent(
           { type: 'tree', id: realTreeId, entries: loopEntries },
@@ -592,12 +563,16 @@ describe('flattenRawTree', () => {
 
   describe('Given an early entry named ".." and a later truncated entry', () => {
     describe('When flattenRawTree runs', () => {
-      it("Then throws the name refusal at offset 0 — flatten's own name validation trips before the truncated tail is ever scanned", async () => {
-        // Arrange
+      it("Then the '..' entry is accepted and the truncated tail still refuses (a later structural fault still fires)", async () => {
+        // Arrange — the name-shape refusal is gone, so the '..' entry is now
+        // accepted; the second entry's truncated hash is a structural fault
+        // the cursor scan still catches, at the offset where that entry
+        // begins.
         const ctx = await buildSeededContext();
         const rootId = await writeTree(ctx, []);
+        const firstEntry = rawEntry(FILE_MODE.REGULAR, '..', LEAF_OID);
         const content = concatBytes(
-          rawEntry(FILE_MODE.REGULAR, '..', LEAF_OID),
+          firstEntry,
           truncatedEntry(FILE_MODE.REGULAR, 'b', LEAF_OID, 5),
         );
         const spy = stubRootContent(rootId, content);
@@ -610,8 +585,8 @@ describe('flattenRawTree', () => {
         } catch (error) {
           const { data } = error as { data: { code: string; offset: number; reason: string } };
           expect(data.code).toBe('INVALID_TREE_ENTRY');
-          expect(data.offset).toBe(0);
-          expect(data.reason).toBe('invalid entry name: ..');
+          expect(data.offset).toBe(firstEntry.length);
+          expect(data.reason).toBe('truncated hash');
         } finally {
           spy.mockRestore();
         }
@@ -661,20 +636,18 @@ describe('flattenRawTree', () => {
         const ctx = await buildSeededContext();
         const mkTinyDir = async (label: string): Promise<ObjectId> => {
           const blobId = await writeBlob(ctx, label);
-          return writeTree(ctx, [{ name: 'x', mode: FILE_MODE.REGULAR, id: blobId }]);
+          return writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x', blobId)]);
         };
         const g0 = await mkTinyDir('g0');
         const g1 = await mkTinyDir('g1');
         const g2 = await mkTinyDir('g2');
         const grandchildIds = new Set<ObjectId>([g0, g1, g2]);
         const childLevelId = await writeTree(ctx, [
-          { name: 'g0', mode: FILE_MODE.DIRECTORY, id: g0 },
-          { name: 'g1', mode: FILE_MODE.DIRECTORY, id: g1 },
-          { name: 'g2', mode: FILE_MODE.DIRECTORY, id: g2 },
+          treeEntry(FILE_MODE.DIRECTORY, 'g0', g0),
+          treeEntry(FILE_MODE.DIRECTORY, 'g1', g1),
+          treeEntry(FILE_MODE.DIRECTORY, 'g2', g2),
         ]);
-        const rootId = await writeTree(ctx, [
-          { name: 'd', mode: FILE_MODE.DIRECTORY, id: childLevelId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'd', childLevelId)]);
         const bounds: FlattenBounds = { maxDepth: TEST_BOUNDS.maxDepth, maxEntries: 2 };
         const remainingBudgetAtChildLevel = 1;
         let speculativeReadCount = 0;

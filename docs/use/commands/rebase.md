@@ -66,6 +66,13 @@ type RebaseResult =
 - **Conflict.** Returns `{ kind: 'conflict', ... }`, leaving HEAD detached at the
   last good pick and writing the full `.git/rebase-merge/` state + `REBASE_HEAD`.
   Resolve with `repo.add(paths)` then `repo.rebase.continue()`.
+- **Conflict path safety.** Before any conflict is materialised, every
+  outcome/conflict path the replay is about to write is checked in one pass
+  against git's own index-entry name rules (absolute path; `.`, `..`, or empty
+  segment; `.git`/`.gitmodules` alias) — a hostile path anywhere in the set
+  refuses the whole write with `INVALID_INDEX_ENTRY`, atomically, before the
+  first byte lands, whether or not it is the path a straightforward per-entry
+  write would reach first.
 - **Resume.** `continue` commits the resolution (preserved author from
   `author-script`, current committer, `rebase (continue)` reflog) and replays the
   rest; `skip` discards the conflicted commit and replays the rest; `abort`
@@ -126,6 +133,10 @@ await repo.rebase.run({
 ## Throws
 
 - `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree.
+- `INVALID_INDEX_ENTRY` — a conflicting replay's outcome or conflict path fails
+  git's own index-entry name rules. Every path the conflict write is about to
+  touch is checked in one pass before any of them is written, so a hostile
+  path anywhere in the batch refuses the whole write, atomically.
 - `OPERATION_IN_PROGRESS` — another operation (merge / cherry-pick / revert /
   rebase) is already pending.
 - `NO_INITIAL_COMMIT` — `run` on an unborn branch.

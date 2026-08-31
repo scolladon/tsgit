@@ -18,9 +18,14 @@ import fc from 'fast-check';
 import { describe, it } from 'vitest';
 import { fsck } from '../../../../src/application/commands/fsck.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { validateTree } from '../../../../src/domain/fsck/validate-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
+import { serializeTreeContent, treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { arbTreeEntryRawName } from '../../domain/objects/arbitraries.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
 import { findingIds } from './fsck-finding-ids.js';
@@ -45,14 +50,10 @@ const makeBlob = (content: string) => ({
   content: enc.encode(content),
 });
 
-const makeTree = (entries: ReadonlyArray<{ mode: string; name: string; id: ObjectId }>) => ({
+const makeTree = (entries: ReadonlyArray<TreeEntry>) => ({
   type: 'tree' as const,
   id: '' as ObjectId,
-  entries: entries.map((e) => ({
-    mode: e.mode as typeof FILE_MODE.REGULAR,
-    name: e.name,
-    id: e.id,
-  })),
+  entries,
 });
 
 const makeCommit = (tree: ObjectId, parents: ReadonlyArray<ObjectId>, msg: string) => ({
@@ -94,7 +95,7 @@ describe('Given an arbitrary healthy repo (all objects reachable)', () => {
           const blobId = await writeObject(ctx, makeBlob(content));
           const treeId = await writeObject(
             ctx,
-            makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+            makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
           );
           const commitId = await writeObject(ctx, makeCommit(treeId, [], 'init'));
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -137,7 +138,7 @@ describe('Given a healthy repo plus one orphan blob tip', () => {
             const reachableBlobId = await writeObject(ctx, makeBlob(reachableContent));
             const treeId = await writeObject(
               ctx,
-              makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: reachableBlobId }]),
+              makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', reachableBlobId)]),
             );
             const commitId = await writeObject(ctx, makeCommit(treeId, [], 'init'));
             await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -226,7 +227,7 @@ describe('Given an arbitrary repo state', () => {
           const blobId = await writeObject(ctx, makeBlob(content));
           const treeId = await writeObject(
             ctx,
-            makeTree([{ mode: FILE_MODE.REGULAR, name: 'f.txt', id: blobId }]),
+            makeTree([treeEntry(FILE_MODE.REGULAR, 'f.txt', blobId)]),
           );
           const commitId = await writeObject(ctx, makeCommit(treeId, [], 'c'));
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -301,7 +302,7 @@ describe('Given a repo with a mix of reachable and unreachable objects', () => {
           const blobId = await writeObject(ctx, makeBlob(reachable));
           const treeId = await writeObject(
             ctx,
-            makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+            makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
           );
           const commitId = await writeObject(ctx, makeCommit(treeId, [], 'c'));
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -409,7 +410,7 @@ async function seedHealthyRepo(ctx: Context, content: string): Promise<void> {
   const blobId = await writeObject(ctx, makeBlob(content));
   const treeId = await writeObject(
     ctx,
-    makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+    makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
   );
   const commitId = await writeObject(ctx, makeCommit(treeId, [], 'init'));
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -569,6 +570,61 @@ describe('Given an arbitrary healthy repo plus one pack-layer-faulted pack whose
           },
         ),
         { numRuns: 50 },
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lens 3 (weak): validateTree never throws for arbitrary byte input. The
+// contract already promises this; the byte-level rewrite touches every
+// branch it depends on.
+//
+// Serialized from well-formed TreeEntry values (arbTreeEntryRawName's raw,
+// NUL-free names over the five accepted modes) rather than pure random byte
+// arrays: a purely random array almost never assembles the
+// mode-space-name-NUL-sha shape parseTreeEntriesTolerant requires before it
+// ever reaches entryNameKey / checkNameFaults / treeEntrySortKey /
+// checkSpecialFileName or the duplicate/sort passes — the exact code this
+// property exists to protect. A minority of runs additionally flip one byte
+// of the serialized body, so the malformed-tree (early `badTree` return)
+// tier stays sampled too.
+// ---------------------------------------------------------------------------
+
+const arbTreeBytesForValidation = (): fc.Arbitrary<Uint8Array> =>
+  fc
+    .tuple(
+      fc.array(arbTreeEntryRawName(), { maxLength: 8 }),
+      fc.oneof(
+        { weight: 3, arbitrary: fc.constant(undefined) },
+        { weight: 1, arbitrary: fc.nat() },
+      ),
+    )
+    .map(([entries, corruptionSeed]) => {
+      const raw = serializeTreeContent({ type: 'tree', id: '' as ObjectId, entries }, SHA1_CONFIG);
+      if (corruptionSeed === undefined || raw.length === 0) return raw;
+      const mutated = new Uint8Array(raw);
+      const index = corruptionSeed % mutated.length;
+      const current = mutated[index] ?? 0;
+      mutated[index] = (current + 1) % 256;
+      return mutated;
+    });
+
+describe('Given arbitrary tree object bytes', () => {
+  describe('When validateTree runs', () => {
+    it('Then it never throws', () => {
+      fc.assert(
+        fc.property(arbTreeBytesForValidation(), fc.boolean(), (raw, strict) => {
+          // Arrange
+          const sut = validateTree;
+
+          // Act
+          sut(raw, strict, 20);
+
+          // Assert — reaching here without throwing is the property.
+          return true;
+        }),
+        { numRuns: 100 },
       );
     });
   });

@@ -44,6 +44,13 @@ type RevertResult =
   stage-1/2/3 index entries, and `<<<<<<<` markers. Resolve with
   `repo.add(paths)` then `repo.revert.continue()` (or `repo.commit()` — both keep
   a single parent and write a plain `commit:` reflog).
+- **Conflict path safety.** Before any conflict is materialised, every
+  outcome/conflict path the revert is about to write is checked in one pass
+  against git's own index-entry name rules (absolute path; `.`, `..`, or empty
+  segment; `.git`/`.gitmodules` alias) — a hostile path anywhere in the set
+  refuses the whole write with `INVALID_INDEX_ENTRY`, atomically, before the
+  first byte lands, whether or not it is the path a straightforward per-entry
+  write would reach first.
 - **Empty.** `git revert` has no `--allow-empty`. A revert that yields no net
   change stops as `{ kind: 'empty' }` with **no** `REVERT_HEAD`: a single revert
   writes no state, a multi-revert persists only the sequencer. `skip` and
@@ -69,6 +76,10 @@ type RevertResult =
 - `NO_INITIAL_COMMIT` — `run` on an unborn branch (no commit yet).
 - `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree
   (git's `require_clean_work_tree`).
+- `INVALID_INDEX_ENTRY` — a conflicting revert's outcome or conflict path fails
+  git's own index-entry name rules. Every path the conflict write is about to
+  touch is checked in one pass before any of them is written, so a hostile
+  path anywhere in the batch refuses the whole write, atomically.
 - `OPERATION_IN_PROGRESS` — another operation (merge / cherry-pick / revert)
   is already pending.
 - `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with nothing in progress.

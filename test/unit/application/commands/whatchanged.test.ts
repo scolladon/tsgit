@@ -9,6 +9,7 @@ import {
   type ObjectId,
   type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -26,11 +27,9 @@ const blob = (ctx: Context, content: string): Promise<ObjectId> =>
 
 const tree = async (ctx: Context, files: Readonly<Record<string, string>>): Promise<ObjectId> => {
   const entries: TreeEntry[] = await Promise.all(
-    Object.entries(files).map(async ([name, content]) => ({
-      mode: FILE_MODE.REGULAR,
-      name,
-      id: await blob(ctx, content),
-    })),
+    Object.entries(files).map(async ([name, content]) =>
+      treeEntry(FILE_MODE.REGULAR, name, await blob(ctx, content)),
+    ),
   );
   return writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries });
 };

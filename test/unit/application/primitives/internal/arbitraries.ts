@@ -125,11 +125,15 @@ export const treePathArb = (shape: ReadonlyArray<TreePathShapeEntry>): fc.Arbitr
 };
 
 /**
- * A duplicate entry name, a disjoint set of sibling names (the pool minus
- * the duplicate itself), and a final search segment — irrelevant to whether
- * the refusal fires, since a full-directory scan sees the duplicate
- * regardless of what is being searched for. `duplicateName` is drawn first
- * via `.chain` so `siblings` can exclude it by construction.
+ * A duplicate entry name and a disjoint set of sibling names (the pool minus
+ * the duplicate itself) — the caller assigns each sibling and each of the
+ * duplicate's two occurrences its own distinct blob id, so resolving to the
+ * WRONG entry (a sibling, or the second duplicate) is observable rather than
+ * masked by every candidate sharing one id. `searchSegment` mostly equals
+ * `duplicateName` (the case this arbitrary exists to probe); the remaining
+ * weight still draws from the pool, covering the plain single-entry lookup
+ * and the "not present" miss. `duplicateName` is drawn first via `.chain` so
+ * `siblings` can exclude it by construction.
  */
 export interface DuplicateDirectorySpec {
   readonly duplicateName: string;
@@ -144,7 +148,10 @@ export const duplicateDirectoryArb = (): fc.Arbitrary<DuplicateDirectorySpec> =>
         fc
           .uniqueArray(arbTreePathName(), { maxLength: TREE_PATH_MAX_BREADTH })
           .map((names) => names.filter((name) => name !== duplicateName)),
-        fc.constantFrom(...TREE_PATH_NAME_POOL),
+        fc.oneof(
+          { weight: 4, arbitrary: fc.constant(duplicateName) },
+          { weight: 1, arbitrary: fc.constantFrom(...TREE_PATH_NAME_POOL) },
+        ),
       )
       .map(([siblings, searchSegment]) => ({ duplicateName, siblings, searchSegment })),
   );

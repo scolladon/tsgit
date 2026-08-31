@@ -8,18 +8,54 @@
  *   kind:    equivalent-under-readback
  *   format:  git-tree-object
  */
-import { compareBytes, decode, encode, hexToBytes, indexOf } from './encoding.js';
+import {
+  compareBytes,
+  decode,
+  decodePreservingBom,
+  encode,
+  hexToBytes,
+  indexOf,
+} from './encoding.js';
 import { invalidTreeEntry } from './error.js';
 import type { FileMode } from './file-mode.js';
 import { isDirectory, normalizeFileMode } from './file-mode.js';
 import type { HashConfig } from './hash-config.js';
 import type { ObjectId } from './object-id.js';
 import { ObjectId as ObjectIdFactory } from './object-id.js';
+import { hasNonOctalByte } from './tree-entry-bytes.js';
 
-export interface TreeEntry {
+export type TreeEntry = {
   readonly mode: FileMode;
+  /** Derived display view — always `decodePreservingBom(nameBytes)`. Never
+   *  read to make a decision; `nameBytes` is the authoritative value. */
   readonly name: string;
+  /** Authoritative on-disk name bytes: a fresh copy owned by this entry,
+   *  never a view onto a caller-supplied or cached buffer. */
+  readonly nameBytes: Uint8Array;
   readonly id: ObjectId;
+} & { readonly __brand: unique symbol };
+
+// The brand stops an object *literal* from satisfying `TreeEntry`, not a
+// spread (`{ ...entry, name: 'x' }` still type-checks — TypeScript's spread
+// carries the brand property along with everything else). Accepted: nothing
+// reads `name` to make a decision, so a stale `name` from such a spread is a
+// wrong display string, never wrong on-disk bytes.
+export function treeEntry(mode: FileMode, name: string | Uint8Array, id: ObjectId): TreeEntry {
+  const nameBytes = typeof name === 'string' ? encode(name) : new Uint8Array(name);
+  return { mode, name: decodePreservingBom(nameBytes), nameBytes, id } as TreeEntry;
+}
+
+/**
+ * Mints an entry as a VIEW onto `parseTreeContent`'s own private copy of the
+ * tree body — never a per-entry copy. Safe only because that copy is
+ * exclusive to this parse and outlives every entry built from it: entries
+ * parsed from one tree share that tree's buffer lifetime, the accepted
+ * trade for recovering most of the retained memory a per-entry copy cost.
+ * Not exported — every OTHER construction path keeps the defensive copy in
+ * `treeEntry` above, because those sources are not the parser's to trust.
+ */
+function treeEntryFromParsedView(mode: FileMode, nameView: Uint8Array, id: ObjectId): TreeEntry {
+  return { mode, name: decodePreservingBom(nameView), nameBytes: nameView, id } as TreeEntry;
 }
 
 export interface Tree {
@@ -30,42 +66,41 @@ export interface Tree {
 
 export function parseTreeContent(id: ObjectId, content: Uint8Array, hash: HashConfig): Tree {
   const entries: TreeEntry[] = [];
-  const names = new Set<string>();
+  // One private copy of the whole body, owned by this parse — every entry
+  // below views into it rather than copying its own name span.
+  const body = new Uint8Array(content);
   let offset = 0;
 
-  while (offset < content.length) {
-    const spaceIndex = indexOf(content, 0x20, offset);
+  while (offset < body.length) {
+    const spaceIndex = indexOf(body, 0x20, offset);
     if (spaceIndex === -1) {
       throw invalidTreeEntry(offset, 'missing space after mode');
     }
+    if (spaceIndex === offset || hasNonOctalByte(body, offset, spaceIndex)) {
+      throw invalidTreeEntry(offset, 'malformed mode');
+    }
 
-    const modeStr = decode(content.subarray(offset, spaceIndex));
-
-    const nullIndex = indexOf(content, 0x00, spaceIndex + 1);
+    const nullIndex = indexOf(body, 0x00, spaceIndex + 1);
     if (nullIndex === -1) {
       throw invalidTreeEntry(offset, 'missing null after name');
     }
-
-    const name = decode(content.subarray(spaceIndex + 1, nullIndex));
-    if (name === '' || name === '.' || name === '..' || name.includes('/')) {
-      throw invalidTreeEntry(offset, `invalid entry name: ${name}`);
+    if (nullIndex === spaceIndex + 1) {
+      throw invalidTreeEntry(offset, 'empty filename');
     }
 
     const hashStart = nullIndex + 1;
     const hashEnd = hashStart + hash.digestLength;
-    if (hashEnd > content.length) {
+    if (hashEnd > body.length) {
       throw invalidTreeEntry(offset, 'truncated hash');
     }
 
-    const rawHash = content.subarray(hashStart, hashEnd);
+    const nameSpan = body.subarray(spaceIndex + 1, nullIndex);
+    const rawHash = body.subarray(hashStart, hashEnd);
     const entryId = ObjectIdFactory.fromRaw(rawHash);
+    const modeStr = decode(body.subarray(offset, spaceIndex));
     const mode = normalizeFileMode(modeStr);
 
-    if (names.has(name)) {
-      throw invalidTreeEntry(offset, `duplicate entry name: ${name}`);
-    }
-    names.add(name);
-    entries.push({ mode, name, id: entryId });
+    entries.push(treeEntryFromParsedView(mode, nameSpan, entryId));
     offset = hashEnd;
   }
 
@@ -77,7 +112,7 @@ export function serializeTreeContent(tree: Tree, hash: HashConfig): Uint8Array {
 
   const encoded = sorted.map((entry) => ({
     mode: encode(entry.mode),
-    name: encode(entry.name),
+    name: entry.nameBytes,
     hash: hexToBytes(entry.id),
   }));
 
@@ -104,20 +139,19 @@ export function serializeTreeContent(tree: Tree, hash: HashConfig): Uint8Array {
 export function sortTreeEntries(entries: ReadonlyArray<TreeEntry>): ReadonlyArray<TreeEntry> {
   const decorated = entries.map((entry) => ({
     entry,
-    sortKey: encodeEntryName(entry.name, isDirectory(entry.mode)),
+    sortKey: encodeEntryName(entry.nameBytes, isDirectory(entry.mode)),
   }));
   decorated.sort((a, b) => compareBytes(a.sortKey, b.sortKey));
   return decorated.map((d) => d.entry);
 }
 
 export function treeEntryCompare(a: TreeEntry, b: TreeEntry): number {
-  const aBytes = encodeEntryName(a.name, isDirectory(a.mode));
-  const bBytes = encodeEntryName(b.name, isDirectory(b.mode));
+  const aBytes = encodeEntryName(a.nameBytes, isDirectory(a.mode));
+  const bBytes = encodeEntryName(b.nameBytes, isDirectory(b.mode));
   return compareBytes(aBytes, bBytes);
 }
 
-function encodeEntryName(name: string, isDir: boolean): Uint8Array {
-  const nameBytes = encode(name);
+function encodeEntryName(nameBytes: Uint8Array, isDir: boolean): Uint8Array {
   if (!isDir) return nameBytes;
   const result = new Uint8Array(nameBytes.length + 1);
   result.set(nameBytes);

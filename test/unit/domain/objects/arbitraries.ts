@@ -11,6 +11,7 @@ import {
 import type { ObjectType } from '../../../../src/domain/objects/header.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 export function arbObjectId(length: 40 | 64 = 40): fc.Arbitrary<ObjectId> {
   return fc
@@ -118,12 +119,27 @@ export function arbTreeEntryAnyMode(): fc.Arbitrary<TreeEntry> {
         .filter((s) => !s.includes('\0') && !s.includes('/') && s !== '.' && s !== '..'),
       arbObjectId(40),
     )
-    .map(([mode, name, id]) => ({ mode, name, id }));
+    .map(([mode, name, id]) => treeEntry(mode, name, id));
 }
 
-// Git trees cannot contain duplicate entry names — dedupe by name (first
-// wins) before building a tree so the arbitrary never generates a tree that
-// is invalid by construction (which would look like a flaky test).
+// `arbTreeEntryAnyMode()`'s canonical names, but as arbitrary NUL-free raw
+// bytes rather than a JS string — able to emit a byte-order mark, lone
+// 0x80-0xFF bytes and other sequences that are not valid UTF-8, none of
+// which `fc.string()` can ever produce.
+export function arbTreeEntryRawName(): fc.Arbitrary<TreeEntry> {
+  return fc
+    .tuple(
+      arbFileModeEnum(),
+      fc.uint8Array({ minLength: 1, maxLength: 50 }).filter((bytes) => !bytes.includes(0)),
+      arbObjectId(40),
+    )
+    .map(([mode, nameBytes, id]) => treeEntry(mode, nameBytes, id));
+}
+
+// A duplicate name is no longer refused by any tree read path — this dedupe
+// stays only so a *generated canonical* tree is also a canonical one (one
+// entry per name), which some properties over `arbTreeEntryAnyMode()` need
+// as a precondition; it is not modelling a git restriction.
 export function dedupeTreeEntriesByName(
   entries: ReadonlyArray<TreeEntry>,
 ): ReadonlyArray<TreeEntry> {

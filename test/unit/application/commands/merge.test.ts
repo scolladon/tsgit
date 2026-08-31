@@ -29,6 +29,7 @@ import * as writeTreeMod from '../../../../src/application/primitives/write-tree
 import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
@@ -36,8 +37,10 @@ import type {
   ObjectId,
   RefName,
   Tree,
+  TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import {
   buildSeededContext,
   buildTreeChain,
@@ -921,7 +924,7 @@ describe('merge', () => {
           id: '' as ObjectId,
         });
         const otherTreeId = await writeTree(ctx, [
-          { name: 'shared.txt' as never, id: otherBlobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'shared.txt' as never, otherBlobId),
         ]);
         const otherCommitId = await createCommit(ctx, {
           tree: otherTreeId,
@@ -1844,6 +1847,107 @@ describe('merge — updateRef CAS guard', () => {
   });
 });
 
+describe('merge — conflicting-write atomicity', () => {
+  describe('Given a conflicting merge where one changed path is hostile and a sibling path is clean', () => {
+    describe('When merge runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY and the clean sibling is never written', async () => {
+        // Arrange — `sub/.` conflicts (both sides change it differently from
+        // base); `clean.txt` is changed by theirs only and resolves cleanly.
+        // Nested under `sub/` (not top-level) so the conflicting path never
+        // collides with the work directory's own root. Under the previous
+        // per-outcome guard (validated inside the write wave), the clean
+        // sibling batch ran and completed BEFORE the conflicts batch ever
+        // reached `sub/.`'s refusal — this proves the hoisted whole-set gate
+        // now refuses before either path is written.
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        const cleanBase = await writeBlob(ctx, 'base-clean\n');
+        const cleanTheirs = await writeBlob(ctx, 'THEIRS-CLEAN\n');
+        const dotBase = await writeBlob(ctx, 'base\n');
+        const dotOurs = await writeBlob(ctx, 'ours\n');
+        const dotTheirs = await writeBlob(ctx, 'theirs\n');
+        const dotEntry = (id: ObjectId): TreeEntry => treeEntry(FILE_MODE.REGULAR, '.', id);
+
+        const baseTree = await writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt', cleanBase),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await writeTreeMod.writeTree(ctx, [dotEntry(dotBase)]),
+          ),
+        ]);
+        const mainTree = await writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt', cleanBase),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await writeTreeMod.writeTree(ctx, [dotEntry(dotOurs)]),
+          ),
+        ]);
+        const featureTree = await writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt', cleanTheirs),
+          treeEntry(
+            FILE_MODE.DIRECTORY,
+            'sub',
+            await writeTreeMod.writeTree(ctx, [dotEntry(dotTheirs)]),
+          ),
+        ]);
+
+        const { createCommit: createCommitPrim } = await import(
+          '../../../../src/application/primitives/create-commit.js'
+        );
+        const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+        const baseCommitId = await createCommitPrim(ctx, {
+          tree: baseTree,
+          parents: [],
+          author,
+          committer: author,
+          message: 'base',
+          extraHeaders: [],
+        });
+        const mainCommitId = await createCommitPrim(ctx, {
+          tree: mainTree,
+          parents: [baseCommitId],
+          author,
+          committer: author,
+          message: 'ours-edit-dot',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/main' as RefName, mainCommitId, {
+          reflogMessage: 'branch: Created',
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const featureCommitId = await createCommitPrim(ctx, {
+          tree: featureTree,
+          parents: [baseCommitId],
+          author,
+          committer: author,
+          message: 'theirs-edit-both',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/feature' as RefName, featureCommitId, {
+          reflogMessage: 'branch: Created from seed',
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'feature', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/clean.txt`)).toBe(false);
+      });
+    });
+  });
+});
+
 describe('merge — internal reflog action', () => {
   const seedFastForward = async () => {
     const ctx = createMemoryContext();
@@ -2316,6 +2420,119 @@ describe('writeOutcomeToTree (direct)', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/d.txt`)).toBe(false);
+      });
+    });
+  });
+
+  // Once flatten-raw stops refusing `.`/`..` at parse, a merged tree carrying
+  // such a name reaches this writer for the first time — it must refuse
+  // before anything touches the working tree.
+  describe('Given an outcome named "."', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const outcome: MergeOutcome = {
+          status: 'unchanged',
+          path: '.' as FilePath,
+          id: await seedBlob(ctx, 'DOT-BYTES'),
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        let caught: unknown;
+        let streamBlobCallCount: number;
+        try {
+          await writeOutcomeToTree(ctx, outcome, undefined);
+        } catch (err) {
+          caught = err;
+        } finally {
+          streamBlobCallCount = streamBlobSpy.mock.calls.length;
+          streamBlobSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(streamBlobCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an outcome named ".."', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const outcome: MergeOutcome = {
+          status: 'unchanged',
+          path: '..' as FilePath,
+          id: await seedBlob(ctx, 'DOTDOT-BYTES'),
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        let caught: unknown;
+        let streamBlobCallCount: number;
+        try {
+          await writeOutcomeToTree(ctx, outcome, undefined);
+        } catch (err) {
+          caught = err;
+        } finally {
+          streamBlobCallCount = streamBlobSpy.mock.calls.length;
+          streamBlobSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(streamBlobCallCount).toBe(0);
+      });
+    });
+  });
+
+  // A `resolved-deleted` outcome's path is sourced from the merge's `ours`
+  // tree flatten, never from a parsed index — so the premise "this path
+  // already passed validation when the index was parsed" does not hold for
+  // it, and it must be validated here like every other outcome.
+  describe('Given a resolved-deleted outcome named ".."', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY and the working-tree file is not removed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const outcome: MergeOutcome = { status: 'resolved-deleted', path: '..' as FilePath };
+        const removeSpy = vi.spyOn(writeFileMod, 'removeWorkingTreeFile');
+
+        // Act
+        let caught: unknown;
+        let removeCallCount: number;
+        try {
+          await writeOutcomeToTree(ctx, outcome, undefined);
+        } catch (err) {
+          caught = err;
+        } finally {
+          removeCallCount = removeSpy.mock.calls.length;
+          removeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(removeCallCount).toBe(0);
       });
     });
   });
@@ -3283,7 +3500,7 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         );
         const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
         const theirsTreeId = await writeTree(ctx, [
-          { name: 'f.txt' as FilePath, id: theirsBlobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as FilePath, theirsBlobId),
         ]);
         const theirsCommitId = await createCommitPrim(ctx, {
           tree: theirsTreeId,
@@ -3331,7 +3548,7 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         );
         const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
         const oursTreeId = await writeTree(ctx, [
-          { name: 'link' as FilePath, id: oursBlobId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'link' as FilePath, oursBlobId),
         ]);
         const oursCommitId = await createCommitPrim(ctx, {
           tree: oursTreeId,
@@ -3356,7 +3573,7 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
           id: '' as ObjectId,
         });
         const theirsTreeId = await writeTree(ctx, [
-          { name: 'link' as FilePath, id: theirsBlobId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'link' as FilePath, theirsBlobId),
         ]);
         const theirsCommitId = await createCommitPrim(ctx, {
           tree: theirsTreeId,
@@ -3402,7 +3619,7 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
           content: new TextEncoder().encode(content),
           id: '' as ObjectId,
         });
-        return { name: name as FilePath, id, mode: mode as never };
+        return treeEntry(mode as never, name as FilePath, id);
       }),
     );
     const treeId = await writeTree(ctx, treeEntries);
@@ -3478,7 +3695,7 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
           id: '' as ObjectId,
         });
         const oursTreeId = await writeTree(ctx, [
-          { name: 'f.txt' as FilePath, id: oursBlobId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'f.txt' as FilePath, oursBlobId),
         ]);
         const oursCommitId = await createCommitPrim(ctx, {
           tree: oursTreeId,
@@ -3549,7 +3766,7 @@ describe('merge — labels threading (slice 4)', () => {
         );
         const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
         const theirsTreeId = await writeTree(ctx, [
-          { name: 'f.txt' as FilePath, id: theirsBlobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as FilePath, theirsBlobId),
         ]);
         const theirsCommitId = await createCommitPrim(ctx, {
           tree: theirsTreeId,
@@ -3723,6 +3940,39 @@ describe('writeConflictToTree (direct)', () => {
     });
   });
 
+  // A conflict's path still reaches `.git/index` via `conflictsToIndexEntries`
+  // even when no mode can be derived — the mode-derived guard must not also
+  // skip path validation.
+  describe('Given a hostile-named conflict carrying conflictContent but no mode on any field', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const conflict = conflictOf({
+          path: '..' as FilePath,
+          type: 'content',
+          conflictContent: new TextEncoder().encode('marker-bytes\n'),
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await writeConflictToTree(ctx, conflict);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+      });
+    });
+  });
+
   // Refusal seam: mode defined but no derivable bytes — no write, no throw
   describe('Given a bare add-add conflict with only theirId and theirMode', () => {
     describe('When writeConflictToTree runs', () => {
@@ -3743,6 +3993,87 @@ describe('writeConflictToTree (direct)', () => {
 
         // Assert — no file materialised
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+
+  // Once flatten-raw stops refusing `.`/`..` at parse, a merged tree carrying
+  // such a name reaches this writer for the first time — it must refuse
+  // before any blob is read or any bytes are written.
+  describe('Given a conflict path named "."', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+        const conflict = conflictOf({
+          path: '.' as FilePath,
+          type: 'add-add',
+          ourId: await seedBlob(ctx, 'ours'),
+          ourMode: FILE_MODE.REGULAR,
+          theirId: await seedBlob(ctx, 'theirs'),
+          theirMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await writeConflictToTree(ctx, conflict);
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'.' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a conflict path named ".."', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY before any write is attempted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+        const conflict = conflictOf({
+          path: '..' as FilePath,
+          type: 'add-add',
+          ourId: await seedBlob(ctx, 'ours'),
+          ourMode: FILE_MODE.REGULAR,
+          theirId: await seedBlob(ctx, 'theirs'),
+          theirMode: FILE_MODE.REGULAR,
+        });
+
+        // Act
+        let caught: unknown;
+        let writeCallCount: number;
+        try {
+          await writeConflictToTree(ctx, conflict);
+        } catch (err) {
+          caught = err;
+        } finally {
+          writeCallCount = writeSpy.mock.calls.length;
+          writeSpy.mockRestore();
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string; offset?: number } })
+          ?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe("'..' segment rejected");
+        expect(data?.offset).toBe(NO_PARSER_OFFSET);
+        expect(writeCallCount).toBe(0);
       });
     });
   });

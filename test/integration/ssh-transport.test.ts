@@ -23,6 +23,7 @@ import { __resetConfigCacheForTests } from '../../src/application/primitives/con
 import { resolveRef, writeObject, writeTree } from '../../src/application/primitives/index.js';
 import { TsgitError } from '../../src/domain/index.js';
 import type { Blob, Commit, FileMode, ObjectId, RefName } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import { openRepository } from '../../src/index.node.js';
 import { runGit } from './interop-helpers.js';
 
@@ -204,9 +205,7 @@ const commitFileChange = async (
     id: '' as ObjectId,
   };
   const blobId = await writeObject(repo.ctx, blob);
-  const treeId = await writeTree(repo.ctx, [
-    { name: fileName, mode: '100644' as FileMode, id: blobId },
-  ]);
+  const treeId = await writeTree(repo.ctx, [treeEntry('100644' as FileMode, fileName, blobId)]);
   const author = {
     name: 'Push',
     email: 'push@test',

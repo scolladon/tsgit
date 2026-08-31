@@ -1,6 +1,7 @@
 import { TsgitError } from '../../../../domain/error.js';
 import type { FsckObjectType, ValidateObjectInput } from '../../../../domain/fsck/index.js';
 import { validateObject } from '../../../../domain/fsck/index.js';
+import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { parseHeader } from '../../../../domain/objects/index.js';
@@ -82,8 +83,20 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
   }
 }
 
-/** Special filenames whose blob content triggers dedicated fsck checks. */
-const SPECIAL_BLOB_NAMES: ReadonlySet<string> = new Set(['.gitmodules', '.gitattributes']);
+const GITMODULES_NAME_BYTES = encode('.gitmodules');
+const GITATTRIBUTES_NAME_BYTES = encode('.gitattributes');
+
+/**
+ * The special filename `nameBytes` matches, when it matches one of fsck's
+ * two dedicated blob-content checks. Compares raw bytes — never the entry's
+ * decoded `name` — so a byte sequence that merely decodes to one of these
+ * literals is never mistaken for it.
+ */
+function specialBlobName(nameBytes: Uint8Array): string | undefined {
+  if (bytesEqual(nameBytes, GITMODULES_NAME_BYTES)) return '.gitmodules';
+  if (bytesEqual(nameBytes, GITATTRIBUTES_NAME_BYTES)) return '.gitattributes';
+  return undefined;
+}
 
 /**
  * Scan all tree objects in the universe to record blob OIDs that appear
@@ -103,9 +116,9 @@ export function buildBlobFilenameMap(
     const obj = objectCache.get(id);
     if (obj == null || obj.type !== 'tree') continue;
     for (const entry of obj.entries) {
-      // Stryker disable next-line ConditionalExpression: equivalent — non-special filenames are mapped but validateBlob returns [] for them; no finding is affected.
-      if (SPECIAL_BLOB_NAMES.has(entry.name)) {
-        map.set(entry.id, entry.name);
+      const specialName = specialBlobName(entry.nameBytes);
+      if (specialName !== undefined) {
+        map.set(entry.id, specialName);
       }
     }
   }

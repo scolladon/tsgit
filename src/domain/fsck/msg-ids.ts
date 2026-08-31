@@ -9,7 +9,6 @@ export const MSG_BAD_FILEMODE = 'badFilemode' as const;
 export const MSG_BAD_TREE = 'badTree' as const;
 export const MSG_BAD_TREE_SHA1 = 'badTreeSha1' as const;
 export const MSG_DUPLICATE_ENTRIES = 'duplicateEntries' as const;
-export const MSG_EMPTY_NAME = 'emptyName' as const;
 export const MSG_FULL_PATHNAME = 'fullPathname' as const;
 export const MSG_HAS_DOT = 'hasDot' as const;
 export const MSG_HAS_DOTDOT = 'hasDotdot' as const;

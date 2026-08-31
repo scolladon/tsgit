@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import type { Blob, ObjectId, TreeEntry } from '../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 
@@ -49,10 +50,10 @@ const writeRootTree = async (
   const entries: TreeEntry[] = [];
   if (gitmodulesText !== undefined) {
     const blobId = await writeBlobText(repo, gitmodulesText);
-    entries.push({ name: '.gitmodules', mode: FILE_MODE.REGULAR, id: blobId });
+    entries.push(treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId));
   }
   for (const g of gitlinks) {
-    entries.push({ name: g.name, mode: FILE_MODE.GITLINK, id: g.id });
+    entries.push(treeEntry(FILE_MODE.GITLINK, g.name, g.id));
   }
   return repo.primitives.writeTree(entries);
 };
@@ -140,7 +141,7 @@ describe('integration/submodules', () => {
           '../../src/application/primitives/index.js'
         );
         const childTreeId = await writeTree(childCtx, [
-          { name: 'inner', mode: FILE_MODE.GITLINK, id: FAKE_LEAF },
+          treeEntry(FILE_MODE.GITLINK, 'inner', FAKE_LEAF),
         ]);
         const childCommit = await writeObject(childCtx, {
           type: 'commit',

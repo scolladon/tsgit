@@ -1,4 +1,5 @@
-import type { FilePath } from '../../../domain/objects/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../../domain/git-index/path-validator.js';
+import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { deriveContext } from '../derive-context.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -51,7 +52,10 @@ const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): C
  * checks.
  *
  * `name` is the `.gitmodules` subsection name, already rejected by
- * `parseGitmodules` if unsafe; no second name check is needed here.
+ * `parseGitmodules` if unsafe. That covers `name`, which builds the child's
+ * gitdir — it says nothing about `treeRelPath`, which builds the child's work
+ * directory and arrives unvalidated from a tree walk; `buildChildContext`
+ * checks that one itself.
  */
 export const deriveSubmoduleContext = async (
   ctx: Context,
@@ -61,6 +65,13 @@ export const deriveSubmoduleContext = async (
 ): Promise<Context | undefined> => {
   // Stryker disable next-line ConditionalExpression: equivalent — letting an `undefined` name through builds `gitDir = '…/modules/undefined'`, which fails the next `fs.exists` probe and still returns `undefined`; identical observable behaviour.
   if (name === undefined) return undefined;
+  // `treeRelPath` is a gitlink entry's own name, straight off a tree walk. The
+  // object-parse layer no longer refuses a `..` or separator-bearing name — git
+  // refuses those where a path is materialised, not where a tree is read — and
+  // this path becomes the child repository's work directory. Checked here
+  // rather than where the context is built, so a hostile name is refused
+  // whether or not the submodule happens to be initialised locally.
+  validateIndexPath(treeRelPath, NO_PARSER_OFFSET, FILE_MODE.GITLINK);
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
   // Defense-in-depth: under the absorbed layout + safe-name rules, the child
   // gitDir strictly extends an ancestor (`/modules/<name>` is appended at every

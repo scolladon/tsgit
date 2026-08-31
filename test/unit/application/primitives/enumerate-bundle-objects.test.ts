@@ -16,6 +16,7 @@ import {
   type Tag,
   type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, seedMaxTreeDepth } from './fixtures.js';
 
@@ -45,9 +46,9 @@ const makeTree = async (ctx: Context, entries: ReadonlyArray<TreeEntry>): Promis
  *  the 1000+-level fixtures a hardcoded 1024 cap used to require. */
 const buildDeepTree = async (ctx: Context, levels: number): Promise<ObjectId> => {
   const leafBlob = await makeBlob(ctx, 'deep-leaf');
-  let current: ObjectId = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: leafBlob }]);
+  let current: ObjectId = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', leafBlob)]);
   for (let i = 0; i < levels; i++) {
-    current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
+    current = await makeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', current)]);
   }
   return current;
 };
@@ -87,15 +88,15 @@ const buildLinearFixture = async (): Promise<LinearFixture> => {
   const blobA = await makeBlob(ctx, 'A');
   const blobB = await makeBlob(ctx, 'B');
   const blobC = await makeBlob(ctx, 'C');
-  const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f0.txt', id: blobA }]);
+  const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f0.txt', blobA)]);
   const tree2 = await makeTree(ctx, [
-    { mode: BLOB_MODE, name: 'f0.txt', id: blobA },
-    { mode: BLOB_MODE, name: 'f1.txt', id: blobB },
+    treeEntry(BLOB_MODE, 'f0.txt', blobA),
+    treeEntry(BLOB_MODE, 'f1.txt', blobB),
   ]);
   const tree3 = await makeTree(ctx, [
-    { mode: BLOB_MODE, name: 'f0.txt', id: blobA },
-    { mode: BLOB_MODE, name: 'f1.txt', id: blobB },
-    { mode: BLOB_MODE, name: 'f2.txt', id: blobC },
+    treeEntry(BLOB_MODE, 'f0.txt', blobA),
+    treeEntry(BLOB_MODE, 'f1.txt', blobB),
+    treeEntry(BLOB_MODE, 'f2.txt', blobC),
   ]);
   const commit1 = await makeCommit(ctx, tree1, [], 'first', 1);
   const commit2 = await makeCommit(ctx, tree2, [commit1], 'second', 2);
@@ -190,14 +191,14 @@ describe('enumerateBundleObjects', () => {
         const blobX = await makeBlob(ctx, 'X');
         const blobA = await makeBlob(ctx, 'A');
         const blobB = await makeBlob(ctx, 'B');
-        const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'x.txt', id: blobX }]);
+        const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'x.txt', blobX)]);
         const treeMain = await makeTree(ctx, [
-          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
-          { mode: BLOB_MODE, name: 'x.txt', id: blobX },
+          treeEntry(BLOB_MODE, 'a.txt', blobA),
+          treeEntry(BLOB_MODE, 'x.txt', blobX),
         ]);
         const treeFeature = await makeTree(ctx, [
-          { mode: BLOB_MODE, name: 'b.txt', id: blobB },
-          { mode: BLOB_MODE, name: 'x.txt', id: blobX },
+          treeEntry(BLOB_MODE, 'b.txt', blobB),
+          treeEntry(BLOB_MODE, 'x.txt', blobX),
         ]);
         const commit1 = await makeCommit(ctx, tree1, [], 'first', 1);
         const commitMain = await makeCommit(ctx, treeMain, [commit1], 'main', 2);
@@ -239,16 +240,16 @@ describe('enumerateBundleObjects', () => {
       const blobB = await makeBlob(ctx, 'B');
       const blobX = await makeBlob(ctx, 'X');
       const emptyTree = await makeTree(ctx, []);
-      const treeA = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blobA }]);
-      const treeB = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'b.txt', id: blobB }]);
+      const treeA = await makeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blobA)]);
+      const treeB = await makeTree(ctx, [treeEntry(BLOB_MODE, 'b.txt', blobB)]);
       const treeM2 = await makeTree(ctx, [
-        { mode: BLOB_MODE, name: 'a.txt', id: blobA },
-        { mode: BLOB_MODE, name: 'b.txt', id: blobB },
+        treeEntry(BLOB_MODE, 'a.txt', blobA),
+        treeEntry(BLOB_MODE, 'b.txt', blobB),
       ]);
       const treeM1 = await makeTree(ctx, [
-        { mode: BLOB_MODE, name: 'a.txt', id: blobA },
-        { mode: BLOB_MODE, name: 'b.txt', id: blobB },
-        { mode: BLOB_MODE, name: 'x.txt', id: blobX },
+        treeEntry(BLOB_MODE, 'a.txt', blobA),
+        treeEntry(BLOB_MODE, 'b.txt', blobB),
+        treeEntry(BLOB_MODE, 'x.txt', blobX),
       ]);
       const commitO = await makeCommit(ctx, emptyTree, [], 'root', 1);
       const commitA = await makeCommit(ctx, treeA, [commitO], 'A', 2);
@@ -298,7 +299,7 @@ describe('enumerateBundleObjects', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobA = await makeBlob(ctx, 'A');
-        const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: blobA }]);
+        const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blobA)]);
         const commit1 = await makeCommit(ctx, tree1, [], 'tagged commit', 1);
         const tag: Tag = {
           type: 'tag',
@@ -329,7 +330,7 @@ describe('enumerateBundleObjects', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blobA = await makeBlob(ctx, 'A');
-        const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: blobA }]);
+        const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blobA)]);
         const commit1 = await makeCommit(ctx, tree1, [], 'c', 1);
 
         // Act
@@ -360,16 +361,16 @@ describe('enumerateBundleObjects', () => {
         // Arrange
         const base = await buildSeededContext();
         const blobX = await makeBlob(base, 'X');
-        const sharedTree = await makeTree(base, [{ mode: BLOB_MODE, name: 'x.txt', id: blobX }]);
+        const sharedTree = await makeTree(base, [treeEntry(BLOB_MODE, 'x.txt', blobX)]);
         const blobA = await makeBlob(base, 'A');
         const blobB = await makeBlob(base, 'B');
         const treeA = await makeTree(base, [
-          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
-          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+          treeEntry(BLOB_MODE, 'a.txt', blobA),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', sharedTree),
         ]);
         const treeB = await makeTree(base, [
-          { mode: BLOB_MODE, name: 'b.txt', id: blobB },
-          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+          treeEntry(BLOB_MODE, 'b.txt', blobB),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', sharedTree),
         ]);
         const commitA = await makeCommit(base, treeA, [], 'A', 1);
         const commitB = await makeCommit(base, treeB, [commitA], 'B', 2);
@@ -405,14 +406,12 @@ describe('enumerateBundleObjects — haves-side isDirectory guard', () => {
         // contents (blobX) are never collected, so blobX leaks into the bundle.
         const ctx = await buildSeededContext();
         const blobX = await makeBlob(ctx, 'X');
-        const subTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'x.txt', id: blobX }]);
-        const haveTree = await makeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: subTree },
-        ]);
+        const subTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'x.txt', blobX)]);
+        const haveTree = await makeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subTree)]);
         const blobY = await makeBlob(ctx, 'Y');
         const wantTree = await makeTree(ctx, [
-          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: subTree },
-          { mode: BLOB_MODE, name: 'y.txt', id: blobY },
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', subTree),
+          treeEntry(BLOB_MODE, 'y.txt', blobY),
         ]);
         const haveCommit = await makeCommit(ctx, haveTree, [], 'have', 1);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
@@ -447,8 +446,8 @@ describe('enumerateBundleObjects — wants-side gitlink guard', () => {
         const GITLINK_OID = 'c'.repeat(40) as ObjectId;
         const blobA = await makeBlob(ctx, 'A');
         const tree = await makeTree(ctx, [
-          { mode: FILE_MODE.GITLINK, name: 'sub', id: GITLINK_OID },
-          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
+          treeEntry(FILE_MODE.GITLINK, 'sub', GITLINK_OID),
+          treeEntry(BLOB_MODE, 'a.txt', blobA),
         ]);
         const commit = await makeCommit(ctx, tree, [], 'with-gitlink', 1);
 
@@ -476,12 +475,12 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
         const ctx = await buildSeededContext();
         const PHANTOM_PARENT = 'd'.repeat(40) as ObjectId;
         const blobA = await makeBlob(ctx, 'A');
-        const tree1 = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blobA }]);
+        const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blobA)]);
         const haveCommit = await makeCommit(ctx, tree1, [PHANTOM_PARENT], 'have', 1);
         const blobB = await makeBlob(ctx, 'B');
         const tree2 = await makeTree(ctx, [
-          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
-          { mode: BLOB_MODE, name: 'b.txt', id: blobB },
+          treeEntry(BLOB_MODE, 'a.txt', blobA),
+          treeEntry(BLOB_MODE, 'b.txt', blobB),
         ]);
         const wantCommit = await makeCommit(ctx, tree2, [haveCommit], 'want', 2);
 
@@ -512,7 +511,7 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
         const ctx = await buildSeededContext();
         const PHANTOM_PARENT = 'e'.repeat(40) as ObjectId;
         const blobA = await makeBlob(ctx, 'A');
-        const tree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'a.txt', id: blobA }]);
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blobA)]);
         const wantCommit = await makeCommit(ctx, tree, [PHANTOM_PARENT], 'want', 1);
 
         // Act
@@ -658,7 +657,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const haveTreeId = await buildDeepTree(ctx, 4);
         const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-at-cap', 1);
         const wantBlob = await makeBlob(ctx, 'want');
-        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'w.txt', wantBlob)]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
 
         // Act
@@ -682,7 +681,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const haveTreeId = await buildDeepTree(ctx, 5);
         const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-over-cap', 1);
         const wantBlob = await makeBlob(ctx, 'want');
-        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'w.txt', wantBlob)]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
 
         // Act
@@ -711,7 +710,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const haveTreeId = await buildDeepTree(ctx, 80);
         const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-far-over-cap', 1);
         const wantBlob = await makeBlob(ctx, 'want');
-        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'w.txt', wantBlob)]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
 
         // Act
@@ -740,7 +739,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const haveTreeId = await buildDeepTree(ctx, 4);
         const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-boundary-pass', 1);
         const wantBlob = await makeBlob(ctx, 'want');
-        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'w.txt', wantBlob)]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
 
         // Act
@@ -762,7 +761,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const haveTreeId = await buildDeepTree(ctx, 4);
         const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-boundary-fail', 1);
         const wantBlob = await makeBlob(ctx, 'want');
-        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'w.txt', wantBlob)]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
 
         // Act
@@ -788,8 +787,8 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blob = await makeBlob(ctx, 'leaf content');
-        const sub = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: blob }]);
-        const root = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'dir', id: sub }]);
+        const sub = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blob)]);
+        const root = await makeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', sub)]);
         const commit = await makeCommit(ctx, root, [], 'root', 1);
 
         const controller = new AbortController();
@@ -839,19 +838,19 @@ describe('enumerateBundleObjects — haves-side shared-subtree dedup', () => {
         // re-reads it, doubling the count.
         const base = await buildSeededContext();
         const blobX = await makeBlob(base, 'X');
-        const sharedTree = await makeTree(base, [{ mode: BLOB_MODE, name: 'x.txt', id: blobX }]);
+        const sharedTree = await makeTree(base, [treeEntry(BLOB_MODE, 'x.txt', blobX)]);
         const blobA = await makeBlob(base, 'A');
         const blobB = await makeBlob(base, 'B');
         const blobC = await makeBlob(base, 'C');
         const haveTreeA = await makeTree(base, [
-          { mode: BLOB_MODE, name: 'a.txt', id: blobA },
-          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+          treeEntry(BLOB_MODE, 'a.txt', blobA),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', sharedTree),
         ]);
         const haveTreeB = await makeTree(base, [
-          { mode: BLOB_MODE, name: 'b.txt', id: blobB },
-          { mode: FILE_MODE.DIRECTORY, name: 'sub', id: sharedTree },
+          treeEntry(BLOB_MODE, 'b.txt', blobB),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', sharedTree),
         ]);
-        const wantTree = await makeTree(base, [{ mode: BLOB_MODE, name: 'c.txt', id: blobC }]);
+        const wantTree = await makeTree(base, [treeEntry(BLOB_MODE, 'c.txt', blobC)]);
         const haveCommitA = await makeCommit(base, haveTreeA, [], 'haveA', 1);
         const haveCommitB = await makeCommit(base, haveTreeB, [haveCommitA], 'haveB', 2);
         const wantCommit = await makeCommit(base, wantTree, [haveCommitB], 'want', 3);

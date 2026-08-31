@@ -73,6 +73,8 @@ The ref is never deleted, even when the last note is removed — an empty-tree c
 
 Note content is stored verbatim — no trailing-newline insertion or normalisation is applied by the library. Callers supply and receive raw `Uint8Array` bytes.
 
+Entries the notes tree carries but does not own — anything in the notes ref that is not a note blob — are rewritten with their **name bytes preserved exactly**, as canonical git preserves them. A neighbouring entry whose name contains a separator stays one entry rather than being re-split into a subtree, and two entries whose names differ only in bytes that do not survive a UTF-8 decode stay distinct rather than collapsing into one.
+
 ## Examples
 
 ```ts

@@ -33,17 +33,35 @@ Loop: `graft ask` → `graft skeleton` → `serena find_symbol` / `find_referenc
 
 Cost ladder on a 1,254-line file — `get_symbols_overview` ~1.1 KB (no signatures) < `graft skeleton` 8.6 KB (full TS signatures) < raw `Read` 50.7 KB. Overview to decide, skeleton to work, `Read` almost never.
 
-## What a full run actually measured (2026-08-29, reflog-parity run)
+## What two full runs measured (2026-08-29 reflog-parity, 2026-08-30/31 tree-bytes)
 
-This file is injected into every craft agent. Measured across the 21 agents of one
-full run: **17 used zero MCP tools** — pure Bash/Read/Edit — and every one passed its
-gates first-spawn; the 4 that did use serena/graft used them successfully, with no
-observable quality difference at part granularity. Two structural reasons: subagent
-MCP schemas are deferred (a ToolSearch round-trip before first use), and the shell is
-always warm. Read the table above as BINDING for the session's own precision work —
-where it measurably pays (sub-10% of a file read per symbol lookup; ~20 surgical
-`replace_*` edits in 300–1,200-line files this run, zero mismatch failures) — and as
-ADVISORY for spawned agents: enforcing it there costs more than it buys.
+This file is injected into every craft agent. The second run added a **tool bootstrap
+block** to every spawn prompt — two literal `ToolSearch` calls plus a worked example per
+tool, pre-filled from that part's own context — to test whether the first run's low
+adoption was a discovery problem.
+
+It is not. The split is by **task shape**, not by prompting:
+
+| | agents | zero-MCP | MCP calls |
+|---|---|---|---|
+| agents that **edit code** | 16 | 5 | **321** |
+| agents that **only read** | 6 | **6** | **0** |
+
+Adoption overall went from 17/21 zero-MCP to 11/22, entirely on the writing side. The
+bootstrap block *does* work at what it literally asks: 18 of 22 agents ran the ToolSearch
+calls (the 4 that did not were sub-agents spawned by other agents, which never saw it).
+But **three read-only agents loaded the tools and then used none of them** — loading and
+using are separate behaviours and the block only moves the first.
+
+The reason is task shape, and it is defensible rather than lazy. A reviewer or planner
+starts with `git diff` in hand: it already knows where the change is, so the question
+graft answers best — *where does X live* — is one it does not have. Its natural instrument
+is Bash: run the diff, run a probe, run the suite. An implementer, by contrast, has a
+symbol to rewrite, and serena's `replace_*` is genuinely the right tool for that.
+
+**So: bind the table for editing work, and stop spending prompt space pushing read-only
+agents onto graft.** The one exception worth keeping is orientation in genuinely
+unfamiliar code — which a diff-scoped reviewer is not doing.
 
 ## Serena — the precision and write tool
 
@@ -68,12 +86,15 @@ ADVISORY for spawned agents: enforcing it there costs more than it buys.
 
 ## tokensave — analytics, not navigation
 
-- Use for what the other two cannot compute: `circular`, `god_class`, `coupling`, `dsm`, `hotspots`, `blame`, `complexity`. A full feature run (2026-08-29) produced ZERO analytics triggers — the audit cadence is per-quarter, not per-task.
-- Its Bash grep hook misfires: it blocked literal scans this table explicitly allows, its message names tools that do not exist as named (`tokensave_search` → the real form is `tokensave tool search`), and it fires in fresh worktrees where tokensave has NO index (graft seeds its graph from the parent checkout; tokensave needs a full `tokensave init` per worktree). On a misfire against an allowed literal scan, `TOKENSAVE_DISABLE_GREP_HOOK=1` on that one command is the sanctioned override.
-- **Its findings are neither sound nor complete — verify each one against the source before acting.** A `circular` run here reported 7 cycles: 2 were noise (an SCC dumped alphabetically as if it were a path; a pair with no reverse edge), and one of the 5 real ones was actually 13 instances of the same shape, of which it listed one. A short list reads as reassurance and is the more dangerous error. It also cannot tell a `import type` edge (erased at build, harmless) from a value edge.
+- Use for what the other two cannot compute: `circular`, `god_class`, `coupling`, `dsm`, `hotspots`, `blame`, `complexity`. Two full feature runs produced ZERO analytics triggers — the audit cadence is per-quarter, not per-task.
+- **Its MCP server is not registered here.** `tokensave doctor` reports `MCP server NOT registered in ~/.claude.json`, so there are no `mcp__tokensave__*` tools in a session. Analytics are reachable only through the CLI: `tokensave tool <name>` (`tokensave tool` alone lists them).
+- **Worktree recipe, measured — the cost is not the objection.** `tokensave init` in a fresh worktree took **8 s** (7.0 s indexing, 2,949 files, 79,233 nodes, 150,291 edges) and `tokensave branch add <branch>` copies the ancestor DB in **1 s** and works correctly from a worktree. The real costs are disk — **238 MB per DB**, against graft's 85 MB, and a tracked branch is a second full copy — and that none of it earned anything in two runs.
+- **`tokensave doctor` is not read-only.** It VACUUMs the database *and* rewrites `~/.claude/settings.json` — observed widening the PreToolUse matcher from `Agent|Grep|Bash` to `Agent|Grep|Bash|Glob` without asking. Treat it as a mutating command; check `git diff` on your settings afterwards.
+- **The grep hook still misfires, and an index does not fix it.** It blocked `grep -rn "parseTreeContent" src --include="*.ts"` in a worktree with a complete index, while the identical pattern piped through `sed` had passed seconds earlier. It fires on `rg` as well as `grep`, so it matches the command text rather than the tool. Its message still names `tokensave_search` / `tokensave_callers_for`, which exist in no form when the MCP server is unregistered. `TOKENSAVE_DISABLE_GREP_HOOK=1` on the one command remains the sanctioned override.
+- **Its findings are neither sound nor complete — verify each one against the source before acting.** A `circular` run here reported 7 cycles: 2 were noise, and one of the 5 real ones was 13 instances of the same shape, of which it listed one. A short list reads as reassurance and is the more dangerous error. It also cannot tell an `import type` edge from a value edge.
 - **Do not use `tokensave_context` for orientation** — measured at ~2× graft's cost with worse recall on this repo.
-- **Do not trust `dead_code` unfiltered** — 37,284 hits here, including `describe(...)` blocks in test files. Scope to `src/` or ignore.
-- A tokensave version bump implies a **DB schema migration and a full re-index**. Incremental `sync` will keep reporting success against a half-built graph. Run `tokensave doctor` after every upgrade.
+- **Do not trust `dead_code` unfiltered** — 37,284 hits here, including `describe(...)` blocks in test files.
+- A version bump implies a **DB schema migration and a full re-index**. Incremental `sync` keeps reporting success against a half-built graph. Run `tokensave doctor` after every upgrade — accepting that it will also edit your settings.
 
 ## Shared blind spot — the emit pipeline
 
@@ -94,11 +115,29 @@ All three graph tools extract **zero symbols** from `src/application/primitives/
 
 Any question of the form "who uses this re-exported symbol" is a **serena** job. Do not accept a graph tool's silence as evidence of no callers.
 
-## headroom — not part of the loop
+## headroom — a compression proxy, not a navigation tool
 
-Wired as an MCP server but measured dead in the 2026-08-29 run: its compression proxy
-was unreachable the whole session (`headroom_stats` → 0 compressions, 0 retrievals,
-proxy ConnectError), and no trigger arose — the one oversized tool result was
-persisted by the harness itself. Its one historically recorded value is
-`headroom_retrieve` for reading session-compressed content. Do not route work to it;
-if the proxy stays down, remove it from this repo's session config.
+It was listed here at all because it was wired as an MCP server. That was a category
+error: headroom is an **LLM-traffic proxy that lossily compresses tool output before the
+model sees it**. It answers no navigation question and belongs in this file only as a
+warning.
+
+- **Why it measured "dead" in the first run was mundane.** The CLI is installed
+  (`~/.local/bin/headroom`), but nothing was listening on `127.0.0.1:8787` — `headroom
+  proxy` is a daemon and no one had started it. The MCP server was wired to a proxy that
+  did not exist. It is now unwired entirely, and no `mcp__headroom__*` tools appear.
+- **To use it at all** you run `headroom proxy` (binds `127.0.0.1:8787`) and point the
+  client at it — `ANTHROPIC_BASE_URL=http://localhost:8787` or `headroom wrap claude`.
+  `/health`, `/stats` and `/metrics` report what it did.
+- **Do not put it in front of this repo's work.** Compression is lossy by design: its own
+  documentation says it preserves keys, brackets, signatures, timestamps and hashes while
+  compressing "long string values, whitespace, function bodies, comments, repeated log
+  patterns", and it states no size threshold and no accuracy caveat. The original bytes
+  are recoverable only if CCR storage is enabled. This repo's prime directive is
+  byte-for-byte faithfulness to git, and its evidence is exactly the shape headroom
+  discards — `ls-tree` rendering `"\357\273\277a"`, hex dumps of `EF BB BF`, 40-char
+  oids, git's literal `error: malformed mode in tree entry`. A parity conclusion drawn
+  from compressed probe output is worthless.
+- **Where it could genuinely pay:** bulk, low-entropy, non-load-bearing output — CI logs,
+  dependency trees, large JSON fixtures being skimmed rather than verified. If it is ever
+  wired again, wire it for those and keep it off the path that carries git's bytes.

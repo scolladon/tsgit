@@ -1,9 +1,9 @@
 import { compareBytes, indexOf } from '../objects/encoding.js';
+import { entryNameKey, hasNonOctalByte, matchesDotgitAlias } from '../objects/tree-entry-bytes.js';
 import {
   MSG_BAD_FILEMODE,
   MSG_BAD_TREE,
   MSG_DUPLICATE_ENTRIES,
-  MSG_EMPTY_NAME,
   MSG_FULL_PATHNAME,
   MSG_GITATTRIBUTES_BLOB,
   MSG_GITATTRIBUTES_SYMLINK,
@@ -29,13 +29,17 @@ export interface TreeFinding {
 
 interface TreeEntry {
   readonly mode: string;
-  readonly name: string;
+  readonly nameStart: number;
+  readonly nameEnd: number;
   readonly sha: Uint8Array;
   readonly offset: number;
 }
 
+// Decodes the mode span only. Safe because parseTreeEntriesTolerant rejects
+// any non-octal byte in that span before this ever runs — every mode that
+// reaches it is already pure ASCII octal digits. Names are never decoded:
+// fsck compares and keys them on raw bytes (see entryNameKey).
 const DECODER = new TextDecoder();
-const ENCODER = new TextEncoder();
 
 const VALID_MODES: ReadonlySet<string> = new Set(['100644', '100755', '120000', '40000', '160000']);
 
@@ -46,6 +50,18 @@ function isZeroSha(sha: Uint8Array): boolean {
     if (byte !== 0) return false;
   }
   return true;
+}
+
+/**
+ * Strips every leading zero, matching git's `canon_mode` — `0040000`
+ * normalises to `40000`, not `040000`. Keeps at least one character so an
+ * all-zero mode never normalises to the empty string.
+ */
+function stripLeadingZeros(mode: string): string {
+  let i = 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — the boundary only changes output for an all-'0' mode, where correct strips to '0'; mutated (dropped/off-by-one bound) strips to '' instead. normMode's only readers are VALID_MODES.has(normMode) and checkSpecialFileName's mode==='120000'/'100644'/'100755' checks — no entry is '' or '0', so both '0' and '' evaluate identically everywhere — confirmed empirically across '0','00','000000','0000001'.
+  while (i < mode.length - 1 && mode[i] === '0') i++;
+  return mode.slice(i);
 }
 
 /** Parse tree bytes tolerantly, returning entries and any badTree fault. */
@@ -62,21 +78,23 @@ function parseTreeEntriesTolerant(
   while (offset < raw.length) {
     const spaceIdx = indexOf(raw, 0x20, offset);
     if (spaceIdx === -1 || spaceIdx === offset) return { entries, badTree: true };
+    if (hasNonOctalByte(raw, offset, spaceIdx)) return { entries, badTree: true };
 
     const nullIdx = indexOf(raw, 0x00, spaceIdx + 1);
     if (nullIdx === -1) return { entries, badTree: true };
+    if (nullIdx === spaceIdx + 1) return { entries, badTree: true };
 
     const shaEnd = nullIdx + 1 + digestLength;
     if (shaEnd > raw.length) return { entries, badTree: true };
 
     const modeBytes = raw.subarray(offset, spaceIdx);
-    const nameBytes = raw.subarray(spaceIdx + 1, nullIdx);
     const sha = raw.subarray(nullIdx + 1, shaEnd);
 
+    // Safe to decode: hasNonOctalByte already rejected anything but ASCII
+    // octal digits in this span, so no other byte value can reach here.
     const mode = DECODER.decode(modeBytes);
-    const name = DECODER.decode(nameBytes);
 
-    entries.push({ mode, name, sha, offset });
+    entries.push({ mode, nameStart: spaceIdx + 1, nameEnd: nullIdx, sha, offset });
     offset = shaEnd;
   }
 
@@ -87,9 +105,9 @@ function parseTreeEntriesTolerant(
  * Compare two tree entries using git's canonical sort order.
  * Directories sort as if their name ends with '/'.
  */
-function treeEntrySortKey(entry: TreeEntry): Uint8Array {
+function treeEntrySortKey(raw: Uint8Array, entry: TreeEntry): Uint8Array {
   const isDir = entry.mode === '40000' || entry.mode === '040000';
-  const nameBytes = ENCODER.encode(entry.name);
+  const nameBytes = raw.subarray(entry.nameStart, entry.nameEnd);
   if (!isDir) return nameBytes;
   const result = new Uint8Array(nameBytes.length + 1);
   result.set(nameBytes);
@@ -97,28 +115,30 @@ function treeEntrySortKey(entry: TreeEntry): Uint8Array {
   return result;
 }
 
-function checkNameFaults(name: string, strict: boolean): ReadonlyArray<TreeFinding> {
+function checkNameFaults(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
+  key: string,
+  byteLength: number,
+  strict: boolean,
+): ReadonlyArray<TreeFinding> {
   const findings: TreeFinding[] = [];
-  if (name === '') {
-    findings.push({ msgId: MSG_EMPTY_NAME, severity: resolveSeverity(MSG_EMPTY_NAME, strict) });
-    return findings;
-  }
-  if (name === '.') {
+  if (key === '.') {
     findings.push({ msgId: MSG_HAS_DOT, severity: resolveSeverity(MSG_HAS_DOT, strict) });
   }
-  if (name === '..') {
+  if (key === '..') {
     findings.push({ msgId: MSG_HAS_DOTDOT, severity: resolveSeverity(MSG_HAS_DOTDOT, strict) });
   }
-  if (name === '.git') {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'git')) {
     findings.push({ msgId: MSG_HAS_DOTGIT, severity: resolveSeverity(MSG_HAS_DOTGIT, strict) });
   }
-  if (name.includes('/')) {
+  if (key.includes('/')) {
     findings.push({
       msgId: MSG_FULL_PATHNAME,
       severity: resolveSeverity(MSG_FULL_PATHNAME, strict),
     });
   }
-  const byteLength = ENCODER.encode(name).length;
   if (byteLength > MAX_NAME_BYTES) {
     findings.push({
       msgId: MSG_LARGE_PATHNAME,
@@ -129,15 +149,17 @@ function checkNameFaults(name: string, strict: boolean): ReadonlyArray<TreeFindi
 }
 
 function checkSpecialFileName(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
   mode: string,
-  name: string,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
   const findings: TreeFinding[] = [];
   const isSymlink = mode === '120000';
   const isRegular = mode === '100644' || mode === '100755';
 
-  if (name === '.gitmodules') {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitmodules')) {
     if (isSymlink) {
       findings.push({
         msgId: MSG_GITMODULES_SYMLINK,
@@ -150,7 +172,7 @@ function checkSpecialFileName(
       });
     }
   }
-  if (name === '.gitattributes') {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitattributes')) {
     if (isSymlink) {
       findings.push({
         msgId: MSG_GITATTRIBUTES_SYMLINK,
@@ -163,13 +185,13 @@ function checkSpecialFileName(
       });
     }
   }
-  if (name === '.gitignore' && isSymlink) {
+  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'gitignore')) {
     findings.push({
       msgId: MSG_GITIGNORE_SYMLINK,
       severity: resolveSeverity(MSG_GITIGNORE_SYMLINK, strict),
     });
   }
-  if (name === '.mailmap' && isSymlink) {
+  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'mailmap')) {
     findings.push({
       msgId: MSG_MAILMAP_SYMLINK,
       severity: resolveSeverity(MSG_MAILMAP_SYMLINK, strict),
@@ -179,13 +201,15 @@ function checkSpecialFileName(
 }
 
 function checkEntryFaults(
+  raw: Uint8Array,
   entry: TreeEntry,
+  key: string,
   prevEntry: TreeEntry | undefined,
   seenNames: Set<string>,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
   const findings: TreeFinding[] = [];
-  const { mode, name, sha } = entry;
+  const { mode, nameStart, nameEnd, sha } = entry;
 
   if (mode.startsWith('0')) {
     findings.push({
@@ -193,16 +217,25 @@ function checkEntryFaults(
       severity: resolveSeverity(MSG_ZERO_PADDED_FILEMODE, strict),
     });
   }
-  const normMode = mode.startsWith('0') ? mode.slice(1) : mode;
+  const normMode = stripLeadingZeros(mode);
   if (!VALID_MODES.has(normMode)) {
     findings.push({ msgId: MSG_BAD_FILEMODE, severity: resolveSeverity(MSG_BAD_FILEMODE, strict) });
   }
   if (isZeroSha(sha)) {
     findings.push({ msgId: MSG_NULL_SHA1, severity: resolveSeverity(MSG_NULL_SHA1, strict) });
   }
-  for (const finding of checkNameFaults(name, strict)) findings.push(finding);
+  for (const finding of checkNameFaults(
+    raw,
+    nameStart,
+    nameEnd,
+    key,
+    nameEnd - nameStart,
+    strict,
+  )) {
+    findings.push(finding);
+  }
 
-  if (seenNames.has(name)) {
+  if (seenNames.has(key)) {
     findings.push({
       msgId: MSG_DUPLICATE_ENTRIES,
       severity: resolveSeverity(MSG_DUPLICATE_ENTRIES, strict),
@@ -211,7 +244,7 @@ function checkEntryFaults(
 
   if (
     prevEntry !== undefined &&
-    compareBytes(treeEntrySortKey(prevEntry), treeEntrySortKey(entry)) > 0
+    compareBytes(treeEntrySortKey(raw, prevEntry), treeEntrySortKey(raw, entry)) > 0
   ) {
     findings.push({
       msgId: MSG_TREE_NOT_SORTED,
@@ -219,7 +252,9 @@ function checkEntryFaults(
     });
   }
 
-  for (const finding of checkSpecialFileName(mode, name, strict)) findings.push(finding);
+  for (const finding of checkSpecialFileName(raw, nameStart, nameEnd, normMode, strict)) {
+    findings.push(finding);
+  }
 
   return findings;
 }
@@ -240,10 +275,11 @@ export function validateTree(
   let prevEntry: TreeEntry | undefined;
 
   for (const entry of entries) {
-    for (const finding of checkEntryFaults(entry, prevEntry, seenNames, strict)) {
+    const key = entryNameKey(raw, entry.nameStart, entry.nameEnd);
+    for (const finding of checkEntryFaults(raw, entry, key, prevEntry, seenNames, strict)) {
       findings.push(finding);
     }
-    seenNames.add(entry.name);
+    seenNames.add(key);
     prevEntry = entry;
   }
 

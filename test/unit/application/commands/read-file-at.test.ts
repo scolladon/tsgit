@@ -7,6 +7,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const author: AuthorIdentity = {
@@ -51,20 +52,20 @@ const seed = async (): Promise<Seed> => {
   await init(ctx);
 
   const parentTree = await writeTree(ctx, [
-    { mode: FILE_MODE.REGULAR, name: 'a.txt', id: await writeBlob(ctx, 'old\n') },
+    treeEntry(FILE_MODE.REGULAR, 'a.txt', await writeBlob(ctx, 'old\n')),
   ]);
   const parent = await mkCommit(ctx, parentTree, []);
 
   const helloId = await writeBlob(ctx, 'hello\n');
   const dirTree = await writeTree(ctx, [
-    { mode: FILE_MODE.REGULAR, name: 'nested.txt', id: await writeBlob(ctx, 'deep\n') },
+    treeEntry(FILE_MODE.REGULAR, 'nested.txt', await writeBlob(ctx, 'deep\n')),
   ]);
   const childTree = await writeTree(ctx, [
-    { mode: FILE_MODE.REGULAR, name: 'a.txt', id: helloId },
-    { mode: FILE_MODE.DIRECTORY, name: 'dir', id: dirTree },
-    { mode: FILE_MODE.EXECUTABLE, name: 'run.sh', id: await writeBlob(ctx, '#!/bin/sh\n') },
-    { mode: FILE_MODE.SYMLINK, name: 'link', id: await writeBlob(ctx, 'a.txt') },
-    { mode: FILE_MODE.GITLINK, name: 'sub', id: parent },
+    treeEntry(FILE_MODE.REGULAR, 'a.txt', helloId),
+    treeEntry(FILE_MODE.DIRECTORY, 'dir', dirTree),
+    treeEntry(FILE_MODE.EXECUTABLE, 'run.sh', await writeBlob(ctx, '#!/bin/sh\n')),
+    treeEntry(FILE_MODE.SYMLINK, 'link', await writeBlob(ctx, 'a.txt')),
+    treeEntry(FILE_MODE.GITLINK, 'sub', parent),
   ]);
   const child = await mkCommit(ctx, childTree, [parent]);
 
@@ -111,6 +112,30 @@ describe('readFileAt', () => {
         const result = await readFileAt(ctx, 'HEAD', 'dir/nested.txt');
         // Assert
         expect(dec(result.content)).toBe('deep\n');
+      });
+    });
+  });
+
+  describe('Given a literal entry name containing a slash', () => {
+    describe('When readFileAt reads it', () => {
+      it('Then it resolves the literal entry, not a two-level descent', async () => {
+        // Arrange — a root entry literally named `a/b` (no `a` directory
+        // exists at all); the whole-remaining-path fallback matches it
+        // directly against the query's full remaining path.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const literalId = await writeBlob(ctx, 'literal\n');
+        const tree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a/b', literalId)]);
+        const commit = await mkCommit(ctx, tree, []);
+        await setRef(ctx, 'refs/heads/main', commit);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await readFileAt(ctx, 'HEAD', 'a/b');
+
+        // Assert
+        expect(result.id).toBe(literalId);
+        expect(dec(result.content)).toBe('literal\n');
       });
     });
   });

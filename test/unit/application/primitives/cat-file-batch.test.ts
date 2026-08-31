@@ -12,6 +12,7 @@ import {
   serializeCommitContent,
   serializeTagContent,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -118,7 +119,7 @@ describe('catFileBatch', () => {
           build: async (ctx: Context): Promise<{ id: ObjectId; expected: number }> => {
             const blobId = await writeBlobBytes(ctx, new Uint8Array([0xa]));
             const treeEntries: ReadonlyArray<TreeEntry> = [
-              { mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId },
+              treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId),
             ];
             const treeId = await writeTree(ctx, treeEntries);
             const tree = await readObject(ctx, treeId);
@@ -129,9 +130,7 @@ describe('catFileBatch', () => {
           label: 'commit',
           build: async (ctx: Context): Promise<{ id: ObjectId; expected: number }> => {
             const blobId = await writeBlobBytes(ctx, new Uint8Array([1]));
-            const treeId = await writeTree(ctx, [
-              { mode: FILE_MODE.REGULAR, name: 'f', id: blobId },
-            ]);
+            const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f', blobId)]);
             const commitId = await writeObject(ctx, {
               type: 'commit',
               id: '' as ObjectId,

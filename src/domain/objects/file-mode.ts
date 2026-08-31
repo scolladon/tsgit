@@ -11,9 +11,9 @@ export const FILE_MODE = {
 
 export type FileMode = (typeof FILE_MODE)[keyof typeof FILE_MODE];
 
-const VALID_MODES: ReadonlySet<string> = new Set(Object.values(FILE_MODE));
+const ASCII_ZERO = 0x30;
 
-const NORMALIZE_MAP: ReadonlyMap<string, FileMode> = new Map([['040000', FILE_MODE.DIRECTORY]]);
+const VALID_MODES: ReadonlySet<string> = new Set(Object.values(FILE_MODE));
 
 export function validateFileMode(mode: string): FileMode {
   if (!VALID_MODES.has(mode)) {
@@ -23,8 +23,16 @@ export function validateFileMode(mode: string): FileMode {
 }
 
 export function normalizeFileMode(mode: string): FileMode {
-  const normalized = NORMALIZE_MAP.get(mode) ?? mode;
-  return validateFileMode(normalized);
+  return validateFileMode(stripModeZeros(mode));
+}
+
+// The string counterpart of `skipModeZeros`: git reads any zero-padded
+// spelling of a mode as the mode itself, so `040000` and `0100644` normalise
+// to `40000` and `100644`. At least one digit always survives.
+function stripModeZeros(mode: string): string {
+  let i = 0;
+  while (i < mode.length - 1 && mode[i] === '0') i += 1;
+  return mode.slice(i);
 }
 
 export function isDirectory(mode: FileMode): boolean {
@@ -36,17 +44,28 @@ export function isDirectory(mode: FileMode): boolean {
 // length first, then compare bytes directly against the mode's own encoding
 // (computed once at module load, not per call).
 const DIRECTORY_5_BYTES = encode(FILE_MODE.DIRECTORY);
-const DIRECTORY_6_BYTES = encode('040000');
 const REGULAR_6_BYTES = encode(FILE_MODE.REGULAR);
 const EXECUTABLE_6_BYTES = encode(FILE_MODE.EXECUTABLE);
 const SYMLINK_6_BYTES = encode(FILE_MODE.SYMLINK);
 const GITLINK_6_BYTES = encode(FILE_MODE.GITLINK);
 
+// git canonicalises a mode's leading zeros when it reads a tree, for any
+// padding width (measured: `0100644`, `00100644` and `000040000` all render as
+// their unpadded form under `ls-tree`). The span is scanned from the first
+// non-zero digit so a padded spelling of a recognised mode matches it, while
+// `fsck` keeps reporting the padding — git both reads these and flags them.
+function skipModeZeros(buf: Uint8Array, start: number, end: number): number {
+  let i = start;
+  while (i < end - 1 && buf[i] === ASCII_ZERO) i += 1;
+  return i;
+}
+
 export function matchFileModeBytes(buf: Uint8Array, start: number, end: number): FileMode {
-  const length = end - start;
-  if (length === 5 && matchesBytes(buf, start, DIRECTORY_5_BYTES)) return FILE_MODE.DIRECTORY;
+  const from = skipModeZeros(buf, start, end);
+  const length = end - from;
+  if (length === 5 && matchesBytes(buf, from, DIRECTORY_5_BYTES)) return FILE_MODE.DIRECTORY;
   if (length === 6) {
-    const matched = matchSixByteMode(buf, start);
+    const matched = matchSixByteMode(buf, from);
     if (matched !== undefined) return matched;
   }
   throw invalidFileMode(decodeModeForError(buf, start, end));
@@ -63,12 +82,14 @@ function decodeModeForError(buf: Uint8Array, start: number, end: number): string
   return `${decode(buf.subarray(start, start + MAX_INVALID_MODE_ERROR_BYTES))}…`;
 }
 
+// No six-byte directory form here: the caller strips leading zeros first, so a
+// six-byte span can never start with `0` and `040000` always arrives as the
+// five-byte `40000`.
 function matchSixByteMode(buf: Uint8Array, start: number): FileMode | undefined {
   if (matchesBytes(buf, start, REGULAR_6_BYTES)) return FILE_MODE.REGULAR;
   if (matchesBytes(buf, start, EXECUTABLE_6_BYTES)) return FILE_MODE.EXECUTABLE;
   if (matchesBytes(buf, start, SYMLINK_6_BYTES)) return FILE_MODE.SYMLINK;
   if (matchesBytes(buf, start, GITLINK_6_BYTES)) return FILE_MODE.GITLINK;
-  if (matchesBytes(buf, start, DIRECTORY_6_BYTES)) return FILE_MODE.DIRECTORY;
   return undefined;
 }
 

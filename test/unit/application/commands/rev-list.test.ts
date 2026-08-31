@@ -20,6 +20,7 @@ import type {
   Tree,
 } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   type BitmapEntrySpec,
@@ -634,7 +635,7 @@ async function buildDiamondBitmapRepo(): Promise<DiamondRepo> {
     const tree: Tree = {
       type: 'tree',
       id: '' as ObjectId,
-      entries: [{ name: `${prefix}.txt`, mode: '100644' as FileMode, id: blobId as ObjectId }],
+      entries: [treeEntry('100644' as FileMode, `${prefix}.txt`, blobId as ObjectId)],
     };
     const treeId = await idOf(ctx, tree);
     entries.push({ kind: 'base', type: 'tree', content: rawContentOf(ctx, tree) });

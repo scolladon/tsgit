@@ -13,6 +13,7 @@ import type {
   ObjectId,
   TreeEntry,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { buildSeededContext } from './fixtures.js';
 
 const EMPTY_INDEX: GitIndex = {
@@ -85,7 +86,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeEntries: TreeEntry[] = [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ];
         const treeId = await writeTree(ctx, treeEntries);
 
@@ -122,7 +123,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeEntries: TreeEntry[] = [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ];
         const treeId = await writeTree(ctx, treeEntries);
         const donor: IndexEntry = {
@@ -175,7 +176,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
         const unmerged = makeIndexEntry(
           'a.txt',
@@ -208,7 +209,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, '#!/bin/sh');
         const treeId = await writeTree(ctx, [
-          { name: 'run.sh' as FilePath, id: blobId, mode: FILE_MODE.EXECUTABLE },
+          treeEntry(FILE_MODE.EXECUTABLE, 'run.sh' as FilePath, blobId),
         ]);
         const donor = makeIndexEntry('run.sh', blobId, FILE_MODE.REGULAR, {
           mtimeSeconds: 1_700_000_000,
@@ -239,7 +240,7 @@ describe('buildIndexFromTree', () => {
         const oldBlob = await writeBlob(ctx, 'old');
         const newBlob = await writeBlob(ctx, 'new');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: newBlob, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, newBlob),
         ]);
         const donor = makeIndexEntry('a.txt', oldBlob, FILE_MODE.REGULAR, {
           mtimeSeconds: 1_700_000_000,
@@ -268,7 +269,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobId),
         ]);
         const donor = makeIndexEntry(
           'a.txt',
@@ -300,7 +301,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blob = await writeBlob(ctx, 'keep');
         const treeId = await writeTree(ctx, [
-          { name: 'keep.txt' as FilePath, id: blob, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'keep.txt' as FilePath, blob),
         ]);
 
         // Act
@@ -327,11 +328,11 @@ describe('buildIndexFromTree', () => {
         const leafBlob = await writeBlob(ctx, 'deep');
         const rootBlob = await writeBlob(ctx, 'top');
         const subTreeId = await writeTree(ctx, [
-          { name: 'inner.txt' as FilePath, id: leafBlob, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt' as FilePath, leafBlob),
         ]);
         const rootTreeId = await writeTree(ctx, [
-          { name: 'sub' as FilePath, id: subTreeId, mode: FILE_MODE.DIRECTORY },
-          { name: 'top.txt' as FilePath, id: rootBlob, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subTreeId),
+          treeEntry(FILE_MODE.REGULAR, 'top.txt' as FilePath, rootBlob),
         ]);
 
         // Act
@@ -361,9 +362,9 @@ describe('buildIndexFromTree', () => {
         const blobB = await writeBlob(ctx, 'B');
         const blobC = await writeBlob(ctx, 'C');
         const treeId = await writeTree(ctx, [
-          { name: 'b.txt' as FilePath, id: blobB, mode: FILE_MODE.REGULAR },
-          { name: 'a.txt' as FilePath, id: blobA, mode: FILE_MODE.REGULAR },
-          { name: 'c.txt' as FilePath, id: blobC, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'b.txt' as FilePath, blobB),
+          treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, blobA),
+          treeEntry(FILE_MODE.REGULAR, 'c.txt' as FilePath, blobC),
         ]);
 
         // Act
@@ -386,7 +387,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'drop.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'drop.js' as FilePath, blobId),
         ]);
         const donor = makeIndexEntry('drop.js', blobId, FILE_MODE.REGULAR, {
           mtimeSeconds: 1_700_000_000,
@@ -420,7 +421,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'drop.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'drop.js' as FilePath, blobId),
         ]);
 
         // Act
@@ -446,7 +447,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'keep.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'keep.js' as FilePath, blobId),
         ]);
         const donor: IndexEntry = {
           ...makeIndexEntry('keep.js', blobId, FILE_MODE.REGULAR, {
@@ -480,7 +481,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'keep.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'keep.js' as FilePath, blobId),
         ]);
         const donor = makeIndexEntry('keep.js', blobId, FILE_MODE.REGULAR, {
           mtimeSeconds: 1_700_000_000,
@@ -510,7 +511,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hello');
         const treeId = await writeTree(ctx, [
-          { name: 'keep.js' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'keep.js' as FilePath, blobId),
         ]);
 
         // Act
@@ -536,8 +537,8 @@ describe('buildIndexFromTree', () => {
         const keepBlob = await writeBlob(ctx, 'keep');
         const dropBlob = await writeBlob(ctx, 'drop');
         const treeId = await writeTree(ctx, [
-          { name: 'drop.js' as FilePath, id: dropBlob, mode: FILE_MODE.REGULAR },
-          { name: 'keep.js' as FilePath, id: keepBlob, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, 'drop.js' as FilePath, dropBlob),
+          treeEntry(FILE_MODE.REGULAR, 'keep.js' as FilePath, keepBlob),
         ]);
 
         // Act
@@ -562,8 +563,8 @@ describe('buildIndexFromTree', () => {
         const linkBlob = await writeBlob(ctx, 'target/path');
         const submoduleOid = 'cccccccccccccccccccccccccccccccccccccccc' as ObjectId;
         const treeId = await writeTree(ctx, [
-          { name: 'link' as FilePath, id: linkBlob, mode: FILE_MODE.SYMLINK },
-          { name: 'sub' as FilePath, id: submoduleOid, mode: FILE_MODE.GITLINK },
+          treeEntry(FILE_MODE.SYMLINK, 'link' as FilePath, linkBlob),
+          treeEntry(FILE_MODE.GITLINK, 'sub' as FilePath, submoduleOid),
         ]);
 
         // Act
@@ -586,13 +587,12 @@ describe('buildIndexFromTree', () => {
 
   describe('Given a target tree with a `.git`-alias entry name', () => {
     describe('When buildIndexFromTree runs', () => {
-      // `..`/`.`/empty/`/` names never reach this boundary through a real
-      // tree read: `parseTreeContent` already refuses to parse a tree
-      // containing one of those (pre-existing, stricter than git's own
-      // index-write refusal stage). `.git` and its NTFS short name are NOT
-      // rejected there — git accepts them at `mktree`/tree-parse and only
-      // refuses at index write — so these are the families this boundary's
-      // new check actually intercepts.
+      // `.git` and its NTFS short name are never refused by the parse tier —
+      // git accepts them at `mktree`/tree-parse and only refuses at index
+      // write — so this boundary is where they are first intercepted. `.`
+      // and `..` are exercised by their own describe blocks above: the parse
+      // tier accepts those name shapes too, so this same boundary is what
+      // catches them, just with a different reason string.
       it.each([
         { label: 'a `.git` entry', name: '.git' },
         { label: 'a `git~1` entry', name: 'git~1' },
@@ -602,7 +602,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'hostile');
         const treeId = await writeTree(ctx, [
-          { name: name as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          treeEntry(FILE_MODE.REGULAR, name as FilePath, blobId),
         ]);
 
         // Act
@@ -620,6 +620,94 @@ describe('buildIndexFromTree', () => {
     });
   });
 
+  describe('Given a target tree with a `.`-named entry, reachable now that the parse tier accepts it', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it("Then throws INVALID_INDEX_ENTRY with the '.' segment reason", async () => {
+        // Arrange — the parse tier no longer refuses this name shape; the
+        // refusal moves to this boundary, the layer git itself refuses it at.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '.' as FilePath, blobId),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'.' segment rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a target tree with a `..`-named entry, reachable now that the parse tier accepts it', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it("Then throws INVALID_INDEX_ENTRY with the '..' segment reason", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '..' as FilePath, blobId),
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'..' segment rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a target tree with an entry literally named "a/b" (embedded separator)', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then it accepts the entry and indexes it at path "a/b", unlike `.`/`..`', async () => {
+        // Arrange — the parse tier accepts an embedded separator as a single
+        // literal name (unit-level pin for the interop row under
+        // describe.skipIf(!GIT_AVAILABLE): `git read-tree` indexes it at
+        // "a/b" too, not as a nested directory).
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a/b' as FilePath, blobId),
+        ]);
+
+        // Act
+        const result = await buildIndexFromTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+        });
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.path).toBe('a/b');
+        expect(result[0]?.id).toBe(blobId);
+      });
+    });
+  });
+
   describe('Given a `.gitmodules` leaf entry with symlink mode', () => {
     describe('When buildIndexFromTree runs', () => {
       it('Then throws INVALID_INDEX_ENTRY with the gitmodules-not-regular reason', async () => {
@@ -628,7 +716,7 @@ describe('buildIndexFromTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, '../outside');
         const treeId = await writeTree(ctx, [
-          { name: '.gitmodules' as FilePath, id: blobId, mode: FILE_MODE.SYMLINK },
+          treeEntry(FILE_MODE.SYMLINK, '.gitmodules' as FilePath, blobId),
         ]);
 
         // Act

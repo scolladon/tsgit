@@ -9,6 +9,7 @@ import {
   type ObjectId,
   type Tree,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { ResolveOptions, TreeResolver } from '../../../../src/ports/snapshot-resolvers.js';
 import { buildSeededContext } from '../../application/primitives/fixtures.js';
 
@@ -30,11 +31,9 @@ const createCountingResolver = (tree: Tree): CountingResolver => {
 const makeTree = (entries: ReadonlyArray<{ name: string; oid: ObjectId }>): Tree => ({
   type: 'tree',
   id: '' as ObjectId,
-  entries: entries.map((e) => ({
-    name: FilePath.from(e.name),
-    mode: FILE_MODE.REGULAR as FileMode,
-    id: e.oid,
-  })),
+  entries: entries.map((e) =>
+    treeEntry(FILE_MODE.REGULAR as FileMode, FilePath.from(e.name), e.oid),
+  ),
 });
 
 const oid = (suffix: string): ObjectId =>
@@ -152,9 +151,7 @@ describe('createCachingTreeResolver', () => {
         const tree: Tree = {
           type: 'tree',
           id: '' as ObjectId,
-          entries: [
-            { name: FilePath.from('x'), mode: FILE_MODE.REGULAR as FileMode, id: oid('a') },
-          ],
+          entries: [treeEntry(FILE_MODE.REGULAR as FileMode, FilePath.from('x'), oid('a'))],
         };
         const treeId = await writeObject(ctx, tree);
         const inner: TreeResolver = {

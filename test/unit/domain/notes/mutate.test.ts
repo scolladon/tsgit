@@ -10,6 +10,7 @@ import {
   setSlot,
 } from '../../../../src/domain/notes/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const oid = (s: string) => ObjectId.from(s);
 const oid40 = (c: string) => ObjectId.from(c.repeat(40));
@@ -20,9 +21,7 @@ const subtreeOid = oid40('f');
 const noteBlob = oid40('a');
 const insideKey = oid(`1a${'b'.repeat(38)}`);
 const subtreeReader = (): SubtreeReader =>
-  vi.fn<SubtreeReader>(async () => [
-    { mode: FILE_MODE.REGULAR, name: 'b'.repeat(38), id: noteBlob },
-  ]);
+  vi.fn<SubtreeReader>(async () => [treeEntry(FILE_MODE.REGULAR, 'b'.repeat(38), noteBlob)]);
 const lazyTrie = () =>
   setSlot(createEmptyTrie(), 1, { kind: 'subtree', prefix: '1a', oid: subtreeOid });
 
@@ -281,8 +280,8 @@ describe('Given a removal from the notes trie', () => {
     it('Then the subtree node is retained to keep the preserved entry', async () => {
       // Arrange
       const read = vi.fn<SubtreeReader>(async () => [
-        { mode: FILE_MODE.REGULAR, name: 'b'.repeat(38), id: noteBlob },
-        { mode: FILE_MODE.REGULAR, name: 'README', id: oid40('d') },
+        treeEntry(FILE_MODE.REGULAR, 'b'.repeat(38), noteBlob),
+        treeEntry(FILE_MODE.REGULAR, 'README', oid40('d')),
       ]);
       // Act
       const result = await remove(lazyTrie(), insideKey, read);

@@ -1,4 +1,5 @@
 import type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { ObjectId } from '../../domain/objects/index.js';
@@ -95,12 +96,19 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
  * `core.maxTreeDepth` exits 128), so no override belongs here.
  * Blob content is hydrated per-entry as the caller iterates; no upfront
  * materialisation of the full tree.
+ *
+ * `walkTree` never validates entry names — a raw tree can carry a `.`/`..`
+ * or traversal-shaped name that reaches neither the index nor a filesystem
+ * write, since archive only serializes bytes. Each entry's path is
+ * validated here, before it is yielded as a tar/zip member name, so the
+ * refusal fires at the same boundary git's own `archive` refuses it.
  */
 async function* buildEntryStream(ctx: Context, tree: ObjectId): AsyncIterable<ArchiveEntry> {
   for await (const entry of walkTree(ctx, tree, {
     maxEntries: Number.MAX_SAFE_INTEGER,
   })) {
     const { path, id, mode } = entry;
+    validateIndexPath(path, NO_PARSER_OFFSET, mode);
     if (mode === FILE_MODE.DIRECTORY || mode === FILE_MODE.GITLINK) {
       yield { path, mode, oid: id };
     } else {

@@ -17,7 +17,11 @@ import {
   cursorOid,
   openTreeCursor,
 } from '../../../../src/domain/objects/tree-cursor.js';
-import { arbTreeEntryAnyMode, dedupeTreeEntriesByName } from './arbitraries.js';
+import {
+  arbTreeEntryAnyMode,
+  arbTreeEntryRawName,
+  dedupeTreeEntriesByName,
+} from './arbitraries.js';
 
 const DUMMY_ID = ObjectId.from('a'.repeat(40));
 
@@ -28,6 +32,7 @@ function buildTree(entries: ReadonlyArray<TreeEntry>): Tree {
 interface WalkedEntry {
   readonly mode: TreeEntry['mode'];
   readonly name: string;
+  readonly nameBytes: Uint8Array;
   readonly id: TreeEntry['id'];
 }
 
@@ -35,20 +40,24 @@ function walkAll(content: Uint8Array): WalkedEntry[] {
   const walked: WalkedEntry[] = [];
   const cursor = openTreeCursor(content, SHA1_CONFIG);
   while (!cursor.done) {
-    walked.push({ mode: cursorMode(cursor), name: cursorName(cursor), id: cursorOid(cursor) });
+    walked.push({
+      mode: cursorMode(cursor),
+      name: cursorName(cursor),
+      nameBytes: cursor.buf.slice(cursor.nameStart, cursor.nameEnd),
+      id: cursorOid(cursor),
+    });
     advanceCursor(cursor);
   }
   return walked;
 }
 
 describe('tree-cursor — property-based tests', () => {
-  describe('Given an arbitrary deduped tree serialized to canonical bytes', () => {
+  describe('Given an arbitrary tree of raw-byte names serialized to canonical bytes', () => {
     describe('When walking the raw cursor over its content', () => {
-      it('Then it yields the same (mode, name, oid) sequence as parseTreeContent', () => {
+      it('Then it yields the same (mode, name, nameBytes, oid) sequence as parseTreeContent', () => {
         // Arrange + Assert
         fc.assert(
-          fc.property(fc.array(arbTreeEntryAnyMode()), (rawEntries) => {
-            const entries = dedupeTreeEntriesByName(rawEntries);
+          fc.property(fc.array(arbTreeEntryRawName()), (entries) => {
             const content = serializeTreeContent(buildTree(entries), SHA1_CONFIG);
             const parsed = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
@@ -56,7 +65,12 @@ describe('tree-cursor — property-based tests', () => {
             const result = sut(content);
 
             expect(result).toEqual(
-              parsed.entries.map(({ mode, name, id }) => ({ mode, name, id })),
+              parsed.entries.map(({ mode, name, nameBytes, id }) => ({
+                mode,
+                name,
+                nameBytes,
+                id,
+              })),
             );
           }),
           { numRuns: 200 },

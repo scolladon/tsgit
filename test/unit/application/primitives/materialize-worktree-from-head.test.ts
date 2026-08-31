@@ -7,6 +7,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -33,11 +34,11 @@ const seedHeadCommit = async (): Promise<{ ctx: Context; head: ObjectId }> => {
     content: ENCODER.encode('deep\n'),
   });
   const subtree = await writeTree(ctx, [
-    { name: 'nested' as FilePath, id: nested, mode: FILE_MODE.REGULAR },
+    treeEntry(FILE_MODE.REGULAR, 'nested' as FilePath, nested),
   ]);
   const tree = await writeTree(ctx, [
-    { name: 'dir' as FilePath, id: subtree, mode: FILE_MODE.DIRECTORY },
-    { name: 'file.txt' as FilePath, id: blob, mode: FILE_MODE.REGULAR },
+    treeEntry(FILE_MODE.DIRECTORY, 'dir' as FilePath, subtree),
+    treeEntry(FILE_MODE.REGULAR, 'file.txt' as FilePath, blob),
   ]);
   const head = await writeObject(ctx, {
     type: 'commit',

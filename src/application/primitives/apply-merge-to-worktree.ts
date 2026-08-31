@@ -16,9 +16,11 @@
  *                tree (git's "local changes would be overwritten" guard);
  *                nothing is written.
  */
+
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import {
   type ConflictType,
   MAX_CONFLICT_OUTPUT_BYTES,
@@ -27,7 +29,7 @@ import {
   type MergeOutcome,
   mergeTrees,
 } from '../../domain/merge/index.js';
-import type { FilePath, ObjectId } from '../../domain/objects/index.js';
+import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from './build-content-merger.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
@@ -37,6 +39,7 @@ import {
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
+import { validateMergeWritePaths } from './internal/validate-merge-write-paths.js';
 import { writeDistinctTypesSides } from './internal/write-distinct-types-sides.js';
 import {
   removeWorkingTreeFile,
@@ -159,6 +162,70 @@ export const writeMarkedConflict = async (
   await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode, scanner);
 };
 
+/** A `MergeOutcome` known to change a path the merge actually writes — the
+ *  'conflict' variant is excluded before this type is ever reached (its own
+ *  path lives on `MergeConflict`, handled separately). */
+type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
+
+/**
+ * Validate then materialise one changed clean outcome. Every outcome path is
+ * sourced from a tree walk (the merge's `ours`/`theirs` flatten), never from
+ * a parsed index, so `resolved-deleted` is validated here too — it has NOT
+ * already passed this check anywhere upstream. `resolved-deleted` carries no
+ * mode of its own (a delete writes nothing); REGULAR stands in because the
+ * only mode-sensitive rule this call can trigger — the `.gitmodules`-symlink
+ * rejection — is a write-time concern that does not apply to a removal.
+ */
+const writeChangedOutcome = async (
+  ctx: Context,
+  outcome: ChangedOutcome,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  validateIndexPath(
+    outcome.path,
+    NO_PARSER_OFFSET,
+    outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
+  );
+  if (outcome.status === 'resolved-deleted') {
+    await removeWorkingTreeFile(ctx, outcome.path);
+    return;
+  }
+  if (outcome.status === 'resolved-merged') {
+    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
+    return;
+  }
+  // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
+  if (outcome.status === 'resolved-known') {
+    const stream = await streamBlob(ctx, outcome.id);
+    await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
+  }
+};
+
+/**
+ * Validate then materialise one conflict's working-tree marker/sides.
+ * Validated ahead of the `distinct-types` dispatch (using the resolved mode's
+ * fallback chain) so one call covers both branches below. Runs
+ * unconditionally, whether or not a mode is derivable: `conflictsToIndexEntries`
+ * still writes an index entry for a mode-less conflict, so its path reaches
+ * `.git/index` regardless of whether this function goes on to write
+ * working-tree bytes. REGULAR stands in when no mode is derivable — the only
+ * mode-sensitive rule is the write-time-only `.gitmodules`-symlink
+ * rejection, inapplicable when nothing is written.
+ */
+const writeValidatedConflict = async (
+  ctx: Context,
+  conflict: MergeConflict,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
+  if (conflict.type === 'distinct-types') {
+    await writeDistinctTypesSides(ctx, conflict, scanner);
+    return;
+  }
+  await writeMarkedConflict(ctx, conflict, scanner);
+};
+
 /**
  * Write the changed clean outcomes + conflict markers to the working tree.
  * One scanner for the whole call: its per-directory memo serves every write
@@ -176,26 +243,10 @@ const writeConflictWorktree = async (
   for (const outcome of outcomes) {
     // Stryker disable next-line ConditionalExpression: equivalent — the `!changed.has` half only skips outcomes that equal `ours` (writing them reproduces working bytes); the `if(true)` skip-all variant is killed by the multi-path conflict test that asserts the clean side is written.
     if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    if (outcome.status === 'resolved-deleted') {
-      await removeWorkingTreeFile(ctx, outcome.path);
-      continue;
-    }
-    if (outcome.status === 'resolved-merged') {
-      await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
-      continue;
-    }
-    // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
-    if (outcome.status === 'resolved-known') {
-      const stream = await streamBlob(ctx, outcome.id);
-      await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
-    }
+    await writeChangedOutcome(ctx, outcome, scanner);
   }
   for (const conflict of conflicts) {
-    if (conflict.type === 'distinct-types') {
-      await writeDistinctTypesSides(ctx, conflict, scanner);
-      continue;
-    }
-    await writeMarkedConflict(ctx, conflict, scanner);
+    await writeValidatedConflict(ctx, conflict, scanner);
   }
 };
 
@@ -272,6 +323,10 @@ export const applyMergeToWorktree = async (
     });
     return { kind: 'clean', mergedTree, result };
   }
+  // Whole-set path gate, hoisted above the write wave: a hostile name
+  // anywhere in the batch refuses before the FIRST byte is written, not
+  // partway through it.
+  validateMergeWritePaths(merged.outcomes, merged.conflicts, changed);
   await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
   return {
     kind: 'conflict',

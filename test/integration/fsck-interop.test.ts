@@ -161,6 +161,69 @@ afterAll(async () => {
   if (zeroPadDir !== '') await rm(zeroPadDir, { recursive: true, force: true });
 });
 
+// --- Scenario family: zero-padded modes must strip ALL leading zeros --------
+// A single leading zero already normalises correctly (the family above); a
+// SECOND leading zero on a directory mode, and any zero-padded symlink mode,
+// exercise the fix directly.
+
+let zeroPadAllDir = '';
+let zeroPadAllCtx: Context;
+let zeroPadDirModeTreeSha = '';
+let zeroPadSymlinkTreeSha = '';
+
+beforeAll(async () => {
+  zeroPadAllDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-zeroPadAll-'));
+  initRepo(zeroPadAllDir);
+
+  const blobSha = runGit(['-C', zeroPadAllDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'hello\n',
+  }).trim();
+  const blobShaBytes = Buffer.from(blobSha, 'hex');
+  const emptyTreeSha = await writeLooseObject(zeroPadAllDir, 'tree', Buffer.alloc(0));
+  const emptyTreeShaBytes = Buffer.from(emptyTreeSha, 'hex');
+
+  // Double-zero-padded directory mode: stripping only ONE zero leaves
+  // '040000', which VALID_MODES does not contain — the old defect emitted a
+  // spurious badFilemode alongside the correct zeroPaddedFilemode. Points at
+  // a real (empty) tree so git's own recursive checks stay quiet.
+  const dirModeAndName = Buffer.from('0040000 subdir\0');
+  zeroPadDirModeTreeSha = await writeLooseObject(
+    zeroPadAllDir,
+    'tree',
+    Buffer.concat([dirModeAndName, emptyTreeShaBytes]),
+  );
+
+  // Zero-padded symlink mode named '.gitignore': the old defect compared the
+  // raw, still zero-padded mode against '120000', so isSymlink never fired
+  // for a zero-padded symlink mode and gitignoreSymlink silently never fired.
+  const symlinkModeAndName = Buffer.from('0120000 .gitignore\0');
+  zeroPadSymlinkTreeSha = await writeLooseObject(
+    zeroPadAllDir,
+    'tree',
+    Buffer.concat([symlinkModeAndName, blobShaBytes]),
+  );
+
+  const refsDir = path.join(zeroPadAllDir, '.git', 'refs', 'heads');
+  await mkdir(refsDir, { recursive: true });
+
+  const pointRefAtTree = async (ref: string, treeSha: string): Promise<void> => {
+    const commitBody = Buffer.from(
+      `tree ${treeSha}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\n${ref}\n`,
+    );
+    const commitSha = await writeLooseObject(zeroPadAllDir, 'commit', commitBody);
+    await writeFile(path.join(refsDir, ref), `${commitSha}\n`);
+  };
+  await pointRefAtTree('dirMode', zeroPadDirModeTreeSha);
+  await pointRefAtTree('symlinkMode', zeroPadSymlinkTreeSha);
+
+  zeroPadAllCtx = createNodeContext({ workDir: zeroPadAllDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (zeroPadAllDir !== '') await rm(zeroPadAllDir, { recursive: true, force: true });
+});
+
 // --- Scenario family 12c: treeNotSorted + missingSpaceBeforeEmail -----------
 
 let catalogueDir = '';
@@ -467,6 +530,68 @@ describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with zeroPaddedFilemode', ()
     );
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose tree with a double-zero-padded directory mode "0040000"',
+  () => {
+    describe('When fsck runs with --strict', () => {
+      it('Then emits zeroPaddedFilemode only, matching real git — stripping one zero is not enough', async () => {
+        // Arrange — git's expected output
+        const gitResult = gitFsck(zeroPadAllDir, '--strict');
+
+        // Act
+        const result = await fsck(zeroPadAllCtx, { strict: true });
+
+        // Assert — exactly zeroPaddedFilemode for this tree, no spurious badFilemode
+        const msgIds = result.findings
+          .filter(
+            (f): f is FsckFinding & { type: 'bad-object' } =>
+              f.type === 'bad-object' && f.id === zeroPadDirModeTreeSha,
+          )
+          .map((f) => f.msgId);
+        expect(msgIds).toEqual(['zeroPaddedFilemode']);
+
+        // Reconstruct git's stderr line and assert byte-equality
+        const reconstructed = `error in tree ${zeroPadDirModeTreeSha}: zeroPaddedFilemode: contains zero-padded file modes`;
+        expect(gitResult.stderr).toContain(reconstructed);
+        expect(gitResult.stderr).not.toContain(`tree ${zeroPadDirModeTreeSha}: badFilemode`);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose tree where ".gitignore" is a symlink with zero-padded mode "0120000"',
+  () => {
+    describe('When fsck runs with --strict', () => {
+      it('Then emits gitignoreSymlink and zeroPaddedFilemode, matching real git — the raw padded mode is not "120000"', async () => {
+        // Arrange — git's expected output
+        const gitResult = gitFsck(zeroPadAllDir, '--strict');
+
+        // Act
+        const result = await fsck(zeroPadAllCtx, { strict: true });
+
+        // Assert — both findings present for this tree
+        const msgIds = result.findings
+          .filter(
+            (f): f is FsckFinding & { type: 'bad-object' } =>
+              f.type === 'bad-object' && f.id === zeroPadSymlinkTreeSha,
+          )
+          .map((f) => f.msgId)
+          .sort();
+        expect(msgIds).toEqual(['gitignoreSymlink', 'zeroPaddedFilemode'].sort());
+
+        // Reconstruct git's stderr lines and assert byte-equality
+        expect(gitResult.stderr).toContain(
+          `warning in tree ${zeroPadSymlinkTreeSha}: gitignoreSymlink: .gitignore is a symlink`,
+        );
+        expect(gitResult.stderr).toContain(
+          `error in tree ${zeroPadSymlinkTreeSha}: zeroPaddedFilemode: contains zero-padded file modes`,
+        );
+      });
+    });
+  },
+);
 
 describe.skipIf(!GIT_AVAILABLE)(
   'Given a loose tree with a name fault only fsck --strict upgrades to error',

@@ -10,6 +10,7 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HttpTransport } from '../../../../src/ports/http-transport.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
@@ -65,9 +66,7 @@ const seedSuper = async (
     id: '' as ObjectId,
     content: ENCODER.encode('root\n'),
   })) as ObjectId;
-  const tree = await writeTree(base, [
-    { name: 'README' as FilePath, id: blob, mode: FILE_MODE.REGULAR },
-  ]);
+  const tree = await writeTree(base, [treeEntry(FILE_MODE.REGULAR, 'README' as FilePath, blob)]);
   const commit = (await writeObject(base, {
     type: 'commit',
     id: '' as ObjectId,

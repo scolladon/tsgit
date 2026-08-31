@@ -13,7 +13,6 @@ import {
   MSG_BAD_TREE_SHA1,
   MSG_BAD_TYPE,
   MSG_DUPLICATE_ENTRIES,
-  MSG_EMPTY_NAME,
   MSG_FULL_PATHNAME,
   MSG_GITATTRIBUTES_BLOB,
   MSG_GITATTRIBUTES_LARGE,
@@ -71,7 +70,6 @@ export const DEFAULT_SEVERITY: ReadonlyMap<string, FsckSeverity> = new Map([
   [MSG_BAD_TREE, 'error'],
   [MSG_BAD_TREE_SHA1, 'error'],
   [MSG_DUPLICATE_ENTRIES, 'error'],
-  [MSG_EMPTY_NAME, 'warning'],
   [MSG_FULL_PATHNAME, 'warning'],
   [MSG_HAS_DOT, 'warning'],
   [MSG_HAS_DOTDOT, 'warning'],
@@ -140,7 +138,6 @@ export const DEFAULT_SEVERITY: ReadonlyMap<string, FsckSeverity> = new Map([
  * flips WARN→ERROR under strict).
  */
 export const STRICT_UPGRADE_SET: ReadonlySet<string> = new Set([
-  MSG_EMPTY_NAME,
   MSG_FULL_PATHNAME,
   MSG_HAS_DOT,
   MSG_HAS_DOTDOT,

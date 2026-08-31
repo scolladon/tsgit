@@ -34,6 +34,7 @@ import {
   runGit,
   runGitBytes,
   runGitEnv,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,120 @@ describe.skipIf(!GIT_AVAILABLE)('archive interop', () => {
       expect(subIdx).toBeGreaterThanOrEqual(0);
       expect(subBIdx).toBeGreaterThanOrEqual(0);
       expect(subIdx).toBeLessThan(subBIdx);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Path validation parity — archive refuses what git archive refuses.
+  // Every fixture here is a FLOATING tree (never checked out, never wired to
+  // a ref): `hash-object --literally` is the same plumbing escape hatch real
+  // git's own `mktree` uses internally to accept an entry name its
+  // higher-level client-side check would refuse — the point being probed is
+  // the archive boundary's refusal, not tree construction.
+  // -------------------------------------------------------------------------
+
+  const writeFloatingBlob = (content: string): string =>
+    runGit(['-C', pair.peer, 'hash-object', '-w', '--stdin'], {
+      input: content,
+      env: runGitEnv(),
+    }).trim();
+
+  /** Raw pre-object bytes for a single tree entry: `<mode> <name>\0<raw-oid>`. */
+  const rawTreeEntryBytes = (mode: string, name: string, oidHex: string): Uint8Array => {
+    const header = Buffer.from(`${mode} ${name}\0`, 'utf8');
+    const oidBytes = Buffer.from(oidHex, 'hex');
+    return new Uint8Array(Buffer.concat([header, oidBytes]));
+  };
+
+  /** A single-entry floating tree, written via the `--literally` escape
+   * hatch so the entry name bypasses `mktree`'s own client-side refusal. */
+  const writeFloatingTree = (name: string, blobOid: string): string =>
+    runGit(['-C', pair.peer, 'hash-object', '-t', 'tree', '-w', '--literally', '--stdin'], {
+      input: rawTreeEntryBytes('100644', name, blobOid),
+      env: runGitEnv(),
+    }).trim();
+
+  describe('Given a floating tree with a single hostile-named entry, When archive runs on each tool', () => {
+    it.each([
+      { label: 'a "." entry', name: '.', reason: "'.' segment rejected" },
+      { label: 'a ".." entry', name: '..', reason: "'..' segment rejected" },
+      {
+        label: 'a traversal-shaped entry',
+        name: '../../etc/evil',
+        reason: "'..' segment rejected",
+      },
+    ])(
+      'Then $label is refused by both — git exits 128, tsgit throws INVALID_INDEX_ENTRY',
+      async ({ name, reason }) => {
+        // Arrange — git ls-tree on the SAME tree still succeeds: the refusal
+        // is at the archive boundary specifically, not a tree-read refusal.
+        const ctx = createNodeContext({ workDir: pair.peer });
+        const blobOid = writeFloatingBlob('hostile');
+        const treeOid = writeFloatingTree(name, blobOid);
+
+        // Act — real git
+        const lsTree = tryRunGitWithExit(['-C', pair.peer, 'ls-tree', treeOid], {
+          env: runGitEnv(),
+        });
+        const gitArchive = tryRunGitWithExit(
+          ['-C', pair.peer, 'archive', '--format=tar', treeOid],
+          { env: runGitEnv() },
+        );
+
+        // Act — tsgit
+        const result = await archive(ctx, { treeish: treeOid });
+        let caught: unknown;
+        const entries: ArchiveEntry[] = [];
+        try {
+          for await (const entry of result.entries) {
+            entries.push(entry);
+          }
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git: ls-tree succeeds, archive refuses at exit 128
+        expect(lsTree.exitCode).toBe(0);
+        expect(gitArchive.exitCode).toBe(128);
+        expect(gitArchive.stderr).toContain('invalid path');
+
+        // Assert — tsgit refuses the same shape, git-faithfully, before any entry
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe(reason);
+        expect(entries).toHaveLength(0);
+      },
+    );
+  });
+
+  describe('Given a floating tree with an entry literally named "a/b" (embedded separator)', () => {
+    describe('When archive runs on each tool', () => {
+      it('Then both accept it and emit a single member at path "a/b"', async () => {
+        // Arrange — an embedded `/` in one raw entry name, not two nested
+        // tree levels: git accepts this shape (ADR: read-tree indexes it as
+        // a path), so archive must keep matching, not newly refuse it.
+        const ctx = createNodeContext({ workDir: pair.peer });
+        const blobOid = writeFloatingBlob('nested-by-name\n');
+        const treeOid = writeFloatingTree('a/b', blobOid);
+
+        // Act — real git
+        const gitArchive = tryRunGitWithExit(
+          ['-C', pair.peer, 'archive', '--format=tar', treeOid],
+          { env: runGitEnv() },
+        );
+
+        // Act — tsgit
+        const result = await archive(ctx, { treeish: treeOid });
+        const entries: ArchiveEntry[] = [];
+        for await (const entry of result.entries) {
+          entries.push(entry);
+        }
+
+        // Assert
+        expect(gitArchive.exitCode).toBe(0);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]?.path).toBe('a/b');
+      });
     });
   });
 

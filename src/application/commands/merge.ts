@@ -7,6 +7,7 @@ import {
   type StatData,
   skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
@@ -28,6 +29,7 @@ import {
   type RefName,
   type TreeEntry,
 } from '../../domain/objects/index.js';
+import { treeEntry } from '../../domain/objects/tree.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
@@ -41,6 +43,7 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
+import { validateMergeWritePaths } from '../primitives/internal/validate-merge-write-paths.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import {
   removeWorkingTreeFile,
@@ -484,7 +487,7 @@ const buildLeafTrie = (rootLeaves: ReadonlyArray<LeafRecord>, maxDepth: number):
 };
 
 const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
-  files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
+  files.map((f) => treeEntry(f.mode, f.path, f.id));
 
 /**
  * Write the leaf trie deepest-level-first. Every frame WITHIN a level is
@@ -518,11 +521,7 @@ const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> =>
         frame.parentIndex === ROOT_PARENT_LEVEL_INDEX
           ? rootTreeEntries
           : treeEntries[frame.parentIndex]!;
-      parentEntries.push({
-        name: frame.name,
-        id,
-        mode: FILE_MODE.DIRECTORY,
-      });
+      parentEntries.push(treeEntry(FILE_MODE.DIRECTORY, frame.name, id));
     }
   }
   return writeTree(ctx, rootTreeEntries);
@@ -541,9 +540,10 @@ export const writeNestedTree = async (
  * Persist the conflicting-merge state on disk's write order:
  * working-tree files → ORIG_HEAD → MERGE_HEAD → MERGE_MSG → index.
  *
- * Unsupported conflict types and would-overwrite refusals are checked upfront
- * BEFORE any disk write so the operation fails atomically (HEAD/index/working-
- * tree untouched, no MERGE_HEAD, no leaked index lock).
+ * Unsupported conflict types, would-overwrite refusals, and hostile
+ * entry-path refusals are checked upfront BEFORE any disk write so the
+ * operation fails atomically (HEAD/index/working-tree untouched, no
+ * MERGE_HEAD, no leaked index lock).
  */
 const persistConflictState = async (
   ctx: Context,
@@ -564,6 +564,14 @@ const persistConflictState = async (
   if (localChanges.length > 0 || untracked.length > 0) {
     throw workingTreeDirty({ localChanges, untracked });
   }
+
+  // Whole-set path gate, hoisted above the write wave and above
+  // `acquireIndexLock`: every outcome/conflict path this call is about to
+  // write is validated in one upfront pass, so a hostile name anywhere in
+  // the batch refuses before the FIRST byte is written, not partway through
+  // the concurrent write wave — mirrors `validateChangesetPaths`
+  // (apply-changeset.ts) and `restoreUntracked`'s pre-pass (stash.ts).
+  validateMergeWritePaths(result.outcomes, result.conflicts, changed);
 
   // loadSparseMatcher is a pure config/pattern-file read — no lock needed. A
   // defined matcher keeps excluded blob-backed paths out of the working tree
@@ -676,6 +684,22 @@ export const writeOutcomeToTree = async (
   matcher: SparseMatcher | undefined,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
+  // Every outcome path is sourced from a tree walk (the merge's `ours`/
+  // `theirs` flatten), never from a parsed index, so it is validated here
+  // regardless of status — a `resolved-deleted` path has NOT already passed
+  // this check anywhere upstream. `resolved-deleted` carries no mode of its
+  // own (a delete writes nothing); REGULAR stands in because the only
+  // mode-sensitive rule this call can trigger — the `.gitmodules`-symlink
+  // rejection — is a write-time concern that does not apply to a removal.
+  // `conflict` is skipped because this function no-ops on it (the conflict
+  // itself is validated by the parallel conflicts batch instead).
+  if (outcome.status !== 'conflict') {
+    validateIndexPath(
+      outcome.path,
+      NO_PARSER_OFFSET,
+      outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
+    );
+  }
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     if (isExcluded(matcher, outcome.path)) return;
     const stream = await streamBlob(ctx, outcome.id);
@@ -699,16 +723,24 @@ export const writeConflictToTree = async (
   conflict: MergeConflict,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
-  if (conflict.type === 'distinct-types') {
-    await writeDistinctTypesSides(ctx, conflict, scanner);
-    return;
-  }
   // Materialise with the merged mode when the merge resolved one, else the
   // surviving side's (ours, or theirs for modify-delete with ours deleted) so
   // the kind (symlink / exec bit) is preserved. Every conflict constructor
   // pairs ids with modes, so bytes being derivable implies a mode exists; the
   // guard checks anyway and skips the blob read when no mode is present.
+  //
+  // Path validation runs unconditionally, whether or not a mode is derivable:
+  // `conflictsToIndexEntries` still writes an index entry for a mode-less
+  // conflict, so its path reaches `.git/index` regardless of whether this
+  // function goes on to write working-tree bytes. REGULAR stands in when no
+  // mode is derivable — the only mode-sensitive rule is the write-time-only
+  // `.gitmodules`-symlink rejection, inapplicable when nothing is written.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
+  if (conflict.type === 'distinct-types') {
+    await writeDistinctTypesSides(ctx, conflict, scanner);
+    return;
+  }
   if (mode === undefined) return;
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;

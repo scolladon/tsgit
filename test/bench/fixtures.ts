@@ -15,6 +15,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { packPositionMap } from '../../src/application/primitives/internal/pack-positions.js';
 import type { Blob, Commit, FileMode, ObjectId, Tree } from '../../src/domain/objects/index.js';
 import { serializeObject } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import { parsePackIndex } from '../../src/domain/storage/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
@@ -275,7 +276,7 @@ async function buildLinearChain(ctx: Context, length: number): Promise<LinearCha
     const tree: Tree = {
       type: 'tree',
       id: '' as ObjectId,
-      entries: [{ name: 'f.txt', mode: '100644' as FileMode, id: blobId as ObjectId }],
+      entries: [treeEntry('100644' as FileMode, 'f.txt', blobId as ObjectId)],
     };
     const treeId = await objectId(ctx, tree);
     entries.push({ kind: 'base', type: 'tree', content: withoutObjectHeader(ctx, tree) });

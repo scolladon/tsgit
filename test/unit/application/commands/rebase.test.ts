@@ -30,6 +30,7 @@ import type {
   ObjectId,
   RefName,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { asBareContext } from './fixtures.js';
 
@@ -617,9 +618,7 @@ const seedUnrelated = async (): Promise<{ ctx: Context; mainTip: ObjectId }> => 
     content: new TextEncoder().encode('f0\n'),
     id: '' as ObjectId,
   });
-  const treeId = await writeTree(ctx, [
-    { name: 'f0.txt' as never, id: blobId, mode: FILE_MODE.REGULAR },
-  ]);
+  const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f0.txt' as never, blobId)]);
   const featureRoot = await createCommit(ctx, {
     tree: treeId,
     parents: [],

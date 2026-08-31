@@ -35,6 +35,7 @@ import {
   type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
@@ -132,7 +133,7 @@ describe('Given a healthy repo with reachable commits', () => {
       const blobId = await writeObject(ctx, makeBlob('hello'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'hello.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'hello.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -366,7 +367,7 @@ describe('Given an orphan commit subgraph (commit→tree→blob, all unreachable
       const blobId = await writeObject(ctx, makeBlob('orphan-content'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       // No ref → all three are unreachable
@@ -442,7 +443,7 @@ describe('Given a tree entry pointing to a missing blob', () => {
       const ghostId = '0000000000000000000000000000000000000001' as ObjectId;
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'ghost.txt', id: ghostId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'ghost.txt', ghostId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -559,7 +560,7 @@ describe('Given a tree with a directory entry pointing to a missing subtree', ()
       const ghostSubtree = '0000000000000000000000000000000000000007' as ObjectId;
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: ghostSubtree }]),
+        makeTree([treeEntry(FILE_MODE.DIRECTORY, 'sub', ghostSubtree)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -1578,7 +1579,7 @@ describe('Given a tree containing a .gitmodules blob with a disallowed URL (--up
       // Tree: blob named '.gitmodules'
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -1619,7 +1620,7 @@ describe('Given a tree containing a .gitmodules blob that cannot be parsed (malf
       });
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -1660,7 +1661,7 @@ describe('Given a tree containing a .gitmodules blob with a submodule named "../
       });
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -1701,12 +1702,12 @@ describe('Given a blob named .gitmodules in a sub-tree (not the root tree)', () 
       // Inner tree: has .gitmodules blob
       const innerTreeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)]),
       );
       // Root tree: has inner tree as a subdirectory
       const rootTreeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.DIRECTORY, name: 'subdir', id: innerTreeId }]),
+        makeTree([treeEntry(FILE_MODE.DIRECTORY, 'subdir', innerTreeId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(rootTreeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -1956,7 +1957,7 @@ describe('Given repo .gitmodules blob with disallowed URL', () => {
       });
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -1989,7 +1990,7 @@ describe('Given missing blob referenced both as blob (tree entry) and as tag tar
       // Tree entry references ghost as blob
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'ghost.txt', id: ghostId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'ghost.txt', ghostId)]),
       );
       // Tag also references ghost (as a blob tag target)
       const tagId = await writeObject(ctx, makeTag(ghostId, 'blob', 'v-ghost'));
@@ -2034,7 +2035,7 @@ describe('Given tree with non-special-name blob whose content looks like .gitmod
       // Blob referenced under 'config.txt' (NOT '.gitmodules')
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'config.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'config.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -2146,7 +2147,7 @@ describe('Given tree with gitlink (submodule) entry pointing to commit not in un
       const submoduleCommitId = '0000000000000000000000000000000000000099' as ObjectId;
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.GITLINK, name: 'vendor', id: submoduleCommitId }]),
+        makeTree([treeEntry(FILE_MODE.GITLINK, 'vendor', submoduleCommitId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -2184,7 +2185,7 @@ describe('Given ref pointing to corrupt object (null in cache)', () => {
       // We need a commit pointing to a tree that includes this blob
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -2561,11 +2562,8 @@ describe('Given two broken edges pointing to the same missing OID with different
       const realTreeId = await writeObject(
         ctx,
         makeTree([
-          {
-            mode: FILE_MODE.REGULAR,
-            name: 'file.txt',
-            id: missingOid, // missing, expected type 'blob'
-          },
+          // missing, expected type 'blob'
+          treeEntry(FILE_MODE.REGULAR, 'file.txt', missingOid),
         ]),
       );
 
@@ -3265,7 +3263,7 @@ describe('Given only the HEAD commit object deleted, its tree still readable and
       const blobId = await writeObject(ctx, makeBlob('still readable'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
       );
       const parentCommitId = await writeObject(ctx, makeCommit(treeId, []));
       const headCommitId = await writeObject(
@@ -3293,7 +3291,7 @@ describe('Given every loose object deleted, main and the index both pointing at 
       const blobId = await writeObject(ctx, makeBlob('gone'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -3322,7 +3320,7 @@ describe('Given every loose object deleted, an index entry pointing at a gone ob
       const blobId = await writeObject(ctx, makeBlob('gone'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -3353,7 +3351,7 @@ describe('Given a readable tree indexed by the cache-tree, but its blob deleted'
       const blobId = await writeObject(ctx, makeBlob('blob only'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -3451,7 +3449,7 @@ describe('Given a tree named only by the index cache-tree, reachable through no 
       const blobId = await writeObject(ctx, makeBlob('cache-tree rooted'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
       );
       await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
 
@@ -3582,7 +3580,7 @@ describe('Given a cache-tree walk that meets an absent oid, then one no artefact
       const blobId = await writeObject(ctx, makeBlob('cache-tree drain'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
       );
       const refusedRouteId = midxOid('bb1');
       await writeFlatMidx(
@@ -3988,7 +3986,7 @@ describe('Given a reachable tree entry pointing at an unreadable (empty-file) bl
       await writeEmptyLooseObject(ctx, damagedId);
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'damaged.bin', id: damagedId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'damaged.bin', damagedId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -4041,10 +4039,7 @@ describe('Given two unreadable objects, one referenced by a readable object and 
       const orphanId = 'b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9' as ObjectId;
       await writeEmptyLooseObject(ctx, referencedId);
       await writeEmptyLooseObject(ctx, orphanId);
-      await writeObject(
-        ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'ref.bin', id: referencedId }]),
-      );
+      await writeObject(ctx, makeTree([treeEntry(FILE_MODE.REGULAR, 'ref.bin', referencedId)]));
 
       // Act
       const result = await fsck(ctx, { connectivityOnly: true });
@@ -4078,7 +4073,7 @@ describe('Given a healthy repo with no damage', () => {
       const blobId = await writeObject(ctx, makeBlob('healthy-content'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -4100,7 +4095,7 @@ describe('Given a healthy repo with no damage', () => {
       const blobId = await writeObject(ctx, makeBlob('healthy-content'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -4122,7 +4117,7 @@ describe('Given a healthy repo with no damage', () => {
       const blobId = await writeObject(ctx, makeBlob('healthy-content'));
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -4418,7 +4413,7 @@ describe('Given a garbage blob referenced by a reachable tree, connectivityOnly:
       await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'garbage.bin', id: garbageId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'garbage.bin', garbageId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -4441,10 +4436,7 @@ describe('Given a garbage blob referenced only by a dangling readable tree (no r
       const ctx = await initBareCtx();
       const garbageId = 'd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6' as ObjectId;
       await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
-      await writeObject(
-        ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'garbage.bin', id: garbageId }]),
-      );
+      await writeObject(ctx, makeTree([treeEntry(FILE_MODE.REGULAR, 'garbage.bin', garbageId)]));
       // No ref: the tree itself is readable but unreferenced (dangling), which
       // still records an in-edge for the garbage blob via buildInEdgeMap — the
       // blob is unreachable but NOT dangling.
@@ -6625,7 +6617,7 @@ describe('fsck — remote.promisor guard', () => {
         const blobId = await writeObject(ctx, makeBlob('hello'));
         const treeId = await writeObject(
           ctx,
-          makeTree([{ mode: FILE_MODE.REGULAR, name: 'hello.txt', id: blobId }]),
+          makeTree([treeEntry(FILE_MODE.REGULAR, 'hello.txt', blobId)]),
         );
         const commitId = await writeObject(ctx, makeCommit(treeId, []));
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -6728,11 +6720,11 @@ describe('Given a shallow-boundary root commit whose true (unfetched) parent is 
   });
 });
 
-describe('Given a dangling loose tree with a duplicate entry name (full decode fails, stored header still recovers), connectivityOnly: true', () => {
+describe('Given a dangling loose tree with a non-octal byte in the mode (full decode fails, stored header still recovers), connectivityOnly: true', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the findings array carries the header-recovered type, not "unknown"', async () => {
       // Arrange — buildObjectCache's primary readObject call throws
-      // INVALID_TREE_ENTRY (duplicate name), so the cache entry is null; the
+      // INVALID_TREE_ENTRY (malformed mode), so the cache entry is null; the
       // header-recovery probe still reads a valid `tree <size>\0` header from
       // the same bytes, populating the `recovered` map with the real type.
       // NOTE: on this path project() is never invoked — this case pins the
@@ -6740,15 +6732,13 @@ describe('Given a dangling loose tree with a duplicate entry name (full decode f
       // a projected field; the three cases above carry the field-preservation
       // load.
       const ctx = await initBareCtx();
-      const entryA = 'b'.repeat(40) as ObjectId;
-      const entryB = 'c'.repeat(40) as ObjectId;
-      const treeId = await writeObject(
-        ctx,
-        makeTree([
-          { mode: FILE_MODE.REGULAR, name: 'dup.txt', id: entryA },
-          { mode: FILE_MODE.REGULAR, name: 'dup.txt', id: entryB },
-        ]),
-      );
+      const entrySha = new Uint8Array(20).fill(0xab);
+      const modeBytes = enc2.encode('10064a file.txt\0');
+      const treeBody = new Uint8Array(modeBytes.length + 20);
+      treeBody.set(modeBytes, 0);
+      treeBody.set(entrySha, modeBytes.length);
+      const treeRaw = buildLooseBytes('tree', treeBody);
+      const treeId = await writeMalformedLooseObject(ctx, treeRaw);
 
       // Act
       const result = await fsck(ctx, { connectivityOnly: true });
@@ -6764,6 +6754,41 @@ describe('Given a dangling loose tree with a duplicate entry name (full decode f
   });
 });
 
+describe('Given a repo whose only object graph contains a BOM-named tree', () => {
+  describe('When fsck runs', () => {
+    it('Then neither validation pass emits a finding and the exit code is clean', async () => {
+      // Arrange — the content-validation pass (raw bytes) and the
+      // object-cache pass (decoded parse) must agree: real git accepts a
+      // byte-order mark as a whole entry name.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('content'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, Uint8Array.of(0xef, 0xbb, 0xbf), blobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const faultTypes = [
+        'dangling',
+        'unreachable',
+        'missing',
+        'broken-link',
+        'bad-object',
+        'hash-mismatch',
+        'bad-ref',
+      ];
+      const faults = result.findings.filter((f) => faultTypes.includes(f.type));
+      expect(faults).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
 describe('Given a tree carrying a GITLINK entry whose target commit is absent from the universe', () => {
   describe('When fsck runs', () => {
     it('Then findings are exactly one root finding with a clean exit code — entry.mode must survive the projection so the walk skips the gitlink edge', async () => {
@@ -6774,7 +6799,7 @@ describe('Given a tree carrying a GITLINK entry whose target commit is absent fr
       const submoduleCommitId = '9'.repeat(40) as ObjectId;
       const treeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.GITLINK, name: 'vendor', id: submoduleCommitId }]),
+        makeTree([treeEntry(FILE_MODE.GITLINK, 'vendor', submoduleCommitId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -6806,11 +6831,11 @@ describe('Given a .gitmodules blob with a disallowed URL nested below the root t
       });
       const subTreeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+        makeTree([treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)]),
       );
       const rootTreeId = await writeObject(
         ctx,
-        makeTree([{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: subTreeId }]),
+        makeTree([treeEntry(FILE_MODE.DIRECTORY, 'sub', subTreeId)]),
       );
       const commitId = await writeObject(ctx, makeCommit(rootTreeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
@@ -6876,10 +6901,7 @@ describe('Given a loose blob a prior read has NOT yet cached', () => {
         id: '' as ObjectId,
         content: enc.encode('never cached by fsck'),
       });
-      const treeId = await writeObject(
-        ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'f', id: blobId }]),
-      );
+      const treeId = await writeObject(ctx, makeTree([treeEntry(FILE_MODE.REGULAR, 'f', blobId)]));
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 

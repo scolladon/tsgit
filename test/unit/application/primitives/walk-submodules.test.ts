@@ -8,8 +8,10 @@ import { walkSubmodules } from '../../../../src/application/primitives/walk-subm
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { concatBytes, encode } from '../../../../src/domain/objects/encoding.js';
 import type { Blob, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, RefName } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -40,7 +42,7 @@ const writeRootTreeWithGitmodules = async (
   const entries: TreeEntry[] = [];
   if (gitmodulesText !== undefined) {
     const blobId = await writeBlobText(ctx, gitmodulesText);
-    entries.push({ name: '.gitmodules', mode: FILE_MODE.REGULAR, id: blobId });
+    entries.push(treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId));
   }
   // walkTree visits subdirectories — nested gitlinks (a/b) need an intermediate tree.
   const direct: TreeEntry[] = [];
@@ -48,16 +50,12 @@ const writeRootTreeWithGitmodules = async (
   for (const link of gitlinks) {
     const segments = link.path.split('/');
     if (segments.length === 1) {
-      direct.push({ name: link.path, mode: FILE_MODE.GITLINK, id: link.id });
+      direct.push(treeEntry(FILE_MODE.GITLINK, link.path, link.id));
     } else {
       const [head, ...rest] = segments;
       const key = head as string;
       const bucket = nested.get(key) ?? [];
-      bucket.push({
-        name: rest.join('/'),
-        mode: FILE_MODE.GITLINK,
-        id: link.id,
-      });
+      bucket.push(treeEntry(FILE_MODE.GITLINK, rest.join('/'), link.id));
       nested.set(key, bucket);
     }
   }
@@ -65,7 +63,7 @@ const writeRootTreeWithGitmodules = async (
   for (const [dirName, dirEntries] of nested) {
     // Recursively materialise sub-trees one level only (sufficient for these tests).
     const subId = await writeTreeAt(ctx, dirEntries);
-    entries.push({ name: dirName, mode: FILE_MODE.DIRECTORY, id: subId });
+    entries.push(treeEntry(FILE_MODE.DIRECTORY, dirName, subId));
   }
   return writeTreeAt(ctx, entries);
 };
@@ -174,6 +172,60 @@ describe('primitives/walk-submodules', () => {
       });
     });
 
+    describe('Given a .gitmodules entry whose name carries a leading byte-order mark', () => {
+      describe('When walkSubmodules looks it up', () => {
+        it('Then the file does not match — git compares raw bytes, not decoded names', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
+          const blobId = await writeBlobText(ctx, text);
+          const gitmodulesName = concatBytes([
+            Uint8Array.of(0xef, 0xbb, 0xbf),
+            encode('.gitmodules'),
+          ]);
+          const entries: TreeEntry[] = [
+            treeEntry(FILE_MODE.REGULAR, gitmodulesName, blobId),
+            treeEntry(FILE_MODE.GITLINK, 'foo', FAKE_COMMIT_A),
+          ];
+          const treeId = await writeTreeAt(ctx, entries);
+
+          // Act
+          const result = await collect(walkSubmodules(ctx, { ref: treeId }));
+
+          // Assert — the BOM-prefixed name never matches '.gitmodules', so no row is found
+          expect(result).toEqual([{ name: 'foo', path: 'foo', commit: FAKE_COMMIT_A, depth: 0 }]);
+        });
+      });
+    });
+
+    describe('Given a gitlink entry whose own name escapes the work tree, When the walk recurses', () => {
+      it('Then it refuses rather than deriving a child work directory outside the parent', async () => {
+        // Arrange — the entry name, not the .gitmodules section name, is what
+        // builds the child's work directory. The object-parse layer no longer
+        // refuses a '..' name, so this is the boundary that has to.
+        const ctx = await buildSeededContext();
+        const text = '[submodule "escape"]\n\tpath = ../escape\n\turl = https://e/x.git\n';
+        const blobId = await writeBlobText(ctx, text);
+        const entries: TreeEntry[] = [
+          treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId),
+          treeEntry(FILE_MODE.GITLINK, '../escape', FAKE_COMMIT_A),
+        ];
+        const treeId = await writeTreeAt(ctx, entries);
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(walkSubmodules(ctx, { ref: treeId, recursive: true }));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+      });
+    });
+
     describe('Given a .gitmodules row with no matching gitlink', () => {
       describe('When walkSubmodules', () => {
         it('Then it is not yielded', async () => {
@@ -263,8 +315,8 @@ describe('primitives/walk-submodules', () => {
           const text = '[submodule "vendor-foo"]\n\tpath = vendorfoo\n\turl = https://e/foo.git\n';
           const blobId = await writeBlobText(ctx, text);
           const treeId = await writeTreeAt(ctx, [
-            { name: '.gitmodules', mode: FILE_MODE.EXECUTABLE, id: blobId },
-            { name: 'vendorfoo', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+            treeEntry(FILE_MODE.EXECUTABLE, '.gitmodules', blobId),
+            treeEntry(FILE_MODE.GITLINK, 'vendorfoo', FAKE_COMMIT_A),
           ]);
 
           // Act
@@ -295,8 +347,8 @@ describe('primitives/walk-submodules', () => {
             '[submodule "gitlink"]\n\tpath = gitlink\n\turl = https://attacker/x.git\n';
           const linkId = await writeBlobText(ctx, iniText);
           const treeId = await writeTreeAt(ctx, [
-            { name: '.gitmodules', mode: FILE_MODE.SYMLINK, id: linkId },
-            { name: 'gitlink', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+            treeEntry(FILE_MODE.SYMLINK, '.gitmodules', linkId),
+            treeEntry(FILE_MODE.GITLINK, 'gitlink', FAKE_COMMIT_A),
           ]);
 
           // Act
@@ -354,9 +406,9 @@ describe('primitives/walk-submodules', () => {
           const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
           const modulesBlob = await writeBlobText(ctx, text);
           const treeId = await writeTreeAt(ctx, [
-            { name: '.gitignore', mode: FILE_MODE.REGULAR, id: ignoreBlob },
-            { name: '.gitmodules', mode: FILE_MODE.REGULAR, id: modulesBlob },
-            { name: 'foo', mode: FILE_MODE.GITLINK, id: FAKE_COMMIT_A },
+            treeEntry(FILE_MODE.REGULAR, '.gitignore', ignoreBlob),
+            treeEntry(FILE_MODE.REGULAR, '.gitmodules', modulesBlob),
+            treeEntry(FILE_MODE.GITLINK, 'foo', FAKE_COMMIT_A),
           ]);
 
           // Act

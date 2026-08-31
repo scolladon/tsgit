@@ -11,6 +11,7 @@ import { createEmptyTrie } from '../../../../src/domain/notes/trie.js';
 import type { SubtreeReader } from '../../../../src/domain/notes/types.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const OID_A = ObjectId.from('a'.repeat(40));
 
@@ -77,7 +78,7 @@ describe('Given writeNotesTree', () => {
         content: noteContent,
       });
 
-      const trie = loadTrieRoot([{ id: noteOid, mode: FILE_MODE.REGULAR, name: OID_A }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, OID_A, noteOid)]);
       const sut = writeNotesTree;
 
       // Act
@@ -124,7 +125,7 @@ describe('Given writeNotesTree', () => {
 
       // Build trie with a note whose oid requires fanout=1 (need ≥2 notes for fanout)
       // Use a single note to verify fanout=0 (no fanout with just 1 note)
-      const trie = loadTrieRoot([{ id: noteBlobOid, mode: FILE_MODE.REGULAR, name: noteOid }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, noteOid, noteBlobOid)]);
       const sut = writeNotesTree;
 
       // Act
@@ -203,10 +204,10 @@ describe('Given writeNotesTree', () => {
       });
       // A fanout subtree '00/' holding a note leaf plus a non-note 'README' (preserved verbatim).
       const subtreeOid = await writeTree(ctx, [
-        { id: innerBlob, mode: FILE_MODE.REGULAR, name: '0'.repeat(38) },
-        { id: readmeBlob, mode: FILE_MODE.REGULAR, name: 'README' },
+        treeEntry(FILE_MODE.REGULAR, '0'.repeat(38), innerBlob),
+        treeEntry(FILE_MODE.REGULAR, 'README', readmeBlob),
       ]);
-      const trie = loadTrieRoot([{ id: subtreeOid, mode: FILE_MODE.DIRECTORY, name: '00' }]);
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.DIRECTORY, '00', subtreeOid)]);
       const read: SubtreeReader = async (oid) => {
         const obj = await readObject(ctx, oid);
         return obj.type === 'tree' ? obj.entries : [];
@@ -232,6 +233,101 @@ describe('Given writeNotesTree', () => {
           const grouped = root.entries.find((entry) => entry.name === '00');
           expect(grouped?.mode).toBe(FILE_MODE.DIRECTORY);
           expect(root.entries.every((entry) => !entry.name.includes('/'))).toBe(true);
+
+          // The preserved 'README' leaf's nameBytes must survive the
+          // fanout-group recursion (write-notes-tree's buildTree) intact —
+          // dropping it during regrouping would mint an empty-named entry.
+          if (grouped !== undefined) {
+            const subtree = await readObject(ctx, grouped.id);
+            expect(subtree.type).toBe('tree');
+            if (subtree.type === 'tree') {
+              expect(subtree.entries).toHaveLength(1);
+              expect(subtree.entries[0]?.name).toBe('README');
+              expect(subtree.entries[0]?.id).toBe(readmeBlob);
+            }
+          }
+        }
+      }
+    });
+  });
+
+  describe('When writing a trie with a preserved entry whose own raw name contains a "/" byte', () => {
+    it('Then the entry is written verbatim, never split into a nested subtree', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const blob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('preserved verbatim'),
+      });
+      const trie = loadTrieRoot([treeEntry(FILE_MODE.REGULAR, 'a/b', blob)]);
+      const sut = writeNotesTree;
+
+      // Act
+      const notesCommitOid = await sut(ctx, {
+        trie,
+        read: noopRead,
+        prevCommitOid: undefined,
+        message: "Notes added by 'git notes add'",
+        author: IDENTITY,
+      });
+
+      // Assert — one entry named 'a/b' verbatim, not a subtree 'a' containing 'b'
+      const commit = await readObject(ctx, notesCommitOid);
+      expect(commit.type).toBe('commit');
+      if (commit.type === 'commit') {
+        const root = await readObject(ctx, commit.data.tree);
+        expect(root.type).toBe('tree');
+        if (root.type === 'tree') {
+          expect(root.entries).toHaveLength(1);
+          expect(root.entries[0]?.nameBytes).toEqual(new TextEncoder().encode('a/b'));
+          expect(root.entries[0]?.mode).toBe(FILE_MODE.REGULAR);
+        }
+      }
+    });
+  });
+
+  describe('When writing a trie with two preserved entries whose raw bytes are invalid UTF-8 and collide once decoded', () => {
+    it('Then both entries are written distinctly, never collapsed to one', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const blobA = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('blob a'),
+      });
+      const blobB = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('blob b'),
+      });
+      // 0xFE and 0xFF both decode to U+FFFD (the same string) but are distinct bytes.
+      const trie = loadTrieRoot([
+        treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xfe]), blobA),
+        treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xff]), blobB),
+      ]);
+      const sut = writeNotesTree;
+
+      // Act
+      const notesCommitOid = await sut(ctx, {
+        trie,
+        read: noopRead,
+        prevCommitOid: undefined,
+        message: "Notes added by 'git notes add'",
+        author: IDENTITY,
+      });
+
+      // Assert — two distinct entries, not one overwriting the other
+      const commit = await readObject(ctx, notesCommitOid);
+      expect(commit.type).toBe('commit');
+      if (commit.type === 'commit') {
+        const root = await readObject(ctx, commit.data.tree);
+        expect(root.type).toBe('tree');
+        if (root.type === 'tree') {
+          expect(root.entries).toHaveLength(2);
+          const nameBytesSet = root.entries.map((entry) => entry.nameBytes);
+          expect(nameBytesSet).toContainEqual(Uint8Array.of(0xfe));
+          expect(nameBytesSet).toContainEqual(Uint8Array.of(0xff));
         }
       }
     });

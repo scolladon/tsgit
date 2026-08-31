@@ -7,7 +7,7 @@ import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mo
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { Tree, TreeEntry } from '../../../../src/domain/objects/tree.js';
-import { serializeTreeContent } from '../../../../src/domain/objects/tree.js';
+import { serializeTreeContent, treeEntry } from '../../../../src/domain/objects/tree.js';
 
 const ID_A = 'a'.repeat(40) as ObjectId;
 const ID_B = 'b'.repeat(40) as ObjectId;
@@ -27,7 +27,7 @@ function concatBytes(...parts: ReadonlyArray<Uint8Array>): Uint8Array {
 }
 
 function entry(name: string, mode: FileMode, id: ObjectId): TreeEntry {
-  return { name, mode, id };
+  return treeEntry(mode, name, id);
 }
 
 function tree(entries: ReadonlyArray<TreeEntry>): Tree {
@@ -198,6 +198,31 @@ describe('diffRawTrees', () => {
         // Assert
         expect(result.changes).toEqual([
           { type: 'delete', oldPath: 'b', oldId: ID_B, oldMode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a new-side entry named exactly the raw byte-order-mark bytes', () => {
+    describe('When diffRawTrees is called', () => {
+      it('Then the emitted add carries the BOM in newPath, not an empty string', () => {
+        // Arrange — raw byte name, not a source string literal.
+        const newContent = canonicalContent([
+          treeEntry(FILE_MODE.REGULAR, new Uint8Array([0xef, 0xbb, 0xbf]), ID_A),
+        ]);
+        const sut = diffRawTrees;
+
+        // Act
+        const result = sut(undefined, newContent, SHA1_CONFIG);
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'add',
+            newPath: String.fromCharCode(0xfeff),
+            newId: ID_A,
+            newMode: FILE_MODE.REGULAR,
+          },
         ]);
       });
     });

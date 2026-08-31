@@ -20,6 +20,7 @@
 import { hexToBytes } from '../../../src/domain/objects/encoding.ts';
 import type { ObjectId } from '../../../src/domain/objects/index.ts';
 import { serializeObject } from '../../../src/domain/objects/index.ts';
+import { treeEntry } from '../../../src/domain/objects/tree.js';
 import {
   type BasePackEntryType,
   PACK_ENTRY_TYPE,
@@ -97,7 +98,7 @@ async function buildAndPackChain(repo: Repository): Promise<PackedChain> {
   });
   objects.push({ id: blobId, type: PACK_ENTRY_TYPE.BLOB, content: blobContent });
 
-  const treeEntries = [{ name: 'bitmap.txt', mode: '100644' as const, id: blobId }];
+  const treeEntries = [treeEntry('100644' as const, 'bitmap.txt', blobId)];
   const treeId = await repo.primitives.writeObject({
     type: 'tree',
     id: '' as ObjectId,

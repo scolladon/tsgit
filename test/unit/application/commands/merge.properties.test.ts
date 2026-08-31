@@ -7,6 +7,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { treeDepthExceeded } from '../../../../src/domain/objects/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { type FlatPathEntrySpec, flatPathEntrySpecsArb } from '../primitives/arbitraries.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
@@ -65,13 +66,15 @@ const writeNestedTreeOracle = async (
   if (depth > ORACLE_MAX_MERGE_TREE_DEPTH) throw treeDepthExceeded(depth);
   const { files, subdirs } = partitionByPrefixOracle(leaves);
   const subdirEntries = await Promise.all(
-    Array.from(subdirs, async ([prefix, subLeaves]) => ({
-      name: prefix as FilePath,
-      id: await writeNestedTreeOracle(ctx, subLeaves, depth + 1),
-      mode: FILE_MODE.DIRECTORY,
-    })),
+    Array.from(subdirs, async ([prefix, subLeaves]) =>
+      treeEntry(
+        FILE_MODE.DIRECTORY,
+        prefix as FilePath,
+        await writeNestedTreeOracle(ctx, subLeaves, depth + 1),
+      ),
+    ),
   );
-  const fileEntries = files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
+  const fileEntries = files.map((f) => treeEntry(f.mode, f.path, f.id));
   return writeTree(ctx, [...fileEntries, ...subdirEntries]);
 };
 

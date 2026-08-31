@@ -43,6 +43,13 @@ type CherryPickResult =
   a `MERGE_MSG` draft (with a `# Conflicts:` block), stage-1/2/3 index entries,
   and `<<<<<<<` markers. Resolve with `repo.add(paths)` then
   `repo.cherryPick.continue()` (or `repo.commit()` — both keep a single parent).
+- **Conflict path safety.** Before any conflict is materialised, every
+  outcome/conflict path the pick is about to write is checked in one pass
+  against git's own index-entry name rules (absolute path; `.`, `..`, or empty
+  segment; `.git`/`.gitmodules` alias) — a hostile path anywhere in the set
+  refuses the whole write with `INVALID_INDEX_ENTRY`, atomically, before the
+  first byte lands, whether or not it is the path a straightforward per-entry
+  write would reach first.
 - **Empty.** A redundant pick stops as `{ kind: 'empty' }`; `--allow-empty`
   commits it.
 - **Range resume.** A mid-range stop persists `.git/sequencer/{head,todo,
@@ -64,6 +71,10 @@ type CherryPickResult =
 - `NO_INITIAL_COMMIT` — `run` on an unborn branch (no commit yet).
 - `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree
   (git's `require_clean_work_tree`).
+- `INVALID_INDEX_ENTRY` — a conflicting pick's outcome or conflict path fails
+  git's own index-entry name rules. Every path the conflict write is about to
+  touch is checked in one pass before any of them is written, so a hostile
+  path anywhere in the batch refuses the whole write, atomically.
 - `OPERATION_IN_PROGRESS` — another operation (merge / rebase / cherry-pick)
   is already pending.
 - `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with nothing in progress.

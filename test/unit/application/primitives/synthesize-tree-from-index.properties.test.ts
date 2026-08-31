@@ -13,6 +13,7 @@ import type {
   ObjectId,
   TreeEntry,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { type FlatPathEntrySpec, flatPathEntrySpecsArb } from './arbitraries.js';
 import { buildSeededContext } from './fixtures.js';
@@ -60,11 +61,11 @@ const synthesizeLevelOracle = async (
   const { files, subdirs } = groupByPrefixOracle(entries);
   const treeEntries: TreeEntry[] = [];
   for (const file of files) {
-    treeEntries.push({ name: file.path as FilePath, id: file.id, mode: file.mode });
+    treeEntries.push(treeEntry(file.mode, file.path as FilePath, file.id));
   }
   for (const [prefix, subEntries] of subdirs) {
     const subId = await synthesizeLevelOracle(ctx, subEntries);
-    treeEntries.push({ name: prefix as FilePath, id: subId, mode: FILE_MODE.DIRECTORY });
+    treeEntries.push(treeEntry(FILE_MODE.DIRECTORY, prefix as FilePath, subId));
   }
   return writeTree(ctx, treeEntries);
 };

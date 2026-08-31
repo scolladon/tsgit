@@ -383,6 +383,63 @@ describe('file-mode', () => {
       });
     });
 
+    describe('Given a zero-padded spelling of a recognised mode, When matching its bytes', () => {
+      it.each([
+        { label: 'a padded regular mode', mode: '0100644', expected: FILE_MODE.REGULAR },
+        { label: 'a doubly padded regular mode', mode: '00100644', expected: FILE_MODE.REGULAR },
+        { label: 'a padded directory mode', mode: '040000', expected: FILE_MODE.DIRECTORY },
+        { label: 'a doubly padded directory mode', mode: '0040000', expected: FILE_MODE.DIRECTORY },
+        {
+          label: 'a heavily padded directory mode',
+          mode: '000040000',
+          expected: FILE_MODE.DIRECTORY,
+        },
+      ])('Then $label reads as the mode itself, as git reads it', ({ mode, expected }) => {
+        // Arrange
+        const buf = encode(mode);
+        const sut = matchFileModeBytes;
+
+        // Act
+        const result = sut(buf, 0, buf.length);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('Given a zero-padded mode as a string, When normalising it', () => {
+      it('Then it resolves to the unpadded mode', () => {
+        // Arrange
+        const sut = normalizeFileMode;
+
+        // Act
+        const result = sut('0100644');
+
+        // Assert
+        expect(result).toBe(FILE_MODE.REGULAR);
+      });
+    });
+
+    describe('Given an all-zero mode span, When matching its bytes', () => {
+      it('Then it still refuses, keeping one digit rather than emptying the span', () => {
+        // Arrange
+        const buf = encode('0000');
+        const sut = matchFileModeBytes;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut(buf, 0, buf.length);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'INVALID_FILE_MODE', value: '0000' });
+      });
+    });
+
     describe('Given a byte range embedded inside a larger buffer', () => {
       describe('When matching only that slice', () => {
         it('Then matches on the [start, end) window, ignoring surrounding bytes', () => {

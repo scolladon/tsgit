@@ -49,6 +49,8 @@ type MergeResult =
 
 A **fast-forward** and a **clean true-merge** both check the result out: the working tree and index advance to the merged tree, exactly like `git merge` (a true merge additionally creates the merge commit on top). If a path the merge would change has uncommitted working-tree modifications — or an untracked file would be clobbered by an incoming add — `run` refuses with `WORKING_TREE_DIRTY` and leaves HEAD, the index, and the working tree untouched. A **conflicting** true-merge refuses the same way: before any conflict is materialised, every path the merge would change is checked, and `run` refuses with `WORKING_TREE_DIRTY` if writing the conflict would overwrite a tracked-and-modified or untracked path — atomically and pre-write, so HEAD, the index, and the working tree are untouched and no `MERGE_HEAD` is written. The offending paths are split across the error's two arrays: `localChanges` for tracked-dirty paths, `untracked` for untracked clashes.
 
+The same whole-set, pre-write discipline also covers path safety on the conflicting branch: every outcome and conflict path the merge is about to write — every one of them, not only the path a straightforward per-entry write would reach first — is checked against git's own index-entry name rules (an absolute path; a `.`, `..`, or empty segment; a `.git`/`.gitmodules` alias) before any of them is written. A single hostile path anywhere in the batch refuses the whole write with `INVALID_INDEX_ENTRY`, atomically: HEAD, the index and the working tree stay untouched and no `MERGE_HEAD` is written, exactly like the `WORKING_TREE_DIRTY` guard above.
+
 Materialising a path whose leading directory is a symlink now matches git: the symlink is unlinked and a real directory created before the file is written — whether the link resolves inside or outside the repository — and a delete through one is skipped silently, leaving the symlink untouched.
 
 ## Conflict handling
@@ -227,6 +229,7 @@ switch (result.kind) {
 - `UNSUPPORTED_OPERATION` — conflict type not supported in v1 (e.g. rename/rename), or HEAD is detached. Also surfaced by `merge.abort` when HEAD is detached.
 - `NON_FAST_FORWARD` — `fastForward: 'only'` and no fast-forward is possible.
 - `WORKING_TREE_DIRTY` — a fast-forward, clean, or conflicting merge would overwrite uncommitted working-tree changes (or clobber an untracked file); nothing is written. Tracked-dirty paths arrive in `localChanges`, untracked clashes in `untracked`.
+- `INVALID_INDEX_ENTRY` — a conflicting merge's outcome or conflict path fails git's own index-entry name rules (absolute path; `.`, `..`, or empty segment; `.git`/`.gitmodules` alias). Every path the write is about to touch is checked in one pass before any of them is written, so a hostile path anywhere in the batch refuses the whole conflict write, atomically.
 - `REF_NOT_FOUND` — `target` does not resolve.
 - `NO_OPERATION_IN_PROGRESS` — `merge.continue` / `merge.abort` called outside an in-progress merge.
 

@@ -7,6 +7,7 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { encode } from '../../../../../src/domain/objects/encoding.js';
 import { FILE_MODE, hexToBytes, type ObjectId } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import { buildSeededContext } from '../fixtures.js';
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
@@ -44,12 +45,10 @@ describe('prefetchSubtreeChildren', () => {
         const ctx = await buildSeededContext();
         const leafBlobId = await writeBlob(ctx, 'leaf');
         const dirBlobId = await writeBlob(ctx, 'inner');
-        const dirId = await writeTree(ctx, [
-          { name: 'inner.txt', mode: FILE_MODE.REGULAR, id: dirBlobId },
-        ]);
+        const dirId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'inner.txt', dirBlobId)]);
         const rootId = await writeTree(ctx, [
-          { name: 'dir', mode: FILE_MODE.DIRECTORY, id: dirId },
-          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafBlobId },
+          treeEntry(FILE_MODE.DIRECTORY, 'dir', dirId),
+          treeEntry(FILE_MODE.REGULAR, 'leaf.txt', leafBlobId),
         ]);
         const content = await readRawTreeById(ctx, rootId);
         const limiter = createConcurrencyLimiter(4);
@@ -76,8 +75,8 @@ describe('prefetchSubtreeChildren', () => {
         const ctx = await buildSeededContext();
         const sharedId = await writeTree(ctx, []);
         const rootId = await writeTree(ctx, [
-          { name: 'a', mode: FILE_MODE.DIRECTORY, id: sharedId },
-          { name: 'b', mode: FILE_MODE.DIRECTORY, id: sharedId },
+          treeEntry(FILE_MODE.DIRECTORY, 'a', sharedId),
+          treeEntry(FILE_MODE.DIRECTORY, 'b', sharedId),
         ]);
         const content = await readRawTreeById(ctx, rootId);
         const limiter = createConcurrencyLimiter(4);
@@ -102,9 +101,7 @@ describe('prefetchSubtreeChildren', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const childId = await writeTree(ctx, []);
-        const rootId = await writeTree(ctx, [
-          { name: 'a', mode: FILE_MODE.DIRECTORY, id: childId },
-        ]);
+        const rootId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'a', childId)]);
         const content = await readRawTreeById(ctx, rootId);
         const limiter = createConcurrencyLimiter(4);
         const realReadRawObject = readObjectMod.readRawObject;

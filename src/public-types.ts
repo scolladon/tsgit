@@ -110,6 +110,9 @@ export type { AuthorIdentity } from './domain/objects/author-identity.js';
 // the merged type. Sourced from object-id.ts directly (not the domain/objects barrel) to keep
 // this surgical. No conflict with the domain/objects wildcard — both trace to the same declaration.
 export { FilePath, ObjectId, RefName } from './domain/objects/object-id.js';
+// treeEntry: the only way a consumer can construct the branded TreeEntry —
+// export type * from the domain/objects wildcard above drops it like every other value.
+export { treeEntry } from './domain/objects/tree.js';
 // The port-tier {name,email} identity (the OpenRepositoryOptions.config.user shape) is a distinct
 // type from the domain authorship above; expose it under an unambiguous name so config.user is
 // nameable without RepositoryConfig['user'] indexed-access.
