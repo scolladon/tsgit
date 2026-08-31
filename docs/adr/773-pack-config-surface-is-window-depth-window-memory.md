@@ -18,6 +18,14 @@ file, with `parseGitInt`'s own grammar verbatim: `invalid unit` for anything the
 parser rejects including a valueless key, `out of range` past the C `int` bound. `0` and
 `-1` are legal for window and depth alike and mean "no deltas".
 
+`pack.windowMemory` does **not** share the other two keys' bounds. Pinned separately against
+git 2.55.0: it is bounded by `unsigned long`, not the C `int` — `4294967296` and
+`18446744073709551615` are accepted where the same values are `out of range` for
+`pack.depth`, and only `18446744073709551616` is refused. A negative value refuses as
+`invalid unit`, not `out of range`. git prints the key all-lowercase in its message. The
+shared machinery and the two reason strings still apply; only the numeric bound differs, so
+the C-int narrowing the other two keys use must **not** be applied to this one.
+
 `pack.compression` is different: an out-of-range value produces
 `fatal: bad pack compression level <n>`, a distinct message needing its own error arm rather
 than a reuse of the generic numeric refusal.
@@ -35,7 +43,8 @@ three reuse the existing integer-config machinery: `configBadNumericValue` with 
 `invalid unit` / `out of range` reasons, no new error code and no new reason string. All
 three belong to the first-malformed-line-is-fatal family, so the finder scans in file order
 and returns the first failure — not last-write-wins. `pack.depth` above 4095 warns and
-clamps, matching git. `pack.compression` stays out of scope, and its distinct refusal
+clamps, matching git. `pack.windowMemory` carries its own `unsigned long` bound per the
+Context above, and accepts `k`/`m`/`g` suffixes as the other two do. `pack.compression` stays out of scope, and its distinct refusal
 message is recorded here so a future adopter does not reuse the wrong arm.
 
 ## Consequences
