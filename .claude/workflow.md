@@ -3,7 +3,7 @@ backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/code-navigation.md
 gates:
-  part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files>"
+  part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling"
   phase: "npm run validate"
   review-batch: "npm run check:spelling"
 phases:
@@ -56,9 +56,33 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   docs writers, whose natural instrument is Bash over a diff. Evidence and the full split:
   `.claude/workflow/code-navigation.md`.
 
-- **`review-batch: check:spelling`** — the md-scoped commit hook misses words in TS test
-  titles/comments and doc filenames; per-batch spelling beats a failed validate. The
-  cspell dict lags on some British `-ising/-ised` forms — full validate is the authority.
+- **`check:spelling` is in BOTH `gates.part` and `review-batch`** — it was review-batch-only,
+  and an unknown word once rode two commits before anything noticed, because the part gate
+  never ran it. The md-scoped commit hook misses words in TS test titles, comments and doc
+  filenames, so per-part spelling is the cheapest place to catch them. The cspell dictionary
+  lags on some British `-ising/-ised` forms; full validate remains the authority.
+- **Gate results can be stale — `wireit` caches them.** `npm run check:types` and
+  `npm run check:spelling` both return `Ran 0 scripts and skipped 1` when inputs look
+  unchanged, and that reads exactly like a pass. A cached green preceded a red pre-push
+  once, and a commit went out on a cached spelling result. Before trusting either as a
+  gate, `rm -rf .wireit`, or bypass wireit entirely:
+  `npx tsc --noEmit -p tsconfig.json` and `npx cspell --no-progress <files>`.
+- **Never re-sort `cspell.json`.** Its order tiebreaks uppercase-first for case-equal
+  pairs, which `localeCompare` does not reproduce — a re-sort churned 42 unrelated lines.
+  Insert the one new word at its alphabetical position and leave the rest alone. Better
+  still, reword the comment: a term used once rarely earns a dictionary entry.
+- **The harness LSP is rooted at the MAIN checkout, not the worktree.** It produced about
+  thirty confirmed-false errors across one feature branch — symbols it called missing that
+  were three lines away, properties it called absent that were declared in the file it was
+  reading — while `tsc` on the same tree was clean throughout. Never gate on it and never
+  source a review finding from it; `npx tsc --noEmit -p tsconfig.json` is the oracle.
+- **Two search paths are intercepted and both fail misleadingly.** `rtk` installs a shell
+  wrapper named `grep` that returns `Error: claude native binary not installed` instead of
+  matches — it fails *closed*, so an empty result reads as "no matches" and is not. And
+  tokensave's PreToolUse hook blocks symbol-shaped searches on `grep` *and* `rg` (it matches
+  the command text, not the tool), naming replacement tools that do not exist when its MCP
+  server is unregistered — which it is here. Use `command grep`, `rg`, or
+  `TOKENSAVE_DISABLE_GREP_HOOK=1` on the one command. Note `rg` has no `-E` flag.
 
 ## Backlog conventions
 

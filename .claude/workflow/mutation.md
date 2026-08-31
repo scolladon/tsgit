@@ -39,9 +39,12 @@ The engine preamble already probed the config and the engine invariants still bi
   docs/spike/stryker-vitest-empty-run-survivors.md): with `bail` enabled the
   runner occasionally scores a mutant run that executed ZERO of its filtered
   tests as "survived" (hitCount 0) — bail's cancellation destroys the kill
-  evidence. `stryker.config.mjs` now sets `disableBail: true`, which removes
-  the race; phantoms should no longer occur locally. Until a full sweep
-  confirms, any survivor may still be a phantom. Before
+  evidence. `stryker.config.mjs` sets `disableBail: true` to remove that race.
+  **`disableBail` does NOT eliminate phantoms — measured.** One triage of 36
+  in-scope survivors found **6 phantoms**: three static-mutant mis-scores, and
+  three `LogicalOperator` survivors that failed 1 of 42 tests the moment the
+  exact replacement was applied. Treat every survivor as possibly phantom; the
+  hand-verify step below is load-bearing, not a formality. Before
   writing any kill test, hand-verify — with three traps to avoid:
   1. **Apply the mutant's EXACT replacement** from the report (`replacement`
      field), not a paraphrase: a guard line carries several `→ true` mutants
@@ -64,6 +67,17 @@ The engine preamble already probed the config and the engine invariants still bi
 - Kill-test patterns: assert error DATA (code/reason/value) not just the class —
   StringLiteral mutants survive type-only checks; isolated tests per guard condition
   in `if (A || B)`; try/catch + direct `.data` assertions over `toThrow(objectContaining)`.
+- **Expected shape of a triage, measured over 36 in-scope survivors:** 20 real kills,
+  6 phantoms, 10 provable equivalents. If a triage reports far fewer equivalents than
+  that, someone is writing contrived tests against equivalent mutants; far fewer real
+  kills and someone is calling real gaps equivalent. Two of the 20 real kills were not
+  test gaps at all but latent defects the mutant exposed — a `(a ?? b) && c` chain
+  returning the wrong operand, and a guard that let a short non-directory match win over
+  the correct longer one. That is the return on doing this properly.
+- **A `(mutator, line)` pair can hold both an equivalent and a real mutant.** A
+  `disable next-line` binds by that pair, not by replacement value, so suppressing the
+  equivalent would swallow the real one. When that happens, leave it unsuppressed and
+  record the equivalence in the run record and the PR instead.
 - Commit kills as `test(mutation): <module>`; re-run `npm run validate`.
 
 ## CI
