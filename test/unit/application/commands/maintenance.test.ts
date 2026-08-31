@@ -2123,6 +2123,68 @@ describe('maintenance', () => {
     });
   });
 
+  // ---------------------------------------------------------------------
+  // pack.depth / pack.window / pack.windowMemory eager refusal
+  // ---------------------------------------------------------------------
+
+  describe('Given a malformed pack.depth value', () => {
+    describe('When gc runs', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE naming pack.depth', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[pack]\n\tdepth = abc\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect((err.data as { key: string }).key).toBe('pack.depth');
+        expect((err.data as { value: string }).value).toBe('abc');
+        expect((err.data as { reason: string }).reason).toBe('invalid unit');
+      });
+    });
+  });
+
+  describe('Given a malformed pack.window value and an empty repository (no commits at all)', () => {
+    describe('When gc runs', () => {
+      it('Then it still refuses — the eager gate runs before the normal-pack build, which would otherwise skip for having zero oids', async () => {
+        // Arrange — `init` only: no commit, no loose object, so
+        // `buildAndWriteNormalPack` would return early on `oids.length === 0`
+        // and never reach `buildPack` if the assert lived there instead.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await appendConfig(ctx, '\n[pack]\n\twindow = 2147483648\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect((err.data as { key: string }).key).toBe('pack.window');
+        expect((err.data as { reason: string }).reason).toBe('out of range');
+      });
+    });
+  });
+
   describe('Given gc.cruftPacks=false and a fresh unreachable object', () => {
     describe('When gc runs', () => {
       it('Then it stays loose and no cruft pack is written', async () => {

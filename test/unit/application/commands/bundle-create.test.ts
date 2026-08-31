@@ -806,6 +806,33 @@ describe('bundleCreate', () => {
   // triggering it through bundleCreate requires defeating readObject hash
   // verification — the invariant (boundary oids always come from
   // peel-to-commit) makes the branch structurally unreachable in normal use.
+
+  // ── pack.depth / pack.window / pack.windowMemory eager refusal ────────────
+
+  describe('Given a malformed pack.depth value', () => {
+    describe('When bundleCreate is called', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE before building any pack', async () => {
+        // Arrange
+        const { ctx } = await buildTwoCommitRepo();
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[pack]\n\tdepth = abc\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect((err.data as { key: string }).key).toBe('pack.depth');
+        expect((err.data as { reason: string }).reason).toBe('invalid unit');
+      });
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

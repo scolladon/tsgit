@@ -98974,7 +98974,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " instead."
+										"text": " instead. With\ndelta emission on, this is more true than ever: the pack's byte order\nis a function of the object SET ("
+									},
+									{
+										"kind": "code",
+										"text": "`buildPack`"
+									},
+									{
+										"kind": "text",
+										"text": "'s own emission order), not\nof the closure's own traversal order."
 									}
 								]
 							},

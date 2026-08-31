@@ -27,8 +27,6 @@ import { fsck } from '../../src/application/commands/fsck.js';
 import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { parseIndex, serializeIndex } from '../../src/domain/git-index/index.js';
-import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
-import { parsePackEntryHeader } from '../../src/domain/storage/index.js';
 import type { Context } from '../../src/ports/context.js';
 
 import {
@@ -42,12 +40,15 @@ import {
 import {
   corruptIdxSameLength,
   DIGEST_LENGTH,
+  flipEntryBodyByte,
+  pseudoRandomBytes,
   readSolePackPair,
   restampIdxForPack,
   restampPackVersion,
   setHeaderObjectCount,
   sha1,
   trailerOf,
+  verifyPackRows,
   writeIdxOnly,
   writeLooseObject,
   writePack,
@@ -1019,50 +1020,6 @@ async function catchFsckRejection(ctx: Context, opts: FsckOptions): Promise<Tsgi
     throw error;
   }
   throw new Error('expected fsck to reject, but it resolved');
-}
-
-/** One row of `git verify-pack -v` — oid, its exact byte span in the pack (`sizeInPackfile` at `offset`), and whether it is delta-encoded (a trailing depth + base-sha pair appears only for delta entries). */
-interface VerifyPackRow {
-  readonly oid: string;
-  readonly sizeInPackfile: number;
-  readonly offset: number;
-  readonly isDelta: boolean;
-}
-
-function verifyPackRows(dir: string, idxPath: string): ReadonlyArray<VerifyPackRow> {
-  const rows: VerifyPackRow[] = [];
-  for (const line of git(dir, 'verify-pack', '-v', idxPath).split('\n')) {
-    const fields = line.trim().split(/\s+/);
-    const oid = fields[0];
-    if (fields.length < 5 || oid === undefined || !/^[0-9a-f]{40}$/.test(oid)) continue;
-    rows.push({
-      oid,
-      sizeInPackfile: Number(fields[3]),
-      offset: Number(fields[4]),
-      isDelta: fields.length >= 7,
-    });
-  }
-  return rows;
-}
-
-/** Flips one byte inside an entry's compressed body — never its header — located via `parsePackEntryHeader`'s own `dataOffset`, so the corruption can only land past the type/size/base-link bytes the type-recovery walk still needs to read. */
-function flipEntryBodyByte(packBytes: Buffer, entryOffset: number, entryEnd: number): Buffer {
-  const buf = Buffer.from(packBytes);
-  const header = parsePackEntryHeader(buf, entryOffset, SHA1_CONFIG);
-  const mid = header.dataOffset + Math.floor((entryEnd - header.dataOffset) / 2);
-  buf[mid] = (buf[mid] ?? 0) ^ 0xff;
-  return buf;
-}
-
-/** Deterministic pseudo-random bytes (no external entropy) — large enough (~20 KiB) that `git pack-objects` always prefers a delta over storing the second blob whole. */
-function pseudoRandomBytes(length: number, seed: number): Buffer {
-  const buf = Buffer.alloc(length);
-  let state = seed >>> 0;
-  for (let i = 0; i < length; i += 1) {
-    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
-    buf[i] = (state >>> 16) & 0xff;
-  }
-  return buf;
 }
 
 /** Packs a single blob into its own donor-only pack — nothing else to delta against, so the entry is always stored whole (K-34, K-35's shared base). */

@@ -2,23 +2,29 @@
  * Bench: the `maintenance` command's two tasks.
  *
  * `commit-graph` is measured over the medium scaled fixture's commit count
- * (Part 2's driver). `gc` gets three scenarios: a plain write over freshly
+ * (Part 2's driver). `gc` gets four scenarios: a plain write over freshly
  * seeded reachable loose objects (fresh-per-iteration, `write-scratch.ts`'s
  * model — a gc mutates the store, so it cannot loop in place any more than
  * `commit` can); a REPEAT run over unreachable loose objects already folded
  * into a cruft pack (the carry-forward cost a first-run number would hide);
- * and a REPEAT run over the deep-delta-chain fixture — the design's cost
- * ceiling, since `buildPack` is base-only and there is no "already
- * consolidated, skip it" branch (Pin W), so every run re-inflates every
- * delta and re-emits it as a full object.
+ * a REPEAT run over the deep-delta-chain fixture — the design's cost
+ * ceiling now that `buildPack` deltifies, since there is no "already
+ * consolidated, skip it" branch (Pin W), so every run re-walks the window
+ * and re-selects delta bases from scratch; and a REPEAT run over the
+ * medium fixture's barely-deltifiable shape (unrelated blob content per
+ * commit), which bounds the OPPOSITE cost — every candidate the window
+ * offers is a thrown-away encode, since none of them beats its own base
+ * entry, so this scenario prices the search's overhead when it finds
+ * nothing to keep.
  *
- * The two REPEAT scenarios build their fixture, and any pre-existing cruft
- * pack, ONCE and then let `bench()`'s own repeated `sut` calls exercise the
- * steady state — resetting between iterations would measure the reset, not
- * gc. Both scaled scenarios (`commit-graph`, delta-chain) copy the SHARED,
- * cached fixture into a scratch directory first: `gc` retires and rewrites
- * packs in place, and the cache is reused, byte-for-byte, by every other
- * bench file that resolves the same spec.
+ * The three REPEAT scenarios build their fixture, and any pre-existing
+ * cruft pack, ONCE and then let `bench()`'s own repeated `sut` calls
+ * exercise the steady state — resetting between iterations would measure
+ * the reset, not gc. All three scaled scenarios (`commit-graph`,
+ * delta-chain, medium) copy the SHARED, cached fixture into a scratch
+ * directory first: `gc` retires and rewrites packs in place, and the
+ * cache is reused, byte-for-byte, by every other bench file that resolves
+ * the same spec.
  */
 import { cp, mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
@@ -33,6 +39,7 @@ import type { ObjectId } from '../../src/domain/objects/index.js';
 import { benchScenario } from './support/bench-dsl.js';
 import {
   DELTA_CHAIN_FIXTURE,
+  MEDIUM_FIXTURE,
   MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
 } from './support/fixture-generator.js';
 import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
@@ -141,7 +148,8 @@ benchScenario(
 
 // ---------------------------------------------------------------------
 // Scenario 4 — REPEAT gc over the deep-delta-chain fixture; the design's
-// cost ceiling (no skip branch, base-only re-emission every run)
+// cost ceiling now that `buildPack` deltifies (no skip branch, the window
+// re-walks and re-selects delta bases every run)
 // ---------------------------------------------------------------------
 
 const deltaChainCtx = await resolveScaledContext(DELTA_CHAIN_FIXTURE);
@@ -157,9 +165,9 @@ scaledScenario(
     });
 
     // First run: consolidates the fixture's git-deltified pack(s) into
-    // tsgit's own base-only one, and is the one place this budget is
-    // reported — a console line, never a threshold (R33): the ratio moves
-    // 5x with the corpus, so asserting it here would be a flake generator.
+    // tsgit's own deltified one, and is the one place this budget is
+    // reported — a console line, never a threshold: the ratio moves
+    // with the corpus, so asserting it here would be a flake generator.
     const first = await maintenance(ctx, { tasks: ['gc'] });
     if (first.packBytesBefore > 0) {
       const ratio = first.packBytesAfter / first.packBytesBefore;
@@ -167,6 +175,37 @@ scaledScenario(
         `[maintenance.bench] delta-chain size-trade (packBytesAfter / packBytesBefore): ${ratio.toFixed(2)}x`,
       );
     }
+
+    const sut = async (): Promise<void> => {
+      await maintenance(ctx, { tasks: ['gc'] });
+    };
+    return { sut };
+  },
+);
+
+// ---------------------------------------------------------------------
+// Scenario 5 — REPEAT gc over the medium fixture's barely-deltifiable
+// shape; the OPPOSITE cost ceiling to scenario 4 (every window candidate
+// is a thrown-away encode, since none of them beats its own base entry)
+// ---------------------------------------------------------------------
+
+const mediumCtx = await resolveScaledContext(MEDIUM_FIXTURE);
+
+scaledScenario(
+  mediumCtx,
+  "When maintenance({tasks:['gc']}) repeats over an already-consolidated, barely-deltifiable repository, Then measure tsgit's wasted search cost",
+  async (fixture) => {
+    const cwd = await copyToScratch(fixture.cwd, 'medium-barely-deltifiable');
+    const ctx = createNodeContext({ workDir: cwd, hooks: false, command: false, ssh: false });
+    afterAll(async () => {
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    // First run: folds the fixture's unrelated-per-commit blobs into one
+    // pack — every later sut() call then re-runs the window search over
+    // a set where almost nothing wins, pricing the search itself rather
+    // than the encode-and-keep path scenario 4 measures.
+    await maintenance(ctx, { tasks: ['gc'] });
 
     const sut = async (): Promise<void> => {
       await maintenance(ctx, { tasks: ['gc'] });

@@ -4,9 +4,10 @@
  * builds ONE repository with real git, copies it into two independent
  * twins, then runs `git gc` on one and tsgit's `maintenance` on the other.
  *
- * Pack-internal byte layout is NOT compared (tsgit's packer is non-delta;
- * git's is not — both are valid, and the design explicitly excludes pack
- * bytes from the faithfulness surface). What IS compared: which objects
+ * Pack-internal byte layout is NOT compared — tsgit and git each select
+ * their own delta bases independently, so two valid packs over the same
+ * object set are never byte-identical, and the design explicitly excludes
+ * pack bytes from the faithfulness surface. What IS compared: which objects
  * live in which file class, the `.mtimes` sidecar's own bytes, file naming
  * and siblings, refusal conditions, and the expiry arithmetic.
  *
@@ -1303,6 +1304,104 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       const expectedSurvivors = Object.values(TEMP_LITTER_NAMES).slice().sort();
       expect(peerSurvivors).toEqual(expectedSurvivors);
       expect(oursSurvivors).toEqual(expectedSurvivors);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given reachable, promisor and cruft content together, When a full gc runs twice on ours', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('gc-twice-determinism');
+      await addCommit(baseDir, 'reachable-c0');
+      await addCommit(baseDir, 'promisor-c0');
+      git(baseDir, 'repack', '-q', '-d');
+      const packDir = path.join(baseDir, '.git', 'objects', 'pack');
+      const packFile = (await readdir(packDir)).find((name) => name.endsWith('.pack'));
+      if (packFile === undefined) {
+        throw new Error('gc-twice-determinism fixture: repack produced no pack');
+      }
+      await writeFile(path.join(packDir, packFile.replace(/\.pack$/, '.promisor')), '');
+      await addCommit(baseDir, 'reachable-c1');
+      writeLooseBlobGit(baseDir, 'cruft-content');
+      git(baseDir, 'config', 'gc.pruneExpire', 'never');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then it reproduces the same normal, promisor and cruft pack checksums — the identity keys the no-op boundary depends on', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'gc-twice-determinism');
+      const { ctx, result: first } = await runOursGc(twin.oursDir);
+      expect(first.packId).toBeDefined();
+      expect(first.promisorPackId).toBeDefined();
+      expect(first.cruftPackId).toBeDefined();
+      const dir = packsDir(commonGitDir(ctx));
+      const bytesBefore = {
+        normal: await readFile(`${dir}/pack-${first.packId}.pack`),
+        promisor: await readFile(`${dir}/pack-${first.promisorPackId}.pack`),
+        cruft: await readFile(`${dir}/pack-${first.cruftPackId}.pack`),
+      };
+
+      // Act — a second, independent gc run against the SAME unchanged tree.
+      const second = await maintenance(ctx, { tasks: ['gc'] });
+
+      // Assert — same checksums (`existingNormalNames`/`reusedExistingName`/
+      // `existingCruftShas`, gc's own identity keys) AND byte-identical
+      // content under each, not merely a name coincidence.
+      expect(second.packId).toBe(first.packId);
+      expect(second.promisorPackId).toBe(first.promisorPackId);
+      expect(second.cruftPackId).toBe(first.cruftPackId);
+      const bytesAfter = {
+        normal: await readFile(`${dir}/pack-${second.packId}.pack`),
+        promisor: await readFile(`${dir}/pack-${second.promisorPackId}.pack`),
+        cruft: await readFile(`${dir}/pack-${second.cruftPackId}.pack`),
+      };
+      expect(Buffer.compare(bytesBefore.normal, bytesAfter.normal)).toBe(0);
+      expect(Buffer.compare(bytesBefore.promisor, bytesAfter.promisor)).toBe(0);
+      expect(Buffer.compare(bytesBefore.cruft, bytesAfter.cruft)).toBe(0);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given a repo already delta-compressed by real git, When tsgit gc consolidates it', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('size-trade-inverted');
+      let content = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n');
+      await writeFile(path.join(baseDir, 'churn.txt'), `${content}\n`);
+      git(baseDir, 'add', '-A');
+      git(baseDir, 'commit', '-q', '-m', 'seed');
+      for (let i = 0; i < 79; i += 1) {
+        content = `${content}\nappended ${i}`;
+        await writeFile(path.join(baseDir, 'churn.txt'), `${content}\n`);
+        git(baseDir, 'add', '-A');
+        git(baseDir, 'commit', '-q', '-m', `edit ${i}`);
+      }
+      git(baseDir, '-c', 'pack.threads=1', 'repack', '-q', '-a', '-d');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then packBytesAfter lands within the recorded class of packBytesBefore, never a multiple above it (the inflation this change retires)', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'size-trade-inverted');
+
+      // Act
+      const { result } = await runOursGc(twin.oursDir);
+
+      // Assert — a class with generous headroom, never an equality (git's
+      // own packer is not deterministic under default threading) and never
+      // the multiples-above relationship the pre-change base-only writer
+      // measured here.
+      expect(result.packBytesBefore).toBeGreaterThan(0);
+      expect(result.packBytesAfter).toBeGreaterThan(0);
+      expect(result.packBytesAfter).toBeLessThan(result.packBytesBefore * 2);
       await disposeTwin(twin);
     });
   });

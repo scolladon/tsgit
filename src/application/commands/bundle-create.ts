@@ -9,6 +9,7 @@ import { foldSubject } from '../../domain/objects/commit-message.js';
 import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
+import { assertValidPackIntConfig } from '../primitives/config-read.js';
 import { enumerateBundleObjects } from '../primitives/enumerate-bundle-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
@@ -291,6 +292,7 @@ export const bundleCreate = async (
   opts: BundleCreateOptions,
 ): Promise<BundleCreateResult> => {
   await assertOperationalRepository(ctx);
+  await assertValidPackIntConfig(ctx);
   const version = selectBundleVersion({
     algorithm: ctx.hashConfig.algorithm,
     filter: false,
@@ -307,7 +309,7 @@ export const bundleCreate = async (
   const closure = await enumerateBundleObjects(ctx, { wants: acc.wants, haves: acc.haves });
   if (closure.objects.length === 0) throw bundleEmpty('no-objects');
   const prerequisites = await makePrerequisites(ctx, closure.boundary);
-  const pack = await buildPack(ctx, { oids: closure.objects });
+  const pack = await buildPack(ctx, { oids: closure.objects, delta: true });
   const header = serializeBundleHeader({
     version,
     hashAlgorithm: ctx.hashConfig.algorithm,
