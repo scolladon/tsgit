@@ -43,6 +43,7 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
+import { validateMergeWritePaths } from '../primitives/internal/validate-merge-write-paths.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import {
   removeWorkingTreeFile,
@@ -570,7 +571,7 @@ const persistConflictState = async (
   // the batch refuses before the FIRST byte is written, not partway through
   // the concurrent write wave — mirrors `validateChangesetPaths`
   // (apply-changeset.ts) and `restoreUntracked`'s pre-pass (stash.ts).
-  validateConflictWorktreePaths(result.outcomes, result.conflicts, changed);
+  validateMergeWritePaths(result.outcomes, result.conflicts, changed);
 
   // loadSparseMatcher is a pure config/pattern-file read — no lock needed. A
   // defined matcher keeps excluded blob-backed paths out of the working tree
@@ -621,38 +622,6 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
 /** True iff a sparse matcher is active AND rejects the path. */
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
-
-/**
- * Whole-set path gate for the conflicting merge's working-tree write.
- * Mirrors `writeConflictingWorkingTree`'s own `touched`/`conflicts`
- * selection, so every path that write is about to touch is validated here,
- * in one pass, before any of them are.
- *
- * `resolved-deleted` carries no mode of its own (a delete writes nothing),
- * so `REGULAR` stands in: the only mode-sensitive rule `validateIndexPath`
- * can apply — the `.gitmodules`-symlink rejection — is a write-time concern
- * that does not apply to a removal. A conflict with no derivable mode is
- * still validated for the same reason: `conflictsToIndexEntries` writes an
- * index entry for it regardless of whether any working-tree bytes follow.
- */
-const validateConflictWorktreePaths = (
-  outcomes: ReadonlyArray<MergeOutcome>,
-  conflicts: ReadonlyArray<MergeConflict>,
-  changed: ReadonlySet<FilePath>,
-): void => {
-  for (const outcome of outcomes) {
-    if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    validateIndexPath(
-      outcome.path,
-      NO_PARSER_OFFSET,
-      outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
-    );
-  }
-  for (const conflict of conflicts) {
-    const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-    validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
-  }
-};
 
 const writeConflictingWorkingTree = async (
   ctx: Context,

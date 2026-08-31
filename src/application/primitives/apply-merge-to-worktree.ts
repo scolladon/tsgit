@@ -16,6 +16,7 @@
  *                tree (git's "local changes would be overwritten" guard);
  *                nothing is written.
  */
+
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
@@ -38,6 +39,7 @@ import {
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
+import { validateMergeWritePaths } from './internal/validate-merge-write-paths.js';
 import { writeDistinctTypesSides } from './internal/write-distinct-types-sides.js';
 import {
   removeWorkingTreeFile,
@@ -225,39 +227,6 @@ const writeValidatedConflict = async (
 };
 
 /**
- * Whole-set path gate for the conflicting merge's working-tree write.
- * Mirrors `writeConflictWorktree`'s own `outcomes`/`conflicts` selection, so
- * every path that write is about to touch is validated here, in one pass,
- * before any of them are — hoisted above the write wave so a hostile name
- * anywhere in the batch refuses before the first byte is written.
- *
- * `resolved-deleted` carries no mode of its own (a delete writes nothing),
- * so `REGULAR` stands in: the only mode-sensitive rule `validateIndexPath`
- * can apply — the `.gitmodules`-symlink rejection — is a write-time concern
- * that does not apply to a removal. A conflict with no derivable mode is
- * still validated for the same reason: `conflictsToIndexEntries` writes an
- * index entry for it regardless of whether any working-tree bytes follow.
- */
-const validateConflictWorktreePaths = (
-  outcomes: ReadonlyArray<MergeOutcome>,
-  conflicts: ReadonlyArray<MergeConflict>,
-  changed: ReadonlySet<FilePath>,
-): void => {
-  for (const outcome of outcomes) {
-    if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    validateIndexPath(
-      outcome.path,
-      NO_PARSER_OFFSET,
-      outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
-    );
-  }
-  for (const conflict of conflicts) {
-    const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-    validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
-  }
-};
-
-/**
  * Write the changed clean outcomes + conflict markers to the working tree.
  * One scanner for the whole call: its per-directory memo serves every write
  * below (clean outcomes and conflict markers alike), so a deep tree with
@@ -357,7 +326,7 @@ export const applyMergeToWorktree = async (
   // Whole-set path gate, hoisted above the write wave: a hostile name
   // anywhere in the batch refuses before the FIRST byte is written, not
   // partway through it.
-  validateConflictWorktreePaths(merged.outcomes, merged.conflicts, changed);
+  validateMergeWritePaths(merged.outcomes, merged.conflicts, changed);
   await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
   return {
     kind: 'conflict',
