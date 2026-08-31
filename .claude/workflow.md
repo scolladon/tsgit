@@ -39,7 +39,13 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   7.x is the native ("tsgo") compiler — an API-breaking major whose main export is a version
   stub and whose programmatic API moved under `./unstable/*`, so `@rollup/plugin-typescript`
   and `rollup-plugin-dts` cannot load it (the `tsc` CLI still works). Unpin once the rollup
-  toolchain supports TS 7. `knip` is also skipped; the reason was never recorded.
+  toolchain supports TS 7. `knip` is also skipped; the reason was never recorded. **`jscpd` is pinned to
+  5.0.16**: release 5.1.0 declares all seven of its optional platform packages at version
+  `5.0.16`, but `jscpd-windows-arm64-msvc` was only ever published at `5.1.0` — so
+  `npm install` silently skips an unresolvable optional dep while `npm ci` computes it as
+  required and fails with `Missing: jscpd-windows-arm64-msvc@ from lock file`. A local
+  `npm run validate` cannot catch this, because local `node_modules` is already correct;
+  only `npm ci` sees it. Unpin when a release ships coherent optional-dependency versions.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,
