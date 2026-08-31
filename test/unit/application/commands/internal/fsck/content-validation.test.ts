@@ -284,3 +284,23 @@ describe('Given a tree entry whose decoded name field reads ".gitmodules" but wh
     });
   });
 });
+
+describe('Given a tree entry whose nameBytes are ".gitattributes" but whose decoded name field disagrees', () => {
+  describe('When buildBlobFilenameMap runs', () => {
+    it('Then the blob is mapped under ".gitattributes" — the decision reads nameBytes, not name', () => {
+      // Arrange — same byte-sensitivity as the .gitmodules case above, for
+      // fsck's OTHER dedicated blob-content check (specialBlobName's second branch).
+      const blobId = '0000000000000000000000000000000000000007' as ObjectId;
+      const treeId = '0000000000000000000000000000000000000008' as ObjectId;
+      const real = treeEntry(FILE_MODE.REGULAR, '.gitattributes', blobId);
+      const spoofed = { ...real, name: 'config.txt' } as TreeEntry;
+      const cache = new Map([[treeId, { type: 'tree' as const, entries: [spoofed] }]]);
+
+      // Act
+      const result = buildBlobFilenameMap(new Set([treeId]), cache);
+
+      // Assert
+      expect(result.get(blobId)).toBe('.gitattributes');
+    });
+  });
+});

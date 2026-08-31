@@ -186,6 +186,7 @@ const matchLevel = (
 ): LevelMatch | undefined => {
   const hit = scan(encode(segments[i] as string));
   if (hit !== undefined) return { entry: hit, consumed: 1 };
+  // Stryker disable next-line ArithmeticOperator: equivalent — inflating `remaining` only adds loop iterations past the true remaining count; `segments.slice(i, i + take)` clamps its end to segments.length for every such `take`, so `scan` re-queries the SAME byte span already tried at take===trueRemaining and returns the identical candidate. The deferred `take === remaining` accept therefore returns that same full-span entry, and since it spans the whole true remaining path, `index` lands at/after segments.length either way — the outer descent loop exits right after in both branches, so the inflated `consumed` value never reaches another iteration — confirmed empirically.
   const remaining = segments.length - i;
   for (let take = 2; take <= remaining; take += 1) {
     const candidate = scan(encode(segments.slice(i, i + take).join('/')));

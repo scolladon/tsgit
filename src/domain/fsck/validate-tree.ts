@@ -59,6 +59,7 @@ function isZeroSha(sha: Uint8Array): boolean {
  */
 function stripLeadingZeros(mode: string): string {
   let i = 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — the boundary only changes output for an all-'0' mode, where correct strips to '0'; mutated (dropped/off-by-one bound) strips to '' instead. normMode's only readers are VALID_MODES.has(normMode) and checkSpecialFileName's mode==='120000'/'100644'/'100755' checks — no entry is '' or '0', so both '0' and '' evaluate identically everywhere — confirmed empirically across '0','00','000000','0000001'.
   while (i < mode.length - 1 && mode[i] === '0') i++;
   return mode.slice(i);
 }

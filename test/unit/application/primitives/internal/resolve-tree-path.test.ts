@@ -772,6 +772,29 @@ describe('findTreeEntry', () => {
     });
   });
 
+  describe('Given a tree with both a shorter literal a/b BLOB entry and the full-span a/b/c entry', () => {
+    describe('When findTreeEntry searches for a/b/c', () => {
+      it('Then the full-span boundary wins — a shorter non-directory join is not accepted early', async () => {
+        // Arrange — take=2 ('a/b') matches first and is neither a directory
+        // nor the whole remaining span, so it must be skipped in favour of
+        // take=3 ('a/b/c'), which spans the whole remaining path.
+        const ctx = await buildSeededContext();
+        const shortLeafId = await writeObject(ctx, blobOf(1));
+        const fullLeafId = await writeObject(ctx, blobOf(2));
+        const rootId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a/b', shortLeafId),
+          treeEntry(FILE_MODE.REGULAR, 'a/b/c', fullLeafId),
+        ]);
+
+        // Act
+        const result = await findTreeEntry(ctx, rootId, 'a/b/c');
+
+        // Assert
+        expect(result?.id).toBe(fullLeafId);
+      });
+    });
+  });
+
   describe('Given a tree containing entries literally named . and ..', () => {
     describe('When findTreeEntry searches for each at the top level', () => {
       it.each([
