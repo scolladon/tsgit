@@ -3,7 +3,7 @@
 > Brief: teach the pack writer to emit `OFS_DELTA` entries — a delta encoder, a window/depth
 > selection policy, and a `pack.window`/`pack.depth` config surface — and use it from
 > `maintenance`'s gc/consolidation path, retiring ADR-732's accepted size-inflation trade.
-> Status: draft → **self-reviewed ×3** → awaiting the ADR conversation
+> Status: draft → self-reviewed ×3 → **accepted** (decisions ratified, ADRs 767–778)
 
 ## Context
 
@@ -116,6 +116,67 @@ different arithmetics:
 This is latent today because tsgit never *writes* a delta. A writer honouring
 `pack.depth = 50` would activate it: the object is readable, but `fsck` reports it untyped.
 The design must not emit a chain that its own fsck refuses (§9).
+
+---
+
+## Ratified decisions — authoritative
+
+Every decision candidate below was put to the user and settled. **This section overrides any
+contrary recommendation later in this document**, including the Decision-candidates table,
+which is kept only as the record of what was weighed. Where a ratified outcome differs from
+the recommendation, the affected section is annotated inline.
+
+| # | Ratified outcome | ADR | Diverges from the recommendation? |
+|---|---|---|---|
+| DC-1 | Delta emission is a per-call option, default off. gc (×3), `pack-objects` and `bundle-create` opt in; `push` stays base-only. | 767 | **Yes** — recommendation was gc only |
+| DC-2 | Split: pure domain codec + comparator; primitive-internal `deltify.ts` owns the lazy window. | 768 | No |
+| DC-3 | `buildPack` returns `{ id, crc32, offset }` triples **in emission order**; the positional-alignment contract is deleted and all five call sites key on `id`. | 769 | **Yes** — recommendation was permute-back |
+| DC-4 | Two `Int32Array`s (`heads` + `next`) over fixed 16-byte blocks. No hash-keyed container anywhere in the selection path. | 770 | No |
+| DC-5 | Fix the defect: `walkDeltaChain` becomes `depth <= MAX_DELTA_CHAIN_DEPTH`; the writer clamps to the configured `pack.depth` (50) with no adjustment. | 771 | **Yes** — recommendation was clamp-to-49 |
+| DC-6 | `pack.windowMemory` bounds total window residency. **No** `MAX_DELTIFY_BYTES` constant. | 772 | **Yes** — recommendation was the constant |
+| DC-7 | Surface is `pack.window` + `pack.depth` + `pack.windowMemory`. `pack.compression` stays out. | 773 | **Yes** — recommendation was window+depth only |
+| DC-8 | `OFS_DELTA` only; `REF_DELTA` never emitted. Follows from DC-1 excluding `push`. | 774 | No |
+| DC-9 | Two equality tests. No lint guard, no golden fixture. | 775 | No |
+| DC-10 | `PackWriterEntry` **becomes** the discriminated union — breaking, folded into the already-pending major. | 776 | **Yes** — recommendation was additive |
+| DC-11 | Exact acceptance: deflate both, emit the delta only when strictly smaller including header overhead. Ties go to the base. | 777 | No |
+| DC-12 | New `readObjectMetadata` primitive. | 778 | No |
+
+### Corrections to this document
+
+1. **DC-6/DC-7's determinism objection to `pack.windowMemory` is false, and is retracted.**
+   The table below claims a window bounded by memory "would make the pack sha depend on the
+   host". It would not. `git-pack-objects(1)` documents `--window-memory=<n>` as scaling the
+   window down against **a configured byte budget**, not against host pressure. Measured on
+   git 2.55.0, one fixture, `pack.threads=1`, two independent runs per setting:
+
+   | `pack.windowMemory` | run 1 | run 2 |
+   |---|---|---|
+   | `0` (unlimited) | 20 087 B | 20 087 B |
+   | `8k` | 82 902 B | 82 902 B |
+   | `64k` | 89 458 B | 89 458 B |
+
+   Byte-identical every time; the key is deterministic for a fixed object set and
+   configuration. It has a large effect on output — starving the window costs roughly ×4 here
+   — which makes it worth exposing, not dangerous.
+
+2. **§5's ordering section** is superseded by DC-3: metas are identified triples in emission
+   order, not permuted back. R11's positional-alignment requirement is withdrawn.
+
+3. **§7's residency formula** drops `MAX_DELTIFY_BYTES` (DC-6) and is bounded by
+   `pack.windowMemory` instead: candidates evict oldest-first until the budget is met, and a
+   candidate larger than the whole budget is skipped rather than admitted alone.
+
+4. **§8's config surface** gains `pack.windowMemory` (DC-7) on the same first-malformed-line-
+   is-fatal finder as the other two.
+
+5. **§9's writer clamp** is 50, not 49, and `walkDeltaChain` is fixed in this change (DC-5).
+   The widened fsck acceptance is pinned by interop, not asserted.
+
+6. **§10's caller list** gains `pack-objects` and `bundle-create` (DC-1).
+
+7. **§3's writer surface** re-shapes `PackWriterEntry` itself rather than adding a sibling
+   (DC-10); the change is breaking and lands before the pending 4.0.0 release, so it costs no
+   additional major bump.
 
 ---
 
@@ -1096,8 +1157,9 @@ Nothing here writes a new on-disk format, so 30.5 inherits no new file to parse.
 
 ## Decision candidates
 
-Eleven load-bearing choices this design does **not** settle. Nothing below is pre-decided by an
-existing ADR; each is the user's call in the ADR phase.
+Twelve load-bearing choices. **All twelve are now settled — see §Ratified decisions, which
+overrides this table.** It is retained as the record of what was weighed, not as guidance.
+The DC-6 determinism claim about `pack.windowMemory` is measured false and retracted there.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
