@@ -320,8 +320,10 @@ interface Phase1Result {
 }
 
 /** Extracted so both the per-level walk and a cache-hit resumption share one
- *  throw site rather than duplicating the branch inline. */
-function assertChainDepthWithinCap(depth: number): void {
+ *  throw site rather than duplicating the branch inline. Also reused by
+ *  `readObjectMetadata`'s header-only base-type walk (read-object.ts), so a
+ *  third delta-chain walker cannot drift from the cap the other two enforce. */
+export function assertChainDepthWithinCap(depth: number): void {
   if (depth > MAX_DELTA_CHAIN_DEPTH) {
     throw deltaChainTooDeep(depth);
   }
@@ -434,8 +436,14 @@ async function collectDeltaChain(
 }
 
 /** An OFS_DELTA's base offset is a distance BACK from the entry's own offset
- *  — never forward, and never off the front of the pack. */
-function ofsDeltaBaseOffset(targetId: ObjectId, entryOffset: number, baseDistance: number): number {
+ *  — never forward, and never off the front of the pack. Exported so
+ *  `readObjectMetadata`'s header-only base-type walk (read-object.ts) reuses
+ *  the same arithmetic rather than re-deriving it. */
+export function ofsDeltaBaseOffset(
+  targetId: ObjectId,
+  entryOffset: number,
+  baseDistance: number,
+): number {
   const baseOffset = entryOffset - baseDistance;
   if (baseOffset < 0) {
     throw objectNotFound(targetId);
