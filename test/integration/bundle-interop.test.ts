@@ -42,6 +42,7 @@ import { verifyPackTrailer, walkPackEntries } from '../../src/application/primit
 import { parseBundleHeader } from '../../src/domain/bundle/index.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { RefName } from '../../src/domain/objects/object-id.js';
+import { PACK_ENTRY_TYPE } from '../../src/domain/storage/pack-entry.js';
 import {
   GIT_AVAILABLE,
   makePeerPair,
@@ -86,6 +87,33 @@ const packOids = async (ctx: Ctx, bundleBytes: Uint8Array): Promise<Set<string>>
   const entries = await walkPackEntries(ctx, pack);
   return new Set(entries.map((e) => e.id));
 };
+
+/** Counts pack entry type nibbles at a set of entry offsets — mirrors the
+ *  same-named helper in delta-pack-interop.test.ts. `git verify-pack -v`
+ *  cannot distinguish OFS from REF, so this reads the type nibble directly. */
+const typeNibbleCounts = (
+  packBytes: Uint8Array,
+  offsets: ReadonlyArray<number>,
+): { readonly ofs: number; readonly base: number } => {
+  let ofs = 0;
+  let base = 0;
+  for (const offset of offsets) {
+    const type = ((packBytes[offset] ?? 0) >> 4) & 7;
+    if (type === PACK_ENTRY_TYPE.OFS_DELTA) ofs += 1;
+    else base += 1;
+  }
+  return { ofs, base };
+};
+
+/** A pure function of (seed, index) so two calls with the same seed always
+ *  agree on their common prefix regardless of requested length. */
+const pseudoRandomByte = (seed: number, index: number): number => {
+  const h = Math.imul(seed ^ index, 0x9e3779b1) ^ (index << 13);
+  return (Math.imul(h, 0x85ebca6b) >>> 24) & 0xff;
+};
+
+const pseudoRandomBytes = (seed: number, length: number): Uint8Array =>
+  Uint8Array.from({ length }, (_unused, i) => pseudoRandomByte(seed, i));
 
 /** Run `git bundle create <bundleFile> <args>` and return the raw bundle bytes. */
 const gitBundleCreate = (
@@ -1290,4 +1318,53 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       });
     },
   );
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Pin 12: bundleCreate's own delta:true opt-in is observed, not silently dropped
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe('Given a two-commit history where a tracked blob is edited by one trailing byte', () => {
+    describe('When bundleCreate builds the embedded pack over the full closure', () => {
+      it('Then the pack contains at least one OFS_DELTA entry', async () => {
+        // Arrange — own throwaway repo so this never perturbs the shared
+        // fixture's commit graph (many other Pins assert exact SHAs against
+        // it). Both blob versions land in the closure under `all: true`, and
+        // the shared 300-byte high-entropy prefix is well past DELTA_BLOCK_BYTES
+        // (16), so deltify's window finds a match.
+        const deltaPair = await makePeerPair('bundle-delta');
+        try {
+          const dir = deltaPair.peer;
+          const env = runGitEnv();
+          const commitEnv = buildCommitEnv();
+          runGit(['-C', dir, 'init', '-q', '-b', 'main'], { env });
+          runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env });
+          runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env });
+          runGit(['-C', dir, 'config', 'commit.gpgsign', 'false'], { env });
+          const shared = pseudoRandomBytes(201, 300);
+          writeFileSync(path.join(dir, 'blob.bin'), Buffer.from(shared));
+          runGit(['-C', dir, 'add', '-A'], { env });
+          runGit(['-C', dir, 'commit', '-m', 'v1'], { env: commitEnv });
+          writeFileSync(path.join(dir, 'blob.bin'), Buffer.from([...shared, 0x01]));
+          runGit(['-C', dir, 'add', '-A'], { env });
+          runGit(['-C', dir, 'commit', '-m', 'v2'], { env: commitEnv });
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const result = await bundleCreate(ctx, { all: true });
+
+          // Assert
+          const hdr = parseBundleHeader(result.bytes, '<test>');
+          const packBytes = result.bytes.subarray(hdr.packOffset);
+          const entries = await walkPackEntries(ctx, packBytes);
+          const counts = typeNibbleCounts(
+            packBytes,
+            entries.map((e) => e.offset),
+          );
+          expect(counts.ofs).toBeGreaterThan(0);
+        } finally {
+          await deltaPair.dispose();
+        }
+      });
+    });
+  });
 });

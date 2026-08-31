@@ -172,11 +172,17 @@ describe('pack-writer', () => {
           const offset0 = result.entries[0]!.offset;
           const offset1 = result.entries[1]!.offset;
           const header = parsePackEntryHeader(result.data, offset1, SHA1_CONFIG);
+          const distance = offset1 - offset0;
+          const typeSizeBytes = encodePackEntryHeader(
+            PACK_ENTRY_TYPE.OFS_DELTA,
+            deltaEntry.uncompressedSize,
+          );
+          const distanceBytes = encodeOfsDistance(distance);
           expect(header).toEqual({
             type: PACK_ENTRY_TYPE.OFS_DELTA,
             size: deltaEntry.uncompressedSize,
-            dataOffset: header.dataOffset,
-            baseDistance: offset1 - offset0,
+            dataOffset: offset1 + typeSizeBytes.length + distanceBytes.length,
+            baseDistance: distance,
           });
         });
 

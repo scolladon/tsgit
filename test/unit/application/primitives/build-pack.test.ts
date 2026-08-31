@@ -407,6 +407,28 @@ describe('buildPack', () => {
     });
   });
 
+  describe('Given delta:true and same-type blobs tied on uncompressedSize but distinct in content', () => {
+    describe('When buildPack runs over two permutations of the same oid set', () => {
+      it('Then the pack body bytes are identical, decided by the id tiebreak', async () => {
+        // Arrange — same type and same byte length, so comparePackEmissionOrder
+        // reaches its `id` clause; Array.prototype.sort is stable, so absent
+        // that clause the two differently-ordered inputs would each retain
+        // their own input order instead of converging on one canonical order.
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(111, 64));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(112, 64));
+        const idC = await writeBlob(ctx, pseudoRandomBytes(113, 64));
+
+        // Act
+        const forward = await buildPack(ctx, { oids: [idA, idB, idC], delta: true });
+        const reversed = await buildPack(ctx, { oids: [idC, idB, idA], delta: true });
+
+        // Assert
+        expect(reversed.bytes).toEqual(forward.bytes);
+      });
+    });
+  });
+
   describe('Given pack.window=0 in the repo config', () => {
     describe('When buildPack runs with delta:true', () => {
       it('Then bytes are identical to buildPack without delta', async () => {
@@ -478,6 +500,11 @@ describe('buildPack', () => {
         for (let i = 0; i < headers.length; i += 1) {
           expect(chainDepthAt(i)).toBeLessThanOrEqual(3);
         }
+        // At least one delta chain actually reaches the cap, proving the
+        // corpus was chain-forcing rather than trivially shallow — an
+        // all-base pack (delta selection entirely broken) would otherwise
+        // still pass the <= 3 bound above.
+        expect(Math.max(...headers.map((_h, i) => chainDepthAt(i)))).toBe(3);
       });
     });
   });

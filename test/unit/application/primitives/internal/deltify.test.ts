@@ -162,6 +162,53 @@ describe('deltifyEntries', () => {
     });
   });
 
+  describe('Given a candidate that wins the raw search bound but ties the base on deflated size', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then it is emitted as a base entry, not a delta, and a later object still deltas against it starting a fresh chain', async () => {
+        // Arrange — idBase and idLoser share an 1800-byte repeat run: the
+        // COPY-encoded delta (raw ~278B) comfortably beats the 1000B search
+        // bound, but the shared run compresses just as well standalone as it
+        // does via COPY reference, so the deflated delta (233B) ties the
+        // deflated content (233B) exactly — only the OFS_DELTA back-pointer
+        // overhead separates them, and that alone tips acceptsDeltaEntry to
+        // reject. idFollower is an exact 1999-byte prefix of idLoser's own
+        // content, so it deltas cleanly against idLoser once idLoser is a
+        // window member. maxDepth: 1 makes the reset load-bearing: idBase's
+        // own chainDepth is 0, so a rejected idLoser candidate inherits a
+        // candidate.chainDepth of 0 too — a fallback that forgot to reset
+        // (kept candidate.chainDepth instead of a literal 0) would coincide
+        // here, but a fallback that instead reused the accept-path's
+        // `candidate.chainDepth + 1` (1) would push idLoser's chainDepth to
+        // the cap, making tryCandidate refuse idFollower outright.
+        const ctx = await buildSeededContext();
+        const sharedRun = new Uint8Array(1800).fill(0x41);
+        const entropyTail = pseudoRandomBytes(42, 200);
+        const baseContent = Uint8Array.from([...sharedRun, ...new Uint8Array(201).fill(0x42)]);
+        const loserContent = Uint8Array.from([...sharedRun, ...entropyTail]);
+        const followerContent = Uint8Array.from([...sharedRun, ...entropyTail.slice(0, 199)]);
+        const idBase = await writeBlob(ctx, baseContent);
+        const idLoser = await writeBlob(ctx, loserContent);
+        const idFollower = await writeBlob(ctx, followerContent);
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 1,
+          maxDepth: 1,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(ctx, [idBase, idLoser, idFollower], policy);
+
+        // Assert
+        expect(findEntry(result, idLoser).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(findEntry(result, idFollower).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        const followerIndex = result.findIndex((r) => r.id === idFollower);
+        expect(chainDepthOf(result, followerIndex)).toBe(1);
+      });
+    });
+  });
+
   describe('Given an object larger than the whole windowMemory budget', () => {
     describe('When deltifyEntries runs', () => {
       it('Then it is never admitted to the window and never becomes a base', async () => {

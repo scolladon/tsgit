@@ -28,8 +28,12 @@ import { commonGitDir, packsDir } from '../../src/application/primitives/path-la
 import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
-import { parseCruftMtimes, parsePackIndex } from '../../src/domain/storage/index.js';
-import { allObjectIds } from '../../src/domain/storage/pack-index.js';
+import {
+  PACK_ENTRY_TYPE,
+  parseCruftMtimes,
+  parsePackIndex,
+} from '../../src/domain/storage/index.js';
+import { allObjectIds, entryOffsets } from '../../src/domain/storage/pack-index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import {
@@ -249,6 +253,43 @@ async function readOursPackOids(ctx: Context, packId: ObjectId): Promise<Readonl
   const idxBytes = await readFile(`${dir}/pack-${packId}.idx`);
   const index = parsePackIndex(new Uint8Array(idxBytes), ctx.hashConfig.digestLength);
   return new Set(allObjectIds(index));
+}
+
+/** Counts pack entry type nibbles across a tsgit-written pack's own entries
+ *  (offsets read off its `.idx`) — proves `delta: true` was actually
+ *  observed at this opt-in site rather than silently dropped. Reading the
+ *  type nibble directly sidesteps `git verify-pack -v`, which cannot
+ *  distinguish OFS from REF. */
+async function readOursPackTypeCounts(
+  ctx: Context,
+  packId: ObjectId,
+): Promise<{ readonly ofs: number; readonly base: number }> {
+  const dir = packsDir(commonGitDir(ctx));
+  const idxBytes = await readFile(`${dir}/pack-${packId}.idx`);
+  const index = parsePackIndex(new Uint8Array(idxBytes), ctx.hashConfig.digestLength);
+  const packBytes = await readFile(`${dir}/pack-${packId}.pack`);
+  let ofs = 0;
+  let base = 0;
+  for (const offset of entryOffsets(index)) {
+    const type = ((packBytes[offset] ?? 0) >> 4) & 7;
+    if (type === PACK_ENTRY_TYPE.OFS_DELTA) ofs += 1;
+    else base += 1;
+  }
+  return { ofs, base };
+}
+
+/** A pure function of (seed, index) so two calls with the same seed always
+ *  agree on their common prefix — printable ASCII only, safe as a
+ *  `hash-object --stdin` string input with no UTF-8 round-trip risk. */
+function pseudoRandomAsciiByte(seed: number, index: number): number {
+  const h = Math.imul(seed ^ index, 0x9e3779b1) ^ (index << 13);
+  return 0x21 + ((Math.imul(h, 0x85ebca6b) >>> 24) % 0x5e);
+}
+
+function pseudoRandomAsciiString(seed: number, length: number): string {
+  return Array.from({ length }, (_unused, i) =>
+    String.fromCharCode(pseudoRandomAsciiByte(seed, i)),
+  ).join('');
 }
 
 /** Every `.pack` file under `dir` whose contents include `oid`, read via
@@ -1024,6 +1065,53 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       const peerPacksWithOid = await peerPackNamesContaining(twin.peerDir, promisorOid);
       expect(peerPacksWithOid.length).toBe(2);
       await disposeTwin(twin);
+    });
+  });
+
+  describe('Given a deltifiable promisor corpus and a deltifiable unreachable corpus, When gc runs on ours', () => {
+    let baseDir: string;
+
+    beforeAll(async () => {
+      // Arrange — two reachable, near-identical blobs feed the .promisor
+      // pack tsgit rebuilds fresh from `toPromisorPack`; two unreachable,
+      // near-identical loose blobs (fresh mtime, never expired) survive the
+      // cutoff into the cruft pack tsgit rebuilds from `survivors`. Both
+      // pairs share a 300-byte high-entropy prefix, well past
+      // DELTA_BLOCK_BYTES (16), so deltify's window finds a match in each.
+      baseDir = await initRepo('promisor-cruft-delta');
+      const sharedPromisor = pseudoRandomAsciiString(301, 300);
+      await writeFile(path.join(baseDir, 'promisor-a.txt'), sharedPromisor);
+      await writeFile(path.join(baseDir, 'promisor-b.txt'), `${sharedPromisor}Z`);
+      git(baseDir, 'add', '-A');
+      git(baseDir, 'commit', '-q', '-m', 'promisor content');
+      const promisorAOid = git(baseDir, 'rev-parse', 'HEAD:promisor-a.txt').trim();
+      const promisorBOid = git(baseDir, 'rev-parse', 'HEAD:promisor-b.txt').trim();
+      await buildMarkedPack(baseDir, [promisorAOid, promisorBOid], '.promisor');
+      const sharedCruft = pseudoRandomAsciiString(401, 300);
+      writeLooseBlobGit(baseDir, sharedCruft);
+      writeLooseBlobGit(baseDir, `${sharedCruft}Z`);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then the rebuilt promisor pack and the rebuilt cruft pack each carry at least one OFS_DELTA entry', async () => {
+      // Arrange
+      const oursDir = await tmpDir('promisor-cruft-delta-ours');
+      await cp(baseDir, oursDir, { recursive: true, preserveTimestamps: true });
+
+      // Act
+      const { ctx, result } = await runOursGc(oursDir);
+
+      // Assert
+      expect(result.promisorPackId).toBeDefined();
+      expect(result.cruftPackId).toBeDefined();
+      const promisorCounts = await readOursPackTypeCounts(ctx, result.promisorPackId as ObjectId);
+      const cruftCounts = await readOursPackTypeCounts(ctx, result.cruftPackId as ObjectId);
+      expect(promisorCounts.ofs).toBeGreaterThan(0);
+      expect(cruftCounts.ofs).toBeGreaterThan(0);
+      await rm(oursDir, { recursive: true, force: true });
     });
   });
 

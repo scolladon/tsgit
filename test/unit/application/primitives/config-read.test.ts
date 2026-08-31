@@ -6719,6 +6719,54 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given a malformed window value under [core], not [pack]', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — the section guard excludes it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  window = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a malformed depth value under [pack "x"], a subsectioned pack header', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — pack.<key> only ever binds the subsectionless [pack]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack "x"]\n  depth = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a valid [pack] depth followed by a malformed [core] depth', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — a following header resets inSection, so the [core] entry is never checked', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = 50\n[core]\n  depth = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [pack] window is valueless', () => {
     describe('When findFirstInvalidPackInt', () => {
       it("Then it is reported with value '' — a valueless entry has no token.value to report", async () => {
