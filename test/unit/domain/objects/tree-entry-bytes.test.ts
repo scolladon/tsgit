@@ -355,6 +355,90 @@ describe('matchesDotgitAlias', () => {
     });
   });
 
+  describe('Given a span too short for the "git" short name, embedded in a larger buffer', () => {
+    describe('When matching against "git"', () => {
+      it('Then it does not match (bytes past the span end must not be read)', () => {
+        // Arrange — a length computed from the wrong ends, or a length gate
+        // that is bypassed, would let this read the "~1" that sits just past
+        // `end` and falsely match.
+        const sut = matchesDotgitAlias;
+        const buf = concatBytes(encode('xxx'), encode('git~1'), encode('yyy'));
+
+        // Act
+        const result = sut(buf, 3, 6, 'git');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a span too short for the NTFS short name, embedded in a larger buffer', () => {
+    describe('When matching against "gitmodules"', () => {
+      it('Then it does not match (bytes past the span end must not be read)', () => {
+        // Arrange — same class of bug as above, for the generic (non-"git")
+        // short-name fold: a bypassed or widened length gate lets the tilde,
+        // digit, and trailing-dots checks read past `end` into "~1".
+        const sut = matchesDotgitAlias;
+        const buf = concatBytes(encode('xxx'), encode('gitmod~1'), encode('yyy'));
+
+        // Act
+        const result = sut(buf, 3, 9, 'gitmodules');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an NTFS short name missing its tilde', () => {
+    describe('When matching against "gitmodules"', () => {
+      it('Then gitmodX1 does not match', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = encode('gitmodX1');
+
+        // Act
+        const result = sut(buf, 0, buf.length, 'gitmodules');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an NTFS short name whose digit is below the accepted 1-4 range', () => {
+    describe('When matching against "gitmodules"', () => {
+      it('Then gitmod~0 does not match', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = encode('gitmod~0');
+
+        // Act
+        const result = sut(buf, 0, buf.length, 'gitmodules');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the NTFS short name at the upper end of the accepted digit range', () => {
+    describe('When matching against "gitmodules"', () => {
+      it('Then gitmod~4 matches', () => {
+        // Arrange
+        const sut = matchesDotgitAlias;
+        const buf = encode('gitmod~4');
+
+        // Act
+        const result = sut(buf, 0, buf.length, 'gitmodules');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
   describe('Given a name containing an invalid UTF-8 byte immediately after ".git"', () => {
     describe('When matching against "git"', () => {
       it('Then it does not match and does not throw', () => {

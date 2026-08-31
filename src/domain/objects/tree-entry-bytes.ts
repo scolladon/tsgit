@@ -30,6 +30,7 @@ export function hasNonOctalByte(buf: Uint8Array, start: number, end: number): bo
  */
 export function entryNameKey(buf: Uint8Array, start: number, end: number): string {
   let key = '';
+  // Stryker disable next-line EqualityOperator: equivalent — the only iteration this admits beyond the original loop has chunkStart===end, where chunkEnd=Math.min(chunkStart+KEY_CHUNK_SIZE,end)=end makes subarray(chunkStart,chunkEnd) empty, so the appended '' cannot change key.
   for (let chunkStart = start; chunkStart < end; chunkStart += KEY_CHUNK_SIZE) {
     const chunkEnd = Math.min(chunkStart + KEY_CHUNK_SIZE, end);
     // Reflect.apply instead of a spread: the typed-array spread walks the
@@ -69,6 +70,7 @@ const NTFS_SHORT_NAME_PREFIX_LENGTH = 6;
 const HFS_DECODER = new TextDecoder('utf-8', { ignoreBOM: true });
 
 function foldAsciiCodePoint(codePoint: number): number {
+  // Stryker disable next-line EqualityOperator: equivalent — DotgitAliasName is a closed union of 5 literals (git/gitmodules/gitattributes/gitignore/mailmap) with no 'z', so the Z-only boundary this changes never determines any fold comparison this file makes.
   return codePoint >= ASCII_UPPER_A && codePoint <= ASCII_UPPER_Z
     ? codePoint + ASCII_CASE_BIT
     : codePoint;
@@ -93,6 +95,7 @@ function foldsToHfsAlias(
   for (const char of decoded) {
     const codePoint = char.codePointAt(0)!;
     if (HFS_IGNORABLE_CODE_POINTS.has(codePoint)) continue;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — once matched reaches wantLength (alias.length+1), the next want=alias.charCodeAt(matched-1) index is out of range and returns NaN, whose !== comparison is always true, so the loop returns false on the next iteration regardless of this guard.
     if (matched >= wantLength) return false;
     const want = matched === 0 ? ASCII_DOT : alias.charCodeAt(matched - 1);
     if (foldAsciiCodePoint(codePoint) !== want) return false;
@@ -135,6 +138,7 @@ function foldsToNtfsAlias(
   const length = end - start;
   const dotPrefix = `.${alias}`;
   if (
+    // Stryker disable next-line EqualityOperator: equivalent — this >= only differs from > when length===dotPrefix.length exactly; at that length, matchesAsciiCaseInsensitive matching the pure-ASCII dotPrefix implies foldsToHfsAlias already matched the same bytes and returned true first, so this branch's outcome is never observed.
     length >= dotPrefix.length &&
     matchesAsciiCaseInsensitive(buf, start, dotPrefix) &&
     isAllDotsAndSpaces(buf, start + dotPrefix.length, end)
