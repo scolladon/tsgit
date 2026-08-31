@@ -27,8 +27,18 @@ measured against git 2.55.0, a text-churn fixture saturates the default cap at e
 ## Decision
 
 **User-ratified.** `walkDeltaChain` becomes `depth <= MAX_DELTA_CHAIN_DEPTH`, so both
-readers accept a chain of exactly git's default depth and refuse only beyond it. The writer
-clamps to the configured `pack.depth` with no adjustment. The widened fsck acceptance is
+readers accept a chain of exactly git's default depth and refuse only beyond it.
+
+The writer clamps to `min(pack.depth, MAX_DELTA_CHAIN_DEPTH)` — that is, to 50. At the
+default `pack.depth = 50` this is the configured value unchanged, which is the case that
+matters. Above it the clamp binds, and **that is a divergence from git**, recorded here
+rather than left implicit: git accepts `pack.depth` up to 4095 and will write chains that
+deep, while tsgit will not write a chain its own readers refuse. Raising the ceiling would
+mean raising `MAX_DELTA_CHAIN_DEPTH`, which another decision record pins to git's default
+`pack.depth` and which also governs what `fsck` accepts — a wider change than a packer, and
+not one this record makes. The divergence is silent by construction: it can only ever produce
+*less* compression than git at the same setting, never an error, never an unreadable pack, and
+never a difference in the objects stored. The widened fsck acceptance is
 pinned against real git rather than asserted: a pack written at the cap must pass
 `git fsck` and `git index-pack --strict`, and tsgit's fsck must agree with git on the same
 pack.
@@ -36,5 +46,7 @@ pack.
 ## Consequences
 
 The two readers stop disagreeing, and a pack written at the default depth is readable by
-every tsgit path. fsck accepts one chain length it previously refused; that widening is a
+every tsgit path. A `pack.depth` above 50 is honoured only up to 50; a caller who sets one and
+measures the result sees weaker compression than git would give, with no other observable
+difference. fsck accepts one chain length it previously refused; that widening is a
 deliberate correction, pinned by interop, not a side effect.
