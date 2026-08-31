@@ -76,13 +76,21 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   were three lines away, properties it called absent that were declared in the file it was
   reading — while `tsc` on the same tree was clean throughout. Never gate on it and never
   source a review finding from it; `npx tsc --noEmit -p tsconfig.json` is the oracle.
-- **Two search paths are intercepted and both fail misleadingly.** `rtk` installs a shell
-  wrapper named `grep` that returns `Error: claude native binary not installed` instead of
-  matches — it fails *closed*, so an empty result reads as "no matches" and is not. And
-  tokensave's PreToolUse hook blocks symbol-shaped searches on `grep` *and* `rg` (it matches
-  the command text, not the tool), naming replacement tools that do not exist when its MCP
-  server is unregistered — which it is here. Use `command grep`, `rg`, or
-  `TOKENSAVE_DISABLE_GREP_HOOK=1` on the one command. Note `rg` has no `-E` flag.
+- **Search interception — both causes are fixed, and here is what they looked like.** Two
+  separate defects blocked searches during one feature run, and both failed in ways that
+  read as a legitimate empty result rather than an error. `rtk` installed a shell wrapper
+  named `grep` that returned `Error: claude native binary not installed` instead of matches
+  — it failed *closed*, so "no output" meant "broken", not "no matches"; fixed by repairing
+  the missing `@anthropic-ai/claude-code` install. And tokensave's PreToolUse hook blocked
+  symbol-shaped searches on `grep` **and** `rg` — it matches the command text, not the tool
+  — while naming replacement tools that do not exist, because its MCP server is not
+  registered here; fixed by setting `TOKENSAVE_DISABLE_GREP_HOOK=1` globally in
+  `~/.claude/settings.json`'s `env` block.
+  Narrowing that hook's matcher instead would not have held: `tokensave doctor` rewrites
+  `~/.claude/settings.json` — it widened the matcher to include `Glob` on its own — so a
+  matcher edit is reverted the next time anyone runs it. Prefer the env override.
+  If a search ever returns nothing again, confirm the tool works before believing the
+  result: `command grep`, `rg` (no `-E` flag), or `rtk proxy grep` all bypass a wrapper.
 
 ## Backlog conventions
 
