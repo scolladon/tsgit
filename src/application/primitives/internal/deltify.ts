@@ -74,13 +74,16 @@ async function buildEmissionOrder(
   return [...keys].sort(comparePackEmissionOrder);
 }
 
-function isBetterCandidate(candidate: Candidate, best: Candidate | undefined): boolean {
-  if (best === undefined) return true;
-  if (candidate.delta.length !== best.delta.length)
-    return candidate.delta.length < best.delta.length;
-  return candidate.chainDepth < best.chainDepth;
-}
-
+/**
+ * `maxSize` bounds every accepted delta strictly under the incumbent
+ * (`best.delta.length - 1`) — `encodeDeltaFromIndex` returns `undefined`
+ * for anything that does not fit it — so a hit here is by construction
+ * always strictly smaller than `best`. No further length/chain-depth
+ * comparison is needed or reachable: the search bound itself forecloses
+ * ties, so the policy is exactly "strictly smaller wins; the most
+ * recently admitted member breaks anything left" — visit order alone
+ * (most-recent-first in `selectBestCandidate`) decides the rest.
+ */
 function tryCandidate(
   member: WindowMember,
   content: Uint8Array,
@@ -90,15 +93,10 @@ function tryCandidate(
   best: Candidate | undefined,
 ): Candidate | undefined {
   if (member.type !== type || member.chainDepth >= policy.maxDepth) return undefined;
-  const maxSize = best === undefined ? searchBound : Math.min(searchBound, best.delta.length - 1);
+  const maxSize = best === undefined ? searchBound : best.delta.length - 1;
   const delta = encodeDeltaFromIndex(member.index, content, maxSize);
   if (delta === undefined) return undefined;
-  const candidate: Candidate = {
-    delta,
-    chainDepth: member.chainDepth,
-    emissionIndex: member.emissionIndex,
-  };
-  return isBetterCandidate(candidate, best) ? candidate : undefined;
+  return { delta, chainDepth: member.chainDepth, emissionIndex: member.emissionIndex };
 }
 
 /** Candidates are tried most-recently-added first — an array walked back to
@@ -168,6 +166,14 @@ function exceedsBudget(residentBytes: number, incomingBytes: number, policy: Del
   return policy.windowMemoryBudget > 0 && residentBytes + incomingBytes > policy.windowMemoryBudget;
 }
 
+/** A member's true resident cost: its content bytes PLUS the `DeltaIndex`
+ *  built on admission (`heads` + `next`) — canonical git charges the same
+ *  `sizeof_delta_index()` against `window_memory_limit`. Shared by admission
+ *  and eviction so the two can never drift apart. */
+function memberWeight(member: Pick<WindowMember, 'content' | 'index'>): number {
+  return member.content.length + member.index.heads.byteLength + member.index.next.byteLength;
+}
+
 /** Evicts the oldest member (FIFO `shift`) while either bound is violated —
  *  both checks run on every admission. */
 function evictToFit(
@@ -178,19 +184,19 @@ function evictToFit(
 ): number {
   let bytes = residentBytes;
   while (window.length > 0 && exceedsCount(window, policy)) {
-    bytes -= window.shift()!.content.length;
+    bytes -= memberWeight(window.shift()!);
   }
   while (window.length > 0 && exceedsBudget(bytes, incomingBytes, policy)) {
-    bytes -= window.shift()!.content.length;
+    bytes -= memberWeight(window.shift()!);
   }
   return bytes;
 }
 
 /**
- * Admits `pending` to the window unless it alone exceeds the whole memory
- * budget — a candidate that large is never admitted, so nothing ever offers
- * it as a base. The index is built here, on admission, and dropped
- * whenever `evictToFit` shifts a member out.
+ * Admits `pending` to the window unless it — content PLUS its built index —
+ * alone exceeds the whole memory budget: a candidate that large is never
+ * admitted, so nothing ever offers it as a base. The index is built here, on
+ * admission, and dropped whenever `evictToFit` shifts a member out.
  */
 function admitToWindow(
   window: WindowMember[],
@@ -198,12 +204,13 @@ function admitToWindow(
   policy: DeltaPolicy,
   pending: PendingMember,
 ): number {
-  const overBudget =
-    policy.windowMemoryBudget > 0 && pending.content.length > policy.windowMemoryBudget;
+  const member: WindowMember = { ...pending, index: createDeltaIndex(pending.content) };
+  const memberBytes = memberWeight(member);
+  const overBudget = policy.windowMemoryBudget > 0 && memberBytes > policy.windowMemoryBudget;
   if (overBudget) return residentBytes;
-  const afterEviction = evictToFit(window, residentBytes, policy, pending.content.length);
-  window.push({ ...pending, index: createDeltaIndex(pending.content) });
-  return afterEviction + pending.content.length;
+  const afterEviction = evictToFit(window, residentBytes, policy, memberBytes);
+  window.push(member);
+  return afterEviction + memberBytes;
 }
 
 export async function deltifyEntries(

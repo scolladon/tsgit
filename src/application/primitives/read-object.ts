@@ -242,7 +242,7 @@ async function readEntryHeaderAt(
 ): Promise<{ header: PackEntryHeader; chunk: Uint8Array; headerEndInChunk: number }> {
   const table = await hit.pack.offsetTable();
   const nextOffset = nextOffsetForEntry(table, hit.offset);
-  return readEntryHeaderWithChunk(ctx, hit, nextOffset);
+  return readEntryHeaderWithChunk(ctx, hit, nextOffset, table.packFileSize);
 }
 
 /**

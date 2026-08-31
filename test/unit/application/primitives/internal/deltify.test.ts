@@ -193,13 +193,57 @@ describe('deltifyEntries', () => {
     });
   });
 
-  describe('Given a budget that fits two of three objects', () => {
+  describe("Given a budget one byte above an object's content length but below content-plus-index", () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the object is refused — the old content-only accounting would have wrongly admitted it', async () => {
+        // Arrange — the old accounting charged only content.length, so a
+        // budget of content.length + 1 would have admitted objBig. Charging
+        // the built DeltaIndex too (heads + next) pushes the true weight
+        // past that same budget, so objBig must now be refused. objSmall
+        // shares objBig's prefix, so a wrong admission would be observable
+        // as a delta match.
+        const ctx = await buildSeededContext();
+        const sharedPrefix = pseudoRandomBytes(6, 200);
+        const bigTail = pseudoRandomBytes(7, 72);
+        const bigContent = Uint8Array.from([...sharedPrefix, ...bigTail]);
+        const idBig = await writeBlob(ctx, bigContent);
+        const idSmall = await writeBlob(ctx, Uint8Array.from([...sharedPrefix, 0x42]));
+        const index = deltaEncodeModule.createDeltaIndex(bigContent);
+        const indexBytes = index.heads.byteLength + index.next.byteLength;
+        // Sanity: the scenario is only meaningful when charging the index
+        // actually costs something — otherwise old and new accounting agree
+        // trivially and the test would pass for the wrong reason.
+        expect(indexBytes).toBeGreaterThan(0);
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 10,
+          maxDepth: 50,
+          windowMemoryBudget: bigContent.length + 1,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(ctx, [idBig, idSmall], policy);
+
+        // Assert — idBig itself is still emitted as a base (its own window
+        // was empty when it was processed); idSmall's failure to delta
+        // against it is what proves idBig was never admitted to the window.
+        expect(findEntry(result, idBig).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(findEntry(result, idSmall).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a budget that fits two of three objects, once each one is charged for its content AND its built DeltaIndex', () => {
     describe('When deltifyEntries runs', () => {
       it('Then the oldest resident is evicted first', async () => {
-        // Arrange — obj1(60B) and obj2(50B) together fit the 115B budget;
-        // admitting obj3(42B) forces eviction, and obj1 (oldest) goes first.
-        // probe1 shares obj1's pattern and must fail to find a candidate;
-        // probe2 shares obj2's pattern and must succeed.
+        // Arrange — obj1(60B) and obj2(50B) together fit the budget, charging
+        // each one's content length PLUS its DeltaIndex (heads + next) —
+        // the same total admitToWindow now applies. Admitting obj3(42B)
+        // forces eviction, and obj1 (oldest) goes first. probe1 shares
+        // obj1's pattern and must fail to find a candidate (its base was
+        // evicted); probe2 shares obj2's pattern and must succeed (its base
+        // survives).
         const ctx = await buildSeededContext();
         const r1 = pseudoRandomBytes(101, 60);
         const r2 = pseudoRandomBytes(202, 50);
@@ -209,11 +253,15 @@ describe('deltifyEntries', () => {
         const id3 = await writeBlob(ctx, r3);
         const idProbe2 = await writeBlob(ctx, r2.slice(0, 32));
         const idProbe1 = await writeBlob(ctx, r1.slice(0, 30));
+        const chargedWeight = (content: Uint8Array): number => {
+          const index = deltaEncodeModule.createDeltaIndex(content);
+          return content.length + index.heads.byteLength + index.next.byteLength;
+        };
         const policy: DeltaPolicy = {
           enabled: true,
           window: 10,
           maxDepth: 50,
-          windowMemoryBudget: 115,
+          windowMemoryBudget: chargedWeight(r1) + chargedWeight(r2),
         };
         const sut = deltifyEntries;
 

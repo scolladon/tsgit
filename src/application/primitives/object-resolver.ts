@@ -371,13 +371,11 @@ async function collectDeltaChain(
       };
     }
     const nextOffset = nextOffsetForEntry(table, currentHit.offset);
-    if (nextOffset > table.packFileSize) {
-      throw invalidPackIndex('next offset exceeds pack file size: corrupt index');
-    }
     const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(
       ctx,
       currentHit,
       nextOffset,
+      table.packFileSize,
     );
     if (isBase(header)) {
       enforcePackBaseCap(targetId, header.size, maxBytes);
@@ -579,12 +577,22 @@ export function isBase(h: PackEntryHeader): h is PackEntryHeader & { type: 1 | 2
  * output. No per-object size cap is applied here because the inflated output is
  * capped separately by the compressor's `maxOutputLength` — adding a second cap
  * would create a lower ceiling than the caller's contract permits.
+ *
+ * `packFileSize` bounds `nextOffset` itself, BEFORE it is turned into a slice
+ * length: a `.idx` successor offset is attacker-controlled (a fetched or
+ * cloned pack), so every caller — not just this one's own delta-chain walk —
+ * must refuse a `nextOffset` beyond the pack's real end rather than pass it
+ * into `readSlice`, which would allocate an attacker-sized buffer.
  */
 export async function readEntryHeaderWithChunk(
   ctx: Context,
   hit: PackLookupHit,
   nextOffset: number,
+  packFileSize: number,
 ): Promise<{ header: PackEntryHeader; chunk: Uint8Array; headerEndInChunk: number }> {
+  if (nextOffset > packFileSize) {
+    throw invalidPackIndex('next offset exceeds pack file size: corrupt index');
+  }
   const sliceLength = nextOffset - hit.offset;
   if (sliceLength <= 0) {
     throw invalidPackIndex('slice length ≤ 0: next offset not beyond entry offset');

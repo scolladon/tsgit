@@ -6,6 +6,7 @@ import {
   parsedObjectByteSize,
 } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
+  readEntryHeaderWithChunk,
   resolveObject,
   resolveObjectBytesWithDepth,
 } from '../../../../src/application/primitives/object-resolver.js';
@@ -147,6 +148,33 @@ function stubPackHandle(
 }
 
 const noopDispose = async (): Promise<void> => undefined;
+
+/**
+ * A `RegisteredPack` every field of which throws if invoked. Used to prove a
+ * `readEntryHeaderWithChunk` guard clause returns/throws BEFORE touching the
+ * pack at all — a mutant that weakens or deletes the guard surfaces as this
+ * stub's own "unexpected pack access" error instead of the expected one.
+ */
+function unusedPack(): RegisteredPack {
+  const boom = (): never => {
+    throw new Error('unexpected pack access');
+  };
+  return {
+    name: 'unused',
+    index: boom,
+    packPath: 'unused',
+    idxPath: 'unused',
+    header: boom,
+    offsetTable: boom,
+    readSlice: boom,
+    close: boom,
+    hasRevIndex: false,
+    revIndex: boom,
+    packPositions: boom,
+    hasBitmap: false,
+    bitmapBytes: boom,
+  };
+}
 
 /**
  * A `PackRegistry` stub that resolves a fixed id to a fixed `{ packPath, offset }`
@@ -2347,47 +2375,102 @@ describe('object-resolver', () => {
         });
       });
     });
+  });
 
-    describe('Given a 2-entry pack with an OFS_DELTA entry', () => {
-      describe('When resolveObject is called on the delta entry', () => {
-        it('Then each chain step reads its own exact slice and the delta reconstructs correctly', async () => {
+  describe('readEntryHeaderWithChunk', () => {
+    describe('Given nextOffset greater than packFileSize', () => {
+      describe('When called directly', () => {
+        it('Then throws INVALID_PACK_INDEX with the next-offset-exceeds reason without touching the pack', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const baseContent = ENC.encode('ofs-exact-base');
-          const targetContent = ENC.encode('ofs-exact-target-different');
-          const ids = await writeSyntheticPack(ctx, 'ofs-exact-slice', [
-            { kind: 'base', type: 'blob', content: baseContent },
-            { kind: 'ofs-delta', baseIndex: 0, targetContent },
-          ]);
-          const deltaId = ids[1] as ObjectId;
-          const sut = resolveObject;
-          const registry = createPackRegistry(ctx);
-          // Compute expected slice lengths from the real offset table before resolveObject runs.
-          const packs = await registry.all();
-          const table = await packs[0]!.offsetTable();
-          const [off0, off1] = expectSortedOffsets(table);
-          // delta entry (off1) is resolved first, then base (off0).
-          const expectedDeltaSlice = table.trailerStart - off1!;
-          const expectedBaseSlice = off1! - off0!;
-          const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
-          const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
+          const hit: PackLookupHit = { pack: unusedPack(), offset: 100 };
+          const sut = readEntryHeaderWithChunk;
 
           // Act
-          const result = await sut(ctx, registry, deltaId, false);
-
-          // Assert — correct content reconstruction
-          expect(result.type).toBe('blob');
-          expect((result as Blob).content).toEqual(targetContent);
-          // streamInflate must never be called
-          expect(streamInflateSpy.mock.calls.length).toBe(0);
-          // Each of the 2 chain steps called readSlice with exact lengths, both
-          // against the SAME pack's persistent handle (not one open per step).
-          expect(readSliceSpy.mock.calls.length).toBe(2);
-          // First call: delta entry (tip of chain, resolved first)
-          expect(readSliceSpy.mock.calls[0]![1]).toBe(expectedDeltaSlice);
-          // Second call: base entry
-          expect(readSliceSpy.mock.calls[1]![1]).toBe(expectedBaseSlice);
+          try {
+            await sut(ctx, hit, 101, 100);
+            expect.unreachable();
+          } catch (error) {
+            // Assert
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_PACK_INDEX');
+            if (data.code !== 'INVALID_PACK_INDEX') {
+              expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+            }
+            expect(data.reason).toBe('next offset exceeds pack file size: corrupt index');
+          }
         });
+      });
+    });
+
+    describe('Given nextOffset exactly equal to packFileSize (and equal to the entry offset)', () => {
+      describe('When called directly', () => {
+        it('Then the bound guard does not fire, and the slice-length guard fires instead', async () => {
+          // Arrange — isolates the `>` guard's own boundary: nextOffset ===
+          // packFileSize must NOT trip it, so the fall-through hits the
+          // sliceLength <= 0 guard (offset === nextOffset here) rather than
+          // ever reaching `hit.pack.readSlice`.
+          const ctx = await buildSeededContext();
+          const hit: PackLookupHit = { pack: unusedPack(), offset: 100 };
+          const sut = readEntryHeaderWithChunk;
+
+          // Act
+          try {
+            await sut(ctx, hit, 100, 100);
+            expect.unreachable();
+          } catch (error) {
+            // Assert
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_PACK_INDEX');
+            if (data.code !== 'INVALID_PACK_INDEX') {
+              expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+            }
+            expect(data.reason).toBe('slice length ≤ 0: next offset not beyond entry offset');
+          }
+        });
+      });
+    });
+  });
+
+  describe('Given a 2-entry pack with an OFS_DELTA entry', () => {
+    describe('When resolveObject is called on the delta entry', () => {
+      it('Then each chain step reads its own exact slice and the delta reconstructs correctly', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const baseContent = ENC.encode('ofs-exact-base');
+        const targetContent = ENC.encode('ofs-exact-target-different');
+        const ids = await writeSyntheticPack(ctx, 'ofs-exact-slice', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+        const sut = resolveObject;
+        const registry = createPackRegistry(ctx);
+        // Compute expected slice lengths from the real offset table before resolveObject runs.
+        const packs = await registry.all();
+        const table = await packs[0]!.offsetTable();
+        const [off0, off1] = expectSortedOffsets(table);
+        // delta entry (off1) is resolved first, then base (off0).
+        const expectedDeltaSlice = table.trailerStart - off1!;
+        const expectedBaseSlice = off1! - off0!;
+        const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
+        const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
+
+        // Act
+        const result = await sut(ctx, registry, deltaId, false);
+
+        // Assert — correct content reconstruction
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(targetContent);
+        // streamInflate must never be called
+        expect(streamInflateSpy.mock.calls.length).toBe(0);
+        // Each of the 2 chain steps called readSlice with exact lengths, both
+        // against the SAME pack's persistent handle (not one open per step).
+        expect(readSliceSpy.mock.calls.length).toBe(2);
+        // First call: delta entry (tip of chain, resolved first)
+        expect(readSliceSpy.mock.calls[0]![1]).toBe(expectedDeltaSlice);
+        // Second call: base entry
+        expect(readSliceSpy.mock.calls[1]![1]).toBe(expectedBaseSlice);
       });
     });
   });

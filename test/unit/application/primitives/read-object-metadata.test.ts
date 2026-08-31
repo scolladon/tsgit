@@ -13,9 +13,10 @@ import { parseHeader, serializeObject } from '../../../../src/domain/objects/ind
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 import type { EntrySpec } from './pack-fixture.js';
-import { writeSyntheticPack } from './pack-fixture.js';
+import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from './pack-fixture.js';
 
 const AUTHOR = { name: 'A', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+const ENC = new TextEncoder();
 
 /** Independent oracle for a loose object's content length — derived from the
  *  real header parser, never from `readObjectMetadata` itself. */
@@ -110,6 +111,52 @@ describe('readObjectMetadata', () => {
         expect(result.uncompressedSize).toBe(content.length);
         expect(inflateSpy).not.toHaveBeenCalled();
         inflateSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a packed base entry whose idx successor offset was corrupted past the pack file size', () => {
+    describe('When readObjectMetadata is called', () => {
+      it('Then throws INVALID_PACK_INDEX with the next-offset-exceeds reason', async () => {
+        // Arrange — two base entries; the SECOND entry's recorded offset in
+        // the real on-disk `.idx` small-offsets table is overwritten with a
+        // value far past the pack's actual size. `nextOffsetForEntry` finds
+        // it as the FIRST entry's successor (by numeric value, not idx row
+        // order), so a metadata read of the first entry must refuse rather
+        // than pass the bogus successor into readSlice — the exact gap a
+        // fetched or cloned pack's attacker-controlled `.idx` can carry,
+        // since `readOffset` bounds an offset's own encoding but never the
+        // pack's real size.
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENC.encode('first') },
+          { kind: 'base', type: 'blob', content: ENC.encode('second') },
+        ]);
+        const digestLength = ctx.hashConfig.digestLength;
+        const idxBytes = corruptIdxOffset(
+          built.idxBytes,
+          digestLength,
+          built.offsets[1]!,
+          0x7ffffff0,
+        );
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-meta-corrupt-bounds`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, idxBytes);
+        const targetId = built.ids[0] as ObjectId;
+
+        // Act
+        try {
+          await readObjectMetadata(ctx, targetId);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACK_INDEX');
+          if (data.code !== 'INVALID_PACK_INDEX') {
+            expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+          }
+          expect(data.reason).toBe('next offset exceeds pack file size: corrupt index');
+        }
       });
     });
   });

@@ -9,7 +9,7 @@ import type { Blob, Commit, ObjectId } from '../../../../../src/domain/objects/i
 import { EMPTY_TREE_OID } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import { buildSeededContext } from '../fixtures.js';
-import { writeSyntheticPack } from '../pack-fixture.js';
+import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from '../pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
 const ENC = new TextEncoder();
@@ -241,6 +241,49 @@ describe('openBlobSource', () => {
           expect(result.type).toBe('blob');
           const drained = await collect(result.stream);
           expect(drained).toEqual(content);
+        }
+      });
+    });
+  });
+
+  describe('Given a packed base blob whose idx successor offset was corrupted past the pack file size', () => {
+    describe('When openBlobSource is called', () => {
+      it('Then throws INVALID_PACK_INDEX with the next-offset-exceeds reason', async () => {
+        // Arrange — mirrors the readObjectMetadata regression: the SECOND
+        // entry's on-disk `.idx` offset is overwritten with a value far past
+        // the pack's actual size, so it becomes the first entry's successor
+        // by numeric value. openBlobSource's own pack arm (blob-source.ts)
+        // must inherit the same bound readEntryHeaderWithChunk now enforces,
+        // rather than pass the bogus successor into readSlice.
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENC.encode('first') },
+          { kind: 'base', type: 'blob', content: ENC.encode('second') },
+        ]);
+        const digestLength = ctx.hashConfig.digestLength;
+        const idxBytes = corruptIdxOffset(
+          built.idxBytes,
+          digestLength,
+          built.offsets[1]!,
+          0x7ffffff0,
+        );
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-corrupt-bounds`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, idxBytes);
+        const targetId = built.ids[0] as ObjectId;
+
+        // Act
+        try {
+          await openBlobSource(ctx, targetId, MAX_BUFFERED_BLOB_BYTES);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACK_INDEX');
+          if (data.code !== 'INVALID_PACK_INDEX') {
+            expect.fail(`expected INVALID_PACK_INDEX, got ${data.code}`);
+          }
+          expect(data.reason).toBe('next offset exceeds pack file size: corrupt index');
         }
       });
     });

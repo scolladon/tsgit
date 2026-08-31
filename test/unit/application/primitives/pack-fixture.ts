@@ -20,6 +20,7 @@ import {
   type PackEntryType,
   serializePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
+import { parsePackIndex } from '../../../../src/domain/storage/pack-index.js';
 import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
 import { REV_HEADER_SIZE } from '../../../../src/domain/storage/rev-index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -172,6 +173,36 @@ export async function writeSyntheticPack(
   await ctx.fs.write(`${base}.pack`, result.packBytes);
   await ctx.fs.write(`${base}.idx`, result.idxBytes);
   return result.ids;
+}
+
+/**
+ * Overwrites the `.idx` small-offsets-table slot currently holding
+ * `targetOffset` with `corruptedOffset`, leaving every other byte — including
+ * the `.pack` file itself — untouched. Plants a `.idx` whose declared
+ * successor for some OTHER entry lies past the pack's real end, the shape a
+ * fetched or cloned pack's attacker-controlled `.idx` can carry (`readOffset`
+ * bounds an offset's own encoding but never the pack's actual size). No
+ * table-row order assumption: the small-offsets table is scanned for the
+ * exact value, not indexed by the entry's position among the (oid-sorted)
+ * sha table.
+ */
+export function corruptIdxOffset(
+  idxBytes: Uint8Array,
+  digestLength: 20 | 32,
+  targetOffset: number,
+  corruptedOffset: number,
+): Uint8Array {
+  const mutated = idxBytes.slice();
+  const index = parsePackIndex(mutated, digestLength);
+  const view = new DataView(mutated.buffer, mutated.byteOffset, mutated.byteLength);
+  for (let position = 0; position < index.objectCount; position += 1) {
+    const slot = index.smallOffsetsTableOffset + position * 4;
+    if (view.getUint32(slot) === targetOffset) {
+      view.setUint32(slot, corruptedOffset);
+      return mutated;
+    }
+  }
+  throw new Error(`offset ${targetOffset} not present in idx small-offsets table`);
 }
 
 export interface PackHeaderOverride {
