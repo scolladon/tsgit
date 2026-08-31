@@ -3,12 +3,14 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import {
   __resetConfigCacheForTests,
   assertValidGcAutoConfig,
+  assertValidPackIntConfig,
   type ConfigToken,
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
   findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
+  findFirstInvalidPackInt,
   findFirstInvalidPushGpgSign,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
@@ -6592,6 +6594,671 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(result.pack).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] window = 1k', () => {
+    describe('When readConfig', () => {
+      it('Then pack.window is 1024', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = 1k\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.window).toBe(1024);
+      });
+    });
+  });
+
+  describe('Given [pack] window = 0', () => {
+    describe('When readConfig', () => {
+      it('Then pack.window is 0 — the disable-deltas value, not a falsy absence', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = 0\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.window).toBe(0);
+      });
+    });
+  });
+
+  describe('Given [pack] window = -1', () => {
+    describe('When readConfig', () => {
+      it('Then pack.window is -1 — the other disable-deltas value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = -1\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.window).toBe(-1);
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — -1 is a legal C int, not a refusal', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = -1\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] window is malformed', () => {
+    describe('When readConfig', () => {
+      it('Then pack.window is absent, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = abc\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.window).toBeUndefined();
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns the entry with reason invalid unit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.key).toBe('pack.window');
+        expect(result?.value).toBe('abc');
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+
+    describe('When assertValidPackIntConfig', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying key/source/value/reason', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = abc\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidPackIntConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code === 'CONFIG_BAD_NUMERIC_VALUE') {
+          expect(data.key).toBe('pack.window');
+          expect(data.value).toBe('abc');
+          expect(data.reason).toBe('invalid unit');
+          expect(data.source).toMatch(/\/config$/);
+        }
+      });
+    });
+  });
+
+  describe('Given [pack] window is valueless', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it("Then it is reported with value '' — a valueless entry has no token.value to report", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('invalid unit');
+        expect(result?.value).toBe('');
+      });
+    });
+  });
+
+  describe('Given [pack] window = 5.0', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it is reported with reason invalid unit — trailing garbage after the digits', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = 5.0\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+  });
+
+  describe('Given [pack] window beyond the C int range', () => {
+    describe('When readConfig', () => {
+      it('Then pack.window is absent — the merge path applies the same C int ceiling', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = 2147483648\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.window).toBeUndefined();
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns the entry with reason out of range', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = 2147483648\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given [pack] window just below the C int min', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns the entry with reason out of range', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = -2147483649\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given [pack] window written in accepted alternate numeric forms', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it.each([
+        { config: '[pack]\n  window = 1k\n', label: 'a k-suffixed value' },
+        { config: '[pack]\n  window = 0x20\n', label: 'hex' },
+        { config: '[pack]\n  window = 050\n', label: 'octal' },
+        { config: '[pack]\n  window = +50\n', label: 'an explicit leading +' },
+      ])('Then it accepts $label', async ({ config }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] window malformed on the first of two lines, valid on the second', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it still refuses — first-invalid-wins, not last-write-wins', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = abc\n  window = 50\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.value).toBe('abc');
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+  });
+
+  describe('Given [pack] window valid on the first of two lines, malformed on the second', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it refuses on the second entry', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = 50\n  window = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.value).toBe('abc');
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+  });
+
+  describe('Given [pack] depth = 1k', () => {
+    describe('When readConfig', () => {
+      it('Then pack.depth is 1024', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = 1k\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.depth).toBe(1024);
+      });
+    });
+  });
+
+  describe('Given [pack] depth = 0', () => {
+    describe('When readConfig', () => {
+      it('Then pack.depth is 0 — the disable-deltas value, not a falsy absence', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = 0\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.depth).toBe(0);
+      });
+    });
+  });
+
+  describe('Given [pack] depth = -1', () => {
+    describe('When readConfig', () => {
+      it('Then pack.depth is -1', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = -1\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.depth).toBe(-1);
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — -1 is a legal C int for depth too', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = -1\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] depth is malformed', () => {
+    describe('When readConfig', () => {
+      it('Then pack.depth is absent, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = abc\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.depth).toBeUndefined();
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns the entry with reason invalid unit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.key).toBe('pack.depth');
+        expect(result?.value).toBe('abc');
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+
+    describe('When assertValidPackIntConfig', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying pack.depth', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = abc\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidPackIntConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code === 'CONFIG_BAD_NUMERIC_VALUE') {
+          expect(data.key).toBe('pack.depth');
+          expect(data.reason).toBe('invalid unit');
+        }
+      });
+    });
+  });
+
+  describe('Given [pack] depth beyond the C int range', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns the entry with reason out of range', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = 2147483648\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given [pack] depth malformed on the first of two lines, valid on the second', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it still refuses — first-invalid-wins, not last-write-wins', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = abc\n  depth = 50\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.value).toBe('abc');
+      });
+    });
+  });
+
+  describe('Given [pack] depth valid on the first of two lines, malformed on the second', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it refuses on the second entry', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  depth = 50\n  depth = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.value).toBe('abc');
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory = 1k', () => {
+    describe('When readConfig', () => {
+      it('Then pack.windowMemory is 1024', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 1k\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.windowMemory).toBe(1024);
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory = 0', () => {
+    describe('When readConfig', () => {
+      it('Then pack.windowMemory is 0 — unlimited, not a falsy absence', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 0\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.windowMemory).toBe(0);
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory is malformed', () => {
+    describe('When readConfig', () => {
+      it('Then pack.windowMemory is absent, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = abc\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.windowMemory).toBeUndefined();
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns the all-lowercase key with reason invalid unit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.key).toBe('pack.windowmemory');
+        expect(result?.value).toBe('abc');
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+
+    describe('When assertValidPackIntConfig', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying the all-lowercase key', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = abc\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidPackIntConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code === 'CONFIG_BAD_NUMERIC_VALUE') {
+          expect(data.key).toBe('pack.windowmemory');
+          expect(data.reason).toBe('invalid unit');
+        }
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory = -1', () => {
+    describe('When readConfig', () => {
+      it('Then pack.windowMemory is absent — negative refuses here, unlike window/depth', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = -1\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.windowMemory).toBeUndefined();
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it is reported with reason invalid unit, NOT out of range — the unsigned-long bound', async () => {
+        // Arrange — the trap: window/depth accept -1 as their own disable-deltas
+        // value; windowMemory has no sign at all, so the same value refuses here.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = -1\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('invalid unit');
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory beyond the C int range but within its own unsigned long bound', () => {
+    describe('When readConfig', () => {
+      it('Then pack.windowMemory is 4294967296 — accepted where the same value is out of range for pack.depth', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 4294967296\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.windowMemory).toBe(4294967296);
+      });
+    });
+
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — the C int ceiling does not apply to this key', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 4294967296\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory in the documented int64-vs-unsigned-long divergence gap', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it reports out of range — real git accepts this value, tsgit does not (documented divergence)', async () => {
+        // Arrange — 18446744073709551615 is inside [2**63, 2**64), which real
+        // git's unsigned long accepts but tsgit's int64-bounded parseGitInt cannot.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 18446744073709551615\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.reason).toBe('out of range');
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory malformed on the first of two lines, valid on the second', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it still refuses — first-invalid-wins, not last-write-wins', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = abc\n  windowMemory = 8k\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.value).toBe('abc');
+      });
+    });
+  });
+
+  describe('Given [pack] windowMemory valid on the first of two lines, malformed on the second', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it refuses on the second entry', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  windowMemory = 8k\n  windowMemory = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result?.value).toBe('abc');
+      });
+    });
+  });
+
+  describe('Given no [pack] section', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+
+    describe('When assertValidPackIntConfig', () => {
+      it('Then it resolves (no throw)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act + Assert
+        await assertValidPackIntConfig(ctx);
+      });
+    });
+  });
+
+  describe('Given a [pack] section with an unrelated key holding a non-numeric value', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it is ignored — only window/depth/windowMemory are checked', async () => {
+        // Arrange — without the key guard, `threads`'s own value would be
+        // handed to `parseGitInt` and misreported under one of the pack keys.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  threads = many\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

@@ -29,6 +29,11 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
     reason: 'internal working-tree materialisation primitive reused by apply-sparse-checkout',
   },
   {
+    name: 'assertValidPackIntConfig',
+    reason:
+      'internal pack-config refusal gate for pack.window/pack.depth/pack.windowMemory; not yet wired into a repo.primitives-bound command',
+  },
+  {
     name: 'buildIndexFromTree',
     reason: 'internal index-rebuild primitive reused by stash/reset',
   },
@@ -60,6 +65,11 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
   {
     name: 'fetchPack',
     reason: 'internal smart-HTTP fetch primitive reused by clone/fetch/fetchMissing',
+  },
+  {
+    name: 'findFirstInvalidPackInt',
+    reason:
+      'cold-path finder backing assertValidPackIntConfig, not part of the documented Tier-2 surface',
   },
   {
     name: 'findFirstValuelessEntry',
