@@ -50,7 +50,7 @@ export interface DeltaIndex {
 
 // --- Instruction byte emitters (mirror delta.ts's decoder) ----------------
 
-function encodeDeltaVarInt(value: number): number[] {
+function encodeDeltaVarInt(value: number): Uint8Array {
   const bytes: number[] = [];
   let remaining = value;
   for (let i = 0; i < MAX_VARINT_BYTES; i += 1) {
@@ -58,7 +58,7 @@ function encodeDeltaVarInt(value: number): number[] {
     remaining = Math.floor(remaining / 0x80);
     if (remaining === 0) {
       bytes.push(byte);
-      return bytes;
+      return Uint8Array.from(bytes);
     }
     bytes.push(byte | 0x80);
   }
@@ -96,15 +96,21 @@ function encodeCopySize(size: number): CopyField {
   return { cmdBits, bytes };
 }
 
-function encodeCopy(offset: number, size: number): number[] {
+function encodeCopy(offset: number, size: number): Uint8Array {
   const offsetField = encodeCopyOffset(offset);
   const sizeField = encodeCopySize(size);
   const cmd = 0x80 | offsetField.cmdBits | sizeField.cmdBits;
-  return [cmd, ...offsetField.bytes, ...sizeField.bytes];
+  return Uint8Array.from([cmd, ...offsetField.bytes, ...sizeField.bytes]);
 }
 
-function encodeInsert(data: Uint8Array): number[] {
-  return [data.length, ...data];
+/** `data` is always ≤ `MAX_INSERT_BYTES` by construction — every caller
+ *  chunks first — so this never validates length; `assertValidInsert`
+ *  guards the caller-facing `serializeDelta` path instead. */
+function encodeInsert(data: Uint8Array): Uint8Array {
+  const result = new Uint8Array(data.length + 1);
+  result[0] = data.length;
+  result.set(data, 1);
+  return result;
 }
 
 // --- serializeDelta: the caller-facing, fully-validated codec -------------
@@ -124,7 +130,7 @@ function assertValidInsert(data: Uint8Array): void {
   }
 }
 
-function encodeDeltaInstruction(instruction: DeltaInstruction): number[] {
+function encodeDeltaInstruction(instruction: DeltaInstruction): Uint8Array {
   if (instruction.type === 'copy') {
     assertValidCopy(instruction.offset, instruction.size);
     return encodeCopy(instruction.offset, instruction.size);
@@ -133,16 +139,32 @@ function encodeDeltaInstruction(instruction: DeltaInstruction): number[] {
   return encodeInsert(instruction.data);
 }
 
+/** Copies each chunk into one pre-sized buffer by reference — never a
+ *  spread call, so arity is never a concern regardless of chunk count or
+ *  size. `length` is the caller's own running total, not recomputed here,
+ *  so a single pass over `chunks` both sizes and fills the result. */
+function assembleParts(chunks: ReadonlyArray<Uint8Array>, length: number): Uint8Array {
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
 export function serializeDelta(
   sourceLength: number,
   targetLength: number,
   instructions: ReadonlyArray<DeltaInstruction>,
 ): Uint8Array {
-  const bytes = [...encodeDeltaVarInt(sourceLength), ...encodeDeltaVarInt(targetLength)];
-  for (const instruction of instructions) {
-    bytes.push(...encodeDeltaInstruction(instruction));
-  }
-  return Uint8Array.from(bytes);
+  const chunks: Uint8Array[] = [
+    encodeDeltaVarInt(sourceLength),
+    encodeDeltaVarInt(targetLength),
+    ...instructions.map(encodeDeltaInstruction),
+  ];
+  const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  return assembleParts(chunks, length);
 }
 
 // --- DeltaIndex: the base's block hash table --------------------------------
@@ -265,28 +287,58 @@ function findBestMatch(
   return best;
 }
 
-function encodeLiteralRun(target: Uint8Array, start: number, end: number): number[] {
-  const bytes: number[] = [];
-  let cursor = start;
-  while (cursor < end) {
-    const chunkEnd = Math.min(cursor + MAX_INSERT_BYTES, end);
-    bytes.push(...encodeInsert(target.subarray(cursor, chunkEnd)));
-    cursor = chunkEnd;
-  }
-  return bytes;
-}
-
 interface Emitter {
-  readonly parts: number[];
+  readonly parts: Uint8Array[];
   readonly maxSize: number | undefined;
   emitted: number;
 }
 
-function emit(state: Emitter, bytes: ReadonlyArray<number>): boolean {
+/** `bytes` is pushed by reference, never spread — the element-based
+ *  predecessor spread one call argument per byte, which V8 caps well
+ *  under the size a single object's literal run can reach. */
+function emit(state: Emitter, bytes: Uint8Array): boolean {
   state.emitted += bytes.length;
   if (state.maxSize !== undefined && state.emitted > state.maxSize) return false;
-  state.parts.push(...bytes);
+  state.parts.push(bytes);
   return true;
+}
+
+/** Flushes `[start, end)` as one INSERT — a no-op for an empty range, since
+ *  INSERT with N=0 is reserved. Every caller guarantees `end - start <
+ *  MAX_INSERT_BYTES`: the periodic flush below never lets a pending run
+ *  grow past it. */
+function flushPendingLiteral(
+  state: Emitter,
+  target: Uint8Array,
+  start: number,
+  end: number,
+): boolean {
+  if (start === end) return true;
+  return emit(state, encodeInsert(target.subarray(start, end)));
+}
+
+interface ScanCursor {
+  readonly pos: number;
+  readonly literalStart: number;
+}
+
+/** Emits the pending literal run plus the COPY for `match`, returning where
+ *  the scan resumes — or `undefined` if maxSize was breached mid-flush. */
+function emitMatch(
+  state: Emitter,
+  target: Uint8Array,
+  literalStart: number,
+  match: Match,
+): ScanCursor | undefined {
+  if (!flushPendingLiteral(state, target, literalStart, match.targetStart)) return undefined;
+  if (!emit(state, encodeCopy(match.baseOffset, match.length))) return undefined;
+  const pos = match.targetStart + match.length;
+  return { pos, literalStart: pos };
+}
+
+function emitHeader(state: Emitter, baseLength: number, targetLength: number): boolean {
+  if (!emit(state, encodeDeltaVarInt(baseLength))) return false;
+  return emit(state, encodeDeltaVarInt(targetLength));
 }
 
 export function encodeDeltaFromIndex(
@@ -295,8 +347,7 @@ export function encodeDeltaFromIndex(
   maxSize?: number,
 ): Uint8Array | undefined {
   const state: Emitter = { parts: [], maxSize, emitted: 0 };
-  if (!emit(state, encodeDeltaVarInt(index.base.length))) return undefined;
-  if (!emit(state, encodeDeltaVarInt(target.length))) return undefined;
+  if (!emitHeader(state, index.base.length, target.length)) return undefined;
 
   let pos = 0;
   let literalStart = 0;
@@ -306,19 +357,27 @@ export function encodeDeltaFromIndex(
         ? findBestMatch(index, target, pos, literalStart)
         : undefined;
 
-    if (match === undefined || match.length < DELTA_BLOCK_BYTES) {
-      pos += 1;
+    if (match !== undefined && match.length >= DELTA_BLOCK_BYTES) {
+      const cursor = emitMatch(state, target, literalStart, match);
+      if (cursor === undefined) return undefined;
+      pos = cursor.pos;
+      literalStart = cursor.literalStart;
       continue;
     }
 
-    if (!emit(state, encodeLiteralRun(target, literalStart, match.targetStart))) return undefined;
-    if (!emit(state, encodeCopy(match.baseOffset, match.length))) return undefined;
-    pos = match.targetStart + match.length;
+    // Flush every full MAX_INSERT_BYTES chunk the moment it accumulates —
+    // this is what lets a losing candidate's maxSize breach abort mid-scan
+    // instead of only after the whole object has been walked, and it caps
+    // how much a later match's backward extension may reclaim (only the
+    // still-pending, not-yet-flushed tail).
+    pos += 1;
+    if (pos - literalStart < MAX_INSERT_BYTES) continue;
+    if (!emit(state, encodeInsert(target.subarray(literalStart, pos)))) return undefined;
     literalStart = pos;
   }
 
-  if (!emit(state, encodeLiteralRun(target, literalStart, target.length))) return undefined;
-  return Uint8Array.from(state.parts);
+  if (!flushPendingLiteral(state, target, literalStart, target.length)) return undefined;
+  return assembleParts(state.parts, state.emitted);
 }
 
 export function encodeDelta(

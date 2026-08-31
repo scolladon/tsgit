@@ -5,10 +5,28 @@ import {
   createDeltaIndex,
   DELTA_BLOCK_BYTES,
   encodeDelta,
+  encodeDeltaFromIndex,
   MAX_COPY_BYTES,
   MAX_INSERT_BYTES,
   serializeDelta,
 } from '../../../../src/domain/storage/delta-encode.js';
+
+/** A `Uint8Array` that records the `end` argument of every `subarray()`
+ *  call made against it — the only way to observe, from outside the
+ *  module, how far into `target` the scan actually reached before it
+ *  stopped emitting literal chunks. */
+class SubarrayTrackingTarget extends Uint8Array<ArrayBuffer> {
+  readonly subarrayEnds: number[] = [];
+
+  override subarray(start?: number, end?: number): Uint8Array<ArrayBuffer> {
+    this.subarrayEnds.push(end ?? this.length);
+    return super.subarray(start, end);
+  }
+}
+
+function fillWithNonRepeatingBytes(target: Uint8Array): void {
+  for (let i = 0; i < target.length; i += 1) target[i] = i % 256;
+}
 
 describe('delta-encode', () => {
   describe('serializeDelta', () => {
@@ -659,6 +677,114 @@ describe('delta-encode', () => {
           expect(parsed.instructions).toEqual([
             { type: 'copy', offset: 2 * DELTA_BLOCK_BYTES, size: target.length },
           ]);
+        });
+      });
+    });
+
+    describe('Given a literal run of exactly MAX_INSERT_BYTES unmatched bytes', () => {
+      describe('When encoding', () => {
+        it('Then it emits a single INSERT instruction of length MAX_INSERT_BYTES', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const target = new Uint8Array(MAX_INSERT_BYTES);
+          fillWithNonRepeatingBytes(target);
+          const sut = encodeDelta;
+
+          // Act
+          const result = sut(base, target);
+
+          // Assert
+          const parsed = parseDelta(result!);
+          expect(parsed.instructions).toEqual([{ type: 'insert', data: target }]);
+        });
+      });
+    });
+
+    describe('Given a literal run of MAX_INSERT_BYTES + 1 unmatched bytes', () => {
+      describe('When encoding', () => {
+        it('Then it emits two INSERT instructions split exactly at MAX_INSERT_BYTES', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const target = new Uint8Array(MAX_INSERT_BYTES + 1);
+          fillWithNonRepeatingBytes(target);
+          const sut = encodeDelta;
+
+          // Act
+          const result = sut(base, target);
+
+          // Assert
+          const parsed = parseDelta(result!);
+          expect(parsed.instructions).toEqual([
+            { type: 'insert', data: target.subarray(0, MAX_INSERT_BYTES) },
+            { type: 'insert', data: target.subarray(MAX_INSERT_BYTES) },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a literal run of at least 128 KB that matches nothing in the base', () => {
+      describe('When encoding with no maxSize', () => {
+        it('Then it does not throw and the result round-trips through applyDelta', () => {
+          // Arrange — an empty base guarantees every byte is a literal; the
+          // length exceeds the ~120,000-element V8 spread-arity ceiling that
+          // crashed the old element-based emitter.
+          const base = new Uint8Array(0);
+          const target = new Uint8Array(140_000);
+          fillWithNonRepeatingBytes(target);
+          const sut = encodeDelta;
+
+          // Act
+          const result = sut(base, target);
+
+          // Assert
+          expect(result).toBeDefined();
+          expect(applyDelta(base, result!)).toEqual(target);
+        });
+      });
+    });
+
+    describe('Given a literal run of at least 128 KB and a maxSize that comfortably fits it', () => {
+      describe('When encoding via encodeDeltaFromIndex', () => {
+        it('Then it does not throw and the result round-trips through applyDelta', () => {
+          // Arrange — maxSize alone never protected against the crash: it
+          // only rejected on the cumulative total, so a single run under
+          // budget was still spread verbatim.
+          const base = new Uint8Array(0);
+          const index = createDeltaIndex(base);
+          const target = new Uint8Array(140_000);
+          fillWithNonRepeatingBytes(target);
+          const sut = encodeDeltaFromIndex;
+
+          // Act — generous enough to absorb the per-chunk length-prefix
+          // overhead the 127-byte INSERT chunking adds on top of raw bytes.
+          const result = sut(index, target, target.length * 2);
+
+          // Assert
+          expect(result).toBeDefined();
+          expect(applyDelta(base, result!)).toEqual(target);
+        });
+      });
+    });
+
+    describe('Given a losing-candidate scan and a maxSize breached well before the end of target', () => {
+      describe('When encoding via encodeDeltaFromIndex', () => {
+        it('Then it stops flushing literal chunks long before reaching the end of target', () => {
+          // Arrange — empty base means nothing ever matches, so this is the
+          // dominant "nothing wins" scan shape; the assertion is on how far
+          // subarray() was actually called, not on timing.
+          const base = new Uint8Array(0);
+          const index = createDeltaIndex(base);
+          const target = new SubarrayTrackingTarget(new ArrayBuffer(10_000));
+          fillWithNonRepeatingBytes(target);
+          const sut = encodeDeltaFromIndex;
+
+          // Act
+          const result = sut(index, target, 500);
+
+          // Assert
+          expect(result).toBeUndefined();
+          const maxObservedEnd = Math.max(...target.subarrayEnds);
+          expect(maxObservedEnd).toBeLessThan(target.length / 2);
         });
       });
     });
