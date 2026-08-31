@@ -143,10 +143,13 @@ describe('delta', () => {
     describe('Given base >= 64KB and delta with COPY size=0 (→ 0x10000)', () => {
       describe('When applying', () => {
         it('Then copies 64KB', () => {
-          // Arrange
+          // Arrange — a literal delta, not buildDelta: the production encoder never emits
+          // the size=0 shorthand, so this is the only fixture left that exercises it.
+          // header: varint(0x10000) x2 = [0x80,0x80,0x04] each; body: cmd=0x80 (no offset
+          // bits, no size bits) => decodeCopyFields reads offset=0, size=0 -> 0x10000.
           const base = new Uint8Array(0x10000);
           base.fill(0xaa);
-          const delta = buildDelta(0x10000, 0x10000, [{ type: 'copy', offset: 0, size: 0x10000 }]);
+          const delta = new Uint8Array([0x80, 0x80, 0x04, 0x80, 0x80, 0x04, 0x80]);
 
           // Act
           const result = applyDelta(base, delta);
