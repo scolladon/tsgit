@@ -293,9 +293,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
       await writeFile(scratchPack, tsgitPackBytes);
 
       // Act
-      const result = tryRunGitWithExit(['index-pack', '--strict', '-v', scratchPack], {
-        env: { ...process.env, GIT_CEILING_DIRECTORIES: os.tmpdir() },
-      });
+      const result = tryRunGitWithExit(['index-pack', '--strict', '-v', scratchPack]);
 
       // Assert
       expect(result.exitCode).toBe(0);
@@ -342,12 +340,13 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
       const checkOut = execFileSync(
         'git',
         ['-C', tsgitGcDir, 'cat-file', '--batch-all-objects', '--batch-check=%(objectname)'],
-        { encoding: 'utf8', maxBuffer },
+        { encoding: 'utf8', maxBuffer, env: runGitEnv() },
       );
       const batchOut = execFileSync('git', ['-C', tsgitGcDir, 'cat-file', '--batch'], {
         input: checkOut,
         encoding: 'utf8',
         maxBuffer,
+        env: runGitEnv(),
       });
 
       // Assert
@@ -455,9 +454,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
         await writeFile(scratchPack, corrupted);
 
         // Act
-        const result = tryRunGitWithExit(['index-pack', '--strict', '-v', scratchPack], {
-          env: { ...process.env, GIT_CEILING_DIRECTORIES: os.tmpdir() },
-        });
+        const result = tryRunGitWithExit(['index-pack', '--strict', '-v', scratchPack]);
 
         // Assert
         expect(result.exitCode).toBe(128);
@@ -544,9 +541,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
       const idxBytes = await readFile(idxPath);
       const offsets = showIndexOffsets(idxBytes);
       const counts = typeNibbleCounts(packBytes, offsets);
-      const result = tryRunGitWithExit(['index-pack', '--strict', '-v', packPath], {
-        env: { ...process.env, GIT_CEILING_DIRECTORIES: os.tmpdir() },
-      });
+      const result = tryRunGitWithExit(['index-pack', '--strict', '-v', packPath]);
 
       // Assert
       expect(counts.ofs).toBeGreaterThan(0);
@@ -613,9 +608,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
       const idxBytes = await readFile(idxPath);
       const offsets = showIndexOffsets(idxBytes);
       const counts = typeNibbleCounts(packBytes, offsets);
-      const verifyResult = tryRunGitWithExit(['index-pack', '--verify', packPath], {
-        env: { ...process.env, GIT_CEILING_DIRECTORIES: os.tmpdir() },
-      });
+      const verifyResult = tryRunGitWithExit(['index-pack', '--verify', packPath]);
 
       // Assert
       expect(counts.ofs).toBeGreaterThan(0);
