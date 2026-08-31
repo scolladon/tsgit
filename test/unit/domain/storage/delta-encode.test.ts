@@ -24,7 +24,7 @@ class SubarrayTrackingTarget extends Uint8Array<ArrayBuffer> {
   }
 }
 
-function fillWithNonRepeatingBytes(target: Uint8Array): void {
+function fillWithCyclicBytes(target: Uint8Array): void {
   for (let i = 0; i < target.length; i += 1) target[i] = i % 256;
 }
 
@@ -687,7 +687,7 @@ describe('delta-encode', () => {
           // Arrange
           const base = new Uint8Array(0);
           const target = new Uint8Array(MAX_INSERT_BYTES);
-          fillWithNonRepeatingBytes(target);
+          fillWithCyclicBytes(target);
           const sut = encodeDelta;
 
           // Act
@@ -706,7 +706,7 @@ describe('delta-encode', () => {
           // Arrange
           const base = new Uint8Array(0);
           const target = new Uint8Array(MAX_INSERT_BYTES + 1);
-          fillWithNonRepeatingBytes(target);
+          fillWithCyclicBytes(target);
           const sut = encodeDelta;
 
           // Act
@@ -730,7 +730,7 @@ describe('delta-encode', () => {
           // crashed the old element-based emitter.
           const base = new Uint8Array(0);
           const target = new Uint8Array(140_000);
-          fillWithNonRepeatingBytes(target);
+          fillWithCyclicBytes(target);
           const sut = encodeDelta;
 
           // Act
@@ -752,7 +752,7 @@ describe('delta-encode', () => {
           const base = new Uint8Array(0);
           const index = createDeltaIndex(base);
           const target = new Uint8Array(140_000);
-          fillWithNonRepeatingBytes(target);
+          fillWithCyclicBytes(target);
           const sut = encodeDeltaFromIndex;
 
           // Act — generous enough to absorb the per-chunk length-prefix
@@ -775,16 +775,16 @@ describe('delta-encode', () => {
           const base = new Uint8Array(0);
           const index = createDeltaIndex(base);
           const target = new SubarrayTrackingTarget(new ArrayBuffer(10_000));
-          fillWithNonRepeatingBytes(target);
+          fillWithCyclicBytes(target);
           const sut = encodeDeltaFromIndex;
 
           // Act
           const result = sut(index, target, 500);
 
-          // Assert
+          // Assert — pins both that flushing happened and exactly where it stopped;
+          // Math.max(...[]) === -Infinity would pass vacuously if flushing stopped entirely.
           expect(result).toBeUndefined();
-          const maxObservedEnd = Math.max(...target.subarrayEnds);
-          expect(maxObservedEnd).toBeLessThan(target.length / 2);
+          expect(target.subarrayEnds).toEqual([127, 254, 381, 508]);
         });
       });
     });

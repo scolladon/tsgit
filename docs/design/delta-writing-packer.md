@@ -781,10 +781,7 @@ for each entry E in sorted order:
                                      : min(searchBound, best.delta.length - 1)
         d = encodeDelta(C.content, E.content, maxSize)
         if d === undefined: continue                  // aborted over maxSize
-        if best === undefined
-           or d.length < best.delta.length
-           or (d.length === best.delta.length and C.chainDepth < best.base.chainDepth):
-            best = { delta: d, base: C }
+        best = { delta: d, base: C }                  // reaching here means d is strictly smaller
     emit(E, best)
 ```
 
@@ -796,11 +793,19 @@ for each entry E in sorted order:
 - **`DELTA_ACCEPT_RATIO = 0.5`** is the search's cheap upper bound: a delta bigger than half
   the target is very unlikely to survive the real acceptance test below, and bounding the
   search this way is what keeps the per-object cost near-constant.
-- **Ties keep the earlier-visited candidate.** Both comparisons are strict `<`, so a candidate
-  that matches the incumbent on length *and* chain depth loses; since candidates are visited in
-  a fixed order over a deterministic list, "earlier wins" is itself a deterministic rule and no
-  further oid tie-break is needed. This is deliberate — an extra oid comparison would be a
-  branch with no reachable state, which mutation testing would (correctly) flag as dead.
+- **The search bound forecloses ties.** Once `best` is set, `maxSize` is `best.delta.length - 1`,
+  and `encodeDelta` returns `undefined` for anything that does not fit under it — so `d.length ===
+  best.delta.length` can never hold, and a candidate only ever replaces `best` by being *strictly*
+  smaller. Candidates are visited most-recently-added first over a deterministic list, so the
+  policy is exactly "strictly smaller wins; ties go to the most recently admitted window member" —
+  an older candidate that would have tied on length instead aborts against `maxSize` and never gets
+  the chance to compete. No explicit chain-depth or oid comparison is needed to break a tie,
+  because no tie can occur: earlier drafts of this design compared chain depth on a length-equal
+  match and reasoned that a further oid tie-break on *that* would be a branch with no reachable
+  state, which mutation testing would (correctly) flag as dead. That reasoning was right, and it
+  applies one level further in than it realised — the chain-depth comparison itself is the dead
+  branch, not just an oid comparison layered on top of it, which is why the shipped comparator has
+  neither.
 - The window is a plain ring buffer of fixed length `W`, not a heap and not a `Map`. Its
   eviction is positional, so its content is a pure function of the sorted order (R9).
 - Each window member's delta index (§2b) is built **once**, when it enters the window, and
@@ -912,7 +917,7 @@ table below is the checklist a reviewer walks:
 | Candidate visit order | Array walk, most-recent-first; no `Map`/`Set` iteration anywhere in the hot path |
 | Index bucket walk | `Int32Array` chain, most-recent-first, capped at `MAX_CANDIDATES_PER_BUCKET` |
 | Match tie-break | Lower base offset, then lower base index — total |
-| Candidate tie-break | `(delta length, base chain depth, base oid)` — total |
+| Candidate tie-break | Strictly-smaller-only acceptance forecloses ties; most-recently-admitted window member wins by visit order |
 | Acceptance | A comparison of two byte lengths |
 | `deflate` | Deterministic **within** an adapter (already the pack surface's contract) |
 | Config | Read once per `buildPack` call through the memoised `readConfig`; never re-read mid-pass |

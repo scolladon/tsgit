@@ -236,7 +236,21 @@ function matchBackward(
 
 /** Extends a candidate both ways; backward is capped so it never crosses
  *  into bytes already flushed as INSERT — only the pending, not-yet-emitted
- *  literal run (`pos - literalStart`) may be reclaimed into the match. */
+ *  literal run (`pos - literalStart`) may be reclaimed into the match.
+ *
+ *  Trade accepted: capping reclaim to the not-yet-flushed tail means backward
+ *  extension can no longer compensate when `MAX_CANDIDATES_PER_BUCKET`
+ *  hides the true base block behind a full bucket chain — on a synthetic
+ *  self-similar worst case (a 251-byte ramp whose 15 blocks all collide
+ *  into one bucket) the resulting delta can run up to 44x larger than the
+ *  optimum. Measured on 649 real blob pairs from this repo's history the
+ *  effect is negligible: +260 bytes on 3.86 MB of deltas (+0.01%), worst
+ *  single case 1.09x, 604/649 byte-identical. The alternative — a reclaim
+ *  floor independent of the flush cursor — would let a match dig back into
+ *  target bytes already committed to output, reopening the unbounded
+ *  pending-literal growth this incremental flush exists to prevent. The
+ *  underlying weakness is the candidate-per-bucket cap hiding the base
+ *  block in the first place; that is pre-existing and out of scope here. */
 function evaluateCandidate(
   index: DeltaIndex,
   target: Uint8Array,
