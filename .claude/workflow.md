@@ -46,6 +46,16 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   and for every entry either land a `docs(<scope>): …` fix or record why it is
   intentionally code-only. It is informational today and blocking soon, so an unread
   comment is a merge-time surprise waiting to happen.
+- **Tool bootstrap in agent spawns** — every spawn prompt for an agent that will *edit
+  code* carries a short block with the two literal `ToolSearch` calls (graft's five tools,
+  serena's six) plus one worked example per tool, pre-filled from that part's own context,
+  above the context-file references. Measured over one full run: agents that edit code made
+  321 MCP calls across 16 spawns, against 0 across 6 read-only spawns — and three read-only
+  agents ran the ToolSearch calls and then used nothing. So the block is worth its prompt
+  space for implementers and refactor executors, and is not worth it for reviewers, planners or
+  docs writers, whose natural instrument is Bash over a diff. Evidence and the full split:
+  `.claude/workflow/code-navigation.md`.
+
 - **`review-batch: check:spelling`** — the md-scoped commit hook misses words in TS test
   titles/comments and doc filenames; per-batch spelling beats a failed validate. The
   cspell dict lags on some British `-ising/-ised` forms — full validate is the authority.
