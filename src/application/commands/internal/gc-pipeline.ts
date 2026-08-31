@@ -7,7 +7,7 @@
  * doc for the task's observable contract.
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
-import { type PackIndexWriterEntry, parseMultiPackIndex } from '../../../domain/storage/index.js';
+import { parseMultiPackIndex } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { DirEntry, FileStat } from '../../../ports/file-system.js';
@@ -443,13 +443,6 @@ function partitionByCutoff(
   return { survivors, doomed };
 }
 
-function indexEntriesFor(
-  oids: ReadonlyArray<ObjectId>,
-  entries: ReadonlyArray<{ readonly crc32: number; readonly offset: number }>,
-): ReadonlyArray<PackIndexWriterEntry> {
-  return oids.map((id, i) => ({ id, crc32: entries[i]!.crc32, offset: entries[i]!.offset }));
-}
-
 interface NormalPackOutcome {
   readonly packId: ObjectId | undefined;
   /**
@@ -485,7 +478,7 @@ async function buildAndWriteNormalPack(
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
-    entries: indexEntriesFor(oids, pack.entries),
+    entries: pack.entries,
     packSha: pack.sha,
     promisor: false,
   });
@@ -528,7 +521,7 @@ async function buildAndWritePromisorPack(
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
-    entries: indexEntriesFor(oids, pack.entries),
+    entries: pack.entries,
     packSha: pack.sha,
     promisor: true,
   });
@@ -561,7 +554,7 @@ async function buildAndWriteCruftPack(
   if (existingCruftShas.has(pack.sha)) return pack.sha as ObjectId;
   const written = await writeCruftPack(ctx, {
     packDir,
-    entries: indexEntriesFor(survivors, pack.entries),
+    entries: pack.entries,
     packBytes: pack.bytes,
     packSha: pack.sha,
     mtimeOf: (id) => mtimeOrThrow(mtimes, id),

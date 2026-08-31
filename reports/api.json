@@ -75754,39 +75754,23 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Per-entry crc32/offset, in "
+										"text": "One "
 									},
 									{
 										"kind": "code",
-										"text": "`input.oids`"
+										"text": "`{ id, crc32, offset }`"
 									},
 									{
 										"kind": "text",
-										"text": " order — "
+										"text": " triple per object, in EMISSION order. Each\n meta carries its own identity, so a caller keys on "
 									},
 									{
 										"kind": "code",
-										"text": "`serializePackfile`"
+										"text": "`id`"
 									},
 									{
 										"kind": "text",
-										"text": "'s\n own metas, passed through so a caller (e.g. "
-									},
-									{
-										"kind": "code",
-										"text": "`pack-objects`"
-									},
-									{
-										"kind": "text",
-										"text": ") can build a\n matching "
-									},
-									{
-										"kind": "code",
-										"text": "`.idx`"
-									},
-									{
-										"kind": "text",
-										"text": " without recomputing offsets or checksums."
+										"text": " and can never\n pair a checksum with the wrong object."
 									}
 								]
 							},
@@ -75797,8 +75781,8 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 9356,
-										"name": "PackEntryMeta",
+										"target": 9362,
+										"name": "PackIndexWriterEntry",
 										"package": "@scolladon/tsgit"
 									}
 								}

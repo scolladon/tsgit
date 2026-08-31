@@ -15,7 +15,7 @@ import type { ObjectType } from '../../domain/objects/index.js';
 import { type GitObject, type ObjectId, serializeObject } from '../../domain/objects/index.js';
 import {
   PACK_ENTRY_TYPE,
-  type PackEntryMeta,
+  type PackIndexWriterEntry,
   type PackWriterBaseEntry,
   serializePackfile,
 } from '../../domain/storage/index.js';
@@ -31,10 +31,10 @@ export interface BuildPackResult {
   /** Hex SHA of the pack body, also the trailer (last 20 bytes). */
   readonly sha: string;
   readonly objectCount: number;
-  /** Per-entry crc32/offset, in `input.oids` order — `serializePackfile`'s
-   *  own metas, passed through so a caller (e.g. `pack-objects`) can build a
-   *  matching `.idx` without recomputing offsets or checksums. */
-  readonly entries: ReadonlyArray<PackEntryMeta>;
+  /** One `{ id, crc32, offset }` triple per object, in EMISSION order. Each
+   *  meta carries its own identity, so a caller keys on `id` and can never
+   *  pair a checksum with the wrong object. */
+  readonly entries: ReadonlyArray<PackIndexWriterEntry>;
 }
 
 export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<BuildPackResult> => {
@@ -49,7 +49,8 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
   const bytes = new Uint8Array(packfile.data.length + trailerBytes.length);
   bytes.set(packfile.data, 0);
   bytes.set(trailerBytes, packfile.data.length);
-  return { bytes, sha, objectCount: writerEntries.length, entries: packfile.entries };
+  const entries = input.oids.map((id, i) => ({ id, ...packfile.entries[i]! }));
+  return { bytes, sha, objectCount: writerEntries.length, entries };
 };
 
 const encodeEntry = async (ctx: Context, object: GitObject): Promise<PackWriterBaseEntry> => {

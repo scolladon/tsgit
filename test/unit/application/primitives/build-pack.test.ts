@@ -191,7 +191,7 @@ describe('buildPack', () => {
 
   describe('Given mixed types (blob + tree)', () => {
     describe('When buildPack returns', () => {
-      it('Then entries matches serializePackfile crc32/offset metas, order preserved', async () => {
+      it('Then each meta carries the emission-order oid alongside its crc32/offset', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([1, 2, 3]), id: '' as ObjectId };
@@ -201,14 +201,37 @@ describe('buildPack', () => {
         // Act
         const result = await buildPack(ctx, { oids: [blobId, treeId] });
 
-        // Assert — one entry per oid, in the same order, each offset strictly
-        // increasing from the header.
+        // Assert — one identified triple per oid, in emission order, each
+        // offset strictly increasing from the header.
         expect(result.entries).toHaveLength(2);
+        expect(result.entries[0]?.id).toBe(blobId);
+        expect(result.entries[1]?.id).toBe(treeId);
         expect(result.entries[0]?.offset).toBe(PACK_HEADER_BYTES);
         expect(result.entries[1]?.offset).toBeGreaterThan(result.entries[0]?.offset as number);
         for (const entry of result.entries) {
           expect(Number.isInteger(entry.crc32)).toBe(true);
         }
+      });
+    });
+
+    describe('When the input oid order differs from a hypothetical emission order', () => {
+      it('Then every input oid appears exactly once among result.entries ids', async () => {
+        // Arrange — emission order still equals input order at this point in
+        // the design (delta selection lands later), so this asserts identity
+        // set-wise rather than positionally, which stays true once emission
+        // order stops matching input order.
+        const ctx = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([9, 9]), id: '' as ObjectId };
+        const blobId = await writeObject(ctx, blob);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'z.bin', blobId)]);
+        const oids = [treeId, blobId];
+
+        // Act
+        const result = await buildPack(ctx, { oids });
+
+        // Assert
+        const resultIds = new Set(result.entries.map((entry) => entry.id));
+        expect(resultIds).toEqual(new Set(oids));
       });
     });
   });

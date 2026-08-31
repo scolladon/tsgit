@@ -80,18 +80,11 @@ export const packObjects = async (
 
   const oids = closure.objects.map((object) => object.id);
   const pack = await buildPack(ctx, { oids });
-  // `buildPack` produces exactly one entry per oid, in the same order — the
-  // non-null assertion documents that invariant rather than working around it.
-  const indexEntries = oids.map((id, i) => ({
-    id,
-    crc32: pack.entries[i]!.crc32,
-    offset: pack.entries[i]!.offset,
-  }));
   const outputDirectory = opts.outputDirectory ?? packsDir(commonGitDir(ctx));
   const written = await writePackArtifacts(ctx, {
     packDir: outputDirectory,
     packBytes: pack.bytes,
-    entries: indexEntries,
+    entries: pack.entries,
     packSha: pack.sha,
     promisor: false,
   });
