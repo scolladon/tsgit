@@ -209,6 +209,83 @@ describe('deltifyEntries', () => {
     });
   });
 
+  describe('Given two window members whose raw (pre-deflate) deltas against a later object tie exactly in length', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the strictly-smaller-only bound rejects the tie — the most recently admitted member keeps the win', async () => {
+        // Arrange — idMember1(2000B) and idMember2(1999B) share the same
+        // 1800B high-entropy run; idMember1 is admitted first (older),
+        // idMember2 second (newer, and itself a delta off idMember1). Both
+        // produce a byte-length-identical raw delta against idTarget: same
+        // COPY match (offset 0, length 1800) and the same INSERT tail
+        // (idTarget's own bytes — a base's own tail, present or absent from
+        // the match, is irrelevant; only the shared prefix is ever
+        // matched). maxSize = best.delta.length - 1 makes visit order
+        // (most-recent-first) the sole tie-break: idMember2 is tried first
+        // and wins outright; idMember1's equal-length raw delta must beat
+        // maxSize to unseat it, and an equal length never does.
+        const ctx = await buildSeededContext();
+        const sharedRun = pseudoRandomBytes(600, 1800);
+        const tailMember1 = pseudoRandomBytes(601, 200);
+        const tailMember2 = pseudoRandomBytes(602, 199);
+        const tailTarget = pseudoRandomBytes(603, 50);
+        const member1Content = Uint8Array.from([...sharedRun, ...tailMember1]);
+        const member2Content = Uint8Array.from([...sharedRun, ...tailMember2]);
+        const targetContent = Uint8Array.from([...sharedRun, ...tailTarget]);
+        const idMember1 = await writeBlob(ctx, member1Content);
+        const idMember2 = await writeBlob(ctx, member2Content);
+        const idTarget = await writeBlob(ctx, targetContent);
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 10,
+          maxDepth: 50,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(ctx, [idMember1, idMember2, idTarget], policy);
+
+        // Assert — chainDepth 2 only holds if idTarget based off idMember2
+        // (itself based off idMember1); a wrongly-accepted tie would base
+        // idTarget directly off idMember1, giving chainDepth 1.
+        const targetIndex = result.findIndex((r) => r.id === idTarget);
+        expect(chainDepthOf(result, targetIndex)).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a window whose most-recently-admitted member wins a search and an older member fails it', () => {
+    describe('When deltifyEntries runs', () => {
+      it("Then the older member's failed search leaves the winning candidate untouched", async () => {
+        // Arrange — idMember1 (unrelated random content, admitted
+        // first/older) can never produce a delta for idTarget (no 16+ byte
+        // run matches anywhere); idMember2 (shares idTarget's exact prefix,
+        // admitted second/newer) wins outright. Search visits
+        // most-recent-first, so idMember2's win must survive idMember1's
+        // later, failed attempt.
+        const ctx = await buildSeededContext();
+        const unrelatedContent = pseudoRandomBytes(701, 400);
+        const sharedContent = pseudoRandomBytes(702, 300);
+        const idMember1 = await writeBlob(ctx, unrelatedContent);
+        const idMember2 = await writeBlob(ctx, sharedContent);
+        const idTarget = await writeBlob(ctx, sharedContent.slice(0, 250));
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 10,
+          maxDepth: 50,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(ctx, [idMember1, idMember2, idTarget], policy);
+
+        // Assert
+        expect(findEntry(result, idTarget).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
   describe('Given an object larger than the whole windowMemory budget', () => {
     describe('When deltifyEntries runs', () => {
       it('Then it is never admitted to the window and never becomes a base', async () => {
