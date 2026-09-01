@@ -18,7 +18,7 @@ remaining term. Measured on this repository's own clone pack (15 074 objects): t
 `PackIndexWriterEntry[]` array, each carrying a 40-character hex oid, costs **7.36 MB**, and
 `sortPackIndexEntries` adds **2.42 MB** more — a `SortedEntry` wrapper plus a fresh 20-byte
 `Uint8Array` per object from `hexToBytes(entry.id)`, decoding hex back into bytes the new record
-store already holds. Together **9.79 MB**, about 38 % of the change's ~26 MB ceiling. At
+store already holds. Together **9.79 MB**, a large share of the change's ceiling. At
 1 000 000 objects the pair costs **421.89 MB**; at 10 000 000 it exhausts Node's default heap
 inside `entries.map()`.
 
@@ -53,15 +53,20 @@ about index positions. Only the input shape widens.
 
 ## Consequences
 
-`PackIndexWriterEntry`, `SortedEntry`, `sortPackIndexEntries`, `serializePackIndex` and
-`serializePackRevIndex` all move in `reports/api.json`; the regenerated report is committed and
+`PackIndexWriterEntry`, `SortedEntry`, `sortPackIndexEntries`, `serializePackIndex`,
+`serializePackRevIndex` and `serializeCruftMtimes` all move in `reports/api.json` — the last of
+these because its own signature takes both `PackIndexWriterEntry` and `SortedEntry`, so it
+cannot stay behind; the regenerated report is committed and
 the change is called out in the release notes. The design's R12 ("api.json unchanged") and R13
 ("the serializers are untouched") are both falsified by this decision and are rewritten in the
 design revision rather than left standing.
 
-`build-pack.ts` and `cruft-pack-lifecycle.ts` call `sortPackIndexEntries` without a slab and must
-be reconciled — either by building one or by a narrow adapter over the widened entry point. That
-reconciliation is an engineering choice for the design revision, and it must not fork the
-serializer into two implementations, which is the outcome ADR-625 and `check:duplicates` both
-exist to prevent. The three serializers carry byte-exact goldens and `git verify-pack` cross-tool
+Callers without a slab must be reconciled. The call sites are `write-pack-artifacts.ts:192` and
+`:305` and `cruft-pack-lifecycle.ts:245`, plus three `presorted ?? sortPackIndexEntries(entries)`
+fallbacks inside the serializers themselves (`pack-writer.ts:117`, `rev-index.ts:129`,
+`cruft-pack.ts:56`). `build-pack.ts` is **not** among them — it is the *producer* of
+`PackIndexWriterEntry[]`, which is why the conversion point is a design question rather than a
+call-site edit. That reconciliation is an engineering choice for the design revision, and it must
+not fork the serializer into two implementations, which is the outcome ADR-625 and
+`check:duplicates` both exist to prevent. The three serializers carry byte-exact goldens and `git verify-pack` cross-tool
 pins; those are the regression net and none of them may be weakened to accommodate the new shape.
