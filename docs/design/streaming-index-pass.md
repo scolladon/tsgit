@@ -6,7 +6,7 @@
 > indexer in `git index-pack`'s shape — a sequential first pass that hashes base entries and
 > records delta positions, a second pass that resolves deltas without retaining the whole
 > corpus, thin-pack external bases on the same seam.
-> Status: draft → self-reviewed ×3
+> Status: **revised against ADRs 779–789** (every decision candidate ratified) → self-reviewed ×3
 
 ## Context
 
@@ -52,6 +52,11 @@ consumes to build the `.idx`/`.rev`. Every inflated byte in the pipeline exists 
 two reasons: to compute an oid, and to serve as a delta base. Neither requires retention past
 the moment it is used.
 
+**Three fields, and none of them needs to be an object.** ADR-789 takes that one step further:
+after this change `writePackSiblingArtifacts` consumes the same three fields as *parallel typed
+arrays* (`PackIndexEntries`, §3a) rather than `N` objects carrying hex strings. `WalkedEntry`
+survives only as `walkPackEntries`' return type, for `bundle verify` (ADR-783, §7a).
+
 ### The two entry points and who reaches them
 
 | Entry point | Line | Source | Callers |
@@ -72,14 +77,33 @@ consumed by `bundle-verify.ts` and by `test/unit/application/primitives/fetch-pa
 | **ADR-249** structured data only | The indexer returns fields, never rendered text; `TsgitError.data.reason` *is* observable and is what §8 argues about |
 | **ADR-728** clone pack quarantine | `tmp_pack_<random>` → verify → rename. Unchanged: this design starts *after* the trailer verifies |
 | **ADR-718** read-path hash verification is opt-in | The indexer is a *write* path — it computes oids because it must, not to verify. `bundle-verify` passing `verifyHash: true` is a different surface |
-| **ADR-736** delta-base cache is additive, not a fraction | The prior art for any byte-capped cache added here, and the reason a *new* additive budget must be justified rather than assumed free |
-| **ADR-727** parsed-commit memo is a byte-capped LRU | Same shape; `createLruCache(maxBytes, maxEntries)` with a fixed per-entry overhead term |
+| **ADR-736** delta-base cache is additive, not a fraction | The reason a *new* byte budget must be justified rather than assumed free, **and the citation this design originally got wrong**: ADR-736 *considered* a fraction and **rejected** it, keeping `deltaBaseCache` at a full additive `deltaCacheMaxBytes`. The fraction siblings are ADR-726 (FlatTree, 1/16) and ADR-727 (parsed-object memo, 1/16). There is therefore **no sizing precedent to inherit** — ADR-788 |
+| **ADR-727** parsed-commit memo is a byte-capped LRU | The *mechanical* shape only: `createLruCache(maxBytes, maxEntries)`, a byte cap paired with an entry cap, and an entry sizer carrying a fixed per-entry overhead term — its 2026-08-27 amendment records that omitting that term undercounts a typical entry by roughly an order of magnitude |
+| **ADR-625** one shared pack-offset sort for `.idx` and `.rev` | One ordering definition feeds both serializers so the two artefacts cannot disagree about index positions. ADR-789 widens the *input shape* of that definition and **preserves the invariant** — §6a makes it structural rather than documentary |
+| **ADR-776** `PackWriterEntry` becomes a union | The precedent for ADR-789's break: last release 3.6.0, the 4.0.0 release PR still open, so a published-type change costs no additional major bump |
 | **ADR-770** the base index is two `Int32Array`s | The prior art for §3's record store: parallel typed arrays over an array of objects, chosen so iteration order is an array walk |
 | **ADR-771** both readers accept git's full delta depth | `MAX_DELTA_CHAIN_DEPTH = 50` binds `collectDeltaChain` and fsck's `walkDeltaChain`. It does **not** bind this indexer today (§1f row 9, §8 row l) |
 | **ADR-772** window memory bounds residency | Precedent for preferring git's own config key over a private constant — but `pack.windowMemory` is a *writer* key and is not this path's |
 | **ADR-720** lazy `.rev`-first successor lookup | The read path a freshly indexed pack lands in; untouched |
-| **ADR-722** caches key on a session token | If a cache is introduced it keys on `ctx.session`, never on `Context` identity |
+| **ADR-722** caches key on a session token | ADR-788's base cache keys on `ctx.session`, never on `Context` identity — a `pull` derives a Context between its fetch and its merge, which is the bug family ADR-722 closed |
 | `design/delta-writing-packer.md` §12 | Names this change and records the two seams it moved: `serializePackfile` still takes a materialised array, and `buildPack` gained a metadata pass structurally similar to §2's |
+
+This design's own eleven choices are settled. Each is stated as a rule in §Decisions and cited
+inline where it binds:
+
+| ADR | Settles |
+|---|---|
+| **779** | Pass 2 is a root-down forest walk with a `resolved` duplicate-oid guard (§4) |
+| **780** | The record arrays grow geometrically; the declared count is never an allocation input (§3, §9) |
+| **781** | Base oids hash incrementally through `createHasher()` (§2) |
+| **782** | Pass 2 reads at arbitrary offsets through `ctx.fs.readSlice` (§4) |
+| **783** | The in-memory walk shares the indexer (§6, §11) |
+| **784** | The unresolved-delta refusal is git's count, singular at one (§8) |
+| **785** | A zero or forward OFS base offset refuses as `delta base offset is out of bound` (§2, §8) |
+| **786** | No depth cap in the index pass; the unbounded retained-ancestor term is knowingly accepted (§5, §7, §9) |
+| **787** | Two new modules: `internal/index-pack.ts` + `internal/pack-records.ts` (§6) |
+| **788** | One byte-capped base cache on its own measured budget, replacing `bundle-verify`'s unbounded `Map` (§5) |
+| **789** | The `.idx`/`.rev`/`.mtimes` serializers take the oid slab (§6a, §7, §11) |
 
 ---
 
@@ -91,9 +115,10 @@ Everything below is verifiable by a test named in §Test strategy.
 
 - **R1** The index pass's peak retained bytes are bounded by §7's closed formula —
   `largestEntryInflatedBytes + Σ_{retained ancestors} contentBytes + N × RECORD_BYTES +
-  D × DELTA_RECORD_BYTES + one read window + cacheBudget` — and are **independent of Σ inflated
-  over the pack**. Asserted by a bench-side memory scenario on the §1c fixtures, measured from a
-  child process's kernel high-water mark (§1d's methodology note).
+  D × DELTA_RECORD_BYTES + one read window + INDEX_PASS_BASE_CACHE_MAX_BYTES + idxAssembly` —
+  and are **independent of Σ inflated over the pack**. Asserted by a bench-side memory scenario
+  on the §1c fixtures, measured from a child process's kernel high-water mark (§1d's methodology
+  note).
 - **R2** On fixture **C** (§1c — a real `git clone` pack of tsgit's own history: 27.7 MB pack,
   15 074 objects, 571 MiB total inflated), peak process footprint over baseline does **not
   exceed** `git index-pack --threads=1`'s peak on the same pack at git's defaults — §1e:
@@ -106,8 +131,9 @@ Everything below is verifiable by a test named in §Test strategy.
 
 **Correctness — unchanged observable behaviour**
 
-- **R4** For every pack the current pipeline accepts, the new one returns the **same
-  `WalkedEntry` set** (same oids, same crc32s, same offsets). Proved by running both over the
+- **R4** For every pack the current pipeline accepts, the new one produces the **same
+  `(oid, crc32, offset)` set** — read as a `WalkedEntry[]` through `walkPackEntries`, and as a
+  `PackIndexEntries` slab on the `fetchPack` path (ADR-789). Proved by running both over the
   §1c fixtures and the existing synthetic pack fixtures and comparing sets.
 - **R5** A REF delta whose in-pack base appears at a **higher** offset still resolves (§1f
   pin 6 — git accepts this, and today's fixed-point loop does too). A single forward pass
@@ -130,16 +156,44 @@ Everything below is verifiable by a test named in §Test strategy.
 - **R11** A cyclic REF graph cannot make the indexer loop or allocate unboundedly; termination
   is structural, not a no-progress check (§5).
 
-**Contracts preserved**
+**Contracts moved, deliberately**
 
-- **R12** `reports/api.json` is **unchanged** — no exported symbol's shape moves (§11). If a
-  decision adds a config key this requirement is restated, not silently broken.
-- **R13** `writePackSiblingArtifacts`, `buildIdx`, `buildRev`, `sortPackIndexEntries`,
-  `serializePackIndex` and `serializePackRevIndex` are untouched; the indexer still hands them
-  `ReadonlyArray<PackIndexWriterEntry>`.
+- **R12** `reports/api.json` **moves, and the move is exactly six symbols** (ADR-789):
+  `PackIndexWriterEntry`, `SortedEntry`, `sortPackIndexEntries`, `serializePackIndex`,
+  `serializePackRevIndex` — the five ADR-789 names — plus **`serializeCruftMtimes`**, which
+  ADR-789 does not name but which consumes `SortedEntry` and `PackIndexWriterEntry` in its own
+  signature (`cruft-pack.ts:42,45`) and therefore cannot stay behind (§6a). This is a
+  **breaking change to published types**, and it rides the pending **4.0.0** exactly as ADR-776
+  reasoned for `PackWriterEntry`: the last release is 3.6.0, the 4.0.0 release PR is still open,
+  so it costs one major bump rather than two. The commit carries the conventional-commit `!`
+  breaking marker, as the two prior 4.0.0-bound breaks did.
+  Three symbols are **added** alongside — `PackIndexEntries`, `SortedPackIndex` and
+  `packIndexEntriesFrom` — which is additive, not breaking. The regenerated `reports/api.json`
+  is committed, and its diff is the scope check: **those six moved and three added, and nothing
+  else** (plus `BuildPackResult` if DC-A(b) is taken). Anything further in that diff means the
+  change leaked past its blast radius. No *config* key is added.
+- **R13** The `.idx`, `.rev` and `.mtimes` **bytes are unchanged for every entry set**, while the
+  serializers' input shape widens to the oid slab. Concretely, all four must hold:
+  - **R13a** Every existing byte-exact golden in `pack-writer.test.ts`, `rev-index.test.ts` and
+    `cruft-pack.test.ts` keeps its expected bytes **verbatim**; only the arrangement that builds
+    the input changes. A single moved byte means the change is wrong.
+  - **R13b** `git verify-pack` / `git fsck --strict` / `git show-index` accept a tsgit-written
+    `.idx` produced **from the indexer's own slab**, not only from a converted array
+    (§Test strategy X1, X9).
+  - **R13c** ADR-625's invariant holds and is **strengthened**: one ordering definition still
+    feeds `.idx`, `.rev` and `.mtimes`, and the widened signature makes the pairing structural —
+    the permutation travels *with* the entry set it was computed from, so a caller can no longer
+    hand a serializer a permutation belonging to a different entry set.
+  - **R13d** Exactly **one** implementation of the ordering and of each serializer exists.
+    `check:duplicates` (jscpd) and a direct equivalence test are the oracles (§Test strategy).
 - **R14** `fetch-pack.ts` ends **below** the repo's 800-line file ceiling — the byte-source seam
   moves with the indexer, not just the pipeline, or the file lands *on* the ceiling rather than
   under it (§6). No new module exceeds it either.
+- **R15** The base cache is an **optimisation over an already-correct walk**: with
+  `INDEX_PASS_BASE_CACHE_MAX_BYTES` forced to `0`, every §10 degenerate input, both §1c fixtures
+  and the thin-pack fixtures produce **identical results** — same `WalkedEntry` set, byte-identical
+  `.idx`/`.rev`, same refusals with the same `TsgitError.data` — and differ only in latency
+  (ADR-788). This is a test, not a claim.
 
 ---
 
@@ -246,7 +300,8 @@ Why the multiple exceeds 1.0× even on fixture B, where a base entry's `content`
 `computeLooseObjectId` (`:1026`), which allocates a **full second copy** of every object
 (`headerBytes ++ content`) purely to hand `ctx.hash.hashHex` one buffer. 43.28 MiB live plus
 43.28 MiB of transient copies plus per-entry object overhead lands near the measured 102 MiB,
-and V8's footprint high-water absorbs the churn rather than smoothing it. See DC-3.
+and V8's footprint high-water absorbs the churn rather than smoothing it. ADR-781 removes that
+copy.
 
 > ⚠️ **Methodology note, recorded because it cost an hour.** An in-process sampler
 > (`setImmediate` loop over `process.memoryUsage()`) reported 6.3 MiB for `walkPackEntries` on
@@ -314,8 +369,9 @@ two objects at a time and only a branching one retains ancestors. §7 states the
 
 So git's own shape is a memory-safe resolution algorithm **plus** an optional byte-capped base
 cache that trades up to 96 MiB per thread for roughly 2× wall clock. Those are two separable
-decisions, and this design keeps them separable: DC-1 picks the algorithm, DC-11 decides whether
-the cache ships now and under which budget.
+decisions and were settled separately: ADR-779 takes the memory-safe algorithm, ADR-788 adds one
+byte-capped cache above it on its own measured budget. These numbers are why "no cache" was not
+treated as the free option — it is a deliberate ~2× on clone latency.
 
 Fixture B remains the sharpest single number: **2.51 MB to index 903 objects totalling 45.4 MB
 inflated.** git retains O(1) per object; tsgit retains all of it.
@@ -342,7 +398,7 @@ trailer), then fed to both tools. `git index-pack --strict <file>`; tsgit throug
 | 12 | declared count **>** actual entries | `error: inflate: data stream error (incorrect header check)` + `fatal: pack has bad object at offset 37: inflate returned -3` | 128 | `DECOMPRESS_FAILED` / `incorrect header check` | both refuse, near-identical class |
 | 13 | declared count **<** actual entries | `fatal: pack is corrupted (SHA1 mismatch)` | 128 | `INVALID_PACK_HEADER` / `extra bytes between last entry and trailer` | both refuse, different reason |
 | 14 | OFS distance **>** the delta's own offset | `fatal: pack has bad object at offset 37: delta base offset is out of bound` | 128 | `INVALID_PACK_HEADER` / `OFS_DELTA at offset 37 points before pack body: distance 99999` | both refuse, different reason |
-| 15 | OFS distance **0** (self reference) | `fatal: pack has bad object at offset 37: delta base offset is out of bound` | 128 | `INVALID_PACK_HEADER` / **`unresolved entry at offset 37`** | ⚠️ **wrong refusal** — tsgit's guard is `baseOffset < PACK_HEADER_BYTES` only, so `37 − 0 = 37` passes it and the entry falls through to "base not yet resolved" |
+| 15 | OFS distance **0** (self reference) | `fatal: pack has bad object at offset 37: delta base offset is out of bound` | 128 | `INVALID_PACK_HEADER` / **`unresolved entry at offset 37`** | ⚠️ **wrong refusal** — tsgit's guard is `baseOffset < PACK_HEADER_BYTES` only, so `37 − 0 = 37` passes it and the entry falls through to "base not yet resolved". Fixed by ADR-785 |
 | 15b | OFS distance in range but landing **mid-entry** (base offset 15 inside an entry starting at 12) | `fatal: pack has 1 unresolved delta` | 128 | `INVALID_PACK_HEADER` / `unresolved entry at offset 64` | both refuse; note git's **singular** `delta` at N = 1 |
 | 16 | thin pack (`pack-objects --thin`), 5 REF deltas, bases absent | `fatal: pack has 5 unresolved deltas` | 128 | n/a (external resolver path) | — |
 | 17 | same thin pack, `--stdin --fix-thin` into a repo holding the bases | `pack\t<sha>` on stdout | 0 | n/a | — |
@@ -355,14 +411,16 @@ Three settled facts:
   tsgit names the
   first offending base or offset. Rows 7, 8, 15b and 16 pin it. The redesign changes *which*
   entry would be named first anyway (a root-down walk discovers unresolved entries as a set,
-  not in queue order), so keeping today's strings byte-identical is a cost, not a default —
-  **DC-6**.
+  not in queue order), so keeping today's strings byte-identical would have been a cost, not a
+  default. **ADR-784 takes git's count**, singular at one, under the unchanged
+  `INVALID_PACK_HEADER` code, and does **not** add structured `unresolvedCount` /
+  `firstUnresolvedOffset` fields.
 - **Row 15 is a real defect this design must fix.** git treats a zero distance as out-of-bound;
-  tsgit reports the wrong reason for it — **DC-7**.
+  tsgit reports the wrong reason for it. **ADR-785 widens the guard and adopts git's reason.**
 - **Row 9 is why the indexer must not inherit `MAX_DELTA_CHAIN_DEPTH`.** git's indexer has no
   depth cap, and neither does tsgit's today. ADR-771 pins the *readers* at 50. Row 10 shows the
-  consequence: tsgit will happily index a pack it cannot later read. That gap is pre-existing
-  and is **DC-8**, not something this change may quietly close.
+  consequence: tsgit will happily index a pack it cannot later read. That gap is pre-existing;
+  **ADR-786 leaves it open** rather than closing it with a refusal git does not make.
 
 Also pinned, and used in §7/§9:
 
@@ -372,9 +430,10 @@ Also pinned, and used in §7/§9:
   `(T − 12 − digestLength) / 9` entries, regardless of what its header declares.
 - `core.deltaBaseCacheLimit`, `man 1 git-config`, verbatim: *"Maximum number of bytes **per
   thread** to reserve for caching base objects that may be referenced by multiple deltified
-  objects. … Default is 96 MiB on all platforms."* This is git's own key for exactly the cache
-  DC-1(b) would introduce, and its "per thread" wording is the same multiplication the
-  `--threads` man text describes.
+  objects. … Default is 96 MiB on all platforms."* This is git's own key for *git's* base cache,
+  and its "per thread" wording is the same multiplication the `--threads` man text describes.
+  ADR-788 deliberately does **not** honour this key: it describes a cache whose hit pattern this
+  design does not reproduce, so borrowing its number would imply a parity that is not there.
 - `git index-pack` writes `.idx` **and** `.rev` beside the pack. `--stdin` prints
   `pack\t<sha>`; the file form prints the sha bare.
 
@@ -398,11 +457,15 @@ For entry `i` at absolute offset `o`:
    `dataOffset`, not from the entry start** — the current loop (`:879`) already does this, and
    getting it wrong shifts every subsequent offset by the header width.
 4. Classify:
-   - **base** (`COMMIT|TREE|BLOB|TAG`): compute the oid from `result.output` and store it in
-     the record slab. `result.output` is then dropped.
-   - **OFS delta**: store `baseOffset = o − header.baseDistance`. Whether an out-of-range value
-     refuses *here* rather than falling through to the unresolved path is **DC-7**; §8 row h is
-     the defect it addresses.
+   - **base** (`COMMIT|TREE|BLOB|TAG`): compute the oid from `result.output` **incrementally**
+     — `h = ctx.hash.createHasher(); h.update(headerBytes); h.update(result.output);
+     await h.digestHex()` (ADR-781) — and store it in the record slab. `result.output` is then
+     dropped, or offered to the base cache (§5) when the entry turns out to have children.
+   - **OFS delta**: store `baseOffset = o − header.baseDistance`, **after** the widened guard:
+     `baseOffset < PACK_HEADER_BYTES || baseOffset >= entryOffset` refuses **here**, at the
+     entry, with git's reason `delta base offset is out of bound` (ADR-785). §8 row h is the
+     defect it fixes. A base offset that is in range but lands mid-entry is *not* caught here —
+     it stays an unresolved-delta count under ADR-784, which is the same split git makes.
    - **REF delta**: store `header.baseId`'s bytes.
 5. `o = entryEnd`; loop. The existing `entryEnd > trailerStart` and
    `offset !== trailerStart` guards keep their exact positions and messages.
@@ -414,7 +477,14 @@ inflated payload** plus the read window.
 would let the bytes flow into a hasher without ever existing whole — but it **does not report
 `bytesConsumed`**, so it cannot drive a walk that must find the next entry. Pass 1 therefore
 stays on `streamInflate`, and `largestEntryInflatedBytes` is an irreducible term of §7's bound.
-What *is* removable is the **second** full copy `computeLooseObjectId` makes — DC-3.
+What *is* removed is the **second** full copy `computeLooseObjectId` makes (ADR-781).
+
+**The adapter asymmetry is recorded, not hidden** (ADR-781): Node's `createHasher()` wraps
+`crypto.createHash` and is genuinely incremental; the memory and browser adapters implement it by
+collecting chunks and concatenating at `digest()` time, because SubtleCrypto has no streaming
+digest. So the change is a clear win on Node and *exactly neutral* elsewhere — it never
+regresses, and it removes the copy on the runtime that clones large repositories. If those
+adapters ever gain a true streaming digest they inherit the benefit with no call-site change.
 
 ### 3. The record store
 
@@ -425,7 +495,7 @@ One structure, allocated once, holding every fact pass 2 and the `.idx` writer n
 | `offsets` | `Float64Array(N)` | 8 | Pack offsets exceed `2^32` for packs > 4 GiB, which the `.idx` v2 large-offset table already contemplates. `Uint32Array` would be a silent 4 GiB cliff |
 | `crcValues` | `Int32Array(N)` | 4 | `crc32` is already a signed 32-bit value in `WalkedEntry` |
 | `types` | `Uint8Array(N)` | 1 | 3 bits of pack entry type + a `resolved` flag bit. An all-zero oid slot is **not** a usable "unresolved" sentinel — the zero oid is a legal, if absurd, hash |
-| `oids` | `Uint8Array(N × W)` | 20 (SHA-1) / 32 (SHA-256) | `W = ctx.hash.digestLength`. Flat slab, no per-entry allocation; hex is derived once, at the end, for `PackIndexWriterEntry.id` |
+| `oids` | `Uint8Array(N × W)` | 20 (SHA-1) / 32 (SHA-256) | `W = ctx.hash.digestLength`. Flat slab, no per-entry allocation. **Under ADR-789 this slab is the `.idx`/`.rev` serializers' input** — hex is never derived on the fetch path at all (§3a) |
 | | | **33 / 45** | |
 
 Plus per-delta side tables (`D` deltas, `D_ref` of them REF):
@@ -444,7 +514,16 @@ reason it did there: iteration is an array walk, so nothing on the path has a co
 order a reviewer must reason about, and there is no per-entry object allocation. For fixture C
 that is `15 074 × 33 B ≈ 497 KB` against today's ~15 074 × (2 Map nodes + 3 objects).
 
-**The array must not be sized from `header.objectCount`** (R3, §9). See DC-2.
+**The arrays are never sized from `header.objectCount`** (R3, §9). ADR-780: capacity grows
+**geometrically** from a small initial size as entries are actually parsed; the declared count is
+a loop bound and nothing else. The structural clamp — `(totalBytes − 12 − digestLength) / 9` from
+§1f's pinned 9-byte minimum entry — is kept as a second bound *underneath* the growth, not
+instead of it. A 50 M-entry claim over a 3-entry pack allocates for 3; the cost is a transient
+1.5× during each doubling, bounded by the *real* entry count.
+
+Because capacity exceeds `count`, the arrays are **over-allocated by construction**. Everything
+downstream is bounded by an explicit `count`, never by `array.length` — §3a makes that part of
+the type.
 
 Building the two child indexes at the end of pass 1:
 
@@ -458,10 +537,82 @@ Both are pure sorts over typed arrays. **No `Map`, no `Set`, no `push(...spread)
 `arr.push(...children)` over an array sized by object count overflows the call stack near
 125 k elements, which is well inside the range a real clone reaches.
 
+#### 3a. What crosses the boundary
+
+ADR-789 makes the slab the serializers' input, so its layout is load-bearing beyond pass 2 and
+its type has to be **domain-owned** — the dependency rule is absolute: `domain` never imports
+outward, so an application type may not reach inward.
+
+**Three of the four per-entry arrays cross. The fourth, and every delta side table, never does.**
+
+| Array | Crosses? | Why |
+|---|---|---|
+| `oids`, `crcValues`, `offsets` | **yes** | Exactly the `.idx`'s SHA table, CRC table and offset table |
+| `types` (3 type bits + `resolved` flag) | no | Pass-2 bookkeeping; the `.idx` records no object type |
+| `deltaEntry` / `deltaBaseOffset` / `refBaseOids` and the two child indexes | no | The delta forest is consumed and discarded inside pass 2 |
+
+The carrier is a plain-typed-array value type in `src/domain/storage/pack-order.ts`:
+
+```ts
+/** One pack's index inputs in EMISSION order (ascending pack offset).
+ *  Arrays may be longer than `count` — `count` is the only bound. */
+export interface PackIndexEntries {
+  readonly count: number;
+  readonly digestLength: number;   // 20 | 32
+  readonly oids: Uint8Array;       // >= count * digestLength
+  readonly crcValues: Int32Array;  // >= count
+  readonly offsets: Float64Array;  // >= count
+}
+
+/** An entry set paired with its own oid-ascending permutation:
+ *  index position p holds entry ordinal `order[p]`. */
+export interface SortedPackIndex {
+  readonly entries: PackIndexEntries;
+  readonly order: Uint32Array;     // length === entries.count
+}
+```
+
+Four properties of this shape are the reason it is this shape and not another:
+
+1. **Nothing but typed arrays and numbers crosses.** `PackIndexEntries` has zero platform
+   dependencies and zero application imports, so it satisfies the domain's own invariant. The
+   application-side record store (`internal/pack-records.ts`) *imports* it — application →
+   domain, the permitted direction — and exposes its own arrays as a `PackIndexEntries` **view**:
+   the same buffers, no copy, and no narrowing `subarray` (that is what `count` is for). Its
+   store type, its `types` array and its child indexes stay application-owned and never appear in
+   a domain signature.
+2. **`count` is explicit, so geometric growth (ADR-780) needs no narrowing step.** A `subarray`
+   would work too, but it makes "the view's length is the truth" a second invariant to hold; one
+   `count` is cheaper to reason about and cheaper to mutation-test.
+3. **`SortedPackIndex` carries the permutation *with* the entry set it was computed from.**
+   Today `serializePackIndex(entries, checksum, presorted?)` documents "`presorted` MUST be
+   `sortPackIndexEntries(entries)`" in a comment and enforces it nowhere. Pairing them in one
+   value makes ADR-625's invariant **structural**: the `.idx` and the `.rev` cannot be handed
+   orderings from different entry sets, because there is only one value to hand over.
+4. **The slab is complete only after pass 2.** Delta entries' oid slots are filled as the forest
+   walk resolves them, so the record store hands over a `PackIndexEntries` only once
+   `resolvedCount === objectCount` — i.e. only on the path where ADR-784's refusal did not fire.
+
+**The `.idx` and `.rev` are still written from ordinals, never from strings.** A serializer reads
+entry `k` as `crcValues[k]`, `offsets[k]`, and the byte range
+`[k * digestLength, (k + 1) * digestLength)` of `oids` — copied into the output with
+`bytes.set(oids.subarray(…), …)`, which allocates a view object and never the 20 bytes.
+`hexToBytes` leaves the path entirely, and with it the slab → hex → slab round-trip ADR-789
+measured.
+
+The record store also keeps a **strictly increasing** `offsets` array by construction (pass 1
+walks forward), and so does `serializePackfile` for the other producer. `.rev`'s
+`packPositionsByOffset` still **sorts** rather than assuming it: the assumption is a producer
+invariant no serializer signature states, and the sort is already measured and typed-array-based.
+
 ### 4. Pass 2 — resolve from the roots down
 
-The recommended shape (DC-1a) is a depth-first walk of the delta forest, rooted at every base
-entry, with the parent's content held on an explicit stack while its children resolve.
+Pass 2 is a depth-first walk of the delta forest (ADR-779), rooted at every base entry, with the
+parent's content held on an explicit stack while its children resolve. Every byte it reads at an
+arbitrary offset goes through `ctx.fs.readSlice`, reusing the existing `PackByteSource` seam and
+its window ladder (ADR-782) — never a held `FileHandle`, which `browser-file-system.ts` cannot
+provide (`openWithNoFollow` throws `UNSUPPORTED_OPERATION`) and which reopens a descriptor-leak
+class this repository has already paid for once.
 
 ```
 for each entry b with a base type, in increasing offset:        # the forest roots
@@ -485,7 +636,7 @@ walkSubtree(oid, type, content, offset):                        # explicit stack
 carry the *same oid twice* (git's default fetch accepts it, `transfer.fsckObjects` being false).
 A REF delta keyed on that oid is then a child of **two** parents, and without the guard it would
 be applied twice and `resolvedCount` would overshoot `objectCount` — breaking R8 and turning
-DC-6's count into nonsense. An entry has exactly one base *reference*, so this is the only way
+ADR-784's count into nonsense. An entry has exactly one base *reference*, so this is the only way
 a child is reachable twice, and one flag bit closes it.
 
 The `release content` line is what §7's ancestor term depends on: **a parent is released the
@@ -499,8 +650,8 @@ Five properties fall out, and each answers a question the brief asks:
 - **No cache is *required*.** A base's content is on the stack exactly while its children need
   it, so nothing has to be re-derived. The "size-budgeted cache" the brief sketches is what an
   *ordinal* sweep needs to be correct-and-fast; a root-down walk needs it only as an
-  optimisation, over a much smaller surface (§5's carry-over) — DC-1 picks the algorithm,
-  DC-11 decides whether the optimisation ships.
+  optimisation, over a much smaller surface (§5). ADR-788 ships that optimisation; R15 is the
+  test that keeps it an optimisation.
 - **Each entry's payload is read at most twice** (pass 1, pass 2) and **applied exactly once**
   (R8). A base with no children is read once and never revisited.
 - **Forward REF references resolve** (R5): roots are enumerated by entry *type*, and children
@@ -511,15 +662,20 @@ Five properties fall out, and each answers a question the brief asks:
   so. Today's `while (unresolved.length > 0)` loop is O(passes × entries) and relies on the
   progress flag.
 - **Unresolved detection is a count.** After the walk, `resolvedCount < objectCount` means some
-  delta was never reachable. That is exactly git's `pack has <N> unresolved deltas` shape
-  (§1f rows 7, 8, 16) — see DC-6.
+  delta was never reachable. ADR-784 makes that the refusal verbatim:
+  `pack has <N> unresolved delta(s)`, **singular at one**, under the unchanged
+  `INVALID_PACK_HEADER` code, where `N = objectCount − resolvedCount`. Three cases converge on
+  it — a REF cycle, an all-deltas pack with no base entry, and an OFS base offset landing
+  mid-entry (§1f rows 7, 8, 15b) — which is exactly what git does on the same bytes.
 
 **Thin packs sit on the same seam.** Before declaring failure, every REF child whose base oid
 matched no in-pack entry is offered to `externalBaseResolver(baseOid)`. A resolved external
 base becomes an extra forest root: its `{ type, content }` is exactly what `walkSubtree` takes,
 and `validateDeltaHeader` already enforces `base.length === sourceLength`, so a wrong-sized
 external base refuses rather than producing garbage. The external content is the only object in
-the pass whose bytes tsgit did not itself inflate; it is released when its subtree completes.
+the pass whose bytes tsgit did not itself inflate; it is released when its subtree completes —
+or, under ADR-788, handed to the one base cache, which is what makes the resolver's own
+memoisation unnecessary (§5).
 
 Ordering the roots by increasing offset keeps pass 2's *root* reads sequential; child reads jump
 around, which is unavoidable — the delta forest's shape is the server's choice, not ours.
@@ -531,7 +687,8 @@ A chain `A ← B ← C ← D` is one root-to-leaf path in the forest. The walk d
 element's chain is ever re-resolved** — the arithmetic the brief asks for is that a chain of
 depth `d` costs `d` delta applications, not `d(d+1)/2`.
 
-Contrast the alternative the brief sketches (DC-1b): an ordinal sweep resolving `D` first must
+Contrast the alternative the brief sketched — an ordinal sweep with a byte-capped base cache,
+which ADR-779 rejected. Resolving `D` first must
 reconstruct `C`, which needs `B`, which needs `A` — `d` applications for one delta. With a
 cache large enough, the sweep amortises to the same total; with a cache that misses, the cost
 is `Σ_i depth(i)` applications and the same number of inflations. On fixture A that sum is
@@ -545,18 +702,108 @@ then 7/9/10/10/10/10/11/12/14/3 at depths 41…50:
 ```
 
 **Twenty-nine times the work** on a 903-object fixture, in the fully-missing case. That worst
-case is what the root-down walk removes by construction, and it is why the recommendation
-diverges from the brief.
-
-**Where a cache still earns its keep in design (a):** every base entry that has children is
-read from disk twice — once in pass 1 to compute its oid, once in pass 2 as a forest root. A
-budget-capped carry-over of pass 1's base contents into pass 2 removes exactly that second read,
-and nothing else. That is a much smaller and better-defined cache than DC-1(b)'s, and it is
-what DC-11 puts to the user, priced against §1e's measured 2× wall-clock / 96 MiB trade in git.
+case is what the root-down walk removes by construction, and it is why ADR-779 diverges from the
+brief's sketch.
 
 Depth is **not capped** (§1f row 9: git accepts depth 1 000; tsgit's indexer accepts it today).
-The walk uses an explicit stack, so depth costs heap, not the JS call stack (R6). The heap it
-costs is §7's ancestor term, and DC-8 is where a ceiling on it would go.
+ADR-786 keeps it that way: adding a refusal where git accepts is the divergence direction the
+prime directive forbids by default, and ADR-771 set `MAX_DELTA_CHAIN_DEPTH = 50` from git's
+*writer* default, which says nothing about what a reader or an indexer must accept. The walk uses
+an explicit stack, so depth costs heap, not the JS call stack (R6). The heap it costs is §7's
+retained-ancestor term, and ADR-786 accepts that term as **formally unbounded, knowingly** — §9
+names the exposure it leaves undefended.
+
+#### 5a. One base cache, on its own measured budget (ADR-788)
+
+The walk leaves exactly one piece of re-work: **every base entry that has children is read from
+disk twice** — once in pass 1 to compute its oid, once in pass 2 as a forest root. And the
+thin-pack seam already carries a cache today, on the wrong side of the port and **unbounded**:
+`bundle-verify.ts:170`'s `buildExternalBaseResolver` wraps `ExternalBaseResolver` in a
+`Map<ObjectId, content>` that retains every externally-resolved base — and memoises `undefined`
+results too — for the life of the verify.
+
+ADR-788 collapses both into **one** structure:
+
+| | |
+|---|---|
+| Shape | A single byte-capped `createLruCache<CachedBase>` inside the indexer, keyed on `ctx.session` (ADR-722), never on `Context` identity |
+| Serves | pass-1 base contents carried into pass 2, **and** externally-resolved thin-pack bases |
+| Replaces | `bundle-verify.ts:170`'s unbounded `Map`. Its resolver becomes a plain port call — `resolveExternalBase(ctx, baseOid)` with no memo of its own |
+| Budget | **`INDEX_PASS_BASE_CACHE_MAX_BYTES`**, its own named constant, defaulted from the measurement below. Not a fraction of `deltaCacheMaxBytes`, and not equal to it |
+| Entry sizer | `content.byteLength + INDEX_PASS_BASE_CACHE_ENTRY_OVERHEAD_BYTES`, paired with `INDEX_PASS_BASE_CACHE_MAX_ENTRIES` — ADR-727's 2026-08-27 amendment records that a byte cap without a fixed overhead term and an entry cap undercounts a typical entry by roughly an order of magnitude |
+
+Deleting the `Map` is a **residency fix in its own right**, independent of the pack-size win: the
+design's earlier claim that "a thin-base cache buys nothing" was measuring hit rate against the
+wrong thing. There was never a question of *adding* retention to that path — there was an
+unbounded retention already on it, and this bounds it.
+
+**Two keyspaces, one cache.** In-pack bases key on `o:<passId>:<offset>`; external bases key on
+`x:<oid>`. The `passId` is a per-invocation counter: two index passes sharing a session must not
+collide on a raw pack offset, and external oids are already globally unique within the
+repository. The pass `clear()`s the cache when it finishes — success or failure — so the byte
+budget is never retained past the pass that needed it. That is what reconciles ADR-788's
+`ctx.session` keying with its own "transient (one index pass)" consequence; it is safe under R15
+precisely because dropping a live entry another pass is using can only cost a re-read, never a
+different result.
+
+**`ctx.session`, not `Context` identity.** A `pull` derives a Context between its fetch and its
+merge; ADR-722 exists because nine identity-keyed caches were silently dropped by exactly that.
+Be clear about what session-keying buys here: sharing between *overlapping* passes, and nothing
+else, because the clear-on-exit makes the cache per-pass in every other respect. A purely
+per-call cache — `bitmap-reconstruct.ts:46`'s `RECONSTRUCTION_CACHE_MAX_BYTES` shape, explicitly
+*"never cached on a `Context`"* — would have been the alternative; ADR-788 names `ctx.session`,
+so `ctx.session` it is.
+
+##### The measurement the implementation owes
+
+ADR-788 pins the *shape* and leaves the *number* to a measurement. The default is not chosen
+until this runs, and it is recorded in the plan as a gating step, not as a nice-to-have.
+
+**What is measured** — three quantities per fixture. Peak footprint comes from a **child
+process's kernel high-water mark**; §1d's methodology note is binding here too, because an
+in-process sampler cannot see this pipeline's peak. The first two come from instrumentation
+inside the pass, not from memory sampling:
+
+1. **The demand curve.** `Σ inflatedBytes(b)` over base entries `b` with at least one child —
+   the total working set a perfect cache would hold. This is the ceiling the sweep approaches,
+   and it is computable up front from `git verify-pack -v`'s chain listing as a cross-check on
+   the instrumented run.
+2. **Hit rate against budget.** Sweep `INDEX_PASS_BASE_CACHE_MAX_BYTES` over
+   `{0, 1, 2, 4, 8, 16, 32, 64} MiB`, recording base re-reads avoided ÷ base-entries-with-children.
+3. **Wall clock and peak footprint at each budget**, median of three, single-threaded.
+
+**On which fixtures** — all four, because each isolates something different:
+
+| Fixture | Isolates |
+|---|---|
+| **A** (§1c) | Deep chains (depth 50) over *small* objects — largest object 159 748 B, so every candidate budget can hold many roots |
+| **B** (§1c) | The delta-free control: the cache must be **inert** here (no base has children), so any wall-clock or footprint movement is measurement noise or a bug |
+| **C** (§1c) | A real clone pack whose largest object is **4.76 MiB** — the fixture that discriminates budgets, because a budget below that cannot hold even one large root |
+| **thin** (§1f rows 16–17, plus a bundle with prerequisites) | The external-base half, which fixture C does not exercise at all |
+
+**What makes a candidate default right:** it sits at the **knee** of the wall-clock curve — the
+smallest budget within 5 % of the unbounded-cache wall clock on **both** A and C — and it leaves
+fixture C's measured peak inside R2's class with headroom.
+
+**What makes a candidate default wrong** — any one of these falsifies it, and each is a real
+failure mode rather than a formality:
+
+- **No knee.** If wall clock keeps improving roughly linearly all the way to the demand curve's
+  total, the cache is "retain everything" wearing a budget, and the residency claim is hollow.
+  The honest response is a much smaller budget and a documented smaller speed-up, not a bigger
+  budget.
+- **Below the largest object.** A budget under `largestEntryInflatedBytes` cannot hold one root
+  on fixture C. This is exactly the falsifier ADR-788 records against the 1/16-fraction option:
+  1 MiB at the default `deltaCacheMaxBytes` against a 4.76 MiB object holds almost nothing, so
+  most second reads happen anyway.
+- **Peak rises by more than the budget.** Then the entry sizer is wrong — the classic symptom
+  ADR-727's amendment describes — and the constant is meaningless until the sizer is fixed.
+- **Fixture B moves.** The cache must be inert on a pack with no deltas. Movement there means
+  something is being cached that has no children.
+
+The result is a number a future profile can revisit without reopening ADR-788's shape, and it is
+published as a local sizing measurement — never as a performance claim, which per repo policy
+comes only from CI's nightly bench artifact.
 
 ### 6. Where the code lives
 
@@ -566,7 +813,7 @@ costs is §7's ancestor term, and DC-8 is where a ceiling on it would go.
 |---|---|---|
 | `fetch-pack.ts` | negotiation, `receivePackToQuarantine`, quarantine lifecycle, `fetchPack`/`materializePack`, `verifyPackTrailer` | keeps ≈ 460 |
 | `internal/index-pack.ts` (new) | `PackByteSource` and both implementations (`:484-825`), the two passes, the forest walk, the refusals, `WalkedEntry`, `ExternalBaseResolver` | ≈ 575 taken |
-| `internal/pack-records.ts` (new, DC-9b) | the typed-array record store and the two child indexes — pure, no I/O, its own property tests | new |
+| `internal/pack-records.ts` (new, ADR-787) | the typed-array record store and the two child indexes — pure, no I/O, its own property tests. Exposes its slab as a domain `PackIndexEntries` view (§3a) | new |
 
 The byte-source seam moves **with** the indexer, not with the receiver: it exists to feed the
 walk, and moving only the pipeline would leave `fetch-pack.ts` at ~800 lines — on the ceiling,
@@ -575,15 +822,96 @@ not under it (R14). `walkQuarantinedEntries` becomes a one-line call into
 `walkPackEntries` re-points at the new module. `DISK_WALK_WINDOW_BYTES` moves with the disk
 source and its ten test references re-point with it.
 
-**Two Stryker equivalence proofs are falsified by this change and must be re-proved or
-retired**, not carried forward — equivalence comments are structure-specific:
+ADR-789 adds a **second** touched area, in the domain rather than the application layer:
 
-- `windowCovering`'s (`:716`) asserts *"anchor only ever grows; `anchor < window.start` never
-  occurs"*. Pass 2 reads backwards. The guard itself is already correct — a non-covering anchor
-  falls through to a fresh fetch — but the proof is now false and the mutant is killable.
-- `walkFromPending`'s (`:844`, `:846`) asserts the offset sort and its comparator are
-  unobservable. The records are filled in offset order by construction, so the sort disappears
-  entirely along with its suppressions.
+| Module | Change |
+|---|---|
+| `src/domain/storage/pack-order.ts` | Gains `PackIndexEntries` and `SortedPackIndex` (§3a) and the adapter `packIndexEntriesFrom`; `sortPackIndexEntries` re-typed; `SortedEntry` deleted. Currently 28 lines |
+| `src/domain/storage/pack-writer.ts` | `serializePackIndex` re-typed; its body indexes through the permutation instead of dereferencing `SortedEntry.entry` |
+| `src/domain/storage/rev-index.ts` | `serializePackRevIndex` re-typed; `packPositionsByOffset` reads offsets from the slab through the permutation |
+| `src/domain/storage/cruft-pack.ts` | `serializeCruftMtimes` re-typed — **not named by ADR-789, but forced by it** (§6a) |
+| `src/application/primitives/internal/write-pack-artifacts.ts` | `buildIdx` / `buildRev` / `buildCruftMtimes` and the three `writePack*Artifacts` input types carry `PackIndexEntries`/`SortedPackIndex` instead of `PackIndexWriterEntry[]`/`SortedEntry[]` |
+
+No new *domain* module is created: `pack-order.ts` is 28 lines today and is the ordering
+definition's existing home, so ADR-625's "one shared helper" stays one file.
+
+**Three Stryker equivalence proofs are falsified by this change and must be re-proved or
+retired**, not carried forward — equivalence comments are structure-specific, and a
+data-structure migration falsifies a carried-forward proof even when the verdict survives:
+
+- `windowCovering`'s (`fetch-pack.ts:716`) asserts *"anchor only ever grows; `anchor <
+  window.start` never occurs"*. Pass 2 reads backwards. The guard itself is already correct — a
+  non-covering anchor falls through to a fresh fetch — but the proof is now false and the mutant
+  is killable.
+- `walkFromPending`'s (`fetch-pack.ts:844`, `:846`) asserts the offset sort and its comparator
+  are unobservable. The records are filled in offset order by construction, so the sort
+  disappears entirely along with its suppressions.
+- `bundleVerify`'s (`bundle-verify.ts:76`) asserts that always building the external resolver
+  *"only allocates a Map+closure `walkPackEntries` never invokes"*. ADR-788 deletes that Map, so
+  the sentence describes code that no longer exists. The *verdict* may still hold — a
+  0-prerequisite bundle's pack is self-contained, so the resolver is still never invoked — but
+  the proof must be restated against the plain port call, or the suppression retired.
+
+#### 6a. The widened serializers (ADR-789)
+
+Today, and after:
+
+```ts
+// today
+sortPackIndexEntries(entries: ReadonlyArray<PackIndexWriterEntry>): ReadonlyArray<SortedEntry>
+serializePackIndex   (entries, packChecksum, presorted?: ReadonlyArray<SortedEntry>): Uint8Array
+serializePackRevIndex(entries, packChecksum, presorted?: ReadonlyArray<SortedEntry>): Uint8Array
+serializeCruftMtimes (entries, packChecksum, mtimeOf, presorted?: ReadonlyArray<SortedEntry>): Uint8Array
+
+// after
+packIndexEntriesFrom (entries: ReadonlyArray<PackIndexWriterEntry>, digestLength: number): PackIndexEntries
+sortPackIndexEntries (entries: PackIndexEntries): SortedPackIndex
+serializePackIndex   (sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array
+serializePackRevIndex(sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array
+serializeCruftMtimes (sorted: SortedPackIndex, packChecksum: Uint8Array, mtimeOf): Uint8Array
+```
+
+Four things about that diff are deliberate.
+
+**1. The optional `presorted` parameter is gone, and the sort is mandatory.** It has to be:
+`sortPackIndexEntries` can no longer be called from inside a serializer without also knowing the
+digest width, and the `presorted ?? sortPackIndexEntries(entries)` fallback exists in **three**
+serializers today with a comment in each saying *"`presorted` MUST be
+`sortPackIndexEntries(entries)`"* — an invariant enforced by prose. Taking one `SortedPackIndex`
+deletes three branches, three mutants and three prose invariants at once, and makes ADR-625's
+guarantee structural (R13c). Every production call site already sorts once and passes `presorted`,
+so no caller loses anything; the six test-side call sites that relied on the default
+(`packfile-interop.test.ts:102,187`, `pack-fixture.ts:152`, `pack-pair.ts:71`,
+`bitmap-closure.scenario.ts:158`, `fsck-degraded-store.scenario.ts:87`) gain one
+`sortPackIndexEntries(packIndexEntriesFrom(…))` wrap, using the **production** adapter rather
+than a test-local copy.
+
+**2. Width is validated where it is already validated.** Each serializer derives
+`digestLength` from `packChecksum.length` today and refuses anything but 20 or 32. It now also refuses a slab that disagrees with it:
+`entries.digestLength !== packChecksum.length`, `oids.length < count * digestLength`,
+`crcValues.length < count`, `offsets.length < count`, `order.length !== count`. These are cheap
+structural guards on a value that now carries five coupled fields instead of one array, and each
+gets its own isolated test with `error.data` asserted (never a bare `toThrow(Class)`).
+
+**3. `serializeCruftMtimes` is dragged along, and keeps its `mtimeOf(oid)` contract.** ADR-789
+names five symbols; this is the sixth, because its own signature mentions both
+`PackIndexWriterEntry` and `SortedEntry`. Its body needs an `ObjectId` per index position to call
+`mtimeOf`, which the slab does not carry — so it derives one with `bytesToHex` over the slab range
+inside the write loop. That is a **transient** string per object, immediately unreferenced, where
+today the same hex is *retained* for every object in the `PackIndexWriterEntry[]`; the cruft path
+therefore gets strictly better, not worse. Changing `mtimeOf` to take an ordinal instead would
+also work and would remove the hex entirely — it is not taken, because it moves a *published
+callback contract* on a path this change is not about, and `gc-pipeline.ts:562`'s
+`mtimeOrThrow(mtimes, id)` is naturally oid-keyed.
+
+**4. There is exactly one implementation.** No overload, no union input, no private slab path
+beside a public array path — that shape is the fork ADR-625 and `check:duplicates` both exist to
+prevent, and ADR-789 names it as the outcome to avoid. Callers that hold a
+`PackIndexWriterEntry[]` convert **once**, through `packIndexEntriesFrom`, before entering the
+pipeline; from that point down there is one shape.
+
+Which callers those are, and where the conversion belongs, is the one choice this revision could
+not settle from the ratified record — **DC-A**, the sole entry in §Decision candidates.
 
 ### 7. The memory ceiling, stated honestly
 
@@ -593,8 +921,8 @@ R  =  largestEntryInflatedBytes            one entry's payload in flight (pass 1
    +  N × RECORD_BYTES                     33 B (SHA-1) / 45 B (SHA-256)
    +  D × DELTA_RECORD_BYTES               12 B, plus 20/32 B per REF delta
    +  oneReadWindow                        DISK_WALK_WINDOW_BYTES, or the one grown window
-   +  cacheBudget                          0 unless DC-11 admits one
-   +  idxAssembly                          PRE-EXISTING: N × PackIndexWriterEntry + N × SortedEntry
+   +  INDEX_PASS_BASE_CACHE_MAX_BYTES      ADR-788's named budget (§5a), 0 when disabled
+   +  idxAssembly                          ADR-789: N × 4 B permutation + the artefact buffers
 ```
 
 **This is not O(1) and the design does not claim it is.** Three terms are unavoidable:
@@ -606,35 +934,89 @@ R  =  largestEntryInflatedBytes            one entry's payload in flight (pass 1
 - **The retained-ancestor term.** An ancestor is held only while it still has unvisited
   children, so a **linear** chain retains two objects at a time regardless of depth, and only a
   **branching** delta forest retains more. The worst case is `chainDepth × largestObjectBytes`
-  — a fully bushy tree — and with no depth cap (§1f row 9) that is formally unbounded; DC-8 is
-  where a ceiling would go. §1e's controlled pairs say the typical case is far below it: git,
+  — a fully bushy tree — and with no depth cap (§1f row 9) that is formally unbounded.
+  **ADR-786 accepts this knowingly**, and does not add a path-bytes budget to close it; if the
+  unbounded term is ever judged unacceptable, that budget is the shape to revisit and it does not
+  require reopening the depth semantics. §1e's controlled pairs say the typical case is far below it: git,
   with its cache off, pays **0.39 MB** on a fixture whose deepest chain is 50, and **18.28 MB**
   on a 15 074-object, 571 MiB-inflated fixture. The implementation must release a parent as
   soon as its last child is dequeued, or it will land on the worst case instead of the typical
   one — that is the single behaviour this term depends on.
 - **`N × RECORD_BYTES` is linear in object count and cannot be avoided**, because the `.idx`
-  must list every object. Fixture C: 497 KB. A 10 M-object monorepo: 330 MB for the records and
-  more for the final `PackIndexWriterEntry[]`. git pays the same shape — §1e's delta-free
-  fixture C control measures its fixed cost at ≈ 1 KB per object.
+  must list every object. Fixture C: 497 KB. A 10 M-object monorepo: 330 MB for the records. git
+  pays the same shape — §1e's delta-free fixture C control measures its fixed cost at ≈ 1 KB per
+  object.
 
-The last term is today's behaviour, unchanged: `writePackSiblingArtifacts` takes
-`ReadonlyArray<PackIndexWriterEntry>` and `sortPackIndexEntries` wraps each in a `SortedEntry`
-carrying a fresh 20-byte `Uint8Array` from `hexToBytes(entry.id)`. On fixture C that is ~2.3 MB
-transient; on a 10 M-object repo it is the dominant term and would need the slab handed
-straight to the serializer — DC-10, recommended out of scope here.
+#### 7a. `idxAssembly`: the term ADR-789 changes in character
+
+**The design's earlier "~2.3 MB" was an undercount, and the correction is what carried ADR-789.**
+It counted only `sortPackIndexEntries`' own allocation and not the hex-bearing array beneath it.
+Session-measured on fixture C's 15 074 objects:
+
+| | fixture C, 15 074 objects | per entry |
+|---|---|---|
+| `PackIndexWriterEntry[]`, each with a 40-char hex id | **7.36 MB** | |
+| `SortedEntry[]` + N × `Uint8Array(20)` from `hexToBytes(entry.id)` | **2.42 MB** | |
+| **pair, today** | **9.79 MB** | **649 B** |
+| at 1 000 000 objects | **421.89 MB** | |
+| at 10 000 000 objects | **exhausts Node's default heap inside `entries.map()`** | |
+
+So the pipeline runs slab → hex → slab per object, and the round-trip is also the term.
+
+After ADR-789 the slab **is** the input, and it is already counted in `N × RECORD_BYTES` — it is
+handed over as a view, not copied (§3a). The 649 B/entry pair disappears outright. What is left
+is one new 4 B/entry array, plus the artefact buffers that were always there and are unchanged
+by this decision:
+
+| Component | Bytes/entry (SHA-1) | Before | After | Lifetime |
+|---|---|---|---|---|
+| `PackIndexWriterEntry[]` + `SortedEntry[]` + N × `Uint8Array(20)` | 649 | ✓ | **gone** | until the last artefact is written |
+| `SortedPackIndex.order` — `Uint32Array(N)` | 4 | — | ✓ | whole artefact write; shared by `.idx`, `.rev` and `.mtimes` (ADR-625) |
+| `.idx` body, `1052 + 28 N` | 28 | ✓ | ✓ | retained until `writeExclusive` returns |
+| `buildIdx`'s trailer append (a second `body.length + digestLength` buffer) | 28 | ✓ | ✓ | transient, inside `buildIdx` |
+| `.rev` body, `52 + 4 N` | 4 | ✓ | ✓ | written after the `.idx` |
+| `packPositionsByOffset` scratch — `Uint32Array(N)` + `Float64Array(N)` | 12 | ✓ | ✓ | transient, inside `serializePackRevIndex` |
+| **peak** (the `buildIdx` instant: pair + order + body + append) | | **705 B** | **60 B** | |
+
+**705 B/entry → 60 B/entry, an 11.8× reduction of the term**, and `hexToBytes` leaves the path.
+The reduction *is* the 649 B pair; the residual 60 B is 4 B of permutation over the 56 B of
+artefact buffers this change does not touch.
+
+On fixture C: **10.13 MiB → 0.86 MiB.** At 1 000 000 objects the pair alone is the measured
+**421.89 MB**, so the assembly peak goes from ≈ 478 MB to ≈ 60 MB. At 10 000 000 the pair
+**exhausts Node's default heap inside `entries.map()`**, where the post-789 term is ≈ 600 MB of
+typed arrays — large, and honestly not small, but allocatable. That difference — heap exhaustion
+versus a large `ArrayBuffer` — is the qualitative change, not the ratio.
+
+⚠️ **The per-entry cost is not scale-invariant** — the pair measures 649 B/entry at 15 074
+objects and 422 B/entry at 1 000 000. Extrapolating either figure to the other scale would be
+wrong, so both are quoted from their own measurement and neither is derived from the other.
+
+One place still materialises the old shape, deliberately: **`walkPackEntries` keeps its
+`WalkedEntry[]` return** (ADR-783), and its single caller `bundle-verify.ts:78` discards it. That
+is `N × ~490 B` of pure waste on the bundle path. ADR-783 considered collapsing
+`walkPackEntries` to a validate-only entry point and explicitly deferred it as *"available at any
+time after"* option 1 and not a prerequisite, so this design does not take it; `fetchPack` itself
+never calls `walkPackEntries` and never builds the array.
 
 Expected outcome on the fixtures, with the ancestor term taken at its measured-typical rather
 than its worst case (the `largestEntryInflatedBytes` term double-counts the deepest ancestor, so
-these are upper bounds):
+these are upper bounds). `B` is the ADR-788 budget, pending §5a's measurement:
 
-| | largest object | ancestors | records | window | `.idx` assembly | ≈ ceiling | today |
-|---|---|---|---|---|---|---|---|
-| A | 0.15 MiB | ≤ 7.6 MiB worst / ~0.3 MiB linear | 0.03 MiB | 0.25 MiB | ~0.14 MiB | **< 8.2 MiB** | 75.4 MB |
-| C | 4.76 MiB | ~18 MiB (git's measured figure on the same pack) | 0.50 MiB | 0.25 MiB | ~2.3 MiB | **< 26 MiB** | 799.5 MB |
+| | largest object | ancestors | records | window | `idxAssembly` | ≈ ceiling | pre-789 ceiling | today |
+|---|---|---|---|---|---|---|---|---|
+| A | 0.15 MiB | ≤ 7.6 MiB worst / ~0.3 MiB linear | 0.03 MiB | 0.25 MiB | **0.05 MiB** | **< 8.1 MiB + B** | < 8.7 MiB | 75.4 MB |
+| C | 4.76 MiB | ~18 MiB (git's measured figure on the same pack) | 0.47 MiB | 0.25 MiB | **0.86 MiB** | **< 24.4 MiB + B** | < 33.7 MiB | 799.5 MB |
+
+The `pre-789 ceiling` column is the same formula with the corrected 705 B/entry term — i.e. what
+this design would have shipped had it kept `PackIndexWriterEntry[]`, and **not** the "< 26 MiB"
+the first draft printed, which carried the undercount. ADR-789 removes ≈ 9.3 MiB from fixture C's
+ceiling, over a quarter of it.
 
 **The assertion in R2 is a class with headroom, never a byte count** — the same discipline the
 delta-writing packer's size assertions use, for the same reason: the peer moves, and here the
-peer moves by a factor of four depending on one config key (§1e).
+peer moves by a factor of four depending on one config key (§1e). `B` must be small enough that
+`24.4 MiB + B` stays well inside R2's class; that is one of §5a's acceptance conditions.
 
 ### 8. Faithfulness — what changes and what must not
 
@@ -647,11 +1029,18 @@ peer moves by a factor of four depending on one config key (§1e).
 | e | `PACK_TOO_LARGE` on `maxResponseBytes` / `maxObjectsPerPack` | unchanged | unchanged (§9 revisits what each still defends) | — |
 | f | `DECOMPRESS_FAILED` for a corrupt zlib member | unchanged | unchanged — pass 1 still inflates every entry in order | — |
 | g | `extra bytes between last entry and trailer` | tsgit-internal string; git says `pack is corrupted (SHA1 mismatch)` | unchanged (out of scope) | — |
-| h | OFS distance 0 | **wrong refusal** (`unresolved entry at offset N`) | whatever DC-7 ratifies; the recommendation refuses it as out-of-bound at pass 1, matching git's class | **DC-7** |
-| i | OFS distance past the pack start | refused, tsgit-internal wording | verdict unchanged; the wording is DC-7's second half | **DC-7** |
-| j | unresolved deltas | `unresolved REF_DELTA: base <id> not in pack` / `unresolved entry at offset <n>` | whatever DC-6 ratifies; the recommendation is git's counting shape, singular at one | **DC-6** |
+| h | OFS distance 0 | **wrong refusal** (`unresolved entry at offset N`) | refused at the entry as `delta base offset is out of bound`, git's own reason and git's own split | **ADR-785** |
+| i | OFS distance past the pack start | refused, tsgit-internal wording | same verdict, now with git's reason | **ADR-785** |
+| j | unresolved deltas | `unresolved REF_DELTA: base <id> not in pack` / `unresolved entry at offset <n>` | `pack has <N> unresolved delta(s)`, singular at one, same `INVALID_PACK_HEADER` code. **No structured `unresolvedCount` / `firstUnresolvedOffset` fields** — offered as option 3 and not taken | **ADR-784** |
 | k | duplicate oid in one pack | accepted (`.idx` carries the oid twice) | unchanged — git's default fetch accepts it too (`transfer.fsckObjects` defaults false) | — |
-| l | delta depth in the indexer | uncapped, matching git | **DC-8** |
+| l | delta depth in the indexer | uncapped, matching git | uncapped, unchanged | **ADR-786** |
+| m | `.idx` / `.rev` / `.mtimes` bytes for a given entry set | — | **byte-identical** (R13); only the serializers' input shape widens | **ADR-789** |
+| n | thin-pack external base resolution | `bundle-verify` memoises every resolved base, and every `undefined`, in an unbounded `Map` | one byte-capped LRU inside the indexer; the resolver is a plain port call. Same verdicts, bounded residency | **ADR-788** |
+
+Row **j** carries one consequence worth stating plainly: `TsgitError.data.code` is unchanged, so
+any consumer branching on the code is unaffected — a consumer matching the *reason text* sees a
+new string. That text was never git-faithful, so there is no faithfulness debt being spent, only
+tests being updated.
 
 Row **l** deserves its own paragraph. `MAX_DELTA_CHAIN_DEPTH = 50` is enforced by
 `object-resolver.ts:327` and `fsck/object-cache.ts:223` — the two readers ADR-771 aligned. It is
@@ -659,7 +1048,12 @@ Row **l** deserves its own paragraph. `MAX_DELTA_CHAIN_DEPTH = 50` is enforced b
 chain today exactly as git does. Row 10 is the consequence: those objects are then unreadable
 through tsgit's own resolver. The gap is pre-existing, it is *surfaced* by writing this design
 rather than created by it, and closing it at fetch time would be a new refusal on a path git
-does not refuse. DC-8 puts the choice to the user rather than taking it.
+does not refuse. **ADR-786 leaves the gap open deliberately**, and records that whether
+`MAX_DELTA_CHAIN_DEPTH` should bind the *readers* at all belongs to ADR-771's own record.
+
+Row **n** is a residency change, not a faithfulness one — git has no `bundle verify` equivalent
+to be faithful to here. It is listed because it is an observable retention the design originally
+missed.
 
 ### 9. Threat model
 
@@ -692,20 +1086,29 @@ up-front allocation** — 50 M × 33 B = 1.65 GB — if the record arrays were s
    actually parsed. A header declaring 50 M entries over a 3-entry pack then allocates for 3.
    Cost is a transient 1.5× during a copy.
 
-DC-2 chooses between them. The failure mode being defended is precise: *a small pack with a
-huge declared count*, which is a one-packet DoS today only in CPU and would become one in
-memory if the naive shape shipped.
+**ADR-780 takes both**: geometric growth is the sizing rule, with the structural clamp kept as a
+second bound *underneath* it, not instead of it. The failure mode being defended is precise:
+*a small pack with a huge declared count*, which is a one-packet DoS today only in CPU and would
+become one in memory if the naive shape shipped. Under ADR-780 a 50 M-entry claim over a 3-entry
+pack allocates for 3, and `maxObjectsPerPack`'s doc comment moves with the change because it no
+longer guards "before `fetchPack` allocates per-entry state" — nothing allocates from the
+declared count at all.
 
 **Not defended, before or after**
 
 - A **branching** delta forest whose ancestors are each near `MAX_INFLATED_OBJECT_BYTES` makes
   §7's retained-ancestor term enormous. The pack-size cap bounds the *compressed* input, not the
-  inflated path, and a delta may declare a target far larger than its base. DC-8(c) is the only
-  option that closes it. A *linear* chain is not exposed, because a parent is released at its
-  last child (§4).
-- A pack of many small objects still costs `N × 33 B` plus the `.idx` materialisation. That is
-  inherent to writing an index.
+  inflated path, and a delta may declare a target far larger than its base. **ADR-786 accepts
+  this exposure knowingly**: a path-bytes budget was the option that closes it and was not taken,
+  because it would sit beside depth semantics that must stay git's. A *linear* chain is not
+  exposed, because a parent is released at its last child (§4).
+- A pack of many small objects still costs `N × 33 B` plus the `.idx` assembly — after ADR-789,
+  `N × 60 B` rather than `N × 705 B` (§7a). That is inherent to writing an index.
 - Cycles and unreachable deltas cost nothing new: the forest walk never visits them (§4).
+- `INDEX_PASS_BASE_CACHE_MAX_BYTES` is a **hard** cap, not a target: a pack crafted to be all
+  base-with-children fills it and then evicts; it never grows it. The entry cap is the second
+  bound, for the reason ADR-736 and ADR-727's amendment both record — a byte cap alone
+  under-defends against many small entries whose per-entry overhead the sizer under-counts.
 
 ### 10. Degenerate inputs, enumerated
 
@@ -724,7 +1127,7 @@ Every row is a test case, and every row was run against real git in §1f.
 | **chain saturating `pack.depth` (50)** | accepts | accepts | fixture A is exactly this shape |
 | **chain of depth 1 000** | accepts | accepts | accepted; explicit stack (R6) |
 | **REF cycle** | `pack has 2 unresolved deltas` | refuses | refuses, structurally (§4) |
-| **OFS distance 0** | `delta base offset is out of bound` | wrong reason | DC-7 |
+| **OFS distance 0** | `delta base offset is out of bound` | wrong reason | refuses at the entry with git's reason (ADR-785) |
 | **OFS base landing mid-entry** | `pack has 1 unresolved delta` | `unresolved entry at offset 64` | refuses — the child index is keyed on **entry** offsets, so a mid-entry base matches no root and the delta is never visited. Same verdict as git, reached differently |
 | **object whose inflated size exceeds one read window** | accepts | accepts (window doubling ladder) | unchanged in pass 1; pass 2 must grow the window the same way for a **base** re-read, which today's ladder only ever exercises forward |
 
@@ -736,58 +1139,142 @@ Every row is a test case, and every row was run against real git in §1f.
 | `FetchPackInput` / `FetchPackResult` | exported, in `api.json` | none | as above |
 | `RepositoryConfig.maxObjectsPerPack` / `.maxResponseBytes` | in `api.json` | **doc comment only** — `maxObjectsPerPack`'s stated purpose changes (§9) | `ports/context.ts:142,150` |
 | `walkPackEntries` | module export, **not** in `api.json` | body replaced; signature kept; **import path moves** to `internal/index-pack.ts` | `bundle-verify.ts:20,78`, `fetch-pack.test.ts` (≈10 references) |
-| `ExternalBaseResolver` | module export, not in `api.json` | shape unchanged; **import path moves** | `bundle-verify.ts:18,170`, `fetch-pack.test.ts` |
+| `ExternalBaseResolver` | module export, not in `api.json` | shape unchanged; **import path moves**. Its `bundle-verify.ts:170` implementation loses its unbounded `Map` and becomes a plain `resolveExternalBase(ctx, oid)` port call (ADR-788, §5a) | `bundle-verify.ts:18,170`, `fetch-pack.test.ts` |
+| `buildExternalBaseResolver` | `bundle-verify.ts:170` module-private | **deleted** — with it the `undefined`-memoising `Map` and the Stryker suppression at `:76` that described it (§6) | `bundle-verify.ts:76,77` |
 | `verifyPackTrailer` | module export, not in `api.json` | none — stays in `fetch-pack.ts` | `bundle-verify.ts:75` |
 | `DISK_WALK_WINDOW_BYTES` | module export, not in `api.json` | value unchanged; **import path moves** with the disk source | `fetch-pack.test.ts` (≈10 references) |
-| `WalkedEntry` | module-private **type**, but structurally the return of an exported function | none | `bundle-verify.ts` binds it implicitly; `writePackSiblingArtifacts` consumes it as `PackIndexWriterEntry` |
+| `WalkedEntry` | module-private **type**, but structurally the return of an exported function | shape unchanged; **`fetchPack` stops using it**. `walkPackEntries` still returns `WalkedEntry[]`, materialised from the slab for its one caller (ADR-783, §7a) | `bundle-verify.ts` binds it implicitly |
 | `PendingEntry`, `ResolvedEntry` | module-private | **deleted** | — |
 | `inflateAllEntries`, `resolveAllEntries`, `walkFromPending`, `tryResolveEntry`, `resolveDelta`, `computeLooseObjectId`, `firstUnresolvedError`, `refDeltaBaseId` | module-private | replaced / moved | — |
-| `writePackSiblingArtifacts` | internal | none (R13) | — |
+| `fetchPack`'s zero-entry guard | `fetch-pack.ts:181` | `entries.length === 0` becomes `indexed.count === 0` | quarantine-reap path, unchanged behaviour |
 
-**`reports/api.json` does not move** (R12) — the only public shapes involved are `fetchPack`
-and its two types, and none changes. The regenerated report is still committed and diffed, per
-the standing pre-push gate; a zero diff is the expected result and is itself the check.
+#### 11a. The ADR-789 surface — six published symbols
+
+This is the half the design's first draft said would not move.
+
+| Symbol | Kind | Change | Consumers to sweep |
+|---|---|---|---|
+| `PackIndexWriterEntry` | **in `api.json`** | leaves every serializer signature; survives only where DC-A leaves it | `pack-order.ts:3`, `pack-writer.ts:25,27,104`, `rev-index.ts:14,113`, `cruft-pack.ts:22,42`, `storage/index.ts:86`, `write-pack-artifacts.ts:18,32,59,83,118,160,170`, `cruft-pack-lifecycle.ts:15,232`, `build-pack.ts:18,42` |
+| `SortedEntry` | **in `api.json`** | **deleted**, replaced by `SortedPackIndex` | `pack-order.ts:9`, `pack-writer.ts:25,107`, `rev-index.ts:13,115,152`, `cruft-pack.ts:21,45`, `write-pack-artifacts.ts:19,34,61,86,162`, `storage/index.ts:81` |
+| `sortPackIndexEntries` | **in `api.json`** | `(PackIndexEntries) → SortedPackIndex` | `pack-writer.ts:117`, `rev-index.ts:129`, `cruft-pack.ts:56` (the three `presorted ??` fallbacks, all **deleted**), `write-pack-artifacts.ts:192,305`, `cruft-pack-lifecycle.ts:245` |
+| `serializePackIndex` | **in `api.json`** | `(SortedPackIndex, packChecksum)` | `write-pack-artifacts.ts:37`; tests at `packfile-interop.test.ts:102,187`, `pack-fixture.ts:152`, `pack-pair.ts:71`, `bitmap-closure.scenario.ts:158`, `fsck-degraded-store.scenario.ts:87` |
+| `serializePackRevIndex` | **in `api.json`** | `(SortedPackIndex, packChecksum)` | `write-pack-artifacts.ts:64`; `rev-index.test.ts`, `rev-index.properties.test.ts` |
+| `serializeCruftMtimes` | **in `api.json`** | `(SortedPackIndex, packChecksum, mtimeOf)` — **the symbol ADR-789 does not name** (§6a) | `write-pack-artifacts.ts:85`; `cruft-pack.test.ts`, `cruft-pack.properties.test.ts` |
+| `PackIndexEntries`, `SortedPackIndex`, `packIndexEntriesFrom` | **new, in `api.json`** | added (additive, not breaking) | `pack-records.ts`, the three serializers, DC-A's conversion sites |
+| `buildIdx` / `buildRev` / `buildCruftMtimes` | internal | `(ctx, SortedPackIndex, packSha[, mtimeOf])` | `write-pack-artifacts.ts:37,64,85,164` |
+| `WritePackArtifactsInput.entries`, `WritePackSiblingArtifactsInput.entries`, `writeCruftPack`'s `entries` | internal | `PackIndexEntries` | `fetch-pack.ts:193`, `pack-objects.ts:89`, `gc-pipeline.ts:485,528,562` |
+| `BuildPackResult.entries` | **in `api.json`** | **unchanged under DC-A(a); becomes `PackIndexEntries` under DC-A(b)** | `pack-objects.ts:87`, `gc-pipeline.ts:484,527,560`. `push.ts:353` and `bundle-create.ts:312` read only `.bytes`/`.sha` and are unaffected either way |
+
+**`reports/api.json` moves** (R12). The regenerated report is committed and diffed per the
+standing pre-push gate, and the diff is now the *check on scope*: the six moved symbols plus the
+three added ones under DC-A(a), plus `BuildPackResult` under DC-A(b). Anything else in that diff
+is a leak.
+
+#### 11b. Tests
 
 `test/unit/application/primitives/fetch-pack.test.ts` is ~3 000 lines and is where most of the
-work lands. The window-behaviour tests (`requestedLengths` assertions around
+indexer work lands. The window-behaviour tests (`requestedLengths` assertions around
 `DISK_WALK_WINDOW_BYTES`) pin *pass 1's* read pattern and survive; pass 2 adds a second,
 backward-jumping read pattern that needs its own assertions.
 
+The ADR-789 half touches eleven test files, none of which may be weakened (R13, §Test strategy):
+`pack-order.test.ts`, `pack-writer.test.ts`, `rev-index.test.ts`,
+`rev-index.properties.test.ts`, `cruft-pack.test.ts`, `cruft-pack.properties.test.ts`,
+`arbitraries.ts`, `write-pack-artifacts.test.ts`, `pack-fixture.ts`,
+`packfile-interop.test.ts`, and the three parity scenarios `pack-pair.ts`,
+`bitmap-closure.scenario.ts`, `fsck-degraded-store.scenario.ts`.
+
 Not touched: `pack-registry.ts`'s `deltaBaseCache` (a *read*-path cache for already-indexed
-packs), `object-resolver.ts`, `build-pack.ts`, and every `.idx`/`.rev` serializer.
+packs, ADR-736's subject and outside `INDEX_PASS_BASE_CACHE_MAX_BYTES`'s budget entirely),
+`object-resolver.ts`, `parsePackIndex` / `parsePackRevIndex` / `parseCruftMtimes` (the readers —
+only the writers widen), and `serializePackfile`.
+
+---
+
+## Decisions
+
+All eleven of this design's load-bearing choices are ratified. Each row states the **settled
+rule** — not a preference, not a recommendation — and the section that implements it. Nothing
+here is open.
+
+| ADR | Settled rule | Where it binds |
+|---|---|---|
+| **779** | Pass 2 is a **child-indexed root-down forest walk**. Roots are the base entries, enumerated by entry *type* so a base sitting after its dependents is still found; children are located through the record store's two child indexes; a parent's content is released **the moment its last child is dequeued**. Recursion is an explicit stack, never the JS call stack. A `resolved` flag guards each child, because a pack may legally carry the same oid twice and a REF delta keyed on it would otherwise be a child of two parents, applied twice, with the resolved count overshooting the declared one. The cache half of the ratified option is settled by ADR-788 instead of a thin-pack-only structure. | §4, §5 |
+| **780** | Record-array capacity **grows geometrically** from a small initial size as entries are actually parsed. `header.objectCount` is a **loop bound and never an allocation input**. The structural clamp `(totalBytes − 12 − digestLength) / 9` is kept as a second bound *underneath* the growth, not instead of it. `maxObjectsPerPack`'s doc comment moves with the change. | §3, §9 |
+| **781** | Base and reconstructed-delta oids are computed by feeding header bytes and content into **`ctx.hash.createHasher()`** separately. `computeLooseObjectId`'s concatenated copy is deleted. The adapter asymmetry is recorded, not hidden: Node's hasher is genuinely incremental, the memory and browser adapters collect chunks and concatenate at `digest()` because SubtleCrypto has no streaming digest — so the change is a clear win on Node and exactly neutral elsewhere. It does **not** remove the `largestEntryInflatedBytes` term. | §2, §7 |
+| **782** | Pass 2 reads at arbitrary offsets through **`ctx.fs.readSlice`**, reusing the `PackByteSource` seam and its window ladder. No held `FileHandle`: `browser-file-system.ts` throws `UNSUPPORTED_OPERATION` for `openWithNoFollow`, and holding handles across async boundaries re-opens a descriptor-leak class already paid for once. The ladder must learn to grow for a **backward** anchor. | §4, §6 |
+| **783** | Both byte sources drive the **same** two-pass indexer. `walkPackEntries` keeps its signature and its `WalkedEntry` return; `bundle-verify.ts` changes only its import path. Collapsing `walkPackEntries` to a validate-only entry point remains available *after* this change and is **not** taken here. | §6, §7a, §11 |
+| **784** | The unresolved-delta refusal is **git's count**: `pack has <N> unresolved delta(s)`, singular at one, under the unchanged `INVALID_PACK_HEADER` code, where `N = objectCount − resolvedCount`. Structured `unresolvedCount` / `firstUnresolvedOffset` fields were offered and **not** taken. Three cases converge on this one message — REF cycle, all-deltas-no-base, and an OFS base landing mid-entry — exactly as git does. | §4, §8 j |
+| **785** | The OFS guard is **`baseOffset < PACK_HEADER_BYTES \|\| baseOffset >= entryOffset`**, refusing at the entry with git's reason **`delta base offset is out of bound`**. A base offset that is in range but lands mid-entry is *not* caught here and remains an unresolved-delta count under ADR-784 — the same split git makes. | §2, §8 h/i, §10 |
+| **786** | The index pass applies **no depth cap**. Adding a refusal where git accepts is the divergence direction the prime directive forbids by default, and ADR-771 set `MAX_DELTA_CHAIN_DEPTH` from git's *writer* default. The cost is accepted knowingly: the retained-ancestor term stays **formally unbounded**, and a deliberately branching forest of near-maximal objects is undefended. The index/read depth gap stays open. | §5, §7, §8 l, §9 |
+| **787** | Two new modules: **`internal/index-pack.ts`** (passes, byte sources, refusals) and **`internal/pack-records.ts`** (record store + child indexes, pure, I/O-free). `fetch-pack.ts` keeps negotiation, the quarantine lifecycle, `fetchPack`/`materializePack` and `verifyPackTrailer`. The byte-source seam moves **with the indexer**. Neither module is coverage-gated, so mutation is the gate. | §6 |
+| **788** | **One** byte-capped LRU inside the indexer, keyed on `ctx.session`, serving **both** pass-1→pass-2 carry-over of in-pack bases **and** externally-resolved thin-pack bases. It **replaces** `bundle-verify.ts:170`'s unbounded `Map`, whose deletion is a residency fix in its own right; that resolver becomes a plain port call. Its budget is **`INDEX_PASS_BASE_CACHE_MAX_BYTES`**, its own named constant, defaulted from the §5a measurement — not a fraction of and not equal to `deltaCacheMaxBytes`. Because the cache is an optimisation over an already-correct walk, **disabling it must change latency and never results** (R15). | §5a |
+| **789** | `sortPackIndexEntries`, `serializePackIndex`, `serializePackRevIndex` — and, forced by the same types, `serializeCruftMtimes` — take the **oid slab plus parallel crc/offset arrays**. The indexer never materialises `PackIndexWriterEntry[]` and `hexToBytes` leaves the path. Six published symbols move; the break rides the pending 4.0.0 exactly as ADR-776 reasoned. **ADR-625's invariant is preserved, not superseded** — one shared ordering definition still feeds every artefact — and §6a makes it structural. The byte-exact goldens and `git verify-pack` cross-tool pins are the regression net and none is weakened. | §3a, §6a, §7a, §11a |
+
+Two corrections this revision carries, both recorded so they are not re-introduced:
+
+- **The `deltaBaseCache` fraction citation was false.** The first draft cited "ADR-727/736's
+  fraction pattern" as sizing precedent. ADR-736 *considered* a fraction and **rejected** it,
+  keeping `deltaBaseCache` at a full additive `deltaCacheMaxBytes`; the fraction siblings are
+  ADR-726 and ADR-727. There is no sizing precedent to inherit, which is why ADR-788's budget is
+  measured rather than derived.
+- **The `idxAssembly` term was undercounted 4×.** "~2.3 MB on fixture C" counted only
+  `sortPackIndexEntries`' own allocation, not the hex-bearing array beneath it. The measured pair
+  is **9.79 MB** (§7a), and that correction is what carried ADR-789 against the design's own
+  recommendation.
 
 ---
 
 ## Decision candidates
 
-Eleven load-bearing choices. **The designer decides none of these.**
+**One**, surfaced by the ADR-789 revision and not settled by any ratified record. ADR-789 hands it
+over explicitly: *"`build-pack.ts` and `cruft-pack-lifecycle.ts` call `sortPackIndexEntries`
+without a slab and must be reconciled — either by building one or by a narrow adapter over the
+widened entry point. That reconciliation is an engineering choice for the design revision, and it
+must not fork the serializer into two implementations…"*
+
+**The designer decides none of this.**
+
+**The constraint both live options satisfy, and the third does not:** exactly one implementation
+of the ordering and of each serializer (R13d). ADR-789 and `check:duplicates` both name the fork
+as the outcome to avoid, and ADR-625's shared-ordering invariant is what a fork would break.
+
+**The facts.** Four distinct caller paths reach `sortPackIndexEntries` from the application layer,
+through three source lines, and only the indexer's path has a slab:
+
+| Call site | Reached from | Has a slab? |
+|---|---|---|
+| `write-pack-artifacts.ts:192` (`writeSiblingsGiven`) | `fetch-pack.ts:193` — **the indexer** | **yes** |
+| `write-pack-artifacts.ts:192` (same line) | `writePackArtifacts` ← `pack-objects.ts:89`, `cruft-pack-lifecycle.ts:238` | no |
+| `write-pack-artifacts.ts:305` (`writePackArtifactsViaQuarantine`) | `gc-pipeline.ts:485,528` | no |
+| `cruft-pack-lifecycle.ts:245` (`writeCruftPack`) | `gc-pipeline.ts:562` | no |
+
+One correction to ADR-789's own wording, which does not change the decision: **`build-pack.ts`
+never calls `sortPackIndexEntries`.** It is the *producer* whose `BuildPackResult.entries` —
+`plan.ids.map((id, i) => ({ id, ...packfile.entries[i]! }))` at `build-pack.ts:58`, hex
+`ObjectId`s it already holds joined to `serializePackfile`'s `{ crc32, offset }` metas — feeds
+every slab-less call site. That is why it is where DC-A(b) would intervene.
+
+`push.ts:353` and `bundle-create.ts:312` also call `buildPack` but read only `.bytes`/`.sha`, so
+they are unaffected by either option.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| **DC-1** | **How pass 2 resolves deltas** | (a) **Child-indexed forest walk**: roots are base entries, children found by base offset / base oid, a parent's content held on an explicit stack and released when its last child is done. **No cache.** (b) **Offset-ordered sweep with a byte-capped LRU base cache** (the brief's shape), sized on ADR-736's additive pattern, keyed on `ctx.session` per ADR-722. (c) **Hybrid**: forest walk, plus an LRU only for externally-resolved thin-pack bases. | **(a)** | (a) applies each delta exactly once and reads each entry at most twice, with no budget to tune and no config key to pin (§5). §1e's `core.deltaBaseCacheLimit` sweep is the evidence: with git's cache **off**, delta resolution costs 0.39 MB on fixture A and 18.28 MB on fixture C — so a memory-safe root-down algorithm is what git's own indexer rests on, and the cache is a speed layer above it (DC-11). (b) is what the brief sketches and keeps pass 2 a flat loop, but a fully-missing cache costs `Σ_i depth(i)` delta applications — **8 474 against 296** on fixture A (§5) — and needs a budget whose only faithful key is `core.deltaBaseCacheLimit`, which brings an int-config finder, an eager assertion and a refusal pin. (c) buys nothing (a) does not already give: an external base is a root like any other, and there is exactly one per unresolved REF oid. |
-| **DC-2** | **How the record arrays are sized, given `objectCount` is attacker-controlled** | (a) Allocate up front at `min(header.objectCount, maxObjectsPerPack, structuralMax)` where `structuralMax = (totalBytes − 12 − digestLength) / 9` (§1f). (b) **Grow geometrically** from a small capacity; `header.objectCount` is only a loop bound. (c) Array of `{ offset, crc32, type, oid }` objects — no sizing question, ~5× the bytes. | **(b)** | (b) is the only one where a lying header costs nothing: a 50 M-entry claim over a 3-entry pack allocates for 3. Its cost is a transient 1.5× during each doubling, bounded by the *real* entry count. (a) is exact and free but still lets a 512 MiB pack claim ~59.6 M entries → 1.97 GB of records before a single byte is validated; the clamp is worth keeping as a second bound *under* (b), not instead of it. (c) abandons ADR-770's precedent and roughly quintuples §7's `N` term for no gain. |
-| **DC-3** | **How a base entry's oid is computed** | (a) **Incremental**: `h = ctx.hash.createHasher(); h.update(headerBytes); h.update(content); await h.digestHex()`. (b) Keep `computeLooseObjectId`'s concatenated `headerBytes ++ content` buffer. (c) (a) on Node, (b) elsewhere, behind a capability probe. | **(a)** | The port already has `createHasher()`. On Node it is `crypto.createHash`, genuinely incremental, and (a) removes a **full second copy of every object** — measurable in §1d's fixture-B multiple (2.36× Σ inflated for a corpus with zero deltas). **The asymmetry must be stated, not hidden**: the memory and browser hash adapters implement `createHasher` by pushing chunks into an array and concatenating at `digest()` time, because SubtleCrypto has no streaming digest. So (a) is a clear win on Node and *exactly neutral* elsewhere — it never regresses, and it removes the copy on the runtime that clones large repositories. (c) is (a) with a branch that buys nothing. Note that neither option removes §7's `largestEntryInflatedBytes` term: `createInflateStream()` could, but it does not report `bytesConsumed`, so it cannot drive pass 1. |
-| **DC-4** | **How pass 2 reads bytes at arbitrary offsets** | (a) **`ctx.fs.readSlice`** through the existing `PackByteSource` seam — one `open`+`read`+`close` per window fetch on Node. (b) Hold one `ctx.fs.openWithNoFollow(path, 'read')` `FileHandle` for the whole pass. (c) Add an optional `FileSystem` capability for scoped random reads, with (a) as the fallback. | **(a)** | **(b) is not portable: `browser-file-system.ts:201` throws `UNSUPPORTED_OPERATION` for `openWithNoFollow`**, so it would break clone/fetch in the browser unless paired with an (a) fallback anyway — two code paths for one job. `readSlice` is implemented by every adapter and is already the primitive `object-resolver`'s hot path uses. (b) also reopens the `FileHandle` GC-leak class the repo has already paid for once, and the port's own doc says *"Holding handles open across async boundaries can leak file descriptors on Node — keep usage tight."* (c) is the honest escape hatch if a measured syscall profile demands it, but it is a port change (three adapters plus the memory fake) for a cost nobody has measured yet. |
-| **DC-5** | **Does `walkPackEntries` (in-memory, `bundle-verify`'s only gate) share the new path?** | (a) **Share** — one indexer over the existing `PackByteSource` seam, two sources. (b) Keep the old pipeline for the in-memory source. (c) Replace `walkPackEntries` with a validate-only entry point that returns nothing, since its one caller discards the array. | **(a)** | The seam exists precisely so the walk is written once (`fetch-pack.ts:484-499`), and `bundle verify` has the *same* residency problem: on a bundle of tsgit's history it would hold 571 MiB today. (a) fixes it for free and keeps one code path to mutation-test. (b) preserves two implementations of the same logic, which `check:duplicates` exists to catch. (c) is a genuine simplification — `bundle-verify.ts:78` really does discard the result — but it changes a module export's contract for a caller count of one, and it can be done any time after (a). |
-| **DC-6** | **The unresolved-delta refusal** | (a) Keep both strings **byte-identical** (`unresolved REF_DELTA: base <id> not in pack`, `unresolved entry at offset <n>`). (b) Adopt git's shape: one reason, `pack has <N> unresolved deltas`, same `INVALID_PACK_HEADER` code. (c) (b) plus structured fields on `TsgitError.data` (`unresolvedCount`, `firstUnresolvedOffset`). | **(b)** | §1f rows 7/8/16 pin git's wording as a **count**, and today's strings are tsgit-internal — there is no faithfulness debt to preserve, only tests. The forest walk produces the count for free; naming "the first" unresolved entry requires an extra scan and is *less* meaningful than today, because a DFS discovers unreachable entries as a set with no queue order to be first in. (a) costs that extra scan to preserve a string that was never faithful. (c) is (b) plus more, and ADR-249 favours structured fields — take it if the user wants a machine-readable count; the extra fields are additive on an error `data` shape that is not in `api.json`. |
-| **DC-7** | **The OFS base-offset guard** | (a) Widen the guard to `baseOffset < PACK_HEADER_BYTES \|\| baseOffset >= entryOffset` and keep tsgit's current message. (b) (a) **plus** adopt git's reason (`delta base offset is out of bound`). (c) Leave the guard as-is; a zero distance keeps falling through to the unresolved path. | **(b)** | §1f row 15 is a defect: git refuses a zero distance as out-of-bound at the entry, tsgit reports `unresolved entry at offset 37` — the wrong diagnosis for a structurally invalid pack, and one that would now be folded into DC-6's count and lose the offset entirely. (a) fixes the *verdict*; (b) also fixes the *reason*, and since DC-6 already opens the refusal-wording question, doing both in one change keeps one ADR instead of two. (c) is only defensible if the user wants zero refusal-surface movement in this change. |
-| **DC-8** | **Delta depth in the index pass** | (a) **No cap**, matching git (§1f row 9 pins acceptance at depth 1 000). (b) Refuse beyond `MAX_DELTA_CHAIN_DEPTH` (50), so tsgit never indexes a pack its own resolver cannot read. (c) No depth cap, but a **path-bytes budget**: refuse when the walk's retained content exceeds a budget, bounding §7's retained-ancestor term. | **(a)** | (a) is what git does and what tsgit does today; changing it would add a refusal on a path git accepts, which is the divergence direction ADR-226 forbids by default. But (a) leaves §7's retained-ancestor term formally unbounded, which §9 names as undefended. (b) closes the §1f row-10 gap — a pack tsgit indexes but cannot read — at the cost of refusing a legal pack; note that ADR-771 deliberately set `MAX_DELTA_CHAIN_DEPTH` to git's *writer* default, which is not a statement about what a reader must accept. (c) bounds the memory without touching the depth semantics, and is the option to take if R1's formula must have no unbounded term; its cost is a new budget with no git key to borrow — `core.deltaBaseCacheLimit` describes a cache, not a path. |
-| **DC-9** | **Module layout** | (a) One new module, `internal/index-pack.ts`. (b) Two: `internal/index-pack.ts` (passes, I/O) + `internal/pack-records.ts` (typed-array store + child indexes, pure). (c) Keep everything in `fetch-pack.ts`. | **(b)** | (c) is out: `fetch-pack.ts` is 1 036 lines against an 800 ceiling and this adds more than it removes. (b) puts the record store and the two child indexes — sorted typed arrays with binary-search lookup — behind a pure boundary that takes property tests naturally (round-trip: every recorded entry is retrievable; invariant: a child index lookup returns exactly the ordinals whose base key matches). (a) is fine and smaller, but folds a pure data structure into an I/O module and loses that lens. Neither module is coverage-gated (the 100 % gate covers `domain/` and `adapters/`), so mutation is the gate that will notice. |
-| **DC-10** | **Does the `.idx`/`.rev` writer keep taking `PackIndexWriterEntry[]`?** | (a) **Yes** — one final materialisation of N objects with hex oids, exactly as today. (b) Widen `sortPackIndexEntries`/`serializePackIndex`/`serializePackRevIndex` to accept the oid **slab** plus parallel `crc`/`offset` arrays, removing §7's last O(N)-objects term. | **(a)** | (a) keeps R13 true and the domain serializers untouched; the term it leaves is **pre-existing**, not a regression, and it is ~2.3 MB on fixture C. (b) is the right long-term shape — `sortPackIndexEntries` currently calls `hexToBytes(entry.id)` to re-derive bytes the record store already holds, so (b) removes a round-trip as well as an allocation — but it moves three domain serializers with their own goldens and cross-tool pins, and it is cleanly separable from the residency problem this change is about. Take (b) only if the user wants the `N`-term closed in the same PR. |
-| **DC-11** | **Does a delta-base cache ship in this change, and on what budget?** | (a) **No cache.** Take git's cache-off profile: fixture C at ~33 MB and ~2× the wall clock of git's default. (b) **A pass-1→pass-2 carry-over cache** of base contents, bounded by an internal budget derived from `ctx.deltaCache.maxSize` (ADR-727/736's fraction pattern), keyed on `ctx.session` (ADR-722). Removes the second read of every base that has children — the only re-work design (a) has. (c) (b) but bounded by **`core.deltaBaseCacheLimit`**, git's own key, honoured with its 96 MiB default and its `k`/`m`/`g` unit grammar. | **(b)** | §1e prices the trade in git precisely: **1.84× and 2.07× wall clock** for up to 96 MiB per thread. That is a real cost, so (a)'s "no cache" is not free — it is a deliberate 2× on clone latency. But (b)'s cache is a *different, smaller* cache than git's: design (a) already reads each entry at most twice, so the only re-work available to save is one re-read per base-with-children, and a modest budget captures most of it. (b) keeps the residency knob on tsgit's existing `deltaCacheMaxBytes` axis, which ADR-736 already documents as the one dial for this family, and adds no config surface (R12 stays true). (c) is the faithful-key answer and has ADR-772's precedent behind it — prefer git's key over a private constant — but git's key describes *git's* cache, whose hit pattern this design does not reproduce, so honouring the number would imply a parity that is not there; it also costs an int-config finder, an eager assertion and a refusal pin, and moves `api.json`. Ship (b) if the 2× matters; ship (a) if the first PR should change exactly one thing. |
+| **DC-A** | **Where the slab is born for callers that do not have one** | **(a) A domain conversion at the write boundary.** `packIndexEntriesFrom(entries, digestLength)` is exported from `domain/storage/pack-order.ts`; `pack-objects.ts` and `gc-pipeline.ts`'s three call sites convert `pack.entries` once before calling `writePackArtifacts*` / `writeCruftPack`, which take `PackIndexEntries` only. `BuildPackResult` is unchanged. **(b) Move the slab birth into `buildPack`.** `BuildPackResult.entries` becomes `PackIndexEntries`; `buildPack` fills the slab from `plan.ids` and `packfile.entries` directly. No slab-less caller remains and `packIndexEntriesFrom` has no production caller. **(c) Let the serializers accept either shape** (overload, or a union narrowed inside). | **(a)** | (a) and (b) are both fork-free; (c) is not, and is listed only so its rejection is on the record — a union input puts two index-and-dereference paths inside each serializer, which is exactly the second implementation ADR-625 and `check:duplicates` exist to prevent, and it doubles the mutation surface of code carrying byte-exact goldens. Between (a) and (b): **(a) moves the smallest published surface** — the six R12 symbols plus three additive ones, with `BuildPackResult` untouched — and the conversion is one named domain function with its own round-trip property test. Its cost is honest: the gc and `pack-objects` paths keep `BuildPackResult`'s hex-bearing `N × 488 B` array, so §7a's 11.8× reduction lands on the **fetch** path only, and the same term survives on the path `gc` uses to repack a whole repository. **(b) removes that term everywhere** and is the better long-term shape — `buildPack` already holds both halves, so building the slab there costs the same `hexToBytes` per object that (a) pays one level up, with no extra allocation — but it moves a **seventh** published symbol in the same major, re-points four call sites that are otherwise pure pass-through, and leaves `packIndexEntriesFrom` published with no production caller (a smell, though not a `knip` finding: it is reachable from `domain/index.ts`). (a) does not foreclose (b): (b) can land afterwards by deleting the three conversion calls, without reopening ADR-789. Take (b) instead if the gc path's residency should move in this PR rather than a later one. |
 
 ---
 
 ## Test strategy
 
-### Unit — `test/unit/application/primitives/internal/pack-records.test.ts` (new, DC-9b)
+### Unit — `test/unit/application/primitives/internal/pack-records.test.ts` (new, ADR-787)
 
 Pure, `describe('Given …')` > `describe('When …')` > `it('Then …')`, AAA, `sut`.
 
 | Area | Cases |
 |---|---|
 | record store | store/read back `offset`, `crc32`, `type`, `oid` for entry 0, entry N−1, and a middle entry; SHA-1 (20 B) and SHA-256 (32 B) widths; the `resolved` flag distinguishing "unresolved" from "resolved to the all-zero oid" |
-| growth (DC-2b) | capacity crossing exactly at the doubling boundary, one below, one above; contents preserved across every growth |
+| growth (ADR-780) | capacity crossing exactly at the doubling boundary, one below, one above; contents preserved across every growth; the structural clamp binding *before* the declared count does |
+| slab hand-over (ADR-789) | the exposed `PackIndexEntries` reports `count`, not `array.length`, when capacity exceeds `count`; entry `count − 1`'s oid range is the last `digestLength` bytes *within* `count`, never into the over-allocated tail |
 | OFS child index | zero children; one; two children of the same base (adjacent ordinals); children of *different* bases interleaved by offset; a base offset present in the delta table but with no matching entry |
 | REF child index | same five shapes over oid bytes; **two entries with equal oids** (§10's duplicate row) |
 | guard clauses | `baseOffset < PACK_HEADER_BYTES` and `baseOffset >= entryOffset` as **separate** tests, each triggering exactly one condition, each asserting `error.data` via try/catch — never a bare `toThrow(Class)` |
@@ -819,7 +1306,7 @@ rather than duplicate.
 - **Pass-2 read pattern.** The existing `requestedLengths` spies pin pass 1's forward window
   ladder; add assertions that pass 2 issues *backward* anchors and that no single requested
   length exceeds one grown window.
-- **`walkPackEntries` parity (DC-5a).** In-memory and disk sources produce identical results on
+- **`walkPackEntries` parity (ADR-783).** In-memory and disk sources produce identical results on
   the same bytes — the test that already exists (`fetch-pack.test.ts:2309`) extended to the
   fixtures with deep chains and forward REF references.
 - **Thin packs (R7).** Base present → resolves; base absent → refuses; base present but the
@@ -827,6 +1314,50 @@ rather than duplicate.
 - **Untrusted count (R3, §9).** A pack declaring `objectCount = 50_000_000` with three real
   entries: the call refuses on the first bad inflate and total allocation stays proportional to
   three, asserted through a spy on the record store's capacity rather than through memory.
+
+### Unit + property — the serializer regression net (ADR-789)
+
+**The goldens and the cross-tool pins *are* the net. None of them is weakened to fit the new
+shape** — that is R13, and it is the hardest constraint in this half of the change. How each is
+re-expressed:
+
+| Existing asset | What happens to it |
+|---|---|
+| Byte-exact goldens in `pack-writer.test.ts` (727 lines), `rev-index.test.ts` (650), `cruft-pack.test.ts` (479) | **Expected bytes stay verbatim.** Only the *Arrange* changes: the same `{ id, crc32, offset }` literals the test already declares are wrapped in `sortPackIndexEntries(packIndexEntriesFrom([...], 20))` — the **production** adapter, never a test-local copy. One moved expected byte means the change is wrong |
+| `pack-order.test.ts` (78 lines) | Rewritten against the new return type, keeping all four existing cases: out-of-order input sorts ascending; each ordinal pairs with its own oid bytes (now `order[p]` selecting a slab range); the order is input-order-independent; the empty set returns an empty order |
+| `rev-index.properties.test.ts`, `cruft-pack.properties.test.ts` | **Properties unchanged.** `arbPackIndexWriterEntries` (`arbitraries.ts:472`) keeps generating readable `{ id, crc32, offset }` triples — that is what gives the generator hex-domain coverage — and gains a `.map` into `PackIndexEntries`. Rewriting it to emit slabs directly would silently drop that coverage |
+| `packfile-interop.test.ts:102,187` — `git fsck --strict` + `cat-file -p` readback | **Oracle unchanged**, call shape wrapped. Its whole contract is "git accepts what we wrote"; it must keep passing with zero change to its assertions |
+| `pack-pair.ts:71`, `bitmap-closure.scenario.ts:158`, `fsck-degraded-store.scenario.ts:87` | Same wrap. Parity scenarios are cross-*adapter* and do not prove faithfulness, but they do prove the three adapters agree on the widened path |
+
+Three new tests carry the weight the type change adds:
+
+| # | Kind | Property |
+|---|---|---|
+| S1 | property, round-trip, `numRuns` **200** | `packIndexEntriesFrom(E, W)` — for every `i < E.length`: `oids[i*W … (i+1)*W)` equals `hexToBytes(E[i].id)`, `crcValues[i] === E[i].crc32`, `offsets[i] === E[i].offset`, `count === E.length`. Lens 1 |
+| S2 | property, compositional, `numRuns` 100 | `sortPackIndexEntries(packIndexEntriesFrom(E, W)).order` reads out a **non-decreasing** oid byte sequence that is a permutation of `E`'s oids — including when `E` carries duplicate oids, which §10 pins as legal. Lens 2 |
+| S3 | example, the anti-fork oracle | The same entry set built **two ways** — through `packIndexEntriesFrom` from an array, and written directly into a hand-built slab — produces `.idx`, `.rev` and `.mtimes` bytes that are `toEqual`. If a second implementation ever appears, this is what fails; `check:duplicates` is the mechanical half of the same guard |
+
+### Unit — the base cache (ADR-788, R15)
+
+- **R15 as a parameterised sweep.** Every §10 degenerate input, both §1c fixtures and both
+  thin-pack fixtures run twice — `INDEX_PASS_BASE_CACHE_MAX_BYTES` forced to `0`, and at its
+  default — asserting **identical** `WalkedEntry` sets, byte-identical `.idx`/`.rev`, and
+  identical `TsgitError.data` on every refusal. Only latency may differ. This is the test that
+  keeps the cache an optimisation.
+- **Bounded, and observably so.** A pack whose base-with-children content exceeds the budget:
+  `cache.currentSize <= maxSize` holds after every insertion, and the entry cap binds
+  independently — a separate case with many tiny bases, since a byte cap alone does not defend
+  entry-count overhead (ADR-736; ADR-727's amendment).
+- **The two keyspaces do not collide.** Two index passes on one session, over different packs
+  whose entries share a pack offset, must not read each other's bases. The
+  `o:<passId>:<offset>` key is what makes that true, and only a test driving two passes and
+  asserting distinct content proves it.
+- **`clear()` on both exits.** Success and failure both leave `cache.currentSize === 0`. The
+  failure case matters more: a refusing pack must not leave its bases resident.
+- **`bundle verify` keeps its verdicts.** The existing `bundle-verify` tests pass unchanged after
+  the `Map` is deleted — including the case where a prerequisite base is **absent**, since
+  today's Map memoises that `undefined` and the replacement must still answer `undefined` on a
+  repeat lookup rather than throwing.
 
 ### Integration — `test/integration/index-pack-interop.test.ts` (new)
 
@@ -839,13 +1370,15 @@ Every row of §1f becomes a case, with git as the peer on the same crafted bytes
 | # | Given | Then |
 |---|---|---|
 | X1 | a pack tsgit indexed | `git verify-pack <idx>` exits **0** with no output, and `git show-index < <idx>` lists the same `(offset, oid)` set tsgit recorded |
-| X2 | the crafted OFS-distance-0 pack | both refuse; git's reason tail is `delta base offset is out of bound` and tsgit's `data` matches DC-7's ratified shape |
-| X3 | the crafted REF-cycle pack and the all-deltas pack | both refuse; git says `pack has 2 unresolved deltas` and tsgit's count agrees (DC-6) |
+| X2 | the crafted OFS-distance-0 pack | both refuse; git's reason tail is `delta base offset is out of bound` and tsgit's `data.reason` is the same string (ADR-785) |
+| X3 | the crafted REF-cycle pack and the all-deltas pack | both refuse; git says `pack has 2 unresolved deltas` and tsgit's reason is byte-identical (ADR-784) |
+| X3b | a pack with exactly **one** unresolvable delta (§1f row 15b) | both say `pack has 1 unresolved delta` — the **singular**, which is the case a naive `${n} deltas` template gets wrong |
 | X4 | the crafted forward-REF pack | both accept, same oid set |
-| X5 | chains at depth 50 / 51 / 1 000 | both accept (DC-8a); if DC-8b is ratified instead, this row inverts and becomes the divergence pin |
+| X5 | chains at depth 50 / 51 / 1 000 | both accept — no depth cap (ADR-786). Row 10's consequence is *recorded* in the same case: tsgit's own resolver refuses past 50, and that gap stays open deliberately |
 | X6 | four identical zero-length blobs | git without `--strict` accepts, tsgit accepts; `git index-pack --strict` refuses and tsgit's divergence is **recorded, not asserted away** |
 | X7 | a real thin pack (`pack-objects --thin --revs`) | tsgit refuses without a resolver; with the store's bases available it completes, and `git index-pack --stdin --fix-thin` accepts the same bytes |
 | X8 | fixture C's pack indexed by tsgit | `git fsck --strict --no-progress` in the resulting repo exits **0** with zero output on both streams |
+| X9 | fixture C's `.idx` and `.rev` written **from the indexer's own slab** (ADR-789), never from a converted array | `git verify-pack -v` and `git show-index` agree with tsgit's records, and `git cat-file --batch-all-objects --batch-check` reads every object back. This is the pin that proves the slab path and the array path emit the same artefact — R13b |
 
 ⚠️ Any case that corrupts an entry *header* must recompute the pack trailer, or git answers
 `fatal: pack is corrupted (SHA1 mismatch)` and never reaches the condition under test — §1f
@@ -853,7 +1386,7 @@ rows 11 and 13 are exactly that shape.
 
 ### Bench — `test/bench/fetch-pack.bench.ts`
 
-Two scenarios, both on committed generators reproducing fixtures A and C:
+Three scenarios, all on committed generators reproducing fixtures A, B and C:
 
 - **Residency (R1, R2).** The assertion is a **class with headroom** against §7's formula, never
   a byte count, and it is measured with a **kernel high-water mark from a child process** —
@@ -861,6 +1394,11 @@ Two scenarios, both on committed generators reproducing fixtures A and C:
 - **Throughput.** Pass 1 + pass 2 wall clock against today's single pass, so the second read of
   every entry is priced rather than assumed free. Published numbers come from CI's nightly bench
   artifact; local runs are for the design only.
+- **The ADR-788 budget sweep** (§5a). The demand curve, hit rate and wall clock across
+  `{0, 1, 2, 4, 8, 16, 32, 64} MiB`, on all four fixtures including the thin-pack one. This is
+  the measurement the implementation owes before `INDEX_PASS_BASE_CACHE_MAX_BYTES` gets a
+  default, and it is a **gating step in the plan**, not a nice-to-have. Fixture B is the control:
+  the cache must be inert there.
 
 ### Mutation
 
@@ -868,10 +1406,15 @@ Target 0 survivors. Known-hazardous spots to write kill tests for up front:
 
 - `RECORD_BYTES` and every field offset in the record store — each needs a case whose *output*
   changes when the constant does.
-- The growth factor and the `capacity <= needed` comparison (DC-2b) — a case landing exactly on
+- The growth factor and the `capacity <= needed` comparison (ADR-780) — a case landing exactly on
   the boundary.
-- `baseOffset >= entryOffset` versus `>` (DC-7) — the self-reference case (`distance === 0`) is
+- The slab guards in each serializer (`oids.length < count * digestLength` and siblings, §6a) —
+  a case landing exactly on equality, since `<` versus `<=` is the live mutant there.
+- `baseOffset >= entryOffset` versus `>` (ADR-785) — the self-reference case (`distance === 0`) is
   the killer, and it is the defect §1f row 15 found.
+- The **singular/plural** branch in ADR-784's message — a one-unresolved-delta pack and a
+  two-unresolved-delta pack, since a `StringLiteral` mutant on either arm survives a test that
+  only ever sees the plural.
 - `resolvedCount < objectCount` versus `!==` — a pack where the walk resolves *more* entries
   than declared is unreachable, so prove the equivalence or restructure rather than suppress.
 - Binary-search bounds in both child indexes — the classic loop-bound equivalent family. Any
@@ -883,6 +1426,12 @@ Target 0 survivors. Known-hazardous spots to write kill tests for up front:
 mutates all of `src/`. Both new modules live under `application/primitives/internal/`, so they
 are mutated but not coverage-gated — their tests must be written to the same standard anyway,
 because mutation is the gate that will notice if they are not.
+
+**The ADR-789 half is the opposite case.** `pack-order.ts`, `pack-writer.ts`, `rev-index.ts` and
+`cruft-pack.ts` are all under `domain/`, so **every new line and branch there is coverage-gated
+at 100 %** — including each of §6a's structural guards. A guard added without a test does not
+survive `npm run test:coverage`, which is a stronger signal than mutation alone and arrives
+earlier.
 
 ---
 
@@ -901,18 +1450,27 @@ because mutation is the gate that will notice if they are not.
   the digest, so its trailer check passes where git's — which hashes only the declared entries —
   fails with `pack is corrupted (SHA1 mismatch)`. Both refuse; the divergence is in which check
   fires and predates this change.
-- **Closing the index/read depth gap** (§1f row 10). Whether `MAX_DELTA_CHAIN_DEPTH` should
-  bind the indexer is DC-8; whether it should bind the *readers* at all belongs to ADR-771's own
+- **Closing the index/read depth gap** (§1f row 10). ADR-786 settled that the indexer takes no
+  cap; whether `MAX_DELTA_CHAIN_DEPTH` should bind the *readers* at all belongs to ADR-771's own
   record, not here.
+- **A path-bytes budget on the retained-ancestor term.** ADR-786 records it as the shape to
+  revisit if the unbounded term is ever judged unacceptable, and notes it would not require
+  reopening the depth semantics.
 - **`--strict`-class object checks.** git's `index-pack --strict` runs fsck checks (duplicate
   oid, malformed objects) that the default fetch path does not, because `transfer.fsckObjects`
   and `fetch.fsckObjects` both default to **false** (pinned, §1f row 5). tsgit has `fsck`; wiring
   a `--strict` equivalent into the fetch path is a config surface with its own faithfulness pins.
 - **`--max-input-size` as a config key.** `maxResponseBytes` already covers the byte cap with a
   different message (§1f row 18). Aligning the message is a separable faithfulness item.
-- **The `.idx`/`.rev` serializers' entry shape** (DC-10b). Removing the last O(N)-objects term
-  means moving three domain serializers with their own goldens; separable from residency.
-- **`walkPackEntries`'s existence** (DC-5c). Its one caller discards the result; collapsing it
-  to a validate-only gate is a follow-up, not a prerequisite.
+- **`walkPackEntries`'s existence.** ADR-783 keeps its signature and its `WalkedEntry` return;
+  its one caller discards the result, and collapsing it to a validate-only gate is explicitly
+  *available afterwards* and not a prerequisite. Until then it is the last place the hex-bearing
+  array survives (§7a).
+- **The gc / `pack-objects` half of `idxAssembly`**, if DC-A(a) is chosen. Those paths keep
+  `BuildPackResult.entries`' hex-bearing array; DC-A(b) is the shape that closes it, and it can
+  land later without reopening ADR-789.
+- **`serializeCruftMtimes`' `mtimeOf(oid)` contract.** ADR-789's slab does not carry hex, so the
+  serializer derives a transient one per index position (§6a). Re-keying the callback on an
+  ordinal would remove even that, and is separable.
 - **Anything in `pack-registry.ts`.** `deltaBaseCache` (ADR-736) serves the *read* path over
   already-indexed packs and is untouched by this change.
