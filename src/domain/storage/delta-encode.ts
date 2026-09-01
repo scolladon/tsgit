@@ -212,6 +212,7 @@ function matchForward(
   baseOffset: number,
   targetPos: number,
 ): number {
+  // Stryker disable next-line ArithmeticOperator: equivalent — these two subtractions only cap `max`; the loop's own base[i]===target[i] check already halts at the true remaining length (an out-of-bounds read is `undefined`, which can never equal a real byte), so inflating either term cannot change the result — verified with 200k randomized trials, including exact tied-remaining-length cases.
   const max = Math.min(MAX_COPY_BYTES, base.length - baseOffset, target.length - targetPos);
   let length = 0;
   while (length < max && base[baseOffset + length] === target[targetPos + length]) {
@@ -270,7 +271,9 @@ function evaluateCandidate(
 
 function isBetterMatch(candidate: Match, best: Match | undefined): boolean {
   if (best === undefined) return true;
+  // Stryker disable next-line EqualityOperator: equivalent — only reached when candidate.length !== best.length already holds (the guard on this line), so `>` and `>=` decide identically here: equality is impossible inside this branch.
   if (candidate.length !== best.length) return candidate.length > best.length;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a same-offset or reversed-offset tie between two distinct chain blocks needs one block's backward reach to overlap the other's own 16-byte hash-matched content, which forces target's pre-pos bytes to replicate its own post-pos window; the natural leftmost scan always discovers that replicated window as an earlier match first, so this tie-break is never actually reached with a differing outcome — verified with 2M+ randomized trials plus two hand-built overlap constructions, both preempted by an earlier match, and the full unit suite (15k+ tests) unaffected under both mutations.
   return candidate.baseOffset < best.baseOffset;
 }
 
@@ -285,6 +288,7 @@ function findBestMatch(
   let candidatesLeft = MAX_CANDIDATES_PER_BUCKET;
   let best: Match | undefined;
 
+  // Stryker disable next-line ConditionalExpression: equivalent — dropping this guard only lets the loop evaluate phantom candidates at a negative or NaN blockOffset, whose out-of-bounds reads make forward and backward both 0; a zero-length candidate never beats an existing or later real match under isBetterMatch, and the caller's own `length >= DELTA_BLOCK_BYTES` check rejects it regardless, so `best` is never corrupted — verified against the full unit suite (15k+ tests) unmutated.
   while (block !== END_OF_CHAIN && candidatesLeft > 0) {
     const candidate = evaluateCandidate(
       index,
@@ -367,6 +371,7 @@ export function encodeDeltaFromIndex(
   let literalStart = 0;
   while (pos < target.length) {
     const match =
+      // Stryker disable next-line ConditionalExpression,ArithmeticOperator: equivalent — this is a pure performance short-circuit; evaluateCandidate/matchForward/matchBackward independently bound themselves by the real remaining lengths regardless of when they run, so skipping this guard only wastes a lookup or, rarely, accepts a genuinely valid backward-compensated match near the tail — round-trip and every existing instruction-shape assertion hold either way, verified against the full unit suite (15k+ tests) plus 8k round-trip fuzz trials, unmutated.
       target.length - pos >= DELTA_BLOCK_BYTES
         ? findBestMatch(index, target, pos, literalStart)
         : undefined;

@@ -232,6 +232,22 @@ describe('delta-encode', () => {
       });
     });
 
+    describe('Given a COPY offset of exactly 0xffffffff', () => {
+      describe('When serializing', () => {
+        it('Then the offset is accepted, not rejected as out of range', () => {
+          // Arrange
+          const sut = serializeDelta;
+          const offset = 0xffffffff;
+
+          // Act
+          const result = sut(1, 1, [{ type: 'copy', offset, size: 1 }]);
+
+          // Assert
+          expect(parseDelta(result).instructions[0]).toEqual({ type: 'copy', offset, size: 1 });
+        });
+      });
+    });
+
     describe('Given an INSERT at the MAX_INSERT_BYTES boundary', () => {
       describe('When serializing', () => {
         it.each([
@@ -475,6 +491,77 @@ describe('delta-encode', () => {
       });
     });
 
+    describe('Given a match candidate whose coincidental backward bytes reach past literalStart', () => {
+      describe('When encoding', () => {
+        it('Then backward extension stops at the pending literal boundary, not the coincidence', () => {
+          // Arrange — 127 bytes of junk trigger the periodic MAX_INSERT_BYTES
+          // flush (literalStart becomes 127), then 3 more junk bytes bring pos
+          // to 130 (pos - literalStart = 3) before a 20-byte block-aligned
+          // match is found. base is deliberately seeded so its 6 bytes just
+          // before the matched block equal target's 6 bytes just before pos —
+          // a coincidence that extends 3 bytes past literalStart into the
+          // already-flushed region. Only the 3 pending bytes may be reclaimed.
+          const junkPrefixLen = 130;
+          const matchLen = 20;
+          const blockOffset = 128;
+          const overlapK = 6;
+          const target = new Uint8Array(junkPrefixLen + matchLen);
+          for (let i = 0; i < junkPrefixLen - overlapK; i += 1) target[i] = 200 + (i % 55);
+          for (let i = 0; i < overlapK; i += 1) target[junkPrefixLen - overlapK + i] = 10 + i;
+          for (let i = 0; i < matchLen; i += 1) target[junkPrefixLen + i] = 1 + (i % 8);
+
+          const base = new Uint8Array(160);
+          for (let i = 0; i < base.length; i += 1) base[i] = 50 + (i % 20);
+          for (let i = 0; i < matchLen; i += 1) base[blockOffset + i] = target[junkPrefixLen + i]!;
+          for (let i = 0; i < overlapK; i += 1) {
+            base[blockOffset - overlapK + i] = target[junkPrefixLen - overlapK + i]!;
+          }
+          const sut = encodeDelta;
+
+          // Act
+          const result = sut(base, target);
+
+          // Assert — backward is capped at 3 (pos - literalStart), not the
+          // coincidental 6-byte match, so the COPY offset is 125, not 122.
+          const parsed = parseDelta(result!);
+          expect(parsed.instructions).toEqual([
+            { type: 'insert', data: target.subarray(0, 127) },
+            { type: 'copy', offset: 125, size: 23 },
+          ]);
+          expect(applyDelta(base, result!)).toEqual(target);
+        });
+      });
+    });
+
+    describe('Given a match of exactly DELTA_BLOCK_BYTES with no extension either way', () => {
+      describe('When encoding', () => {
+        it('Then it is accepted as a COPY rather than literal-encoded', () => {
+          // Arrange — the first 16 bytes are shared; base and target diverge
+          // differently right after, so forward stops at exactly the block
+          // size and backward stays 0 (pos = literalStart = 0).
+          const base = new Uint8Array(20);
+          const target = new Uint8Array(20);
+          for (let i = 0; i < 16; i += 1) {
+            base[i] = i + 1;
+            target[i] = i + 1;
+          }
+          for (let i = 16; i < 20; i += 1) {
+            base[i] = 200 + i;
+            target[i] = 100 + i;
+          }
+          const sut = encodeDelta;
+
+          // Act
+          const result = sut(base, target);
+
+          // Assert
+          const parsed = parseDelta(result!);
+          expect(parsed.instructions[0]).toEqual({ type: 'copy', offset: 0, size: 16 });
+          expect(applyDelta(base, result!)).toEqual(target);
+        });
+      });
+    });
+
     describe('Given a target shorter than one block', () => {
       describe('When encoding', () => {
         it('Then every instruction is an INSERT', () => {
@@ -547,6 +634,43 @@ describe('delta-encode', () => {
 
           // Assert
           expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a maxSize smaller than the header itself and an empty target', () => {
+      describe('When encoding', () => {
+        it('Then returns undefined instead of a truncated header-only buffer', () => {
+          // Arrange — an empty target means the scan never calls emit() again
+          // after the header fails, so this exercises the header-failure path
+          // in isolation, with nothing downstream able to mask a wrong return.
+          const base = new Uint8Array(5);
+          const target = new Uint8Array(0);
+          const sut = encodeDelta;
+
+          // Act
+          const result = sut(base, target, 0);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a maxSize exactly equal to the unbounded result size', () => {
+      describe('When encoding', () => {
+        it('Then the full result is returned, not undefined', () => {
+          // Arrange
+          const base = new Uint8Array(0);
+          const target = new Uint8Array(20).fill(0x41);
+          const sut = encodeDelta;
+          const full = sut(base, target)!;
+
+          // Act
+          const result = sut(base, target, full.length);
+
+          // Assert
+          expect(result).toEqual(full);
         });
       });
     });
@@ -677,6 +801,28 @@ describe('delta-encode', () => {
           expect(parsed.instructions).toEqual([
             { type: 'copy', offset: 2 * DELTA_BLOCK_BYTES, size: target.length },
           ]);
+        });
+      });
+    });
+
+    describe('Given a literal run of exactly MAX_INSERT_BYTES - 1 unmatched bytes', () => {
+      describe('When encoding', () => {
+        it('Then it emits a single INSERT instruction after the scan reaches the end of target', () => {
+          // Arrange — one byte short of the periodic-flush threshold: the run
+          // never gets flushed mid-scan, so it's only ever emitted by the
+          // post-loop flushPendingLiteral call once pos reaches target.length.
+          const base = new Uint8Array(0);
+          const target = new Uint8Array(MAX_INSERT_BYTES - 1);
+          fillWithCyclicBytes(target);
+          const sut = encodeDelta;
+
+          // Act
+          const result = sut(base, target);
+
+          // Assert
+          const parsed = parseDelta(result!);
+          expect(parsed.instructions).toEqual([{ type: 'insert', data: target }]);
+          expect(applyDelta(base, result!)).toEqual(target);
         });
       });
     });
