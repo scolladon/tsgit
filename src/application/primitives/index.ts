@@ -15,8 +15,16 @@ export type { WorkingTreeComparison, WorkingTreeDelta } from './compare-working-
 export { compareWorkingTreeDelta, compareWorkingTreeEntry } from './compare-working-tree-entry.js';
 export type { Changeset, ChangesetEntry, ChangesetStats } from './compute-changeset.js';
 export { computeChangeset } from './compute-changeset.js';
-export type { IniSection, ParsedConfig, PushDefaultMode, ValuelessEntry } from './config-read.js';
+export type {
+  IniSection,
+  InvalidPackIntEntry,
+  ParsedConfig,
+  PushDefaultMode,
+  ValuelessEntry,
+} from './config-read.js';
 export {
+  assertValidPackIntConfig,
+  findFirstInvalidPackInt,
   findFirstValuelessEntry,
   invalidateConfigCache,
   parseIniSections,

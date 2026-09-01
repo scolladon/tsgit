@@ -2,6 +2,8 @@ import fc from 'fast-check';
 
 import { compareBytes, encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { DeltaInstruction } from '../../../../src/domain/storage/delta.js';
+import { MAX_COPY_BYTES, serializeDelta } from '../../../../src/domain/storage/delta-encode.js';
 import type { PackIndexWriterEntry } from '../../../../src/domain/storage/pack-writer.js';
 import type {
   BitmapEntrySpec,
@@ -115,6 +117,11 @@ export function buildTestIndex(entries: ReadonlyArray<TestIndexEntry>): Uint8Arr
   return bytes;
 }
 
+/**
+ * Delegates to `serializeDelta` — the production encoder. This used to be a
+ * hand-rolled duplicate; `check:duplicates` never scanned `test/`, so the
+ * duplication was invisible to the gate but still wrong as a test oracle.
+ */
 export function buildDelta(
   sourceLength: number,
   targetLength: number,
@@ -123,78 +130,108 @@ export function buildDelta(
     | { readonly type: 'insert'; readonly data: Uint8Array }
   >,
 ): Uint8Array {
-  const parts: number[] = [];
-
-  encodeDeltaVarInt(parts, sourceLength);
-  encodeDeltaVarInt(parts, targetLength);
-
-  for (const inst of instructions) {
-    if (inst.type === 'copy') {
-      encodeCopyInstruction(parts, inst.offset, inst.size);
-    } else {
-      encodeInsertInstruction(parts, inst.data);
-    }
-  }
-
-  return new Uint8Array(parts);
+  return serializeDelta(sourceLength, targetLength, instructions);
 }
 
-function encodeDeltaVarInt(out: number[], value: number): void {
-  let v = value;
-  let byte = v & 0x7f;
-  v >>>= 7;
-  while (v > 0) {
-    out.push(byte | 0x80);
-    byte = v & 0x7f;
-    v >>>= 7;
-  }
-  out.push(byte);
+export interface DeltaBaseTarget {
+  readonly base: Uint8Array;
+  readonly target: Uint8Array;
 }
 
-function encodeCopyInstruction(out: number[], offset: number, size: number): void {
-  let cmd = 0x80;
-  const offBytes: number[] = [];
-  const sizeBytes: number[] = [];
-
-  if ((offset & 0xff) !== 0) {
-    cmd |= 0x01;
-    offBytes.push(offset & 0xff);
-  }
-  if ((offset & 0xff00) !== 0) {
-    cmd |= 0x02;
-    offBytes.push((offset >>> 8) & 0xff);
-  }
-  if ((offset & 0xff0000) !== 0) {
-    cmd |= 0x04;
-    offBytes.push((offset >>> 16) & 0xff);
-  }
-  if ((offset & 0xff000000) !== 0) {
-    cmd |= 0x08;
-    offBytes.push((offset >>> 24) & 0xff);
-  }
-
-  const effectiveSize = size === 0x10000 ? 0 : size;
-  if ((effectiveSize & 0xff) !== 0) {
-    cmd |= 0x10;
-    sizeBytes.push(effectiveSize & 0xff);
-  }
-  if ((effectiveSize & 0xff00) !== 0) {
-    cmd |= 0x20;
-    sizeBytes.push((effectiveSize >>> 8) & 0xff);
-  }
-  if ((effectiveSize & 0xff0000) !== 0) {
-    cmd |= 0x40;
-    sizeBytes.push((effectiveSize >>> 16) & 0xff);
-  }
-
-  out.push(cmd, ...offBytes, ...sizeBytes);
+function arbTruncated(base: Uint8Array): fc.Arbitrary<DeltaBaseTarget> {
+  return fc.integer({ min: 0, max: base.length }).map((n) => ({ base, target: base.slice(0, n) }));
 }
 
-function encodeInsertInstruction(out: number[], data: Uint8Array): void {
-  out.push(data.length);
-  for (const byte of data) {
-    out.push(byte);
-  }
+function arbAppended(base: Uint8Array): fc.Arbitrary<DeltaBaseTarget> {
+  return fc.uint8Array({ minLength: 0, maxLength: 50 }).map((extra) => {
+    const target = new Uint8Array(base.length + extra.length);
+    target.set(base, 0);
+    target.set(extra, base.length);
+    return { base, target };
+  });
+}
+
+function arbSpliced(base: Uint8Array): fc.Arbitrary<DeltaBaseTarget> {
+  return fc.integer({ min: 0, max: base.length }).chain((at) =>
+    fc.uint8Array({ minLength: 0, maxLength: 50 }).map((insertion) => {
+      const target = new Uint8Array(base.length + insertion.length);
+      target.set(base.subarray(0, at), 0);
+      target.set(insertion, at);
+      target.set(base.subarray(at), at + insertion.length);
+      return { base, target };
+    }),
+  );
+}
+
+function arbDuplicatedRun(base: Uint8Array): fc.Arbitrary<DeltaBaseTarget> {
+  return fc.integer({ min: 0, max: base.length }).chain((start) =>
+    fc.integer({ min: 0, max: base.length - start }).map((len) => {
+      const run = base.subarray(start, start + len);
+      const target = new Uint8Array(base.length + run.length);
+      target.set(base, 0);
+      target.set(run, base.length);
+      return { base, target };
+    }),
+  );
+}
+
+/**
+ * A base plus a target drawn either from independent random bytes or from a
+ * mutation of the base (splice / duplicate a run / truncate / append) — the
+ * mutated half is what gives round-trip properties real matches to exercise
+ * instead of degenerate all-INSERT deltas.
+ */
+export function arbDeltaBaseTarget(): fc.Arbitrary<DeltaBaseTarget> {
+  return fc.uint8Array({ minLength: 0, maxLength: 300 }).chain((base) =>
+    fc.oneof(
+      fc.uint8Array({ minLength: 0, maxLength: 300 }).map((target) => ({ base, target })),
+      arbTruncated(base),
+      arbAppended(base),
+      arbSpliced(base),
+      arbDuplicatedRun(base),
+    ),
+  );
+}
+
+export interface SerializableDelta {
+  readonly sourceLength: number;
+  readonly targetLength: number;
+  readonly instructions: ReadonlyArray<DeltaInstruction>;
+}
+
+function arbSerializableInstruction(sourceLength: number): fc.Arbitrary<DeltaInstruction> {
+  const insert = fc
+    .uint8Array({ minLength: 1, maxLength: 127 })
+    .map((data): DeltaInstruction => ({ type: 'insert', data }));
+  if (sourceLength === 0) return insert;
+  const copy = fc
+    .integer({ min: 0, max: sourceLength - 1 })
+    .chain((offset) =>
+      fc
+        .integer({ min: 1, max: Math.min(MAX_COPY_BYTES, sourceLength - offset) })
+        .map((size): DeltaInstruction => ({ type: 'copy', offset, size })),
+    );
+  return fc.oneof(insert, copy);
+}
+
+/**
+ * A self-consistent `{ sourceLength, targetLength, instructions }` triple —
+ * every INSERT is 1..127 bytes and every COPY stays within
+ * `[0, sourceLength)` — the exact domain `serializeDelta` never refuses.
+ */
+export function arbSerializableInstructions(): fc.Arbitrary<SerializableDelta> {
+  return fc.integer({ min: 0, max: 500 }).chain((sourceLength) =>
+    fc
+      .array(arbSerializableInstruction(sourceLength), { minLength: 0, maxLength: 20 })
+      .map((instructions) => ({
+        sourceLength,
+        targetLength: instructions.reduce(
+          (sum, inst) => sum + (inst.type === 'copy' ? inst.size : inst.data.length),
+          0,
+        ),
+        instructions,
+      })),
+  );
 }
 
 // --- Multi-pack index --------------------------------------------------

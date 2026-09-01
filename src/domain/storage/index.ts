@@ -8,6 +8,7 @@ export { CRUFT_MTIMES_MAGIC, parseCruftMtimes, serializeCruftMtimes } from './cr
 // Delta
 export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction } from './delta.js';
 export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
+export { encodeDelta, serializeDelta } from './delta-encode.js';
 // Errors
 export type {
   BitmapCheck,
@@ -58,6 +59,7 @@ export type {
 export {
   encodeOfsDistance,
   encodePackEntryHeader,
+  objectTypeToPackEntryType,
   PACK_ENTRY_TYPE,
   packEntryTypeToObjectType,
   parsePackEntryHeader,
@@ -82,6 +84,8 @@ export type {
   PackEntryMeta,
   PackfileResult,
   PackIndexWriterEntry,
+  PackWriterBaseEntry,
+  PackWriterDeltaEntry,
   PackWriterEntry,
 } from './pack-writer.js';
 export { serializePackfile, serializePackIndex } from './pack-writer.js';

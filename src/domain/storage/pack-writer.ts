@@ -1,9 +1,10 @@
 /**
  * Packfile + pack-index writers. `serializePackfile` emits the v2 pack
- * body (header + entries) and `serializePackIndex` emits the matching
- * v2 idx (fanout + sha table + crc32 + offsets + trailer). The packfile
- * bytes are not bit-exact across writers (deflate level + delta selection
- * are implementation-defined); fsck acceptance + readback is the contract.
+ * body (header + base and OFS_DELTA entries) and `serializePackIndex`
+ * emits the matching v2 idx (fanout + sha table + crc32 + offsets +
+ * trailer). The packfile bytes are not bit-exact across writers (deflate
+ * level and delta selection are implementation-defined); fsck acceptance
+ * + readback is the contract.
  *
  * @writes
  *   surface: packfile
@@ -12,22 +13,35 @@
  */
 import { concatBytes } from '../objects/encoding.js';
 import { crc32 } from './crc32.js';
-import { invalidPackIndex } from './error.js';
+import { invalidPackEntry, invalidPackIndex } from './error.js';
 import {
   type BasePackEntryType,
+  encodeOfsDistance,
   encodePackEntryHeader,
   GENERATED_PACK_VERSION,
+  PACK_ENTRY_TYPE,
   serializePackHeader,
 } from './pack-entry.js';
 import { type PackIndexWriterEntry, type SortedEntry, sortPackIndexEntries } from './pack-order.js';
 
 export type { PackIndexWriterEntry };
 
-export interface PackWriterEntry {
+export interface PackWriterBaseEntry {
   readonly type: BasePackEntryType;
   readonly uncompressedSize: number;
   readonly compressedData: Uint8Array;
 }
+
+export interface PackWriterDeltaEntry {
+  readonly type: typeof PACK_ENTRY_TYPE.OFS_DELTA;
+  /** Inflated length of the DELTA INSTRUCTION STREAM — not the target object. */
+  readonly uncompressedSize: number;
+  readonly compressedData: Uint8Array;
+  /** Index of this delta's base in the SAME entries array; must be < this entry's index. */
+  readonly baseIndex: number;
+}
+
+export type PackWriterEntry = PackWriterBaseEntry | PackWriterDeltaEntry;
 
 export interface PackEntryMeta {
   readonly crc32: number;
@@ -39,19 +53,47 @@ export interface PackfileResult {
   readonly entries: ReadonlyArray<PackEntryMeta>;
 }
 
+function assertValidBaseIndex(baseIndex: number, i: number, offset: number): void {
+  if (baseIndex >= i) {
+    throw invalidPackEntry(offset, `OFS_DELTA base index ${baseIndex} is not before entry ${i}`);
+  }
+  if (baseIndex < 0) {
+    throw invalidPackEntry(offset, `OFS_DELTA base index ${baseIndex} out of range`);
+  }
+  if (!Number.isInteger(baseIndex)) {
+    throw invalidPackEntry(offset, `OFS_DELTA base index ${baseIndex} out of range`);
+  }
+}
+
+function encodeEntryBytes(
+  entry: PackWriterEntry,
+  offsets: ReadonlyArray<number>,
+  currentOffset: number,
+): Uint8Array {
+  const entryHeader = encodePackEntryHeader(entry.type, entry.uncompressedSize);
+  if (entry.type !== PACK_ENTRY_TYPE.OFS_DELTA) {
+    return concatBytes([entryHeader, entry.compressedData]);
+  }
+  const distance = encodeOfsDistance(currentOffset - offsets[entry.baseIndex]!);
+  return concatBytes([entryHeader, distance, entry.compressedData]);
+}
+
 export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): PackfileResult {
   const header = serializePackHeader(GENERATED_PACK_VERSION, entries.length);
 
   const chunks: Uint8Array[] = [header];
   const metas: PackEntryMeta[] = [];
+  const offsets: number[] = [];
   let currentOffset = header.length;
 
-  for (const entry of entries) {
-    const entryHeader = encodePackEntryHeader(entry.type, entry.uncompressedSize);
-    const entryBytes = concat(entryHeader, entry.compressedData);
-    const entryCrc = crc32(entryBytes);
+  for (const [i, entry] of entries.entries()) {
+    if (entry.type === PACK_ENTRY_TYPE.OFS_DELTA) {
+      assertValidBaseIndex(entry.baseIndex, i, currentOffset);
+    }
 
-    metas.push({ crc32: entryCrc, offset: currentOffset });
+    const entryBytes = encodeEntryBytes(entry, offsets, currentOffset);
+    metas.push({ crc32: crc32(entryBytes), offset: currentOffset });
+    offsets.push(currentOffset);
     chunks.push(entryBytes);
     currentOffset += entryBytes.length;
   }
@@ -157,11 +199,4 @@ export function serializePackIndex(
   bytes.set(packChecksum, totalSize - checksumSize);
 
   return bytes;
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const result = new Uint8Array(a.length + b.length);
-  result.set(a);
-  result.set(b, a.length);
-  return result;
 }

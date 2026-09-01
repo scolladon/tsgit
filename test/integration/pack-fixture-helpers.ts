@@ -18,6 +18,8 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
+import { parsePackEntryHeader } from '../../src/domain/storage/index.js';
 import { git } from './interop-helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -157,6 +159,64 @@ export async function writeLooseObject(dir: string, oid: string, raw: Uint8Array
   const objDir = path.join(dir, '.git', 'objects', oid.slice(0, 2));
   await mkdir(objDir, { recursive: true });
   await writeFile(path.join(objDir, oid.slice(2)), raw);
+}
+
+/** One row of `git verify-pack -v` — oid, its exact byte span in the pack (`sizeInPackfile` at `offset`), and whether it is delta-encoded (a trailing depth + base-sha pair appears only for delta entries). */
+export interface VerifyPackRow {
+  readonly oid: string;
+  readonly sizeInPackfile: number;
+  readonly offset: number;
+  readonly isDelta: boolean;
+}
+
+/** Parses `git verify-pack -v`'s 5-field base lines and 7-field delta lines
+ *  into `{ oid, sizeInPackfile, offset, isDelta }` rows — the shared oracle
+ *  for locating an entry's own byte span inside a `.pack` file. */
+export function verifyPackRows(dir: string, idxPath: string): ReadonlyArray<VerifyPackRow> {
+  const rows: VerifyPackRow[] = [];
+  for (const line of git(dir, 'verify-pack', '-v', idxPath).split('\n')) {
+    const fields = line.trim().split(/\s+/);
+    const oid = fields[0];
+    if (fields.length < 5 || oid === undefined || !/^[0-9a-f]{40}$/.test(oid)) continue;
+    rows.push({
+      oid,
+      sizeInPackfile: Number(fields[3]),
+      offset: Number(fields[4]),
+      isDelta: fields.length >= 7,
+    });
+  }
+  return rows;
+}
+
+/** Flips one byte inside an entry's compressed body — never its header —
+ *  located via `parsePackEntryHeader`'s own `dataOffset`, so the corruption
+ *  can only land past the type/size/base-link bytes the type-recovery walk
+ *  still needs to read. */
+export function flipEntryBodyByte(
+  packBytes: Uint8Array,
+  entryOffset: number,
+  entryEnd: number,
+): Buffer {
+  const buf = Buffer.from(packBytes);
+  const header = parsePackEntryHeader(buf, entryOffset, SHA1_CONFIG);
+  const mid = header.dataOffset + Math.floor((entryEnd - header.dataOffset) / 2);
+  buf[mid] = (buf[mid] ?? 0) ^ 0xff;
+  return buf;
+}
+
+/** Deterministic pseudo-random bytes (no external entropy) — large enough
+ *  (~20 KiB) that `git pack-objects` always prefers a delta over storing the
+ *  second blob whole. Distinct from `test/fixtures/pseudo-random-bytes.ts`'s
+ *  generator (a different mix function, and no NUL/LF/CR exclusion — this
+ *  one feeds binary pack content, not text diff fixtures). */
+export function pseudoRandomBytes(length: number, seed: number): Buffer {
+  const buf = Buffer.alloc(length);
+  let state = seed >>> 0;
+  for (let i = 0; i < length; i += 1) {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    buf[i] = (state >>> 16) & 0xff;
+  }
+  return buf;
 }
 
 /** Reads the single `.pack`/`.idx` pair a `git repack` produced under a repo's pack directory. */

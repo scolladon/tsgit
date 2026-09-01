@@ -7,12 +7,16 @@
  * doc for the task's observable contract.
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
-import { type PackIndexWriterEntry, parseMultiPackIndex } from '../../../domain/storage/index.js';
+import { parseMultiPackIndex } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { DirEntry, FileStat } from '../../../ports/file-system.js';
 import { buildPack } from '../../primitives/build-pack.js';
-import { assertValidGcAutoConfig, readConfig } from '../../primitives/config-read.js';
+import {
+  assertValidGcAutoConfig,
+  assertValidPackIntConfig,
+  readConfig,
+} from '../../primitives/config-read.js';
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
 import { expiryCutoff } from '../../primitives/expiry-cutoff.js';
 import { assertValidBooleanConfig } from '../../primitives/internal/boolean-config-guard.js';
@@ -409,6 +413,9 @@ function partitionOwned(
   // itself oid-sorted). Left unsorted, that shift alone would change the
   // normal pack's sha on the very next run, breaking Pin W's no-op
   // boundary for no reason a caller could observe as a real content change.
+  // With delta emission on, `buildPack` sorts internally into its own
+  // emission order, so this array order governs only the delta-disabled
+  // path — which is exactly why this sort stays even now.
   toNormalPack.sort();
   return { toNormalPack, cruftCandidates };
 }
@@ -443,13 +450,6 @@ function partitionByCutoff(
   return { survivors, doomed };
 }
 
-function indexEntriesFor(
-  oids: ReadonlyArray<ObjectId>,
-  entries: ReadonlyArray<{ readonly crc32: number; readonly offset: number }>,
-): ReadonlyArray<PackIndexWriterEntry> {
-  return oids.map((id, i) => ({ id, crc32: entries[i]!.crc32, offset: entries[i]!.offset }));
-}
-
 interface NormalPackOutcome {
   readonly packId: ObjectId | undefined;
   /**
@@ -481,11 +481,11 @@ async function buildAndWriteNormalPack(
   existingNormalNames: ReadonlySet<string>,
 ): Promise<NormalPackOutcome> {
   if (oids.length === 0) return { packId: undefined, reuse: 'none' };
-  const pack = await buildPack(ctx, { oids });
+  const pack = await buildPack(ctx, { oids, delta: true });
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
-    entries: indexEntriesFor(oids, pack.entries),
+    entries: pack.entries,
     packSha: pack.sha,
     promisor: false,
   });
@@ -524,11 +524,11 @@ async function buildAndWritePromisorPack(
   existingPromisorNames: ReadonlySet<string>,
 ): Promise<PromisorPackOutcome> {
   if (oids.length === 0) return { packId: undefined, reusedExistingName: undefined };
-  const pack = await buildPack(ctx, { oids });
+  const pack = await buildPack(ctx, { oids, delta: true });
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
-    entries: indexEntriesFor(oids, pack.entries),
+    entries: pack.entries,
     packSha: pack.sha,
     promisor: true,
   });
@@ -557,11 +557,11 @@ async function buildAndWriteCruftPack(
   mtimes: ReadonlyMap<ObjectId, number>,
   existingCruftShas: ReadonlySet<string>,
 ): Promise<ObjectId> {
-  const pack = await buildPack(ctx, { oids: survivors });
+  const pack = await buildPack(ctx, { oids: survivors, delta: true });
   if (existingCruftShas.has(pack.sha)) return pack.sha as ObjectId;
   const written = await writeCruftPack(ctx, {
     packDir,
-    entries: indexEntriesFor(survivors, pack.entries),
+    entries: pack.entries,
     packBytes: pack.bytes,
     packSha: pack.sha,
     mtimeOf: (id) => mtimeOrThrow(mtimes, id),
@@ -795,6 +795,7 @@ export async function runGcTask(
   }
 
   await assertValidBooleanConfig(ctx, 'gc', undefined, ['cruftPacks']);
+  await assertValidPackIntConfig(ctx);
   const config = await readConfig(ctx);
   const cruftPacksEnabled = config.gc?.cruftPacks ?? true;
   const cutoff = expiryCutoff(config.gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE, {});
@@ -849,7 +850,9 @@ export async function runGcTask(
   // CLASSIFICATION order, not merged-sorted, so consolidating more than one
   // promisor pack would otherwise churn `buildPack`'s array-order entries —
   // and with it the promisor pack's sha — on every run whose pack-discovery
-  // order happens to differ, even though the object SET never changed.
+  // order happens to differ, even though the object SET never changed. With
+  // delta emission on, `buildPack` sorts internally into its own emission
+  // order, so this array order governs only the delta-disabled path.
   const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor].sort();
 
   const mtimes = await computeCruftMtimes(

@@ -209,17 +209,33 @@ interface MaintenanceResult {
 
 ### The size trade
 
-tsgit's pack writer emits every object as a full base entry — it does not
-write delta chains. Consolidating a repository that git had delta-compressed
-therefore **inflates** it: re-emitting an existing delta chain's objects as
-base entries costs more bytes than the chain did. Measured brackets: **×1.29**
-on content that barely deltifies to begin with, up to **×6.91** on a
-deliberately deep 43-level delta chain; **×3.17** on tsgit's own real
-history is the number to plan against. The trade is accepted, not gated —
-`packBytesBefore`/`packBytesAfter` make it observable, and a delta-writing
-pack writer is the natural follow-up that retires it. `*.keep` a pack to opt
-it out of consolidation entirely if the inflation is unacceptable for that
-content.
+tsgit's pack writer selects and writes delta chains (`OFS_DELTA`), the same
+format git uses, so consolidating a repository no longer inflates it the way
+a base-entries-only writer would. Two synthetic, effectively all-reachable
+corpora are measured against `git -c pack.threads=1 repack -a -d -f` (`repack`
+and `gc` agree there — nothing unreachable to drop or retain): **×1.58** on
+content that barely deltifies to begin with, up to **×5.43** for one shape
+specifically — a single file evolving through a long, same-size delta chain.
+tsgit's own real history (all branches) genuinely carries unreachable
+objects, so its peer is `git -c pack.threads=1 gc`, not `repack -a -d -f`:
+`repack -a -d` (no `-A`) drops unreachable objects, while tsgit's `gc` — like
+git's own default `gc` — retains the ones newer than the two-week expiry.
+`gc` against `gc` keeps both sides on a comparable object set (24 879 for
+git, 24 817 for tsgit, within 0.25%) instead of charging tsgit for objects
+git already deleted. Measured that way: **×1.42** — the class to plan
+against for an ordinary repository. tsgit's window
+orders candidate delta bases by size; git orders by path/name-hash first, so
+on a real repository's mix of differently-sized files the two orderings
+mostly agree, but a series of same-size versions of one file ties under
+tsgit's ordering and the window samples the wrong neighbours. The trade is
+accepted, not gated — `packBytesBefore`/`packBytesAfter` make it observable
+per call. `pack.depth` above 50 is honoured only up to 50: tsgit's readers
+refuse a chain deeper than that, so the writer never produces one they
+couldn't read back, which is strictly weaker compression at that setting,
+never an error, an unreadable pack, or a difference in which objects are
+stored (see [ADR-771](../../adr/771-both-readers-accept-gits-full-delta-depth.md)).
+`*.keep` a pack to opt it out of consolidation entirely if even the reduced
+cost is unacceptable for that content.
 
 ## Examples
 
@@ -261,4 +277,6 @@ await repo.maintenance({ tasks: ['bogus' as never] }); // throws INVALID_OPTION
 - ADRs: [724](../../adr/724-maintenance-command-with-commit-graph-and-gc-lite.md),
   [731](../../adr/731-gc-uses-cruft-packs.md),
   [732](../../adr/732-gc-consolidates-existing-packs.md),
-  [733](../../adr/733-gc-repacks-promisor-objects-separately.md)
+  [733](../../adr/733-gc-repacks-promisor-objects-separately.md),
+  [767](../../adr/767-delta-emission-is-opt-in-per-caller.md),
+  [771](../../adr/771-both-readers-accept-gits-full-delta-depth.md)

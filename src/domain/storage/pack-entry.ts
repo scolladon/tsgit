@@ -229,3 +229,16 @@ const TYPE_TO_OBJECT_TYPE: Readonly<Record<BasePackEntryType, ObjectType>> = {
 export function packEntryTypeToObjectType(type: BasePackEntryType): ObjectType {
   return TYPE_TO_OBJECT_TYPE[type];
 }
+
+const OBJECT_TYPE_TO_TYPE: Readonly<Record<ObjectType, BasePackEntryType>> = {
+  commit: PACK_ENTRY_TYPE.COMMIT,
+  tree: PACK_ENTRY_TYPE.TREE,
+  blob: PACK_ENTRY_TYPE.BLOB,
+  tag: PACK_ENTRY_TYPE.TAG,
+};
+
+/** The exact mirror of `packEntryTypeToObjectType` — total over the four
+ *  object types every base pack entry can carry. */
+export function objectTypeToPackEntryType(type: ObjectType): BasePackEntryType {
+  return OBJECT_TYPE_TO_TYPE[type];
+}

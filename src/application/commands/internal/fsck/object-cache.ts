@@ -220,7 +220,7 @@ async function walkDeltaChain(
   hit: PackLookupHit,
 ): Promise<TypedOrUntyped> {
   let currentHit = hit;
-  for (let depth = 0; depth < MAX_DELTA_CHAIN_DEPTH; depth += 1) {
+  for (let depth = 0; depth <= MAX_DELTA_CHAIN_DEPTH; depth += 1) {
     const chunk = await currentHit.pack.readSlice(currentHit.offset, ENTRY_HEADER_PROBE_BYTES);
     const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
 

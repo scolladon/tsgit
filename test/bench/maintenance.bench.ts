@@ -8,17 +8,27 @@
  * `commit` can); a REPEAT run over unreachable loose objects already folded
  * into a cruft pack (the carry-forward cost a first-run number would hide);
  * and a REPEAT run over the deep-delta-chain fixture — the design's cost
- * ceiling, since `buildPack` is base-only and there is no "already
- * consolidated, skip it" branch (Pin W), so every run re-inflates every
- * delta and re-emits it as a full object.
+ * ceiling now that `buildPack` deltifies, since there is no "already
+ * consolidated, skip it" branch (Pin W), so every run re-walks the window
+ * and re-selects delta bases from scratch.
  *
- * The two REPEAT scenarios build their fixture, and any pre-existing cruft
- * pack, ONCE and then let `bench()`'s own repeated `sut` calls exercise the
- * steady state — resetting between iterations would measure the reset, not
- * gc. Both scaled scenarios (`commit-graph`, delta-chain) copy the SHARED,
- * cached fixture into a scratch directory first: `gc` retires and rewrites
- * packs in place, and the cache is reused, byte-for-byte, by every other
- * bench file that resolves the same spec.
+ * The OPPOSITE cost ceiling — the window search's wasted-encode overhead
+ * when every candidate loses (unrelated blob content, none of them beats
+ * its own base entry) — is priced separately in `deltify.bench.ts` as a
+ * direct micro-bench over `deltifyEntries`, not a full gc: a full-gc
+ * version of that scenario over the medium fixture's 35 003 objects ran
+ * ~7-8 minutes for tinybench's default 5 warmup + 10 measured iterations,
+ * against `bench.yml`'s 30-minute budget for the WHOLE suite, and mixed
+ * enumerate/read/deflate/pack-write cost into the search signal it meant
+ * to isolate.
+ *
+ * The two REPEAT scenarios remaining here build their fixture, and any
+ * pre-existing cruft pack, ONCE and then let `bench()`'s own repeated `sut`
+ * calls exercise the steady state — resetting between iterations would
+ * measure the reset, not gc. Both scaled scenarios (`commit-graph`,
+ * delta-chain) copy the SHARED, cached fixture into a scratch directory
+ * first: `gc` retires and rewrites packs in place, and the cache is reused,
+ * byte-for-byte, by every other bench file that resolves the same spec.
  */
 import { cp, mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
@@ -141,7 +151,8 @@ benchScenario(
 
 // ---------------------------------------------------------------------
 // Scenario 4 — REPEAT gc over the deep-delta-chain fixture; the design's
-// cost ceiling (no skip branch, base-only re-emission every run)
+// cost ceiling now that `buildPack` deltifies (no skip branch, the window
+// re-walks and re-selects delta bases every run)
 // ---------------------------------------------------------------------
 
 const deltaChainCtx = await resolveScaledContext(DELTA_CHAIN_FIXTURE);
@@ -157,9 +168,9 @@ scaledScenario(
     });
 
     // First run: consolidates the fixture's git-deltified pack(s) into
-    // tsgit's own base-only one, and is the one place this budget is
-    // reported — a console line, never a threshold (R33): the ratio moves
-    // 5x with the corpus, so asserting it here would be a flake generator.
+    // tsgit's own deltified one, and is the one place this budget is
+    // reported — a console line, never a threshold: the ratio moves
+    // with the corpus, so asserting it here would be a flake generator.
     const first = await maintenance(ctx, { tasks: ['gc'] });
     if (first.packBytesBefore > 0) {
       const ratio = first.packBytesAfter / first.packBytesBefore;

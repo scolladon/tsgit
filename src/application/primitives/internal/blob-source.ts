@@ -105,7 +105,12 @@ export async function openBlobSource(
 
   const table = await hit.pack.offsetTable();
   const nextOffset = nextOffsetForEntry(table, hit.offset);
-  const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(ctx, hit, nextOffset);
+  const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(
+    ctx,
+    hit,
+    nextOffset,
+    table.packFileSize,
+  );
 
   if (isBase(header)) {
     return await resolvePackBase(

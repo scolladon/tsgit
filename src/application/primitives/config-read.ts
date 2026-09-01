@@ -3,6 +3,7 @@ import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js'
 import {
   GIT_C_INT_MAX,
   GIT_C_INT_MIN,
+  GIT_UINT64_MAX,
   parseGitBoolean,
   parseGitInt,
   parseIniSectionsFromTokens,
@@ -113,8 +114,20 @@ export interface ParsedConfig {
   readonly commit?: { readonly gpgSign?: boolean };
   /** `tag.gpgSign` — sign annotated tags by default when true. */
   readonly tag?: { readonly gpgSign?: boolean };
-  /** `pack.writeReverseIndex` — write a sibling `.rev` beside each pack index. git defaults to true. */
-  readonly pack?: { readonly writeReverseIndex?: boolean };
+  /**
+   * `[pack]` — pack-writing behaviour. `writeReverseIndex` writes a sibling
+   * `.rev` beside each pack index (git default `true`). `window` bounds how
+   * many recent objects the delta selector considers as bases (git default
+   * `10`). `depth` bounds the longest delta chain the writer builds (git
+   * default `50`). `windowMemory` bounds the window's total resident size in
+   * bytes; unset or `0` means unlimited (git default).
+   */
+  readonly pack?: {
+    readonly writeReverseIndex?: boolean;
+    readonly window?: number;
+    readonly depth?: number;
+    readonly windowMemory?: number;
+  };
   /**
    * `[gc]` — maintenance's `gc` task settings. `auto` (git default `6700`) is
    * consulted only under `auto: true`; `pruneExpire` (git default
@@ -641,6 +654,63 @@ export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
   }
 };
 
+/** One invalid `pack.window` / `pack.depth` / `pack.windowMemory` entry returned by `findFirstInvalidPackInt`. */
+export interface InvalidPackIntEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly value: string;
+  readonly reason: 'invalid unit' | 'out of range';
+}
+
+/**
+ * Cold-path detection: walk the cached `[pack]` (subsectionless) tokens in
+ * file order and return the FIRST `window` / `depth` / `windowMemory` entry
+ * whose value fails git's integer grammar or its own key's range. `window`
+ * and `depth` share the C `int` range `gc.auto` uses; `windowMemory` is
+ * bounded only to non-negative — git's own unsigned-long range, not the C
+ * `int` the other two keys share. Returns `undefined` when every recognised
+ * entry is valid or none is present. Runs ONLY on a command's refusal path —
+ * `readConfig` stays lenient and merges an invalid entry as absent (see
+ * `mergePack`).
+ */
+export const findFirstInvalidPackInt = async (
+  ctx: Context,
+): Promise<InvalidPackIntEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'pack', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const lowered = token.key.toLowerCase();
+    const check = packIntChecker(lowered);
+    if (check === undefined) continue;
+    const checked = check(token.value);
+    if (checked.ok) continue;
+    return {
+      key: `pack.${lowered}`,
+      source: path,
+      value: token.value ?? '',
+      reason: checked.reason,
+    };
+  }
+  return undefined;
+};
+
+/**
+ * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when `pack.window`, `pack.depth` or
+ * `pack.windowMemory` holds a value git's integer grammar (or that key's own
+ * range) refuses — the pack-config sibling of `assertValidGcAutoConfig`.
+ */
+export const assertValidPackIntConfig = async (ctx: Context): Promise<void> => {
+  const found = await findFirstInvalidPackInt(ctx);
+  if (found !== undefined) {
+    throw configBadNumericValue(found.key, found.source, found.value, found.reason);
+  }
+};
+
 const MAX_TREE_DEPTH_KEY = 'maxtreedepth';
 
 /** One invalid `core.maxTreeDepth` entry returned by `findLastInvalidMaxTreeDepth`. */
@@ -724,7 +794,7 @@ interface MutableParsedConfig {
   extensions?: { partialClone?: string };
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
-  pack?: { writeReverseIndex?: boolean };
+  pack?: MutablePack;
   gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
@@ -1137,12 +1207,95 @@ const mergeTag = (acc: { tag?: { gpgSign?: boolean } }, sec: IniSection): void =
   }
 };
 
-const mergePack = (acc: { pack?: { writeReverseIndex?: boolean } }, sec: IniSection): void => {
+type MutablePack = {
+  writeReverseIndex?: boolean;
+  window?: number;
+  depth?: number;
+  windowMemory?: number;
+};
+
+const PACK_WINDOW_KEY = 'window';
+const PACK_DEPTH_KEY = 'depth';
+const PACK_WINDOW_MEMORY_KEY = 'windowmemory';
+
+type PackIntCheck = (value: string | null) => ReturnType<typeof parseGitInt>;
+
+const checkPackCIntBound: PackIntCheck = (value) => {
+  const parsed = parseGitInt(value);
+  if (!parsed.ok) return parsed;
+  if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) {
+    return { ok: false, reason: 'out of range' };
+  }
+  return parsed;
+};
+
+// git's own unsigned-long grammar: a negative value is a syntax refusal
+// ('invalid unit'), not a magnitude refusal — unlike `window`/`depth`'s C
+// `int`, this key has no signed representation to be "out of range" of.
+// `parseGitInt` is given the unsigned-long ceiling (GIT_UINT64_MAX) instead
+// of its own int64 default, so a magnitude between int64-max and uint64-max
+// — refused for window/depth — reads as valid here.
+const checkPackWindowMemoryBound: PackIntCheck = (value) => {
+  const parsed = parseGitInt(value, GIT_UINT64_MAX);
+  if (!parsed.ok) return parsed;
+  if (parsed.value < 0) return { ok: false, reason: 'invalid unit' };
+  return parsed;
+};
+
+/**
+ * Which bound rule (if any) governs a `[pack]` key. `undefined` means the key
+ * is not one of the three int-typed pack keys. Kept as two small checkers,
+ * not one merged condition, so `window`/`depth`'s C-int bound and
+ * `windowMemory`'s unsigned-long bound are each independently testable.
+ */
+const packIntChecker = (lowered: string): PackIntCheck | undefined => {
+  if (lowered === PACK_WINDOW_KEY || lowered === PACK_DEPTH_KEY) return checkPackCIntBound;
+  if (lowered === PACK_WINDOW_MEMORY_KEY) return checkPackWindowMemoryBound;
+  return undefined;
+};
+
+const applyPackWriteReverseIndexEntry = (
+  pack: MutablePack,
+  value: string | null,
+): MutablePack | undefined => {
+  const parsed = parseGitBoolean(value);
+  return parsed.ok ? { ...pack, writeReverseIndex: parsed.value } : undefined;
+};
+
+const applyPackIntEntry = (
+  pack: MutablePack,
+  field: 'window' | 'depth' | 'windowMemory',
+  value: string | null,
+  check: PackIntCheck,
+): MutablePack | undefined => {
+  const checked = check(value);
+  return checked.ok ? { ...pack, [field]: checked.value } : undefined;
+};
+
+/**
+ * Apply one `[pack]` entry. Returns the updated accumulator, or `undefined`
+ * when the key is not recognised or its value fails validation — the same
+ * shape `applyGcEntry` uses. `readConfig` stays total/lenient here: an
+ * invalid `window`/`depth`/`windowMemory` merges as absent, and the eager
+ * refusal lives in `assertValidPackIntConfig`.
+ */
+const applyPackEntry = (
+  pack: MutablePack,
+  lowered: string,
+  value: string | null,
+): MutablePack | undefined => {
+  if (lowered === 'writereverseindex') return applyPackWriteReverseIndexEntry(pack, value);
+  const check = packIntChecker(lowered);
+  if (check === undefined) return undefined;
+  const field =
+    lowered === PACK_WINDOW_KEY ? 'window' : lowered === PACK_DEPTH_KEY ? 'depth' : 'windowMemory';
+  return applyPackIntEntry(pack, field, value, check);
+};
+
+const mergePack = (acc: { pack?: MutablePack }, sec: IniSection): void => {
   for (const { key, value } of sec.entries) {
-    if (key.toLowerCase() === 'writereverseindex') {
-      const parsed = parseGitBoolean(value);
-      if (parsed.ok) acc.pack = { ...acc.pack, writeReverseIndex: parsed.value };
-    }
+    const next = applyPackEntry(acc.pack ?? {}, key.toLowerCase(), value);
+    if (next !== undefined) acc.pack = next;
   }
 };
 
@@ -1319,7 +1472,7 @@ type FinalizeOut = {
   filter?: ReadonlyMap<string, FilterEntry>;
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
-  pack?: { writeReverseIndex?: boolean };
+  pack?: MutablePack;
   gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
@@ -1400,7 +1553,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     extensions?: { partialClone?: string };
     commit?: { gpgSign?: boolean };
     tag?: { gpgSign?: boolean };
-    pack?: { writeReverseIndex?: boolean };
+    pack?: MutablePack;
     gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
     push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
     gpg?: MutableGpg;

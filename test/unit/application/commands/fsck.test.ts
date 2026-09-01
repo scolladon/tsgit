@@ -4509,16 +4509,16 @@ describe('Given a dangling OFS_DELTA-encoded blob with a corrupt delta body, bas
   });
 });
 
-describe('Given an OFS_DELTA chain one hop deeper than the walker can afford, tip corrupt', () => {
+describe('Given an OFS_DELTA chain exactly as deep as the walker accepts, tip corrupt', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it("Then resolves with dangling/'unknown' and logs the depth-cap reason", async () => {
+    it("Then resolves with dangling/'blob' — the cap accepts a chain of exactly MAX_DELTA_CHAIN_DEPTH hops", async () => {
       // Arrange — base + 50 chained OFS deltas: reconstructing the tip needs
-      // 51 header reads (50 delta hops + the base), but the walker's
-      // `depth < MAX_DELTA_CHAIN_DEPTH` loop allows only 50 — one short of
-      // the base. Corrupting the tip's own body (the last-written entry)
-      // decode-faults the INITIAL read on its very first inflate, before any
-      // chain walking; the recovery probe then re-walks headers only (never
-      // inflating a body) and hits the cap.
+      // 51 header reads (50 delta hops + the base). The walker's
+      // `depth <= MAX_DELTA_CHAIN_DEPTH` loop allows exactly that many.
+      // Corrupting the tip's own body (the last-written entry) decode-faults
+      // the INITIAL read on its very first inflate, before any chain
+      // walking; the recovery probe then re-walks headers only (never
+      // inflating a body) and reaches the base within the cap.
       const ctx = await initBareCtx();
       const baseContent = enc.encode('depth-cap-base');
       const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
@@ -4532,6 +4532,41 @@ describe('Given an OFS_DELTA chain one hop deeper than the walker can afford, ti
       const ids = await writeSyntheticPack(ctx, 'depth-cap', entries);
       const tipId = ids.at(-1) as ObjectId;
       await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'depth-cap'));
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === tipId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+describe('Given an OFS_DELTA chain one hop deeper than the walker can afford, tip corrupt', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' and logs the depth-cap reason", async () => {
+      // Arrange — base + 51 chained OFS deltas: reconstructing the tip needs
+      // 52 header reads (51 delta hops + the base), but the walker's
+      // `depth <= MAX_DELTA_CHAIN_DEPTH` loop allows only 51 — one short of
+      // the base. Corrupting the tip's own body forces the same header-only
+      // recovery probe as the sibling test above, one hop past its cap.
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('depth-cap-base');
+      const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
+      for (let i = 0; i < 51; i += 1) {
+        entries.push({
+          kind: 'ofs-delta',
+          baseIndex: i,
+          targetContent: enc.encode(`depth-cap-hop-${i}`),
+        });
+      }
+      const ids = await writeSyntheticPack(ctx, 'depth-cap-over', entries);
+      const tipId = ids.at(-1) as ObjectId;
+      await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'depth-cap-over'));
       const { ctx: logged, calls } = withWarnLog(ctx);
 
       // Act

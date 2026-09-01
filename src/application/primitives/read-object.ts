@@ -1,10 +1,31 @@
 import { TsgitError } from '../../domain/error.js';
+import { objectNotFound } from '../../domain/objects/error.js';
 import { splitObject } from '../../domain/objects/git-object.js';
-import type { GitObject, ObjectId } from '../../domain/objects/index.js';
+import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
+import {
+  type OfsPackEntryHeader,
+  PACK_ENTRY_TYPE,
+  type PackEntryHeader,
+  packEntryTypeToObjectType,
+  type RefPackEntryHeader,
+  readDeltaTargetSize,
+} from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
-import { resolveObject, resolveObjectBytesWithDepth } from './object-resolver.js';
-import { createPackRegistry, type PackRegistry } from './pack-registry.js';
+import {
+  assertChainDepthWithinCap,
+  isBase,
+  ofsDeltaBaseOffset,
+  readEntryHeaderWithChunk,
+  resolveObject,
+  resolveObjectBytesWithDepth,
+} from './object-resolver.js';
+import {
+  createPackRegistry,
+  nextOffsetForEntry,
+  type PackLookupHit,
+  type PackRegistry,
+} from './pack-registry.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
@@ -154,4 +175,154 @@ export async function readRawObject(
     );
     return splitObject(resolved.bytes);
   });
+}
+
+/**
+ * An object's type and uncompressed content size, without materialising the
+ * content. The size is always a property of the object's CONTENT — never of
+ * how it is currently stored — so it stays stable across a gc repack that
+ * rewrites exactly the packs a stored-size shortcut would depend on.
+ */
+export interface ObjectMetadata {
+  readonly type: ObjectType;
+  readonly uncompressedSize: number;
+}
+
+/**
+ * `ObjectMetadata` plus the content the loose route already inflated to
+ * compute `uncompressedSize` — see `readObjectMetadataWithContent`. Every
+ * packed route leaves `content` `undefined`: a packed base entry gets its
+ * size straight from the pack header (zero inflate) and a packed delta gets
+ * it from the delta instruction stream (not the target's own bytes), so
+ * neither ever has final content to hand back.
+ */
+export interface ObjectMetadataWithContent extends ObjectMetadata {
+  readonly content?: Uint8Array;
+}
+
+type DeltaEntryHeader = OfsPackEntryHeader | RefPackEntryHeader;
+
+/** `isBase`'s own predicate type is an intersection, which TypeScript won't
+ *  narrow on the negative branch — this re-expresses the same test against a
+ *  plain union so the "still walking a delta" branch narrows cleanly. */
+function isDeltaHeader(header: PackEntryHeader): header is DeltaEntryHeader {
+  return !isBase(header);
+}
+
+export async function readObjectMetadata(ctx: Context, id: ObjectId): Promise<ObjectMetadata> {
+  const { type, uncompressedSize } = await readObjectMetadataWithContent(ctx, id);
+  return { type, uncompressedSize };
+}
+
+/**
+ * Like `readObjectMetadata`, but surfaces the loose route's already-inflated
+ * content instead of discarding it. A caller that needs both metadata and
+ * content for the same object (deltify's emission-order pass) reads a loose
+ * object once instead of twice; packed routes are untouched and never carry
+ * content (see `ObjectMetadataWithContent`).
+ */
+export async function readObjectMetadataWithContent(
+  ctx: Context,
+  id: ObjectId,
+): Promise<ObjectMetadataWithContent> {
+  const registry = getPackRegistry(ctx);
+  return withLazyFetchRetry(ctx, id, registry, () =>
+    resolveObjectMetadataWithContent(ctx, registry, id),
+  );
+}
+
+async function resolveObjectMetadataWithContent(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+): Promise<ObjectMetadataWithContent> {
+  const hit = await registry.lookup(id);
+  if (hit === undefined) {
+    // No pack claims this id: a full inflate is the cheapest route left, and
+    // it inherits readRawObject's own partial-clone lazy-fetch retry. Hand
+    // the inflated content back too — the loose route already paid for it.
+    const raw = await readRawObject(ctx, id);
+    return { type: raw.type, uncompressedSize: raw.content.length, content: raw.content };
+  }
+  return readPackedMetadata(ctx, registry, hit, id);
+}
+
+async function readPackedMetadata(
+  ctx: Context,
+  registry: PackRegistry,
+  hit: PackLookupHit,
+  targetId: ObjectId,
+): Promise<ObjectMetadata> {
+  const { header, chunk, headerEndInChunk } = await readEntryHeaderAt(ctx, hit);
+  if (!isDeltaHeader(header)) {
+    // Packed base entry: the size already sits in the pack header — zero inflate.
+    return { type: packEntryTypeToObjectType(header.type), uncompressedSize: header.size };
+  }
+  // One inflate of the delta INSTRUCTION stream (not the object) — already
+  // the smallest representation carrying the target's declared size.
+  const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
+  const type = await walkDeltaBaseType(ctx, registry, hit, header, targetId);
+  return { type, uncompressedSize: readDeltaTargetSize(instructions) };
+}
+
+async function readEntryHeaderAt(
+  ctx: Context,
+  hit: PackLookupHit,
+): Promise<{ header: PackEntryHeader; chunk: Uint8Array; headerEndInChunk: number }> {
+  const table = await hit.pack.offsetTable();
+  const nextOffset = nextOffsetForEntry(table, hit.offset);
+  return readEntryHeaderWithChunk(ctx, hit, nextOffset, table.packFileSize);
+}
+
+/**
+ * Walks base links through entry HEADERS only, never inflating a base — the
+ * type comes from the base entry's own header once the walk reaches it.
+ * Reuses `ofsDeltaBaseOffset` and `assertChainDepthWithinCap` so this third
+ * delta-chain walker cannot drift from the two `collectDeltaChain` already
+ * uses to resolve full bytes.
+ */
+async function walkDeltaBaseType(
+  ctx: Context,
+  registry: PackRegistry,
+  hit: PackLookupHit,
+  header: DeltaEntryHeader,
+  targetId: ObjectId,
+): Promise<ObjectType> {
+  let currentHit = hit;
+  let currentHeader = header;
+  let depth = 1;
+  for (;;) {
+    const nextHit = await nextDeltaHit(registry, currentHit, currentHeader, targetId);
+    const { header: nextHeader } = await readEntryHeaderAt(ctx, nextHit);
+    if (!isDeltaHeader(nextHeader)) {
+      return packEntryTypeToObjectType(nextHeader.type);
+    }
+    depth += 1;
+    assertChainDepthWithinCap(depth);
+    currentHit = nextHit;
+    currentHeader = nextHeader;
+  }
+}
+
+/**
+ * One hop down a delta chain by HEADER alone: OFS_DELTA stays in the same
+ * pack at a computed offset; REF_DELTA looks its base up by id, which may
+ * land in a different pack. A base a pack claims but cannot supply is a
+ * corrupt pack — this throws OBJECT_NOT_FOUND for the base id, fail-loud
+ * like every other read here, and retried by the same `withLazyFetchRetry`
+ * a missing REF_DELTA base already gets via `resolveObject`/`readRawObject`.
+ */
+async function nextDeltaHit(
+  registry: PackRegistry,
+  hit: PackLookupHit,
+  header: DeltaEntryHeader,
+  targetId: ObjectId,
+): Promise<PackLookupHit> {
+  if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
+    const baseOffset = ofsDeltaBaseOffset(targetId, hit.offset, header.baseDistance);
+    return { pack: hit.pack, offset: baseOffset };
+  }
+  const baseHit = await registry.lookup(header.baseId);
+  if (baseHit === undefined) throw objectNotFound(header.baseId);
+  return baseHit;
 }

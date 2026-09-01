@@ -1,11 +1,14 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import { crc32 } from '../../../../src/domain/storage/crc32.js';
 import {
+  encodeOfsDistance,
   encodePackEntryHeader,
   PACK_ENTRY_TYPE,
+  parsePackEntryHeader,
   parsePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import { lookupPackIndex, parsePackIndex } from '../../../../src/domain/storage/pack-index.js';
@@ -18,6 +21,15 @@ import { arbObjectId } from './arbitraries.js';
 
 function makeEntry(type: 1 | 2 | 3 | 4, data: Uint8Array): PackWriterEntry {
   return { type, uncompressedSize: data.length, compressedData: data };
+}
+
+function makeDeltaEntry(baseIndex: number, data: Uint8Array): PackWriterEntry {
+  return {
+    type: PACK_ENTRY_TYPE.OFS_DELTA,
+    uncompressedSize: data.length,
+    compressedData: data,
+    baseIndex,
+  };
 }
 
 function arbUniqueIndexEntries(
@@ -142,6 +154,132 @@ describe('pack-writer', () => {
           const header = parsePackHeader(result.data);
           expect(header.objectCount).toBe(0);
           expect(result.entries).toHaveLength(0);
+        });
+      });
+    });
+
+    describe('Given 2 entries, the second an OFS_DELTA on the first', () => {
+      describe('When serializing', () => {
+        it('Then parsePackEntryHeader at the second offset yields OFS_DELTA with baseDistance = offset1 - offset0', () => {
+          // Arrange
+          const baseEntry = makeEntry(PACK_ENTRY_TYPE.BLOB, new Uint8Array([1, 2, 3]));
+          const deltaEntry = makeDeltaEntry(0, new Uint8Array([9, 9]));
+
+          // Act
+          const result = serializePackfile([baseEntry, deltaEntry]);
+
+          // Assert
+          const offset0 = result.entries[0]!.offset;
+          const offset1 = result.entries[1]!.offset;
+          const header = parsePackEntryHeader(result.data, offset1, SHA1_CONFIG);
+          const distance = offset1 - offset0;
+          const typeSizeBytes = encodePackEntryHeader(
+            PACK_ENTRY_TYPE.OFS_DELTA,
+            deltaEntry.uncompressedSize,
+          );
+          const distanceBytes = encodeOfsDistance(distance);
+          expect(header).toEqual({
+            type: PACK_ENTRY_TYPE.OFS_DELTA,
+            size: deltaEntry.uncompressedSize,
+            dataOffset: offset1 + typeSizeBytes.length + distanceBytes.length,
+            baseDistance: distance,
+          });
+        });
+
+        it('Then the delta entry crc32 is recomputed over header ++ distance ++ payload', () => {
+          // Arrange
+          const baseEntry = makeEntry(PACK_ENTRY_TYPE.BLOB, new Uint8Array([1, 2, 3]));
+          const compressedData = new Uint8Array([9, 9]);
+          const deltaEntry = makeDeltaEntry(0, compressedData);
+
+          // Act
+          const result = serializePackfile([baseEntry, deltaEntry]);
+
+          // Assert
+          const offset0 = result.entries[0]!.offset;
+          const offset1 = result.entries[1]!.offset;
+          const entryHeader = encodePackEntryHeader(
+            PACK_ENTRY_TYPE.OFS_DELTA,
+            compressedData.length,
+          );
+          const distance = encodeOfsDistance(offset1 - offset0);
+          const combined = new Uint8Array(
+            entryHeader.length + distance.length + compressedData.length,
+          );
+          combined.set(entryHeader, 0);
+          combined.set(distance, entryHeader.length);
+          combined.set(compressedData, entryHeader.length + distance.length);
+          expect(result.entries[1]!.crc32).toBe(crc32(combined));
+        });
+      });
+    });
+
+    describe('Given an OFS_DELTA entry whose baseIndex references itself', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_ENTRY naming the entry index', () => {
+          // Arrange
+          const deltaEntry = makeDeltaEntry(0, new Uint8Array([1]));
+
+          // Act & Assert
+          try {
+            serializePackfile([deltaEntry]);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            // Assert
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_PACK_ENTRY',
+              offset: 12,
+              reason: 'OFS_DELTA base index 0 is not before entry 0',
+            });
+          }
+        });
+      });
+    });
+
+    describe('Given an OFS_DELTA entry whose baseIndex is negative', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_ENTRY naming baseIndex out of range', () => {
+          // Arrange
+          const deltaEntry = makeDeltaEntry(-1, new Uint8Array([1]));
+
+          // Act & Assert
+          try {
+            serializePackfile([deltaEntry]);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            // Assert
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_PACK_ENTRY',
+              offset: 12,
+              reason: 'OFS_DELTA base index -1 out of range',
+            });
+          }
+        });
+      });
+    });
+
+    describe('Given an OFS_DELTA entry whose baseIndex is not an integer', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_ENTRY naming baseIndex out of range', () => {
+          // Arrange
+          const baseEntry = makeEntry(PACK_ENTRY_TYPE.BLOB, new Uint8Array([1]));
+          const deltaEntry = makeDeltaEntry(0.5, new Uint8Array([1]));
+
+          // Act & Assert
+          try {
+            serializePackfile([baseEntry, deltaEntry]);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            // Assert
+            const err = e as TsgitError;
+            expect(err.data).toEqual({
+              code: 'INVALID_PACK_ENTRY',
+              offset: 14,
+              reason: 'OFS_DELTA base index 0.5 out of range',
+            });
+          }
         });
       });
     });

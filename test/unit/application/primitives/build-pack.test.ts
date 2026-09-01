@@ -10,11 +10,13 @@
 import { describe, expect, it } from 'vitest';
 import { buildPack } from '../../../../src/application/primitives/build-pack.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { crc32 } from '../../../../src/domain/storage/crc32.js';
 import {
   PACK_ENTRY_TYPE,
   parsePackEntryHeader,
@@ -23,6 +25,42 @@ import {
 import { buildSeededContext } from './fixtures.js';
 
 const PACK_HEADER_BYTES = 12;
+
+/** A pure function of (seed, index) so two calls with the same seed always
+ *  agree on their common prefix regardless of requested length. */
+function pseudoRandomByte(seed: number, index: number): number {
+  const h = Math.imul(seed ^ index, 0x9e3779b1) ^ (index << 13);
+  return (Math.imul(h, 0x85ebca6b) >>> 24) & 0xff;
+}
+
+function pseudoRandomBytes(seed: number, length: number): Uint8Array {
+  return Uint8Array.from({ length }, (_unused, i) => pseudoRandomByte(seed, i));
+}
+
+async function writeBlob(ctx: Awaited<ReturnType<typeof buildSeededContext>>, content: Uint8Array) {
+  const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+  return writeObject(ctx, blob);
+}
+
+async function seedPackConfig(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+  body: string,
+): Promise<void> {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[pack]\n${body}`);
+  __resetConfigCacheForTests();
+}
+
+/** Each result entry's own byte range in `bytes`, derived from `entries`
+ *  (offset-sorted by emission) and the trailer boundary. */
+function entrySpan(
+  entries: ReadonlyArray<{ readonly offset: number }>,
+  index: number,
+  bytes: Uint8Array,
+): { readonly start: number; readonly end: number } {
+  const start = entries[index]!.offset;
+  const next = entries[index + 1]?.offset ?? bytes.length - 20;
+  return { start, end: next };
+}
 const TRAILER_BYTES = 20;
 
 describe('buildPack', () => {
@@ -191,7 +229,7 @@ describe('buildPack', () => {
 
   describe('Given mixed types (blob + tree)', () => {
     describe('When buildPack returns', () => {
-      it('Then entries matches serializePackfile crc32/offset metas, order preserved', async () => {
+      it('Then each meta carries the emission-order oid alongside its crc32/offset', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const blob: Blob = { type: 'blob', content: new Uint8Array([1, 2, 3]), id: '' as ObjectId };
@@ -201,14 +239,37 @@ describe('buildPack', () => {
         // Act
         const result = await buildPack(ctx, { oids: [blobId, treeId] });
 
-        // Assert — one entry per oid, in the same order, each offset strictly
-        // increasing from the header.
+        // Assert — one identified triple per oid, in emission order, each
+        // offset strictly increasing from the header.
         expect(result.entries).toHaveLength(2);
+        expect(result.entries[0]?.id).toBe(blobId);
+        expect(result.entries[1]?.id).toBe(treeId);
         expect(result.entries[0]?.offset).toBe(PACK_HEADER_BYTES);
         expect(result.entries[1]?.offset).toBeGreaterThan(result.entries[0]?.offset as number);
         for (const entry of result.entries) {
           expect(Number.isInteger(entry.crc32)).toBe(true);
         }
+      });
+    });
+
+    describe('When the input oid order differs from a hypothetical emission order', () => {
+      it('Then every input oid appears exactly once among result.entries ids', async () => {
+        // Arrange — emission order still equals input order at this point in
+        // the design (delta selection lands later), so this asserts identity
+        // set-wise rather than positionally, which stays true once emission
+        // order stops matching input order.
+        const ctx = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([9, 9]), id: '' as ObjectId };
+        const blobId = await writeObject(ctx, blob);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'z.bin', blobId)]);
+        const oids = [treeId, blobId];
+
+        // Act
+        const result = await buildPack(ctx, { oids });
+
+        // Assert
+        const resultIds = new Set(result.entries.map((entry) => entry.id));
+        expect(resultIds).toEqual(new Set(oids));
       });
     });
   });
@@ -242,6 +303,231 @@ describe('buildPack', () => {
 
         // Assert — build-pack calls deflate without a level (pack.compression key governs pack)
         expect(deflateLevels.every((l) => l === undefined)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given delta:true and two near-identical blobs', () => {
+    describe('When buildPack runs', () => {
+      it('Then at least one entry decodes as OFS_DELTA', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(41, 200);
+        const idA = await writeBlob(ctx, shared);
+        const idB = await writeBlob(ctx, shared.slice(0, 150));
+
+        // Act
+        const result = await buildPack(ctx, { oids: [idA, idB], delta: true });
+
+        // Assert
+        const types = result.entries.map(
+          (e) => parsePackEntryHeader(result.bytes, e.offset, ctx.hashConfig).type,
+        );
+        expect(types).toContain(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given delta:true and an input order opposite to the emission sort', () => {
+    describe('When buildPack runs', () => {
+      it('Then each entries[] id, crc32, and offset all describe the SAME object', async () => {
+        // Arrange — small blob first in input.oids, big blob second; the
+        // emission sort (size DESC) reorders big-first, small-second, so a
+        // positional id<->entry pairing bug would swap the two objects'
+        // crc32/offset. Both blobs are mutually unrelated so both are
+        // guaranteed base entries, keeping the ground-truth check simple.
+        const ctx = await buildSeededContext();
+        const smallContent = pseudoRandomBytes(51, 10);
+        const bigContent = pseudoRandomBytes(52, 500);
+        const smallId = await writeBlob(ctx, smallContent);
+        const bigId = await writeBlob(ctx, bigContent);
+
+        // Act
+        const result = await buildPack(ctx, { oids: [smallId, bigId], delta: true });
+
+        // Assert
+        expect(result.entries).toHaveLength(2);
+        for (const [i, entry] of result.entries.entries()) {
+          const span = entrySpan(result.entries, i, result.bytes);
+          const segment = result.bytes.subarray(span.start, span.end);
+          const recomputedCrc = crc32(segment);
+          expect(recomputedCrc).toBe(entry.crc32);
+
+          const header = parsePackEntryHeader(result.bytes, span.start, ctx.hashConfig);
+          expect(header.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+          const compressed = result.bytes.subarray(header.dataOffset, span.end);
+          const inflated = await ctx.compressor.inflate(compressed);
+          const expected = (await readRawObject(ctx, entry.id as ObjectId)).content;
+          expect(inflated).toEqual(expected);
+        }
+      });
+    });
+  });
+
+  describe('Given delta:true, called twice over the same oid set', () => {
+    describe('When buildPack runs both times', () => {
+      it('Then the two packs are byte-identical', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(61, 300);
+        const ids = [
+          await writeBlob(ctx, shared),
+          await writeBlob(ctx, shared.slice(0, 200)),
+          await writeBlob(ctx, shared.slice(0, 100)),
+        ];
+
+        // Act
+        const first = await buildPack(ctx, { oids: ids, delta: true });
+        const second = await buildPack(ctx, { oids: ids, delta: true });
+
+        // Assert
+        expect(second.bytes).toEqual(first.bytes);
+        expect(second.sha).toBe(first.sha);
+      });
+    });
+  });
+
+  describe('Given delta:true and a shuffled oid array whose sorted order is unchanged', () => {
+    describe('When buildPack runs over both orderings', () => {
+      it('Then the pack body bytes are identical', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(71, 300);
+        const idA = await writeBlob(ctx, shared);
+        const idB = await writeBlob(ctx, shared.slice(0, 200));
+        const idC = await writeBlob(ctx, shared.slice(0, 100));
+
+        // Act
+        const inOrder = await buildPack(ctx, { oids: [idA, idB, idC], delta: true });
+        const shuffled = await buildPack(ctx, { oids: [idC, idA, idB], delta: true });
+
+        // Assert — emission order is sort-derived, not input-derived.
+        expect(shuffled.bytes).toEqual(inOrder.bytes);
+      });
+    });
+  });
+
+  describe('Given delta:true and same-type blobs tied on uncompressedSize but distinct in content', () => {
+    describe('When buildPack runs over two permutations of the same oid set', () => {
+      it('Then the pack body bytes are identical, decided by the id tiebreak', async () => {
+        // Arrange — same type and same byte length, so comparePackEmissionOrder
+        // reaches its `id` clause; Array.prototype.sort is stable, so absent
+        // that clause the two differently-ordered inputs would each retain
+        // their own input order instead of converging on one canonical order.
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(111, 64));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(112, 64));
+        const idC = await writeBlob(ctx, pseudoRandomBytes(113, 64));
+
+        // Act
+        const forward = await buildPack(ctx, { oids: [idA, idB, idC], delta: true });
+        const reversed = await buildPack(ctx, { oids: [idC, idB, idA], delta: true });
+
+        // Assert
+        expect(reversed.bytes).toEqual(forward.bytes);
+      });
+    });
+  });
+
+  describe('Given pack.window=0 in the repo config', () => {
+    describe('When buildPack runs with delta:true', () => {
+      it('Then bytes are identical to buildPack without delta', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(81, 200);
+        const idA = await writeBlob(ctx, shared);
+        const idB = await writeBlob(ctx, shared.slice(0, 150));
+        await seedPackConfig(ctx, '\twindow = 0\n');
+
+        // Act
+        const withDelta = await buildPack(ctx, { oids: [idA, idB], delta: true });
+        const withoutDelta = await buildPack(ctx, { oids: [idA, idB] });
+
+        // Assert
+        expect(withDelta.bytes).toEqual(withoutDelta.bytes);
+      });
+    });
+  });
+
+  describe('Given pack.depth=0 in the repo config', () => {
+    describe('When buildPack runs with delta:true', () => {
+      it('Then bytes are identical to buildPack without delta', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(82, 200);
+        const idA = await writeBlob(ctx, shared);
+        const idB = await writeBlob(ctx, shared.slice(0, 150));
+        await seedPackConfig(ctx, '\tdepth = 0\n');
+
+        // Act
+        const withDelta = await buildPack(ctx, { oids: [idA, idB], delta: true });
+        const withoutDelta = await buildPack(ctx, { oids: [idA, idB] });
+
+        // Assert
+        expect(withDelta.bytes).toEqual(withoutDelta.bytes);
+      });
+    });
+  });
+
+  describe('Given a chain-forcing corpus and pack.depth configured below the reader cap', () => {
+    describe('When buildPack runs with delta:true', () => {
+      it('Then no emitted chain is longer than the configured depth', async () => {
+        // Arrange — each object is a strict prefix of the previous, and
+        // pack.window=1 forces a straight chain off the sole predecessor.
+        const ctx = await buildSeededContext();
+        await seedPackConfig(ctx, '\twindow = 1\n\tdepth = 3\n');
+        const shared = pseudoRandomBytes(91, 500);
+        const ids: ObjectId[] = [];
+        for (let k = 0; k < 8; k += 1) {
+          ids.push(await writeBlob(ctx, shared.slice(0, 500 - k)));
+        }
+
+        // Act
+        const result = await buildPack(ctx, { oids: ids, delta: true });
+
+        // Assert
+        const headers = result.entries.map((e) => ({
+          entry: e,
+          header: parsePackEntryHeader(result.bytes, e.offset, ctx.hashConfig),
+        }));
+        const chainDepthAt = (index: number): number => {
+          const { header } = headers[index]!;
+          if (header.type !== PACK_ENTRY_TYPE.OFS_DELTA) return 0;
+          const baseOffset = headers[index]!.entry.offset - header.baseDistance;
+          const baseIndex = headers.findIndex((h) => h.entry.offset === baseOffset);
+          return 1 + chainDepthAt(baseIndex);
+        };
+        for (let i = 0; i < headers.length; i += 1) {
+          expect(chainDepthAt(i)).toBeLessThanOrEqual(3);
+        }
+        // At least one delta chain actually reaches the cap, proving the
+        // corpus was chain-forcing rather than trivially shallow — an
+        // all-base pack (delta selection entirely broken) would otherwise
+        // still pass the <= 3 bound above.
+        expect(Math.max(...headers.map((_h, i) => chainDepthAt(i)))).toBe(3);
+      });
+    });
+  });
+
+  describe('Given delta:true and a corpus of incompressible, mutually unrelated blobs', () => {
+    describe('When buildPack runs', () => {
+      it('Then zero delta entries are emitted and the pack is not larger than base-only', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(101, 64));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(102, 64));
+        const idC = await writeBlob(ctx, pseudoRandomBytes(103, 64));
+
+        // Act
+        const withDelta = await buildPack(ctx, { oids: [idA, idB, idC], delta: true });
+        const baseOnly = await buildPack(ctx, { oids: [idA, idB, idC] });
+
+        // Assert
+        const types = withDelta.entries.map(
+          (e) => parsePackEntryHeader(withDelta.bytes, e.offset, ctx.hashConfig).type,
+        );
+        expect(types).not.toContain(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(withDelta.bytes.length).toBeLessThanOrEqual(baseOnly.bytes.length);
       });
     });
   });

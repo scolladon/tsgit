@@ -21,6 +21,7 @@
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
+import { assertValidPackIntConfig } from '../primitives/config-read.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
 import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
@@ -47,7 +48,10 @@ export interface PackObjectsResult {
    * for a fixed tier only — object order inside the pack is the closure's
    * own order, which differs between tiers, so the SAME closure written by
    * a different tier yields a DIFFERENT name. Never compare this across
-   * tiers; compare the object set read back from the `.idx` instead.
+   * tiers; compare the object set read back from the `.idx` instead. With
+   * delta emission on, this is more true than ever: the pack's byte order
+   * is a function of the object SET (`buildPack`'s own emission order), not
+   * of the closure's own traversal order.
    */
   readonly packId: ObjectId;
   readonly objectCount: number;
@@ -69,6 +73,7 @@ export const packObjects = async (
   opts: PackObjectsOptions,
 ): Promise<PackObjectsResult> => {
   await assertOperationalRepository(ctx);
+  await assertValidPackIntConfig(ctx);
   const wants = await Promise.all(opts.wants.map((rev) => revParse(ctx, rev)));
   const not = await Promise.all((opts.not ?? []).map((rev) => revParse(ctx, rev)));
   const closure = await computeClosure(ctx, {
@@ -79,19 +84,12 @@ export const packObjects = async (
   });
 
   const oids = closure.objects.map((object) => object.id);
-  const pack = await buildPack(ctx, { oids });
-  // `buildPack` produces exactly one entry per oid, in the same order — the
-  // non-null assertion documents that invariant rather than working around it.
-  const indexEntries = oids.map((id, i) => ({
-    id,
-    crc32: pack.entries[i]!.crc32,
-    offset: pack.entries[i]!.offset,
-  }));
+  const pack = await buildPack(ctx, { oids, delta: true });
   const outputDirectory = opts.outputDirectory ?? packsDir(commonGitDir(ctx));
   const written = await writePackArtifacts(ctx, {
     packDir: outputDirectory,
     packBytes: pack.bytes,
-    entries: indexEntries,
+    entries: pack.entries,
     packSha: pack.sha,
     promisor: false,
   });

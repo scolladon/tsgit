@@ -285,23 +285,31 @@ describe('packObjects', () => {
   });
 
   describe('Given the same bitmap-bearing fixture with no haves', () => {
-    describe('When packObjects runs at its default tier and again with useBitmapIndex: false', () => {
-      it('Then the two tiers write the same object set, never compared by packId', async () => {
-        // Arrange
+    describe('When packObjects runs at its default tier and again with useBitmapIndex: false, into separate directories', () => {
+      it('Then the two tiers write the same object set AND the same packId — delta emission keys the pack on the object SET, not the closure traversal order', async () => {
+        // Arrange — separate output directories: with delta emission on,
+        // `buildPack` sorts into its own emission order regardless of the
+        // closure's traversal order, so the SAME object set now produces a
+        // BYTE-IDENTICAL pack across tiers; writing both into the same
+        // directory would collide on the shared `pack-<sha>.pack` name.
         const { ctx, wantCommitId } = await buildHaveBearingBitmapFixture();
         const sut = packObjects;
+        const walkDir = `${packDirOf(ctx)}-walk`;
 
         // Act
         const bitmapResult = await sut(ctx, { wants: [wantCommitId] });
-        const walkResult = await sut(ctx, { wants: [wantCommitId], useBitmapIndex: false });
+        const walkResult = await sut(ctx, {
+          wants: [wantCommitId],
+          useBitmapIndex: false,
+          outputDirectory: walkDir,
+        });
 
-        // Assert — same SET, deliberately not asserting packId equality:
-        // object order differs by tier, so the pack's own checksum differs too.
+        // Assert
         expect(bitmapResult.objectCount).toBe(8);
         expect(walkResult.objectCount).toBe(8);
-        const dir = packDirOf(ctx);
-        const bitmapIds = await idxIdsOf(ctx, dir, bitmapResult.packId);
-        const walkIds = await idxIdsOf(ctx, dir, walkResult.packId);
+        expect(walkResult.packId).toBe(bitmapResult.packId);
+        const bitmapIds = await idxIdsOf(ctx, packDirOf(ctx), bitmapResult.packId);
+        const walkIds = await idxIdsOf(ctx, walkDir, walkResult.packId);
         expect(bitmapIds).toEqual(walkIds);
       });
     });
@@ -382,6 +390,32 @@ describe('packObjects', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a malformed pack.depth value', () => {
+    describe('When packObjects is called', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE before building any pack', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[pack]\n\tdepth = abc\n');
+        const sut = packObjects;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: ['HEAD'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect((err.data as { key: string }).key).toBe('pack.depth');
+        expect((err.data as { reason: string }).reason).toBe('invalid unit');
       });
     });
   });

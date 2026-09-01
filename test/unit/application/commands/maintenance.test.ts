@@ -1974,6 +1974,85 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a repository with one reachable commit and nothing unreachable', () => {
+    describe('When gc runs', () => {
+      it('Then the normal-pack build calls buildPack with delta: true', async () => {
+        // Arrange — a single reachable commit/tree/blob: only the
+        // normal-pack path has any oids to build (no unreachable object
+        // for cruft, no .promisor pack for the promisor path), so exactly
+        // one buildPack call can be observed here.
+        const ctx = await seedOneCommit();
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+        expect(result.cruftPackId).toBeUndefined();
+        expect(result.promisorPackId).toBeUndefined();
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a repository with no reachable commit and an unreachable object living only inside a .promisor-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then the promisor-pack build calls buildPack with delta: true', async () => {
+        // Arrange — no commit (normal path has zero oids), and the only
+        // unreachable object lives inside the promisor pack (excluded from
+        // cruft candidates), so exactly one buildPack call can be
+        // observed here, from the promisor path.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await writePromisorPack(ctx, 'delta-flag-promisor', ['delta-flag-promisor-seed']);
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.promisorPackId).toBeDefined();
+        expect(result.packId).toBeUndefined();
+        expect(result.cruftPackId).toBeUndefined();
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a repository with no reachable commit and one unreferenced loose blob that never expires', () => {
+    describe('When gc runs', () => {
+      it('Then the cruft-pack build calls buildPack with delta: true', async () => {
+        // Arrange — no commit (normal path has zero oids), no .promisor
+        // pack (promisor path has zero oids), so exactly one buildPack
+        // call can be observed here, from the cruft path.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await writeLooseBlob(ctx, 'delta-flag-cruft-seed');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftPackId).toBeDefined();
+        expect(result.packId).toBeUndefined();
+        expect(result.promisorPackId).toBeUndefined();
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given an existing cruft pack whose survivor set is the same SIZE but a different member set', () => {
     describe('When gc runs again', () => {
       it('Then it still rebuilds via buildPack — a same-size set is not the same set', async () => {
@@ -2119,6 +2198,68 @@ describe('maintenance', () => {
         const err = caught as TsgitError;
         expect(err.data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect((err.data as { key: string }).key.toLowerCase()).toContain('cruftpacks');
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // pack.depth / pack.window / pack.windowMemory eager refusal
+  // ---------------------------------------------------------------------
+
+  describe('Given a malformed pack.depth value', () => {
+    describe('When gc runs', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE naming pack.depth', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[pack]\n\tdepth = abc\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect((err.data as { key: string }).key).toBe('pack.depth');
+        expect((err.data as { value: string }).value).toBe('abc');
+        expect((err.data as { reason: string }).reason).toBe('invalid unit');
+      });
+    });
+  });
+
+  describe('Given a malformed pack.window value and an empty repository (no commits at all)', () => {
+    describe('When gc runs', () => {
+      it('Then it still refuses — the eager gate runs before the normal-pack build, which would otherwise skip for having zero oids', async () => {
+        // Arrange — `init` only: no commit, no loose object, so
+        // `buildAndWriteNormalPack` would return early on `oids.length === 0`
+        // and never reach `buildPack` if the assert lived there instead.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await appendConfig(ctx, '\n[pack]\n\twindow = 2147483648\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect((err.data as { key: string }).key).toBe('pack.window');
+        expect((err.data as { reason: string }).reason).toBe('out of range');
       });
     });
   });

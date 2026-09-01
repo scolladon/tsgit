@@ -7,6 +7,7 @@ import {
   bundleCreate,
   selectBundleVersion,
 } from '../../../../src/application/commands/bundle-create.js';
+import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
@@ -296,6 +297,20 @@ describe('bundleCreate', () => {
 
         // Assert
         expect(result.packSha).toMatch(/^[0-9a-f]{40}$/);
+      });
+
+      it('Then calls buildPack with delta: true', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepo();
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+
+        // Assert
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        buildPackSpy.mockRestore();
       });
     });
 
@@ -806,6 +821,33 @@ describe('bundleCreate', () => {
   // triggering it through bundleCreate requires defeating readObject hash
   // verification — the invariant (boundary oids always come from
   // peel-to-commit) makes the branch structurally unreachable in normal use.
+
+  // ── pack.depth / pack.window / pack.windowMemory eager refusal ────────────
+
+  describe('Given a malformed pack.depth value', () => {
+    describe('When bundleCreate is called', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE before building any pack', async () => {
+        // Arrange
+        const { ctx } = await buildTwoCommitRepo();
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[pack]\n\tdepth = abc\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const err = caught as TsgitError;
+        expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect((err.data as { key: string }).key).toBe('pack.depth');
+        expect((err.data as { reason: string }).reason).toBe('invalid unit');
+      });
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -50,7 +50,22 @@ done
 # validation added at the archive, merge and submodule boundaries — runtime
 # code shipped in every distribution form, none removable without dropping
 # either parity with git fsck or a traversal refusal.
-SIZE_CAP=$((888 * 1024))
+# Raised 888 -> 898 KiB by the delta-writing packer: the measured pack landed at
+# 917 618 B, 8 306 B over the old cap, attributable to the delta instruction
+# encoder and its typed-array base index, the selection policy, the lazy
+# sliding window with its window-memory accounting, the object-metadata read
+# path and the three new `pack.*` config finders — runtime code shipped in
+# every distribution form. None of it is removable without dropping delta
+# compression, which is the whole feature: it takes gc output from a x1.29-6.91
+# inflation against git down to x1.42 on real history (gc vs gc), x1.58 and
+# x5.43 on the two synthetic corpora. This is the largest single raise in the
+# list because it is the largest single behaviour addition. The figure includes
+# this change's own review round: the delta encoder was rewritten to flush
+# literal runs incrementally (fixing a RangeError crash on ~330 KB objects),
+# pack successor offsets gained a bounds refusal, and the window budget began
+# charging its delta index the way git charges sizeof_delta_index() — together
+# ~618 B beyond the first post-implementation measurement.
+SIZE_CAP=$((898 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
