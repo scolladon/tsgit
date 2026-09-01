@@ -34,6 +34,25 @@ describe('comparePackEmissionOrder', () => {
     });
   });
 
+  describe('Given two keys of different types whose id ordering disagrees with their type ordering', () => {
+    describe('When compared', () => {
+      it('Then the lower type rank still sorts first — type is the primary key, not id', () => {
+        // Arrange — commit (rank 1) carries the HIGHER id, blob (rank 3) the
+        // LOWER one, so a comparator that skipped the type check and fell
+        // through to the id tiebreaker would report the opposite sign.
+        const sut = comparePackEmissionOrder;
+        const commit = key('z', PACK_ENTRY_TYPE.COMMIT, 10);
+        const blob = key('a', PACK_ENTRY_TYPE.BLOB, 10);
+
+        // Act
+        const result = sut(commit, blob);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
   describe('Given two keys of the same type and different sizes', () => {
     describe('When compared', () => {
       it('Then the larger size sorts first (DESC)', () => {

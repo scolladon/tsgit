@@ -260,6 +260,7 @@ async function readPackedMetadata(
   }
   // One inflate of the delta INSTRUCTION stream (not the object) — already
   // the smallest representation carrying the target's declared size.
+  // Stryker disable next-line CallExpression: equivalent — depth is seeded at literal 1 here and MAX_DELTA_CHAIN_DEPTH is 50, so `1 > 50` can never be true; this call can never throw, so removing it is behaviorally identical — confirmed empirically (hand-applied CallExpression removal, full covering set still green).
   assertChainDepthWithinCap(1);
   const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
   const type = await walkDeltaBaseType(ctx, registry, hit, header, targetId);

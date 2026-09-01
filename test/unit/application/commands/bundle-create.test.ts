@@ -7,6 +7,7 @@ import {
   bundleCreate,
   selectBundleVersion,
 } from '../../../../src/application/commands/bundle-create.js';
+import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
@@ -296,6 +297,20 @@ describe('bundleCreate', () => {
 
         // Assert
         expect(result.packSha).toMatch(/^[0-9a-f]{40}$/);
+      });
+
+      it('Then calls buildPack with delta: true', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepo();
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+
+        // Assert
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        buildPackSpy.mockRestore();
       });
     });
 

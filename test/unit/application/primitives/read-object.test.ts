@@ -796,6 +796,37 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     });
   });
 
+  describe('Given a missing object the promisor supplies inside a NEW pack (not loose)', () => {
+    describe('When readObject lazy-fetches', () => {
+      it('Then the retry finds it — the registry is refreshed before the re-resolve', async () => {
+        // Arrange — the fetched object lands in a pack written straight to
+        // the filesystem (bypassing writeObject), so the pack registry's
+        // cached pack list is stale until `registry.refresh()` runs; a
+        // dropped refresh would leave the retry's `registry.lookup(id)`
+        // blind to the new pack and rethrow OBJECT_NOT_FOUND.
+        const base = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([1, 2, 3]), id: '' as ObjectId };
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        let ctx!: Context;
+        const promisor: PromisorRemote = {
+          fetch: async (oids) => {
+            await writeSyntheticPack(ctx, 'lazy-fetch-refresh', [
+              { kind: 'base', type: 'blob', content: blob.content },
+            ]);
+            return { attempted: true, requested: oids.length, fetched: oids.length };
+          },
+        };
+        ctx = { ...base, promisor };
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+      });
+    });
+  });
+
   describe('Given a missing object supplied by a promisor that records its request', () => {
     describe('When readObject lazy-fetches', () => {
       it('Then the promisor is asked for exactly the missing oid', async () => {

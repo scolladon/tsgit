@@ -6660,6 +6660,38 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [pack] window = -2147483648, the C int floor', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — the floor is inclusive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = -2147483648\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [pack] window = 2147483647, the C int ceiling', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — the ceiling is inclusive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  window = 2147483647\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [pack] window is malformed', () => {
     describe('When readConfig', () => {
       it('Then pack.window is absent, not a guessed default', async () => {
@@ -6725,6 +6757,23 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  window = abc\n');
+
+        // Act
+        const result = await findFirstInvalidPackInt(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a malformed window value that appears before any section header', () => {
+    describe('When findFirstInvalidPackInt', () => {
+      it('Then it returns undefined — inSection starts false and only a matching [pack] header sets it', async () => {
+        // Arrange — a pre-header bare key must NOT match. Mutant
+        // (inSection=true) would wrongly check and return it.
+        const ctx = createMemoryContext();
+        await seed(ctx, '  window = abc\n[pack]\n  depth = 50\n');
 
         // Act
         const result = await findFirstInvalidPackInt(ctx);
