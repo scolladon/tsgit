@@ -387,17 +387,22 @@ const walkFromRoot = async <TCrcContext>(
   typeName: BaseTypeName,
   rootChildren: ReadonlyArray<number>,
 ): Promise<void> => {
-  const stack: WalkFrame[] = [
-    { content: rootContent, typeName, children: rootChildren, cursor: 0 },
-  ];
+  // Every stacked frame has at least one child still to take: a frame is
+  // pushed only when it has children, and popped the moment its last child is
+  // taken. That invariant is what bounds residency — a linear chain holds the
+  // parent and the child being built, never the whole root-to-leaf path.
+  const stack: WalkFrame[] = [];
+  if (rootChildren.length > 0) {
+    stack.push({ content: rootContent, typeName, children: rootChildren, cursor: 0 });
+  }
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
-    if (frame.cursor >= frame.children.length) {
-      stack.pop();
-      continue;
-    }
     const childOrdinal = frame.children[frame.cursor]!;
     frame.cursor += 1;
+    // Release the parent before descending. `frame` stays reachable through
+    // this local binding for the `applyDelta` below, then becomes collectable
+    // as soon as the iteration ends.
+    if (frame.cursor >= frame.children.length) stack.pop();
     if (store.isResolved(childOrdinal)) continue;
     const childOffset = store.offsetOf(childOrdinal);
     const childHeader = await source.entryHeader(childOffset);
@@ -411,12 +416,15 @@ const walkFromRoot = async <TCrcContext>(
     store.setOid(childOrdinal, oidBytes);
     store.markResolved(childOrdinal);
     const grandchildren = collectChildren(store, childOffset, oidBytes);
-    stack.push({
-      content: childContent,
-      typeName: frame.typeName,
-      children: grandchildren,
-      cursor: 0,
-    });
+    // A leaf's content is dropped here rather than held by a childless frame.
+    if (grandchildren.length > 0) {
+      stack.push({
+        content: childContent,
+        typeName: frame.typeName,
+        children: grandchildren,
+        cursor: 0,
+      });
+    }
   }
 };
 

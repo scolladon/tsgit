@@ -458,6 +458,187 @@ const buildDeltaChainClonePackFixture = async (root: string): Promise<ClonePackF
   return { bareDir, packBytes };
 };
 
+// ─── index-pass residency ──────────────────────────────────────────────────
+//
+// Every other clone reading in this file samples with `setInterval` +
+// `process.memoryUsage()`. That oracle CANNOT see this pipeline's peak: pass 2
+// awaits only already-settled promises, so the event loop never turns while
+// the walk holds its deepest stack. A lazily-released parent frame therefore
+// measured identically to an eagerly-released one on every fixture here, and a
+// retention defect a remote could trigger shipped past all of them.
+//
+// Two things are needed to see it, and both are load-bearing:
+//   1. a kernel high-water mark (`maxRSS`) read in a FRESH CHILD PROCESS, so
+//      the reading is monotonic and cannot be missed between polls;
+//   2. a fixture whose objects are large enough that `depth x objectSize` is
+//      visible at all. `buildDeltaChainClonePackFixture` above churns ~8 KB
+//      revisions, so its ancestor term is ~0.4 MB — invisible either way.
+const RESIDENCY_CHILD_FLAG = '--residency-child';
+const DEEP_CHAIN_COMMITS = 60;
+const DEEP_CHAIN_LINE_COUNT = 60_000;
+
+/** One multi-MiB file churned over `DEEP_CHAIN_COMMITS` commits, repacked into
+ *  a single deep OFS chain. Small on the wire, large when reconstructed —
+ *  the shape a remote controls and the one the retained-ancestor term is
+ *  measured against. */
+const buildDeepChainFixture = async (root: string): Promise<ClonePackFixture> => {
+  const workDir = path.join(root, 'deep-chain-work');
+  const bareDir = path.join(root, 'deep-chain.git');
+  const env = gitEnv();
+  await execFileAsync('git', ['init', '-q', workDir], { env });
+  const filePath = path.join(workDir, 'churn.txt');
+  const lines = Array.from(
+    { length: DEEP_CHAIN_LINE_COUNT },
+    (_, i) => `line-${i}-${randomBytes(8).toString('hex')}`,
+  );
+  const commitOnce = async (message: string): Promise<void> => {
+    await writeFile(filePath, `${lines.join('\n')}\n`);
+    await execFileAsync('git', ['-C', workDir, 'add', 'churn.txt'], { env });
+    await execFileAsync(
+      'git',
+      [
+        '-C',
+        workDir,
+        '-c',
+        'user.email=bench@example.com',
+        '-c',
+        'user.name=bench',
+        'commit',
+        '-q',
+        '-m',
+        message,
+      ],
+      { env },
+    );
+  };
+  await commitOnce('seed');
+  for (let c = 0; c < DEEP_CHAIN_COMMITS; c += 1) {
+    lines[c % lines.length] = `line-${c}-${randomBytes(8).toString('hex')}`;
+    await commitOnce(`c${c}`);
+  }
+  await execFileAsync('git', ['clone', '-q', '--bare', workDir, bareDir], { env });
+  // `-f --depth=60 --window=60` forces one long chain rather than the shallow
+  // ones git's defaults would pick on this shape.
+  await execFileAsync(
+    'git',
+    [
+      '-C',
+      bareDir,
+      '-c',
+      'pack.threads=1',
+      'repack',
+      '-q',
+      '-a',
+      '-d',
+      '-f',
+      '--depth=60',
+      '--window=60',
+    ],
+    { env },
+  );
+  const packDir = path.join(bareDir, 'objects', 'pack');
+  const packFile = (await readdir(packDir)).find((name) => name.endsWith('.pack'));
+  const packBytes = packFile === undefined ? 0 : (await stat(path.join(packDir, packFile))).size;
+  return { bareDir, packBytes };
+};
+
+/** Clone `label` in a fresh child and return that child's own `maxRSS`. */
+const measureCloneMaxRssInChild = async (
+  backendPath: string,
+  root: string,
+  label: string,
+): Promise<number> =>
+  await new Promise<number>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ['--experimental-strip-types', SCRIPT_PATH, RESIDENCY_CHILD_FLAG, backendPath, root, label],
+      { env: process.env, stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    let out = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      out += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`residency child for ${label} exited ${String(code)}`));
+        return;
+      }
+      const parsed: unknown = JSON.parse(out.trim());
+      if (typeof parsed !== 'object' || parsed === null || !('maxRss' in parsed)) {
+        reject(new Error(`residency child for ${label} produced no reading`));
+        return;
+      }
+      resolve(Number((parsed as { maxRss: unknown }).maxRss));
+    });
+  });
+
+/** The child half: clone once, print this process's own kernel high-water
+ *  mark. No sampling, nothing to miss. */
+const runResidencyChild = async (
+  backendPath: string,
+  root: string,
+  label: string,
+): Promise<void> => {
+  const openRepository = await loadOpenRepository();
+  const transport = buildDeterministicTransport(backendPath, root);
+  const cwd = await mkdtemp(path.join(os.tmpdir(), `tsgit-bench-residency-${label}-`));
+  try {
+    const repo = await openRepository({
+      cwd,
+      allowInsecureHttp: true,
+      transport,
+      config: {
+        allowInsecure: true,
+        allowPrivateNetworks: true,
+        dnsResolver: async () => ['127.0.0.1'],
+      },
+    });
+    try {
+      await repo.clone({ url: `http://bench.invalid/${label}.git` });
+    } finally {
+      await repo.dispose();
+    }
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+  // `maxRSS` is reported in kilobytes on darwin and linux alike.
+  process.stdout.write(`${JSON.stringify({ maxRss: process.resourceUsage().maxRSS * 1024 })}\n`);
+};
+
+/** Peak-RSS cost of indexing a deep chain of large objects, above the cost of
+ *  cloning a trivial repository. Both readings come from their own child, so
+ *  neither can hide inside the other's high-water mark. */
+const runIndexPassResidencyWorkload = async (): Promise<ReadonlyArray<WorkloadReport>> => {
+  const backendPath = findGitHttpBackend();
+  if (backendPath === undefined) {
+    process.stderr.write('skipping index-pass-residency workload: git-http-backend not on $PATH\n');
+    return [];
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-residency-src-'));
+  try {
+    const trivial = await buildClonePackFixture(root, 'residency-trivial', 1024);
+    const deep = await buildDeepChainFixture(root);
+    const baselineRss = await measureCloneMaxRssInChild(backendPath, root, 'residency-trivial');
+    const deepRss = await measureCloneMaxRssInChild(backendPath, root, 'deep-chain');
+    return [
+      {
+        workload:
+          `index-pass-residency-deep-chain-pack-${deep.packBytes}B` +
+          `-over-trivial-${trivial.packBytes}B`,
+        // A child's high-water mark only ever rises, so `after` is `peak`.
+        rss: { before: baselineRss, peak: deepRss, after: deepRss },
+        heapUsed: { before: 0, peak: 0, after: 0 },
+        node: process.version,
+        platform: process.platform,
+      },
+    ];
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
 const findHeaderSeparator = (buf: Buffer): number => {
   for (let i = 0; i < buf.length - 1; i += 1) {
     if (buf[i] === 0x0a && buf[i + 1] === 0x0a) return i;
@@ -766,6 +947,15 @@ const emitReports = async (reports: ReadonlyArray<WorkloadReport>): Promise<void
 };
 
 const main = async (): Promise<void> => {
+  const childArgs = process.argv.slice(2);
+  if (childArgs[0] === RESIDENCY_CHILD_FLAG) {
+    const [, backendPath, root, label] = childArgs;
+    if (backendPath === undefined || root === undefined || label === undefined) {
+      throw new Error(`${RESIDENCY_CHILD_FLAG} needs <backendPath> <root> <label>`);
+    }
+    await runResidencyChild(backendPath, root, label);
+    return;
+  }
   const gc = requireGc();
   const openRepository = await loadOpenRepository();
 
@@ -776,6 +966,7 @@ const main = async (): Promise<void> => {
     reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FIXTURE));
     reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FAT_BLOB_FIXTURE));
     reports.push(...(await runCloneWorkload(gc, openRepository)));
+    reports.push(...(await runIndexPassResidencyWorkload()));
     reports.push(await runGcResidencyWorkload(gc, openRepository));
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
       reports.push(await runLargePackWorkload(gc, openRepository));
