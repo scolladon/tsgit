@@ -185,7 +185,7 @@ export function arbPackRecordEntrySpecs(
     .array(
       fc.record({
         offset: fc.integer({ min: 0, max: 2 ** 31 }),
-        crcValue: fc.integer({ min: -(2 ** 31), max: 2 ** 31 - 1 }),
+        crcValue: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
         type: fc.constantFrom(...BASE_PACK_ENTRY_TYPES),
         oid: fc.uint8Array({ minLength: digestLength, maxLength: digestLength }),
       }),

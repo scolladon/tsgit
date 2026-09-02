@@ -85,7 +85,7 @@ export function createPackRecordStore(
 
   let capacity = Math.min(INITIAL_CAPACITY, structuralMax);
   let offsets = new Float64Array(capacity);
-  let crcValues = new Int32Array(capacity);
+  let crcValues = new Uint32Array(capacity);
   let types = new Uint8Array(capacity);
   let oids = new Uint8Array(capacity * digestLength);
   let count = 0;
@@ -114,7 +114,7 @@ export function createPackRecordStore(
     const nextCapacity = growCapacityTo(capacity, needed, structuralMax);
     const nextOffsets = new Float64Array(nextCapacity);
     nextOffsets.set(offsets);
-    const nextCrcValues = new Int32Array(nextCapacity);
+    const nextCrcValues = new Uint32Array(nextCapacity);
     nextCrcValues.set(crcValues);
     const nextTypes = new Uint8Array(nextCapacity);
     nextTypes.set(types);

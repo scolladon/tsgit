@@ -59,7 +59,7 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
   const digestLength = ctx.hash.digestLength;
   const count = plan.ids.length;
   const oids = new Uint8Array(count * digestLength);
-  const crcValues = new Int32Array(count);
+  const crcValues = new Uint32Array(count);
   const offsets = new Float64Array(count);
   for (let i = 0; i < count; i += 1) {
     oids.set(hexToBytes(plan.ids[i]!), i * digestLength);

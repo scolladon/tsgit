@@ -22460,9 +22460,9 @@
 								"target": {
 									"packageName": "typescript",
 									"packagePath": "lib/lib.es5.d.ts",
-									"qualifiedName": "Int32Array"
+									"qualifiedName": "Uint32Array"
 								},
-								"name": "Int32Array",
+								"name": "Uint32Array",
 								"package": "typescript"
 							}
 						},
@@ -53591,15 +53591,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", sorted\noid-ascending by "
-									},
-									{
-										"kind": "code",
-										"text": "`compareBytes`"
-									},
-									{
-										"kind": "text",
-										"text": "-ing ranges of the "
+										"text": " and sorts it\nwith a comparator that indexes the "
 									},
 									{
 										"kind": "code",
@@ -53607,7 +53599,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " slab directly —\nnever "
+										"text": " slab in place. The comparator\nallocates nothing: a "
 									},
 									{
 										"kind": "code",
@@ -53615,7 +53607,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "d once into a retained per-entry array, which would\nreintroduce the very allocation this shape exists to delete."
+										"text": " per comparison would be O(N log N)\nallocations, worse than the per-entry array this shape exists to delete."
 									}
 								]
 							},

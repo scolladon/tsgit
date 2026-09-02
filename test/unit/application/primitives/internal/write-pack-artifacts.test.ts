@@ -39,7 +39,7 @@ const buildEntries = (count: number): PackIndexEntries =>
  *  must be read against. */
 const overAllocated = (base: PackIndexEntries, extraCapacity: number): PackIndexEntries => {
   const oids = new Uint8Array(base.oids.length + extraCapacity * base.digestLength);
-  const crcValues = new Int32Array(base.crcValues.length + extraCapacity);
+  const crcValues = new Uint32Array(base.crcValues.length + extraCapacity);
   const offsets = new Float64Array(base.offsets.length + extraCapacity);
   oids.set(base.oids);
   crcValues.set(base.crcValues);

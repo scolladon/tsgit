@@ -600,11 +600,8 @@ export const walkPackEntries = async (
     const end = start + entries.digestLength;
     walked.push({
       id: bytesToHex(entries.oids.subarray(start, end)),
-      // `crcValues` is a signed `Int32Array` (the `.idx`/`.rev` byte-level
-      // shape); `crc32()` and this module's own `WalkedEntry` contract are
-      // unsigned, so the bit pattern is reinterpreted back on the way out.
-      crc32: (entries.crcValues[i] ?? 0) >>> 0,
-      offset: entries.offsets[i] ?? 0,
+      crc32: entries.crcValues[i]!,
+      offset: entries.offsets[i]!,
     });
   }
   return walked;

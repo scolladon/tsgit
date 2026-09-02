@@ -22,7 +22,7 @@ export function packIndexEntriesOf(
 ): PackIndexEntries {
   const count = entries.length;
   const oids = new Uint8Array(count * digestLength);
-  const crcValues = new Int32Array(count);
+  const crcValues = new Uint32Array(count);
   const offsets = new Float64Array(count);
   for (let i = 0; i < count; i += 1) {
     const entry = entries[i]!;

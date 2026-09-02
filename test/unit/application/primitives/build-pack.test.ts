@@ -379,9 +379,8 @@ describe('buildPack', () => {
             const span = entrySpan(result.entries, i, result.bytes);
             const segment = result.bytes.subarray(span.start, span.end);
             const recomputedCrc = crc32(segment);
-            // `crcValues` is `Int32Array` — same bit pattern as the unsigned
-            // crc32, read back signed; normalise before comparing.
-            expect(recomputedCrc).toBe(result.entries.crcValues[i]! >>> 0);
+            // `crcValues` is unsigned, like `crc32()` itself — no normalisation.
+            expect(recomputedCrc).toBe(result.entries.crcValues[i]!);
 
             const header = parsePackEntryHeader(result.bytes, span.start, ctx.hashConfig);
             expect(header.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
