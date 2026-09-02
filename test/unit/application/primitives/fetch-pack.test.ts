@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { negotiatePackBytes } from '../../../../src/application/commands/internal/fetch-negotiation.js';
 import {
-  DISK_WALK_WINDOW_BYTES,
-  type ExternalBaseResolver,
   fetchPack,
   type NegotiatePackBytes,
-  walkPackEntries,
 } from '../../../../src/application/primitives/fetch-pack.js';
+import {
+  DISK_WALK_WINDOW_BYTES,
+  type ExternalBaseResolver,
+  walkPackEntries,
+} from '../../../../src/application/primitives/internal/index-pack.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import {
   fileExists,
@@ -22,14 +24,17 @@ import {
   encodePktStream,
   type GitExchange,
 } from '../../../../src/domain/protocol/pkt-line.js';
+import { crc32 } from '../../../../src/domain/storage/crc32.js';
 import {
   encodePackEntryHeader,
   PACK_ENTRY_TYPE,
   parsePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import {
+  entryOffsets,
   lookupPackIndex,
   lookupPackIndexPosition,
+  objectIdAt,
   parsePackIndex,
 } from '../../../../src/domain/storage/pack-index.js';
 import { readableStreamToAsyncIterable } from '../../../../src/operators/readable-stream.js';
@@ -39,6 +44,7 @@ import type {
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
 import { recordingProgress, withProgress } from '../commands/fixtures.js';
+import { INDEX_PASS_CORPUS } from './index-pass-corpus.js';
 import { buildSyntheticPack, type EntrySpec } from './pack-fixture.js';
 
 const ENCODER = new TextEncoder();
@@ -2763,6 +2769,127 @@ describe('quarantine disk-backed entry walk', () => {
       });
     });
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// index pass equivalence — the regression net every later part of the
+// streaming-index-pass change is measured against. Each corpus case's
+// (id, crc32, offset) set is asserted against an oracle the indexer had no
+// hand in producing: `buildSyntheticPack`'s own independently-computed
+// `ids`/`offsets`, plus a crc32 recomputed fresh from the packed bytes —
+// never a snapshot of what today's code returns.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface OracleEntry {
+  readonly id: string;
+  readonly crc32: number;
+  readonly offset: number;
+}
+
+/**
+ * The oracle: `built.ids[i]`/`built.offsets[i]` are the fixture builder's
+ * own independently-computed values (never derived from the indexer under
+ * test), and each entry's crc32 is recomputed fresh over the raw bytes
+ * `[offsets[i], offsets[i + 1])` — the same span `buildSyntheticPack`
+ * computed its own (unexposed) `crc32Values` over, but read back through
+ * the exported `crc32` function rather than trusted from the builder.
+ */
+const oracleWalkedEntries = (
+  built: Awaited<ReturnType<typeof buildSyntheticPack>>,
+  digestLength: number,
+): OracleEntry[] =>
+  built.ids.map((id, i) => {
+    const start = built.offsets[i] as number;
+    const end = built.offsets[i + 1] ?? built.packBytes.length - digestLength;
+    return { id, crc32: crc32(built.packBytes.subarray(start, end)), offset: start };
+  });
+
+/** Every offset is unique per entry, so sorting by offset gives a canonical
+ *  order for a set comparison — including the `duplicate-oid` corpus case,
+ *  where several entries share an id but never an offset. */
+const byOffsetAscending = <T extends { readonly offset: number }>(items: ReadonlyArray<T>): T[] =>
+  [...items].sort((a, b) => a.offset - b.offset);
+
+/** Reads every `.idx` position's `(id, crc32, offset)` triple directly,
+ *  rather than looking entries up by id — `lookupPackIndex`/
+ *  `lookupPackIndexPosition` assume a unique oid per index, which the
+ *  `duplicate-oid` corpus case deliberately violates. */
+const idxEntries = (idx: ReturnType<typeof parsePackIndex>): OracleEntry[] =>
+  entryOffsets(idx).map((offset, position) => ({
+    id: objectIdAt(idx, position) as string,
+    crc32: idx._view.getUint32(idx.crc32TableOffset + position * 4),
+    offset,
+  }));
+
+describe('index pass equivalence', () => {
+  const OFS_CHAIN_1000_TIMEOUT_MS = 30_000;
+
+  for (const corpusCase of INDEX_PASS_CORPUS) {
+    describe(`Given the "${corpusCase.name}" corpus case`, () => {
+      describe('When walkPackEntries walks the in-memory pack', () => {
+        it(
+          "Then the resulting (id, crc32, offset) set matches the fixture builder's own oracle",
+          async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const entries = await corpusCase.entries(ctx);
+            const built = await buildSyntheticPack(ctx, entries);
+            const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+            // Act
+            const result = await walkPackEntries(ctx, built.packBytes);
+
+            // Assert
+            expect(byOffsetAscending(result)).toEqual(expected);
+          },
+          corpusCase.name === 'ofs-chain-depth-1000' ? OFS_CHAIN_1000_TIMEOUT_MS : undefined,
+        );
+      });
+
+      describe('When fetchPack walks the quarantined pack from disk', () => {
+        it(
+          corpusCase.name === 'empty-pack'
+            ? 'Then it reaches the zero-entry suppression path: objectCount 0 and no .idx written'
+            : "Then the resulting .idx entries match the fixture builder's own oracle",
+          async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const entries = await corpusCase.entries(ctx);
+            const built = await buildSyntheticPack(ctx, entries);
+            // Chunked, not `buildUploadPackResponseBody`'s single frame: a
+            // few corpus cases (multi-window, deep chains) produce packs
+            // past the 65 516-byte pkt-line payload cap.
+            const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+            const { transport } = captureRequests(body);
+            const wants = [(built.ids[0] ?? 'a'.repeat(40)) as ObjectId];
+
+            // Act
+            const result = await fetchPack(ctx, toNegotiator(transport), {
+              wants,
+              haves: [],
+              capabilities: ['side-band-64k', 'ofs-delta'],
+              progressOp: 'test:write-objects',
+            });
+
+            // Assert
+            if (corpusCase.name === 'empty-pack') {
+              expect(result.objectCount).toBe(0);
+              expect(result.idxPath).toBe('');
+              return;
+            }
+            const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+            const idx = parsePackIndex(
+              await ctx.fs.read(result.idxPath),
+              ctx.hash.digestLength as 20 | 32,
+            );
+            expect(idx.objectCount).toBe(expected.length);
+            expect(byOffsetAscending(idxEntries(idx))).toEqual(expected);
+          },
+          corpusCase.name === 'ofs-chain-depth-1000' ? OFS_CHAIN_1000_TIMEOUT_MS : undefined,
+        );
+      });
+    });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

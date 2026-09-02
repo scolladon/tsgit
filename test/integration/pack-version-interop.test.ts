@@ -23,7 +23,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { bundleVerify } from '../../src/application/commands/bundle-verify.js';
 import { enumerateObjects } from '../../src/application/primitives/enumerate-objects.js';
-import { walkPackEntries } from '../../src/application/primitives/fetch-pack.js';
+import { walkPackEntries } from '../../src/application/primitives/internal/index-pack.js';
 import { getPackRegistry, readObject } from '../../src/application/primitives/read-object.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { GitObject, ObjectId } from '../../src/domain/objects/index.js';

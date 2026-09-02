@@ -38,7 +38,8 @@ import type { BundleCreateOptions } from '../../src/application/commands/bundle-
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { bundleListHeads } from '../../src/application/commands/bundle-list-heads.js';
 import { bundleVerify } from '../../src/application/commands/bundle-verify.js';
-import { verifyPackTrailer, walkPackEntries } from '../../src/application/primitives/fetch-pack.js';
+import { verifyPackTrailer } from '../../src/application/primitives/fetch-pack.js';
+import { walkPackEntries } from '../../src/application/primitives/internal/index-pack.js';
 import { parseBundleHeader } from '../../src/domain/bundle/index.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { RefName } from '../../src/domain/objects/object-id.js';

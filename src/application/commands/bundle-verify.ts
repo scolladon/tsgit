@@ -14,11 +14,8 @@ import type { ObjectFilter } from '../../domain/protocol/object-filter.js';
 import { notARepository } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import { deriveContext } from '../primitives/derive-context.js';
-import {
-  type ExternalBaseResolver,
-  verifyPackTrailer,
-  walkPackEntries,
-} from '../primitives/fetch-pack.js';
+import { verifyPackTrailer } from '../primitives/fetch-pack.js';
+import { type ExternalBaseResolver, walkPackEntries } from '../primitives/internal/index-pack.js';
 import { layoutFailsAcceptance } from '../primitives/internal/layout-verdict.js';
 import { readObject } from '../primitives/read-object.js';
 import { readBundle } from './internal/read-bundle.js';
