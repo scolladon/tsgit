@@ -22,9 +22,7 @@ import {
   PACK_ENTRY_TYPE,
   serializePackHeader,
 } from './pack-entry.js';
-import { type PackIndexWriterEntry, type SortedEntry, sortPackIndexEntries } from './pack-order.js';
-
-export type { PackIndexWriterEntry };
+import type { SortedPackIndex } from './pack-order.js';
 
 export interface PackWriterBaseEntry {
   readonly type: BasePackEntryType;
@@ -51,6 +49,37 @@ export interface PackEntryMeta {
 export interface PackfileResult {
   readonly data: Uint8Array;
   readonly entries: ReadonlyArray<PackEntryMeta>;
+}
+
+/**
+ * Structural shape guards for a `.idx` write's `SortedPackIndex` input,
+ * shared by `serializePackIndex` and factored out purely to keep that
+ * function's own cognitive complexity under the repo's ceiling — every
+ * branch here is still its own coverage-gated test.
+ */
+function assertValidSortedPackIndex(sorted: SortedPackIndex, digestLength: number): void {
+  if (digestLength !== 20 && digestLength !== 32) {
+    throw invalidPackIndex(`packChecksum must be 20 or 32 bytes, got ${digestLength}`);
+  }
+  const { entries, order } = sorted;
+  const { count, oids, crcValues, offsets } = entries;
+  if (entries.digestLength !== digestLength) {
+    throw invalidPackIndex(
+      `entries digestLength ${entries.digestLength} does not match packChecksum length ${digestLength}`,
+    );
+  }
+  if (oids.length < count * digestLength) {
+    throw invalidPackIndex(`oids too short: need ${count * digestLength}, got ${oids.length}`);
+  }
+  if (crcValues.length < count) {
+    throw invalidPackIndex(`crcValues too short: need ${count}, got ${crcValues.length}`);
+  }
+  if (offsets.length < count) {
+    throw invalidPackIndex(`offsets too short: need ${count}, got ${offsets.length}`);
+  }
+  if (order.length !== count) {
+    throw invalidPackIndex(`order length ${order.length} does not match entries count ${count}`);
+  }
 }
 
 function assertValidBaseIndex(baseIndex: number, i: number, offset: number): void {
@@ -101,25 +130,17 @@ export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): Pack
   return { data: concatBytes(chunks), entries: metas };
 }
 
-export function serializePackIndex(
-  entries: ReadonlyArray<PackIndexWriterEntry>,
-  packChecksum: Uint8Array,
-  presorted?: ReadonlyArray<SortedEntry>,
-): Uint8Array {
+export function serializePackIndex(sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array {
   const digestLength = packChecksum.length;
-  if (digestLength !== 20 && digestLength !== 32) {
-    throw invalidPackIndex(`packChecksum must be 20 or 32 bytes, got ${digestLength}`);
-  }
+  assertValidSortedPackIndex(sorted, digestLength);
 
-  // `presorted` MUST be `sortPackIndexEntries(entries)` — a caller writing the
-  // sibling `.rev` from the same entry set passes it so the oid sort runs once
-  // per pack write instead of once per artefact.
-  const withBytes = presorted ?? sortPackIndexEntries(entries);
+  const { entries, order } = sorted;
+  const { count, oids, crcValues, offsets } = entries;
 
-  const n = withBytes.length;
+  const n = count;
   let largeCount = 0;
-  for (const e of withBytes) {
-    if (e.entry.offset > 0x7fffffff) largeCount += 1;
+  for (let p = 0; p < n; p += 1) {
+    if (offsets[order[p]!]! > 0x7fffffff) largeCount += 1;
   }
 
   const headerSize = 8;
@@ -148,8 +169,8 @@ export function serializePackIndex(
 
   // Fanout table — count per bucket, then cumulate (O(N + 256) instead of O(N * 256))
   const bucketCounts = new Uint32Array(256);
-  for (const { shaBytes } of withBytes) {
-    bucketCounts[shaBytes[0]!]! += 1;
+  for (let p = 0; p < n; p += 1) {
+    bucketCounts[oids[order[p]! * digestLength]!]! += 1;
   }
   const fanout = new Uint32Array(256);
   let cumulative = 0;
@@ -166,14 +187,15 @@ export function serializePackIndex(
 
   // SHA table — reuse pre-computed bytes
   const shaStart = fanoutOffset + fanoutSize;
-  for (let i = 0; i < n; i++) {
-    bytes.set(withBytes[i]!.shaBytes, shaStart + i * digestLength);
+  for (let p = 0; p < n; p++) {
+    const k = order[p]!;
+    bytes.set(oids.subarray(k * digestLength, (k + 1) * digestLength), shaStart + p * digestLength);
   }
 
   // CRC-32 table
   const crcStart = shaStart + shaTableSize;
-  for (let i = 0; i < n; i++) {
-    view.setUint32(crcStart + i * 4, withBytes[i]!.entry.crc32);
+  for (let p = 0; p < n; p++) {
+    view.setUint32(crcStart + p * 4, crcValues[order[p]!]!);
   }
 
   // Offset table
@@ -181,17 +203,17 @@ export function serializePackIndex(
   let largeIdx = 0;
   const largeOffsetStart = offsetStart + offsetTableSize;
 
-  for (let i = 0; i < n; i++) {
-    const offset = withBytes[i]!.entry.offset;
+  for (let p = 0; p < n; p++) {
+    const offset = offsets[order[p]!]!;
     if (offset > 0x7fffffff) {
-      view.setUint32(offsetStart + i * 4, 0x80000000 | largeIdx);
+      view.setUint32(offsetStart + p * 4, 0x80000000 | largeIdx);
       const high = Math.floor(offset / 0x100000000);
       const low = offset >>> 0;
       view.setUint32(largeOffsetStart + largeIdx * 8, high);
       view.setUint32(largeOffsetStart + largeIdx * 8 + 4, low);
       largeIdx += 1;
     } else {
-      view.setUint32(offsetStart + i * 4, offset);
+      view.setUint32(offsetStart + p * 4, offset);
     }
   }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { RevIndexCheck } from '../../../../src/domain/storage/error.js';
-import type { PackIndexWriterEntry } from '../../../../src/domain/storage/pack-writer.js';
+import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.js';
 import {
   parsePackRevIndex,
   REASON_REV_INDEX_CORRUPT,
@@ -10,6 +10,10 @@ import {
   revIndexPositionAt,
   serializePackRevIndex,
 } from '../../../../src/domain/storage/rev-index.js';
+import {
+  type PackIndexEntryLiteral,
+  packIndexEntriesOf,
+} from '../../../fixtures/storage/pack-index-entries.js';
 import { buildRevIndex, type RevIndexSpec } from './arbitraries.js';
 
 // --- Fixture helpers -------------------------------------------------------
@@ -65,12 +69,19 @@ const F1_OID_PREFIXES = [
 ];
 const F1_OFFSETS = [333, 276, 314, 94, 106, 257, 295];
 
-function f1Entries(): PackIndexWriterEntry[] {
+function f1Entries(): PackIndexEntryLiteral[] {
   return F1_OID_PREFIXES.map((prefix, i) => ({
     id: prefix + '00'.repeat(16),
     crc32: 0,
     offset: F1_OFFSETS[i]!,
   }));
+}
+
+/** Wraps `{ id, crc32, offset }` literals through the shared fixture builder
+ *  and the mandatory sort — the shape every `serializePackRevIndex` caller
+ *  now provides. */
+function sortedIndex(entries: ReadonlyArray<PackIndexEntryLiteral>, digestLength = 20) {
+  return sortPackIndexEntries(packIndexEntriesOf(entries, digestLength));
 }
 
 function expectRefusal(act: () => void, check: RevIndexCheck, reasonContains: string): void {
@@ -469,7 +480,7 @@ describe('rev-index', () => {
           const sut = serializePackRevIndex;
 
           // Act
-          const result = sut(f1Entries(), packChecksum);
+          const result = sut(sortedIndex(f1Entries()), packChecksum);
 
           // Assert
           expect(result.length).toBe(80);
@@ -500,7 +511,7 @@ describe('rev-index', () => {
           const sut = serializePackRevIndex;
 
           // Act
-          const result = sut(order, packChecksum);
+          const result = sut(sortedIndex(order), packChecksum);
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -518,7 +529,7 @@ describe('rev-index', () => {
           const sut = serializePackRevIndex;
 
           // Act
-          const result = sut([], packChecksum);
+          const result = sut(sortedIndex([]), packChecksum);
 
           // Assert
           expect(result.length).toBe(52);
@@ -536,7 +547,7 @@ describe('rev-index', () => {
           const sut = serializePackRevIndex;
 
           // Act
-          const result = sut([entry], packChecksum);
+          const result = sut(sortedIndex([entry]), packChecksum);
 
           // Assert
           expect(result.length).toBe(56);
@@ -560,7 +571,7 @@ describe('rev-index', () => {
           const sut = serializePackRevIndex;
 
           // Act
-          const result = sut(entries, packChecksum);
+          const result = sut(sortedIndex(entries, 32), packChecksum);
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -579,7 +590,11 @@ describe('rev-index', () => {
           const packChecksum = new Uint8Array(0);
 
           // Act & Assert
-          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 0');
+          expectRefusal(
+            () => serializePackRevIndex(sortedIndex(entries), packChecksum),
+            'hash-id',
+            'got 0',
+          );
         });
       });
     });
@@ -592,7 +607,11 @@ describe('rev-index', () => {
           const packChecksum = new Uint8Array(19);
 
           // Act & Assert
-          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 19');
+          expectRefusal(
+            () => serializePackRevIndex(sortedIndex(entries), packChecksum),
+            'hash-id',
+            'got 19',
+          );
         });
       });
     });
@@ -605,7 +624,11 @@ describe('rev-index', () => {
           const packChecksum = new Uint8Array(21);
 
           // Act & Assert
-          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 21');
+          expectRefusal(
+            () => serializePackRevIndex(sortedIndex(entries), packChecksum),
+            'hash-id',
+            'got 21',
+          );
         });
       });
     });
@@ -618,7 +641,11 @@ describe('rev-index', () => {
           const packChecksum = new Uint8Array(33);
 
           // Act & Assert
-          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 33');
+          expectRefusal(
+            () => serializePackRevIndex(sortedIndex(entries), packChecksum),
+            'hash-id',
+            'got 33',
+          );
         });
       });
     });
@@ -637,12 +664,128 @@ describe('rev-index', () => {
           const sut = serializePackRevIndex;
 
           // Act
-          const result = sut(entries, packChecksum);
+          const result = sut(sortedIndex(entries), packChecksum);
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
           const body = [view.getUint32(12), view.getUint32(16), view.getUint32(20)];
           expect(body).toEqual([1, 2, 0]);
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose entries.digestLength disagrees with packChecksum', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }], 20);
+          const packChecksum = new Uint8Array(32);
+
+          // Act & Assert
+          expectRefusal(
+            () => serializePackRevIndex(sorted, packChecksum),
+            'hash-id',
+            'digestLength',
+          );
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose oids slab is shorter than count*digestLength', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }], 20);
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, oids: sorted.entries.oids.subarray(0, 19) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(() => serializePackRevIndex(truncated, packChecksum), 'hash-id', 'oids');
+        });
+
+        it('Then a slab exactly count*digestLength long passes', () => {
+          // Arrange — the equality boundary itself must NOT refuse.
+          const entries = [{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }];
+          const packChecksum = new Uint8Array(20);
+
+          // Act
+          const result = serializePackRevIndex(sortedIndex(entries), packChecksum);
+
+          // Assert
+          expect(result.length).toBeGreaterThan(0);
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose crcValues array is shorter than count', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const sorted = sortedIndex(
+            [
+              { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
+              { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 2 },
+            ],
+            20,
+          );
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, crcValues: sorted.entries.crcValues.subarray(0, 1) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(
+            () => serializePackRevIndex(truncated, packChecksum),
+            'hash-id',
+            'crcValues',
+          );
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose offsets array is shorter than count', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const sorted = sortedIndex(
+            [
+              { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
+              { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 2 },
+            ],
+            20,
+          );
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, offsets: sorted.entries.offsets.subarray(0, 1) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(() => serializePackRevIndex(truncated, packChecksum), 'hash-id', 'offsets');
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose order length disagrees with entries.count', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const sorted = sortedIndex(
+            [
+              { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
+              { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 2 },
+            ],
+            20,
+          );
+          const truncated = { ...sorted, order: sorted.order.subarray(0, 1) };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(() => serializePackRevIndex(truncated, packChecksum), 'hash-id', 'order');
         });
       });
     });

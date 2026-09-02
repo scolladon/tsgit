@@ -12,7 +12,7 @@
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
 import {
-  type PackIndexWriterEntry,
+  type PackIndexEntries,
   parseCruftMtimes,
   sortPackIndexEntries,
 } from '../../../domain/storage/index.js';
@@ -229,7 +229,7 @@ export async function writeCruftPack(
   ctx: Context,
   input: {
     readonly packDir: string;
-    readonly entries: ReadonlyArray<PackIndexWriterEntry>;
+    readonly entries: PackIndexEntries;
     readonly packBytes: Uint8Array;
     readonly packSha: string;
     readonly mtimeOf: (id: ObjectId) => number;
@@ -243,13 +243,7 @@ export async function writeCruftPack(
     promisor: false,
   });
   const sorted = sortPackIndexEntries(input.entries);
-  const mtimesBytes = await buildCruftMtimes(
-    ctx,
-    input.entries,
-    written.packSha,
-    input.mtimeOf,
-    sorted,
-  );
+  const mtimesBytes = await buildCruftMtimes(ctx, sorted, written.packSha, input.mtimeOf);
   await ctx.fs.writeExclusive(cruftMtimesFilePath(input.packDir, written.packSha), mtimesBytes);
   return { packSha: written.packSha };
 }

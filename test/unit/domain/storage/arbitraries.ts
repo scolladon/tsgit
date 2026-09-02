@@ -4,12 +4,12 @@ import { compareBytes, encode, hexToBytes } from '../../../../src/domain/objects
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { DeltaInstruction } from '../../../../src/domain/storage/delta.js';
 import { MAX_COPY_BYTES, serializeDelta } from '../../../../src/domain/storage/delta-encode.js';
-import type { PackIndexWriterEntry } from '../../../../src/domain/storage/pack-writer.js';
 import type {
   BitmapEntrySpec,
   BitmapSpec,
   BitmapStreamSpec,
 } from '../../../fixtures/storage/bitmap-writers.js';
+import type { PackIndexEntryLiteral } from '../../../fixtures/storage/pack-index-entries.js';
 import { arbObjectId } from '../objects/arbitraries.js';
 
 /** The bitmap/EWAH writers live in a `fast-check`-free module so the parity
@@ -468,17 +468,25 @@ export function buildRevIndex(spec: RevIndexSpec): Uint8Array {
  * production writer can never emit). Offsets are unique by construction in
  * every real pack, so a `.rev` round-trip property needs a generator that
  * upholds the same invariant.
+ *
+ * `hexLength` defaults to 40 (SHA-1). A caller that also varies digest width
+ * (e.g. a cruft-pack round-trip decoding oid hex back out of the slab) MUST
+ * pass the matching width — `arbUniqueIndexEntries` in `pack-writer.test.ts`
+ * carries the same knob for the same reason.
  */
-export function arbPackIndexWriterEntries(maxLength: number): fc.Arbitrary<PackIndexWriterEntry[]> {
+export function arbPackIndexWriterEntries(
+  maxLength: number,
+  hexLength: 40 | 64 = 40,
+): fc.Arbitrary<PackIndexEntryLiteral[]> {
   return fc
-    .array(fc.tuple(arbObjectId(40), fc.integer({ min: 0, max: 0xffffffff })), {
+    .array(fc.tuple(arbObjectId(hexLength), fc.integer({ min: 0, max: 0xffffffff })), {
       minLength: 0,
       maxLength,
     })
     .map((tuples) => {
       const seenOid = new Set<string>();
       const seenOffset = new Set<number>();
-      const entries: PackIndexWriterEntry[] = [];
+      const entries: PackIndexEntryLiteral[] = [];
       for (const [id, offset] of tuples) {
         if (seenOid.has(id) || seenOffset.has(offset)) continue;
         seenOid.add(id);

@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { compareBytes, hexToBytes } from '../../../../src/domain/objects/encoding.js';
+import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.js';
 import {
   parsePackRevIndex,
   REV_HEADER_SIZE,
   revIndexPositionAt,
   serializePackRevIndex,
 } from '../../../../src/domain/storage/rev-index.js';
+import { packIndexEntriesOf } from '../../../fixtures/storage/pack-index-entries.js';
 import { arbPackIndexWriterEntries, arbRevIndexSpec, buildRevIndex } from './arbitraries.js';
 
 describe('rev-index properties', () => {
@@ -114,8 +116,9 @@ describe('rev-index properties', () => {
             (entries, digestLength) => {
               const packChecksum = new Uint8Array(digestLength).fill(0xab);
               const objectCount = entries.length;
+              const sorted = sortPackIndexEntries(packIndexEntriesOf(entries, digestLength));
 
-              const bytes = sut(entries, packChecksum);
+              const bytes = sut(sorted, packChecksum);
               const rev = parsePackRevIndex(bytes, digestLength, objectCount);
 
               expect(rev.version).toBe(1);
@@ -160,8 +163,9 @@ describe('rev-index properties', () => {
             fc.constantFrom<20 | 32>(20, 32),
             (entries, digestLength) => {
               const packChecksum = new Uint8Array(digestLength);
+              const sorted = sortPackIndexEntries(packIndexEntriesOf(entries, digestLength));
 
-              const bytes = sut(entries, packChecksum);
+              const bytes = sut(sorted, packChecksum);
 
               expect(bytes.length).toBe(REV_HEADER_SIZE + 4 * entries.length + 2 * digestLength);
             },

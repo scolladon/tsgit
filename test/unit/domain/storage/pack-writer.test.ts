@@ -12,11 +12,16 @@ import {
   parsePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import { lookupPackIndex, parsePackIndex } from '../../../../src/domain/storage/pack-index.js';
+import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.js';
 import {
   type PackWriterEntry,
   serializePackfile,
   serializePackIndex,
 } from '../../../../src/domain/storage/pack-writer.js';
+import {
+  type PackIndexEntryLiteral,
+  packIndexEntriesOf,
+} from '../../../fixtures/storage/pack-index-entries.js';
 import { arbObjectId } from './arbitraries.js';
 
 function makeEntry(type: 1 | 2 | 3 | 4, data: Uint8Array): PackWriterEntry {
@@ -35,7 +40,7 @@ function makeDeltaEntry(baseIndex: number, data: Uint8Array): PackWriterEntry {
 function arbUniqueIndexEntries(
   maxLen: number,
   hexLength: 40 | 64 = 40,
-): fc.Arbitrary<Array<{ id: string; offset: number; crc32: number }>> {
+): fc.Arbitrary<Array<PackIndexEntryLiteral>> {
   return fc
     .array(
       fc.tuple(
@@ -47,7 +52,7 @@ function arbUniqueIndexEntries(
     )
     .map((tuples) => {
       const seen = new Set<string>();
-      const entries: Array<{ id: string; offset: number; crc32: number }> = [];
+      const entries: Array<PackIndexEntryLiteral> = [];
       for (const [id, offset, crc] of tuples) {
         if (!seen.has(id)) {
           seen.add(id);
@@ -56,6 +61,13 @@ function arbUniqueIndexEntries(
       }
       return entries;
     });
+}
+
+/** Wraps `{ id, crc32, offset }` literals through the shared fixture builder
+ *  and the mandatory sort — the shape every `serializePackIndex` caller now
+ *  provides. */
+function sortedIndex(entries: ReadonlyArray<PackIndexEntryLiteral>, digestLength = 20) {
+  return sortPackIndexEntries(packIndexEntriesOf(entries, digestLength));
 }
 
 describe('pack-writer', () => {
@@ -298,7 +310,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const result = serializePackIndex(entries, packChecksum);
+          const result = serializePackIndex(sortedIndex(entries), packChecksum);
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -320,7 +332,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const result = serializePackIndex(entries, packChecksum);
+          const result = serializePackIndex(sortedIndex(entries), packChecksum);
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -384,7 +396,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const serialized = serializePackIndex(entries, packChecksum);
+          const serialized = serializePackIndex(sortedIndex(entries), packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 20);
           withTrailer.set(serialized);
           const idx = parsePackIndex(withTrailer, 20);
@@ -444,7 +456,7 @@ describe('pack-writer', () => {
             const packChecksum = new Uint8Array(20);
 
             // Act
-            const result = serializePackIndex(entries, packChecksum);
+            const result = serializePackIndex(sortedIndex(entries), packChecksum);
 
             // Assert
             expect(result.length).toBe(expectedLength);
@@ -464,7 +476,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const serialized = serializePackIndex(entries, packChecksum);
+          const serialized = serializePackIndex(sortedIndex(entries), packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 20);
           withTrailer.set(serialized);
           const idx = parsePackIndex(withTrailer, 20);
@@ -494,7 +506,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const serialized = serializePackIndex(entries, packChecksum);
+          const serialized = serializePackIndex(sortedIndex(entries), packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 20);
           withTrailer.set(serialized);
           const idx = parsePackIndex(withTrailer, 20);
@@ -514,7 +526,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const result = serializePackIndex(entries, packChecksum);
+          const result = serializePackIndex(sortedIndex(entries), packChecksum);
 
           // Assert — CRC table follows sorted SHA order (aa, bb, cc)
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -536,7 +548,7 @@ describe('pack-writer', () => {
 
           // Act & Assert
           try {
-            serializePackIndex(entries, packChecksum);
+            serializePackIndex(sortedIndex(entries), packChecksum);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -559,7 +571,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(20);
 
           // Act
-          const serialized = serializePackIndex([], packChecksum);
+          const serialized = serializePackIndex(sortedIndex([]), packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 20);
           withTrailer.set(serialized);
 
@@ -583,7 +595,7 @@ describe('pack-writer', () => {
           const n = entries.length;
 
           // Act
-          const result = serializePackIndex(entries, packChecksum);
+          const result = serializePackIndex(sortedIndex(entries, 32), packChecksum);
 
           // Assert
           expect(result.length).toBe(8 + 1024 + n * 32 + n * 4 + n * 4 + 32);
@@ -603,7 +615,7 @@ describe('pack-writer', () => {
           const packChecksum = new Uint8Array(32);
 
           // Act
-          const serialized = serializePackIndex(entries, packChecksum);
+          const serialized = serializePackIndex(sortedIndex(entries, 32), packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 32);
           withTrailer.set(serialized);
           const idx = parsePackIndex(withTrailer, 32);
@@ -625,7 +637,7 @@ describe('pack-writer', () => {
 
           // Act & Assert
           try {
-            serializePackIndex(entries, packChecksum);
+            serializePackIndex(sortedIndex(entries), packChecksum);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -636,6 +648,145 @@ describe('pack-writer', () => {
                 reason: expect.stringContaining('20 or 32'),
               }),
             );
+          }
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose entries.digestLength disagrees with packChecksum', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_INDEX naming the disagreement', () => {
+          // Arrange
+          const sorted = sortedIndex([{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 }], 20);
+          const packChecksum = new Uint8Array(32);
+
+          // Act & Assert
+          try {
+            serializePackIndex(sorted, packChecksum);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+          }
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose oids slab is exactly one byte short of count*digestLength', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_INDEX naming the shortfall', () => {
+          // Arrange
+          const sorted = sortedIndex([{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 }], 20);
+          const shortOids = sorted.entries.oids.subarray(0, sorted.entries.oids.length - 1);
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, oids: shortOids },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          try {
+            serializePackIndex(truncated, packChecksum);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+          }
+        });
+
+        it('Then a slab exactly count*digestLength long passes', () => {
+          // Arrange — the equality boundary itself must NOT refuse.
+          const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 }];
+          const packChecksum = new Uint8Array(20);
+
+          // Act
+          const result = serializePackIndex(sortedIndex(entries), packChecksum);
+
+          // Assert
+          expect(result.length).toBeGreaterThan(0);
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose crcValues array is shorter than count', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_INDEX naming the shortfall', () => {
+          // Arrange
+          const sorted = sortedIndex(
+            [
+              { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
+              { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 20 },
+            ],
+            20,
+          );
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, crcValues: sorted.entries.crcValues.subarray(0, 1) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          try {
+            serializePackIndex(truncated, packChecksum);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+          }
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose offsets array is shorter than count', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_INDEX naming the shortfall', () => {
+          // Arrange
+          const sorted = sortedIndex(
+            [
+              { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
+              { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 20 },
+            ],
+            20,
+          );
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, offsets: sorted.entries.offsets.subarray(0, 1) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          try {
+            serializePackIndex(truncated, packChecksum);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+          }
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose order length disagrees with entries.count', () => {
+      describe('When serializing', () => {
+        it('Then throws INVALID_PACK_INDEX naming the disagreement', () => {
+          // Arrange
+          const sorted = sortedIndex(
+            [
+              { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
+              { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 20 },
+            ],
+            20,
+          );
+          const truncated = { ...sorted, order: sorted.order.subarray(0, 1) };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          try {
+            serializePackIndex(truncated, packChecksum);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
           }
         });
       });
@@ -677,7 +828,10 @@ describe('pack-writer', () => {
               ({ digestLength, entries }) => {
                 fc.pre(entries.length > 0);
                 const packChecksum = new Uint8Array(digestLength);
-                const serialized = serializePackIndex(entries, packChecksum);
+                const serialized = serializePackIndex(
+                  sortedIndex(entries, digestLength),
+                  packChecksum,
+                );
                 const withTrailer = new Uint8Array(serialized.length + digestLength);
                 withTrailer.set(serialized);
                 const idx = parsePackIndex(withTrailer, digestLength);

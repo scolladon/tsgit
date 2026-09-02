@@ -78,12 +78,15 @@ export {
   offsetAtPackPosition,
   parsePackIndex,
 } from './pack-index.js';
-export { type SortedEntry, sortPackIndexEntries } from './pack-order.js';
+export {
+  type PackIndexEntries,
+  type SortedPackIndex,
+  sortPackIndexEntries,
+} from './pack-order.js';
 // Pack writer
 export type {
   PackEntryMeta,
   PackfileResult,
-  PackIndexWriterEntry,
   PackWriterBaseEntry,
   PackWriterDeltaEntry,
   PackWriterEntry,

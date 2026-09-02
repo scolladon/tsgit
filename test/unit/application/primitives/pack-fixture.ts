@@ -21,9 +21,11 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import { parsePackIndex } from '../../../../src/domain/storage/pack-index.js';
+import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.js';
 import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
 import { REV_HEADER_SIZE } from '../../../../src/domain/storage/rev-index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { packIndexEntriesOf } from '../../../fixtures/storage/pack-index-entries.js';
 
 export interface BaseEntrySpec {
   readonly kind: 'base';
@@ -149,7 +151,10 @@ export async function buildSyntheticPack(
     crc32: crc32Values[i]!,
     offset: offsets[i]!,
   }));
-  const idxFromWriter = serializePackIndex(idxEntries, packChecksum);
+  const idxFromWriter = serializePackIndex(
+    sortPackIndexEntries(packIndexEntriesOf(idxEntries, packChecksum.length)),
+    packChecksum,
+  );
   // parsePackIndex expects a 40-byte trailer (pack-checksum + idx-checksum) but
   // serializePackIndex currently emits only 20. Pad the idx with a computed
   // idx-checksum so the parser accepts the file.

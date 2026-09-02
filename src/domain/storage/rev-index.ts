@@ -10,8 +10,7 @@
  *   format:  pack-rev-index-v1
  */
 import { invalidPackRevIndex } from './error.js';
-import { type SortedEntry, sortPackIndexEntries } from './pack-order.js';
-import type { PackIndexWriterEntry } from './pack-writer.js';
+import type { SortedPackIndex } from './pack-order.js';
 
 const REV_MAGIC = 0x52494458; // 'RIDX'
 
@@ -97,8 +96,52 @@ export function parsePackRevIndex(
 }
 
 /**
- * Serializes a pack reverse index from writer entries and a verified pack
- * checksum — the same `PackIndexWriterEntry` pair `serializePackIndex`
+ * Structural shape guards for a `.rev` write's `SortedPackIndex` input,
+ * factored out purely to keep `serializePackRevIndex`'s own cognitive
+ * complexity under the repo's ceiling — every branch here is still its own
+ * coverage-gated test.
+ */
+function assertValidSortedPackIndex(sorted: SortedPackIndex, digestLength: number): void {
+  if (digestLength !== 20 && digestLength !== 32) {
+    throw invalidPackRevIndex(
+      'hash-id',
+      `packChecksum must be 20 or 32 bytes, got ${digestLength}`,
+    );
+  }
+  const { entries, order } = sorted;
+  const { count, oids, crcValues, offsets } = entries;
+  if (entries.digestLength !== digestLength) {
+    throw invalidPackRevIndex(
+      'hash-id',
+      `entries digestLength ${entries.digestLength} does not match packChecksum length ${digestLength}`,
+    );
+  }
+  if (oids.length < count * digestLength) {
+    throw invalidPackRevIndex(
+      'hash-id',
+      `oids too short: need ${count * digestLength}, got ${oids.length}`,
+    );
+  }
+  if (crcValues.length < count) {
+    throw invalidPackRevIndex(
+      'hash-id',
+      `crcValues too short: need ${count}, got ${crcValues.length}`,
+    );
+  }
+  if (offsets.length < count) {
+    throw invalidPackRevIndex('hash-id', `offsets too short: need ${count}, got ${offsets.length}`);
+  }
+  if (order.length !== count) {
+    throw invalidPackRevIndex(
+      'hash-id',
+      `order length ${order.length} does not match entries count ${count}`,
+    );
+  }
+}
+
+/**
+ * Serializes a pack reverse index from a pre-sorted oid slab and a verified
+ * pack checksum — the same `PackIndexEntries` slab `serializePackIndex`
  * consumes, so the two artefacts cannot disagree about the entry set.
  *
  * `packChecksum`'s width picks `hashId` (SHA-1 ⇒ 1, SHA-256 ⇒ 2). An
@@ -110,23 +153,16 @@ export function parsePackRevIndex(
  * hash; the caller fills them in place over the returned buffer.
  */
 export function serializePackRevIndex(
-  entries: ReadonlyArray<PackIndexWriterEntry>,
+  sorted: SortedPackIndex,
   packChecksum: Uint8Array,
-  presorted?: ReadonlyArray<SortedEntry>,
 ): Uint8Array {
   const digestLength = packChecksum.length;
-  if (digestLength !== 20 && digestLength !== 32) {
-    throw invalidPackRevIndex(
-      'hash-id',
-      `packChecksum must be 20 or 32 bytes, got ${digestLength}`,
-    );
-  }
+  assertValidSortedPackIndex(sorted, digestLength);
 
+  const { count } = sorted.entries;
   const hashId = digestLength === 32 ? 2 : 1;
-  const objectCount = entries.length;
-  // `presorted` MUST be `sortPackIndexEntries(entries)` — the sibling `.idx`
-  // writer's caller passes it so the oid sort runs once per pack write.
-  const body = packPositionsByOffset(presorted ?? sortPackIndexEntries(entries));
+  const objectCount = count;
+  const body = packPositionsByOffset(sorted);
 
   const bytes = new Uint8Array(REV_HEADER_SIZE + 4 * objectCount + 2 * digestLength);
   const view = new DataView(bytes.buffer);
@@ -149,18 +185,20 @@ export function serializePackRevIndex(
  * construction (each pack entry begins where the previous one ends), so tie
  * behaviour is undefined because ties cannot occur.
  */
-function packPositionsByOffset(byOid: ReadonlyArray<SortedEntry>): Uint32Array {
-  const positions = new Uint32Array(byOid.length);
-  // Offsets flattened into a typed array so the sort comparator does two
-  // array loads instead of two property-chain dereferences per comparison
+function packPositionsByOffset(sorted: SortedPackIndex): Uint32Array {
+  const { entries, order } = sorted;
+  const count = entries.count;
+  const positions = new Uint32Array(count);
+  // Offsets flattened into a typed array so the sort comparator does one
+  // array load instead of two (`entries.offsets[order[i]]`) per comparison
   // (measured 2x on 500k-entry packs). Float64 covers the full safe-integer
   // offset range where Uint32 would truncate >4 GiB packs.
-  const offsets = new Float64Array(byOid.length);
-  for (let indexPosition = 0; indexPosition < positions.length; indexPosition += 1) {
+  const offsetsByPosition = new Float64Array(count);
+  for (let indexPosition = 0; indexPosition < count; indexPosition += 1) {
     positions[indexPosition] = indexPosition;
-    offsets[indexPosition] = byOid[indexPosition]!.entry.offset;
+    offsetsByPosition[indexPosition] = entries.offsets[order[indexPosition]!]!;
   }
-  positions.sort((a, b) => offsets[a]! - offsets[b]!);
+  positions.sort((a, b) => offsetsByPosition[a]! - offsetsByPosition[b]!);
   return positions;
 }
 

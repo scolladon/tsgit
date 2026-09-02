@@ -26,10 +26,12 @@ import {
   PACK_ENTRY_TYPE,
   serializePackfile,
   serializePackIndex,
+  sortPackIndexEntries,
 } from '../../../src/domain/storage/index.ts';
 import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import type { Repository } from '../../../src/repository.ts';
 import { type BitmapEntrySpec, buildBitmap } from '../../fixtures/storage/bitmap-writers.ts';
+import { packIndexEntriesOf } from '../../fixtures/storage/pack-index-entries.ts';
 import { AUTHOR, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 
@@ -155,7 +157,10 @@ async function buildAndPackChain(repo: Repository): Promise<PackedChain> {
     crc32: entries[i]?.crc32 ?? 0,
     offset: entries[i]?.offset ?? 0,
   }));
-  const idxBody = serializePackIndex(idxEntries, trailer);
+  const idxBody = serializePackIndex(
+    sortPackIndexEntries(packIndexEntriesOf(idxEntries, trailer.length)),
+    trailer,
+  );
   const idxBytes = concatBytes(idxBody, hexToBytes(await repo.ctx.hash.hashHex(idxBody)));
 
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${PACK_NAME}`;

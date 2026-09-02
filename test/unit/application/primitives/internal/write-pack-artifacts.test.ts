@@ -9,21 +9,43 @@ import {
   buildRev,
   writePackArtifacts,
   writePackArtifactsViaQuarantine,
+  writePackSiblingArtifacts,
 } from '../../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
-import type { PackIndexWriterEntry } from '../../../../../src/domain/storage/index.js';
-import { parsePackIndex, parsePackRevIndex } from '../../../../../src/domain/storage/index.js';
+import type { PackIndexEntries } from '../../../../../src/domain/storage/index.js';
+import {
+  parsePackIndex,
+  parsePackRevIndex,
+  sortPackIndexEntries,
+} from '../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { packIndexEntriesOf } from '../../../../fixtures/storage/pack-index-entries.js';
 
 const PACK_SHA = 'f'.repeat(40);
 const PACK_BYTES = new TextEncoder().encode('fake-pack-bytes');
 
-const buildEntries = (count: number): PackIndexWriterEntry[] =>
-  Array.from({ length: count }, (_, i) => ({
-    id: (i + 1).toString(16).padStart(40, '0'),
-    crc32: i + 1,
-    offset: 12 + i * 20,
-  }));
+const buildEntries = (count: number): PackIndexEntries =>
+  packIndexEntriesOf(
+    Array.from({ length: count }, (_, i) => ({
+      id: (i + 1).toString(16).padStart(40, '0'),
+      crc32: i + 1,
+      offset: 12 + i * 20,
+    })),
+    20,
+  );
+
+/** Returns a `PackIndexEntries` whose backing arrays are deliberately longer
+ *  than `count` — the over-allocated-producer shape `count`, not `.length`,
+ *  must be read against. */
+const overAllocated = (base: PackIndexEntries, extraCapacity: number): PackIndexEntries => {
+  const oids = new Uint8Array(base.oids.length + extraCapacity * base.digestLength);
+  const crcValues = new Int32Array(base.crcValues.length + extraCapacity);
+  const offsets = new Float64Array(base.offsets.length + extraCapacity);
+  oids.set(base.oids);
+  crcValues.set(base.crcValues);
+  offsets.set(base.offsets);
+  return { count: base.count, digestLength: base.digestLength, oids, crcValues, offsets };
+};
 
 const packDirOf = (ctx: Context): string => `${ctx.layout.gitDir}/objects/pack`;
 
@@ -44,17 +66,18 @@ describe('buildRev', () => {
         // Arrange
         const ctx = createMemoryContext();
         const entries = buildEntries(4);
+        const sorted = sortPackIndexEntries(entries);
         const sut = buildRev;
 
         // Act
-        const revBytes = await sut(ctx, entries, PACK_SHA);
+        const revBytes = await sut(ctx, sorted, PACK_SHA);
 
         // Assert
         const trailerStart = revBytes.length - ctx.hash.digestLength;
         const expectedDigest = await ctx.hash.hash(revBytes.subarray(0, trailerStart));
         expect(revBytes.subarray(trailerStart)).toEqual(expectedDigest);
         expect(() =>
-          parsePackRevIndex(revBytes, ctx.hash.digestLength, entries.length),
+          parsePackRevIndex(revBytes, ctx.hash.digestLength, entries.count),
         ).not.toThrow();
       });
 
@@ -62,16 +85,17 @@ describe('buildRev', () => {
         // Arrange
         const ctx = createMemoryContext();
         const entries = buildEntries(4);
+        const sorted = sortPackIndexEntries(entries);
         const sut = buildRev;
 
         // Act
-        const revBytes = await sut(ctx, entries, PACK_SHA);
+        const revBytes = await sut(ctx, sorted, PACK_SHA);
 
         // Assert
-        const idxBytes = await buildIdx(ctx, entries, PACK_SHA);
+        const idxBytes = await buildIdx(ctx, sorted, PACK_SHA);
         const expected = packPositionMap(parsePackIndex(idxBytes, 20));
-        const parsedRev = parsePackRevIndex(revBytes, ctx.hash.digestLength, entries.length);
-        const actual = revIndexPositions(parsedRev, entries.length);
+        const parsedRev = parsePackRevIndex(revBytes, ctx.hash.digestLength, entries.count);
+        const actual = revIndexPositions(parsedRev, entries.count);
         expect(actual).toEqual(expected);
       });
     });
@@ -131,7 +155,7 @@ describe('writePackArtifacts', () => {
         expect(entryNames.some((name) => name.endsWith('.rev'))).toBe(false);
         expect(await ctx.fs.read(`${dir}/pack-${PACK_SHA}.pack`)).toEqual(PACK_BYTES);
         expect(await ctx.fs.read(`${dir}/pack-${PACK_SHA}.idx`)).toEqual(
-          await buildIdx(ctx, entries, PACK_SHA),
+          await buildIdx(ctx, sortPackIndexEntries(entries), PACK_SHA),
         );
       });
     });
@@ -334,7 +358,7 @@ describe('writePackArtifacts', () => {
         await sut(ctx, {
           packDir: dir,
           packBytes: PACK_BYTES,
-          entries: [],
+          entries: buildEntries(0),
           packSha: PACK_SHA,
           promisor: false,
         });
@@ -675,6 +699,58 @@ describe('writePackArtifactsViaQuarantine', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.rev`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given entries whose backing arrays are longer than count', () => {
+    describe('When writePackArtifactsViaQuarantine runs', () => {
+      it('Then objectCount reflects count, not the over-allocated array length', async () => {
+        // Arrange — on a `buildPack`-produced slab, count and the arrays'
+        // `.length` are equal, so nothing catches a `.length` regression
+        // without an over-allocated fixture like this one.
+        const ctx = createMemoryContext();
+        const entries = overAllocated(buildEntries(2), 5);
+        const dir = packDirOf(ctx);
+        const sut = writePackArtifactsViaQuarantine;
+
+        // Act
+        const written = await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: false,
+        });
+
+        // Assert
+        expect(written.objectCount).toBe(2);
+      });
+    });
+  });
+});
+
+describe('writePackSiblingArtifacts', () => {
+  describe('Given entries whose backing arrays are longer than count', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then objectCount reflects count, not the over-allocated array length', async () => {
+        // Arrange — same over-allocation hazard as writePackArtifactsViaQuarantine,
+        // at writeSiblingsGiven's own `objectCount:` line.
+        const ctx = createMemoryContext();
+        const entries = overAllocated(buildEntries(3), 4);
+        const dir = packDirOf(ctx);
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        const written = await sut(ctx, {
+          packDir: dir,
+          entries,
+          packSha: PACK_SHA,
+          promisor: false,
+        });
+
+        // Assert
+        expect(written.objectCount).toBe(3);
       });
     });
   });

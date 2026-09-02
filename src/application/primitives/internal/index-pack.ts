@@ -8,6 +8,7 @@
  * changes here.
  */
 import { TsgitError } from '../../../domain/error.js';
+import { hexToBytes } from '../../../domain/objects/encoding.js';
 import type { ObjectId } from '../../../domain/objects/object-id.js';
 import {
   applyDelta,
@@ -18,6 +19,7 @@ import {
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
   type PackHeader,
+  type PackIndexEntries,
   parsePackEntryHeader,
   parsePackHeader,
 } from '../../../domain/storage/index.js';
@@ -60,14 +62,39 @@ export const indexQuarantinedPack = async (
   tmpPath: string,
   totalBytes: number,
   onFailure: (path: string) => Promise<void>,
-): Promise<ReadonlyArray<WalkedEntry>> => {
+): Promise<PackIndexEntries> => {
   try {
     const pending = await inflateAllEntries(ctx, diskPackByteSource(ctx, tmpPath, totalBytes));
-    return await walkFromPending(ctx, pending);
+    const walked = await walkFromPending(ctx, pending);
+    return slabFromWalkedEntries(walked, ctx.hash.digestLength);
   } catch (err) {
     await onFailure(tmpPath);
     throw err;
   }
+};
+
+/**
+ * Interim: the two-pass indexer this walk shares with `walkPackEntries` does
+ * not fill a `PackIndexEntries` slab natively yet, so the resolved
+ * `WalkedEntry` set is re-encoded into one here. Module-private on purpose —
+ * never exported, barrelled or moved into the domain layer — and deleted
+ * once the two passes fill the slab directly.
+ */
+const slabFromWalkedEntries = (
+  entries: ReadonlyArray<WalkedEntry>,
+  digestLength: number,
+): PackIndexEntries => {
+  const count = entries.length;
+  const oids = new Uint8Array(count * digestLength);
+  const crcValues = new Int32Array(count);
+  const offsets = new Float64Array(count);
+  for (let i = 0; i < count; i += 1) {
+    const entry = entries[i]!;
+    oids.set(hexToBytes(entry.id), i * digestLength);
+    crcValues[i] = entry.crc32;
+    offsets[i] = entry.offset;
+  }
+  return { count, digestLength, oids, crcValues, offsets };
 };
 
 interface WalkedEntry {

@@ -147,7 +147,7 @@ const materializePack = async (
   // A verified pack can legitimately carry zero entries (e.g. the negotiated
   // response round-tripped a pack rather than a zero-byte body). Suppress
   // promoting it, same as the zero-byte-body guard above.
-  if (entries.length === 0) {
+  if (entries.count === 0) {
     await cleanupQuarantine(ctx, receipt.tmpPath);
     return emptyPackResult(download.shallow, download.unshallow);
   }

@@ -10,12 +10,12 @@
  * is self-contained: no REF_DELTA references and no thin-pack assumption —
  * every delta's base precedes it in the same pack.
  */
-import { bytesToHex } from '../../domain/objects/encoding.js';
+import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
 import { type GitObject, type ObjectId, serializeObject } from '../../domain/objects/index.js';
 import { resolveDeltaPolicy } from '../../domain/storage/delta-policy.js';
 import {
   objectTypeToPackEntryType,
-  type PackIndexWriterEntry,
+  type PackIndexEntries,
   type PackWriterBaseEntry,
   type PackWriterEntry,
   serializePackfile,
@@ -36,10 +36,10 @@ export interface BuildPackResult {
   /** Hex SHA of the pack body, also the trailer (last 20 bytes). */
   readonly sha: string;
   readonly objectCount: number;
-  /** One `{ id, crc32, offset }` triple per object, in EMISSION order. Each
-   *  meta carries its own identity, so a caller keys on `id` and can never
-   *  pair a checksum with the wrong object. */
-  readonly entries: ReadonlyArray<PackIndexWriterEntry>;
+  /** The pack's oid/crc32/offset slab, in EMISSION order — the native
+   *  `PackIndexEntries` shape every `.idx`/`.rev`/cruft serializer consumes
+   *  directly, with no intermediate hex-bearing array on the write path. */
+  readonly entries: PackIndexEntries;
 }
 
 interface WriterPlan {
@@ -55,7 +55,20 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
   const bytes = new Uint8Array(packfile.data.length + trailerBytes.length);
   bytes.set(packfile.data, 0);
   bytes.set(trailerBytes, packfile.data.length);
-  const entries = plan.ids.map((id, i) => ({ id, ...packfile.entries[i]! }));
+
+  const digestLength = ctx.hash.digestLength;
+  const count = plan.ids.length;
+  const oids = new Uint8Array(count * digestLength);
+  const crcValues = new Int32Array(count);
+  const offsets = new Float64Array(count);
+  for (let i = 0; i < count; i += 1) {
+    oids.set(hexToBytes(plan.ids[i]!), i * digestLength);
+    const meta = packfile.entries[i]!;
+    crcValues[i] = meta.crc32;
+    offsets[i] = meta.offset;
+  }
+  const entries: PackIndexEntries = { count, digestLength, oids, crcValues, offsets };
+
   return { bytes, sha, objectCount: plan.entries.length, entries };
 };
 

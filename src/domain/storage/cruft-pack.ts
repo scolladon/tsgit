@@ -15,45 +15,83 @@
  *   kind:    byte-identical
  *   format:  cruft-mtimes-v1
  */
-import { bytesEqual } from '../objects/encoding.js';
+import { bytesEqual, bytesToHex } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/object-id.js';
 import { invalidCruftMtimes } from './error.js';
-import { type SortedEntry, sortPackIndexEntries } from './pack-order.js';
-import type { PackIndexWriterEntry } from './pack-writer.js';
+import type { SortedPackIndex } from './pack-order.js';
 
 export const CRUFT_MTIMES_MAGIC = 0x4d544d45; // 'MTME' — the final byte is 0x45/'E', not 0x53/'S'
 const CRUFT_HEADER_SIZE = 12;
 
 /**
- * Serializes a cruft pack's `.mtimes` sidecar from writer entries, the
- * verified pack checksum and an mtime lookup — the same
- * `PackIndexWriterEntry` set `serializePackIndex` consumes for the sibling
- * `.idx`, so the two artefacts cannot disagree about the entry set.
+ * Structural shape guards for a `.mtimes` write's `SortedPackIndex` input,
+ * factored out purely to keep `serializeCruftMtimes`'s own cognitive
+ * complexity under the repo's ceiling — every branch here is still its own
+ * coverage-gated test.
+ */
+function assertValidSortedPackIndex(sorted: SortedPackIndex, digestLength: number): void {
+  if (digestLength !== 20 && digestLength !== 32) {
+    throw invalidCruftMtimes('hash-id', `packChecksum must be 20 or 32 bytes, got ${digestLength}`);
+  }
+  const { entries, order } = sorted;
+  const { count, oids, crcValues, offsets } = entries;
+  if (entries.digestLength !== digestLength) {
+    throw invalidCruftMtimes(
+      'hash-id',
+      `entries digestLength ${entries.digestLength} does not match packChecksum length ${digestLength}`,
+    );
+  }
+  if (oids.length < count * digestLength) {
+    throw invalidCruftMtimes(
+      'hash-id',
+      `oids too short: need ${count * digestLength}, got ${oids.length}`,
+    );
+  }
+  if (crcValues.length < count) {
+    throw invalidCruftMtimes(
+      'hash-id',
+      `crcValues too short: need ${count}, got ${crcValues.length}`,
+    );
+  }
+  if (offsets.length < count) {
+    throw invalidCruftMtimes('hash-id', `offsets too short: need ${count}, got ${offsets.length}`);
+  }
+  if (order.length !== count) {
+    throw invalidCruftMtimes(
+      'hash-id',
+      `order length ${order.length} does not match entries count ${count}`,
+    );
+  }
+}
+
+/**
+ * Serializes a cruft pack's `.mtimes` sidecar from a pre-sorted oid slab, the
+ * verified pack checksum and an mtime lookup — the same `PackIndexEntries`
+ * slab `serializePackIndex` consumes for the sibling `.idx`, so the two
+ * artefacts cannot disagree about the entry set.
  *
  * The body is written directly at `.idx` position (oid-ascending) — there
  * is no permutation step here, unlike `serializePackRevIndex`'s pack-offset
- * reordering: index position IS body position.
+ * reordering: index position IS body position. Each oid's hex is decoded
+ * transiently, per index position, inside the write loop — never retained
+ * across positions the way a writer-entry array used to.
  *
  * The trailer's digestLength bytes are left zero — this function does not
  * hash; the caller fills them in place over the returned buffer, mirroring
  * `buildRev`.
  */
 export function serializeCruftMtimes(
-  entries: ReadonlyArray<PackIndexWriterEntry>,
+  sorted: SortedPackIndex,
   packChecksum: Uint8Array,
   mtimeOf: (oid: ObjectId) => number,
-  presorted?: ReadonlyArray<SortedEntry>,
 ): Uint8Array {
   const digestLength = packChecksum.length;
-  if (digestLength !== 20 && digestLength !== 32) {
-    throw invalidCruftMtimes('hash-id', `packChecksum must be 20 or 32 bytes, got ${digestLength}`);
-  }
+  assertValidSortedPackIndex(sorted, digestLength);
 
+  const { entries, order } = sorted;
+  const { oids } = entries;
   const hashId = digestLength === 32 ? 2 : 1;
-  const objectCount = entries.length;
-  // `.idx` position order — oid-ascending. This IS the body index; nothing
-  // here is reordered by pack offset the way `.rev`'s body is.
-  const mtimesByIndexPosition = presorted ?? sortPackIndexEntries(entries);
+  const objectCount = entries.count;
 
   const bytes = new Uint8Array(CRUFT_HEADER_SIZE + 4 * objectCount + 2 * digestLength);
   const view = new DataView(bytes.buffer);
@@ -61,9 +99,13 @@ export function serializeCruftMtimes(
   view.setUint32(0, CRUFT_MTIMES_MAGIC);
   view.setUint32(4, 1);
   view.setUint32(8, hashId);
-  mtimesByIndexPosition.forEach((sorted, indexPosition) => {
-    view.setUint32(CRUFT_HEADER_SIZE + indexPosition * 4, mtimeOf(sorted.entry.id as ObjectId));
-  });
+  // `.idx` position order — oid-ascending. This IS the body index; nothing
+  // here is reordered by pack offset the way `.rev`'s body is.
+  for (let p = 0; p < objectCount; p += 1) {
+    const k = order[p]!;
+    const oidHex = bytesToHex(oids.subarray(k * digestLength, (k + 1) * digestLength));
+    view.setUint32(CRUFT_HEADER_SIZE + p * 4, mtimeOf(oidHex as ObjectId));
+  }
   bytes.set(packChecksum, CRUFT_HEADER_SIZE + 4 * objectCount);
 
   return bytes;

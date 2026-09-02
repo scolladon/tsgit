@@ -24,9 +24,11 @@ import {
   PACK_ENTRY_TYPE,
   serializePackfile,
   serializePackIndex,
+  sortPackIndexEntries,
 } from '../../../src/domain/storage/index.ts';
 import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import type { Repository } from '../../../src/repository.ts';
+import { packIndexEntriesOf } from '../../fixtures/storage/pack-index-entries.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import { writeScenarioPackPair } from './pack-pair.ts';
 import type { Scenario } from './types.ts';
@@ -84,7 +86,12 @@ async function writeCorruptEntryPack(repo: Repository, name: string): Promise<Ob
 
   const trailer = await repo.ctx.hash.hash(data);
   const packBytes = concatBytes(data, trailer);
-  const idxBody = serializePackIndex([{ id, crc32: entry.crc32, offset: entry.offset }], trailer);
+  const idxBody = serializePackIndex(
+    sortPackIndexEntries(
+      packIndexEntriesOf([{ id, crc32: entry.crc32, offset: entry.offset }], trailer.length),
+    ),
+    trailer,
+  );
   const idxBytes = concatBytes(idxBody, hexToBytes(await repo.ctx.hash.hashHex(idxBody)));
 
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${name}`;
