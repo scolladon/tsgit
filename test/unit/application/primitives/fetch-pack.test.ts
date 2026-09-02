@@ -10,7 +10,6 @@ import {
   DISK_WALK_WINDOW_BYTES,
   type ExternalBaseResolver,
   INDEX_PASS_BASE_CACHE_MAX_BYTES,
-  INDEX_PASS_BASE_CACHE_MAX_ENTRIES,
   type IndexPackOptions,
   indexQuarantinedPack,
   walkPackEntries,
@@ -3641,7 +3640,8 @@ describe('index pass base cache — invariants', () => {
       // entries' own per-entry overhead alone would exceed it, conflating
       // the two guards).
       const ENTRY_CAP_OVERFLOW = 2;
-      const pairCount = INDEX_PASS_BASE_CACHE_MAX_ENTRIES + ENTRY_CAP_OVERFLOW;
+      const FORCED_ENTRY_CAP = 4;
+      const pairCount = FORCED_ENTRY_CAP + ENTRY_CAP_OVERFLOW;
       const GENEROUS_BYTE_BUDGET = 64 * 1024 * 1024;
       const ctx = createMemoryContext();
       const entries: EntrySpec[] = [];
@@ -3659,7 +3659,10 @@ describe('index pass base cache — invariants', () => {
         ...ctx,
         compressor: { ...ctx.compressor, streamInflate: streamInflateSpy },
       };
-      const options: IndexPackOptions = { baseCacheMaxBytes: GENEROUS_BYTE_BUDGET };
+      const options: IndexPackOptions = {
+        baseCacheMaxBytes: GENEROUS_BYTE_BUDGET,
+        baseCacheMaxEntries: FORCED_ENTRY_CAP,
+      };
 
       // Act
       await walkPackEntries(spyCtx, built.packBytes, undefined, options);
@@ -3671,7 +3674,7 @@ describe('index pass base cache — invariants', () => {
       // fewer misses would mean the entry cap let the pack overflow it.
       const expectedCalls = 3 * pairCount + ENTRY_CAP_OVERFLOW;
       expect(streamInflateSpy).toHaveBeenCalledTimes(expectedCalls);
-    }, 60_000);
+    });
   });
 
   describe('Given a zero-length base entry with one child, When the child is resolved through the base cache', () => {

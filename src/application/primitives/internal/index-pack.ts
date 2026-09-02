@@ -40,11 +40,15 @@ export { DISK_WALK_WINDOW_BYTES };
 
 /** Threaded through `walkPackEntries`/`indexQuarantinedPack` so a caller —
  *  chiefly this module's own R15 sweep — can force the base cache's budget,
- *  down to disabling it entirely (`0`). `fetchPack` deliberately gains no
- *  such parameter of its own: the receive path always runs at
- *  {@link INDEX_PASS_BASE_CACHE_MAX_BYTES}. */
+ *  down to disabling it entirely (`0`). `baseCacheMaxEntries` overrides the
+ *  entry cap on the same seam, so the count guard can be exercised without a
+ *  pack carrying {@link INDEX_PASS_BASE_CACHE_MAX_ENTRIES} roots. `fetchPack`
+ *  deliberately gains no such parameter of its own: the receive path always
+ *  runs at {@link INDEX_PASS_BASE_CACHE_MAX_BYTES} and
+ *  {@link INDEX_PASS_BASE_CACHE_MAX_ENTRIES}. */
 export interface IndexPackOptions {
   readonly baseCacheMaxBytes?: number;
+  readonly baseCacheMaxEntries?: number;
 }
 
 /**
@@ -198,11 +202,11 @@ interface BaseCacheSlot {
 
 const baseCacheSlots = new WeakMap<Context['session'], BaseCacheSlot>();
 
-const baseCacheSlotFor = (ctx: Context, maxBytes: number): BaseCacheSlot => {
+const baseCacheSlotFor = (ctx: Context, maxBytes: number, maxEntries: number): BaseCacheSlot => {
   const existing = baseCacheSlots.get(ctx.session);
   if (existing !== undefined) return existing;
   const created: BaseCacheSlot = {
-    cache: createLruCache<CachedBase>(maxBytes, INDEX_PASS_BASE_CACHE_MAX_ENTRIES),
+    cache: createLruCache<CachedBase>(maxBytes, maxEntries),
     passId: 0,
   };
   baseCacheSlots.set(ctx.session, created);
@@ -545,7 +549,11 @@ const indexPackEntries = async <TCrcContext>(
   externalBaseResolver?: ExternalBaseResolver,
   options?: IndexPackOptions,
 ): Promise<PackIndexEntries> => {
-  const slot = baseCacheSlotFor(ctx, options?.baseCacheMaxBytes ?? INDEX_PASS_BASE_CACHE_MAX_BYTES);
+  const slot = baseCacheSlotFor(
+    ctx,
+    options?.baseCacheMaxBytes ?? INDEX_PASS_BASE_CACHE_MAX_BYTES,
+    options?.baseCacheMaxEntries ?? INDEX_PASS_BASE_CACHE_MAX_ENTRIES,
+  );
   const passId = slot.passId;
   slot.passId += 1;
   try {
