@@ -47,6 +47,28 @@ import { recordingProgress, withProgress } from '../commands/fixtures.js';
 import { INDEX_PASS_CORPUS } from './index-pass-corpus.js';
 import { buildSyntheticPack, type EntrySpec } from './pack-fixture.js';
 
+// Wraps `createPackRecordStore` in a call-through spy so a test can recover
+// the exact `PackRecordStore` a `fetchPack` call built — the only way to
+// observe its internal, ordinal-indexed `offsets` array, since the .idx and
+// .rev writers both re-derive their own orderings from VALUES (oid-sort,
+// offset-sort) and are therefore blind to the order the producer originally
+// populated its arrays in. Every other test in this file is unaffected: the
+// spy calls straight through to the real implementation.
+vi.mock(
+  '../../../../src/application/primitives/internal/pack-records.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../../src/application/primitives/internal/pack-records.js')
+      >();
+    return { ...actual, createPackRecordStore: vi.fn(actual.createPackRecordStore) };
+  },
+);
+const packRecordsModule = await import(
+  '../../../../src/application/primitives/internal/pack-records.js'
+);
+const createPackRecordStoreSpy = vi.mocked(packRecordsModule.createPackRecordStore);
+
 const ENCODER = new TextEncoder();
 const REMOTE_URL = 'https://remote.example/r.git';
 const UPLOAD_PACK_URL = `${REMOTE_URL}/git-upload-pack`;
@@ -2887,6 +2909,59 @@ describe('index pass equivalence', () => {
           },
           corpusCase.name === 'ofs-chain-depth-1000' ? OFS_CHAIN_1000_TIMEOUT_MS : undefined,
         );
+      });
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// index pass equivalence — the record store's offsets stay strictly
+// ascending even when resolution order does not match offset order.
+// `resolveAllEntries` returns entries in resolution-round order, not offset
+// order; the sort ahead of the record store is what upholds the store's
+// documented strictly-ascending-`offsets` invariant, so it is no longer an
+// unobservable no-op.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('index pass equivalence — record-store offset ordering', () => {
+  const RESOLUTION_ORDER_CASES = ['ref-delta-before-base', 'branching-forest'] as const;
+
+  for (const caseName of RESOLUTION_ORDER_CASES) {
+    const corpusCase = INDEX_PASS_CORPUS.find((c) => c.name === caseName);
+    if (corpusCase === undefined) {
+      throw new Error(`corpus case "${caseName}" not found`);
+    }
+
+    describe(`Given the "${caseName}" corpus case, whose resolution order differs from its offset order`, () => {
+      describe('When fetchPack indexes the quarantined pack from disk', () => {
+        it('Then the handed-over PackIndexEntries.offsets is strictly ascending', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const entries = await corpusCase.entries(ctx);
+          const built = await buildSyntheticPack(ctx, entries);
+          const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+          const { transport } = captureRequests(body);
+          createPackRecordStoreSpy.mockClear();
+
+          // Act
+          await fetchPack(ctx, toNegotiator(transport), {
+            wants: [(built.ids[0] ?? 'a'.repeat(40)) as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k', 'ofs-delta'],
+            progressOp: 'test:write-objects',
+          });
+
+          // Assert
+          expect(createPackRecordStoreSpy).toHaveBeenCalledTimes(1);
+          const store = createPackRecordStoreSpy.mock.results[0]?.value as ReturnType<
+            typeof packRecordsModule.createPackRecordStore
+          >;
+          const view = store.view();
+          expect(view.count).toBeGreaterThan(1);
+          for (let i = 1; i < view.count; i += 1) {
+            expect(view.offsets[i]).toBeGreaterThan(view.offsets[i - 1] as number);
+          }
+        });
       });
     });
   }

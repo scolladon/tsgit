@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import { PACK_ENTRY_TYPE, PACK_HEADER_SIZE } from '../../../../../src/domain/storage/pack-entry.js';
 
 /**
  * Shared property-test arbitraries for the `internal` primitives family.
@@ -155,3 +156,70 @@ export const duplicateDirectoryArb = (): fc.Arbitrary<DuplicateDirectorySpec> =>
       )
       .map(([siblings, searchSegment]) => ({ duplicateName, siblings, searchSegment })),
   );
+
+/**
+ * `pack-records.properties.test.ts`'s grammar (P1's round-trip lens): one
+ * `PackRecordStore` record. `type` is drawn from the four base entry types
+ * only — the only shape Part 3's own wiring ever appends — never the two
+ * delta types, which never reach `append` directly.
+ */
+const BASE_PACK_ENTRY_TYPES = [
+  PACK_ENTRY_TYPE.COMMIT,
+  PACK_ENTRY_TYPE.TREE,
+  PACK_ENTRY_TYPE.BLOB,
+  PACK_ENTRY_TYPE.TAG,
+] as const;
+
+export interface PackRecordEntrySpec {
+  readonly offset: number;
+  readonly crcValue: number;
+  readonly type: (typeof BASE_PACK_ENTRY_TYPES)[number];
+  readonly oid: Uint8Array;
+}
+
+export function arbPackRecordEntrySpecs(
+  digestLength: 20 | 32,
+  maxLength = 50,
+): fc.Arbitrary<PackRecordEntrySpec[]> {
+  return fc
+    .array(
+      fc.record({
+        offset: fc.integer({ min: 0, max: 2 ** 31 }),
+        crcValue: fc.integer({ min: -(2 ** 31), max: 2 ** 31 - 1 }),
+        type: fc.constantFrom(...BASE_PACK_ENTRY_TYPES),
+        oid: fc.uint8Array({ minLength: digestLength, maxLength: digestLength }),
+      }),
+      { maxLength },
+    )
+    .map((records) => records as PackRecordEntrySpec[]);
+}
+
+/**
+ * `pack-records.properties.test.ts`'s grammar (P2–P4's compositional-matcher
+ * and counting lenses): one role per synthetic carrier entry, recorded via
+ * `recordOfsDelta`/`recordRefDelta` against that entry's own ordinal. OFS
+ * base offsets are drawn well below where the test assigns carrier-entry
+ * offsets, so every generated role satisfies the OFS guard
+ * (`PACK_HEADER_SIZE <= baseOffset < entryOffset`) by construction — the
+ * property is about the child-index lookup, not about re-proving the guard.
+ */
+export const PACK_RECORD_ROLE_CARRIER_OFFSET_BASE = 10_000;
+const OFS_BASE_OFFSET_MAX = PACK_RECORD_ROLE_CARRIER_OFFSET_BASE - 1;
+
+export type PackRecordDeltaRole =
+  | { readonly kind: 'ofs'; readonly baseOffset: number }
+  | { readonly kind: 'ref'; readonly baseOid: Uint8Array };
+
+export function arbPackRecordDeltaRoles(maxLength = 20): fc.Arbitrary<PackRecordDeltaRole[]> {
+  return fc.array(
+    fc.oneof(
+      fc
+        .integer({ min: PACK_HEADER_SIZE, max: OFS_BASE_OFFSET_MAX })
+        .map((baseOffset): PackRecordDeltaRole => ({ kind: 'ofs', baseOffset })),
+      fc
+        .uint8Array({ minLength: 20, maxLength: 20 })
+        .map((baseOid): PackRecordDeltaRole => ({ kind: 'ref', baseOid })),
+    ),
+    { maxLength },
+  );
+}

@@ -16,6 +16,7 @@ import {
   crc32,
   invalidPackEntry,
   invalidPackHeader,
+  objectTypeToPackEntryType,
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
   type PackHeader,
@@ -27,6 +28,7 @@ import { PACK_HEADER_SIZE } from '../../../domain/storage/pack-entry.js';
 import type { InflateStreamResult } from '../../../ports/compressor.js';
 import type { Context } from '../../../ports/context.js';
 import { errorDataCode } from './error-data-code.js';
+import { createPackRecordStore } from './pack-records.js';
 
 /**
  * Resolves an object referenced by a REF_DELTA whose base is absent from the
@@ -65,36 +67,12 @@ export const indexQuarantinedPack = async (
 ): Promise<PackIndexEntries> => {
   try {
     const pending = await inflateAllEntries(ctx, diskPackByteSource(ctx, tmpPath, totalBytes));
-    const walked = await walkFromPending(ctx, pending);
-    return slabFromWalkedEntries(walked, ctx.hash.digestLength);
+    const { entries } = await walkFromPending(ctx, pending);
+    return entries;
   } catch (err) {
     await onFailure(tmpPath);
     throw err;
   }
-};
-
-/**
- * Interim: the two-pass indexer this walk shares with `walkPackEntries` does
- * not fill a `PackIndexEntries` slab natively yet, so the resolved
- * `WalkedEntry` set is re-encoded into one here. Module-private on purpose —
- * never exported, barrelled or moved into the domain layer — and deleted
- * once the two passes fill the slab directly.
- */
-const slabFromWalkedEntries = (
-  entries: ReadonlyArray<WalkedEntry>,
-  digestLength: number,
-): PackIndexEntries => {
-  const count = entries.length;
-  const oids = new Uint8Array(count * digestLength);
-  const crcValues = new Int32Array(count);
-  const offsets = new Float64Array(count);
-  for (let i = 0; i < count; i += 1) {
-    const entry = entries[i]!;
-    oids.set(hexToBytes(entry.id), i * digestLength);
-    crcValues[i] = entry.crc32;
-    offsets[i] = entry.offset;
-  }
-  return { count, digestLength, oids, crcValues, offsets };
 };
 
 interface WalkedEntry {
@@ -465,26 +443,38 @@ const diskPackByteSource = (
 
 /**
  * Shared tail for both walk entry points: resolves deltas against the
- * already-inflated pending entries, then sorts by offset before mapping
- * down to the public `WalkedEntry` shape. Delta resolution
- * (`resolveAllEntries`) holds every resolved entry's full content in memory
- * at once — that residency is unrelated to the read-back windowing above
- * and is out of scope here.
+ * already-inflated pending entries, sorts by offset, then feeds the sorted
+ * entries into a fresh `PackRecordStore` — appended in that same order, so
+ * the store's `offsets` end up strictly increasing by construction, exactly
+ * as its own contract documents. The sort is what upholds that invariant:
+ * `resolveAllEntries` returns entries in resolution-round order, not offset
+ * order (`ref-delta-before-base` and `branching-forest` are corpus cases
+ * where the two orders differ), so dropping it, or breaking its comparator,
+ * would be directly observable in the handed-over `PackIndexEntries`.
+ * Returns both shapes callers need: `walked`, the public `WalkedEntry` set
+ * (`walkPackEntries`), and `entries`, the store's `PackIndexEntries` view
+ * (`indexQuarantinedPack`). Delta resolution (`resolveAllEntries`) holds
+ * every resolved entry's full content in memory at once — that residency is
+ * unrelated to the read-back windowing above and is out of scope here.
  */
 const walkFromPending = async (
   ctx: Context,
   pending: ReadonlyArray<PendingEntry>,
   externalBaseResolver?: ExternalBaseResolver,
-): Promise<ReadonlyArray<WalkedEntry>> => {
+): Promise<{ readonly walked: ReadonlyArray<WalkedEntry>; readonly entries: PackIndexEntries }> => {
   const resolved = await resolveAllEntries(ctx, pending, externalBaseResolver);
-  // The sort below only orders the WalkedEntry array; nothing observable
-  // depends on that order — `objectCount` reads `.length`, and `buildIdx`
-  // feeds `serializePackIndex`, which re-sorts entries by SHA before writing.
-  // Stryker disable next-line MethodExpression: equivalent — `resolveAllEntries` is module-internal and never shares the array, so the defensive `.slice()` copy cannot change behaviour.
   const copied = resolved.slice();
-  // Stryker disable next-line ArithmeticOperator,MethodExpression: equivalent — the WalkedEntry order is unobservable (objectCount uses `.length`; serializePackIndex re-sorts by SHA), so a broken comparator — or dropping the `.sort()` entirely — changes nothing downstream.
   const ordered = copied.sort((a, b) => a.offset - b.offset);
-  return ordered.map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
+  const walked = ordered.map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
+
+  const store = createPackRecordStore(ctx.hash.digestLength, ordered.length);
+  for (const entry of ordered) {
+    const ordinal = store.append(entry.offset, entry.crc32, objectTypeToPackEntryType(entry.type));
+    store.setOid(ordinal, hexToBytes(entry.id));
+    store.markResolved(ordinal);
+  }
+
+  return { walked, entries: store.view() };
 };
 
 export const walkPackEntries = async (
@@ -493,7 +483,8 @@ export const walkPackEntries = async (
   externalBaseResolver?: ExternalBaseResolver,
 ): Promise<ReadonlyArray<WalkedEntry>> => {
   const pending = await inflateAllEntries(ctx, inMemoryPackByteSource(ctx, packBytes));
-  return walkFromPending(ctx, pending, externalBaseResolver);
+  const { walked } = await walkFromPending(ctx, pending, externalBaseResolver);
+  return walked;
 };
 
 const inflateAllEntries = async <TCrcContext>(
