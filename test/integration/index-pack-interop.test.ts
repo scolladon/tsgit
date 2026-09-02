@@ -638,7 +638,7 @@ describe.skipIf(!GIT_AVAILABLE)('index-pack interop', () => {
     });
   });
 
-  describe('Given a real thin pack built by canonical git (pack-objects --thin --revs)', () => {
+  describe('Given a real thin pack built by canonical git (pack-objects --thin --revs), When it is offered to tsgit without and then with the bases available', () => {
     it("Then tsgit refuses without a resolver, completes once the store's bases are available, and git index-pack --stdin --fix-thin accepts the same bytes", async () => {
       // Arrange — a two-commit repo where the second commit's blob is
       // packed thin against the first, absent from the pack itself.

@@ -3272,7 +3272,7 @@ describe('index pass equivalence — record-store offset ordering', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('index pass equivalence — anti-producer-fork oracle', () => {
-  describe('Given a pack built by buildPack, then re-indexed via indexQuarantinedPack', () => {
+  describe('Given a pack built by buildPack, then re-indexed via indexQuarantinedPack, When both producers write their sibling artifacts', () => {
     it('Then both producers agree byte-for-byte on the .idx, .rev and .mtimes bytes', async () => {
       // Arrange — two similar blobs so buildPack's delta path has a real
       // chance to emit an OFS_DELTA, exercising both producers' delta
@@ -3423,7 +3423,7 @@ describe('index pass equivalence — base cache budget sweep, thin-pack half (R1
     return { packBytes, baseId, baseContent };
   };
 
-  describe('Given a thin pack whose external base resolver finds the base', () => {
+  describe('Given a thin pack whose external base resolver finds the base, When it is walked at base cache budget 0 and at the default', () => {
     it('Then both budgets resolve the delta to the identical entry set', async () => {
       // Arrange
       const results = await Promise.all(
@@ -3444,7 +3444,7 @@ describe('index pass equivalence — base cache budget sweep, thin-pack half (R1
     });
   });
 
-  describe('Given a thin pack whose external base resolver never finds the base', () => {
+  describe('Given a thin pack whose external base resolver never finds the base, When it is walked at base cache budget 0 and at the default', () => {
     it('Then both budgets refuse with the identical error data', async () => {
       // Arrange
       const caught = await Promise.all(
@@ -3480,7 +3480,7 @@ describe('index pass equivalence — base cache budget sweep, thin-pack half (R1
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('index pass base cache — invariants', () => {
-  describe('Given two packs walked CONCURRENTLY over one session, each carrying a filler base-with-child ahead of a second base-with-child that lands at the identical offset in both packs but with different content', () => {
+  describe('Given two packs each carrying a filler base-with-child ahead of a second base-with-child at the identical offset but with different content, When both are walked CONCURRENTLY over one session', () => {
     it("Then each pack's own result matches its own oracle — pass B's write never leaks into pass A's read of the same offset", async () => {
       // Arrange — the filler pair is byte-identical in both packs, so the
       // second (colliding) base lands at the SAME offset in both — the only
@@ -3540,7 +3540,7 @@ describe('index pass base cache — invariants', () => {
     });
   });
 
-  describe('Given a thin pack whose external base resolver is spied, walked twice over one session', () => {
+  describe('Given a thin pack whose external base resolver is spied, When it is walked twice over one session', () => {
     it('Then the resolver is invoked once per walk — the cache is cleared, not reused, across passes', async () => {
       // Arrange
       const ctx = createMemoryContext();
@@ -3575,7 +3575,7 @@ describe('index pass base cache — invariants', () => {
     });
   });
 
-  describe('Given a first pack that resolves one external base then refuses on an unrelated unresolved delta, followed by a second pack needing the same external base', () => {
+  describe('Given a first pack that resolves one external base then refuses on an unrelated unresolved delta, When a second pack needing that same external base is walked over the same session', () => {
     it('Then the second pack still calls the resolver — the cache is cleared on the failure exit, not only the success one', async () => {
       // Arrange
       const ctx = createMemoryContext();
@@ -3629,7 +3629,7 @@ describe('index pass base cache — invariants', () => {
     });
   });
 
-  describe('Given a pack with more base-with-children roots than the base cache holds entries for, every base tiny enough that the byte budget alone would never evict', () => {
+  describe('Given a pack with more base-with-children roots than the base cache holds entries for, every base tiny enough that the byte budget alone would never evict, When it is walked', () => {
     it('Then the entry cap evicts the earliest roots independently of the byte budget', async () => {
       // Arrange — one base blob + one ofs-delta child per pair, so pass 1
       // inflates 2 entries and pass 2 inflates the child (always) plus the
@@ -3674,7 +3674,7 @@ describe('index pass base cache — invariants', () => {
     }, 60_000);
   });
 
-  describe('Given a zero-length base entry with one child', () => {
+  describe('Given a zero-length base entry with one child, When the child is resolved through the base cache', () => {
     it('Then it is cached and served without the sizer ever needing a non-positive byteSize', async () => {
       // Arrange — the fixed per-entry overhead is what keeps the sizer's
       // result positive for a zero-length base's content; if a future edit
