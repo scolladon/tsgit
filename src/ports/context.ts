@@ -146,8 +146,12 @@ export interface RepositoryConfig {
   readonly maxResponseBytes?: number;
   /**
    * Hard cap on the entry-count field declared in a received pack header.
-   * Server-controlled `uint32` values above this raise `PACK_TOO_LARGE` before
-   * `fetchPack` allocates per-entry state. Default 50_000_000.
+   * Server-controlled `uint32` values above this raise `PACK_TOO_LARGE`
+   * before the pack is walked at all. The declared count itself is never an
+   * allocation input past this point — the indexer's record arrays grow
+   * from the pack's real entry count as they are parsed, clamped
+   * underneath by the pack's own byte length, not by what the header
+   * claims. Default 50_000_000.
    */
   readonly maxObjectsPerPack?: number;
   readonly detectRenames?: boolean;

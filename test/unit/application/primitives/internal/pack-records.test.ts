@@ -416,6 +416,43 @@ describe('Given a REF delta table with entries but none based on a particular oi
   });
 });
 
+describe('Given a store with no REF deltas recorded, before buildChildIndexes is ever called', () => {
+  describe('When refDeltaCount is read', () => {
+    it('Then it is zero', () => {
+      // Arrange
+      const sut = createPackRecordStore(20, 10);
+      sut.append(12, 0, PACK_ENTRY_TYPE.BLOB);
+
+      // Assert
+      expect(sut.refDeltaCount).toBe(0);
+    });
+  });
+});
+
+describe('Given two REF deltas recorded in append order, before buildChildIndexes is ever called', () => {
+  describe('When refDeltaCount, refDeltaOrdinalAt and refDeltaBaseOidAt are read', () => {
+    it('Then they report the raw append order, not the oid-sorted order refChildren uses', () => {
+      // Arrange
+      const sut = createPackRecordStore(20, 10);
+      const oidHigh = fixedOid(20, 0xff);
+      const oidLow = fixedOid(20, 0x01);
+      const firstDelta = sut.append(100, 0, PACK_ENTRY_TYPE.REF_DELTA);
+      const secondDelta = sut.append(200, 0, PACK_ENTRY_TYPE.REF_DELTA);
+      // Recorded with the HIGHER oid first — an oid-sorted read would flip
+      // this order; the raw append-order accessors must not.
+      sut.recordRefDelta(firstDelta, oidHigh);
+      sut.recordRefDelta(secondDelta, oidLow);
+
+      // Assert
+      expect(sut.refDeltaCount).toBe(2);
+      expect(sut.refDeltaOrdinalAt(0)).toBe(firstDelta);
+      expect(sut.refDeltaOrdinalAt(1)).toBe(secondDelta);
+      expect(sut.refDeltaBaseOidAt(0)).toEqual(oidHigh);
+      expect(sut.refDeltaBaseOidAt(1)).toEqual(oidLow);
+    });
+  });
+});
+
 describe('Given an OFS delta whose base offset points before the pack body', () => {
   describe('When recordOfsDelta is called', () => {
     it('Then it throws INVALID_PACK_HEADER with git\'s "out of bound" reason', () => {

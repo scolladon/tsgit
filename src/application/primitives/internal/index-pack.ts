@@ -1,24 +1,30 @@
 /**
- * The pack entry pipeline: walks a pack's entries from either an
+ * The pack entry indexer: walks a pack's entries from either an
  * already-resident buffer (`walkPackEntries`) or a quarantined pack file
- * read back from disk in bounded windows (`indexQuarantinedPack`), inflates
- * every entry, then resolves OFS/REF deltas against whichever bases have
- * already resolved. Split out of `fetch-pack.ts` purely to keep that module
- * under the repo's line ceiling — nothing about the pipeline's behaviour
- * changes here.
+ * read back from disk in bounded windows (`indexQuarantinedPack`), in two
+ * bounded-memory passes. Pass 1 (`scanEntries`) scans every entry once,
+ * sequentially, hashing base entries incrementally and recording delta
+ * positions into a typed-array store (`./pack-records.js`) — nothing but
+ * fixed-width records survives the pass. Pass 2 (`resolveFromRoots`) walks
+ * the delta forest root-down from every base entry, resolving each delta
+ * against its already-resolved parent's content, held on an explicit stack
+ * rather than the JS call stack so depth costs heap, never frames. Split out
+ * of `fetch-pack.ts` purely to keep that module under the repo's line
+ * ceiling — nothing about the pipeline's observable behaviour changes here.
  */
 import { TsgitError } from '../../../domain/error.js';
-import { hexToBytes } from '../../../domain/objects/encoding.js';
+import { bytesToHex, hexToBytes } from '../../../domain/objects/encoding.js';
 import type { ObjectId } from '../../../domain/objects/object-id.js';
 import {
   applyDelta,
   type BasePackEntryHeader,
+  type BasePackEntryType,
   crc32,
   invalidPackEntry,
   invalidPackHeader,
-  objectTypeToPackEntryType,
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
+  type PackEntryType,
   type PackHeader,
   type PackIndexEntries,
   parsePackEntryHeader,
@@ -28,7 +34,7 @@ import { PACK_HEADER_SIZE } from '../../../domain/storage/pack-entry.js';
 import type { InflateStreamResult } from '../../../ports/compressor.js';
 import type { Context } from '../../../ports/context.js';
 import { errorDataCode } from './error-data-code.js';
-import { createPackRecordStore } from './pack-records.js';
+import { createPackRecordStore, type PackRecordStore } from './pack-records.js';
 
 /**
  * Resolves an object referenced by a REF_DELTA whose base is absent from the
@@ -53,12 +59,12 @@ export type ExternalBaseResolver = (
 const DEFAULT_MAX_OBJECT_COUNT = 50_000_000;
 
 /** Reads the quarantined pack back from disk (it was never resident in
- *  memory during receive) and walks its entries through `diskPackByteSource`
- *  — the same `inflateAllEntries`/`resolveAllEntries` pipeline `walkPackEntries`
- *  uses, fed by bounded `readSlice` windows instead of one whole-pack buffer.
- *  Failures here mean the body is malformed even though its trailer
- *  verified, so `onFailure` — the caller's quarantine cleanup — runs before
- *  rethrow. */
+ *  memory during receive) and indexes its entries through
+ *  `diskPackByteSource` — the same two-pass `indexPackEntries` core
+ *  `walkPackEntries` uses, fed by bounded `readSlice` windows instead of one
+ *  whole-pack buffer. Failures here mean the body is malformed even though
+ *  its trailer verified, so `onFailure` — the caller's quarantine cleanup —
+ *  runs before rethrow. */
 export const indexQuarantinedPack = async (
   ctx: Context,
   tmpPath: string,
@@ -66,9 +72,7 @@ export const indexQuarantinedPack = async (
   onFailure: (path: string) => Promise<void>,
 ): Promise<PackIndexEntries> => {
   try {
-    const pending = await inflateAllEntries(ctx, diskPackByteSource(ctx, tmpPath, totalBytes));
-    const { entries } = await walkFromPending(ctx, pending);
-    return entries;
+    return await indexPackEntries(ctx, diskPackByteSource(ctx, tmpPath, totalBytes));
   } catch (err) {
     await onFailure(tmpPath);
     throw err;
@@ -83,29 +87,15 @@ interface WalkedEntry {
 
 type BaseTypeName = 'commit' | 'tree' | 'blob' | 'tag';
 
-interface PendingEntry {
-  readonly offset: number;
-  readonly header: PackEntryHeader;
-  readonly inflated: Uint8Array;
-  readonly crc32: number;
-}
-
-interface ResolvedEntry {
-  readonly id: string;
-  readonly type: BaseTypeName;
-  readonly content: Uint8Array;
-  readonly crc32: number;
-  readonly offset: number;
-}
-
 /**
- * Byte-source seam for `inflateAllEntries`' sequential entry walk: reads
- * either an already-resident pack buffer (`inMemoryPackByteSource` — every
- * existing `walkPackEntries` caller: `bundle-verify.ts`, in-memory fetch
- * paths, unchanged) or the quarantined pack file on disk in bounded windows
- * (`diskPackByteSource` — `indexQuarantinedPack`). Both report entry data
- * through this one shape so the walk loop below is written once and behaves
- * identically over either source.
+ * Byte-source seam for the two-pass indexer's sequential and root-down
+ * walks: reads either an already-resident pack buffer
+ * (`inMemoryPackByteSource` — every existing `walkPackEntries` caller:
+ * `bundle-verify.ts`, in-memory fetch paths, unchanged) or the quarantined
+ * pack file on disk in bounded windows (`diskPackByteSource` —
+ * `indexQuarantinedPack`). Both report entry data through this one shape so
+ * the walks below are written once and behave identically over either
+ * source.
  *
  * `TCrcContext` lets a source thread whatever it needs from `inflateEntry`
  * into the matching `entryCrc32` call as an ordinary parameter, instead of
@@ -271,12 +261,16 @@ const withAbsoluteEntryOffset = (err: unknown, windowStart: number): unknown => 
 
 /**
  * Reads the quarantine file at `tmpPath` in bounded `DISK_WALK_WINDOW_BYTES`
- * windows, sliding forward as `inflateAllEntries` walks entries in strictly
- * increasing offset order (per the receive-path contract: header parse at
- * `offset`, zlib stream from `dataOffset`, `bytesConsumed` advances to
- * `entryEnd`). A window is reused across entries whenever the next entry's
- * start already falls inside it — the common case, since most objects are
- * far smaller than the window.
+ * windows. Pass 1 slides forward through entries in strictly increasing
+ * offset order (per the receive-path contract: header parse at `offset`,
+ * zlib stream from `dataOffset`, `bytesConsumed` advances to `entryEnd`);
+ * pass 2 re-anchors at arbitrary — often earlier — offsets as it re-reads
+ * delta bases and walks the forest. A window is reused whenever the next
+ * read's start already falls inside it — the common case for pass 1's
+ * forward scan, since most objects are far smaller than the window; pass
+ * 2's backward anchors fall through to a fresh fetch (`windowCovering`
+ * below), which is the same fallback path a forward anchor past the held
+ * window already takes.
  *
  * When a header parse or a compressed stream turns out to straddle or
  * exceed the window currently held, `withGrowth` retries — but only for
@@ -325,12 +319,14 @@ const diskPackByteSource = (
     priorRung === 0 ? initialWindowSize(anchor) : Math.min(priorRung * 2, trailerStart - anchor);
 
   /** Reuses the held window when `anchor` already falls inside it; fetches
-   *  a fresh one, anchored at `anchor`, otherwise. Reuse never checks how
-   *  much room is left past `anchor` — that is `withGrowth`'s job below. */
+   *  a fresh one, anchored at `anchor`, otherwise — including when `anchor`
+   *  falls BEFORE the held window, which pass 2's backward base re-reads
+   *  make a real, exercised path rather than a merely theoretical one.
+   *  Reuse never checks how much room is left past `anchor` — that is
+   *  `withGrowth`'s job below. */
   const windowCovering = async (anchor: number): Promise<DiskWindow> => {
     if (
       window !== undefined &&
-      // Stryker disable next-line ConditionalExpression: equivalent — diskPackByteSource has one caller sequence (inflateAllEntries's forward scan, entryHeader then inflateEntry at the SAME offset), so anchor only ever grows; `anchor < window.start` never occurs, and forcing the lower bound true changes nothing reachable.
       anchor >= window.start &&
       // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a window wrongly deemed to cover an anchor past its real extent immediately trips decodeTypeAndSize's own `offset >= bytes.length` guard (pack-entry.ts) with the retryable "unexpected end of header" reason, so growOrRethrow re-fetches at the correct anchor on the very next attempt before any byte is read — same final window and result, one wasted parse in between.
       anchor < window.start + window.bytes.length
@@ -441,56 +437,44 @@ const diskPackByteSource = (
   };
 };
 
+/** Minimum bytes one pack entry can occupy: one type/size byte plus the
+ *  8-byte zlib stream of an empty payload. Bounds the record store's growth
+ *  independently of whatever `header.objectCount` claims — a pack of
+ *  `totalBytes` bytes cannot hold more than
+ *  `(totalBytes - PACK_HEADER_SIZE - digestLength) / MIN_PACK_ENTRY_BYTES`
+ *  real entries, regardless of what its header declares, so this clamp
+ *  underneath the store's own geometric growth is what keeps a lying
+ *  header from sizing an allocation. */
+const MIN_PACK_ENTRY_BYTES = 9;
+
+const structuralMaxEntries = (totalBytes: number, digestLength: number): number =>
+  Math.max(0, Math.floor((totalBytes - PACK_HEADER_SIZE - digestLength) / MIN_PACK_ENTRY_BYTES));
+
+/** Whether a raw stored `PackEntryType` byte names a base (non-delta) entry
+ *  — the pass-2 counterpart to `isBaseHeader` below, operating on the
+ *  record store's own `typeOf(ordinal)` rather than a freshly parsed
+ *  `PackEntryHeader`. */
+const isBaseType = (type: PackEntryType): type is BasePackEntryType =>
+  type === PACK_ENTRY_TYPE.COMMIT ||
+  type === PACK_ENTRY_TYPE.TREE ||
+  type === PACK_ENTRY_TYPE.BLOB ||
+  type === PACK_ENTRY_TYPE.TAG;
+
 /**
- * Shared tail for both walk entry points: resolves deltas against the
- * already-inflated pending entries, sorts by offset, then feeds the sorted
- * entries into a fresh `PackRecordStore` — appended in that same order, so
- * the store's `offsets` end up strictly increasing by construction, exactly
- * as its own contract documents. The sort is what upholds that invariant:
- * `resolveAllEntries` returns entries in resolution-round order, not offset
- * order (`ref-delta-before-base` and `branching-forest` are corpus cases
- * where the two orders differ), so dropping it, or breaking its comparator,
- * would be directly observable in the handed-over `PackIndexEntries`.
- * Returns both shapes callers need: `walked`, the public `WalkedEntry` set
- * (`walkPackEntries`), and `entries`, the store's `PackIndexEntries` view
- * (`indexQuarantinedPack`). Delta resolution (`resolveAllEntries`) holds
- * every resolved entry's full content in memory at once — that residency is
- * unrelated to the read-back windowing above and is out of scope here.
+ * Pass 1 — sequential scan, retain nothing. Walks every entry once, in
+ * strictly increasing offset order, inflating it to learn where the next
+ * entry starts (`bytesConsumed`, counted from `dataOffset` — a pack stores
+ * no entry lengths). A base entry's oid is hashed incrementally
+ * (`ctx.hash.createHasher()`) and its inflated payload dropped immediately
+ * after; a delta entry's base position (OFS) or base id (REF) is recorded
+ * in the record store and its payload dropped without ever being applied.
+ * Peak residency during this pass is one entry's inflated payload plus the
+ * read window — nothing else survives the loop.
  */
-const walkFromPending = async (
-  ctx: Context,
-  pending: ReadonlyArray<PendingEntry>,
-  externalBaseResolver?: ExternalBaseResolver,
-): Promise<{ readonly walked: ReadonlyArray<WalkedEntry>; readonly entries: PackIndexEntries }> => {
-  const resolved = await resolveAllEntries(ctx, pending, externalBaseResolver);
-  const copied = resolved.slice();
-  const ordered = copied.sort((a, b) => a.offset - b.offset);
-  const walked = ordered.map((r) => ({ id: r.id, crc32: r.crc32, offset: r.offset }));
-
-  const store = createPackRecordStore(ctx.hash.digestLength, ordered.length);
-  for (const entry of ordered) {
-    const ordinal = store.append(entry.offset, entry.crc32, objectTypeToPackEntryType(entry.type));
-    store.setOid(ordinal, hexToBytes(entry.id));
-    store.markResolved(ordinal);
-  }
-
-  return { walked, entries: store.view() };
-};
-
-export const walkPackEntries = async (
-  ctx: Context,
-  packBytes: Uint8Array,
-  externalBaseResolver?: ExternalBaseResolver,
-): Promise<ReadonlyArray<WalkedEntry>> => {
-  const pending = await inflateAllEntries(ctx, inMemoryPackByteSource(ctx, packBytes));
-  const { walked } = await walkFromPending(ctx, pending, externalBaseResolver);
-  return walked;
-};
-
-const inflateAllEntries = async <TCrcContext>(
+const scanEntries = async <TCrcContext>(
   ctx: Context,
   source: PackByteSource<TCrcContext>,
-): Promise<ReadonlyArray<PendingEntry>> => {
+): Promise<PackRecordStore> => {
   const header = await source.header();
   const objectCountCap = ctx.config?.maxObjectsPerPack ?? DEFAULT_MAX_OBJECT_COUNT;
   if (header.objectCount > objectCountCap) {
@@ -501,7 +485,10 @@ const inflateAllEntries = async <TCrcContext>(
     });
   }
   const trailerStart = source.totalBytes - ctx.hash.digestLength;
-  const out: PendingEntry[] = [];
+  const store = createPackRecordStore(
+    ctx.hash.digestLength,
+    structuralMaxEntries(source.totalBytes, ctx.hash.digestLength),
+  );
   let offset = PACK_HEADER_SIZE;
   for (let i = 0; i < header.objectCount; i += 1) {
     const entryHeader = await source.entryHeader(offset);
@@ -516,119 +503,246 @@ const inflateAllEntries = async <TCrcContext>(
     // entry whose stream consumed bytes past `trailerStart` would require
     // those SHA bytes to also be a valid zlib continuation — unreachable
     // for any verifiable pack.
-    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — `entryEnd > trailerStart` is unreachable once the trailer has been accepted; the throw cannot fire.
+    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — `entryEnd > trailerStart` is unreachable once the trailer has been accepted; the throw cannot fire. Restated against this scan's own loop — the pipeline this replaced made the identical argument at the identical point in an otherwise identical scan.
     if (entryEnd > trailerStart) {
       // Stryker disable next-line StringLiteral: equivalent — the guarded throw is unreachable (see above), so its message is never observed.
       throw invalidPackHeader('entry extends past pack trailer');
     }
     const entryCrc = await source.entryCrc32(offset, entryEnd, inflated.crcContext);
-    out.push({ offset, header: entryHeader, inflated: inflated.result.output, crc32: entryCrc });
+    const ordinal = store.append(offset, entryCrc, entryHeader.type);
+    if (isBaseHeader(entryHeader)) {
+      const typeName = baseTypeName(entryHeader.type);
+      store.setOid(ordinal, await hashObject(ctx, typeName, inflated.result.output));
+      // A base entry is resolved the moment its oid is known — pass 2 never
+      // revisits this flag for it, only for the deltas that chain off it.
+      store.markResolved(ordinal);
+    } else if (entryHeader.type === PACK_ENTRY_TYPE.OFS_DELTA) {
+      // `recordOfsDelta` applies the widened out-of-bound guard: a distance
+      // landing before the pack body OR at/after the entry's own offset
+      // (including the self-referential distance-0 case) refuses here with
+      // git's own reason. A distance that lands in range but not on a real
+      // entry boundary is not caught here — it stays an unresolved-delta
+      // count, the same split git makes.
+      store.recordOfsDelta(ordinal, offset - entryHeader.baseDistance);
+    } else {
+      store.recordRefDelta(ordinal, hexToBytes(entryHeader.baseId));
+    }
     offset = entryEnd;
   }
   if (offset !== trailerStart) {
     throw invalidPackHeader('extra bytes between last entry and trailer');
   }
-  return out;
+  store.buildChildIndexes();
+  return store;
 };
 
-const resolveAllEntries = async (
+/** One frame of pass 2's explicit stack: a resolved parent's content, held
+ *  only while it still has children left to resolve. `cursor` is the
+ *  "children remaining" counter, counting UP against `children.length`
+ *  rather than down — equivalent, and simpler to pair with a plain array.
+ *  The frame — and with it the only remaining reference to `content` — is
+ *  popped the instant `cursor` reaches `children.length`: the load-bearing
+ *  release the memory bound depends on (a linear chain then retains two
+ *  objects at a time regardless of depth; only a branching subtree retains
+ *  more, and only for as long as it still has unresolved children). */
+interface WalkFrame {
+  readonly content: Uint8Array;
+  readonly typeName: BaseTypeName;
+  readonly children: ReadonlyArray<number>;
+  cursor: number;
+}
+
+/** Every entry ordinal chained onto `offset` (OFS) or `oidBytes` (REF),
+ *  merged into one plain array via a loop — never `push(...spread)`, which
+ *  overflows the call stack near 125k arguments and a real clone's delta
+ *  forest can exceed. */
+const collectChildren = (
+  store: PackRecordStore,
+  offset: number,
+  oidBytes: Uint8Array,
+): number[] => {
+  const children: number[] = [];
+  const ofsRange = store.ofsChildren(offset);
+  for (let p = ofsRange.start; p < ofsRange.end; p += 1) {
+    children.push(store.ofsChildOrdinalAt(p));
+  }
+  const refRange = store.refChildren(oidBytes);
+  for (let p = refRange.start; p < refRange.end; p += 1) {
+    children.push(store.refChildOrdinalAt(p));
+  }
+  return children;
+};
+
+/**
+ * Depth-first walk of one forest root's subtree via an explicit stack —
+ * never recursion, since depth is uncapped (git itself accepts chains a
+ * thousand deep) and must cost heap, not JS call frames. The `isResolved`
+ * check below is not defensive padding: a pack may legally carry the same
+ * oid twice (git's default fetch accepts it, `transfer.fsckObjects`
+ * defaulting false), which makes a REF delta keyed on that oid a child of
+ * two parents; without the check it would be applied twice and
+ * `resolvedCount` would overshoot `objectCount`, turning the unresolved
+ * count into nonsense.
+ */
+const walkFromRoot = async <TCrcContext>(
   ctx: Context,
-  pending: ReadonlyArray<PendingEntry>,
-  externalBaseResolver?: ExternalBaseResolver,
-): Promise<ReadonlyArray<ResolvedEntry>> => {
-  const byOffset = new Map<number, ResolvedEntry>();
-  const byId = new Map<string, ResolvedEntry>();
-  let unresolved: ReadonlyArray<PendingEntry> = pending;
-  while (unresolved.length > 0) {
-    const next: PendingEntry[] = [];
-    let progress = false;
-    for (const entry of unresolved) {
-      const resolved = await tryResolveEntry(ctx, entry, byOffset, byId, externalBaseResolver);
-      if (resolved === undefined) {
-        next.push(entry);
-      } else {
-        byOffset.set(resolved.offset, resolved);
-        byId.set(resolved.id, resolved);
-        progress = true;
-      }
+  source: PackByteSource<TCrcContext>,
+  store: PackRecordStore,
+  rootContent: Uint8Array,
+  typeName: BaseTypeName,
+  rootChildren: ReadonlyArray<number>,
+): Promise<void> => {
+  const stack: WalkFrame[] = [
+    { content: rootContent, typeName, children: rootChildren, cursor: 0 },
+  ];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    if (frame.cursor >= frame.children.length) {
+      stack.pop();
+      continue;
     }
-    if (!progress) throw firstUnresolvedError(next);
-    unresolved = next;
+    const childOrdinal = frame.children[frame.cursor]!;
+    frame.cursor += 1;
+    if (store.isResolved(childOrdinal)) continue;
+    const childOffset = store.offsetOf(childOrdinal);
+    const childHeader = await source.entryHeader(childOffset);
+    const inflated = await source.inflateEntry(
+      childOffset,
+      childHeader.dataOffset,
+      childHeader.size,
+    );
+    const childContent = applyDelta(frame.content, inflated.result.output);
+    const oidBytes = await hashObject(ctx, frame.typeName, childContent);
+    store.setOid(childOrdinal, oidBytes);
+    store.markResolved(childOrdinal);
+    const grandchildren = collectChildren(store, childOffset, oidBytes);
+    stack.push({
+      content: childContent,
+      typeName: frame.typeName,
+      children: grandchildren,
+      cursor: 0,
+    });
   }
-  return [...byOffset.values()];
 };
 
-const firstUnresolvedError = (unresolved: ReadonlyArray<PendingEntry>): Error => {
-  const first = unresolved[0];
-  // equivalent-mutant: `first === undefined` defensive branch is unreachable —
-  // `resolveAllEntries` only calls this helper when `unresolved.length > 0`.
-  // The branch exists so a future refactor that violates that invariant fails
-  // with a clear message instead of throwing on `first.header`; flipping it to
-  // always-false would only break that hypothetical future code path.
-  if (first === undefined) {
-    // Stryker disable next-line StringLiteral: equivalent — this branch is unreachable; `resolveAllEntries` only calls `firstUnresolvedError` with a non-empty `next` queue, so `first` is always defined.
-    return invalidPackHeader('unresolved deltas: empty queue (internal invariant violated)');
-  }
-  const refBaseId = refDeltaBaseId(first.header);
-  if (refBaseId !== undefined) {
-    return invalidPackHeader(`unresolved REF_DELTA: base ${refBaseId} not in pack`);
-  }
-  return invalidPackHeader(`unresolved entry at offset ${first.offset}`);
-};
-
-const refDeltaBaseId = (header: PackEntryHeader): string | undefined => {
-  if (isBaseHeader(header)) return undefined;
-  if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) return undefined;
-  return header.baseId;
-};
-
-const tryResolveEntry = async (
+/**
+ * Pass 2 — resolve from the roots down. Every base-typed entry is a forest
+ * root, visited in increasing offset order (the store's own append order,
+ * since pass 1 appends strictly forward) so root reads stay sequential;
+ * child reads jump around, which is unavoidable — the forest's shape is the
+ * server's choice. A root with no children is never re-inflated at all: its
+ * oid is already known from pass 1, and content is only ever needed to
+ * resolve children.
+ */
+const resolveFromRoots = async <TCrcContext>(
   ctx: Context,
-  entry: PendingEntry,
-  byOffset: ReadonlyMap<number, ResolvedEntry>,
-  byId: ReadonlyMap<string, ResolvedEntry>,
-  externalBaseResolver?: ExternalBaseResolver,
-): Promise<ResolvedEntry | undefined> => {
-  if (isBaseHeader(entry.header)) {
-    const type = baseTypeName(entry.header.type);
-    const id = await computeLooseObjectId(ctx, type, entry.inflated);
-    return { id, type, content: entry.inflated, crc32: entry.crc32, offset: entry.offset };
+  source: PackByteSource<TCrcContext>,
+  store: PackRecordStore,
+): Promise<void> => {
+  const { oids } = store.view();
+  for (let ordinal = 0; ordinal < store.count; ordinal += 1) {
+    const type = store.typeOf(ordinal);
+    if (!isBaseType(type)) continue;
+    const offset = store.offsetOf(ordinal);
+    const oidRange = store.oidRangeOf(ordinal);
+    const oidBytes = oids.subarray(oidRange.start, oidRange.end);
+    const children = collectChildren(store, offset, oidBytes);
+    if (children.length === 0) continue;
+    const header = await source.entryHeader(offset);
+    const inflated = await source.inflateEntry(offset, header.dataOffset, header.size);
+    await walkFromRoot(ctx, source, store, inflated.result.output, baseTypeName(type), children);
   }
-  if (entry.header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
-    const baseOffset = entry.offset - entry.header.baseDistance;
-    if (baseOffset < PACK_HEADER_SIZE) {
-      throw invalidPackHeader(
-        `OFS_DELTA at offset ${entry.offset} points before pack body: distance ${entry.header.baseDistance}`,
-      );
+};
+
+/**
+ * Thin-pack completion: after the in-pack walk, every REF delta still
+ * unresolved is offered — in the order pass 1 recorded it — to
+ * `externalBaseResolver`. A resolved external base becomes an extra forest
+ * root exactly like an in-pack one: `walkFromRoot` resolves the orphaned
+ * delta itself against it, then descends into whatever chains onto that
+ * delta's own offset or oid, so a multi-entry thin chain hanging off one
+ * missing base resolves in a single sweep regardless of which entry in the
+ * chain happens to be recorded first. `applyDelta`'s own base-length guard
+ * refuses a wrong-sized external base rather than reconstructing garbage.
+ */
+const resolveExternalBases = async <TCrcContext>(
+  ctx: Context,
+  source: PackByteSource<TCrcContext>,
+  store: PackRecordStore,
+  externalBaseResolver: ExternalBaseResolver,
+): Promise<void> => {
+  for (let r = 0; r < store.refDeltaCount; r += 1) {
+    const ordinal = store.refDeltaOrdinalAt(r);
+    if (store.isResolved(ordinal)) continue;
+    const baseOid = bytesToHex(store.refDeltaBaseOidAt(r)) as ObjectId;
+    const external = await externalBaseResolver(baseOid);
+    if (external === undefined) continue;
+    const offset = store.offsetOf(ordinal);
+    const header = await source.entryHeader(offset);
+    const inflated = await source.inflateEntry(offset, header.dataOffset, header.size);
+    const content = applyDelta(external.content, inflated.result.output);
+    const oidBytes = await hashObject(ctx, external.type, content);
+    store.setOid(ordinal, oidBytes);
+    store.markResolved(ordinal);
+    const children = collectChildren(store, offset, oidBytes);
+    if (children.length > 0) {
+      await walkFromRoot(ctx, source, store, content, external.type, children);
     }
-    const base = byOffset.get(baseOffset);
-    if (base === undefined) return undefined;
-    return await resolveDelta(ctx, entry, base);
   }
-  // REF_DELTA — base may be in-pack or supplied by an external resolver.
-  const packBase = byId.get(entry.header.baseId);
-  if (packBase !== undefined) return await resolveDelta(ctx, entry, packBase);
-  if (externalBaseResolver === undefined) return undefined;
-  const external = await externalBaseResolver(entry.header.baseId as ObjectId);
-  if (external === undefined) return undefined;
-  const syntheticBase: ResolvedEntry = {
-    id: entry.header.baseId,
-    type: external.type,
-    content: external.content,
-    crc32: 0,
-    offset: 0,
-  };
-  return await resolveDelta(ctx, entry, syntheticBase);
 };
 
-const resolveDelta = async (
+/**
+ * Module-private core: both passes over one `PackByteSource`, then the
+ * refusal check. After the walk (and, when given a resolver, the thin-pack
+ * sweep), `resolvedCount < objectCount` means some delta was never
+ * reachable — a REF cycle, an all-deltas pack with no base entry, or an OFS
+ * base offset landing mid-entry (three cases that converge here, exactly as
+ * they do in git). The refusal is git's own count, singular at one, under
+ * the unchanged `INVALID_PACK_HEADER` code.
+ */
+const indexPackEntries = async <TCrcContext>(
   ctx: Context,
-  entry: PendingEntry,
-  base: ResolvedEntry,
-): Promise<ResolvedEntry> => {
-  const content = applyDelta(base.content, entry.inflated);
-  const id = await computeLooseObjectId(ctx, base.type, content);
-  return { id, type: base.type, content, crc32: entry.crc32, offset: entry.offset };
+  source: PackByteSource<TCrcContext>,
+  externalBaseResolver?: ExternalBaseResolver,
+): Promise<PackIndexEntries> => {
+  const store = await scanEntries(ctx, source);
+  await resolveFromRoots(ctx, source, store);
+  if (externalBaseResolver !== undefined && store.resolvedCount < store.count) {
+    await resolveExternalBases(ctx, source, store, externalBaseResolver);
+  }
+  const unresolvedCount = store.count - store.resolvedCount;
+  if (unresolvedCount > 0) {
+    throw invalidPackHeader(
+      `pack has ${unresolvedCount} unresolved delta${unresolvedCount === 1 ? '' : 's'}`,
+    );
+  }
+  return store.view();
+};
+
+export const walkPackEntries = async (
+  ctx: Context,
+  packBytes: Uint8Array,
+  externalBaseResolver?: ExternalBaseResolver,
+): Promise<ReadonlyArray<WalkedEntry>> => {
+  const entries = await indexPackEntries(
+    ctx,
+    inMemoryPackByteSource(ctx, packBytes),
+    externalBaseResolver,
+  );
+  const walked: WalkedEntry[] = [];
+  for (let i = 0; i < entries.count; i += 1) {
+    const start = i * entries.digestLength;
+    const end = start + entries.digestLength;
+    walked.push({
+      id: bytesToHex(entries.oids.subarray(start, end)),
+      // `crcValues` is a signed `Int32Array` (the `.idx`/`.rev` byte-level
+      // shape); `crc32()` and this module's own `WalkedEntry` contract are
+      // unsigned, so the bit pattern is reinterpreted back on the way out.
+      crc32: (entries.crcValues[i] ?? 0) >>> 0,
+      offset: entries.offsets[i] ?? 0,
+    });
+  }
+  return walked;
 };
 
 const isBaseHeader = (header: PackEntryHeader): header is BasePackEntryHeader => {
@@ -655,14 +769,24 @@ const baseTypeName = (type: BasePackEntryHeader['type']): BaseTypeName => {
 
 const TEXT_ENCODER = new TextEncoder();
 
-const computeLooseObjectId = async (
+/**
+ * Computes an object's oid incrementally: `ctx.hash.createHasher()` fed the
+ * loose header then the content, never a second concatenated copy the way
+ * the deleted `computeLooseObjectId` used to build purely to hand
+ * `ctx.hash.hashHex` one buffer. Node's `createHasher()` wraps
+ * `crypto.createHash` and streams genuinely; the memory and browser adapters
+ * collect chunks and concatenate at `digest()` time (no streaming digest in
+ * SubtleCrypto), so this is a clear win on Node and exactly neutral
+ * elsewhere — it never regresses.
+ */
+const hashObject = async (
   ctx: Context,
-  typeName: string,
+  typeName: BaseTypeName,
   content: Uint8Array,
-): Promise<string> => {
+): Promise<Uint8Array> => {
   const headerBytes = TEXT_ENCODER.encode(`${typeName} ${content.length}\0`);
-  const loose = new Uint8Array(headerBytes.length + content.length);
-  loose.set(headerBytes, 0);
-  loose.set(content, headerBytes.length);
-  return await ctx.hash.hashHex(loose);
+  const hasher = ctx.hash.createHasher();
+  hasher.update(headerBytes);
+  hasher.update(content);
+  return hexToBytes(await hasher.digestHex());
 };

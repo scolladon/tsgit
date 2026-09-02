@@ -105954,15 +105954,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " before\n"
-									},
-									{
-										"kind": "code",
-										"text": "`fetchPack`"
-									},
-									{
-										"kind": "text",
-										"text": " allocates per-entry state. Default 50_000_000."
+										"text": "\nbefore the pack is walked at all. The declared count itself is never an\nallocation input past this point — the indexer's record arrays grow\nfrom the pack's real entry count as they are parsed, clamped\nunderneath by the pack's own byte length, not by what the header\nclaims. Default 50_000_000."
 									}
 								]
 							},

@@ -48,6 +48,12 @@ function growCapacityTo(current: number, needed: number, structuralMax: number):
 export interface PackRecordStore {
   readonly count: number;
   readonly resolvedCount: number;
+  /** Number of REF deltas recorded — `D_ref`, the raw (append-order) table
+   *  `refDeltaOrdinalAt`/`refDeltaBaseOidAt` read, distinct from the
+   *  oid-sorted `refSortedRefIndices` `refChildren`/`refChildOrdinalAt`
+   *  read. Lets a caller sweep every REF delta once, in the order pass 1
+   *  recorded it, without needing a base oid to look one up by. */
+  readonly refDeltaCount: number;
   append(offset: number, crcValue: number, type: PackEntryType): number;
   setOid(ordinal: number, bytes: Uint8Array): void;
   markResolved(ordinal: number): void;
@@ -62,6 +68,12 @@ export interface PackRecordStore {
   ofsChildOrdinalAt(position: number): number;
   refChildren(baseOidBytes: Uint8Array): { readonly start: number; readonly end: number };
   refChildOrdinalAt(position: number): number;
+  /** The entry ordinal of the `position`-th REF delta recorded, in
+   *  append (pack-offset) order — `position` ranges `[0, refDeltaCount)`. */
+  refDeltaOrdinalAt(position: number): number;
+  /** The declared base oid bytes of the `position`-th REF delta recorded,
+   *  in the same append order as `refDeltaOrdinalAt`. */
+  refDeltaBaseOidAt(position: number): Uint8Array;
   view(): PackIndexEntries;
 }
 
@@ -263,6 +275,11 @@ export function createPackRecordStore(
   const refChildOrdinalAt = (position: number): number =>
     refEntry[refSortedRefIndices[position] ?? 0] ?? 0;
 
+  const refDeltaOrdinalAt = (position: number): number => refEntry[position] ?? 0;
+
+  const refDeltaBaseOidAt = (position: number): Uint8Array =>
+    refBaseOids.subarray(position * digestLength, (position + 1) * digestLength);
+
   const view = (): PackIndexEntries => ({ count, digestLength, oids, crcValues, offsets });
 
   return {
@@ -271,6 +288,9 @@ export function createPackRecordStore(
     },
     get resolvedCount() {
       return resolvedCount;
+    },
+    get refDeltaCount() {
+      return refCount;
     },
     append,
     setOid,
@@ -286,6 +306,8 @@ export function createPackRecordStore(
     ofsChildOrdinalAt,
     refChildren,
     refChildOrdinalAt,
+    refDeltaOrdinalAt,
+    refDeltaBaseOidAt,
     view,
   };
 }
