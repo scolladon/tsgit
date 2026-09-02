@@ -56,6 +56,14 @@ The seventh moved symbol carries no extra cost: the pending release is already a
 under this decision no caller needs it, so publishing it with no production caller does not
 arise.
 
+The same criterion removes a type. With every one of `PackIndexWriterEntry`'s twenty-four uses
+living in the eight files ADR-789 and this decision convert, the type has **zero surviving
+production consumers**, so it is deleted from `reports/api.json` rather than published unused.
+The shape is not lost: `WalkedEntry` — `{ id, crc32, offset }`, module-private — remains
+`walkPackEntries`' return under ADR-783. Test files that declare entry literals convert through
+a shared fixture builder rather than a production adapter, on the precedent of
+`test/fixtures/storage/bitmap-writers.ts`.
+
 ## Consequences
 
 `BuildPackResult` joins the six symbols ADR-789 moves in `reports/api.json`, for seven total in
