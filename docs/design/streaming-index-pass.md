@@ -6,7 +6,8 @@
 > indexer in `git index-pack`'s shape — a sequential first pass that hashes base entries and
 > records delta positions, a second pass that resolves deltas without retaining the whole
 > corpus, thin-pack external bases on the same seam.
-> Status: **revised against ADRs 779–789** (every decision candidate ratified) → self-reviewed ×3
+> Status: **revised against ADRs 779–790** (every decision candidate ratified; DC-A folded in as
+> ADR-790) → self-reviewed ×3
 
 ## Context
 
@@ -88,7 +89,7 @@ consumed by `bundle-verify.ts` and by `test/unit/application/primitives/fetch-pa
 | **ADR-722** caches key on a session token | ADR-788's base cache keys on `ctx.session`, never on `Context` identity — a `pull` derives a Context between its fetch and its merge, which is the bug family ADR-722 closed |
 | `design/delta-writing-packer.md` §12 | Names this change and records the two seams it moved: `serializePackfile` still takes a materialised array, and `buildPack` gained a metadata pass structurally similar to §2's |
 
-This design's own eleven choices are settled. Each is stated as a rule in §Decisions and cited
+This design's own twelve choices are settled. Each is stated as a rule in §Decisions and cited
 inline where it binds:
 
 | ADR | Settles |
@@ -104,6 +105,7 @@ inline where it binds:
 | **787** | Two new modules: `internal/index-pack.ts` + `internal/pack-records.ts` (§6) |
 | **788** | One byte-capped base cache on its own measured budget, replacing `bundle-verify`'s unbounded `Map` (§5) |
 | **789** | The `.idx`/`.rev`/`.mtimes` serializers take the oid slab (§6a, §7, §11) |
+| **790** | The slab is born in `buildPack`: `BuildPackResult.entries` **is** a `PackIndexEntries`, so no write path materialises a hex-bearing array (§3a, §6a, §7a, §11a) |
 
 ---
 
@@ -158,19 +160,23 @@ Everything below is verifiable by a test named in §Test strategy.
 
 **Contracts moved, deliberately**
 
-- **R12** `reports/api.json` **moves, and the move is exactly six symbols** (ADR-789):
+- **R12** `reports/api.json` **moves, and the move is exactly seven symbols** (ADRs 789 and 790):
   `PackIndexWriterEntry`, `SortedEntry`, `sortPackIndexEntries`, `serializePackIndex`,
   `serializePackRevIndex` — the five ADR-789 names — plus **`serializeCruftMtimes`**, which
   ADR-789 does not name but which consumes `SortedEntry` and `PackIndexWriterEntry` in its own
-  signature (`cruft-pack.ts:42,45`) and therefore cannot stay behind (§6a). This is a
+  signature (`cruft-pack.ts:42,45`) and therefore cannot stay behind (§6a), plus
+  **`BuildPackResult`**, whose `entries` field ADR-790 re-types to `PackIndexEntries` (§11a).
+  Two of the seven are **deletions**, not re-typings: `SortedEntry` is replaced by
+  `SortedPackIndex`, and `PackIndexWriterEntry` is left with zero production consumers once
+  `BuildPackResult` — its last one — carries the slab (§6a.5). This is a
   **breaking change to published types**, and it rides the pending **4.0.0** exactly as ADR-776
   reasoned for `PackWriterEntry`: the last release is 3.6.0, the 4.0.0 release PR is still open,
   so it costs one major bump rather than two. The commit carries the conventional-commit `!`
   breaking marker, as the two prior 4.0.0-bound breaks did.
-  Three symbols are **added** alongside — `PackIndexEntries`, `SortedPackIndex` and
-  `packIndexEntriesFrom` — which is additive, not breaking. The regenerated `reports/api.json`
-  is committed, and its diff is the scope check: **those six moved and three added, and nothing
-  else** (plus `BuildPackResult` if DC-A(b) is taken). Anything further in that diff means the
+  Two symbols are **added** alongside — `PackIndexEntries` and `SortedPackIndex` — which is
+  additive, not breaking. The regenerated `reports/api.json`
+  is committed, and its diff is the scope check: **those seven moved and two added, and nothing
+  else**. Anything further in that diff means the
   change leaked past its blast radius. No *config* key is added.
 - **R13** The `.idx`, `.rev` and `.mtimes` **bytes are unchanged for every entry set**, while the
   serializers' input shape widens to the oid slab. Concretely, all four must hold:
@@ -539,9 +545,9 @@ Both are pure sorts over typed arrays. **No `Map`, no `Set`, no `push(...spread)
 
 #### 3a. What crosses the boundary
 
-ADR-789 makes the slab the serializers' input, so its layout is load-bearing beyond pass 2 and
-its type has to be **domain-owned** — the dependency rule is absolute: `domain` never imports
-outward, so an application type may not reach inward.
+ADR-789 makes the slab the serializers' input and ADR-790 makes it `buildPack`'s output, so its
+layout is load-bearing beyond pass 2 and its type has to be **domain-owned** — the dependency
+rule is absolute: `domain` never imports outward, so an application type may not reach inward.
 
 **Three of the four per-entry arrays cross. The fourth, and every delta side table, never does.**
 
@@ -572,12 +578,21 @@ export interface SortedPackIndex {
 }
 ```
 
+**`PackIndexEntries` is not the indexer's private hand-over shape — it is *the* pack-index input
+shape.** ADR-790 makes `BuildPackResult.entries` a `PackIndexEntries` as well, so the two
+producers tsgit has — the indexer's record store for received packs, `buildPack` for locally
+built ones — hand the write pipeline the same value. There is no conversion step between them
+and no third shape in between: `buildPack` fills the slab from `plan.ids` and `packfile.entries`
+where it today builds `plan.ids.map((id, i) => ({ id, ...packfile.entries[i]! }))`
+(`build-pack.ts:58`), and `pack-objects` and `gc`'s three writes pass it straight through.
+
 Four properties of this shape are the reason it is this shape and not another:
 
 1. **Nothing but typed arrays and numbers crosses.** `PackIndexEntries` has zero platform
-   dependencies and zero application imports, so it satisfies the domain's own invariant. The
-   application-side record store (`internal/pack-records.ts`) *imports* it — application →
-   domain, the permitted direction — and exposes its own arrays as a `PackIndexEntries` **view**:
+   dependencies and zero application imports, so it satisfies the domain's own invariant. Both
+   application-side producers (`internal/pack-records.ts` and, under ADR-790, `build-pack.ts`)
+   *import* it — application → domain, the permitted direction. The record store exposes its own
+   arrays as a `PackIndexEntries` **view**:
    the same buffers, no copy, and no narrowing `subarray` (that is what `count` is for). Its
    store type, its `types` array and its child indexes stay application-owned and never appear in
    a domain signature.
@@ -589,9 +604,11 @@ Four properties of this shape are the reason it is this shape and not another:
    `sortPackIndexEntries(entries)`" in a comment and enforces it nowhere. Pairing them in one
    value makes ADR-625's invariant **structural**: the `.idx` and the `.rev` cannot be handed
    orderings from different entry sets, because there is only one value to hand over.
-4. **The slab is complete only after pass 2.** Delta entries' oid slots are filled as the forest
-   walk resolves them, so the record store hands over a `PackIndexEntries` only once
+4. **The indexer's slab is complete only after pass 2.** Delta entries' oid slots are filled as
+   the forest walk resolves them, so the record store hands over a `PackIndexEntries` only once
    `resolvedCount === objectCount` — i.e. only on the path where ADR-784's refusal did not fire.
+   `buildPack`'s slab has no such staging: every oid is an input, so the slab is complete the
+   moment `serializePackfile` returns the offsets and checksums to pair with them.
 
 **The `.idx` and `.rev` are still written from ordinals, never from strings.** A serializer reads
 entry `k` as `crcValues[k]`, `offsets[k]`, and the byte range
@@ -822,15 +839,18 @@ not under it (R14). `walkQuarantinedEntries` becomes a one-line call into
 `walkPackEntries` re-points at the new module. `DISK_WALK_WINDOW_BYTES` moves with the disk
 source and its ten test references re-point with it.
 
-ADR-789 adds a **second** touched area, in the domain rather than the application layer:
+ADRs 789 and 790 add a **second** touched area, mostly in the domain rather than the application
+layer:
 
 | Module | Change |
 |---|---|
-| `src/domain/storage/pack-order.ts` | Gains `PackIndexEntries` and `SortedPackIndex` (§3a) and the adapter `packIndexEntriesFrom`; `sortPackIndexEntries` re-typed; `SortedEntry` deleted. Currently 28 lines |
+| `src/domain/storage/pack-order.ts` | Gains `PackIndexEntries` and `SortedPackIndex` (§3a); `sortPackIndexEntries` re-typed; `SortedEntry` **and** `PackIndexWriterEntry` both deleted — ADR-790 removes the latter's last production consumer (§6a.5). Currently 28 lines |
 | `src/domain/storage/pack-writer.ts` | `serializePackIndex` re-typed; its body indexes through the permutation instead of dereferencing `SortedEntry.entry` |
 | `src/domain/storage/rev-index.ts` | `serializePackRevIndex` re-typed; `packPositionsByOffset` reads offsets from the slab through the permutation |
 | `src/domain/storage/cruft-pack.ts` | `serializeCruftMtimes` re-typed — **not named by ADR-789, but forced by it** (§6a) |
-| `src/application/primitives/internal/write-pack-artifacts.ts` | `buildIdx` / `buildRev` / `buildCruftMtimes` and the three `writePack*Artifacts` input types carry `PackIndexEntries`/`SortedPackIndex` instead of `PackIndexWriterEntry[]`/`SortedEntry[]` |
+| `src/application/primitives/internal/write-pack-artifacts.ts` | `buildIdx` / `buildRev` / `buildCruftMtimes` and the three `writePack*Artifacts` input types carry `PackIndexEntries`/`SortedPackIndex` instead of `PackIndexWriterEntry[]`/`SortedEntry[]`. `writeSiblingsGiven`'s `objectCount: input.entries.length` (`:200`) becomes `input.entries.count` — `length` is the over-allocated capacity, `count` is the bound (§3a property 2) |
+| `src/application/primitives/internal/cruft-pack-lifecycle.ts` | `writeCruftPack`'s `entries` input (`:232`) carries `PackIndexEntries`; `:245`'s `sortPackIndexEntries` call and `:248`'s `buildCruftMtimes` call re-point at the pair |
+| `src/application/primitives/build-pack.ts` | **ADR-790**: `BuildPackResult.entries` becomes `PackIndexEntries` and `buildPack` fills the slab in place of `:58`'s `map`. `hexToBytes` runs once per object, exactly as it would have one level up; nothing else about `buildPack` changes |
 
 No new *domain* module is created: `pack-order.ts` is 28 lines today and is the ordering
 definition's existing home, so ADR-625's "one shared helper" stays one file.
@@ -852,7 +872,7 @@ data-structure migration falsifies a carried-forward proof even when the verdict
   0-prerequisite bundle's pack is self-contained, so the resolver is still never invoked — but
   the proof must be restated against the plain port call, or the suppression retired.
 
-#### 6a. The widened serializers (ADR-789)
+#### 6a. The widened serializers (ADRs 789, 790)
 
 Today, and after:
 
@@ -862,16 +882,20 @@ sortPackIndexEntries(entries: ReadonlyArray<PackIndexWriterEntry>): ReadonlyArra
 serializePackIndex   (entries, packChecksum, presorted?: ReadonlyArray<SortedEntry>): Uint8Array
 serializePackRevIndex(entries, packChecksum, presorted?: ReadonlyArray<SortedEntry>): Uint8Array
 serializeCruftMtimes (entries, packChecksum, mtimeOf, presorted?: ReadonlyArray<SortedEntry>): Uint8Array
+BuildPackResult.entries: ReadonlyArray<PackIndexWriterEntry>
 
 // after
-packIndexEntriesFrom (entries: ReadonlyArray<PackIndexWriterEntry>, digestLength: number): PackIndexEntries
 sortPackIndexEntries (entries: PackIndexEntries): SortedPackIndex
 serializePackIndex   (sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array
 serializePackRevIndex(sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array
 serializeCruftMtimes (sorted: SortedPackIndex, packChecksum: Uint8Array, mtimeOf): Uint8Array
+BuildPackResult.entries: PackIndexEntries                                  // ADR-790
 ```
 
-Four things about that diff are deliberate.
+There is no array→slab adapter in that list, and its absence is the ADR-790 half of the diff:
+`packIndexEntriesFrom` is **not written** (point 5).
+
+Five things about that diff are deliberate.
 
 **1. The optional `presorted` parameter is gone, and the sort is mandatory.** It has to be:
 `sortPackIndexEntries` can no longer be called from inside a serializer without also knowing the
@@ -883,8 +907,9 @@ guarantee structural (R13c). Every production call site already sorts once and p
 so no caller loses anything; the six test-side call sites that relied on the default
 (`packfile-interop.test.ts:102,187`, `pack-fixture.ts:152`, `pack-pair.ts:71`,
 `bitmap-closure.scenario.ts:158`, `fsck-degraded-store.scenario.ts:87`) gain one
-`sortPackIndexEntries(packIndexEntriesFrom(…))` wrap, using the **production** adapter rather
-than a test-local copy.
+`sortPackIndexEntries(packIndexEntriesOf(…))` wrap over the **single shared test builder** of
+point 5 — there is no production adapter left to reuse, so the wrap must not be re-typed by
+hand in six places.
 
 **2. Width is validated where it is already validated.** Each serializer derives
 `digestLength` from `packChecksum.length` today and refuses anything but 20 or 32. It now also refuses a slab that disagrees with it:
@@ -901,17 +926,35 @@ inside the write loop. That is a **transient** string per object, immediately un
 today the same hex is *retained* for every object in the `PackIndexWriterEntry[]`; the cruft path
 therefore gets strictly better, not worse. Changing `mtimeOf` to take an ordinal instead would
 also work and would remove the hex entirely — it is not taken, because it moves a *published
-callback contract* on a path this change is not about, and `gc-pipeline.ts:562`'s
-`mtimeOrThrow(mtimes, id)` is naturally oid-keyed.
+callback contract* on a path this change is not about, and `gc-pipeline.ts:567`'s
+`mtimeOf: (id) => mtimeOrThrow(mtimes, id)` is naturally oid-keyed.
 
 **4. There is exactly one implementation.** No overload, no union input, no private slab path
 beside a public array path — that shape is the fork ADR-625 and `check:duplicates` both exist to
-prevent, and ADR-789 names it as the outcome to avoid. Callers that hold a
-`PackIndexWriterEntry[]` convert **once**, through `packIndexEntriesFrom`, before entering the
-pipeline; from that point down there is one shape.
+prevent, and ADR-789 names it as the outcome to avoid. Under ADR-790 there is also nothing to
+convert: **no production caller holds an array**. Both producers — the indexer's record store
+(§3a) and `buildPack` — emit a `PackIndexEntries`, and from there down there is one shape.
 
-Which callers those are, and where the conversion belongs, is the one choice this revision could
-not settle from the ratified record — **DC-A**, the sole entry in §Decision candidates.
+**5. `packIndexEntriesFrom` is not written, and `PackIndexWriterEntry` does not survive.**
+ADR-790 puts the conversion inside `buildPack`, which leaves the domain with no array→slab
+function to publish and leaves `PackIndexWriterEntry` with **zero production consumers** — its
+last one was `BuildPackResult` itself (`build-pack.ts:18,42`). It is deleted alongside
+`SortedEntry`, for the reason ADR-790 declined to publish `packIndexEntriesFrom`: a published
+symbol no production path reaches is the smell, and the smell does not care whether the symbol
+is a function or a type. `PackEntryMeta` (`pack-writer.ts:46`) is a **different** type —
+`serializePackfile`'s own `{ crc32, offset }` output, the half `buildPack` pairs with `plan.ids`
+— and is untouched.
+
+The conversion the *tests* need does not disappear with it. Most of §11b's fourteen files build
+their entry sets from `{ id, crc32, offset }` literals, precisely because those literals are
+readable next to a byte-exact expectation; rewriting each as a hand-built slab would cost the
+goldens their legibility and hand `check:duplicates` a dozen copies of the same construction.
+It becomes a **fixture, not an API**: one
+shared builder `packIndexEntriesOf(entries, digestLength)` in
+`test/fixtures/storage/pack-index-entries.ts`, following the precedent
+`test/fixtures/storage/bitmap-writers.ts` already sets for a helper imported from both
+`test/unit/domain/storage/` and `test/parity/scenarios/`. R13d binds the ordering and the
+serializers, not the fixture — but `check:duplicates` binds the fixture, so there is one of it.
 
 ### 7. The memory ceiling, stated honestly
 
@@ -947,7 +990,7 @@ R  =  largestEntryInflatedBytes            one entry's payload in flight (pass 1
   pays the same shape — §1e's delta-free fixture C control measures its fixed cost at ≈ 1 KB per
   object.
 
-#### 7a. `idxAssembly`: the term ADR-789 changes in character
+#### 7a. `idxAssembly`: the term ADR-789 changes in character, and ADR-790 removes everywhere
 
 **The design's earlier "~2.3 MB" was an undercount, and the correction is what carried ADR-789.**
 It counted only `sortPackIndexEntries`' own allocation and not the hex-bearing array beneath it.
@@ -991,6 +1034,30 @@ versus a large `ArrayBuffer` — is the qualitative change, not the ratio.
 ⚠️ **The per-entry cost is not scale-invariant** — the pair measures 649 B/entry at 15 074
 objects and 422 B/entry at 1 000 000. Extrapolating either figure to the other scale would be
 wrong, so both are quoted from their own measurement and neither is derived from the other.
+
+**ADR-790 lands that reduction on every write path, not on the fetch path alone.** The 649 B
+pair is not the indexer's: it is `sortPackIndexEntries`' input plus whatever produced that
+input. On the locally built paths the producer is `BuildPackResult.entries` — the 488 B half —
+with the sort's own `SortedEntry[]` + `N × Uint8Array(20)` on top, the 161 B half. Filling the
+slab inside `buildPack` removes **both** halves from `pack-objects` and from `gc`'s three
+writes, exactly as it removes them from `fetchPack`.
+
+**That is the gc path, and it is the argument the decision turned on.** A fetch pack is bounded
+by what a remote chose to send; a gc pack is bounded by repository size, so `gc` is the highest
+object-count write tsgit has. At 10 000 000 objects the pair does not merely cost a lot — it
+**exhausts Node's default heap inside `entries.map()`**, the last row of §7a's first table — and
+`gc` is the path that reaches that count first. Under ADR-790 no write path builds it at all.
+
+Two limits on that claim, stated so the plan does not over-promise:
+
+- **`gc`'s peak is not §7's formula.** `buildPack` still returns the whole pack as one
+  `Uint8Array` and `deltifyEntries` still holds its own window; neither is touched here. At
+  fixture C's ratio the removed term is 9.79 MB against 27.7 MB of pack bytes — a real third,
+  not the dominant term. The qualitative claim (no `entries.map()` heap wall at 10 M objects)
+  is the load-bearing one; the proportional claim is not.
+- **The removal is only assertable against `main` on the same fixture**, never as a class
+  ceiling, because no closed formula describes the gc path. §Test strategy's bench case is
+  written that way deliberately.
 
 One place still materialises the old shape, deliberately: **`walkPackEntries` keeps its
 `WalkedEntry[]` return** (ADR-783), and its single caller `bundle-verify.ts:78` discards it. That
@@ -1148,27 +1215,27 @@ Every row is a test case, and every row was run against real git in §1f.
 | `inflateAllEntries`, `resolveAllEntries`, `walkFromPending`, `tryResolveEntry`, `resolveDelta`, `computeLooseObjectId`, `firstUnresolvedError`, `refDeltaBaseId` | module-private | replaced / moved | — |
 | `fetchPack`'s zero-entry guard | `fetch-pack.ts:181` | `entries.length === 0` becomes `indexed.count === 0` | quarantine-reap path, unchanged behaviour |
 
-#### 11a. The ADR-789 surface — six published symbols
+#### 11a. The ADR-789/790 surface — seven published symbols
 
 This is the half the design's first draft said would not move.
 
 | Symbol | Kind | Change | Consumers to sweep |
 |---|---|---|---|
-| `PackIndexWriterEntry` | **in `api.json`** | leaves every serializer signature; survives only where DC-A leaves it | `pack-order.ts:3`, `pack-writer.ts:25,27,104`, `rev-index.ts:14,113`, `cruft-pack.ts:22,42`, `storage/index.ts:86`, `write-pack-artifacts.ts:18,32,59,83,118,160,170`, `cruft-pack-lifecycle.ts:15,232`, `build-pack.ts:18,42` |
+| `PackIndexWriterEntry` | **in `api.json`** | **deleted.** It leaves every serializer signature and every input type, and ADR-790 takes its last production consumer (`BuildPackResult`), so nothing is left to hold it (§6a.5) | `pack-order.ts:3`, `pack-writer.ts:25,27,104`, `rev-index.ts:14,101,113`, `cruft-pack.ts:22,30,42`, `storage/index.ts:86`, `write-pack-artifacts.ts:18,32,59,83,118,160,170`, `cruft-pack-lifecycle.ts:15,232`, `build-pack.ts:18,42` — every one of them a rewrite site, none a survivor |
 | `SortedEntry` | **in `api.json`** | **deleted**, replaced by `SortedPackIndex` | `pack-order.ts:9`, `pack-writer.ts:25,107`, `rev-index.ts:13,115,152`, `cruft-pack.ts:21,45`, `write-pack-artifacts.ts:19,34,61,86,162`, `storage/index.ts:81` |
 | `sortPackIndexEntries` | **in `api.json`** | `(PackIndexEntries) → SortedPackIndex` | `pack-writer.ts:117`, `rev-index.ts:129`, `cruft-pack.ts:56` (the three `presorted ??` fallbacks, all **deleted**), `write-pack-artifacts.ts:192,305`, `cruft-pack-lifecycle.ts:245` |
 | `serializePackIndex` | **in `api.json`** | `(SortedPackIndex, packChecksum)` | `write-pack-artifacts.ts:37`; tests at `packfile-interop.test.ts:102,187`, `pack-fixture.ts:152`, `pack-pair.ts:71`, `bitmap-closure.scenario.ts:158`, `fsck-degraded-store.scenario.ts:87` |
 | `serializePackRevIndex` | **in `api.json`** | `(SortedPackIndex, packChecksum)` | `write-pack-artifacts.ts:64`; `rev-index.test.ts`, `rev-index.properties.test.ts` |
 | `serializeCruftMtimes` | **in `api.json`** | `(SortedPackIndex, packChecksum, mtimeOf)` — **the symbol ADR-789 does not name** (§6a) | `write-pack-artifacts.ts:85`; `cruft-pack.test.ts`, `cruft-pack.properties.test.ts` |
-| `PackIndexEntries`, `SortedPackIndex`, `packIndexEntriesFrom` | **new, in `api.json`** | added (additive, not breaking) | `pack-records.ts`, the three serializers, DC-A's conversion sites |
+| `PackIndexEntries`, `SortedPackIndex` | **new, in `api.json`** | added (additive, not breaking) | `pack-records.ts`, `build-pack.ts`, the three serializers, `write-pack-artifacts.ts`, `cruft-pack-lifecycle.ts` |
 | `buildIdx` / `buildRev` / `buildCruftMtimes` | internal | `(ctx, SortedPackIndex, packSha[, mtimeOf])` | `write-pack-artifacts.ts:37,64,85,164` |
 | `WritePackArtifactsInput.entries`, `WritePackSiblingArtifactsInput.entries`, `writeCruftPack`'s `entries` | internal | `PackIndexEntries` | `fetch-pack.ts:193`, `pack-objects.ts:89`, `gc-pipeline.ts:485,528,562` |
-| `BuildPackResult.entries` | **in `api.json`** | **unchanged under DC-A(a); becomes `PackIndexEntries` under DC-A(b)** | `pack-objects.ts:87`, `gc-pipeline.ts:484,527,560`. `push.ts:353` and `bundle-create.ts:312` read only `.bytes`/`.sha` and are unaffected either way |
+| `BuildPackResult.entries` | **in `api.json`** | `ReadonlyArray<PackIndexWriterEntry>` → **`PackIndexEntries`** (ADR-790); filled in `buildPack` in place of `build-pack.ts:58`'s `map` | the four `buildPack` call sites are **verified**, not assumed: `pack-objects.ts:87` → `:92`, `gc-pipeline.ts:484` → `:488`, `:527` → `:531`, `:560` → `:564`, each a pure pass-through of `pack.entries` into a `writePackArtifacts*` / `writeCruftPack` input that widens with it. `push.ts:353` reads only `.bytes`; `bundle-create.ts:312` reads `.bytes`, `.sha` and `.objectCount`. **Neither touches `.entries`**, so neither is affected |
 
 **`reports/api.json` moves** (R12). The regenerated report is committed and diffed per the
-standing pre-push gate, and the diff is now the *check on scope*: the six moved symbols plus the
-three added ones under DC-A(a), plus `BuildPackResult` under DC-A(b). Anything else in that diff
-is a leak.
+standing pre-push gate, and the diff is now the *check on scope*: **seven moved symbols and two
+added ones**, of which `SortedEntry` and `PackIndexWriterEntry` are outright removals. Anything
+else in that diff is a leak.
 
 #### 11b. Tests
 
@@ -1177,12 +1244,17 @@ indexer work lands. The window-behaviour tests (`requestedLengths` assertions ar
 `DISK_WALK_WINDOW_BYTES`) pin *pass 1's* read pattern and survive; pass 2 adds a second,
 backward-jumping read pattern that needs its own assertions.
 
-The ADR-789 half touches eleven test files, none of which may be weakened (R13, §Test strategy):
+The ADR-789/790 half touches **fourteen** test files, none of which may be weakened (R13,
+§Test strategy) — the first draft said eleven and miscounted the three parity scenarios:
 `pack-order.test.ts`, `pack-writer.test.ts`, `rev-index.test.ts`,
 `rev-index.properties.test.ts`, `cruft-pack.test.ts`, `cruft-pack.properties.test.ts`,
 `arbitraries.ts`, `write-pack-artifacts.test.ts`, `pack-fixture.ts`,
-`packfile-interop.test.ts`, and the three parity scenarios `pack-pair.ts`,
-`bitmap-closure.scenario.ts`, `fsck-degraded-store.scenario.ts`.
+`packfile-interop.test.ts`, the three parity scenarios `pack-pair.ts`,
+`bitmap-closure.scenario.ts`, `fsck-degraded-store.scenario.ts`, and — ADR-790's addition —
+`build-pack.test.ts`, whose `:232` ("each meta carries the emission-order oid alongside its
+crc32/offset") and `:333` ("each `entries[]` id, crc32 and offset all describe the SAME object")
+are the two assertions that must be restated against the slab rather than relaxed.
+One file is **added**: the shared fixture `test/fixtures/storage/pack-index-entries.ts` (§6a.5).
 
 Not touched: `pack-registry.ts`'s `deltaBaseCache` (a *read*-path cache for already-indexed
 packs, ADR-736's subject and outside `INDEX_PASS_BASE_CACHE_MAX_BYTES`'s budget entirely),
@@ -1193,9 +1265,10 @@ only the writers widen), and `serializePackfile`.
 
 ## Decisions
 
-All eleven of this design's load-bearing choices are ratified. Each row states the **settled
+All twelve of this design's load-bearing choices are ratified. Each row states the **settled
 rule** — not a preference, not a recommendation — and the section that implements it. Nothing
-here is open.
+here is open, and there is no §Decision candidates section: the last candidate, DC-A, is
+ADR-790.
 
 | ADR | Settled rule | Where it binds |
 |---|---|---|
@@ -1209,9 +1282,10 @@ here is open.
 | **786** | The index pass applies **no depth cap**. Adding a refusal where git accepts is the divergence direction the prime directive forbids by default, and ADR-771 set `MAX_DELTA_CHAIN_DEPTH` from git's *writer* default. The cost is accepted knowingly: the retained-ancestor term stays **formally unbounded**, and a deliberately branching forest of near-maximal objects is undefended. The index/read depth gap stays open. | §5, §7, §8 l, §9 |
 | **787** | Two new modules: **`internal/index-pack.ts`** (passes, byte sources, refusals) and **`internal/pack-records.ts`** (record store + child indexes, pure, I/O-free). `fetch-pack.ts` keeps negotiation, the quarantine lifecycle, `fetchPack`/`materializePack` and `verifyPackTrailer`. The byte-source seam moves **with the indexer**. Neither module is coverage-gated, so mutation is the gate. | §6 |
 | **788** | **One** byte-capped LRU inside the indexer, keyed on `ctx.session`, serving **both** pass-1→pass-2 carry-over of in-pack bases **and** externally-resolved thin-pack bases. It **replaces** `bundle-verify.ts:170`'s unbounded `Map`, whose deletion is a residency fix in its own right; that resolver becomes a plain port call. Its budget is **`INDEX_PASS_BASE_CACHE_MAX_BYTES`**, its own named constant, defaulted from the §5a measurement — not a fraction of and not equal to `deltaCacheMaxBytes`. Because the cache is an optimisation over an already-correct walk, **disabling it must change latency and never results** (R15). | §5a |
-| **789** | `sortPackIndexEntries`, `serializePackIndex`, `serializePackRevIndex` — and, forced by the same types, `serializeCruftMtimes` — take the **oid slab plus parallel crc/offset arrays**. The indexer never materialises `PackIndexWriterEntry[]` and `hexToBytes` leaves the path. Six published symbols move; the break rides the pending 4.0.0 exactly as ADR-776 reasoned. **ADR-625's invariant is preserved, not superseded** — one shared ordering definition still feeds every artefact — and §6a makes it structural. The byte-exact goldens and `git verify-pack` cross-tool pins are the regression net and none is weakened. | §3a, §6a, §7a, §11a |
+| **789** | `sortPackIndexEntries`, `serializePackIndex`, `serializePackRevIndex` — and, forced by the same types, `serializeCruftMtimes` — take the **oid slab plus parallel crc/offset arrays**. The indexer never materialises `PackIndexWriterEntry[]` and `hexToBytes` leaves the path. Six published symbols move under this ADR alone — ADR-790 adds the seventh; the break rides the pending 4.0.0 exactly as ADR-776 reasoned. **ADR-625's invariant is preserved, not superseded** — one shared ordering definition still feeds every artefact — and §6a makes it structural. The byte-exact goldens and `git verify-pack` cross-tool pins are the regression net and none is weakened. | §3a, §6a, §7a, §11a |
+| **790** | **The oid slab is born in `buildPack`.** `BuildPackResult.entries` becomes a `PackIndexEntries`, filled directly from `plan.ids` and `packfile.entries`; **no intermediate hex-bearing array is materialised on any write path**, so §7a's reduction lands on `gc` and `pack-objects` as well as on `fetchPack` — `gc` repacks the whole repository and is the highest object-count path tsgit has, which is what carried the decision against this design's own recommendation. `packIndexEntriesFrom` is **not written**: it existed only to serve a conversion point that no longer exists. `PackIndexWriterEntry` follows it out, having lost its last production consumer. `BuildPackResult` is the **seventh** published symbol to move, and costs nothing extra: the pending release is already the 4.0.0 ADR-776 and ADR-789 both ride. The four `buildPack` call sites that pass `.entries` through are re-pointed; `push.ts` and `bundle-create.ts` never read the field. | §3a, §6a, §7a, §11a |
 
-Two corrections this revision carries, both recorded so they are not re-introduced:
+Three corrections these revisions carry, recorded so they are not re-introduced:
 
 - **The `deltaBaseCache` fraction citation was false.** The first draft cited "ADR-727/736's
   fraction pattern" as sizing precedent. ADR-736 *considered* a fraction and **rejected** it,
@@ -1222,45 +1296,20 @@ Two corrections this revision carries, both recorded so they are not re-introduc
   `sortPackIndexEntries`' own allocation, not the hex-bearing array beneath it. The measured pair
   is **9.79 MB** (§7a), and that correction is what carried ADR-789 against the design's own
   recommendation.
+- **ADR-789's hand-over wording named the wrong file.** It read *"`build-pack.ts` and
+  `cruft-pack-lifecycle.ts` call `sortPackIndexEntries`"*. `cruft-pack-lifecycle.ts:245` does;
+  **`build-pack.ts` never calls it.** It is the *producer* whose `entries` feed every call site,
+  which is precisely why ADR-790 intervenes there and not at a call site. Nothing in either
+  decision turns on it, but a plan that goes looking for that call will not find it.
 
----
-
-## Decision candidates
-
-**One**, surfaced by the ADR-789 revision and not settled by any ratified record. ADR-789 hands it
-over explicitly: *"`build-pack.ts` and `cruft-pack-lifecycle.ts` call `sortPackIndexEntries`
-without a slab and must be reconciled — either by building one or by a narrow adapter over the
-widened entry point. That reconciliation is an engineering choice for the design revision, and it
-must not fork the serializer into two implementations…"*
-
-**The designer decides none of this.**
-
-**The constraint both live options satisfy, and the third does not:** exactly one implementation
-of the ordering and of each serializer (R13d). ADR-789 and `check:duplicates` both name the fork
-as the outcome to avoid, and ADR-625's shared-ordering invariant is what a fork would break.
-
-**The facts.** Four distinct caller paths reach `sortPackIndexEntries` from the application layer,
-through three source lines, and only the indexer's path has a slab:
-
-| Call site | Reached from | Has a slab? |
-|---|---|---|
-| `write-pack-artifacts.ts:192` (`writeSiblingsGiven`) | `fetch-pack.ts:193` — **the indexer** | **yes** |
-| `write-pack-artifacts.ts:192` (same line) | `writePackArtifacts` ← `pack-objects.ts:89`, `cruft-pack-lifecycle.ts:238` | no |
-| `write-pack-artifacts.ts:305` (`writePackArtifactsViaQuarantine`) | `gc-pipeline.ts:485,528` | no |
-| `cruft-pack-lifecycle.ts:245` (`writeCruftPack`) | `gc-pipeline.ts:562` | no |
-
-One correction to ADR-789's own wording, which does not change the decision: **`build-pack.ts`
-never calls `sortPackIndexEntries`.** It is the *producer* whose `BuildPackResult.entries` —
-`plan.ids.map((id, i) => ({ id, ...packfile.entries[i]! }))` at `build-pack.ts:58`, hex
-`ObjectId`s it already holds joined to `serializePackfile`'s `{ crc32, offset }` metas — feeds
-every slab-less call site. That is why it is where DC-A(b) would intervene.
-
-`push.ts:353` and `bundle-create.ts:312` also call `buildPack` but read only `.bytes`/`.sha`, so
-they are unaffected by either option.
-
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| **DC-A** | **Where the slab is born for callers that do not have one** | **(a) A domain conversion at the write boundary.** `packIndexEntriesFrom(entries, digestLength)` is exported from `domain/storage/pack-order.ts`; `pack-objects.ts` and `gc-pipeline.ts`'s three call sites convert `pack.entries` once before calling `writePackArtifacts*` / `writeCruftPack`, which take `PackIndexEntries` only. `BuildPackResult` is unchanged. **(b) Move the slab birth into `buildPack`.** `BuildPackResult.entries` becomes `PackIndexEntries`; `buildPack` fills the slab from `plan.ids` and `packfile.entries` directly. No slab-less caller remains and `packIndexEntriesFrom` has no production caller. **(c) Let the serializers accept either shape** (overload, or a union narrowed inside). | **(a)** | (a) and (b) are both fork-free; (c) is not, and is listed only so its rejection is on the record — a union input puts two index-and-dereference paths inside each serializer, which is exactly the second implementation ADR-625 and `check:duplicates` exist to prevent, and it doubles the mutation surface of code carrying byte-exact goldens. Between (a) and (b): **(a) moves the smallest published surface** — the six R12 symbols plus three additive ones, with `BuildPackResult` untouched — and the conversion is one named domain function with its own round-trip property test. Its cost is honest: the gc and `pack-objects` paths keep `BuildPackResult`'s hex-bearing `N × 488 B` array, so §7a's 11.8× reduction lands on the **fetch** path only, and the same term survives on the path `gc` uses to repack a whole repository. **(b) removes that term everywhere** and is the better long-term shape — `buildPack` already holds both halves, so building the slab there costs the same `hexToBytes` per object that (a) pays one level up, with no extra allocation — but it moves a **seventh** published symbol in the same major, re-points four call sites that are otherwise pure pass-through, and leaves `packIndexEntriesFrom` published with no production caller (a smell, though not a `knip` finding: it is reachable from `domain/index.ts`). (a) does not foreclose (b): (b) can land afterwards by deleting the three conversion calls, without reopening ADR-789. Take (b) instead if the gc path's residency should move in this PR rather than a later one. |
+And one recommendation that was overruled, recorded so the reasoning is not lost. DC-A asked
+where the slab is born for callers that do not hold one; this design recommended a conversion
+at the write boundary, on the ground that it moves the smallest published surface. ADR-790 took
+the other option. The cost accounting behind the recommendation was right — both options pay
+the same one `hexToBytes` per object — but its *weighting* was wrong: it traded away the term on
+the `gc` path, which is bounded by repository size rather than by what a remote chose to send,
+to avoid moving one more symbol inside a major release that was already breaking two. Ranking
+"smallest published surface" above "the term dies on every path" is the mistake to not repeat.
 
 ---
 
@@ -1315,7 +1364,7 @@ rather than duplicate.
   entries: the call refuses on the first bad inflate and total allocation stays proportional to
   three, asserted through a spy on the record store's capacity rather than through memory.
 
-### Unit + property — the serializer regression net (ADR-789)
+### Unit + property — the serializer regression net (ADRs 789, 790)
 
 **The goldens and the cross-tool pins *are* the net. None of them is weakened to fit the new
 shape** — that is R13, and it is the hardest constraint in this half of the change. How each is
@@ -1323,19 +1372,22 @@ re-expressed:
 
 | Existing asset | What happens to it |
 |---|---|
-| Byte-exact goldens in `pack-writer.test.ts` (727 lines), `rev-index.test.ts` (650), `cruft-pack.test.ts` (479) | **Expected bytes stay verbatim.** Only the *Arrange* changes: the same `{ id, crc32, offset }` literals the test already declares are wrapped in `sortPackIndexEntries(packIndexEntriesFrom([...], 20))` — the **production** adapter, never a test-local copy. One moved expected byte means the change is wrong |
+| Byte-exact goldens in `pack-writer.test.ts` (727 lines), `rev-index.test.ts` (650), `cruft-pack.test.ts` (479) | **Expected bytes stay verbatim.** Only the *Arrange* changes: the same `{ id, crc32, offset }` literals the test already declares are wrapped in `sortPackIndexEntries(packIndexEntriesOf([...], 20))` — the one shared fixture builder of §6a.5, never a per-file copy. One moved expected byte means the change is wrong |
 | `pack-order.test.ts` (78 lines) | Rewritten against the new return type, keeping all four existing cases: out-of-order input sorts ascending; each ordinal pairs with its own oid bytes (now `order[p]` selecting a slab range); the order is input-order-independent; the empty set returns an empty order |
-| `rev-index.properties.test.ts`, `cruft-pack.properties.test.ts` | **Properties unchanged.** `arbPackIndexWriterEntries` (`arbitraries.ts:472`) keeps generating readable `{ id, crc32, offset }` triples — that is what gives the generator hex-domain coverage — and gains a `.map` into `PackIndexEntries`. Rewriting it to emit slabs directly would silently drop that coverage |
+| `rev-index.properties.test.ts`, `cruft-pack.properties.test.ts` | **Properties unchanged.** `arbPackIndexWriterEntries` (`arbitraries.ts:472`) keeps generating readable `{ id, crc32, offset }` triples — that is what gives the generator hex-domain coverage — and gains a `.map` through `packIndexEntriesOf`. Rewriting it to emit slabs directly would silently drop that coverage. Its element type is no longer `PackIndexWriterEntry` (deleted, §6a.5) but the fixture builder's own input shape; the generator is otherwise untouched |
 | `packfile-interop.test.ts:102,187` — `git fsck --strict` + `cat-file -p` readback | **Oracle unchanged**, call shape wrapped. Its whole contract is "git accepts what we wrote"; it must keep passing with zero change to its assertions |
 | `pack-pair.ts:71`, `bitmap-closure.scenario.ts:158`, `fsck-degraded-store.scenario.ts:87` | Same wrap. Parity scenarios are cross-*adapter* and do not prove faithfulness, but they do prove the three adapters agree on the widened path |
 
-Three new tests carry the weight the type change adds:
+Three new tests carry the weight the type change adds. ADR-790 moves S1's subject: the
+conversion is no longer a published function with its own property test, it is a loop inside
+`buildPack`, so the pin goes where the loop is. A property test over the *fixture* builder would
+prove nothing about production.
 
 | # | Kind | Property |
 |---|---|---|
-| S1 | property, round-trip, `numRuns` **200** | `packIndexEntriesFrom(E, W)` — for every `i < E.length`: `oids[i*W … (i+1)*W)` equals `hexToBytes(E[i].id)`, `crcValues[i] === E[i].crc32`, `offsets[i] === E[i].offset`, `count === E.length`. Lens 1 |
-| S2 | property, compositional, `numRuns` 100 | `sortPackIndexEntries(packIndexEntriesFrom(E, W)).order` reads out a **non-decreasing** oid byte sequence that is a permutation of `E`'s oids — including when `E` carries duplicate oids, which §10 pins as legal. Lens 2 |
-| S3 | example, the anti-fork oracle | The same entry set built **two ways** — through `packIndexEntriesFrom` from an array, and written directly into a hand-built slab — produces `.idx`, `.rev` and `.mtimes` bytes that are `toEqual`. If a second implementation ever appears, this is what fails; `check:duplicates` is the mechanical half of the same guard |
+| S1 | example, `build-pack.test.ts` (extended) | **The slab-filling pin, on `buildPack`.** `build-pack.test.ts:232` ("each meta carries the emission-order oid alongside its crc32/offset") and `:333` ("each `entries[]` id, crc32 and offset all describe the SAME object") are restated against `PackIndexEntries`: for every `i < count`, `oids[i*W … (i+1)*W)` equals `hexToBytes` of the oid emitted at position `i`, and `crcValues[i]` / `offsets[i]` are `serializePackfile`'s meta for that same entry. `:333`'s fixture — input order deliberately opposite to the delta-emission sort — is what makes the assertion bite, and it is not relaxed. SHA-1 and SHA-256 widths both, since `W` is now an index stride rather than a string length |
+| S2 | property, compositional, `numRuns` 100 | `sortPackIndexEntries(packIndexEntriesOf(E, W)).order` reads out a **non-decreasing** oid byte sequence that is a permutation of `E`'s oids — including when `E` carries duplicate oids, which §10 pins as legal. The `sut` is `sortPackIndexEntries`; the builder is Arrange only, so this stays a property about the ordering. Lens 2 |
+| S3 | example, the anti-**producer**-fork oracle | ADR-790 creates a second slab producer, so the fork risk moves from the serializers to them. `buildPack` a pack, write those exact bytes and index them through `indexQuarantinedPack` (not `walkPackEntries`, which ADR-783 keeps returning `WalkedEntry[]`), then assert the two `PackIndexEntries` yield `.idx`, `.rev` and `.mtimes` bytes that are `toEqual`. A digest-width mismatch, an off-by-one stride, or a divergent emission order in either producer fails here and nowhere else; `check:duplicates` remains the mechanical half for the serializers themselves |
 
 ### Unit — the base cache (ADR-788, R15)
 
@@ -1384,9 +1436,9 @@ Every row of §1f becomes a case, with git as the peer on the same crafted bytes
 `fatal: pack is corrupted (SHA1 mismatch)` and never reaches the condition under test — §1f
 rows 11 and 13 are exactly that shape.
 
-### Bench — `test/bench/fetch-pack.bench.ts`
+### Bench — `test/bench/fetch-pack.bench.ts`, and one case in `maintenance.bench.ts`
 
-Three scenarios, all on committed generators reproducing fixtures A, B and C:
+Three scenarios in the new file, all on committed generators reproducing fixtures A, B and C:
 
 - **Residency (R1, R2).** The assertion is a **class with headroom** against §7's formula, never
   a byte count, and it is measured with a **kernel high-water mark from a child process** —
@@ -1400,6 +1452,20 @@ Three scenarios, all on committed generators reproducing fixtures A, B and C:
   default, and it is a **gating step in the plan**, not a nice-to-have. Fixture B is the control:
   the cache must be inert there.
 
+A fourth scenario lives elsewhere, because it is not a fetch-path measurement:
+
+- **The gc-path assembly term (ADR-790)** — `test/bench/maintenance.bench.ts`, extending its
+  existing `gc` scenarios (2, 3 and 4) with a residency measurement taken the same way
+  as R1's: a **child process's kernel high-water mark**, never an in-process sampler. The
+  assertion is **branch against `main` on the same fixture**, not a class with headroom: §7's
+  formula describes the index pass, and `gc` does not run it. What is asserted is that the
+  `N × 649 B` pair is gone, so the peak delta must track object count rather than pack bytes.
+  It earns its place because `gc` is the highest object-count write path tsgit has and is the
+  argument ADR-790 turned on — an untested claim there would be the one place this design's
+  headline reduction is unproven. It must be absolute peaks on both branches: a self-share or a
+  ratio would not survive Amdahl against `buildPack`'s whole-pack buffer and `deltifyEntries`'
+  window, neither of which this change touches (§7a).
+
 ### Mutation
 
 Target 0 survivors. Known-hazardous spots to write kill tests for up front:
@@ -1410,6 +1476,11 @@ Target 0 survivors. Known-hazardous spots to write kill tests for up front:
   the boundary.
 - The slab guards in each serializer (`oids.length < count * digestLength` and siblings, §6a) —
   a case landing exactly on equality, since `<` versus `<=` is the live mutant there.
+- **`buildPack`'s slab-filling loop** (ADR-790) — the `i * digestLength` stride and the
+  `plan.ids[i]` ↔ `packfile.entries[i]` pairing. An off-by-one there mis-pairs every oid with
+  the *next* object's crc and offset, and every assertion that only checks set membership still
+  passes; `build-pack.test.ts:333`'s same-object assertion (S1) is the kill test, and it must
+  run at both digest widths because the stride is the mutable term.
 - `baseOffset >= entryOffset` versus `>` (ADR-785) — the self-reference case (`distance === 0`) is
   the killer, and it is the defect §1f row 15 found.
 - The **singular/plural** branch in ADR-784's message — a one-unresolved-delta pack and a
@@ -1432,6 +1503,11 @@ because mutation is the gate that will notice if they are not.
 at 100 %** — including each of §6a's structural guards. A guard added without a test does not
 survive `npm run test:coverage`, which is a stronger signal than mutation alone and arrives
 earlier.
+
+**ADR-790's half is back in the first case.** `build-pack.ts` is under `application/primitives/`,
+so its slab-filling loop is mutated but **not** coverage-gated — the one new piece of arithmetic
+this decision adds sits on the weaker of the two gates. That is why S1 is an explicit named test
+rather than a by-product of the existing `build-pack` suite.
 
 ---
 
@@ -1466,9 +1542,13 @@ earlier.
   its one caller discards the result, and collapsing it to a validate-only gate is explicitly
   *available afterwards* and not a prerequisite. Until then it is the last place the hex-bearing
   array survives (§7a).
-- **The gc / `pack-objects` half of `idxAssembly`**, if DC-A(a) is chosen. Those paths keep
-  `BuildPackResult.entries`' hex-bearing array; DC-A(b) is the shape that closes it, and it can
-  land later without reopening ADR-789.
+- **`buildPack`'s own residency.** ADR-790 moves the slab's birth into `buildPack`; it does not
+  touch the two seams `design/delta-writing-packer.md` §12 already names — `buildPack` still
+  returns the whole pack as a single `Uint8Array`, and `serializePackfile` still takes a
+  materialised `PackWriterEntry[]`. Both are `gc`-path terms of the order of the pack bytes —
+  larger, at fixture C's ratio, than the one this change removes (§7a) — and streaming either is
+  a separate design with its own ceiling. The `idxAssembly` half is closed here; the pack-bytes
+  half is not.
 - **`serializeCruftMtimes`' `mtimeOf(oid)` contract.** ADR-789's slab does not carry hex, so the
   serializer derives a transient one per index position (§6a). Re-keying the callback on an
   ordinal would remove even that, and is separable.
