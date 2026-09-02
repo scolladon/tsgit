@@ -410,7 +410,17 @@ function encodeVarint(out: number[], value: number): void {
   out.push(v & 0x7f);
 }
 
+/** Small, fixed-arity call sites throughout this file — never called with a
+ *  large spread array (see {@link concatAll} for that case). */
 function concat(...arrays: ReadonlyArray<Uint8Array>): Uint8Array {
+  return concatAll(arrays);
+}
+
+/** Never `concat(...arrays)`: spreading a large array into individual call
+ *  arguments overflows the call stack near 125k arguments, and a pack built
+ *  from tens of thousands of tiny entries reaches exactly that shape. Sums
+ *  and copies in a loop instead — same result, no argument-count limit. */
+function concatAll(arrays: ReadonlyArray<Uint8Array>): Uint8Array {
   const total = arrays.reduce((s, a) => s + a.length, 0);
   const out = new Uint8Array(total);
   let offset = 0;
@@ -419,8 +429,4 @@ function concat(...arrays: ReadonlyArray<Uint8Array>): Uint8Array {
     offset += a.length;
   }
   return out;
-}
-
-function concatAll(arrays: ReadonlyArray<Uint8Array>): Uint8Array {
-  return concat(...arrays);
 }

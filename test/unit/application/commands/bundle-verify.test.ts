@@ -715,6 +715,72 @@ describe('bundleVerify', () => {
     });
   });
 
+  describe('Given a bundle with two REF_DELTA entries sharing the same ABSENT external base oid', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then a repeat lookup for the absent base still answers by refusing, never by throwing from the cache itself', async () => {
+        // Arrange — write a blob that serves as the prerequisite (present),
+        // and craft two REF_DELTA entries against the SAME missing base oid
+        // — the shape that used to be memoised as `undefined` forever by
+        // the deleted `Map`. The replacement's cache must answer the SAME
+        // way on the second lookup, not throw or diverge.
+        const ctx = await initRepo();
+        const prereqContent = enc.encode('prerequisite blob');
+        const prereqOid = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: prereqContent,
+        });
+        const absentBaseId = `${'fedcba9876543210'.repeat(2)}fedcba98`; // 40 hex chars, never written
+        const baseContent = enc.encode('base content for delta computation');
+        const { packBytes, ids } = await buildSyntheticPack(ctx, [
+          {
+            kind: 'ref-delta',
+            baseId: absentBaseId,
+            baseUncompressed: baseContent,
+            targetContent: enc.encode('derived content one'),
+          },
+          {
+            kind: 'ref-delta',
+            baseId: absentBaseId,
+            baseUncompressed: baseContent,
+            targetContent: enc.encode('derived content two'),
+          },
+        ] as EntrySpec[]);
+
+        const headerBytes = serializeBundleHeader({
+          version: 2,
+          hashAlgorithm: 'sha1',
+          prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
+          refs: [
+            { oid: ids[0] as ObjectId, name: 'refs/heads/one' as RefName },
+            { oid: ids[1] as ObjectId, name: 'refs/heads/two' as RefName },
+          ],
+        });
+        const bundleBytes = new Uint8Array(headerBytes.length + packBytes.length);
+        bundleBytes.set(headerBytes, 0);
+        bundleBytes.set(packBytes, headerBytes.length);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — both entries stayed unresolvable; the refusal names the
+        // count, not a cache-internal error.
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
+        expect((tsErr.data as { readonly reason: string }).reason).toBe(
+          'pack has 2 unresolved deltas',
+        );
+      });
+    });
+  });
+
   // ── resolver: non-OBJECT_NOT_FOUND error → rethrow ────────────────────────
 
   describe('Given a bundle where the REF_DELTA base object exists but is unreadable (PERMISSION_DENIED)', () => {

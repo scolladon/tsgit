@@ -4,6 +4,8 @@
  *
  *   npm run bench:memory                             # delta-chain + commit-walk-header-cache
  *                                                     # + fsck object cache + clone quarantine
+ *                                                     # (incl. the index-pass base cache's
+ *                                                     # own delta-chain fixture) + gc residency
  *   TSGIT_BENCH_LARGE=1 npm run bench:memory          # + large-pack spread workload
  *   TSGIT_BENCH_HEADER_CACHE=1 npm run bench:memory   # + above-cap header-cache eviction workload
  *
@@ -398,6 +400,64 @@ const buildClonePackFixture = async (
   return { bareDir, packBytes };
 };
 
+// Deep OFS chains over one churned file — the index-pass base cache's own
+// working set (base-with-children roots re-read once per pass without it),
+// unlike `buildClonePackFixture`'s single random blob above.
+const DELTA_CHAIN_CLONE_COMMITS = 60;
+const DELTA_CHAIN_CLONE_LINE_COUNT = 400;
+
+/** A bare repo whose single pack carries real OFS delta chains: one text
+ *  file rewritten a handful of lines per commit over
+ *  `DELTA_CHAIN_CLONE_COMMITS` commits, then `repack -a -d` so the chains
+ *  land in one pack exactly as a real clone would receive them. */
+const buildDeltaChainClonePackFixture = async (root: string): Promise<ClonePackFixture> => {
+  const workDir = path.join(root, 'delta-chain-work');
+  const bareDir = path.join(root, 'delta-chain.git');
+  const env = gitEnv();
+  await execFileAsync('git', ['init', '-q', workDir], { env });
+  const filePath = path.join(workDir, 'churn.txt');
+  const lines = Array.from(
+    { length: DELTA_CHAIN_CLONE_LINE_COUNT },
+    (_, i) => `line-${i}-${randomBytes(4).toString('hex')}`,
+  );
+  const commitOnce = async (message: string): Promise<void> => {
+    await writeFile(filePath, `${lines.join('\n')}\n`);
+    await execFileAsync('git', ['-C', workDir, 'add', 'churn.txt'], { env });
+    await execFileAsync(
+      'git',
+      [
+        '-C',
+        workDir,
+        '-c',
+        'user.email=bench@example.com',
+        '-c',
+        'user.name=bench',
+        'commit',
+        '-q',
+        '-m',
+        message,
+      ],
+      { env },
+    );
+  };
+  await commitOnce('seed');
+  for (let c = 0; c < DELTA_CHAIN_CLONE_COMMITS; c += 1) {
+    for (let r = 0; r < 5; r += 1) {
+      const idx = (c * 5 + r) % lines.length;
+      lines[idx] = `line-${idx}-${randomBytes(4).toString('hex')}`;
+    }
+    await commitOnce(`c${c}`);
+  }
+  await execFileAsync('git', ['clone', '-q', '--bare', workDir, bareDir], { env });
+  await execFileAsync('git', ['-C', bareDir, '-c', 'pack.threads=1', 'repack', '-q', '-a', '-d'], {
+    env,
+  });
+  const packDir = path.join(bareDir, 'objects', 'pack');
+  const packFile = (await readdir(packDir)).find((name) => name.endsWith('.pack'));
+  const packBytes = packFile === undefined ? 0 : (await stat(path.join(packDir, packFile))).size;
+  return { bareDir, packBytes };
+};
+
 const findHeaderSeparator = (buf: Buffer): number => {
   for (let i = 0; i < buf.length - 1; i += 1) {
     if (buf[i] === 0x0a && buf[i + 1] === 0x0a) return i;
@@ -587,14 +647,101 @@ const runCloneWorkload = async (
   try {
     const small = await buildClonePackFixture(root, 'small', CLONE_SMALL_BLOB_BYTES);
     const large = await buildClonePackFixture(root, 'large', CLONE_LARGE_BLOB_BYTES);
+    const deltaChain = await buildDeltaChainClonePackFixture(root);
     const transport = buildDeterministicTransport(backendPath, root);
     return [
       await runOneCloneMeasurement(gc, openRepository, transport, 'small', small.packBytes),
       await runOneCloneMeasurement(gc, openRepository, transport, 'large', large.packBytes),
+      // Exercises the index-pass base cache at its shipped default budget
+      // through the real receive path — the ongoing regression signal for
+      // R1/R2's residency claim; the sizing sweep that picked the default
+      // itself is a one-off local measurement recorded in the base-cache
+      // budget spike doc, not something this nightly workload re-derives.
+      await runOneCloneMeasurement(
+        gc,
+        openRepository,
+        transport,
+        'delta-chain',
+        deltaChain.packBytes,
+      ),
     ];
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+};
+
+// `maintenance`'s `gc` repacks the whole repository and is the highest
+// object-count write path this library has — the argument for turning this
+// cache on in the first place, so leaving it unmeasured would be the one
+// place the change's headline reduction went unproven. Kept modest (loose
+// object count, not a scaled fixture) so it stays inside the same nightly
+// budget the rest of this script already runs in.
+const GC_RESIDENCY_LOOSE_OBJECT_COUNT = 3_000;
+const GC_RESIDENCY_AUTHOR = {
+  name: 'bench',
+  email: 'bench@tsgit.invalid',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+
+/**
+ * Peak RSS for `maintenance({tasks:['gc']})` over freshly seeded reachable
+ * loose objects — this branch's absolute number. `fileCount` committed
+ * working-tree files, one flat commit (gc's cost is driven by object
+ * count, not commit-graph depth), mirroring `test/bench/support/
+ * write-scratch.ts`'s `buildManyLooseObjectsScratch` shape — reproduced
+ * rather than imported, since that helper's own `.js`-suffixed imports
+ * pull in the source tree, which this strip-types script cannot resolve
+ * (see the module doc comment; `openRepository` itself is dynamic-imported
+ * from `dist/` for exactly this reason).
+ *
+ * Comparing this branch's peak against `main`'s absolute peak on the
+ * identical fixture (never a ratio or a self-share delta, both of which
+ * are Amdahl-fragile against `buildPack`'s own untouched deltify/
+ * window-search cost) is a manual step recorded in the base-cache budget
+ * spike doc, not something this script automates — doing so would need a
+ * second checked-out build of the library, out of scope for a script whose
+ * job is measuring ONE tree.
+ */
+const runGcResidencyWorkload = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+): Promise<WorkloadReport> => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-gc-residency-'));
+  const before = gcBaseline(gc);
+  let peak = before;
+  const poll = setInterval(() => {
+    peak = maxSample(peak, sampleMemory());
+  }, PEAK_POLL_INTERVAL_MS);
+  try {
+    const repo = await openRepository({ cwd });
+    try {
+      await repo.init();
+      for (let i = 0; i < GC_RESIDENCY_LOOSE_OBJECT_COUNT; i += 1) {
+        await writeFile(path.join(cwd, `f${i.toString().padStart(6, '0')}.txt`), `payload ${i}\n`);
+      }
+      await repo.add([], { all: true });
+      await repo.commit({
+        message: 'seed',
+        author: GC_RESIDENCY_AUTHOR,
+        committer: GC_RESIDENCY_AUTHOR,
+      });
+      await repo.maintenance({ tasks: ['gc'] });
+      peak = maxSample(peak, sampleMemory());
+    } finally {
+      await repo.dispose();
+    }
+  } finally {
+    clearInterval(poll);
+    await rm(cwd, { recursive: true, force: true });
+  }
+  const after = gcBaseline(gc);
+  return toReport(
+    `gc-residency-${GC_RESIDENCY_LOOSE_OBJECT_COUNT}-loose-objects`,
+    before,
+    peak,
+    after,
+  );
 };
 
 const toMarkdownRow = (report: WorkloadReport): string =>
@@ -629,6 +776,7 @@ const main = async (): Promise<void> => {
     reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FIXTURE));
     reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FAT_BLOB_FIXTURE));
     reports.push(...(await runCloneWorkload(gc, openRepository)));
+    reports.push(await runGcResidencyWorkload(gc, openRepository));
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
       reports.push(await runLargePackWorkload(gc, openRepository));
     }
