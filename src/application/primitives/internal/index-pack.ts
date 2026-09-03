@@ -39,7 +39,8 @@ import { createPackRecordStore, type PackRecordStore } from './pack-records.js';
 export { DISK_WALK_WINDOW_BYTES };
 
 /** Threaded through `walkPackEntries`/`indexQuarantinedPack` so a caller —
- *  chiefly this module's own R15 sweep — can force the base cache's budget,
+ *  chiefly this module's own budget-equivalence sweep — can force the base
+ *  cache's budget,
  *  down to disabling it entirely (`0`). `baseCacheMaxEntries` overrides the
  *  entry cap on the same seam, so the count guard can be exercised without a
  *  pack carrying {@link INDEX_PASS_BASE_CACHE_MAX_ENTRIES} roots. `fetchPack`
@@ -549,7 +550,7 @@ const resolveExternalBases = async <TCrcContext>(
  * it unconditionally, even when clearing wipes entries a DIFFERENT,
  * still-in-flight pass sharing this session populated — safe because
  * dropping a live entry only ever costs that other pass a re-read, never a
- * different result (R15 pins the equivalence this relies on).
+ * different result — the budget-equivalence sweep pins that.
  */
 const indexPackEntries = async <TCrcContext>(
   ctx: Context,

@@ -3316,7 +3316,7 @@ describe('index pass equivalence — anti-producer-fork oracle', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// index pass equivalence — the base cache budget sweep (R15). The base
+// index pass equivalence — the base cache budget sweep. The base
 // cache is an optimisation over an already-correct walk: every corpus case
 // runs TWICE, at baseCacheMaxBytes 0 and at the shipped default, and the two
 // runs must agree on everything except latency. `budget 0` is not a special
@@ -3325,10 +3325,10 @@ describe('index pass equivalence — anti-producer-fork oracle', () => {
 // degenerate path stays correct rather than merely "never crashes".
 // ─────────────────────────────────────────────────────────────────────────────
 
-const R15_BUDGETS: ReadonlyArray<number> = [0, INDEX_PASS_BASE_CACHE_MAX_BYTES];
+const BASE_CACHE_BUDGET_SWEEP: ReadonlyArray<number> = [0, INDEX_PASS_BASE_CACHE_MAX_BYTES];
 
-describe('index pass equivalence — base cache budget sweep (R15)', () => {
-  const R15_OFS_CHAIN_1000_TIMEOUT_MS = 30_000;
+describe('index pass equivalence — base cache budget sweep', () => {
+  const DEEP_CHAIN_TIMEOUT_MS = 30_000;
 
   for (const corpusCase of INDEX_PASS_CORPUS) {
     describe(`Given the "${corpusCase.name}" corpus case`, () => {
@@ -3344,7 +3344,7 @@ describe('index pass equivalence — base cache budget sweep (R15)', () => {
                 readonly offset: number;
               }>
             > = await Promise.all(
-              R15_BUDGETS.map(async (baseCacheMaxBytes) => {
+              BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes) => {
                 const ctx = createMemoryContext();
                 const entries = await corpusCase.entries(ctx);
                 const built = await buildSyntheticPack(ctx, entries);
@@ -3359,7 +3359,7 @@ describe('index pass equivalence — base cache budget sweep (R15)', () => {
             // Assert
             expect(results[1]).toEqual(results[0]);
           },
-          corpusCase.name === 'ofs-chain-depth-1000' ? R15_OFS_CHAIN_1000_TIMEOUT_MS : undefined,
+          corpusCase.name === 'ofs-chain-depth-1000' ? DEEP_CHAIN_TIMEOUT_MS : undefined,
         );
       });
 
@@ -3369,11 +3369,11 @@ describe('index pass equivalence — base cache budget sweep (R15)', () => {
           async () => {
             // Arrange
             const serialized = await Promise.all(
-              R15_BUDGETS.map(async (baseCacheMaxBytes, i) => {
+              BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes, i) => {
                 const ctx = createMemoryContext();
                 const entries = await corpusCase.entries(ctx);
                 const built = await buildSyntheticPack(ctx, entries);
-                const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_r15_${i}`;
+                const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_budget_sweep_${i}`;
                 await ctx.fs.write(tmpPath, built.packBytes);
                 const options: IndexPackOptions = { baseCacheMaxBytes };
 
@@ -3400,22 +3400,22 @@ describe('index pass equivalence — base cache budget sweep (R15)', () => {
             expect(serialized[1]?.idx).toEqual(serialized[0]?.idx);
             expect(serialized[1]?.rev).toEqual(serialized[0]?.rev);
           },
-          corpusCase.name === 'ofs-chain-depth-1000' ? R15_OFS_CHAIN_1000_TIMEOUT_MS : undefined,
+          corpusCase.name === 'ofs-chain-depth-1000' ? DEEP_CHAIN_TIMEOUT_MS : undefined,
         );
       });
     });
   }
 });
 
-describe('index pass equivalence — base cache budget sweep, thin-pack half (R15)', () => {
-  const buildThinPackR15 = async (ctx: ReturnType<typeof createMemoryContext>) => {
-    const baseContent = ENCODER.encode('r15 thin-pack base content');
+describe('index pass equivalence — base cache budget sweep, thin-pack half', () => {
+  const buildThinPackForBudgetSweep = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const baseContent = ENCODER.encode('budget-sweep thin-pack base content');
     const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
     const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
     baseRaw.set(baseHeader, 0);
     baseRaw.set(baseContent, baseHeader.length);
     const baseId = await ctx.hash.hashHex(baseRaw);
-    const targetContent = ENCODER.encode('r15 thin-pack derived content');
+    const targetContent = ENCODER.encode('budget-sweep thin-pack derived content');
     const { packBytes } = await buildSyntheticPack(ctx, [
       { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent } as EntrySpec,
     ]);
@@ -3426,9 +3426,9 @@ describe('index pass equivalence — base cache budget sweep, thin-pack half (R1
     it('Then both budgets resolve the delta to the identical entry set', async () => {
       // Arrange
       const results = await Promise.all(
-        R15_BUDGETS.map(async (baseCacheMaxBytes) => {
+        BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes) => {
           const ctx = createMemoryContext();
-          const { packBytes, baseId, baseContent } = await buildThinPackR15(ctx);
+          const { packBytes, baseId, baseContent } = await buildThinPackForBudgetSweep(ctx);
           const resolveBase: ExternalBaseResolver = async (oid) =>
             oid === baseId ? { type: 'blob', content: baseContent } : undefined;
           const options: IndexPackOptions = { baseCacheMaxBytes };
@@ -3447,9 +3447,9 @@ describe('index pass equivalence — base cache budget sweep, thin-pack half (R1
     it('Then both budgets refuse with the identical error data', async () => {
       // Arrange
       const caught = await Promise.all(
-        R15_BUDGETS.map(async (baseCacheMaxBytes) => {
+        BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes) => {
           const ctx = createMemoryContext();
-          const { packBytes } = await buildThinPackR15(ctx);
+          const { packBytes } = await buildThinPackForBudgetSweep(ctx);
           const resolveBase: ExternalBaseResolver = async () => undefined;
           const options: IndexPackOptions = { baseCacheMaxBytes };
 
