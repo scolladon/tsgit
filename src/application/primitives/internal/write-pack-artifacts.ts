@@ -124,6 +124,10 @@ export interface WrittenPackArtifacts {
   /** Byte length of the written `.idx` — callers no longer recompute it. */
   readonly indexBytes: number;
   readonly packSha: string;
+  /** The oid-ascending permutation this write already computed. Handed back so
+   *  a caller writing a further artefact over the same slab — the cruft
+   *  `.mtimes` is the only one — does not sort it a second time. */
+  readonly sorted: SortedPackIndex;
 }
 
 interface ArtifactPaths {
@@ -196,6 +200,7 @@ const writeSiblingsGiven = async (
     objectCount: input.entries.count,
     indexBytes: idxBytes.length,
     packSha: input.packSha,
+    sorted,
   };
 };
 
@@ -341,5 +346,6 @@ export const writePackArtifactsViaQuarantine = async (
     objectCount: input.entries.count,
     indexBytes: idxBytes.length,
     packSha: input.packSha,
+    sorted,
   };
 };
