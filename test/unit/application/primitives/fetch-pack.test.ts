@@ -3220,41 +3220,61 @@ describe('index pass equivalence', () => {
 describe('index pass equivalence — record-store offset ordering', () => {
   const RESOLUTION_ORDER_CASES = ['ref-delta-before-base', 'branching-forest'] as const;
 
+  const assertStrictlyAscending = (offsets: ReadonlyArray<number>): void => {
+    expect(offsets.length).toBeGreaterThan(1);
+    for (let i = 1; i < offsets.length; i += 1) {
+      expect(offsets[i]!).toBeGreaterThan(offsets[i - 1]!);
+    }
+  };
+
   for (const caseName of RESOLUTION_ORDER_CASES) {
     const corpusCase = INDEX_PASS_CORPUS.find((c) => c.name === caseName);
     if (corpusCase === undefined) {
       throw new Error(`corpus case "${caseName}" not found`);
     }
 
+    // `PackIndexEntries` documents emission order — ascending pack offset — as
+    // its contract, and the walk resolves in dependency order, not offset
+    // order. Both entry points expose the producer's own order directly:
+    // `walkPackEntries` materialises the slab positionally, and
+    // `indexQuarantinedPack` returns the slab itself. Neither needs the record
+    // store mocked to see it, and the `.idx`/`.rev` bytes cannot show it —
+    // both re-derive their own ordering from the values.
     describe(`Given the "${caseName}" corpus case, whose resolution order differs from its offset order`, () => {
-      describe('When fetchPack indexes the quarantined pack from disk', () => {
+      describe('When it is walked from memory', () => {
+        it('Then the returned entries are in strictly ascending offset order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const built = await buildSyntheticPack(ctx, await corpusCase.entries(ctx));
+
+          // Act
+          const result = await walkPackEntries(ctx, built.packBytes);
+
+          // Assert
+          assertStrictlyAscending(result.map((entry) => entry.offset));
+        });
+      });
+
+      describe('When it is indexed from a quarantined file on disk', () => {
         it('Then the handed-over PackIndexEntries.offsets is strictly ascending', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          const entries = await corpusCase.entries(ctx);
-          const built = await buildSyntheticPack(ctx, entries);
-          const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
-          const { transport } = captureRequests(body);
-          createPackRecordStoreSpy.mockClear();
+          const built = await buildSyntheticPack(ctx, await corpusCase.entries(ctx));
+          const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_order_${caseName}`;
+          await ctx.fs.write(tmpPath, built.packBytes);
 
           // Act
-          await fetchPack(ctx, toNegotiator(transport), {
-            wants: [(built.ids[0] ?? 'a'.repeat(40)) as ObjectId],
-            haves: [],
-            capabilities: ['side-band-64k', 'ofs-delta'],
-            progressOp: 'test:write-objects',
-          });
+          const view = await indexQuarantinedPack(
+            ctx,
+            tmpPath,
+            built.packBytes.length,
+            async () => {
+              await ctx.fs.rmRecursive(tmpPath);
+            },
+          );
 
           // Assert
-          expect(createPackRecordStoreSpy).toHaveBeenCalledTimes(1);
-          const store = createPackRecordStoreSpy.mock.results[0]?.value as ReturnType<
-            typeof packRecordsModule.createPackRecordStore
-          >;
-          const view = store.view();
-          expect(view.count).toBeGreaterThan(1);
-          for (let i = 1; i < view.count; i += 1) {
-            expect(view.offsets[i]).toBeGreaterThan(view.offsets[i - 1] as number);
-          }
+          assertStrictlyAscending(Array.from(view.offsets.subarray(0, view.count)));
         });
       });
     });
