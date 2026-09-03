@@ -25,7 +25,7 @@ import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.
 import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
 import { REV_HEADER_SIZE } from '../../../../src/domain/storage/rev-index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { packIndexEntriesOf } from '../../../fixtures/storage/pack-index-entries.js';
+import { packIndexEntriesOf, sealPackIndex } from '../../../fixtures/storage/pack-index-entries.js';
 
 export interface BaseEntrySpec {
   readonly kind: 'base';
@@ -155,11 +155,9 @@ export async function buildSyntheticPack(
     sortPackIndexEntries(packIndexEntriesOf(idxEntries, packChecksum.length)),
     packChecksum,
   );
-  // parsePackIndex expects a 40-byte trailer (pack-checksum + idx-checksum) but
-  // serializePackIndex currently emits only 20. Pad the idx with a computed
-  // idx-checksum so the parser accepts the file.
-  const idxChecksumHex = await ctx.hash.hashHex(idxFromWriter);
-  const idxBytes = concat(idxFromWriter, hexToBytes(idxChecksumHex));
+  // `serializePackIndex` reserves the idx-over-idx checksum zeroed and does
+  // not hash its own output; sealing fills it in place.
+  const idxBytes = await sealPackIndex(idxFromWriter, ctx.hash.hash, ctx.hash.digestLength);
 
   return { packBytes, idxBytes, ids, offsets };
 }

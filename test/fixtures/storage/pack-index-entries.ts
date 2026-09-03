@@ -32,3 +32,20 @@ export function packIndexEntriesOf(
   }
   return { count, digestLength, oids, crcValues, offsets };
 }
+
+/**
+ * Fills the index's own trailing checksum in place — `serializePackIndex`
+ * reserves the region zeroed and does not hash its own output, exactly as
+ * `serializePackRevIndex` does. Mirrors production's `buildIdx`; kept here so
+ * the five test call sites that need it share one copy, which `jscpd` would
+ * not catch drifting apart because it only scans `src/`.
+ */
+export async function sealPackIndex(
+  idx: Uint8Array,
+  hash: (bytes: Uint8Array) => Promise<Uint8Array>,
+  digestLength: number,
+): Promise<Uint8Array> {
+  const digestStart = idx.length - digestLength;
+  idx.set(await hash(idx.subarray(0, digestStart)), digestStart);
+  return idx;
+}

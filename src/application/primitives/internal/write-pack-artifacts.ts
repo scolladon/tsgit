@@ -39,12 +39,10 @@ export const buildIdx = async (
   // the repository's algorithm); parsePackIndex expects a second checksum
   // immediately after — the SHA over the body itself. Real git produces both;
   // we follow suit so subsequent `parsePackIndex` reads round-trip cleanly.
-  const idxTrailerHex = await ctx.hash.hashHex(body);
-  const idxTrailerBytes = hexToBytes(idxTrailerHex);
-  const out = new Uint8Array(body.length + idxTrailerBytes.length);
-  out.set(body, 0);
-  out.set(idxTrailerBytes, body.length);
-  return out;
+  const digestStart = body.length - ctx.hash.digestLength;
+  const idxTrailerHex = await ctx.hash.hashHex(body.subarray(0, digestStart));
+  body.set(hexToBytes(idxTrailerHex), digestStart);
+  return body;
 };
 
 /**

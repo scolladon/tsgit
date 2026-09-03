@@ -111,6 +111,16 @@ export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): Pack
   return { data: concatBytes(chunks), entries: metas };
 }
 
+/**
+ * Serializes a v2 pack index over `sorted`'s oid-ascending permutation.
+ *
+ * The returned buffer ends in TWO digest-sized regions: `packChecksum`, written
+ * here, and the index's own trailing checksum, left **zeroed** — this function
+ * does not hash its own output. The caller hashes everything before that region
+ * and fills it in place, exactly as `serializePackRevIndex` and
+ * `serializeCruftMtimes` expect their callers to. A caller that writes the
+ * buffer without filling it writes an index `parsePackIndex` will reject.
+ */
 export function serializePackIndex(sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array {
   const digestLength = packChecksum.length;
   assertValidPackIndexInput(sorted, digestLength);
@@ -139,7 +149,12 @@ export function serializePackIndex(sorted: SortedPackIndex, packChecksum: Uint8A
     crcTableSize +
     offsetTableSize +
     largeOffsetTableSize +
-    checksumSize;
+    // Two digests: the pack checksum, written here, and the index's own
+    // trailing checksum, left ZEROED for the caller to fill in place — the
+    // same body/trailer split `serializePackRevIndex` uses. Appending it by
+    // allocating a second full-size buffer held 2x the index at once, which
+    // on a million-object pack is roughly 53 MiB for a 20-byte append.
+    2 * checksumSize;
 
   const bytes = new Uint8Array(totalSize);
   const view = new DataView(bytes.buffer);
@@ -198,8 +213,8 @@ export function serializePackIndex(sorted: SortedPackIndex, packChecksum: Uint8A
     }
   }
 
-  // Pack checksum
-  bytes.set(packChecksum, totalSize - checksumSize);
+  // Pack checksum; the index's own trailer stays zeroed for the caller.
+  bytes.set(packChecksum, totalSize - 2 * checksumSize);
 
   return bytes;
 }

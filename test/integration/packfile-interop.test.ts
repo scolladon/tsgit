@@ -30,7 +30,7 @@ import {
   serializePackfile,
   serializePackIndex,
 } from '../../src/domain/storage/pack-writer.js';
-import { packIndexEntriesOf } from '../fixtures/storage/pack-index-entries.js';
+import { packIndexEntriesOf, sealPackIndex } from '../fixtures/storage/pack-index-entries.js';
 import {
   GIT_AVAILABLE,
   initBothRepos,
@@ -105,10 +105,7 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
           sortPackIndexEntries(packIndexEntriesOf(indexEntries, packTrailer.length)),
           packTrailer,
         );
-        const idxTrailerBytes = await ctx.hash.hash(idxBody);
-        const idxBytes = new Uint8Array(idxBody.length + idxTrailerBytes.length);
-        idxBytes.set(idxBody, 0);
-        idxBytes.set(idxTrailerBytes, idxBody.length);
+        const idxBytes = await sealPackIndex(idxBody, ctx.hash.hash, ctx.hash.digestLength);
 
         // Drop both into peer and validate.
         runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);
@@ -193,10 +190,7 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
           sortPackIndexEntries(packIndexEntriesOf(indexEntries, packTrailer.length)),
           packTrailer,
         );
-        const idxTrailerBytes = await ctx.hash.hash(idxBody);
-        const idxBytes = new Uint8Array(idxBody.length + idxTrailerBytes.length);
-        idxBytes.set(idxBody, 0);
-        idxBytes.set(idxTrailerBytes, idxBody.length);
+        const idxBytes = await sealPackIndex(idxBody, ctx.hash.hash, ctx.hash.digestLength);
 
         // Drop both into peer and validate.
         runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);

@@ -416,7 +416,7 @@ describe('pack-writer', () => {
             // 0x7fffffff must NOT count as large; `> 0x7fffffff` boundary. Kills the
             // L78 `>=` EqualityOperator mutant (would reserve 8 extra large-offset bytes).
             entries: [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x7fffffff }],
-            expectedLength: 8 + 1024 + 20 + 4 + 4 + 0 + 20,
+            expectedLength: 8 + 1024 + 20 + 4 + 4 + 0 + 20 + 20,
             label: '1 entry at the exact-boundary small offset (0x7fffffff)',
           },
           {
@@ -426,7 +426,7 @@ describe('pack-writer', () => {
               { id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 },
               { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 99 },
             ],
-            expectedLength: 8 + 1024 + 40 + 8 + 8 + 0 + 20,
+            expectedLength: 8 + 1024 + 40 + 8 + 8 + 0 + 20 + 20,
             label: '2 small-offset entries',
           },
           {
@@ -435,7 +435,7 @@ describe('pack-writer', () => {
             // so true≡correct, but combined with the small-offset row this anchors
             // the exact count.
             entries: [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 0x80000000 }],
-            expectedLength: 8 + 1024 + 20 + 4 + 4 + 8 + 20,
+            expectedLength: 8 + 1024 + 20 + 4 + 4 + 8 + 20 + 20,
             label: '1 large-offset entry',
           },
           {
@@ -446,7 +446,7 @@ describe('pack-writer', () => {
               { id: 'bb' + '00'.repeat(19), crc32: 0, offset: 0x90000000 },
               { id: 'cc' + '00'.repeat(19), crc32: 0, offset: 200 },
             ],
-            expectedLength: 8 + 1024 + 60 + 12 + 12 + 8 + 20,
+            expectedLength: 8 + 1024 + 60 + 12 + 12 + 8 + 20 + 20,
             label: '3 entries, only the middle one large',
           },
         ])(
@@ -584,7 +584,7 @@ describe('pack-writer', () => {
 
     describe('Given a 32-byte pack checksum', () => {
       describe('When serializePackIndex writes the index', () => {
-        it('Then the length is 8 + 1024 + n*32 + n*4 + n*4 + 32 — one checksum; the second (idx-over-idx) trailer is appended by the caller, not here', () => {
+        it('Then the length is 8 + 1024 + n*32 + n*4 + n*4 + 32 + 32 — the pack checksum plus a zeroed region the caller fills with the index-over-index trailer', () => {
           // Arrange
           const entries = [
             { id: 'aa' + '00'.repeat(31), crc32: 0, offset: 12 },
@@ -598,7 +598,7 @@ describe('pack-writer', () => {
           const result = serializePackIndex(sortedIndex(entries, 32), packChecksum);
 
           // Assert
-          expect(result.length).toBe(8 + 1024 + n * 32 + n * 4 + n * 4 + 32);
+          expect(result.length).toBe(8 + 1024 + n * 32 + n * 4 + n * 4 + 32 + 32);
         });
       });
     });

@@ -18,7 +18,6 @@
  * Surfaces closed:
  *   commands: fsck
  */
-import { hexToBytes } from '../../../src/domain/objects/encoding.ts';
 import type { ObjectId } from '../../../src/domain/objects/index.ts';
 import {
   PACK_ENTRY_TYPE,
@@ -28,7 +27,7 @@ import {
 } from '../../../src/domain/storage/index.ts';
 import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import type { Repository } from '../../../src/repository.ts';
-import { packIndexEntriesOf } from '../../fixtures/storage/pack-index-entries.ts';
+import { packIndexEntriesOf, sealPackIndex } from '../../fixtures/storage/pack-index-entries.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import { writeScenarioPackPair } from './pack-pair.ts';
 import type { Scenario } from './types.ts';
@@ -92,7 +91,7 @@ async function writeCorruptEntryPack(repo: Repository, name: string): Promise<Ob
     ),
     trailer,
   );
-  const idxBytes = concatBytes(idxBody, hexToBytes(await repo.ctx.hash.hashHex(idxBody)));
+  const idxBytes = await sealPackIndex(idxBody, repo.ctx.hash.hash, repo.ctx.hash.digestLength);
 
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${name}`;
   await repo.ctx.fs.write(`${packBase}.pack`, packBytes);

@@ -53000,6 +53000,54 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Serializes a v2 pack index over "
+									},
+									{
+										"kind": "code",
+										"text": "`sorted`"
+									},
+									{
+										"kind": "text",
+										"text": "'s oid-ascending permutation.\n\nThe returned buffer ends in TWO digest-sized regions: "
+									},
+									{
+										"kind": "code",
+										"text": "`packChecksum`"
+									},
+									{
+										"kind": "text",
+										"text": ", written\nhere, and the index's own trailing checksum, left **zeroed** — this function\ndoes not hash its own output. The caller hashes everything before that region\nand fills it in place, exactly as "
+									},
+									{
+										"kind": "code",
+										"text": "`serializePackRevIndex`"
+									},
+									{
+										"kind": "text",
+										"text": " and\n"
+									},
+									{
+										"kind": "code",
+										"text": "`serializeCruftMtimes`"
+									},
+									{
+										"kind": "text",
+										"text": " expect their callers to. A caller that writes the\nbuffer without filling it writes an index "
+									},
+									{
+										"kind": "code",
+										"text": "`parsePackIndex`"
+									},
+									{
+										"kind": "text",
+										"text": " will reject."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 9386,
