@@ -247,23 +247,31 @@ Reasoning, in order:
 `INDEX_PASS_BASE_CACHE_ENTRY_OVERHEAD_BYTES = 200` (unchanged from the plan's own model) are
 the paired constants.
 
-## 10. R2, honestly
+## 10. R2, honestly — superseded
 
-The design's R2 target — fixture C's peak over baseline not exceeding 126 MB, aiming for
-the ~33 MB class git's own cache-disabled indexer reaches — is **not met** by the pipeline
-this cache sits on top of, independent of this cache's own budget: measured peak-over-baseline
-on fixture C ranges **192.2 MB** (budget 0, no cache at all) to **235.3 MB** (budget 64
-MiB, effectively unbounded) against this spike's baseline methodology (§1, §6). At the
-chosen 8 MiB default, peak-over-baseline is **207.4 MB**.
+**This section originally read "R2 is not met" and left the reader believing an implementation
+defect remained. Two things have changed since, and both matter.**
 
-This gap predates this part: it belongs to the already-shipped two-pass streaming
-indexer (the prior parts of this same plan), not to the cache this part adds — the
-cache's own marginal contribution at the shipped default is the small, bounded ~15 MB
-figure in §9, not the ~192 MB floor it's added on top of. Closing that floor is out of
-scope for a change whose job is "add one bounded cache to what the prior parts already
-built," per this part's own scope boundary. Recorded here for visibility rather than
-silently narrowed away; it is a legitimate finding for a later phase, not a defect this
-part introduced or is positioned to fix.
+First, there *was* a defect, and it was not in this cache. `walkFromRoot` released a delta
+parent only after its last child's whole subtree had unwound, so a linear chain retained every
+ancestor at once instead of two. The numbers this section first recorded — 192.2 MB at budget 0,
+207.4 MB at the shipped default — were measured against that. Post-fix they are **146.1 MB** and
+**167.7 MB**. On a crafted deep chain over a multi-MiB base the peak fell from 307.3 MB to
+137.9 MB; before the fix, that 666 KiB pack sat within 8 % of the unbounded implementation this
+work replaces.
+
+Second, R2 itself was mis-specified, and the design now says so in §7b rather than here. It
+asserted a **peak footprint** number against a **retained bytes** formula. Post-fix, retention
+matches the formula (15.38 MiB of retained ancestors against a ~30 MiB total). The residual is
+allocation-churn footprint: an indexer-free control that allocates fixture C's real object sizes
+while holding exactly one buffer live already peaks at +58.8 MiB, and the pass must materialise
+542 MiB of `applyDelta` output. git's 33 MB is a C process whose `free()` returns pages
+immediately; that target does not transfer to V8 for any correct implementation of this
+algorithm.
+
+The requirement is now split — R1 asserts retention against the formula with a retained-bytes
+oracle, R2 asserts a footprint class against the branch's own measured figure — and the churn
+term is written into §7b explicitly. There is no outstanding memory defect here.
 
 ## 11. GC residency
 

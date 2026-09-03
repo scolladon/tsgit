@@ -115,19 +115,32 @@ Everything below is verifiable by a test named in §Test strategy.
 
 **Memory**
 
-- **R1** The index pass's peak retained bytes are bounded by §7's closed formula —
+🔴 **R1 and R2 measure two different things, and the first draft conflated them.** R1's
+formula bounds **retained** bytes. R2 asserted a **peak process footprint** number against it.
+Those are not the same quantity on a garbage-collected runtime, and the gap between them is not
+a defect — see §7b. They are now stated separately, with separate oracles.
+
+- **R1 (retained)** The index pass's peak *retained* bytes are bounded by §7's closed formula —
   `largestEntryInflatedBytes + Σ_{retained ancestors} contentBytes + N × RECORD_BYTES +
   D × DELTA_RECORD_BYTES + one read window + INDEX_PASS_BASE_CACHE_MAX_BYTES + idxAssembly` —
-  and are **independent of Σ inflated over the pack**. Asserted by a bench-side memory scenario
-  on the §1c fixtures, measured from a child process's kernel high-water mark (§1d's methodology
-  note).
-- **R2** On fixture **C** (§1c — a real `git clone` pack of tsgit's own history: 27.7 MB pack,
-  15 074 objects, 571 MiB total inflated), peak process footprint over baseline does **not
-  exceed** `git index-pack --threads=1`'s peak on the same pack at git's defaults — §1e:
-  126 MB, against a git baseline small enough (~1.5 MB) that the comparison is fair without
-  subtracting it — and the design targets the class git reaches with its base cache disabled,
-  33 MB. Today tsgit is at 799 MB (§1d). The assertion is a class with headroom, never a byte
-  count.
+  and are **independent of Σ inflated over the pack**. The oracle is a *retained-bytes* one, not
+  RSS: the instrumented sum of live walk-stack content, cache bytes and record arrays, which is
+  cheap and deterministic. Measured post-fix on fixture C: 15.38 MiB of retained ancestors
+  against a formula total near 30 MiB — the formula holds.
+- **R2 (footprint)** On fixture **C** (§1c — a real `git clone` pack of tsgit's own history:
+  27.7 MB pack, 15 074 objects, 571 MiB total inflated), peak process footprint over baseline
+  is in the **~170 MiB class**, down from **767.8 MiB** on `main`. It is asserted as a class
+  with headroom against the branch's own measured figure, never as a byte count and never
+  against git's.
+
+  **git's 33 MB is not a reachable target here, and R2 must not pretend otherwise.** git is a C
+  process where `free()` returns pages to the OS immediately. This pass must materialise 542 MiB
+  of `applyDelta` output plus 94 MiB of inflate output; an indexer-free control — `new
+  Uint8Array` over fixture C's *real* reconstructed-object sizes, holding exactly **one** buffer
+  live — already peaks at **+58.8 MiB** on this runtime. The residual between R1's ~30 MiB and
+  R2's ~170 MiB is allocation-churn footprint, measured at roughly 11 % of churned bytes here,
+  and no correct implementation of this algorithm avoids it on V8. §7b carries the term
+  explicitly.
 - **R3** No allocation is ever sized from `header.objectCount` alone — a server-controlled
   `uint32` (§9).
 
@@ -1084,6 +1097,51 @@ ceiling, over a quarter of it.
 delta-writing packer's size assertions use, for the same reason: the peer moves, and here the
 peer moves by a factor of four depending on one config key (§1e). `B` must be small enough that
 `24.4 MiB + B` stays well inside R2's class; that is one of §5a's acceptance conditions.
+
+### 7b. The churn term — why footprint exceeds retention, and by how much
+
+§7's formula is a **retention** bound and it holds. Peak *footprint* on a garbage-collected
+runtime is retention plus the high-water mark of allocation the collector has not yet returned,
+and this pass churns a great deal by construction.
+
+Measured on fixture C, post-fix, single-threaded, kernel high-water from a fresh child process
+per reading, baseline = the same probe with indexing skipped:
+
+| | over baseline |
+|---|---|
+| `main` (the pipeline this replaces) | **767.8 MiB** |
+| branch, cache 0 | 146.1 MiB |
+| branch, shipped 8 MiB cache | **167.7 MiB** |
+| §7's retention formula over the same run | **~30 MiB** |
+
+The ~138 MiB residual is not retained, and four controls say so:
+
+- live at exit is 10–14 MiB of `heapUsed` plus 9–20 MiB of `arrayBuffers`;
+- forcing a major GC every 256 steps recovers only ~8 MiB;
+- `--max-old-space-size=32` moves the peak by nothing (248.6 vs 254.4 MiB);
+- `--max-semi-space-size=1` removes 48.5 MiB — pure V8 nursery sizing, unrelated to this design.
+
+And the decisive one: an **indexer-free** control that only does `new Uint8Array(size)` over
+fixture C's real reconstructed-object sizes, holding exactly **one** buffer live, peaks at
+**+58.8 MiB** (+64.5 MiB across all 15 326 sizes). Nothing about this algorithm is in that
+number.
+
+The churn the pass must produce, cross-checked to four significant figures against
+`git cat-file --batch-all-objects`' own size sum for the 10 521 delta objects: **542.2 MiB** of
+`applyDelta` output, **94.2 MiB** of inflate output, **219.8 MiB** of read windows — about
+856 MiB of large-buffer traffic. Footprint headroom lands near **11 % of churned bytes** on this
+fixture and this runtime.
+
+So the honest ceiling has one more term than §7 states:
+
+```
+peakFootprint  ≈  R (§7's retained bound)  +  footprintHeadroom(Σ churn)
+```
+
+`footprintHeadroom` is a property of the runtime, not of this code. It is why git's 33 MiB
+cache-off figure does not transfer: a C indexer's `free()` returns pages at once. Quoting it as
+a target would ask for something no correct implementation on V8 can deliver, and would invite a
+future reader to "fix" churn that is not a defect.
 
 ### 8. Faithfulness — what changes and what must not
 
