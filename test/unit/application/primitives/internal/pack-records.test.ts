@@ -204,6 +204,40 @@ describe('Given more entries appended than the structural clamp allows for', () 
   });
 });
 
+describe('Given entries marked resolved across a growth step', () => {
+  describe('When resolvedCount is read', () => {
+    it('Then it counts the marks, and marking one ordinal twice counts it twice', () => {
+      // Arrange — resolvedCount is the sole input to the unresolved-delta
+      // refusal (`count - resolvedCount`), and the store does NOT guard
+      // against a double mark: every caller checks isResolved first, and this
+      // pins that obligation on them rather than pretending otherwise.
+      const sut = createPackRecordStore(20, 1000);
+      const initialCapacity = sut.view().offsets.length;
+      const total = initialCapacity + 2;
+      for (let i = 0; i < total; i += 1) {
+        const ordinal = sut.append(i + 1, i, PACK_ENTRY_TYPE.BLOB);
+        sut.setOid(ordinal, fixedOid(20, (i + 1) & 0xff));
+      }
+
+      // Act & Assert — none marked yet
+      expect(sut.resolvedCount).toBe(0);
+      expect(sut.isResolved(0)).toBe(false);
+
+      // Act & Assert — marks survive the growth the appends forced
+      sut.markResolved(0);
+      sut.markResolved(total - 1);
+      expect(sut.resolvedCount).toBe(2);
+      expect(sut.isResolved(0)).toBe(true);
+      expect(sut.isResolved(total - 1)).toBe(true);
+      expect(sut.isResolved(1)).toBe(false);
+
+      // Act & Assert — the store does not deduplicate
+      sut.markResolved(0);
+      expect(sut.resolvedCount).toBe(3);
+    });
+  });
+});
+
 describe('Given a store with far more capacity than entries', () => {
   describe('When two entries are appended into room for many more', () => {
     it('Then the exposed PackIndexEntries reports count, not the over-allocated array length', () => {

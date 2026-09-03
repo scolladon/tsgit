@@ -1269,7 +1269,14 @@ describe('fetchPack', () => {
           // length instead.
           expect(createPackRecordStoreSpy).toHaveBeenCalledTimes(1);
           const [, structuralMax] = createPackRecordStoreSpy.mock.calls[0] as [number, number];
-          expect(structuralMax).toBeLessThan(1000);
+          // The exact clamp, recomputed here rather than bounded loosely: a
+          // slack bound survives a wrong minimum-entry size and survives
+          // dropping either subtracted term.
+          const PACK_HEADER_BYTES = 12;
+          const MIN_ENTRY_BYTES = 9;
+          expect(structuralMax).toBe(
+            Math.floor((mutated.length - PACK_HEADER_BYTES - trailerLength) / MIN_ENTRY_BYTES),
+          );
         });
       });
     });
@@ -3458,6 +3465,55 @@ describe('Given one session walked twice, the second walk asking for a different
       // Assert — disabling the cache costs the root's second read. If the slot
       // ignored the second budget, both numbers would be equal.
       expect(withoutCache).toBe(withCache + 1);
+    });
+  });
+});
+
+describe('Given two REF deltas naming one base the external resolver cannot find', () => {
+  describe('When the pack is walked', () => {
+    it('Then the resolver is consulted once for that oid, not once per delta', async () => {
+      // Arrange — a not-found answer is cached too, which is the whole reason
+      // the indexer records `{ found: false }`. Without it the refusal is
+      // identical, so only the call count can observe the memoisation.
+      const ctx = createMemoryContext();
+      const baseContent = ENCODER.encode('absent shared base');
+      const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+      const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+      baseRaw.set(baseHeader, 0);
+      baseRaw.set(baseContent, baseHeader.length);
+      const baseId = await ctx.hash.hashHex(baseRaw);
+      const { packBytes } = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent: ENCODER.encode('absent shared base, first derivation'),
+        } as EntrySpec,
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent: ENCODER.encode('absent shared base, second derivation'),
+        } as EntrySpec,
+      ]);
+      const resolve = vi.fn<ExternalBaseResolver>(async () => undefined);
+
+      // Act
+      let caught: unknown;
+      try {
+        await walkPackEntries(ctx, packBytes, resolve);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual(
+        expect.objectContaining({
+          code: 'INVALID_PACK_HEADER',
+          reason: expect.stringContaining('unresolved delta'),
+        }),
+      );
+      expect(resolve).toHaveBeenCalledTimes(1);
     });
   });
 });
