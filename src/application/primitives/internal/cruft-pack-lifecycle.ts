@@ -228,7 +228,7 @@ export async function writeCruftPack(
     readonly entries: PackIndexEntries;
     readonly packBytes: Uint8Array;
     readonly packSha: string;
-    readonly mtimeOf: (id: ObjectId) => number;
+    readonly mtimeAt: (ordinal: number) => number;
   },
 ): Promise<WrittenCruftPack> {
   const written = await writePackArtifacts(ctx, {
@@ -240,7 +240,7 @@ export async function writeCruftPack(
   });
   // `writePackArtifacts` already sorted this exact slab; sorting it again cost
   // a second O(N log N) pass over the highest-object-count write path.
-  const mtimesBytes = await buildCruftMtimes(ctx, written.sorted, written.packSha, input.mtimeOf);
+  const mtimesBytes = await buildCruftMtimes(ctx, written.sorted, written.packSha, input.mtimeAt);
   await ctx.fs.writeExclusive(cruftMtimesFilePath(input.packDir, written.packSha), mtimesBytes);
   return { packSha: written.packSha };
 }

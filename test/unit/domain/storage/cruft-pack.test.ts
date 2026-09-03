@@ -117,7 +117,11 @@ describe('cruft-pack', () => {
           const sut = serializeCruftMtimes;
 
           // Act
-          const result = sut(sortedIndex(entries), packChecksum, (oid) => mtimeByOid.get(oid)!);
+          const result = sut(
+            sortedIndex(entries),
+            packChecksum,
+            (ordinal) => mtimeByOid.get(entries[ordinal]!.id)!,
+          );
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -368,7 +372,7 @@ describe('cruft-pack', () => {
           const bytes = serializeCruftMtimes(
             sortedIndex(entries),
             packChecksum,
-            (oid) => mtimeByOid.get(oid)!,
+            (ordinal) => mtimeByOid.get(entries[ordinal]!.id)!,
           );
 
           // Act

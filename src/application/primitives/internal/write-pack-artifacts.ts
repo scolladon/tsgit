@@ -13,7 +13,6 @@
  * value leaves the pack directory untouched — see `writeReverseIndex`.
  */
 import { hexToBytes } from '../../../domain/objects/encoding.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
 import {
   type PackIndexEntries,
   type SortedPackIndex,
@@ -78,10 +77,10 @@ export const buildCruftMtimes = async (
   ctx: Context,
   sorted: SortedPackIndex,
   packSha: string,
-  mtimeOf: (oid: ObjectId) => number,
+  mtimeAt: (ordinal: number) => number,
 ): Promise<Uint8Array> => {
   const packChecksum = hexToBytes(packSha);
-  const bytes = serializeCruftMtimes(sorted, packChecksum, mtimeOf);
+  const bytes = serializeCruftMtimes(sorted, packChecksum, mtimeAt);
   // Same one-width-source rule buildRev documents: the trailer offset comes
   // from the width the serializer actually sized the file with.
   const trailerStart = bytes.length - packChecksum.length;

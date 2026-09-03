@@ -564,4 +564,45 @@ describe('buildPack', () => {
       });
     });
   });
+
+  describe('Given a corpus the deltifier reorders away from input order', () => {
+    describe('When buildPack runs with delta selection on', () => {
+      it('Then emissionOrder maps every emitted ordinal back to its own input oid', async () => {
+        // A wrong permutation is silent: gc reads per-object mtimes through it,
+        // so an off-by-one attaches each object's mtime to its neighbour and
+        // every artefact still parses. The invariant is checked directly
+        // against the slab rather than inferred from a downstream artefact.
+        {
+          // Arrange — mutually similar blobs of differing sizes, so the
+          // packer's (type, size DESC, oid) order is NOT the input order.
+          const ctx = await buildSeededContext();
+          const seed = pseudoRandomBytes(7, 4096);
+          const oids: ObjectId[] = [];
+          for (const extra of [0, 900, 300, 1500, 60]) {
+            const content = new Uint8Array(seed.length + extra);
+            content.set(seed, 0);
+            oids.push(await writeBlob(ctx, content));
+          }
+
+          // Act
+          const pack = await buildPack(ctx, { oids, delta: true });
+
+          // Assert — a genuine permutation of [0, count)...
+          expect(pack.emissionOrder).toHaveLength(pack.entries.count);
+          expect([...pack.emissionOrder].slice().sort((a, b) => a - b)).toEqual(
+            oids.map((_, i) => i),
+          );
+          // ...that is not the identity (otherwise the test proves nothing)...
+          expect([...pack.emissionOrder]).not.toEqual(oids.map((_, i) => i));
+          // ...and every ordinal's slab oid is the input oid it points at.
+          const { oids: slab, digestLength } = pack.entries;
+          for (let ordinal = 0; ordinal < pack.entries.count; ordinal += 1) {
+            const start = ordinal * digestLength;
+            const emitted = bytesToHex(slab.subarray(start, start + digestLength));
+            expect(emitted).toBe(oids[pack.emissionOrder[ordinal]!]);
+          }
+        }
+      });
+    });
+  });
 });

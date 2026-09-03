@@ -38,13 +38,17 @@ describe('cruft-pack properties', () => {
             ),
             ([digestLength, entries, mtimes]) => {
               const packChecksum = new Uint8Array(digestLength).fill(0xab);
+              // Keyed by emission ordinal now: `entries` IS emission order, so
+              // an ordinal indexes it directly and no oid is decoded. The
+              // oid-keyed map survives for the round-trip assertion, which
+              // reads back through `parseCruftMtimes`' own oid-keyed result.
               const mtimeByOid = new Map<string, number>(
                 entries.map((entry, i) => [entry.id, mtimes[i]!]),
               );
-              const mtimeOf = (oid: ObjectId): number => mtimeByOid.get(oid)!;
+              const mtimeAt = (ordinal: number): number => mtimes[ordinal]!;
               const sorted = sortPackIndexEntries(packIndexEntriesOf(entries, digestLength));
 
-              const bytes = sut(sorted, packChecksum, mtimeOf);
+              const bytes = sut(sorted, packChecksum, mtimeAt);
               const oidsInIndexOrder = [...entries]
                 .sort((a, b) => compareBytes(hexToBytes(a.id), hexToBytes(b.id)))
                 .map((entry) => entry.id as ObjectId);

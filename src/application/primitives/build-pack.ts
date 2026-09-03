@@ -40,11 +40,19 @@ export interface BuildPackResult {
    *  `PackIndexEntries` shape every `.idx`/`.rev`/cruft serializer consumes
    *  directly, with no intermediate hex-bearing array on the write path. */
   readonly entries: PackIndexEntries;
+  /** Emission ordinal -> index into the `oids` this build was given. The packer
+   *  emits in its own (type, size, oid) order, so a caller holding per-object
+   *  data keyed by ITS order — `gc`'s cruft mtimes are the case — maps across
+   *  with this instead of decoding an oid per object. Four bytes an entry
+   *  against the hex-bearing array this shape exists to avoid. */
+  readonly emissionOrder: Uint32Array;
 }
 
 interface WriterPlan {
   readonly ids: ReadonlyArray<ObjectId>;
   readonly entries: ReadonlyArray<PackWriterEntry>;
+  /** Emission ordinal -> index into `input.oids`. */
+  readonly emissionOrder: Uint32Array;
 }
 
 export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<BuildPackResult> => {
@@ -69,7 +77,13 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
   }
   const entries: PackIndexEntries = { count, digestLength, oids, crcValues, offsets };
 
-  return { bytes, sha, objectCount: plan.entries.length, entries };
+  return {
+    bytes,
+    sha,
+    objectCount: plan.entries.length,
+    entries,
+    emissionOrder: plan.emissionOrder,
+  };
 };
 
 /**
@@ -84,7 +98,13 @@ async function resolveWriterPlan(ctx: Context, input: BuildPackInput): Promise<W
   const policy = resolveDeltaPolicy(config.pack ?? {});
   if (!policy.enabled) return buildBaseEntries(ctx, input.oids);
   const deltified = await deltifyEntries(ctx, input.oids, policy);
-  return { ids: deltified.map((d) => d.id), entries: deltified.map((d) => d.entry) };
+  const emissionOrder = new Uint32Array(deltified.length);
+  for (let i = 0; i < deltified.length; i += 1) emissionOrder[i] = deltified[i]!.sourceIndex;
+  return {
+    ids: deltified.map((d) => d.id),
+    entries: deltified.map((d) => d.entry),
+    emissionOrder,
+  };
 }
 
 async function buildBaseEntries(ctx: Context, oids: ReadonlyArray<ObjectId>): Promise<WriterPlan> {
@@ -93,7 +113,10 @@ async function buildBaseEntries(ctx: Context, oids: ReadonlyArray<ObjectId>): Pr
     const object = await readObject(ctx, oid);
     entries.push(await encodeEntry(ctx, object));
   }
-  return { ids: oids, entries };
+  // The base-only route emits in input order, so the permutation is identity.
+  const emissionOrder = new Uint32Array(oids.length);
+  for (let i = 0; i < oids.length; i += 1) emissionOrder[i] = i;
+  return { ids: oids, entries, emissionOrder };
 }
 
 const encodeEntry = async (ctx: Context, object: GitObject): Promise<PackWriterBaseEntry> => {

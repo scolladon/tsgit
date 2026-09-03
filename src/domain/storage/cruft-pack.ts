@@ -15,7 +15,7 @@
  *   kind:    byte-identical
  *   format:  cruft-mtimes-v1
  */
-import { bytesEqual, bytesToHex } from '../objects/encoding.js';
+import { bytesEqual } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/object-id.js';
 import { invalidCruftMtimes } from './error.js';
 import { assertValidSortedPackIndex, type SortedPackIndex } from './pack-order.js';
@@ -54,13 +54,12 @@ const assertValidPackIndexInput = (sorted: SortedPackIndex, digestLength: number
 export function serializeCruftMtimes(
   sorted: SortedPackIndex,
   packChecksum: Uint8Array,
-  mtimeOf: (oid: ObjectId) => number,
+  mtimeAt: (ordinal: number) => number,
 ): Uint8Array {
   const digestLength = packChecksum.length;
   assertValidPackIndexInput(sorted, digestLength);
 
   const { entries, order } = sorted;
-  const { oids } = entries;
   const hashId = digestLength === 32 ? 2 : 1;
   const objectCount = entries.count;
 
@@ -73,9 +72,7 @@ export function serializeCruftMtimes(
   // `.idx` position order — oid-ascending. This IS the body index; nothing
   // here is reordered by pack offset the way `.rev`'s body is.
   for (let p = 0; p < objectCount; p += 1) {
-    const k = order[p]!;
-    const oidHex = bytesToHex(oids.subarray(k * digestLength, (k + 1) * digestLength));
-    view.setUint32(CRUFT_HEADER_SIZE + p * 4, mtimeOf(oidHex as ObjectId));
+    view.setUint32(CRUFT_HEADER_SIZE + p * 4, mtimeAt(order[p]!));
   }
   bytes.set(packChecksum, CRUFT_HEADER_SIZE + 4 * objectCount);
 
