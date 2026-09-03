@@ -92,19 +92,14 @@ export const inMemoryPackByteSource = (ctx: Context, packBytes: Uint8Array): Pac
  * doubling, never past `trailerStart`) — never the whole pack, and never
  * inflated by an unrelated entry's earlier growth.
  *
- * A MALFORMED pack can defeat that, and the "on a valid pack" qualifier above
- * is load-bearing rather than decorative. A zlib member that yields no output
- * and never terminates (a deflate header followed by non-final stored blocks
- * to the end of the body) trips neither the entry's declared size nor the
- * adapter's inflate cap, so every window ends mid-stream, every failure reads
- * as retryable, and the ladder climbs to its `trailerStart` ceiling — one
- * `readSlice` for the whole remaining pack. The walk still ends in a refusal,
- * and `maxResponseBytes` bounds the pack itself, so the amplification is
- * roughly 2x the pack rather than unbounded; but the peak on such a pack is
- * the pack, not a window. Capping the ladder per entry would close it, and
- * cannot simply be a fixed multiple of this constant — a legitimately huge
- * object needs a window to match. The honest bound is the entry's own
- * declared size, which this seam does not currently see.
+ * A malformed pack used to defeat that. A zlib member yielding no output and
+ * never terminating (a deflate header followed by non-final stored blocks to
+ * the end of the body) trips neither the entry's declared size nor the
+ * adapter's inflate cap, so every window ended mid-stream, every failure read
+ * as retryable, and the ladder climbed to its `trailerStart` ceiling — one
+ * `readSlice` for the whole remaining pack, on the one path this whole design
+ * exists to keep bounded. Growth is now also clamped per entry
+ * (`entryGrowthCeiling`), so that shape stops at one window instead.
  */
 export const DISK_WALK_WINDOW_BYTES = 256 * 1024;
 
@@ -255,8 +250,33 @@ export const diskPackByteSource = (
    *  retry, reused or otherwise; only the second and later growth fetches
    *  for this same anchor double, clamped so growth never reaches past the
    *  trailer. */
-  const nextRung = (priorRung: number, anchor: number): number =>
-    priorRung === 0 ? initialWindowSize(anchor) : Math.min(priorRung * 2, trailerStart - anchor);
+  /** How far growth may climb for ONE entry, so a malformed member cannot walk
+   *  the ladder to `trailerStart`. The attack shape is a zlib stream that
+   *  yields no output and never terminates: it trips neither the declared size
+   *  nor the adapter's inflate cap, so every window ends mid-stream and every
+   *  failure reads as retryable.
+   *
+   *  The bound is the entry's own declared size plus room for zlib's worst-case
+   *  expansion, floored at the documented window so a small entry is never
+   *  capped below the natural read granularity. Deflate's stored-block overhead
+   *  is about 5 bytes per 64 KiB plus a 6-byte envelope — under 0.03% — so the
+   *  1.6% allowance here is roughly fifty times what a legitimate member can
+   *  need, deliberately: capping too tightly would refuse a large object that
+   *  compresses badly, which is a far worse failure than reading a malformed
+   *  pack twice. */
+  const entryGrowthCeiling = (anchor: number, declaredSize: number): number =>
+    Math.max(initialWindowSize(anchor), declaredSize + Math.ceil(declaredSize / 64) + 4096);
+
+  /** An entry header is a type/size varint plus either an OFS distance or a
+   *  digest — tens of bytes. Two documented windows is enormous slack, and it
+   *  still bounds the same never-terminating shape when it strikes during
+   *  header parsing rather than inflation. */
+  const headerGrowthCeiling = (anchor: number): number => initialWindowSize(anchor) * 2;
+
+  const nextRung = (priorRung: number, anchor: number, maxSpan: number): number =>
+    priorRung === 0
+      ? initialWindowSize(anchor)
+      : Math.min(priorRung * 2, trailerStart - anchor, maxSpan);
 
   /** Reuses the held window when `anchor` already falls inside it; fetches
    *  a fresh one, anchored at `anchor`, otherwise — including when `anchor`
@@ -297,6 +317,7 @@ export const diskPackByteSource = (
     anchor: number,
     rung: number,
     deliveredAtAnchor: number | undefined,
+    maxSpan: number,
   ): Promise<{
     readonly w: DiskWindow;
     readonly rung: number;
@@ -304,7 +325,7 @@ export const diskPackByteSource = (
   }> => {
     if (!isRetryableWindowFailure(err)) throw err;
     if (w.start + w.bytes.length >= trailerStart) throw err;
-    const grownRung = nextRung(rung, anchor);
+    const grownRung = nextRung(rung, anchor, maxSpan);
     const grown = await fetchWindow(anchor, grownRung);
     if (deliveredAtAnchor !== undefined && grown.bytes.length <= deliveredAtAnchor) throw err;
     return { w: grown, rung: grownRung, deliveredAtAnchor: grown.bytes.length };
@@ -312,6 +333,7 @@ export const diskPackByteSource = (
 
   const withGrowth = async <T>(
     anchor: number,
+    maxSpan: number,
     attempt: (w: DiskWindow) => Promise<T> | T,
   ): Promise<T> => {
     let w = await windowCovering(anchor);
@@ -338,6 +360,7 @@ export const diskPackByteSource = (
           anchor,
           rung,
           deliveredAtAnchor,
+          maxSpan,
         ));
       }
     }
@@ -347,7 +370,7 @@ export const diskPackByteSource = (
     totalBytes,
     header: async () => parsePackHeader(await ctx.fs.readSlice(tmpPath, 0, PACK_HEADER_SIZE)),
     entryHeader: (offset) =>
-      withGrowth(offset, (w) => {
+      withGrowth(offset, headerGrowthCeiling(offset), (w) => {
         try {
           // `parsePackEntryHeader` reports `dataOffset` as an index into the
           // buffer it was handed — i.e. relative to `w.start`, not the
@@ -361,7 +384,7 @@ export const diskPackByteSource = (
         }
       }),
     inflateEntry: (offset, dataOffset, declaredSize) =>
-      withGrowth(offset, async (w) => ({
+      withGrowth(offset, entryGrowthCeiling(offset, declaredSize), async (w) => ({
         result: await ctx.compressor.streamInflate(w.bytes, dataOffset - w.start, declaredSize),
         crcContext: w,
       })),

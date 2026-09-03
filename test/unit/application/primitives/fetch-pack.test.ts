@@ -2637,6 +2637,57 @@ describe('quarantine disk-backed entry walk', () => {
         expect(Math.max(...requestedLengths)).toBeLessThanOrEqual(DISK_WALK_WINDOW_BYTES);
       });
     });
+
+    describe('Given an entry whose zlib member yields no output and never terminates', () => {
+      describe('When the quarantined pack is indexed from disk', () => {
+        it('Then the growth ladder stops at the per-entry ceiling instead of reading the whole pack', async () => {
+          // Arrange — a deflate header followed by empty non-final stored
+          // blocks to the end of the body. Output is always zero, so neither
+          // the entry's declared size nor the adapter's inflate cap ever
+          // trips; every window ends mid-stream and every failure reads as
+          // retryable, which is what let the ladder climb to `trailerStart`
+          // and read the entire remaining pack in one slice.
+          const baseCtx = createMemoryContext();
+          const PACK_BODY_BYTES = 3 * DISK_WALK_WINDOW_BYTES;
+          const stream: number[] = [0x78, 0x01];
+          while (stream.length < PACK_BODY_BYTES) stream.push(0x00, 0x00, 0x00, 0xff, 0xff);
+          // PACK, version 2, one entry; then a blob entry header declaring a
+          // small size, then the endless member.
+          const header = [0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 1];
+          const entryHeader = [0x30 | 0x0a]; // type 3 (blob), size 10, no continuation
+          const body = new Uint8Array([...header, ...entryHeader, ...stream]);
+          const digestLength = baseCtx.hash.digestLength;
+          const packBytes = new Uint8Array(body.length + digestLength);
+          packBytes.set(body, 0);
+          packBytes.set(hexToBytes(await baseCtx.hash.hashHex(body)), body.length);
+
+          const requestedLengths: number[] = [];
+          const ctx = withFsPatch(baseCtx, {
+            readSlice: async (path: string, offset: number, length: number) => {
+              requestedLengths.push(length);
+              return baseCtx.fs.readSlice(path, offset, length);
+            },
+          });
+          const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_endless`;
+          await ctx.fs.write(tmpPath, packBytes);
+
+          // Act
+          let caught: unknown;
+          try {
+            await indexQuarantinedPack(ctx, tmpPath, packBytes.length, async () => undefined);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — still a refusal, but no single read is anywhere near the
+          // pack: the ceiling is the declared size (10 bytes) floored at one
+          // documented window, so growth stops there.
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect(Math.max(...requestedLengths)).toBeLessThanOrEqual(DISK_WALK_WINDOW_BYTES);
+          expect(requestedLengths).not.toContain(packBytes.length);
+        });
+      });
+    });
   });
 
   describe('Given an entry whose zlib stream straddles a window boundary', () => {
