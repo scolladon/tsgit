@@ -48,3 +48,47 @@ export function sortPackIndexEntries(entries: PackIndexEntries): SortedPackIndex
   });
   return { entries, order };
 }
+
+/** Which invariant a `SortedPackIndex` broke — mapped by each serializer onto
+ *  its own refusal discriminant, so a structural length failure is never
+ *  reported as a hash-width one. */
+export type SortedPackIndexDefect = 'hash-id' | 'size' | 'count';
+
+/**
+ * The one structural gate every pack-index artefact shares. `SortedPackIndex`
+ * is published, so a caller can hand over any shape it likes and the checks
+ * cannot live in the type; they lived in three places instead, character for
+ * character apart from the thrower, where `jscpd` could not see them — the
+ * interleaved error calls break every window below its threshold.
+ *
+ * Each serializer passes its own `fail`, which must not return.
+ */
+export function assertValidSortedPackIndex(
+  sorted: SortedPackIndex,
+  digestLength: number,
+  fail: (defect: SortedPackIndexDefect, reason: string) => never,
+): void {
+  if (digestLength !== 20 && digestLength !== 32) {
+    fail('hash-id', `packChecksum must be 20 or 32 bytes, got ${digestLength}`);
+  }
+  const { entries, order } = sorted;
+  const { count, oids, crcValues, offsets } = entries;
+  if (entries.digestLength !== digestLength) {
+    fail(
+      'hash-id',
+      `entries digestLength ${entries.digestLength} does not match packChecksum length ${digestLength}`,
+    );
+  }
+  if (oids.length < count * digestLength) {
+    fail('size', `oids too short: need ${count * digestLength}, got ${oids.length}`);
+  }
+  if (crcValues.length < count) {
+    fail('size', `crcValues too short: need ${count}, got ${crcValues.length}`);
+  }
+  if (offsets.length < count) {
+    fail('size', `offsets too short: need ${count}, got ${offsets.length}`);
+  }
+  if (order.length !== count) {
+    fail('count', `order length ${order.length} does not match entries count ${count}`);
+  }
+}

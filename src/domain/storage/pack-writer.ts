@@ -22,7 +22,7 @@ import {
   PACK_ENTRY_TYPE,
   serializePackHeader,
 } from './pack-entry.js';
-import type { SortedPackIndex } from './pack-order.js';
+import { assertValidSortedPackIndex, type SortedPackIndex } from './pack-order.js';
 
 export interface PackWriterBaseEntry {
   readonly type: BasePackEntryType;
@@ -57,30 +57,11 @@ export interface PackfileResult {
  * function's own cognitive complexity under the repo's ceiling — every
  * branch here is still its own coverage-gated test.
  */
-function assertValidSortedPackIndex(sorted: SortedPackIndex, digestLength: number): void {
-  if (digestLength !== 20 && digestLength !== 32) {
-    throw invalidPackIndex(`packChecksum must be 20 or 32 bytes, got ${digestLength}`);
-  }
-  const { entries, order } = sorted;
-  const { count, oids, crcValues, offsets } = entries;
-  if (entries.digestLength !== digestLength) {
-    throw invalidPackIndex(
-      `entries digestLength ${entries.digestLength} does not match packChecksum length ${digestLength}`,
-    );
-  }
-  if (oids.length < count * digestLength) {
-    throw invalidPackIndex(`oids too short: need ${count * digestLength}, got ${oids.length}`);
-  }
-  if (crcValues.length < count) {
-    throw invalidPackIndex(`crcValues too short: need ${count}, got ${crcValues.length}`);
-  }
-  if (offsets.length < count) {
-    throw invalidPackIndex(`offsets too short: need ${count}, got ${offsets.length}`);
-  }
-  if (order.length !== count) {
-    throw invalidPackIndex(`order length ${order.length} does not match entries count ${count}`);
-  }
-}
+const assertValidPackIndexInput = (sorted: SortedPackIndex, digestLength: number): void => {
+  assertValidSortedPackIndex(sorted, digestLength, (_defect, reason) => {
+    throw invalidPackIndex(reason);
+  });
+};
 
 function assertValidBaseIndex(baseIndex: number, i: number, offset: number): void {
   if (baseIndex >= i) {
@@ -132,7 +113,7 @@ export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): Pack
 
 export function serializePackIndex(sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array {
   const digestLength = packChecksum.length;
-  assertValidSortedPackIndex(sorted, digestLength);
+  assertValidPackIndexInput(sorted, digestLength);
 
   const { entries, order } = sorted;
   const { count, oids, crcValues, offsets } = entries;

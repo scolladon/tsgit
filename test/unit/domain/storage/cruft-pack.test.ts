@@ -221,7 +221,7 @@ describe('cruft-pack', () => {
 
     describe('Given a SortedPackIndex whose oids slab is shorter than count*digestLength', () => {
       describe('When serializing', () => {
-        it('Then refuses with hash-id', () => {
+        it('Then refuses with size', () => {
           // Arrange
           const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }], 20);
           const truncated = {
@@ -233,7 +233,7 @@ describe('cruft-pack', () => {
           // Act & Assert
           expectRefusal(
             () => serializeCruftMtimes(truncated, packChecksum, () => 0),
-            'hash-id',
+            'size',
             'oids',
           );
         });
@@ -254,7 +254,7 @@ describe('cruft-pack', () => {
 
     describe('Given a SortedPackIndex whose crcValues array is shorter than count', () => {
       describe('When serializing', () => {
-        it('Then refuses with hash-id', () => {
+        it('Then refuses with size', () => {
           // Arrange
           const sorted = sortedIndex([
             { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
@@ -269,7 +269,7 @@ describe('cruft-pack', () => {
           // Act & Assert
           expectRefusal(
             () => serializeCruftMtimes(truncated, packChecksum, () => 0),
-            'hash-id',
+            'size',
             'crcValues',
           );
         });
@@ -278,7 +278,7 @@ describe('cruft-pack', () => {
 
     describe('Given a SortedPackIndex whose offsets array is shorter than count', () => {
       describe('When serializing', () => {
-        it('Then refuses with hash-id', () => {
+        it('Then refuses with size', () => {
           // Arrange
           const sorted = sortedIndex([
             { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
@@ -293,7 +293,7 @@ describe('cruft-pack', () => {
           // Act & Assert
           expectRefusal(
             () => serializeCruftMtimes(truncated, packChecksum, () => 0),
-            'hash-id',
+            'size',
             'offsets',
           );
         });
@@ -302,7 +302,7 @@ describe('cruft-pack', () => {
 
     describe('Given a SortedPackIndex whose order length disagrees with entries.count', () => {
       describe('When serializing', () => {
-        it('Then refuses with hash-id', () => {
+        it('Then refuses with count', () => {
           // Arrange
           const sorted = sortedIndex([
             { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
@@ -314,7 +314,7 @@ describe('cruft-pack', () => {
           // Act & Assert
           expectRefusal(
             () => serializeCruftMtimes(truncated, packChecksum, () => 0),
-            'hash-id',
+            'count',
             'order',
           );
         });

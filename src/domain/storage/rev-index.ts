@@ -10,7 +10,7 @@
  *   format:  pack-rev-index-v1
  */
 import { invalidPackRevIndex } from './error.js';
-import type { SortedPackIndex } from './pack-order.js';
+import { assertValidSortedPackIndex, type SortedPackIndex } from './pack-order.js';
 
 const REV_MAGIC = 0x52494458; // 'RIDX'
 
@@ -101,43 +101,13 @@ export function parsePackRevIndex(
  * complexity under the repo's ceiling — every branch here is still its own
  * coverage-gated test.
  */
-function assertValidSortedPackIndex(sorted: SortedPackIndex, digestLength: number): void {
-  if (digestLength !== 20 && digestLength !== 32) {
-    throw invalidPackRevIndex(
-      'hash-id',
-      `packChecksum must be 20 or 32 bytes, got ${digestLength}`,
-    );
-  }
-  const { entries, order } = sorted;
-  const { count, oids, crcValues, offsets } = entries;
-  if (entries.digestLength !== digestLength) {
-    throw invalidPackRevIndex(
-      'hash-id',
-      `entries digestLength ${entries.digestLength} does not match packChecksum length ${digestLength}`,
-    );
-  }
-  if (oids.length < count * digestLength) {
-    throw invalidPackRevIndex(
-      'hash-id',
-      `oids too short: need ${count * digestLength}, got ${oids.length}`,
-    );
-  }
-  if (crcValues.length < count) {
-    throw invalidPackRevIndex(
-      'hash-id',
-      `crcValues too short: need ${count}, got ${crcValues.length}`,
-    );
-  }
-  if (offsets.length < count) {
-    throw invalidPackRevIndex('hash-id', `offsets too short: need ${count}, got ${offsets.length}`);
-  }
-  if (order.length !== count) {
-    throw invalidPackRevIndex(
-      'hash-id',
-      `order length ${order.length} does not match entries count ${count}`,
-    );
-  }
-}
+const assertValidPackIndexInput = (sorted: SortedPackIndex, digestLength: number): void => {
+  // `RevIndexCheck` has no `'count'` member; an order/count disagreement is a
+  // structural size failure from this artefact's point of view.
+  assertValidSortedPackIndex(sorted, digestLength, (defect, reason) => {
+    throw invalidPackRevIndex(defect === 'count' ? 'size' : defect, reason);
+  });
+};
 
 /**
  * Serializes a pack reverse index from a pre-sorted oid slab and a verified
@@ -157,7 +127,7 @@ export function serializePackRevIndex(
   packChecksum: Uint8Array,
 ): Uint8Array {
   const digestLength = packChecksum.length;
-  assertValidSortedPackIndex(sorted, digestLength);
+  assertValidPackIndexInput(sorted, digestLength);
 
   const { count } = sorted.entries;
   const hashId = digestLength === 32 ? 2 : 1;

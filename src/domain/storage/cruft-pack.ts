@@ -18,7 +18,7 @@
 import { bytesEqual, bytesToHex } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/object-id.js';
 import { invalidCruftMtimes } from './error.js';
-import type { SortedPackIndex } from './pack-order.js';
+import { assertValidSortedPackIndex, type SortedPackIndex } from './pack-order.js';
 
 export const CRUFT_MTIMES_MAGIC = 0x4d544d45; // 'MTME' — the final byte is 0x45/'E', not 0x53/'S'
 const CRUFT_HEADER_SIZE = 12;
@@ -29,40 +29,11 @@ const CRUFT_HEADER_SIZE = 12;
  * complexity under the repo's ceiling — every branch here is still its own
  * coverage-gated test.
  */
-function assertValidSortedPackIndex(sorted: SortedPackIndex, digestLength: number): void {
-  if (digestLength !== 20 && digestLength !== 32) {
-    throw invalidCruftMtimes('hash-id', `packChecksum must be 20 or 32 bytes, got ${digestLength}`);
-  }
-  const { entries, order } = sorted;
-  const { count, oids, crcValues, offsets } = entries;
-  if (entries.digestLength !== digestLength) {
-    throw invalidCruftMtimes(
-      'hash-id',
-      `entries digestLength ${entries.digestLength} does not match packChecksum length ${digestLength}`,
-    );
-  }
-  if (oids.length < count * digestLength) {
-    throw invalidCruftMtimes(
-      'hash-id',
-      `oids too short: need ${count * digestLength}, got ${oids.length}`,
-    );
-  }
-  if (crcValues.length < count) {
-    throw invalidCruftMtimes(
-      'hash-id',
-      `crcValues too short: need ${count}, got ${crcValues.length}`,
-    );
-  }
-  if (offsets.length < count) {
-    throw invalidCruftMtimes('hash-id', `offsets too short: need ${count}, got ${offsets.length}`);
-  }
-  if (order.length !== count) {
-    throw invalidCruftMtimes(
-      'hash-id',
-      `order length ${order.length} does not match entries count ${count}`,
-    );
-  }
-}
+const assertValidPackIndexInput = (sorted: SortedPackIndex, digestLength: number): void => {
+  assertValidSortedPackIndex(sorted, digestLength, (defect, reason) => {
+    throw invalidCruftMtimes(defect, reason);
+  });
+};
 
 /**
  * Serializes a cruft pack's `.mtimes` sidecar from a pre-sorted oid slab, the
@@ -86,7 +57,7 @@ export function serializeCruftMtimes(
   mtimeOf: (oid: ObjectId) => number,
 ): Uint8Array {
   const digestLength = packChecksum.length;
-  assertValidSortedPackIndex(sorted, digestLength);
+  assertValidPackIndexInput(sorted, digestLength);
 
   const { entries, order } = sorted;
   const { oids } = entries;
