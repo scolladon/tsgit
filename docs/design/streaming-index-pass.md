@@ -901,7 +901,7 @@ BuildPackResult.entries: ReadonlyArray<PackIndexWriterEntry>
 sortPackIndexEntries (entries: PackIndexEntries): SortedPackIndex
 serializePackIndex   (sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array
 serializePackRevIndex(sorted: SortedPackIndex, packChecksum: Uint8Array): Uint8Array
-serializeCruftMtimes (sorted: SortedPackIndex, packChecksum: Uint8Array, mtimeOf): Uint8Array
+serializeCruftMtimes (sorted: SortedPackIndex, packChecksum: Uint8Array, mtimeAt): Uint8Array
 BuildPackResult.entries: PackIndexEntries                                  // ADR-790
 ```
 
@@ -931,16 +931,29 @@ hand in six places.
 structural guards on a value that now carries five coupled fields instead of one array, and each
 gets its own isolated test with `error.data` asserted (never a bare `toThrow(Class)`).
 
-**3. `serializeCruftMtimes` is dragged along, and keeps its `mtimeOf(oid)` contract.** ADR-789
+**3. `serializeCruftMtimes` is dragged along, and its callback becomes ordinal-keyed.** ADR-789
 names five symbols; this is the sixth, because its own signature mentions both
-`PackIndexWriterEntry` and `SortedEntry`. Its body needs an `ObjectId` per index position to call
-`mtimeOf`, which the slab does not carry — so it derives one with `bytesToHex` over the slab range
-inside the write loop. That is a **transient** string per object, immediately unreferenced, where
-today the same hex is *retained* for every object in the `PackIndexWriterEntry[]`; the cruft path
-therefore gets strictly better, not worse. Changing `mtimeOf` to take an ordinal instead would
-also work and would remove the hex entirely — it is not taken, because it moves a *published
-callback contract* on a path this change is not about, and `gc-pipeline.ts:567`'s
-`mtimeOf: (id) => mtimeOrThrow(mtimes, id)` is naturally oid-keyed.
+`PackIndexWriterEntry` and `SortedEntry`.
+
+This paragraph originally recorded the opposite decision — keep `mtimeOf(oid)` and let the
+serializer derive an `ObjectId` per index position with `bytesToHex` over the slab range. That
+would have been a transient string per object rather than the retained one the
+`PackIndexWriterEntry[]` held, so the cruft path still improved. It was measured afterwards and
+put to the user: **357 ms against 48.7 ms at a million objects**, on the `gc` path ADR-790 was
+argued from. Keeping the hex was the CPU half of ADR-790's own memory trade rather than an
+oversight, but paying neither turned out to be reachable.
+
+**It is taken (ADR-790's consequences, shipped).** The obstacle was that `gc` holds mtimes keyed
+by *its own* input order while `buildPack` emits in the packer's `(type, size, oid)` order, so
+the caller had no bridge back except the oid. `deltifyEntries` now carries each object's input
+index through the emission sort and `buildPack` returns it as `emissionOrder: Uint32Array` — four
+bytes an entry against the 488 the hex-bearing array cost. `serializeCruftMtimes` takes
+`mtimeAt(ordinal)`, and `ObjectId` and `bytesToHex` leave the domain serializer entirely.
+
+A wrong permutation is silent — every artefact still parses, each object simply carries its
+neighbour's mtime — so it is pinned directly against the slab on a corpus the delta selection
+provably reorders, asserting a genuine *non-identity* permutation and that each ordinal's slab oid
+is the input oid it points at.
 
 **4. There is exactly one implementation.** No overload, no union input, no private slab path
 beside a public array path — that shape is the fork ADR-625 and `check:duplicates` both exist to
@@ -1284,9 +1297,9 @@ This is the half the design's first draft said would not move.
 | `sortPackIndexEntries` | **in `api.json`** | `(PackIndexEntries) → SortedPackIndex` | `pack-writer.ts:117`, `rev-index.ts:129`, `cruft-pack.ts:56` (the three `presorted ??` fallbacks, all **deleted**), `write-pack-artifacts.ts:192,305`, `cruft-pack-lifecycle.ts:245` |
 | `serializePackIndex` | **in `api.json`** | `(SortedPackIndex, packChecksum)` | `write-pack-artifacts.ts:37`; tests at `packfile-interop.test.ts:102,187`, `pack-fixture.ts:152`, `pack-pair.ts:71`, `bitmap-closure.scenario.ts:158`, `fsck-degraded-store.scenario.ts:87` |
 | `serializePackRevIndex` | **in `api.json`** | `(SortedPackIndex, packChecksum)` | `write-pack-artifacts.ts:64`; `rev-index.test.ts`, `rev-index.properties.test.ts` |
-| `serializeCruftMtimes` | **in `api.json`** | `(SortedPackIndex, packChecksum, mtimeOf)` — **the symbol ADR-789 does not name** (§6a) | `write-pack-artifacts.ts:85`; `cruft-pack.test.ts`, `cruft-pack.properties.test.ts` |
+| `serializeCruftMtimes` | **in `api.json`** | `(SortedPackIndex, packChecksum, mtimeAt)` — **the symbol ADR-789 does not name** (§6a); the callback is ordinal-keyed per ADR-790 | `write-pack-artifacts.ts:85`; `cruft-pack.test.ts`, `cruft-pack.properties.test.ts` |
 | `PackIndexEntries`, `SortedPackIndex` | **new, in `api.json`** | added (additive, not breaking) | `pack-records.ts`, `build-pack.ts`, the three serializers, `write-pack-artifacts.ts`, `cruft-pack-lifecycle.ts` |
-| `buildIdx` / `buildRev` / `buildCruftMtimes` | internal | `(ctx, SortedPackIndex, packSha[, mtimeOf])` | `write-pack-artifacts.ts:37,64,85,164` |
+| `buildIdx` / `buildRev` / `buildCruftMtimes` | internal | `(ctx, SortedPackIndex, packSha[, mtimeAt])` | `write-pack-artifacts.ts:37,64,85,164` |
 | `WritePackArtifactsInput.entries`, `WritePackSiblingArtifactsInput.entries`, `writeCruftPack`'s `entries` | internal | `PackIndexEntries` | `fetch-pack.ts:193`, `pack-objects.ts:89`, `gc-pipeline.ts:485,528,562` |
 | `BuildPackResult.entries` | **in `api.json`** | `ReadonlyArray<PackIndexWriterEntry>` → **`PackIndexEntries`** (ADR-790); filled in `buildPack` in place of `build-pack.ts:58`'s `map` | the four `buildPack` call sites are **verified**, not assumed: `pack-objects.ts:87` → `:92`, `gc-pipeline.ts:484` → `:488`, `:527` → `:531`, `:560` → `:564`, each a pure pass-through of `pack.entries` into a `writePackArtifacts*` / `writeCruftPack` input that widens with it. `push.ts:353` reads only `.bytes`; `bundle-create.ts:312` reads `.bytes`, `.sha` and `.objectCount`. **Neither touches `.entries`**, so neither is affected |
 
@@ -1607,8 +1620,5 @@ rather than a by-product of the existing `build-pack` suite.
   larger, at fixture C's ratio, than the one this change removes (§7a) — and streaming either is
   a separate design with its own ceiling. The `idxAssembly` half is closed here; the pack-bytes
   half is not.
-- **`serializeCruftMtimes`' `mtimeOf(oid)` contract.** ADR-789's slab does not carry hex, so the
-  serializer derives a transient one per index position (§6a). Re-keying the callback on an
-  ordinal would remove even that, and is separable.
 - **Anything in `pack-registry.ts`.** `deltaBaseCache` (ADR-736) serves the *read* path over
   already-indexed packs and is untouched by this change.
