@@ -313,31 +313,16 @@ const scanEntries = async <TCrcContext>(
     }
     const entryCrc = await source.entryCrc32(offset, entryEnd, inflated.crcContext);
     const ordinal = store.append(offset, entryCrc, entryHeader.type);
-    if (isBaseHeader(entryHeader)) {
-      const typeName = baseTypeName(entryHeader.type);
-      store.setOid(ordinal, await hashObject(ctx, typeName, inflated.result.output));
-      // A base entry is resolved the moment its oid is known — pass 2 never
-      // revisits this flag for it, only for the deltas that chain off it.
-      store.markResolved(ordinal);
-      // Carried into pass 2: every base entry is offered to the cache here,
-      // not only the ones that turn out to have children — pass 1 cannot
-      // yet know which those are, since the child index is only built once
-      // the whole scan (and every OFS/REF record) is in. A base without
-      // children is simply never looked up again in pass 2, so caching it
-      // costs nothing but a slot this same LRU is free to evict first.
-      const cached: CachedBase = { found: true, type: typeName, content: inflated.result.output };
-      cache.set(inPackCacheKey(passId, offset), cached, cachedBaseByteSize(cached));
-    } else if (entryHeader.type === PACK_ENTRY_TYPE.OFS_DELTA) {
-      // `recordOfsDelta` applies the widened out-of-bound guard: a distance
-      // landing before the pack body OR at/after the entry's own offset
-      // (including the self-referential distance-0 case) refuses here with
-      // git's own reason. A distance that lands in range but not on a real
-      // entry boundary is not caught here — it stays an unresolved-delta
-      // count, the same split git makes.
-      store.recordOfsDelta(ordinal, offset - entryHeader.baseDistance);
-    } else {
-      store.recordRefDelta(ordinal, hexToBytes(entryHeader.baseId));
-    }
+    await recordScannedEntry(
+      ctx,
+      store,
+      cache,
+      passId,
+      ordinal,
+      offset,
+      entryHeader,
+      inflated.result.output,
+    );
     offset = entryEnd;
   }
   if (offset !== trailerStart) {
@@ -345,6 +330,48 @@ const scanEntries = async <TCrcContext>(
   }
   store.buildChildIndexes();
   return store;
+};
+
+/** Applies pass 1's per-entry outcome to the record store: a base entry is
+ *  hashed and marked resolved immediately; an OFS/REF delta is only queued,
+ *  left for pass 2 to resolve against its base. Split out of `scanEntries`
+ *  so this three-way branch is reachable in a unit test without driving a
+ *  whole pack through `fetchPack`. */
+const recordScannedEntry = async (
+  ctx: Context,
+  store: PackRecordStore,
+  cache: LruCache<CachedBase>,
+  passId: number,
+  ordinal: number,
+  offset: number,
+  entryHeader: PackEntryHeader,
+  content: Uint8Array,
+): Promise<void> => {
+  if (isBaseHeader(entryHeader)) {
+    const typeName = baseTypeName(entryHeader.type);
+    store.setOid(ordinal, await hashObject(ctx, typeName, content));
+    // A base entry is resolved the moment its oid is known — pass 2 never
+    // revisits this flag for it, only for the deltas that chain off it.
+    store.markResolved(ordinal);
+    // Carried into pass 2: every base entry is offered to the cache here,
+    // not only the ones that turn out to have children — pass 1 cannot
+    // yet know which those are, since the child index is only built once
+    // the whole scan (and every OFS/REF record) is in. A base without
+    // children is simply never looked up again in pass 2, so caching it
+    // costs nothing but a slot this same LRU is free to evict first.
+    const cached: CachedBase = { found: true, type: typeName, content };
+    cache.set(inPackCacheKey(passId, offset), cached, cachedBaseByteSize(cached));
+  } else if (entryHeader.type === PACK_ENTRY_TYPE.OFS_DELTA) {
+    // `recordOfsDelta` applies the widened out-of-bound guard: a distance
+    // landing before the pack body OR at/after the entry's own offset
+    // (including the self-referential distance-0 case) refuses here with
+    // git's own reason. A distance that lands in range but not on a real
+    // entry boundary is not caught here — it stays an unresolved-delta
+    // count, the same split git makes.
+    store.recordOfsDelta(ordinal, offset - entryHeader.baseDistance);
+  } else {
+    store.recordRefDelta(ordinal, hexToBytes(entryHeader.baseId));
+  }
 };
 
 /** One frame of pass 2's explicit stack: a resolved parent's content, held
