@@ -565,7 +565,7 @@ describe('buildPack', () => {
     });
   });
 
-  describe('Given a corpus the deltifier reorders away from input order', () => {
+  describe('Given a corpus the delta selection reorders away from input order', () => {
     describe('When buildPack runs with delta selection on', () => {
       it('Then emissionOrder maps every emitted ordinal back to its own input oid', async () => {
         // A wrong permutation is silent: gc reads per-object mtimes through it,
