@@ -39,7 +39,12 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   7.x is the native ("tsgo") compiler — an API-breaking major whose main export is a version
   stub and whose programmatic API moved under `./unstable/*`, so `@rollup/plugin-typescript`
   and `rollup-plugin-dts` cannot load it (the `tsc` CLI still works). Unpin once the rollup
-  toolchain supports TS 7. `knip` is also skipped; the reason was never recorded. **`jscpd` is pinned to
+  toolchain supports TS 7. `knip` is also skipped; the reason was never recorded. **`vitest` and
+  `@vitest/coverage-v8` are pinned to 4.x**: 5.0.0 is a major, and Stryker pairs with the
+  test runner — the last vitest/Stryker mis-pairing cost a whole PR to diagnose, and the
+  mutation phase gates every feature PR here, so a runner major landing inside one makes a
+  surviving mutant ambiguous between the feature and the bump. Unpin in its own PR, where a
+  mutation regression is attributable to the bump alone. **`jscpd` is pinned to
   5.0.16**: release 5.1.0 declares all seven of its optional platform packages at version
   `5.0.16`, but `jscpd-windows-arm64-msvc` was only ever published at `5.1.0` — so
   `npm install` silently skips an unresolvable optional dep while `npm ci` computes it as
