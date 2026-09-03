@@ -510,6 +510,30 @@ describe('pack-entry', () => {
         });
       });
     });
+
+    describe('Given a five-byte distance encoding whose value exceeds 2^32', () => {
+      describe('When parsing it out of an OFS_DELTA entry header', () => {
+        it('Then the decoded distance is the true value, not a 32-bit wrap of it', () => {
+          // Arrange — 0x8e 0xfe 0xfe 0xff 0x21 encodes 2^32 + 33. Accumulating
+          // this with `<< 7 | b` wraps it to 33, an in-bound-looking distance,
+          // so a pack canonical git refuses as out of bound would be accepted
+          // with a base the sender never named.
+          const distanceBytes = new Uint8Array([0x8e, 0xfe, 0xfe, 0xff, 0x21]);
+          const entryHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0);
+          const combined = new Uint8Array(entryHeader.length + distanceBytes.length);
+          combined.set(entryHeader);
+          combined.set(distanceBytes, entryHeader.length);
+
+          // Act
+          const result = parsePackEntryHeader(combined, 0, SHA1_CONFIG);
+
+          // Assert
+          expect(result.type === PACK_ENTRY_TYPE.OFS_DELTA && result.baseDistance).toBe(
+            2 ** 32 + 33,
+          );
+        });
+      });
+    });
   });
 
   describe('packEntryTypeToObjectType', () => {

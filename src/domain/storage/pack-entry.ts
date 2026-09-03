@@ -141,7 +141,11 @@ function decodeOfsDistance(
     if (currentPos >= bytes.length) {
       throw invalidPackEntry(entryOffset, 'unexpected end of OFS_DELTA distance');
     }
-    distance = ((distance + 1) << 7) | (bytes[currentPos]! & 0x7f);
+    // Float arithmetic, not `<< 7 | b`: a 5-byte encoding reaches ~2^35 and a
+    // 32-bit shift wraps it into a small positive value, laundering an
+    // out-of-bound distance into an in-bound one before any guard sees it.
+    // git accumulates the same field in `off_t` and refuses it.
+    distance = (distance + 1) * 128 + (bytes[currentPos]! & 0x7f);
   }
   return { distance, nextPos: currentPos + 1 };
 }
