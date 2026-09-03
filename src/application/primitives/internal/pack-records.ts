@@ -162,16 +162,15 @@ export function createPackRecordStore(
   };
 
   const markResolved = (ordinal: number): void => {
-    types[ordinal] = (types[ordinal] ?? 0) | RESOLVED_FLAG;
+    types[ordinal] = types[ordinal]! | RESOLVED_FLAG;
     resolvedCount += 1;
   };
 
-  const isResolved = (ordinal: number): boolean => ((types[ordinal] ?? 0) & RESOLVED_FLAG) !== 0;
+  const isResolved = (ordinal: number): boolean => (types[ordinal]! & RESOLVED_FLAG) !== 0;
 
-  const typeOf = (ordinal: number): PackEntryType =>
-    ((types[ordinal] ?? 0) & TYPE_MASK) as PackEntryType;
+  const typeOf = (ordinal: number): PackEntryType => (types[ordinal]! & TYPE_MASK) as PackEntryType;
 
-  const offsetOf = (ordinal: number): number => offsets[ordinal] ?? 0;
+  const offsetOf = (ordinal: number): number => offsets[ordinal]!;
 
   const oidRangeOf = (ordinal: number): { readonly start: number; readonly end: number } => ({
     start: ordinal * digestLength,
@@ -199,7 +198,7 @@ export function createPackRecordStore(
   const buildChildIndexes = (): void => {
     const ofsSorted = new Int32Array(deltaCount);
     for (let d = 0; d < deltaCount; d += 1) ofsSorted[d] = d;
-    ofsSorted.sort((a, b) => (deltaBaseOffset[a] ?? 0) - (deltaBaseOffset[b] ?? 0));
+    ofsSorted.sort((a, b) => deltaBaseOffset[a]! - deltaBaseOffset[b]!);
     ofsSortedDeltaIndices = ofsSorted;
 
     const refSorted = new Int32Array(refCount);
@@ -215,14 +214,14 @@ export function createPackRecordStore(
     let hi = ofsSortedDeltaIndices.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      const midOffset = deltaBaseOffset[ofsSortedDeltaIndices[mid] ?? 0] ?? 0;
+      const midOffset = deltaBaseOffset[ofsSortedDeltaIndices[mid]!]!;
       if (midOffset < baseOffset) lo = mid + 1;
       else hi = mid;
     }
     let end = lo;
     while (
       end < ofsSortedDeltaIndices.length &&
-      (deltaBaseOffset[ofsSortedDeltaIndices[end] ?? 0] ?? 0) === baseOffset
+      deltaBaseOffset[ofsSortedDeltaIndices[end]!]! === baseOffset
     ) {
       end += 1;
     }
@@ -230,13 +229,13 @@ export function createPackRecordStore(
   };
 
   const ofsChildOrdinalAt = (position: number): number =>
-    deltaEntry[ofsSortedDeltaIndices[position] ?? 0] ?? 0;
+    deltaEntry[ofsSortedDeltaIndices[position]!]!;
 
   const refChildren = (
     baseOidBytes: Uint8Array,
   ): { readonly start: number; readonly end: number } => {
     const oidAt = (position: number): Uint8Array => {
-      const r = refSortedRefIndices[position] ?? 0;
+      const r = refSortedRefIndices[position]!;
       return refBaseOids.subarray(r * digestLength, (r + 1) * digestLength);
     };
     let lo = 0;
@@ -253,10 +252,9 @@ export function createPackRecordStore(
     return { start: lo, end };
   };
 
-  const refChildOrdinalAt = (position: number): number =>
-    refEntry[refSortedRefIndices[position] ?? 0] ?? 0;
+  const refChildOrdinalAt = (position: number): number => refEntry[refSortedRefIndices[position]!]!;
 
-  const refDeltaOrdinalAt = (position: number): number => refEntry[position] ?? 0;
+  const refDeltaOrdinalAt = (position: number): number => refEntry[position]!;
 
   const refDeltaBaseOidAt = (position: number): Uint8Array =>
     refBaseOids.subarray(position * digestLength, (position + 1) * digestLength);
