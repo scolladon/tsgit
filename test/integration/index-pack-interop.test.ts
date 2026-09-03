@@ -361,6 +361,83 @@ describe.skipIf(!GIT_AVAILABLE)('index-pack interop', () => {
     });
   });
 
+  describe('Given a crafted pack whose OFS_DELTA base offset lands strictly inside another entry', () => {
+    describe('When git index-pack --strict and tsgit walkPackEntries both run over the same bytes', () => {
+      it('Then both refuse, and both count it as one unresolved delta', async () => {
+        // Arrange — a distance computed from a probe build so the base offset
+        // is in range (past the header, before the delta) yet matches no real
+        // entry start. It therefore escapes the out-of-bound guard entirely
+        // and can only surface as a count. Until now this row was pinned
+        // tsgit-against-tsgit only, so the claim that git reaches the same
+        // verdict was untested.
+        const ctx = createMemoryContext();
+        const bases: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('mid-entry base A') },
+          { kind: 'base', type: 'blob', content: ENCODER.encode('mid-entry base B') },
+        ];
+        const target = ENCODER.encode('mid-entry delta target');
+        const probe = await buildSyntheticPack(ctx, [
+          ...bases,
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: target },
+        ]);
+        const midEntryDistance = (probe.offsets[2] as number) - ((probe.offsets[1] as number) + 1);
+        const built = await buildSyntheticPack(ctx, [
+          ...bases,
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: target,
+            distanceOverride: midEntryDistance,
+          },
+        ]);
+        const dir = await withCraftedPack(built.packBytes);
+        try {
+          // Act
+          const gitResult = tryRunGitWithExit(['index-pack', '--strict', dir.packPath]);
+          let caught: unknown;
+          try {
+            await walkPackEntries(ctx, built.packBytes);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git uses the singular at one; so does tsgit.
+          expect(gitResult.exitCode).not.toBe(0);
+          expect(gitResult.stderr).toContain('pack has 1 unresolved delta');
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { reason?: string };
+          expect(data.reason).toBe('pack has 1 unresolved delta');
+        } finally {
+          await dir.dispose();
+        }
+      }, 60_000);
+    });
+  });
+
+  describe('Given an empty pack (objectCount 0)', () => {
+    describe('When git index-pack --strict and tsgit walkPackEntries both run over the same bytes', () => {
+      it('Then both accept it, and tsgit reports zero entries', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const built = await buildSyntheticPack(ctx, []);
+        const dir = await withCraftedPack(built.packBytes);
+        try {
+          // Act
+          const gitResult = tryRunGitWithExit(['index-pack', '--strict', dir.packPath]);
+          const walked = await walkPackEntries(ctx, built.packBytes);
+
+          // Assert — acceptance is the agreement being pinned. tsgit's
+          // fetchPack suppresses the write entirely for a zero-entry pack,
+          // which is why the walk itself is the comparable surface here.
+          expect(gitResult.exitCode).toBe(0);
+          expect(walked).toHaveLength(0);
+        } finally {
+          await dir.dispose();
+        }
+      }, 60_000);
+    });
+  });
+
   describe('Given the crafted OFS-distance-0 pack (self-referential OFS_DELTA)', () => {
     describe('When git index-pack --strict and tsgit walkPackEntries both run over the same bytes', () => {
       it("Then both refuse, and tsgit's reason is git's own out-of-bound tail, byte-identical", async () => {
