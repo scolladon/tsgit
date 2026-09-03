@@ -198,6 +198,11 @@ const cachedBaseByteSize = (entry: CachedBase): number =>
  */
 interface BaseCacheSlot {
   readonly cache: LruCache<CachedBase>;
+  /** The budget this slot's cache was built with. A session outlives one index
+   *  pass, so a later pass asking for a different budget must not silently
+   *  inherit the first one's. */
+  readonly maxBytes: number;
+  readonly maxEntries: number;
   passId: number;
 }
 
@@ -205,10 +210,20 @@ const baseCacheSlots = new WeakMap<Context['session'], BaseCacheSlot>();
 
 const baseCacheSlotFor = (ctx: Context, maxBytes: number, maxEntries: number): BaseCacheSlot => {
   const existing = baseCacheSlots.get(ctx.session);
-  if (existing !== undefined) return existing;
+  if (
+    existing !== undefined &&
+    existing.maxBytes === maxBytes &&
+    existing.maxEntries === maxEntries
+  ) {
+    return existing;
+  }
   const created: BaseCacheSlot = {
     cache: createLruCache<CachedBase>(maxBytes, maxEntries),
-    passId: 0,
+    maxBytes,
+    maxEntries,
+    // Carried forward so an in-pack key from the discarded slot can never be
+    // read back by a later pass over the same session.
+    passId: existing?.passId ?? 0,
   };
   baseCacheSlots.set(ctx.session, created);
   return created;

@@ -29,11 +29,6 @@ const GROWTH_FACTOR = 2;
 const TYPE_MASK = 0b0111;
 const RESOLVED_FLAG = 0b1000;
 
-/** `deltaBaseOffset`'s marker for a REF-delta slot — real OFS base offsets
- *  are always `>= PACK_HEADER_SIZE`, so a negative value can never collide
- *  with one. */
-const REF_DELTA_SENTINEL = -1;
-
 /** The next capacity for a store growing from `current` to hold at least
  *  `needed` entries: geometric doubling from `current` (or `INITIAL_CAPACITY`
  *  when there is no current capacity yet), clamped underneath by
@@ -92,10 +87,11 @@ export function createPackRecordStore(
   let resolvedCount = 0;
 
   // Delta side tables (application-owned, never crossing into a domain
-  // signature): `deltaEntry`/`deltaBaseOffset` cover every delta (OFS and
-  // REF alike), sized `D`; `refBaseOids`/`refEntry` are REF-only, sized
-  // `D_ref`, kept separate so a REF-heavy or REF-free pack never pays for
-  // oid bytes it doesn't have.
+  // signature). `deltaEntry`/`deltaBaseOffset` hold the OFS deltas, keyed by
+  // the base offset they name. A REF delta has no base offset, so it lives
+  // only in `refEntry`/`refBaseOids` — keeping the two apart means a REF-free
+  // pack never allocates oid bytes, and a REF-heavy one never allocates
+  // offset slots that no lookup would ever read.
   let deltaCapacity = Math.min(INITIAL_CAPACITY, structuralMax);
   let deltaEntry = new Int32Array(deltaCapacity);
   let deltaBaseOffset = new Float64Array(deltaCapacity);
@@ -194,11 +190,6 @@ export function createPackRecordStore(
   };
 
   const recordRefDelta = (ordinal: number, baseOidBytes: Uint8Array): void => {
-    ensureDeltaCapacity(deltaCount + 1);
-    deltaEntry[deltaCount] = ordinal;
-    deltaBaseOffset[deltaCount] = REF_DELTA_SENTINEL;
-    deltaCount += 1;
-
     ensureRefCapacity(refCount + 1);
     refBaseOids.set(baseOidBytes, refCount * digestLength);
     refEntry[refCount] = ordinal;
@@ -206,18 +197,8 @@ export function createPackRecordStore(
   };
 
   const buildChildIndexes = (): void => {
-    let ofsCount = 0;
-    for (let d = 0; d < deltaCount; d += 1) {
-      if ((deltaBaseOffset[d] ?? REF_DELTA_SENTINEL) >= 0) ofsCount += 1;
-    }
-    const ofsSorted = new Int32Array(ofsCount);
-    let ofsCursor = 0;
-    for (let d = 0; d < deltaCount; d += 1) {
-      if ((deltaBaseOffset[d] ?? REF_DELTA_SENTINEL) >= 0) {
-        ofsSorted[ofsCursor] = d;
-        ofsCursor += 1;
-      }
-    }
+    const ofsSorted = new Int32Array(deltaCount);
+    for (let d = 0; d < deltaCount; d += 1) ofsSorted[d] = d;
     ofsSorted.sort((a, b) => (deltaBaseOffset[a] ?? 0) - (deltaBaseOffset[b] ?? 0));
     ofsSortedDeltaIndices = ofsSorted;
 

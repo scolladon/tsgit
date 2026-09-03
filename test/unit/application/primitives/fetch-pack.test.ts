@@ -3407,6 +3407,41 @@ describe('index pass equivalence — base cache budget sweep', () => {
   }
 });
 
+describe('Given one session walked twice, the second walk asking for a different cache budget', () => {
+  describe('When the second walk would hit the cache the first walk filled', () => {
+    it('Then it gets the budget it asked for, not the budget the session was first opened with', async () => {
+      // Arrange — one base with one child, so the root is cached in pass 1 and
+      // re-read in pass 2 only on a miss. The session is shared deliberately:
+      // the slot is keyed on it, and a slot that ignored the later budget would
+      // serve the first walk's cache to the second.
+      const ctx = createMemoryContext();
+      const base = new Uint8Array(4096).fill(7);
+      const target = new Uint8Array(4097).fill(7);
+      const { packBytes } = await buildSyntheticPack(ctx, [
+        { kind: 'base', type: 'blob', content: base },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: target },
+      ]);
+      const inflateCallsFor = async (baseCacheMaxBytes: number): Promise<number> => {
+        const spy = vi.fn(ctx.compressor.streamInflate);
+        const spyCtx: Context = {
+          ...ctx,
+          compressor: { ...ctx.compressor, streamInflate: spy },
+        };
+        await walkPackEntries(spyCtx, packBytes, undefined, { baseCacheMaxBytes });
+        return spy.mock.calls.length;
+      };
+
+      // Act — a generous budget first, then none at all, over the same session.
+      const withCache = await inflateCallsFor(1024 * 1024);
+      const withoutCache = await inflateCallsFor(0);
+
+      // Assert — disabling the cache costs the root's second read. If the slot
+      // ignored the second budget, both numbers would be equal.
+      expect(withoutCache).toBe(withCache + 1);
+    });
+  });
+});
+
 describe('index pass equivalence — base cache budget sweep, thin-pack half', () => {
   const buildThinPackForBudgetSweep = async (ctx: ReturnType<typeof createMemoryContext>) => {
     const baseContent = ENCODER.encode('budget-sweep thin-pack base content');
