@@ -143,7 +143,7 @@ describe('Given a pack record store with a generous structural clamp', () => {
       // Assert — timing of the growth
       expect(belowCapacity).toBe(initialCapacity);
       expect(atBoundaryCapacity).toBe(initialCapacity);
-      expect(aboveBoundaryCapacity).toBeGreaterThan(initialCapacity);
+      expect(aboveBoundaryCapacity).toBe(initialCapacity * 2);
 
       // Assert — the very first entry, written before any growth, is intact
       // after every growth step since.
@@ -171,6 +171,35 @@ describe('Given a structural clamp that sits below what plain doubling would rea
 
       // Assert
       expect(sut.view().offsets.length).toBe(clampedMax);
+    });
+  });
+});
+
+describe('Given more entries appended than the structural clamp allows for', () => {
+  describe('When each is read back by its own ordinal', () => {
+    it('Then every entry survives — correctness wins over the clamp, never silently truncating', () => {
+      // Arrange — a clamp far below the entry count. A typed-array write past
+      // the end is a silent no-op, so a capacity that stops at the clamp would
+      // hand back valid ordinals whose values simply vanish.
+      const CLAMP = 2;
+      const APPENDED = CLAMP + 3;
+      const sut = createPackRecordStore(20, CLAMP);
+
+      // Act
+      for (let i = 0; i < APPENDED; i += 1) {
+        const ordinal = sut.append(100 + i, i, PACK_ENTRY_TYPE.BLOB);
+        sut.setOid(ordinal, fixedOid(20, (i + 1) & 0xff));
+      }
+
+      // Assert
+      expect(sut.count).toBe(APPENDED);
+      for (let i = 0; i < APPENDED; i += 1) {
+        expect(sut.offsetOf(i)).toBe(100 + i);
+        const range = sut.oidRangeOf(i);
+        expect(sut.view().oids.subarray(range.start, range.end)).toEqual(
+          fixedOid(20, (i + 1) & 0xff),
+        );
+      }
     });
   });
 });

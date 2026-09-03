@@ -666,7 +666,12 @@ describe('pack-writer', () => {
             expect.fail('Should have thrown');
           } catch (e) {
             const err = e as TsgitError;
-            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('digestLength'),
+              }),
+            );
           }
         });
       });
@@ -690,7 +695,12 @@ describe('pack-writer', () => {
             expect.fail('Should have thrown');
           } catch (e) {
             const err = e as TsgitError;
-            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('oids too short'),
+              }),
+            );
           }
         });
 
@@ -731,7 +741,12 @@ describe('pack-writer', () => {
             expect.fail('Should have thrown');
           } catch (e) {
             const err = e as TsgitError;
-            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('crcValues too short'),
+              }),
+            );
           }
         });
       });
@@ -760,7 +775,12 @@ describe('pack-writer', () => {
             expect.fail('Should have thrown');
           } catch (e) {
             const err = e as TsgitError;
-            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('offsets too short'),
+              }),
+            );
           }
         });
       });
@@ -786,7 +806,12 @@ describe('pack-writer', () => {
             expect.fail('Should have thrown');
           } catch (e) {
             const err = e as TsgitError;
-            expect(err.data).toEqual(expect.objectContaining({ code: 'INVALID_PACK_INDEX' }));
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('order length'),
+              }),
+            );
           }
         });
       });
