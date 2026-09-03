@@ -390,8 +390,15 @@ describe.skipIf(!GIT_AVAILABLE)('index-pack interop', () => {
           expect(gitResult.exitCode).not.toBe(0);
           expect(gitResult.stderr).toContain('delta base offset is out of bound');
           expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as { reason?: string };
+          const data = (caught as TsgitError).data as { reason?: string; offset?: number };
           expect(data.reason).toBe('delta base offset is out of bound');
+          // git names the offending entry in its own prefix — "pack has bad
+          // object at offset N: <reason>". Both tools must name the SAME
+          // entry, not merely refuse; tsgit ships N as a field and the caller
+          // reconstructs the line.
+          const gitOffset = /at offset (\d+):/.exec(gitResult.stderr)?.[1];
+          expect(gitOffset).toBeDefined();
+          expect(data.offset).toBe(Number(gitOffset));
         } finally {
           await dir.dispose();
         }

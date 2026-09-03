@@ -675,7 +675,7 @@ describe('fetchPack', () => {
 
     describe('Given an OFS_DELTA pointing before the pack body', () => {
       describe('When fetchPack runs', () => {
-        it("Then throws INVALID_PACK_HEADER with git's own out-of-bound reason", async () => {
+        it("Then throws INVALID_PACK_ENTRY naming the offset and git's out-of-bound reason", async () => {
           // Arrange — synthesize a pack with one entry whose OFS_DELTA distance is
           // larger than its own offset minus the 12-byte header. Real packs cannot
           // produce such an entry; we craft it directly to exercise the
@@ -729,7 +729,7 @@ describe('fetchPack', () => {
           // offset is no longer named in the reason.
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as { code: string; reason?: string };
-          expect(data.code).toBe('INVALID_PACK_HEADER');
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
           expect(data.reason).toBe('delta base offset is out of bound');
         });
       });
@@ -1843,7 +1843,7 @@ describe('fetchPack', () => {
 
     describe('Given a pack with an OFS_DELTA whose base offset is itself (distance 0)', () => {
       describe('When fetchPack runs', () => {
-        it("Then throws INVALID_PACK_HEADER with git's own out-of-bound reason (the defect fix)", async () => {
+        it("Then throws INVALID_PACK_ENTRY naming the offset and git's out-of-bound reason (the defect fix)", async () => {
           // Arrange — a single OFS_DELTA at offset 12 with a distance-0
           // varint. `scanEntries` computes `baseOffset = 12 - 0 = 12`, which
           // IS `>= entryOffset` (12), so the widened guard in
@@ -1891,7 +1891,7 @@ describe('fetchPack', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as { code: string; reason?: string };
-          expect(data.code).toBe('INVALID_PACK_HEADER');
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
           expect(data.reason).toBe('delta base offset is out of bound');
         });
       });

@@ -486,7 +486,12 @@ const resolveFromRoots = async <TCrcContext>(
     const oidRange = store.oidRangeOf(ordinal);
     const oidBytes = oids.subarray(oidRange.start, oidRange.end);
     const children = collectChildren(store, offset, oidBytes);
-    if (children.length === 0) continue;
+    // Nothing left to descend into: no children at all, or — for a later
+    // duplicate of an oid a previous base already resolved — none still
+    // unresolved. Either way, skipping avoids inflating a root whose subtree
+    // the walk would immediately discard. `every` is true on an empty list, so
+    // the two cases need no separate test.
+    if (children.every((child) => store.isResolved(child))) continue;
     const rootContent = await rootContentOf(source, cache, passId, offset);
     await walkFromRoot(ctx, source, store, rootContent, baseTypeName(type), children);
   }

@@ -535,17 +535,22 @@ describe('Given an OFS delta whose base offset points before the pack body', () 
       expect(caught).toBeInstanceOf(TsgitError);
       const data = (caught as TsgitError).data as {
         readonly code: string;
+        readonly offset: number;
         readonly reason: string;
       };
-      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.code).toBe('INVALID_PACK_ENTRY');
       expect(data.reason).toBe('delta base offset is out of bound');
+      // git names the offending entry's offset alongside the reason
+      // ("pack has bad object at offset N: ..."); shipping it as a field is
+      // what lets a caller reconstruct that line.
+      expect(data.offset).toBe(100);
     });
   });
 });
 
 describe('Given an OFS delta whose base offset equals its own entry offset (distance zero)', () => {
   describe('When recordOfsDelta is called', () => {
-    it('Then it throws INVALID_PACK_HEADER — a self-referential delta is refused, not folded into an unresolved count', () => {
+    it('Then it throws INVALID_PACK_ENTRY — a self-referential delta is refused, not folded into an unresolved count', () => {
       // Arrange
       const sut = createPackRecordStore(20, 10);
       const deltaOrdinal = sut.append(100, 0, PACK_ENTRY_TYPE.BLOB);
@@ -562,10 +567,15 @@ describe('Given an OFS delta whose base offset equals its own entry offset (dist
       expect(caught).toBeInstanceOf(TsgitError);
       const data = (caught as TsgitError).data as {
         readonly code: string;
+        readonly offset: number;
         readonly reason: string;
       };
-      expect(data.code).toBe('INVALID_PACK_HEADER');
+      expect(data.code).toBe('INVALID_PACK_ENTRY');
       expect(data.reason).toBe('delta base offset is out of bound');
+      // git names the offending entry's offset alongside the reason
+      // ("pack has bad object at offset N: ..."); shipping it as a field is
+      // what lets a caller reconstruct that line.
+      expect(data.offset).toBe(100);
     });
   });
 });

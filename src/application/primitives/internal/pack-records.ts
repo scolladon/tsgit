@@ -15,7 +15,7 @@
  * allocates for the real entry count.
  */
 import { compareBytes } from '../../../domain/objects/encoding.js';
-import { invalidPackHeader } from '../../../domain/storage/error.js';
+import { invalidPackEntry } from '../../../domain/storage/error.js';
 import { PACK_HEADER_SIZE, type PackEntryType } from '../../../domain/storage/pack-entry.js';
 import type { PackIndexEntries } from '../../../domain/storage/pack-order.js';
 
@@ -181,7 +181,7 @@ export function createPackRecordStore(
   const recordOfsDelta = (ordinal: number, baseOffset: number): void => {
     const entryOffset = offsetOf(ordinal);
     if (baseOffset < PACK_HEADER_SIZE || baseOffset >= entryOffset) {
-      throw invalidPackHeader('delta base offset is out of bound');
+      throw invalidPackEntry(entryOffset, 'delta base offset is out of bound');
     }
     ensureDeltaCapacity(deltaCount + 1);
     deltaEntry[deltaCount] = ordinal;
