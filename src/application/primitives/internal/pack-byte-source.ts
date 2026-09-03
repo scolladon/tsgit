@@ -83,14 +83,28 @@ export const inMemoryPackByteSource = (ctx: Context, packBytes: Uint8Array): Pac
  * for the entry walk must keep that same bound rather than reintroducing a
  * whole-pack buffer. 256 KiB is large enough that a typical object's header
  * plus compressed data (commits and trees run a few KB; most blobs too) is
- * satisfied by a single `readSlice` call, small enough that RSS stays flat
- * no matter how large the pack is. On a valid pack this is also the peak:
+ * satisfied by a single `readSlice` call. On a valid pack this is also the
+ * peak:
  * every window growth restarts its doubling ladder from this size, anchored
  * fresh at the entry that needed it, so an entry whose compressed span
  * exceeds one window still resolves correctly with a peak single read of at
  * most that one entry's own compressed span (rounded up to the next
  * doubling, never past `trailerStart`) — never the whole pack, and never
  * inflated by an unrelated entry's earlier growth.
+ *
+ * A MALFORMED pack can defeat that, and the "on a valid pack" qualifier above
+ * is load-bearing rather than decorative. A zlib member that yields no output
+ * and never terminates (a deflate header followed by non-final stored blocks
+ * to the end of the body) trips neither the entry's declared size nor the
+ * adapter's inflate cap, so every window ends mid-stream, every failure reads
+ * as retryable, and the ladder climbs to its `trailerStart` ceiling — one
+ * `readSlice` for the whole remaining pack. The walk still ends in a refusal,
+ * and `maxResponseBytes` bounds the pack itself, so the amplification is
+ * roughly 2x the pack rather than unbounded; but the peak on such a pack is
+ * the pack, not a window. Capping the ladder per entry would close it, and
+ * cannot simply be a fixed multiple of this constant — a legitimately huge
+ * object needs a window to match. The honest bound is the entry's own
+ * declared size, which this seam does not currently see.
  */
 export const DISK_WALK_WINDOW_BYTES = 256 * 1024;
 
