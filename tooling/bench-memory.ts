@@ -40,6 +40,7 @@ import {
   ensureScaledFixture,
   type FixtureSpec,
   HEADER_CACHE_FIXTURE,
+  isFixtureUnavailable,
   LARGE_FIXTURE,
   MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
   SMALL_FAT_BLOB_FIXTURE,
@@ -982,6 +983,7 @@ const main = async (): Promise<void> => {
       reports.push(await runHeaderCacheLargeWorkload(gc, openRepository));
     }
   } catch (err) {
+    if (!isFixtureUnavailable(err)) throw err;
     process.stderr.write(
       `cannot measure memory: fixture unavailable ` +
         `(${err instanceof Error ? err.message : String(err)})\n` +

@@ -34,6 +34,12 @@ jobs:
       - run: npm run bench:summary
       - name: Capture memory probe
         run: npm run bench:memory
+      # A scenario that dies during warmup never reaches its teardown, and a
+      # timeout kill can strand a build; none of it may ride into the cache
+      # the post-step saves.
+      - name: Sweep leftovers out of the fixture cache
+        if: always()
+        run: rm -rf ~/.cache/tsgit-bench/*.tmp.* ~/.cache/tsgit-bench/*.corrupt.* ~/.cache/tsgit-bench/*.scratch.*
       - uses: actions/upload-artifact@v7
         with:
           name: benchmarks

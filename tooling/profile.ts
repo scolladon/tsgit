@@ -26,7 +26,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { ensureScaledFixture, MEDIUM_FIXTURE } from '../test/bench/support/fixture-generator.ts';
+import {
+  ensureScaledFixture,
+  isFixtureUnavailable,
+  MEDIUM_FIXTURE,
+} from '../test/bench/support/fixture-generator.ts';
 import { type Baseline, machineBanner, writeBaseline } from './profile-baseline.ts';
 import { parseDigest, partitionWriteDigest } from './profile-digest.ts';
 import { profileEnv } from './profile-env.ts';
@@ -223,6 +227,7 @@ const main = async (): Promise<void> => {
     try {
       await ensureScaledFixture(MEDIUM_FIXTURE);
     } catch (err) {
+      if (!isFixtureUnavailable(err)) throw err;
       process.stderr.write(
         `cannot profile: medium fixture unavailable ` +
           `(${err instanceof Error ? err.message : String(err)})\n` +

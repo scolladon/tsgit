@@ -12,8 +12,6 @@
  *    directory — the merge-join descends and compares every directory pair
  *    instead of expanding an added subtree.
  */
-import { afterAll } from 'vitest';
-
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID, isDirectory } from '../../src/domain/objects/index.js';
 import type { Repository } from '../../src/index.node.js';
@@ -65,14 +63,11 @@ await tieredScenario(
   'When diff() compares HEAD~1 against HEAD recursively, Then measure tsgit',
   async (fixture) => {
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await repo.diff({ from: 'HEAD~1', to: 'HEAD', recursive: true });
     };
-    return { sut };
+    return { teardown: () => repo.dispose(), sut };
   },
 );
 
@@ -81,14 +76,11 @@ await tieredScenario(
   'When diff() compares the empty tree against HEAD recursively (the merge-join walks the whole tree), Then measure tsgit',
   async (fixture) => {
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await repo.diff({ from: EMPTY_TREE_OID, to: 'HEAD', recursive: true });
     };
-    return { sut };
+    return { teardown: () => repo.dispose(), sut };
   },
 );
 
@@ -97,14 +89,11 @@ await tieredScenario(
   'When diff() compares HEAD against a sibling tree with one blob modified per shard directory, Then the cursor merge-join descends every directory pair instead of expanding an added subtree',
   async (fixture) => {
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-    });
     const wideModifyTreeId = await buildWideModifyTreeId(repo, fixture);
 
     const sut = async (): Promise<void> => {
       await repo.diff({ from: 'HEAD', to: wideModifyTreeId, recursive: true });
     };
-    return { sut };
+    return { teardown: () => repo.dispose(), sut };
   },
 );

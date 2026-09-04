@@ -7,22 +7,21 @@
  * skips them — so git pays the identical cost for the identical shape;
  * this bench prices the delta, not a tsgit-specific overhead.
  */
-import { afterAll } from 'vitest';
-
 import { openRepository } from '../../src/index.node.js';
 import { MANY_OBJECT_COUNT, setupFsckArtefactFixture } from './fixtures.js';
 import type { BenchComparison } from './support/bench-dsl.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 
 const fsckComparison = (withArtefacts: boolean) => async (): Promise<BenchComparison> => {
   const fixture = await setupFsckArtefactFixture(withArtefacts);
   const repo = await openRepository({ cwd: fixture.cwd });
-  afterAll(async () => {
-    await repo.dispose();
-    await fixture.cleanup();
-  });
 
   return {
+    teardown: async (): Promise<void> => {
+      removeSync(fixture.cwd);
+      await repo.dispose();
+    },
     sut: async (): Promise<void> => {
       await repo.fsck();
     },

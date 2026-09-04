@@ -839,7 +839,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^jscpd \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^jscpd \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -v \"^@cloudflare/workers-types \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -1363,7 +1363,7 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/node": "26.4.1",
     "@vitest/coverage-v8": "4.1.11",
-    "cspell": "10.2.1",
+    "cspell": "10.2.2",
     "dependency-cruiser": "18.2.0",
     "fast-check": "4.9.0",
     "husky": "9.1.7",

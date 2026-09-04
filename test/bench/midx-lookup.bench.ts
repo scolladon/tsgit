@@ -10,8 +10,6 @@
  * artefact, never a local run — session load has been shown to bias
  * syscall-heavy paths by up to 2.4x.
  */
-import { afterAll } from 'vitest';
-
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { BenchComparison } from './support/bench-dsl.js';
@@ -30,10 +28,8 @@ const readBlobBench = async (
   blobId: ObjectId,
 ): Promise<BenchComparison> => {
   const repo = await openRepository({ cwd: fixture.cwd });
-  afterAll(async () => {
-    await repo.dispose();
-  });
   return {
+    teardown: () => repo.dispose(),
     sut: async (): Promise<void> => {
       await repo.primitives.readBlob(blobId);
     },

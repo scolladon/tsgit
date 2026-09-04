@@ -87,10 +87,14 @@ micro-scenario keeps the loose-object read path covered outside the tiering.
 
 - **Pre-warm the cache first:** `npm run bench:fixture -- medium` builds a
   5k-commit / 20k-blob repo under `~/.cache/tsgit-bench` (one-time, ~5 s;
-  later runs are cache hits). The tiered benches skip cleanly when a fixture
-  is unavailable, so a cold run without `git` on `PATH` skips cleanly. The
-  small tier is cheap enough (~50 commits) to generate inline on first run —
-  `bench:fixture` does not take a `small` argument.
+  later runs are cache hits). `npm run bench:fixture -- --prune` reclaims
+  caches from older generator versions and leftovers of dead runs, and is
+  the only thing that ever deletes from `~/.cache/tsgit-bench` besides the
+  generator replacing a fixture it proved mutated. The tiered benches skip
+  cleanly when a fixture is unavailable, so a cold run without `git` on
+  `PATH` skips cleanly — any other fixture failure fails the bench file
+  instead. The small tier is cheap enough (~50 commits) to generate inline
+  on first run — `bench:fixture` does not take a `small` argument.
 - **Large fixture:** set `TSGIT_BENCH_LARGE=1` to also run the large tier of
   every hot-path bench, pointed at the 50k-commit / 200k-blob repo
   (`npm run bench:fixture -- large` first). Opt-in only — it never runs in

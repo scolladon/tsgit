@@ -575,6 +575,12 @@ jobs:
           path: ~/.cache/tsgit-bench
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
       - run: npm run test:bench
+      # A scenario that dies during warmup never reaches its teardown, and a
+      # timeout kill can strand a build; none of it may ride into the cache
+      # the post-step saves.
+      - name: Sweep leftovers out of the fixture cache
+        if: always()
+        run: rm -rf ~/.cache/tsgit-bench/*.tmp.* ~/.cache/tsgit-bench/*.corrupt.* ~/.cache/tsgit-bench/*.scratch.*
       - run: node --experimental-strip-types tooling/bench-to-snapshot.ts
         env:
           RESOLVED_NODE_VERSION: ${{ steps.setup.outputs.node-version }}
@@ -708,6 +714,11 @@ jobs:
             run_side head head "${round}"
           done
 
+      # Same reason as benchmark-snapshot: the head tree copies fixtures beside
+      # the cache the post-step saves on a key miss.
+      - name: Sweep leftovers out of the fixture cache
+        if: always()
+        run: rm -rf ~/.cache/tsgit-bench/*.tmp.* ~/.cache/tsgit-bench/*.corrupt.* ~/.cache/tsgit-bench/*.scratch.*
       - name: Compare and comment
         env:
           GH_TOKEN: ${{ github.token }}

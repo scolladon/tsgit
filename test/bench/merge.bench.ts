@@ -6,8 +6,6 @@
  * Accepted as advisory, non-gated coverage, faithful to the profiling
  * factory's own fresh-per-iteration model.
  */
-import { afterAll } from 'vitest';
-
 import { benchScenario } from './support/bench-dsl.js';
 import { buildMergeScratch, SCRATCH_AUTHOR, type ScratchRepo } from './support/write-scratch.js';
 
@@ -16,9 +14,6 @@ benchScenario(
   'When merge.run() creates a non-fast-forward merge, Then measure tsgit',
   () => {
     const scratches: ScratchRepo[] = [];
-    afterAll(async () => {
-      await Promise.all(scratches.map((scratch) => scratch.dispose()));
-    });
 
     const sut = async (): Promise<void> => {
       const scratch = await buildMergeScratch();
@@ -30,6 +25,11 @@ benchScenario(
         committer: SCRATCH_AUTHOR,
       });
     };
-    return { sut };
+    return {
+      teardown: (): void => {
+        for (const scratch of scratches) scratch.disposeSync();
+      },
+      sut,
+    };
   },
 );

@@ -8,11 +8,10 @@
 import * as fs from 'node:fs';
 
 import * as git from 'isomorphic-git';
-import { afterAll } from 'vitest';
-
 import { openRepository } from '../../src/index.node.js';
 import { setupDirtyWorkingTree, setupSmallRepo } from './fixtures.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 
 benchScenario(
   'Given a 50-commit working tree with 25 modified files',
@@ -21,15 +20,15 @@ benchScenario(
     const fixture = await setupSmallRepo({ commits: 50 });
     await setupDirtyWorkingTree(fixture, 25);
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-      await fixture.cleanup();
-    });
 
     const sut = async (): Promise<void> => {
       await repo.status();
     };
     return {
+      teardown: async (): Promise<void> => {
+        removeSync(fixture.cwd);
+        await repo.dispose();
+      },
       sut,
       baseline: async (): Promise<void> => {
         await git.statusMatrix({ fs, dir: fixture.cwd });

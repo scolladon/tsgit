@@ -5,8 +5,6 @@
  * per-iteration scratch build. Accepted as advisory, non-gated coverage,
  * faithful to the profiling factory's own fresh-per-iteration model.
  */
-import { afterAll } from 'vitest';
-
 import { benchScenario } from './support/bench-dsl.js';
 import { buildCommitScratch, SCRATCH_AUTHOR, type ScratchRepo } from './support/write-scratch.js';
 
@@ -15,9 +13,6 @@ benchScenario(
   'When commit() records it, Then measure tsgit',
   () => {
     const scratches: ScratchRepo[] = [];
-    afterAll(async () => {
-      await Promise.all(scratches.map((scratch) => scratch.dispose()));
-    });
 
     const sut = async (): Promise<void> => {
       const scratch = await buildCommitScratch();
@@ -28,6 +23,11 @@ benchScenario(
         committer: SCRATCH_AUTHOR,
       });
     };
-    return { sut };
+    return {
+      teardown: (): void => {
+        for (const scratch of scratches) scratch.disposeSync();
+      },
+      sut,
+    };
   },
 );

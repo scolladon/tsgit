@@ -9,8 +9,6 @@ import * as fs from 'node:fs';
 import { promisify } from 'node:util';
 
 import * as git from 'isomorphic-git';
-import { afterAll } from 'vitest';
-
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
@@ -47,14 +45,12 @@ await tieredScenario(
     const repo = await openRepository({ cwd: fixture.cwd });
     const blobId = fixture.firstBlobId as ObjectId;
     await repo.primitives.readBlob(blobId);
-    afterAll(async () => {
-      await repo.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await repo.primitives.readBlob(blobId);
     };
     return {
+      teardown: () => repo.dispose(),
       sut,
       baseline: async (): Promise<void> => {
         await git.readBlob({ fs, dir: fixture.cwd, oid: fixture.firstBlobId });

@@ -11,8 +11,6 @@
  * routes through `readObject`'s pack-lookup scan, which would mix in cost
  * this measurement is not about.
  */
-import { afterAll } from 'vitest';
-
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { getPackRegistry } from '../../src/application/primitives/read-object.js';
 import {
@@ -25,6 +23,7 @@ import {
 } from './fixtures.js';
 import type { BenchComparison } from './support/bench-dsl.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 
 /**
  * Cold-open: a fresh `Context` per measured call, so `buildOffsetTable`'s
@@ -41,8 +40,10 @@ const measureAllOffsetTables = async (cwd: string): Promise<void> => {
 };
 
 const offsetTableComparison = (fixture: OffsetTablePackFixture): BenchComparison => {
-  afterAll(fixture.cleanup);
-  return { sut: () => measureAllOffsetTables(fixture.cwd) };
+  return {
+    sut: () => measureAllOffsetTables(fixture.cwd),
+    teardown: () => removeSync(fixture.cwd),
+  };
 };
 
 benchScenario(

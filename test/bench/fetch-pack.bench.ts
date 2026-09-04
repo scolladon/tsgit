@@ -7,7 +7,6 @@
  * budget. tsgit-only: there is no isomorphic-git internal-pipeline
  * equivalent to compare pass count against.
  */
-import { afterAll } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { fetchPack, type NegotiatePackBytes } from '../../src/application/primitives/fetch-pack.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
@@ -64,11 +63,6 @@ benchScenario(
     const ctx = createMemoryContext();
     const built = await buildSyntheticPack(ctx, buildChainedEntries());
     const negotiator = toNegotiator(built.packBytes);
-    const packDirs: string[] = [];
-
-    afterAll(async () => {
-      await Promise.all(packDirs.map((p) => ctx.fs.rmRecursive(p).catch(() => undefined)));
-    });
 
     const sut = async (): Promise<void> => {
       const result = await fetchPack(ctx, negotiator, {
@@ -77,7 +71,10 @@ benchScenario(
         capabilities: ['side-band-64k', 'ofs-delta'],
         progressOp: 'test:write-objects',
       });
-      packDirs.push(result.packPath, result.idxPath);
+      // The packs land in the memory adapter's own store; it dies with the
+      // worker, so there is nothing on disk to release. Reading a field keeps
+      // the write observable to the runner.
+      if (result.packPath === '') throw new Error('fetchPack wrote no pack');
     };
     return { sut };
   },
