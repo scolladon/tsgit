@@ -15,7 +15,7 @@ import {
   indexQuarantinedPack,
   walkPackEntries,
 } from '../../../../src/application/primitives/internal/index-pack.js';
-import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getPackRegistry, readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   fileExists,
@@ -48,7 +48,7 @@ import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.
 import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
 import { serializePackRevIndex } from '../../../../src/domain/storage/rev-index.js';
 import { readableStreamToAsyncIterable } from '../../../../src/operators/readable-stream.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import type {
   HttpRequest,
   HttpResponse,
@@ -5139,6 +5139,184 @@ describe('baseCacheSlotFor — session-scoped slot reuse', () => {
         // Assert
         expect(createLruCacheSpy).toHaveBeenCalledTimes(2);
         expect(createLruCacheSpy.mock.calls[1]).toEqual([4096, 16]);
+      });
+    });
+  });
+});
+
+describe('fetchPack — an already-present pack', () => {
+  describe('Given a pack already received once into this repository', () => {
+    describe('When fetchPack receives the byte-identical pack a second time', () => {
+      it('Then it succeeds and returns the artefacts already on disk', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'already present\n');
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const negotiator = toNegotiator(transport);
+        const input = {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        };
+        const sut = fetchPack;
+        const first = await sut(ctx, negotiator, input);
+
+        // Act
+        const second = await sut(ctx, negotiator, input);
+
+        // Assert
+        expect(second.packPath).toBe(first.packPath);
+        expect(second.packSha).toBe(first.packSha);
+        expect(second.objectCount).toBe(first.objectCount);
+        expect(second.objectCount).toBeGreaterThan(0);
+        expect(second.idxPath).toBe(`${packDir(ctx)}/pack-${second.packSha}.idx`);
+      });
+    });
+  });
+
+  describe('Given a pack file already occupying the content-addressed destination with foreign bytes', () => {
+    describe('When fetchPack receives a pack whose trailer names that same destination', () => {
+      it('Then the file on disk still holds its original bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'sentinel destination\n');
+        const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
+        const sentinel = ENCODER.encode('sentinel bytes, not a real pack');
+        await ctx.fs.mkdir(packDir(ctx));
+        await ctx.fs.writeExclusive(`${packDir(ctx)}/pack-${packSha}.pack`, sentinel);
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        const result = await sut(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(result.packPath).toBe(`${packDir(ctx)}/pack-${packSha}.pack`);
+        expect(await ctx.fs.read(result.packPath)).toEqual(sentinel);
+      });
+    });
+  });
+
+  describe('Given a pack already received once into this repository, When fetchPack receives it a second time', () => {
+    it('Then no quarantine file is left behind', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'no leftover quarantine\n');
+      const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+      const { transport } = captureRequests(body);
+      const negotiator = toNegotiator(transport);
+      const input = {
+        wants: [blobId],
+        haves: [],
+        capabilities: ['side-band-64k'],
+        progressOp: 'test:write-objects',
+      };
+      const sut = fetchPack;
+      await sut(ctx, negotiator, input);
+
+      // Act
+      await sut(ctx, negotiator, input);
+
+      // Assert
+      expect(await tmpPackNames(ctx)).toHaveLength(0);
+    });
+  });
+
+  describe('Given an empty repository', () => {
+    describe('When fetchPack receives a pack', () => {
+      it('Then the pack, its index and its reverse index are all written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(
+          ctx,
+          'first receive still writes\n',
+        );
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        const result = await sut(ctx, toNegotiator(transport), {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(result.packPath)).toBe(true);
+        expect(await ctx.fs.exists(result.idxPath)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir(ctx)}/pack-${result.packSha}.rev`)).toBe(true);
+        expect(result.objectCount).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a shallow response for a pack already on disk', () => {
+    describe('When fetchPack receives it a second time with depth set', () => {
+      it('Then the already-present result still carries the advertised shallow boundaries', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'shallow already present\n');
+        const shallowOid = 'b'.repeat(40);
+        const body = buildShallowResponseBody({ packBytes, shallow: [shallowOid] });
+        const { transport } = captureRequests(body);
+        const negotiator = toNegotiator(transport);
+        const input = {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+          depth: 1,
+        };
+        const sut = fetchPack;
+        await sut(ctx, negotiator, input);
+
+        // Act
+        const second = await sut(ctx, negotiator, input);
+
+        // Assert
+        expect(second.shallow).toEqual([shallowOid]);
+        expect(second.unshallow).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a Context whose pack registry was cached before another writer landed the pack', () => {
+    describe('When fetchPack receives that same pack through the stale Context', () => {
+      it('Then an object the pack carries is readable through it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'stale registry\n');
+        await getPackRegistry(ctx).lookup(blobId);
+        const writerCtx = { ...ctx, session: createSession() };
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const negotiator = toNegotiator(transport);
+        const input = {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        };
+        const sut = fetchPack;
+        await sut(writerCtx, negotiator, input);
+
+        // Act
+        await sut(ctx, negotiator, input);
+        const result = await readObject(ctx, blobId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.id).toBe(blobId);
       });
     });
   });

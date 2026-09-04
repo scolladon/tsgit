@@ -6,9 +6,10 @@
  * straight to a quarantine file (`objects/pack/tmp_pack_<random>`), bounded
  * by `config.maxResponseBytes` and hashed incrementally as bytes arrive —
  * the whole pack is never held in memory at once. Once the trailer verifies
- * against the incrementally-computed digest, the quarantine file is renamed
- * to `pack-<sha>.pack` and its `.idx`/`.rev` siblings are written — exactly
- * git's own on-disk shape for a received pack.
+ * against the incrementally-computed digest, the quarantine file is either
+ * discarded (its content-addressed destination is already on disk) or
+ * renamed to `pack-<sha>.pack` with its `.idx`/`.rev` siblings written —
+ * exactly git's own on-disk shape for a received pack.
  *
  * Out of scope here (handled by callers): URL validation, capability
  * negotiation, ref-update propagation.
@@ -21,7 +22,11 @@ import { PACK_HEADER_SIZE } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import { indexQuarantinedPack } from './internal/index-pack.js';
-import { packFilePath, writePackSiblingArtifacts } from './internal/write-pack-artifacts.js';
+import {
+  packFilePath,
+  packIdxFilePath,
+  writePackSiblingArtifacts,
+} from './internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { refreshPackRegistry } from './read-object.js';
 
@@ -121,11 +126,15 @@ const emptyPackResult = (
 
 /**
  * Post-download tail: stream the pack into quarantine, verify the trailer,
- * walk entries, then either suppress or promote it (rename + sibling
- * artefacts). Split out of `fetchPack` so the negotiated response can be
- * fully verified (trailer + entry walk) before deciding whether it is
- * empty — a malformed pack that merely *looks* empty (bad trailer,
- * truncated entries) must still throw, never be silently dropped.
+ * walk entries, then resolve one of three outcomes — suppress an empty pack,
+ * adopt one whose content-addressed destination is already on disk, or
+ * promote a new one (rename + sibling artefacts). In the adopted-outcome
+ * case the quarantine copy is unlinked as a handled outcome, same as the
+ * empty-pack case, so the temp-file posture stays the same across all three.
+ * Split out of `fetchPack` so the negotiated response can be fully verified
+ * (trailer + entry walk) before deciding whether it is empty — a malformed
+ * pack that merely *looks* empty (bad trailer, truncated entries) must still
+ * throw, never be silently dropped.
  */
 const materializePack = async (
   ctx: Context,
@@ -151,8 +160,26 @@ const materializePack = async (
     await cleanupQuarantine(ctx, receipt.tmpPath);
     return emptyPackResult(download.shallow, download.unshallow);
   }
+  const destinationPackPath = packFilePath(packDir, receipt.packSha);
+  // Packs are content-addressed by their trailer SHA, so a file already
+  // occupying this exact name is, by construction, this same pack — matching
+  // git's own already-present test, which is path existence, never content
+  // (a tampered destination is deliberately left as-is, not overwritten).
+  // Checked BEFORE the rename so an existing file is never clobbered.
+  if (await ctx.fs.exists(destinationPackPath)) {
+    await cleanupQuarantine(ctx, receipt.tmpPath);
+    refreshPackRegistry(ctx);
+    return {
+      packPath: destinationPackPath,
+      idxPath: packIdxFilePath(packDir, receipt.packSha),
+      objectCount: entries.count,
+      packSha: receipt.packSha,
+      shallow: download.shallow,
+      unshallow: download.unshallow,
+    };
+  }
   try {
-    await renamePackIntoPlace(ctx, receipt.tmpPath, packFilePath(packDir, receipt.packSha));
+    await renamePackIntoPlace(ctx, receipt.tmpPath, destinationPackPath);
   } catch (err) {
     // A rename failure leaves the verified quarantine file behind unless
     // cleaned up here — nothing later in this function gets a chance to.

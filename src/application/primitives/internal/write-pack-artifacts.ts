@@ -140,9 +140,16 @@ interface ArtifactPaths {
 export const packFilePath = (packDir: string, packSha: string): string =>
   `${packDir}/pack-${packSha}.pack`;
 
+/** The on-disk path for a pack's `.idx` sibling, keyed the same way as
+ *  `packFilePath` — shared so a caller checking whether a pack is already
+ *  present (fetch-pack) and this module's own writer agree on the exact
+ *  same name. */
+export const packIdxFilePath = (packDir: string, packSha: string): string =>
+  `${packDir}/pack-${packSha}.idx`;
+
 const artifactPaths = (packDir: string, packSha: string): ArtifactPaths => ({
   packPath: packFilePath(packDir, packSha),
-  idxPath: `${packDir}/pack-${packSha}.idx`,
+  idxPath: packIdxFilePath(packDir, packSha),
   promisorPath: `${packDir}/pack-${packSha}.promisor`,
   revPath: `${packDir}/pack-${packSha}.rev`,
 });

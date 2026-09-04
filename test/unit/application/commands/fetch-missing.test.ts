@@ -418,13 +418,15 @@ describe('fetchMissing', () => {
         const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
         const packDir = `${ctx.layout.gitDir}/objects/pack`;
         await ctx.fs.mkdir(packDir);
-        await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.pack`, packBytes);
+        await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.idx`, new Uint8Array(0));
 
         // Act
         const result = await fetchMissing(ctx, { oids: [blobId] });
 
-        // Assert — the pre-existing pack made writeExclusive throw FILE_EXISTS,
-        // which fetchMissing swallows: the objects are already on disk.
+        // Assert — the pack itself is absent, so fetchPack renames its quarantine
+        // copy into place, then the pre-existing .idx sibling makes writeExclusive
+        // throw FILE_EXISTS, which fetchMissing swallows: the objects are already
+        // on disk.
         expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
       });
     });
