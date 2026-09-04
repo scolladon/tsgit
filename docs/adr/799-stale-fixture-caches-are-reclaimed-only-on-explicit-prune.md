@@ -31,15 +31,20 @@ generator versions running benches at the same time would delete each other's li
 ## Decision
 
 **Ratified by the user: option 1.** The pre-warm tool gains a `--prune` verb that removes,
-under the cache root, every known-label `<label>-v<N>` directory whose `N` differs from the
-current version and every leftover `*.tmp.*` or `*.corrupt.*` build directory, then prints
-each removed path and the total bytes reclaimed. Directories at the current version are never
-touched. No code path deletes a cache directory automatically except ADR-793's replacement of a
+under the cache root, every known-label `<label>-v<N>` directory whose `N` is **older than**
+the current version and every leftover `*.tmp.*` or `*.corrupt.*` build directory, then prints
+each removed path and the total bytes reclaimed. Directories at the current version, and any
+at a newer version, are never touched: a prune run from an older checkout must not be able to
+delete the live fixtures of a sibling worktree that is ahead of it. A downgrade therefore
+leaves the newer directories in place until a prune from that newer checkout reclaims them. No code path deletes a cache directory automatically except ADR-793's replacement of a
 directory that failed its identity probe.
 
 ## Consequences
 
 - Reclaim is a deliberate developer action, documented beside the pre-warm command.
+- The version predicate is strictly "older than" (adopted as recommended in the design's
+  revision, no user judgment): "differs from" would re-enter the cross-worktree hazard in one
+  direction, and a typed confirmation would make the tool interactive for the first time.
 - The prune logic lives outside the hashed generator file so its edits never invalidate the CI
   fixture cache; it reads the version constant and cache root from the generator.
 - The nightly never prunes: runner caches are keyed per generator hash and expire on their own.
