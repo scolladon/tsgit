@@ -34,11 +34,15 @@ generator repairing a directory it can prove is not the one it wrote.
 
 ## Decision
 
-**Ratified by the user: option 1.** On a cache hit `ensureScaledFixture` reads
-`rev-parse --symbolic-full-name HEAD` and `rev-parse refs/heads/main`; if either disagrees
-with what the generator wrote, it writes one warning line to `stderr` naming the fixture label
-and the mismatch, moves the directory aside with a single `rename`, removes it, and rebuilds
-through the existing temp-build-then-rename path. The retire step runs unconditionally before
+**Ratified by the user: option 1.** On a cache hit `ensureScaledFixture` runs
+`symbolic-ref -q HEAD` and `rev-parse --verify -q refs/heads/main^{commit}`; if either answer
+disagrees with what the generator wrote, it writes one warning line to `stderr` naming the
+fixture label and the mismatch, moves the directory aside with a single `rename`, removes it,
+and rebuilds through the existing temp-build-then-rename path. Both queries answer "no" with
+exit 1 (detached, or the ref is missing) — that is a proven fact about the repository. Any
+other non-zero exit means git could not run the probe (dubious ownership, a transient spawn
+failure): the cache is then **unverifiable**, kept as-is, and a warning says so when git is
+present — a mismatch is never assumed (review refinement, adopted). The retire step runs unconditionally before
 any rebuild, so a directory with no readable `meta.json` can no longer make the final `rename`
 fail with `ENOTEMPTY`. With `git` absent the probe cannot run and the hit degrades to today's
 behaviour: the cached fixture is returned unchanged. The probe checks identity only; tags and
@@ -52,3 +56,5 @@ dangling objects added by benches are tolerated by construction.
   the new key cold-builds every fixture (seconds each, measured) and saves it.
 - A healthy run prints no warning, so the warning's appearance is itself the signal that a
   bench has started mutating a shared fixture.
+- The probe spawns git with an isolated `HOME`, `XDG_CONFIG_HOME` and `GIT_CONFIG_NOSYSTEM=1`,
+  so no global or system git setting can steer a verdict that retires a directory.
