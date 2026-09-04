@@ -233,13 +233,17 @@ interface FixtureMeta {
   readonly spec: FixtureSpec;
 }
 
-/** Thrown when the `git` CLI is absent; callers catch generically and skip. */
+/** Thrown when the `git` CLI is absent. */
 class FixtureUnavailableError extends Error {
   constructor(reason: string) {
     super(`scaled bench fixture unavailable: ${reason}`);
     this.name = 'FixtureUnavailableError';
   }
 }
+
+/** The one condition a bench may skip on. Every other failure must reach the runner. */
+export const isFixtureUnavailable = (err: unknown): boolean =>
+  err instanceof FixtureUnavailableError;
 
 const cacheRoot = (): string => {
   const xdg = process.env.XDG_CACHE_HOME;

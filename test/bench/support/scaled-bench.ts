@@ -3,12 +3,14 @@
  *
  * Resolves the medium (default) or large (`TSGIT_BENCH_LARGE`) fixture once
  * per bench file and registers a `benchScenario` that skips cleanly when the
- * fixture cannot be built (no `git` CLI, Stryker sandbox).
+ * fixture cannot be built (no `git` CLI, Stryker sandbox); any other failure
+ * now fails the bench file rather than dropping its scenarios.
  */
 import { type BenchComparison, benchScenario } from './bench-dsl.js';
 import {
   ensureScaledFixture,
   type FixtureSpec,
+  isFixtureUnavailable,
   LARGE_FIXTURE,
   MEDIUM_FIXTURE,
   type ScaledFixture,
@@ -44,8 +46,9 @@ export const resolveScaledContext = async (spec?: FixtureSpec): Promise<ScaledCo
   try {
     const fixture = await ensureScaledFixture(resolved);
     return { fixture, given };
-  } catch {
-    return { given };
+  } catch (err) {
+    if (isFixtureUnavailable(err)) return { given };
+    throw err;
   }
 };
 
