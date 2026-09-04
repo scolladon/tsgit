@@ -164,6 +164,12 @@ function packPositionsByOffset(sorted: SortedPackIndex): Uint32Array {
   // (measured 2x on 500k-entry packs). Float64 covers the full safe-integer
   // offset range where Uint32 would truncate >4 GiB packs.
   const offsetsByPosition = new Float64Array(count);
+  // Stryker disable next-line EqualityOperator: equivalent — `positions` and
+  // `offsetsByPosition` are fixed-length typed arrays (length `count`); an
+  // extra `indexPosition === count` iteration writes `positions[count]` and
+  // reads `order[count]` (both out-of-bounds), which typed arrays silently
+  // no-op/return `undefined` for rather than throw or grow, so the loop
+  // running to `<= count` is observationally identical to `< count`.
   for (let indexPosition = 0; indexPosition < count; indexPosition += 1) {
     positions[indexPosition] = indexPosition;
     offsetsByPosition[indexPosition] = entries.offsets[order[indexPosition]!]!;

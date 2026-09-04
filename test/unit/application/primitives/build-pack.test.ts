@@ -287,6 +287,27 @@ describe('buildPack', () => {
         expect(resultIds).toEqual(new Set(oids));
       });
     });
+
+    describe('When buildPack runs without delta', () => {
+      it('Then result.emissionOrder is the identity permutation over input.oids', async () => {
+        // Arrange — the base-only route emits in input order, so
+        // emissionOrder must map every ordinal back to itself. A broken loop
+        // (e.g. never running) would leave a zero-filled Uint32Array instead,
+        // which entryIdAt-style consumers (gc's cruft mtimes) would silently
+        // misattribute to oids[0].
+        const ctx = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([4, 2]), id: '' as ObjectId };
+        const blobId = await writeObject(ctx, blob);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'q.bin', blobId)]);
+        const oids = [blobId, treeId];
+
+        // Act
+        const result = await buildPack(ctx, { oids });
+
+        // Assert
+        expect([...result.emissionOrder]).toEqual(oids.map((_, i) => i));
+      });
+    });
   });
 
   describe('Given core.loosecompression=9 in the repo config', () => {

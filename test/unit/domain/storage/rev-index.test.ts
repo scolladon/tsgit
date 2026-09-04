@@ -693,7 +693,7 @@ describe('rev-index', () => {
 
     describe('Given a SortedPackIndex whose oids slab is shorter than count*digestLength', () => {
       describe('When serializing', () => {
-        it('Then refuses with size', () => {
+        it('Then refuses with size and the required byte count in the message', () => {
           // Arrange
           const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }], 20);
           const truncated = {
@@ -702,8 +702,14 @@ describe('rev-index', () => {
           };
           const packChecksum = new Uint8Array(20);
 
-          // Act & Assert
-          expectRefusal(() => serializePackRevIndex(truncated, packChecksum), 'size', 'oids');
+          // Act & Assert — pins the computed `count * digestLength` (20), not
+          // just the word "oids": a mutated arithmetic op would still mention
+          // oids but report the wrong required byte count.
+          expectRefusal(
+            () => serializePackRevIndex(truncated, packChecksum),
+            'size',
+            'need 20, got 19',
+          );
         });
 
         it('Then a slab exactly count*digestLength long passes', () => {

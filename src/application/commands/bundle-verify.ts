@@ -70,8 +70,8 @@ export const bundleVerify = async (
   // prerequisites, hence never refused above) still verifies correctly.
   const packCtx = contextForBundleAlgorithm(ctx, header.hashAlgorithm);
   await verifyPackTrailer(packBytes, packCtx);
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a 0-prerequisite (complete) bundle's pack is self-contained, so no REF_DELTA ever reaches the external resolver; always building the closure (mutant) only allocates one arrow function walkPackEntries never invokes — identical outcome for every git-produced bundle, regardless of which algorithm frames the parse. Restated against the plain port call: the deleted Map+closure this proof once described no longer exists, but the verdict (never invoked on a complete bundle) still holds against what replaced it.
   const resolver =
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a 0-prerequisite (complete) bundle's pack is self-contained, so no REF_DELTA ever reaches the external resolver; always building the closure (mutant) only allocates one arrow function walkPackEntries never invokes — identical outcome for every git-produced bundle, regardless of which algorithm frames the parse. Restated against the plain port call: the deleted Map+closure this proof once described no longer exists, but the verdict (never invoked on a complete bundle) still holds against what replaced it.
     header.prerequisites.length > 0
       ? (baseOid: ObjectId) => resolveExternalBase(ctx, baseOid)
       : undefined;

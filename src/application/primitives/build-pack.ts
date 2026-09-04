@@ -115,6 +115,11 @@ async function buildBaseEntries(ctx: Context, oids: ReadonlyArray<ObjectId>): Pr
   }
   // The base-only route emits in input order, so the permutation is identity.
   const emissionOrder = new Uint32Array(oids.length);
+  // Stryker disable next-line EqualityOperator: equivalent — `emissionOrder`
+  // is a fixed-length `Uint32Array(oids.length)`; an extra `i === oids.length`
+  // iteration writes `emissionOrder[oids.length]`, out of bounds, which typed
+  // arrays silently no-op rather than throw or grow, so `<= oids.length` is
+  // observationally identical to `< oids.length`.
   for (let i = 0; i < oids.length; i += 1) emissionOrder[i] = i;
   return { ids: oids, entries, emissionOrder };
 }
