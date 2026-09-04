@@ -33,8 +33,11 @@ choice is also a cache-invalidation choice.
 ## Decision
 
 **Adopted-as-recommended (no user judgment): option 1.** `test/bench/support/fixture-scratch.ts`
-exports `copyFixtureToScratch(sourceCwd, slug)` returning `{ cwd, dispose }`, mirroring
-`ScratchRepo`'s shape. `maintenance.bench.ts` drops its private copy and imports the shared
+exports `copyFixtureToScratch(sourceCwd)` returning `{ cwd, dispose, disposeSync }`, mirroring
+`ScratchRepo`'s shape. The copy is created beside its source as
+`<label>-v<N>.scratch.<pid>.<random>` (review refinement, adopted): it then lands on the same
+filesystem as every other measured fixture, and a copy orphaned by a killed run is a leftover
+the prune verb can recognise by its dead pid. `maintenance.bench.ts` drops its private copy and imports the shared
 helper; `checkout.bench.ts` uses it for every tier. The module must never import from
 `fixture-generator.ts`'s hashed file or from `src/`.
 
@@ -44,3 +47,7 @@ helper; `checkout.bench.ts` uses it for every tier. The module must never import
   obvious call to make, and its absence is the review signal.
 - The CI cache key is untouched by copier changes.
 - `write-scratch.ts` keeps its single reason to change: building repos through the library.
+- `vitest bench` never runs `afterAll`, so a copy is released through the scenario's
+  `teardown` (the bench DSL's hook) and released synchronously there — tinybench does not
+  await that hook, and an async removal in a file's last scenario is cut off by the worker's
+  exit.
