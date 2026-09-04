@@ -92,11 +92,13 @@ export function createPackRecordStore(
   // only in `refEntry`/`refBaseOids` — keeping the two apart means a REF-free
   // pack never allocates oid bytes, and a REF-heavy one never allocates
   // offset slots that no lookup would ever read.
+  // Stryker disable next-line MethodExpression: equivalent — deltaCapacity backs deltaEntry/deltaBaseOffset, which have no public accessor; recordOfsDelta and every read stay bounded by deltaCount, so an over-allocated backing array is unobservable through PackRecordStore's surface.
   let deltaCapacity = Math.min(INITIAL_CAPACITY, structuralMax);
   let deltaEntry = new Int32Array(deltaCapacity);
   let deltaBaseOffset = new Float64Array(deltaCapacity);
   let deltaCount = 0;
 
+  // Stryker disable next-line MethodExpression: equivalent — refCapacity backs refBaseOids/refEntry, which have no public accessor; recordRefDelta and every read stay bounded by refCount, so an over-allocated backing array is unobservable through PackRecordStore's surface.
   let refCapacity = Math.min(INITIAL_CAPACITY, structuralMax);
   let refBaseOids = new Uint8Array(refCapacity * digestLength);
   let refEntry = new Int32Array(refCapacity);

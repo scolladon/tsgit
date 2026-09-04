@@ -175,6 +175,30 @@ describe('Given a structural clamp that sits below what plain doubling would rea
   });
 });
 
+describe('Given a structural clamp of zero, the real capacity of a tiny or empty pack', () => {
+  describe('When entries are still appended (correctness always wins over the clamp)', () => {
+    it('Then capacity growth falls back to the initial-capacity seed instead of stalling at zero, and every entry is stored', () => {
+      // Arrange — structuralMaxEntries=0 is a real return value of the
+      // caller's structural-bound helper for a minimal pack (see this
+      // module's own docstring): growCapacityTo's current-or-fallback
+      // ternary must pick INITIAL_CAPACITY when current is 0, or the
+      // doubling loop can never clear its own multiplicative floor — 0
+      // times GROWTH_FACTOR stays 0 forever.
+      const sut = createPackRecordStore(20, 0);
+
+      // Act
+      const first = sut.append(10, 0, PACK_ENTRY_TYPE.BLOB);
+      const second = sut.append(20, 0, PACK_ENTRY_TYPE.BLOB);
+
+      // Assert
+      expect(sut.count).toBe(2);
+      expect(sut.offsetOf(first)).toBe(10);
+      expect(sut.offsetOf(second)).toBe(20);
+      expect(sut.view().offsets.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+});
+
 describe('Given more entries appended than the structural clamp allows for', () => {
   describe('When each is read back by its own ordinal', () => {
     it('Then every entry survives — correctness wins over the clamp, never silently truncating', () => {
