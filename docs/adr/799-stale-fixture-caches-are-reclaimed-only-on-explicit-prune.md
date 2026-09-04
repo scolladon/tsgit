@@ -32,8 +32,11 @@ generator versions running benches at the same time would delete each other's li
 
 **Ratified by the user: option 1.** The pre-warm tool gains a `--prune` verb that removes,
 under the cache root, every known-label `<label>-v<N>` directory whose `N` is **older than**
-the current version and every leftover `*.tmp.*` or `*.corrupt.*` build directory, then prints
-each removed path and the total bytes reclaimed. Directories at the current version, and any
+the current version and every leftover `.tmp.<pid>.<ms>`, `.corrupt.<pid>.<ms>` or
+`.scratch.<pid>.<random>` sibling of a known-label directory whose embedded pid no longer
+belongs to a running process, then prints each removed path and the total bytes reclaimed. A
+sibling whose pid is alive is a build, retirement or scratch copy in flight and is never
+touched (review refinement, adopted: the leftover shape alone matched a live build). Directories at the current version, and any
 at a newer version, are never touched: a prune run from an older checkout must not be able to
 delete the live fixtures of a sibling worktree that is ahead of it. A downgrade therefore
 leaves the newer directories in place until a prune from that newer checkout reclaims them. No code path deletes a cache directory automatically except ADR-793's replacement of a
@@ -48,3 +51,5 @@ directory that failed its identity probe.
 - The prune logic lives outside the hashed generator file so its edits never invalidate the CI
   fixture cache; it reads the version constant and cache root from the generator.
 - The nightly never prunes: runner caches are keyed per generator hash and expire on their own.
+- The byte walk and the removals run one directory at a time: the fan-out version measured
+  hundreds of MB of pending `lstat`s on a 200 000-file fixture.
