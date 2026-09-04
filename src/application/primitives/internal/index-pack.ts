@@ -435,7 +435,7 @@ const walkFromRoot = async <TCrcContext>(
   // taken. That invariant is what bounds residency — a linear chain holds the
   // parent and the child being built, never the whole root-to-leaf path.
   const stack: WalkFrame[] = [];
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — both call sites (`resolveFromRoots`, `resolveExternalBases`) already filter to non-empty children before calling `walkFromRoot`, so this guard is invariantly true; forcing it to `true`/`length >= 0` is unobservable.
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — both call sites (`resolveFromRoots`, `resolveExternalBases`) already filter to non-empty children before calling `walkFromRoot`, so this guard is always true; forcing it to `true`/`length >= 0` is unobservable.
   if (rootChildren.length > 0) {
     stack.push({ content: rootContent, typeName, children: rootChildren, cursor: 0 });
   }
@@ -507,7 +507,7 @@ const resolveFromRoots = async <TCrcContext>(
   passId: number,
 ): Promise<void> => {
   const { oids } = store.view();
-  // Stryker disable next-line EqualityOperator: equivalent — an out-of-bounds `ordinal === store.count` read yields a zero-filled (or genuinely out-of-bounds, bitmasked-to-zero) type, which is not COMMIT/TREE/BLOB/TAG (all non-zero), so `isBaseType` still fails and the extra iteration is a no-op.
+  // Stryker disable next-line EqualityOperator: equivalent — an out-of-bounds `ordinal === store.count` read yields a zero-filled (or genuinely out-of-bounds, masked to zero) type, which is not COMMIT/TREE/BLOB/TAG (all non-zero), so `isBaseType` still fails and the extra iteration is a no-op.
   for (let ordinal = 0; ordinal < store.count; ordinal += 1) {
     const type = store.typeOf(ordinal);
     if (!isBaseType(type)) continue;
