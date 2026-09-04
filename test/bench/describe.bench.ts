@@ -8,8 +8,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { afterAll } from 'vitest';
-
 import { openRepository } from '../../src/index.node.js';
 import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
@@ -44,10 +42,8 @@ await tieredScenario(
   async (fixture) => {
     await ensureNearTag(fixture.cwd);
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-    });
     return {
+      teardown: () => repo.dispose(),
       sut: async (): Promise<void> => {
         await repo.describe();
       },

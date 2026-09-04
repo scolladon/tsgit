@@ -20,8 +20,6 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 
 import * as git from 'isomorphic-git';
-import { afterAll } from 'vitest';
-
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { DELTA_CHAIN_FIXTURE } from './support/fixture-generator.js';
@@ -60,14 +58,12 @@ scaledScenario(
     const repo = await openRepository({ cwd: fixture.cwd });
     const deepId = fixture.firstBlobId as ObjectId;
     await repo.primitives.readBlob(deepId);
-    afterAll(async () => {
-      await repo.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await repo.primitives.readBlob(deepId);
     };
     return {
+      teardown: () => repo.dispose(),
       sut,
       baseline: async (): Promise<void> => {
         await git.readBlob({ fs, dir: fixture.cwd, oid: fixture.firstBlobId });

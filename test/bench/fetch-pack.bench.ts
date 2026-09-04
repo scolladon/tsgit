@@ -7,12 +7,12 @@
  * budget. tsgit-only: there is no isomorphic-git internal-pipeline
  * equivalent to compare pass count against.
  */
-import { afterAll } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { fetchPack, type NegotiatePackBytes } from '../../src/application/primitives/fetch-pack.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { buildSyntheticPack, type EntrySpec } from '../unit/application/primitives/pack-fixture.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 
 const ENCODER = new TextEncoder();
 const CHAIN_DEPTH = 200;
@@ -66,10 +66,6 @@ benchScenario(
     const negotiator = toNegotiator(built.packBytes);
     const packDirs: string[] = [];
 
-    afterAll(async () => {
-      await Promise.all(packDirs.map((p) => ctx.fs.rmRecursive(p).catch(() => undefined)));
-    });
-
     const sut = async (): Promise<void> => {
       const result = await fetchPack(ctx, negotiator, {
         wants: [(built.ids[0] ?? 'a'.repeat(40)) as ObjectId],
@@ -79,6 +75,11 @@ benchScenario(
       });
       packDirs.push(result.packPath, result.idxPath);
     };
-    return { sut };
+    return {
+      teardown: (): void => {
+        for (const dir of packDirs) removeSync(dir);
+      },
+      sut,
+    };
   },
 );

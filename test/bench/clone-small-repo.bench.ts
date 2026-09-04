@@ -7,9 +7,9 @@
  *
  * Lifecycle:
  *  - The `http.Server` is booted once in the scenario body and closed in
- *  `afterAll`. Per-iter server boot would dominate the measurement.
+ *  the scenario's teardown. Per-iter server boot would dominate the measurement.
  *  - Each iter mkdtemps a fresh target dir; tmpdirs are collected and
- *  rm'd in bulk via `afterAll` so cleanup time does not enter the
+ *  removed in bulk by the scenario's teardown so cleanup time does not enter the
  *  sampled distribution.
  *
  * Skip semantics: same gates as the integration test — Stryker sandbox,
@@ -17,16 +17,15 @@
  */
 
 import * as fs from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import * as git from 'isomorphic-git';
 import gitHttp from 'isomorphic-git/http/node';
-import { afterAll } from 'vitest';
-
 import { openRepository } from '../../src/index.node.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 import { findGitHttpBackend, startGitHttpBackend } from './support/http-backend-server.js';
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../fixtures/clone-source');
@@ -55,10 +54,6 @@ benchScenario(
     const server = await startGitHttpBackend({ projectRoot: FIXTURE_DIR });
     const url = `http://127.0.0.1:${server.port}/source.git`;
     const tmpdirs: string[] = [];
-    afterAll(async () => {
-      await Promise.all(tmpdirs.map((d) => rm(d, { recursive: true, force: true })));
-      await server.close();
-    });
 
     const sut = async (): Promise<void> => {
       const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-clone-'));
@@ -79,6 +74,10 @@ benchScenario(
       }
     };
     return {
+      teardown: async (): Promise<void> => {
+        for (const dir of tmpdirs) removeSync(dir);
+        await server.close();
+      },
       sut,
       baseline: async (): Promise<void> => {
         const dir = await mkdtemp(path.join(os.tmpdir(), 'iso-bench-clone-'));

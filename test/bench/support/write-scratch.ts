@@ -17,6 +17,7 @@ import { promisify } from 'node:util';
 import type { AuthorIdentity } from '../../../src/domain/objects/index.js';
 import { openRepository } from '../../../src/index.node.js';
 import type { Repository } from '../../../src/repository.js';
+import { removeSync } from './fixture-scratch.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +33,8 @@ export type ScratchRepo = {
   readonly cwd: string;
   readonly repo: Repository;
   dispose(): Promise<void>;
+  /** For a bench scenario's `teardown`, which tinybench fires without awaiting. */
+  disposeSync(): void;
 };
 
 const disposeScratch = (cwd: string, repo: Repository) => async (): Promise<void> => {
@@ -39,12 +42,27 @@ const disposeScratch = (cwd: string, repo: Repository) => async (): Promise<void
   await rm(cwd, { recursive: true, force: true });
 };
 
+// The directory goes synchronously; the handle close may float — process
+// exit closes it too, and its failure is reported rather than lost.
+const disposeScratchSync = (cwd: string, repo: Repository) => (): void => {
+  removeSync(cwd);
+  void repo.dispose().catch((err: unknown) => {
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[bench] could not close ${cwd}: ${reason}\n`);
+  });
+};
+
 /** `mkdtemp → openRepository → repo.init()` — the shared preamble every builder needs. */
 const newScratch = async (): Promise<ScratchRepo> => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-scratch-'));
   const repo = await openRepository({ cwd });
   await repo.init();
-  return { cwd, repo, dispose: disposeScratch(cwd, repo) };
+  return {
+    cwd,
+    repo,
+    dispose: disposeScratch(cwd, repo),
+    disposeSync: disposeScratchSync(cwd, repo),
+  };
 };
 
 /** Stages one small file, ready for the measured `commit` call. */

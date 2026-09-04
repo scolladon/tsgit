@@ -21,19 +21,14 @@
 import * as fs from 'node:fs';
 
 import * as git from 'isomorphic-git';
-import { afterAll } from 'vitest';
-
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { setupSmallRepo } from './fixtures.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 
 const fixture = await setupSmallRepo({ commits: 50 });
 const blobId = fixture.firstBlobId as ObjectId;
-
-afterAll(async () => {
-  await fixture.cleanup();
-});
 
 benchScenario(
   'Given a fresh repository opened per call (cold LRU cache)',
@@ -61,11 +56,12 @@ benchScenario(
   'When readBlob() reads a blob on the open handle, Then compare tsgit against isomorphic-git',
   async () => {
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-    });
 
     return {
+      teardown: async (): Promise<void> => {
+        removeSync(fixture.cwd);
+        await repo.dispose();
+      },
       sut: async (): Promise<void> => {
         await repo.primitives.readBlob(blobId);
       },

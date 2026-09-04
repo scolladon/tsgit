@@ -13,8 +13,6 @@
 import { rm } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { afterAll } from 'vitest';
-
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { computeClosure } from '../../src/application/primitives/internal/closure-engine.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
@@ -23,6 +21,7 @@ import { openRepository } from '../../src/index.node.js';
 import { type BitmapClosureFixture, setupBitmapClosureFixture } from './fixtures.js';
 import type { BenchComparison } from './support/bench-dsl.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 
 /** Comfortably at-or-above the closure design's own 400-commit pinning scale. */
 const CLOSURE_FIXTURE_COMMITS = 500;
@@ -60,12 +59,14 @@ const closureComparison =
     await assertClosureAnsweredByBitmap(fixture);
 
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-      await fixture.cleanup();
-    });
 
-    return { sut: buildSut(repo, fixture.headCommitId, fixture.cwd) };
+    return {
+      teardown: async (): Promise<void> => {
+        removeSync(fixture.cwd);
+        await repo.dispose();
+      },
+      sut: buildSut(repo, fixture.headCommitId, fixture.cwd),
+    };
   };
 
 benchScenario(

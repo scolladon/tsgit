@@ -5,8 +5,6 @@
  * build. Accepted as advisory, non-gated coverage, faithful to the profiling
  * factory's own fresh-per-iteration model.
  */
-import { afterAll } from 'vitest';
-
 import { benchScenario } from './support/bench-dsl.js';
 import { buildAddManyScratch, buildAddScratch, type ScratchRepo } from './support/write-scratch.js';
 
@@ -15,16 +13,18 @@ benchScenario(
   'When add() stages them all, Then measure tsgit',
   () => {
     const scratches: ScratchRepo[] = [];
-    afterAll(async () => {
-      await Promise.all(scratches.map((scratch) => scratch.dispose()));
-    });
 
     const sut = async (): Promise<void> => {
       const scratch = await buildAddScratch();
       scratches.push(scratch);
       await scratch.repo.add([], { all: true });
     };
-    return { sut };
+    return {
+      teardown: (): void => {
+        for (const scratch of scratches) scratch.disposeSync();
+      },
+      sut,
+    };
   },
 );
 
@@ -40,15 +40,17 @@ benchScenario(
   'When add() stages them all, Then measure tsgit',
   () => {
     const scratches: ScratchRepo[] = [];
-    afterAll(async () => {
-      await Promise.all(scratches.map((scratch) => scratch.dispose()));
-    });
 
     const sut = async (): Promise<void> => {
       const scratch = await buildAddManyScratch(MANY_FILE_COUNT);
       scratches.push(scratch);
       await scratch.repo.add([], { all: true });
     };
-    return { sut };
+    return {
+      teardown: (): void => {
+        for (const scratch of scratches) scratch.disposeSync();
+      },
+      sut,
+    };
   },
 );

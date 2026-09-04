@@ -5,8 +5,6 @@
 import * as fs from 'node:fs';
 
 import * as git from 'isomorphic-git';
-import { afterAll } from 'vitest';
-
 import { openRepository } from '../../src/index.node.js';
 import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
@@ -15,14 +13,12 @@ await tieredScenario(
   'When status() scans the clean tree, Then compare tsgit against isomorphic-git',
   async (fixture) => {
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await repo.status();
     };
     return {
+      teardown: () => repo.dispose(),
       sut,
       baseline: async (): Promise<void> => {
         await git.statusMatrix({ fs, dir: fixture.cwd });

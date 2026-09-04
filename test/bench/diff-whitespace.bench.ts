@@ -22,8 +22,6 @@
  * sub-directory changes"), which `recursive:true` fully explodes to
  * blob-level changes instead.
  */
-import { afterAll } from 'vitest';
-
 import { openRepository } from '../../src/index.node.js';
 import { benchScenario } from './support/bench-dsl.js';
 import { MEDIUM_FIXTURE } from './support/fixture-generator.js';
@@ -37,14 +35,11 @@ scaledScenario(
   "When diff() compares HEAD~1 against HEAD recursively with ignoreWhitespace:'all' over add-only changes (non-regression watch — never reaches the whitespace drop-pass predicate), Then measure tsgit",
   async (fixture) => {
     const repo = await openRepository({ cwd: fixture.cwd });
-    afterAll(async () => {
-      await repo.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await repo.diff({ from: 'HEAD~1', to: 'HEAD', recursive: true, ignoreWhitespace: 'all' });
     };
-    return { sut };
+    return { teardown: () => repo.dispose(), sut };
   },
 );
 
@@ -53,9 +48,6 @@ benchScenario(
   "When diff() compares HEAD~1 against HEAD recursively with ignoreWhitespace:'all', Then measure tsgit",
   async () => {
     const scratch = await buildWhitespacePairsScratch();
-    afterAll(async () => {
-      await scratch.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await scratch.repo.diff({
@@ -65,7 +57,7 @@ benchScenario(
         ignoreWhitespace: 'all',
       });
     };
-    return { sut };
+    return { teardown: (): void => scratch.disposeSync(), sut };
   },
 );
 
@@ -85,9 +77,6 @@ benchScenario(
   () => {
     const scratch = packedScratchCtx.scratch;
     if (scratch === undefined) throw new Error('packed whitespace-pairs scratch unavailable');
-    afterAll(async () => {
-      await scratch.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await scratch.repo.diff({
@@ -97,7 +86,7 @@ benchScenario(
         ignoreWhitespace: 'all',
       });
     };
-    return { sut };
+    return { teardown: (): void => scratch.disposeSync(), sut };
   },
   { skip: packedScratchCtx.scratch === undefined },
 );
