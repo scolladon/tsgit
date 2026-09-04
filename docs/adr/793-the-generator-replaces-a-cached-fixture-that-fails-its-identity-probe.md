@@ -42,13 +42,14 @@ exit 1 when the ref is missing. If either fact disagrees with what the generator
 writes one warning line to `stderr` naming the fixture label and the mismatch, moves the
 directory aside with a single `rename`, removes it, and rebuilds through the existing
 temp-build-then-rename path. Any other non-zero exit of the probe means git could not run it
-(dubious ownership, a transient spawn failure): the cache is then **unverifiable**, kept as-is,
+(dubious ownership, a transient spawn failure), and a HEAD file that exists but cannot be read
+is the same case: the cache is then **unverifiable**, kept as-is,
 and a warning says so and names the directory to delete for a forced rebuild — a mismatch is
 never assumed (review refinements, adopted). A mismatch proven with no `git` on `PATH` cannot
 be repaired: the fixture is reported unavailable (benches skip) and the cache is left in place. The retire step runs unconditionally before
 any rebuild, so a directory with no readable `meta.json` can no longer make the final `rename`
-fail with `ENOTEMPTY`. With `git` absent the probe cannot run and the hit degrades to today's
-behaviour: the cached fixture is returned unchanged. The probe checks identity only; tags and
+fail with `ENOTEMPTY`. With `git` absent and the HEAD file pristine, the tip probe cannot run
+and the hit degrades to today's behaviour: the cached fixture is returned unchanged. The probe checks identity only; tags and
 dangling objects added by benches are tolerated by construction.
 
 ## Consequences
@@ -59,9 +60,9 @@ dangling objects added by benches are tolerated by construction.
   the new key cold-builds every fixture (seconds each, measured) and saves it.
 - A healthy run prints no warning, so the warning's appearance is itself the signal that a
   bench has started mutating a shared fixture.
-- Every generator git spawn runs with `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` pointed at
-  `/dev/null`, an isolated `HOME` and `XDG_CONFIG_HOME`, `GIT_CONFIG_NOSYSTEM=1`, and
-  `GIT_CEILING_DIRECTORIES` at the cache root, so neither an ambient git setting nor an ancestor
+- Every generator git spawn runs with `GIT_CONFIG_GLOBAL` pointed at `/dev/null`, an isolated
+  `HOME` and `XDG_CONFIG_HOME`, `GIT_CONFIG_NOSYSTEM=1`, and `GIT_CEILING_DIRECTORIES` at the
+  (absolute) cache root, so neither an ambient git setting nor an ancestor
   repository can steer a verdict that retires a directory. Accepted consequence: a
   `safe.directory` entry in the developer's global config is unreachable too, so a cache root
   owned by another uid fails generation outright instead of being whitelist-able.
