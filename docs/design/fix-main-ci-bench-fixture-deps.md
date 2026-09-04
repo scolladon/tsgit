@@ -39,6 +39,27 @@ and 799 carry the amended decisions.
    (security LOW + perf LOW; ADR-791 amended): same filesystem as every measured fixture, and an
    orphaned copy is a leftover the prune verb can reclaim once its pid is gone. The `slug`
    parameter is gone. A failed `openRepository` disposes the copy before the error propagates.
+6. **The HEAD file is read before git is asked** (cycle-2 code MEDIUM). A cache whose `.git`
+   is gone or whose `HEAD` holds garbage would otherwise probe as unverifiable forever — kept,
+   warned about on every run, failing every bench, and beyond `--prune`'s reach. A pristine
+   fixture's `.git/HEAD` is exactly `ref: refs/heads/main`, so anything else is a proven
+   mismatch without executing git; only the tip check needs `rev-parse --verify -q`. The
+   unverifiable warning now names the directory to delete for a forced rebuild. A mismatch
+   proven with no `git` on `PATH` is reported as an unavailable fixture (benches skip) rather
+   than handed out — R7, restated once more. `rebuildCache` reuses only a proven-pristine
+   winner; an unverifiable one after a proven mismatch is retired.
+7. **Git isolation completed** (cycle-2 security): `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`
+   at `/dev/null`, and `GIT_CEILING_DIRECTORIES` at the cache root so discovery never walks up
+   into an ancestor repository (a `$HOME` dotfiles repo, or `XDG_CACHE_HOME` inside a
+   worktree) and answers about the wrong repository.
+8. **Cleanup that cannot fail the run** (cycle-2 code/security/tests): `disposeSync` logs a
+   removal failure instead of throwing inside tinybench's un-awaited hook; every bench
+   teardown in the touched files is synchronous; the CLI never calls `process.exit`. A scenario
+   that throws during warmup never reaches its teardown, so `bench.yml` and the
+   `benchmark-snapshot` job sweep `*.scratch.*` out of the cache root before the cache
+   post-step, unconditionally. The DSL's hook routing (`onMeasuredRun`, `hooksFor`) is unit-
+   tested; the prune classifier keeps any leftover whose pid is alive or refused (only the
+   kernel's no-such-process answer means dead), and leftovers of an unknown label.
 5. **`afterAll` never runs under `vitest bench`** (found by the session's smoke, not by the
    review): `runBenchmarkSuite` calls no suite hooks, so every `afterAll` in `test/bench/**`
    has always been dead — the maintenance copies and every `write-scratch` directory leaked into
