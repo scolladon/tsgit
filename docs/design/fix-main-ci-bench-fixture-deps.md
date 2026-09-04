@@ -80,7 +80,8 @@ and 799 carry the amended decisions.
    `process.on('exit')` sweep does not run either — the pool kills the worker); the copy is
    therefore removed through `FixtureScratch.disposeSync` first, and the repository handle's
    asynchronous close may float. The user then ruled that the `afterAll` sites in every other
-   bench file move to the same channel in this change: 27 cleanups across 22 files, every
+   bench file move to the same channel in this change: 31 cleanup sites across 24 files (30
+   teardown hooks — `loose-read.bench.ts`'s module-level and scenario cleanups merge), every
    directory removal synchronous through `removeSync`, handle closes left asynchronous (the
    process exit covers them), the module-level fixture cleanup in `loose-read.bench.ts` folded
    into its last scenario. No `afterAll` remains under `test/bench/`.
