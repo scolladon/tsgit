@@ -32,7 +32,6 @@
  * Cleanup rides on the scenario's `teardown`, the one hook `vitest bench`
  * actually runs — an `afterAll` here never fires.
  */
-import { rmSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -46,7 +45,7 @@ import {
   DELTA_CHAIN_FIXTURE,
   MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
 } from './support/fixture-generator.js';
-import { copyFixtureToScratch } from './support/fixture-scratch.js';
+import { copyFixtureToScratch, removeSync } from './support/fixture-scratch.js';
 import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
 import { buildManyLooseObjectsScratch } from './support/write-scratch.js';
 
@@ -104,7 +103,7 @@ benchScenario(
     return {
       sut,
       teardown: (): void => {
-        for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+        for (const dir of scratchDirs) removeSync(dir);
       },
     };
   },
@@ -146,7 +145,7 @@ benchScenario(
     return {
       sut,
       teardown: (): void => {
-        rmSync(cwd, { recursive: true, force: true });
+        removeSync(cwd);
       },
     };
   },

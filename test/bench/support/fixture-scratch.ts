@@ -34,6 +34,26 @@ export interface FixtureScratch {
 const RM_RETRIES = 10;
 const RM_RETRY_DELAY_MS = 100;
 
+/**
+ * Removes a directory a bench scenario is done with, and never throws: the hook
+ * this runs in is invoked un-awaited and unguarded, so a cleanup failure would
+ * abort the bench file that just measured. A directory left behind is
+ * reclaimable by `bench:fixture -- --prune`; the measurements are not.
+ */
+export const removeSync = (dir: string): void => {
+  try {
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: RM_RETRIES,
+      retryDelay: RM_RETRY_DELAY_MS,
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[bench] could not remove ${dir}: ${reason}\n`);
+  }
+};
+
 export const copyFixtureToScratch = async (sourceCwd: string): Promise<FixtureScratch> => {
   const cwd = await mkdtemp(`${sourceCwd}.scratch.${process.pid}.`);
   await cp(sourceCwd, cwd, { recursive: true, preserveTimestamps: true });
@@ -42,20 +62,8 @@ export const copyFixtureToScratch = async (sourceCwd: string): Promise<FixtureSc
     dispose: async (): Promise<void> => {
       await rm(cwd, { recursive: true, force: true });
     },
-    // A cleanup failure must never abort the bench file that just measured:
-    // the copy is reclaimable by `bench:fixture -- --prune`, the run is not.
     disposeSync: (): void => {
-      try {
-        rmSync(cwd, {
-          recursive: true,
-          force: true,
-          maxRetries: RM_RETRIES,
-          retryDelay: RM_RETRY_DELAY_MS,
-        });
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[bench] could not remove ${cwd}: ${reason}\n`);
-      }
+      removeSync(cwd);
     },
   };
 };

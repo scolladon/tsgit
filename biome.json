@@ -25,6 +25,7 @@
       "tooling/test/unit/fixture-generator.test.ts",
       "tooling/test/unit/scaled-bench.test.ts",
       "tooling/test/unit/bench-dsl.test.ts",
+      "tooling/test/unit/fixture-scratch.test.ts",
       "tooling/gen-bench-fixture.ts",
       "tooling/test/unit/fixture-prune.test.ts",
       "tooling/test/unit/gen-bench-fixture.test.ts",

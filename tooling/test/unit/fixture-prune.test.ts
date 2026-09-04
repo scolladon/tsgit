@@ -518,6 +518,29 @@ describe('isProcessAlive', () => {
     });
   });
 
+  describe('Given a kernel that refuses the signal with EPERM', () => {
+    describe('When isProcessAlive asks it', () => {
+      it('Then the refusal counts as alive on every platform', () => {
+        // Arrange
+        const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+          throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+        });
+        const sut = isProcessAlive;
+
+        // Act
+        let result: boolean;
+        try {
+          result = sut(1234);
+        } finally {
+          killSpy.mockRestore();
+        }
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
   describe('Given pid 1, a live process this user may not signal', () => {
     describe('When isProcessAlive asks the kernel', () => {
       // Signal-0 permission semantics are POSIX; under root the call simply

@@ -248,7 +248,8 @@ export const isFixtureUnavailable = (err: unknown): boolean =>
 export const cacheRoot = (): string => {
   const xdg = process.env.XDG_CACHE_HOME;
   const base = xdg !== undefined && xdg !== '' ? xdg : path.join(os.homedir(), '.cache');
-  return path.join(base, 'tsgit-bench');
+  // Absolute on purpose: git silently ignores a relative discovery ceiling.
+  return path.resolve(base, 'tsgit-bench');
 };
 
 const cacheDirFor = (spec: FixtureSpec): string =>
@@ -448,13 +449,32 @@ const gitEnv = (): NodeJS.ProcessEnv => ({
   XDG_CONFIG_HOME: ISOLATED_GIT_HOME,
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_SYSTEM: '/dev/null',
-  // Discovery must never walk above the cache root: a cache directory that is
-  // not a repository would otherwise be answered by an ancestor repository.
+  // Discovery must never walk above the cache root: a cache directory whose
+  // `.git` is gutted would otherwise be answered by an ancestor repository.
   GIT_CEILING_DIRECTORIES: cacheRoot(),
 });
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+const errorCodeOf = (err: unknown): string | undefined =>
+  typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string'
+    ? err.code
+    : undefined;
+
+const PRINTABLE_MIN = 0x20;
+const PRINTABLE_MAX = 0x7e;
+const REASON_MAX_CHARS = 200;
+
+/** One bounded printable line: bytes from a file a bench rewrote must not reach the terminal raw. */
+const oneLine = (text: string): string =>
+  Array.from(text, (ch) => {
+    const code = ch.charCodeAt(0);
+    return code >= PRINTABLE_MIN && code <= PRINTABLE_MAX ? ch : '?';
+  })
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, REASON_MAX_CHARS);
 
 const runGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<string> => {
   const { stdout } = await execFileAsync('git', ['-C', repoDir, ...args], {
@@ -506,17 +526,21 @@ type CacheVerdict =
   | { readonly kind: 'unverifiable'; readonly reason: string };
 
 const mismatch = (reason: string): CacheVerdict => ({ kind: 'mismatch', reason });
-const unverifiable = (probe: GitProbe): CacheVerdict => ({
-  kind: 'unverifiable',
-  reason: probe.detail,
-});
+const unverifiable = (reason: string): CacheVerdict => ({ kind: 'unverifiable', reason });
 const orWord = (answer: string, word: string): string => (answer === '' ? word : answer);
 
+const HEAD_EXCERPT_CHARS = 80;
+
 const describeHead = (content: string): string => {
-  if (OID_HEX.test(content)) return 'detached';
-  if (content.startsWith('ref: ')) return content.slice('ref: '.length);
-  return `"${content}"`;
+  const flat = oneLine(content);
+  if (OID_HEX.test(flat)) return 'detached';
+  if (flat.startsWith('ref: ')) return flat.slice('ref: '.length);
+  return `"${flat.slice(0, HEAD_EXCERPT_CHARS)}"`;
 };
+
+// The file itself being absent is a fact about the directory; any other read
+// failure is the prober's, and a prober failure never authorises a rebuild.
+const MISSING_FILE_CODES: ReadonlySet<string> = new Set(['ENOENT', 'ENOTDIR', 'EISDIR']);
 
 /**
  * What `.git/HEAD` says, read without git. Every strategy ends with
@@ -530,7 +554,11 @@ const headFileVerdict = async (cacheDir: string): Promise<CacheVerdict | undefin
     if (content === HEAD_FILE_PRISTINE) return undefined;
     return mismatch(`HEAD is ${describeHead(content)}, expected ${PRISTINE_HEAD_NAME}`);
   } catch (err) {
-    return mismatch(`HEAD file is unreadable: ${errorMessage(err)}`);
+    const code = errorCodeOf(err);
+    if (code !== undefined && MISSING_FILE_CODES.has(code)) {
+      return mismatch(`HEAD file is missing: ${errorMessage(err)}`);
+    }
+    return unverifiable(`HEAD file could not be read: ${errorMessage(err)}`);
   }
 };
 
@@ -551,7 +579,7 @@ const readCacheVerdict = async (cacheDir: string, meta: FixtureMeta): Promise<Ca
     '-q',
     `${PRISTINE_HEAD_NAME}^{commit}`,
   ]);
-  if (!gitAnswered(main)) return unverifiable(main);
+  if (!gitAnswered(main)) return unverifiable(main.detail);
   if (main.stdout !== meta.headCommitId) {
     return mismatch(
       `${PRISTINE_HEAD_NAME} is ${orWord(main.stdout, 'missing')}, expected ${meta.headCommitId}`,
@@ -607,7 +635,7 @@ const retireCacheDir = async (cacheDir: string): Promise<void> => {
   try {
     await rename(cacheDir, retired);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    if (errorCodeOf(err) !== 'ENOENT') throw err;
     return; // absent, or another process already retired it
   }
   await rm(retired, { recursive: true, force: true });
@@ -615,7 +643,7 @@ const retireCacheDir = async (cacheDir: string): Promise<void> => {
 
 const warnNotPristine = (spec: FixtureSpec, reason: string): void => {
   process.stderr.write(
-    `[bench] cached fixture "${spec.label}" is not pristine: ${reason}. Rebuilding it. ` +
+    `[bench] cached fixture "${spec.label}" is not pristine: ${oneLine(reason)}. Rebuilding it. ` +
       `A bench mutated the shared cache — copy it first ` +
       `(test/bench/support/fixture-scratch.ts).\n`,
   );
@@ -624,7 +652,7 @@ const warnNotPristine = (spec: FixtureSpec, reason: string): void => {
 const warnUnverifiable = (spec: FixtureSpec, cacheDir: string, reason: string): void => {
   process.stderr.write(
     `[bench] cached fixture "${spec.label}" could not be verified: ` +
-      `${reason.replace(/\s+/g, ' ').trim()}. Keeping it — a mismatch is never assumed; ` +
+      `${oneLine(reason)}. Keeping it — a mismatch is never assumed; ` +
       `delete ${cacheDir} to force a rebuild.\n`,
   );
 };

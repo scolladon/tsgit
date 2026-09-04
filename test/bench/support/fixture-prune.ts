@@ -95,9 +95,8 @@ const leftoverVerdict = (groups: NamedGroups, isAlive: ProcessLiveness): CacheEn
 const versionVerdict = (name: string): CacheEntryVerdict => {
   const groups = VERSIONED.exec(name)?.groups;
   if (groups === undefined) return 'keep';
-  const version = Number(groups.version);
-  if (!isKnownLabel(groups.label ?? '') || !Number.isSafeInteger(version)) return 'keep';
-  return version < FIXTURE_GENERATOR_VERSION ? 'stale-version' : 'keep';
+  if (!isKnownLabel(groups.label ?? '')) return 'keep';
+  return Number(groups.version) < FIXTURE_GENERATOR_VERSION ? 'stale-version' : 'keep';
 };
 
 /**

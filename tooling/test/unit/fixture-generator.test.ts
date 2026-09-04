@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -21,7 +21,12 @@ import {
 // module and every other test still performs a genuine rename.
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, rename: vi.fn(actual.rename), rm: vi.fn(actual.rm) };
+  return {
+    ...actual,
+    readFile: vi.fn(actual.readFile),
+    rename: vi.fn(actual.rename),
+    rm: vi.fn(actual.rm),
+  };
 });
 
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -35,6 +40,17 @@ const NOT_PRISTINE_WARNING =
 // silently redirect these spawned probes to the wrong repository.
 const gitEnv = (): NodeJS.ProcessEnv =>
   Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
+// Any git command that WRITES a repository here runs under the module's own
+// isolation class: a developer's `commit.gpgsign` or hooks must not steer it.
+const ISOLATED_HOME = path.join(os.tmpdir(), 'tsgit-fixture-generator-test-nonexistent-home');
+const isolatedGitEnv = (): NodeJS.ProcessEnv => ({
+  ...gitEnv(),
+  HOME: ISOLATED_HOME,
+  XDG_CONFIG_HOME: ISOLATED_HOME,
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+});
 
 const hasGit = (): boolean => {
   try {
@@ -337,6 +353,173 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
     });
   });
 
+  describe('Given a cached small fixture whose .git/HEAD names another branch', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it('Then the warning names that ref and the fixture is rebuilt', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        await writeFile(path.join(original.cwd, '.git', 'HEAD'), 'ref: refs/heads/other\n');
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        let written: string;
+        try {
+          result = await sut(SMALL_FIXTURE);
+          written = stderr.text();
+        } finally {
+          stderr.restore();
+        }
+
+        // Assert
+        expect(result.headCommitId).toBe(original.headCommitId);
+        expect(written).toContain(
+          'is not pristine: HEAD is refs/heads/other, expected refs/heads/main.',
+        );
+      });
+    });
+  });
+
+  describe('Given a cached small fixture whose .git/HEAD holds terminal control bytes', () => {
+    describe('When ensureScaledFixture warns about it', () => {
+      it('Then the bytes reach stderr as question marks, never raw', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        await writeFile(path.join(original.cwd, '.git', 'HEAD'), 'garbage\x1b[2J\r\n');
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let written: string;
+        try {
+          await sut(SMALL_FIXTURE);
+          written = stderr.text();
+        } finally {
+          stderr.restore();
+        }
+
+        // Assert
+        expect(written).toContain(
+          'is not pristine: HEAD is "garbage?[2J", expected refs/heads/main.',
+        );
+        expect(written).not.toContain('\x1b');
+      });
+    });
+  });
+
+  describe('Given a cached small fixture whose .git/HEAD this user may not read', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+        'Then the read failure is unverifiable and the cache is kept',
+        async () => {
+          // Arrange
+          const original = await ensureScaledFixture(SMALL_FIXTURE);
+          const headPath = path.join(original.cwd, '.git', 'HEAD');
+          await chmod(headPath, 0o000);
+          const stderr = captureStderr();
+          const sut = ensureScaledFixture;
+
+          // Act
+          let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+          let written: string;
+          try {
+            result = await sut(SMALL_FIXTURE);
+            written = stderr.text();
+          } finally {
+            stderr.restore();
+            await chmod(headPath, 0o644);
+          }
+
+          // Assert
+          expect(result.headCommitId).toBe(original.headCommitId);
+          expect(written).toContain('could not be verified: HEAD file could not be read: ');
+          expect(written).not.toContain('Rebuilding it');
+        },
+      );
+    });
+  });
+
+  describe('Given a proven mismatch whose re-inspection before retiring turns unverifiable', () => {
+    describe('When ensureScaledFixture rebuilds', () => {
+      it('Then only a pristine winner could have stopped the rebuild, so it rebuilds', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const configPath = path.join(original.cwd, '.git', 'config');
+        execFileSync('git', ['-C', original.cwd, 'update-ref', '-d', 'refs/heads/main'], {
+          env: gitEnv(),
+        });
+        const actualFs =
+          await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+        const mockedReadFile = vi.mocked(readFile);
+        let headReads = 0;
+        mockedReadFile.mockImplementation(async (file, options) => {
+          if (String(file).endsWith(path.join('.git', 'HEAD'))) {
+            headReads += 1;
+            // The second look is the re-inspection: make its git probe fail.
+            if (headReads === 2) writeFileSync(configPath, '[core\n');
+          }
+          return actualFs.readFile(file, options);
+        });
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        let written: string;
+        try {
+          result = await sut(SMALL_FIXTURE);
+          written = stderr.text();
+        } finally {
+          stderr.restore();
+          mockedReadFile.mockImplementation(actualFs.readFile);
+        }
+
+        // Assert
+        expect(headReads).toBeGreaterThanOrEqual(2);
+        expect(result.headCommitId).toBe(original.headCommitId);
+        await expect(actualFs.readFile(configPath, 'utf8')).resolves.toContain('[core]');
+        expect(written).toContain('is not pristine: refs/heads/main is missing');
+        expect(written).not.toContain('could not be verified');
+      });
+    });
+  });
+
+  describe('Given an ancestor repository above the cache root and a cache whose .git is gutted', () => {
+    describe('When ensureScaledFixture probes the tip', () => {
+      it('Then discovery stops at the cache root and the cache is kept as unverifiable', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const ancestor = path.dirname(path.dirname(original.cwd));
+        execFileSync('git', ['init', '-q', '--initial-branch=main', ancestor], {
+          env: isolatedGitEnv(),
+        });
+        await rm(path.join(original.cwd, '.git', 'refs'), { recursive: true, force: true });
+        await rm(path.join(original.cwd, '.git', 'objects'), { recursive: true, force: true });
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        let written: string;
+        try {
+          result = await sut(SMALL_FIXTURE);
+          written = stderr.text();
+        } finally {
+          stderr.restore();
+          await rm(path.join(ancestor, '.git'), { recursive: true, force: true });
+          // Leave no gutted cache behind for the next test: it cold-builds.
+          await rm(original.cwd, { recursive: true, force: true });
+        }
+
+        // Assert
+        expect(result.headCommitId).toBe(original.headCommitId);
+        expect(written).toContain('could not be verified: ');
+        expect(written).not.toContain('Rebuilding it');
+      });
+    });
+  });
+
   describe('Given a cached small fixture whose .git/HEAD file is missing', () => {
     describe('When ensureScaledFixture resolves it', () => {
       it('Then the missing file proves the mismatch and the fixture is rebuilt', async () => {
@@ -360,7 +543,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
         // Assert
         expect(result.headCommitId).toBe(original.headCommitId);
         await expect(readFile(headPath, 'utf8')).resolves.toBe('ref: refs/heads/main\n');
-        expect(written).toContain('is not pristine: HEAD file is unreadable: ');
+        expect(written).toContain('is not pristine: HEAD file is missing: ');
       });
     });
   });
@@ -408,7 +591,9 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
         const sentinelPath = path.join(original.cwd, 'sentinel.txt');
         await writeFile(sentinelPath, 'sentinel');
         const decoy = await mkdtemp(path.join(isolatedCacheHome, 'decoy-'));
-        execFileSync('git', ['init', '-q', '--initial-branch=main', decoy], { env: gitEnv() });
+        execFileSync('git', ['init', '-q', '--initial-branch=main', decoy], {
+          env: isolatedGitEnv(),
+        });
         execFileSync(
           'git',
           [
@@ -418,13 +603,15 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
             'user.name=t',
             '-c',
             'user.email=t@t',
+            '-c',
+            'commit.gpgsign=false',
             'commit',
             '-q',
             '--allow-empty',
             '-m',
             'decoy',
           ],
-          { env: gitEnv() },
+          { env: isolatedGitEnv() },
         );
         const originalGitDir = process.env.GIT_DIR;
         const stderr = captureStderr();

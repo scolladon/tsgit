@@ -41,13 +41,18 @@ export const onMeasuredRun =
   (mode: HookMode): Promise<void> | void =>
     mode === 'run' ? teardown() : undefined;
 
-const afterMeasuredRun = (teardown: Teardown): BenchOptions => ({
+/** The bench options a scenario attaches; the task argument is never read, so callers need not build one. */
+export interface MeasuredRunHooks extends BenchOptions {
+  readonly teardown: (task: unknown, mode: HookMode) => Promise<void> | void;
+}
+
+const afterMeasuredRun = (teardown: Teardown): MeasuredRunHooks => ({
   teardown: (_task, mode) => onMeasuredRun(teardown)(mode),
 });
 
 export interface ScenarioHooks {
-  readonly tsgit?: BenchOptions;
-  readonly baseline?: BenchOptions;
+  readonly tsgit?: MeasuredRunHooks;
+  readonly baseline?: MeasuredRunHooks;
 }
 
 /** The hooks ride on the scenario's LAST bench, so a baseline still measures on an intact scratch. */
