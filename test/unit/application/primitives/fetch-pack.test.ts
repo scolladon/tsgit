@@ -4882,10 +4882,11 @@ describe('resolveFromRoots — non-blob base types with a child', () => {
         const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
 
         // Act
-        const sut = await walkPackEntries(ctx, built.packBytes);
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes);
 
         // Assert
-        expect(byOffsetAscending(sut)).toEqual(expected);
+        expect(byOffsetAscending(result)).toEqual(expected);
       });
     });
   });
@@ -4927,10 +4928,11 @@ describe('resolveFromRoots — a delta chained onto a still-unresolved thin base
         const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
 
         // Act
-        const sut = await walkPackEntries(ctx, built.packBytes, resolveBase);
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes, resolveBase);
 
         // Assert
-        expect(byOffsetAscending(sut)).toEqual(expected);
+        expect(byOffsetAscending(result)).toEqual(expected);
       });
     });
   });
@@ -4968,10 +4970,11 @@ describe('resolveFromRoots — a root with one already-resolved child and one st
         const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
 
         // Act
-        const sut = await walkPackEntries(ctx, built.packBytes);
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes);
 
         // Assert
-        expect(byOffsetAscending(sut)).toEqual(expected);
+        expect(byOffsetAscending(result)).toEqual(expected);
       });
     });
   });
@@ -5067,10 +5070,11 @@ describe('resolveExternalCached — two distinct external oids in one walk', () 
         const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
 
         // Act
-        const sut = await walkPackEntries(ctx, built.packBytes, resolveBase);
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes, resolveBase);
 
         // Assert
-        expect(byOffsetAscending(sut)).toEqual(expected);
+        expect(byOffsetAscending(result)).toEqual(expected);
         expect(resolveBase).toHaveBeenCalledTimes(2);
         expect(resolveBase.mock.calls.map(([oid]) => oid).sort()).toEqual(
           [baseA.id, baseB.id].sort(),
