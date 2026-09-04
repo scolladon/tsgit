@@ -4,7 +4,7 @@
 > mutates the shared cached fixture in place, and `deps` re-reds every day because
 > `@cloudflare/workers-types` publishes a date-versioned release daily. Fix the cause of
 > each, ship as one chore PR.
-> Status: draft → self-reviewed ×3
+> Status: draft → self-reviewed ×3 → revised against ADRs 791–799 → self-reviewed ×2
 
 ## Context
 
@@ -130,6 +130,10 @@ and therefore resolve a cached fixture; the audit above covers all 16. The other
 - `docs/design/perf-remediation-2026-08.md` R16 requires `test/bench/checkout.bench.ts` to
   exist and to compare medians before/after. Running it on a copy preserves that oracle
   (§ Part 1, measurement neutrality).
+- **ADRs 791–799** now settle every decision candidate below. Two of them fold work this
+  design had listed as out of scope back in: **ADR-798** (`resolveScaledContext` skips only on
+  an unavailable fixture — § Part 5) and **ADR-799** (stale caches are reclaimed only by an
+  explicit `--prune` — § Part 6). Both are user rulings, not designer recommendations.
 
 ### Problem B — the `check:deps` treadmill (confirmed as briefed)
 
@@ -179,8 +183,7 @@ Verifiable statements that must hold when this ships.
    `meta.json`'s `headCommitId`.
 2. **R2** `describe.bench.ts`'s `TAG_DISTANCE` / `HEAD~10` and `name-rev.bench.ts`'s
    `DAY_AND_A_BIT` keep their current values, and neither bench's measured `sut` changes.
-   (Under D5(a) both files are untouched entirely; a D5(b) ruling would move their fixture
-   acquisition onto a scratch copy without touching those constants.)
+   (ADR-795 settles D5 as (a): both files are untouched entirely.)
 3. **R3** `test/bench/checkout.bench.ts` still registers the same two scenarios at the same
    tiers with the same describe titles and the same `bench('tsgit', …)` name, so the
    `benchmark-snapshot` series and the `bench-to-snapshot` / `bench-summarize` keys are
@@ -204,12 +207,25 @@ Verifiable statements that must hold when this ships.
 11. **R11** The fix is demonstrated on a real runner **before** merge, on both the
     cache-miss and the cache-restore path — `benchmark-snapshot` runs only on `push` to
     `main`, so a local pass proves nothing for problem A. The mechanism is D7.
+12. **R12** `resolveScaledContext` returns a fixture-less (skipped) context only when the
+    fixture is unavailable — `git` absent — or when `STRYKER_MUTANT_ID` is set. Every other
+    failure raised by `ensureScaledFixture` propagates and fails the bench file. Both halves
+    are pinned by unit tests that never build a scaled fixture.
+13. **R13** `npm run bench:fixture -- --prune` removes, under the cache root, exactly the
+    stale `<label>-v<N>` directories for known labels (D10 settles whether "stale" means
+    older-than-current or merely different) plus every `*.tmp.<pid>.<ms>` /
+    `*.corrupt.<pid>.<ms>` leftover, and nothing else. It reports each removed path with its
+    byte count, leaves the cache root and every current-version directory in place, and exits
+    non-zero if any removal failed. No other code path removes a cache directory — R5's
+    identity-probe replacement is the only exception.
 
 ## Design
 
-Four parts, four commits, one PR. Parts 1 and 2 both land here — § Part 2's *Ordering* table
-shows what each covers that the other cannot; Parts 3 and 4 are independent of them and of
-each other.
+Six parts, six commits, one PR. Parts 1 and 2 both land here — § Part 2's *Ordering* table
+shows what each covers that the other cannot. Part 5 lands **after** Part 2: it is what makes
+Part 2's warning reachable instead of swallowed, and it is what turns a failed rebuild into a
+red run. Part 6 depends only on the two exports it adds to the generator. Parts 3 and 4 are
+independent of everything.
 
 ---
 
@@ -522,11 +538,15 @@ already spells out twice (`{ cwd, headCommitId, firstBlobId, spec, ...(lastBlobI
 mechanical would have flagged that duplicate; this is a house-rule fix, and the same honesty
 applies to Part 1's helper extraction.
 
-**The warning must be written from inside the generator.** `resolveScaledContext`'s
-`catch { return { given } }` swallows every exception `ensureScaledFixture` can raise and
-turns it into a silently **skipped** scenario. A thrown "corrupt fixture" error would
-therefore vanish from the bench output entirely — the decisive argument against D3(b) unless
-that `catch` is narrowed in the same change.
+**The warning must be written from inside the generator.** As written, `resolveScaledContext`'s
+`catch { return { given } }` swallows every exception `ensureScaledFixture` can raise and turns
+it into a silently **skipped** scenario — a thrown "corrupt fixture" error would vanish from the
+bench output entirely. Part 5 removes exactly that swallow, so this is no longer the argument
+against D3(b); what survives it is ADR-793's own reason, which does not depend on the catch:
+throwing leaves every already-mutated local cache broken until someone removes it by hand, while
+replacing self-heals in 147 ms (small) / 3.65 s (medium). The conclusion is unchanged — the
+warning is written where the mismatch is *proved*, so it can name the label and the observed
+value, and the generator is the only place that holds both.
 
 **Cost of the guard.** Measured: two `git` spawns = **15.4 ms** per resolution; a cache hit
 costs 0 ms today. Counted across the suite: 16 bench files, 12 `tieredScenario` calls (2 tiers
@@ -552,7 +572,7 @@ turn CI green; the honest reason to ship both is that each covers what the other
 
 | shipped | CI (`benchmark-snapshot`) | a developer's already-mutated local cache | residual |
 |---|---|---|---|
-| Part 1 only | green — the key bust regenerates, and nothing mutates thereafter | **still red on ~half of machines**: `small-v3` stays detached at whatever parity it stopped at, and nothing repairs it short of a manual `rm -rf` | the next bench that forgets the rule fails the same way, with the same unhelpful `HEAD~10` message |
+| Part 1 only | green — Part 1 does not touch `fixture-generator.ts`, so the key is unchanged and CI keeps restoring the **pristine** 2026-08-16 entry: an exact-key hit never re-saves, so no run has ever written its in-run mutation back. Nothing mutates it thereafter | **still red on ~half of machines**: `small-v3` stays detached at whatever parity it stopped at, and nothing repairs it short of a manual `rm -rf` | the next bench that forgets the rule fails the same way, with the same unhelpful `HEAD~10` message |
 | Part 2 only | green — but with `maxWorkers = 1`, `checkout.bench.ts` still mutates and *every* later tiered file trips the guard, rebuilds (147 ms small / 3.65 s medium) and re-emits the warning, on every run | repaired | the warning fires every run, so it is learned-and-ignored and stops being a signal |
 | both | green | repaired | the warning stays silent, and therefore means something the day it appears |
 
@@ -657,21 +677,295 @@ than trusting the command; and re-run `npx cspell` fresh (it is wireit-cached, a
 
 **`actions/cache` key:** unchanged.
 
+---
+
+### Part 5 — `resolveScaledContext` skips only when the fixture is unavailable
+
+Folded in by **ADR-798**. This design listed the bare `catch` as out of scope; the user ruled it
+rides here. It is also what completes Part 2: without it, a rebuild that Part 2 starts and
+cannot finish leaves the run *shorter* instead of *red* — the benchmark rows simply stop
+existing, which is the one failure mode a snapshot series cannot show you.
+
+**Pre-chewed context**
+
+| symbol | file / line | current shape |
+|---|---|---|
+| `resolveScaledContext` | `test/bench/support/scaled-bench.ts:39-50` | `(spec?: FixtureSpec) => Promise<ScaledContext>`; `if (process.env.STRYKER_MUTANT_ID !== undefined) return { given };` then `try { … } catch { return { given }; }` |
+| `ScaledContext` | `:17-21` | `{ readonly fixture?: ScaledFixture; readonly given: string }` — `fixture === undefined` **is** the skip signal |
+| `scaledScenario` | `:53-69` | `benchScenario(…, { skip: fixture === undefined })`, and re-throws `'scaled fixture unavailable'` if a skipped body ever runs |
+| module docstring | `:1-7` | *"registers a `benchScenario` that skips cleanly when the fixture cannot be built (no `git` CLI, Stryker sandbox)"* — already states the contract this part restores |
+| `FixtureUnavailableError` | `test/bench/support/fixture-generator.ts:235-241` | module-**private** `class … extends Error`, `name = 'FixtureUnavailableError'`; its docstring already says *"callers catch generically and skip"* — that line changes too |
+| its only throw site | `assertGitAvailable`, `:444-450` | `execFileAsync('git', ['--version'])` rejects ⇒ throw. Part 2 splits out the `gitAvailable()` predicate but keeps this wrapper as the sole thrower |
+| call sites | **14 direct calls across 10 bench files**, every one a module-top-level `const ctx = await resolveScaledContext(spec)` (`pack-read.bench.ts:98`'s sits inside a top-level `if`, still top-level `await`), plus `tieredScenario`'s loop (`tiered-bench.ts:55`) — 12 calls × 2 tiers — for the 38 resolutions per run counted in § Part 2 | a rejection is a **top-level-await** rejection: vitest fails the whole bench *file*, which is the loud signal ADR-798 asks for |
+
+**Exported narrowing surface — a predicate, not the class**
+
+```ts
+/** The one condition a bench may skip on. Every other failure must reach the runner. */
+export const isFixtureUnavailable = (err: unknown): boolean =>
+  err instanceof FixtureUnavailableError;
+```
+
+Why the predicate and not `export class FixtureUnavailableError`:
+
+- ADR-798's ruling is worded that way — *"the generator exports the narrowing predicate rather
+  than asking callers to inspect messages"* — and it keeps the representation private: swapping
+  the class for an error code later touches one file.
+- The single call site never uses the narrowed value; it skips or rethrows. So
+  `err is FixtureUnavailableError` buys the caller nothing and would put a module-private name
+  in an exported signature.
+- Exporting the class publishes a **throwable skip token**: any bench could
+  `throw new FixtureUnavailableError(…)` and vanish from the snapshot series with no warning.
+  A predicate cannot be thrown.
+- It is *not* forced by the compiler, and the design should not pretend otherwise. Pinned
+  locally (tsc 6.0.3, `declaration: true` + `noEmit: true`, a module-private class as an
+  exported guard's `err is` target): **exit 0**, no TS4060. `npm run check:types` runs
+  `--noEmit` and `tsconfig.build.json` excludes `test/**`, so no declaration is ever emitted
+  for this file. The choice is design, not a type error.
+- The `export type *` trap that strips runtime classes does not arise either way: `scaled-bench.ts`
+  imports the generator directly, not through a barrel.
+
+**The new `catch`**
+
+```ts
+if (process.env.STRYKER_MUTANT_ID !== undefined) return { given };
+try {
+  const fixture = await ensureScaledFixture(resolved);
+  return { fixture, given };
+} catch (err) {
+  if (isFixtureUnavailable(err)) return { given };
+  throw err;
+}
+```
+
+Two skip conditions survive, both documented: the Stryker sandbox and an absent `git`.
+Everything else — a failed `fast-import`, an `ENOTEMPTY`, an `EACCES` from `retireCacheDir`, a
+`TypeError` from a bad edit — propagates. No error is swallowed and none is re-wrapped: the
+original error object reaches the runner with its own stack.
+
+The module docstring gains the other half of the sentence it already carries: *any other
+failure now fails the bench file rather than dropping its scenarios.*
+
+**Interaction with Part 2 (R7), stated so it is not re-derived.** The generator's degrade path
+is untouched: a cache **hit** with `git` absent still returns the cached fixture, because
+`cacheRejection` asks `gitAvailable()` before classifying a probe failure. Part 5 changes only
+what happens when `ensureScaledFixture` *throws*. Today's one throwing path with `git` absent —
+cache miss ⇒ `assertGitAvailable()` ⇒ `FixtureUnavailableError` — still skips, byte for byte.
+
+**Blast radius, honestly.** A developer whose cache is broken in a way Part 2 cannot prove and
+repair moves from 16 quiet bench files to a red `test:bench` naming the failure. That is the
+intended trade, and it is the direction the tooling already points (§ D11).
+
+**`actions/cache` key: this part edits the hashed file** (one added export). Parts 2, 5 and 6
+all edit `fixture-generator.ts` in the same PR, so the key is busted exactly **once**.
+
+---
+
+### Part 6 — `npm run bench:fixture -- --prune`, and nothing automatic
+
+Folded in by **ADR-799**. Reclaim is a deliberate developer action; no code path deletes a
+cache directory on its own except Part 2's replacement of a directory that failed its identity
+probe.
+
+**Pre-chewed context**
+
+| what | where |
+|---|---|
+| argv parsing | `tooling/gen-bench-fixture.ts:23` `const label = process.argv[2]`, ternary chain `:24-33`, usage line `:35`, `process.exit(1)` `:36` |
+| npm passthrough | pinned today: `npm run bench:fixture -- --prune` prints `usage: gen-bench-fixture <medium\|large\|delta-chain\|many-pack>` and exits 1 ⇒ `--prune` **does** arrive as `argv[2]` |
+| module/CLI split | absent in this script; the house pattern is `invokedDirectly()` + a guarded `main().catch(…)` — `tooling/bench-check.ts:252-260`, `tooling/bench-to-snapshot.ts:113-121`, `tooling/bench-ab.ts:245` |
+| cache root | `cacheRoot()` `fixture-generator.ts:243-247` — `$XDG_CACHE_HOME` (when set and non-empty) else `~/.cache`, joined with `tsgit-bench`. Module-private today |
+| version constant | `FIXTURE_GENERATOR_VERSION = 3` `:25`. Module-private today |
+| directory names | `cacheDirFor` `:249-250` ⇒ `<label>-v<N>`; `ensureScaledFixture`'s temp build ⇒ `<label>-v<N>.tmp.<pid>.<ms>`; Part 2's `retireCacheDir` ⇒ `<label>-v<N>.corrupt.<pid>.<ms>` |
+| label vocabulary | `FixtureSpec['label']` union, `:34-48` — 14 labels, `[a-z][a-z-]*` in shape |
+| node resolution trap | `gen-bench-fixture.ts` runs under `node --experimental-strip-types`, which does **not** rewrite `.js` → `.ts`. Pinned in a `mktemp` throwaway (node 22.22.3): a `.ts` module importing `./lib.js` fails with `ERR_MODULE_NOT_FOUND … lib.js imported from mid-js.ts`; the `./lib.ts` form runs. The same trap is already recorded in `tooling/bench-memory.ts`'s docstring. ⇒ `fixture-prune.ts` must import `./fixture-generator.ts`, not `./fixture-generator.js`, even though every other file in `test/bench/support/` uses the `.js` form |
+| lint whitelist | `biome.json` `files.includes` is a **whitelist**. `test/**` is in it (so `fixture-prune.ts` is linted); `tooling/gen-bench-fixture.ts` and every new `tooling/test/unit/*.test.ts` are **not** — add all of them, or the new files ship unlinted and unformatted. Probed via `biome check --stdin-file-path=…` on the current `gen-bench-fixture.ts`: output byte-identical, no diagnostics, so the addition should not go red — `npm run check` is the oracle |
+| knip / coverage / mutation / api | `knip.json` `project` is `src/**` only, so the new exports in Parts 5 and 6 cannot be flagged unused; `test/bench/**` is outside the coverage gate and outside Stryker's `mutate` globs, so the unit tests below are the only mechanical guard; `reports/api.json` is generated from `src/` alone, so none of these exports reaches the public-surface gate |
+
+**Measured starting state** (read-only walk of the live cache, this machine, 2026-09-04):
+21 directories, **2.01 GiB** by `du -sk` (2 111 672 KiB). Nine are stale (`N ≠ 3`):
+
+| directory | logical bytes |
+|---|---|
+| `large-v1` | 1 080 819 906 |
+| `medium-v2` | 108 267 879 |
+| `medium-commit-graph-v2` | 107 985 985 |
+| `medium-v1` | 107 690 754 |
+| `small-v2` | 1 107 281 |
+| `deep-ancestry-medium-v2` | 326 421 |
+| `delta-chain-v1`, `delta-chain-v2` | 249 435 each |
+| `deep-ancestry-small-v2` | 60 066 |
+| **total** | **1 406 757 162** |
+
+`du -sk` reports **1 765 160 KiB (1.68 GiB)** for the same nine. The report counts **logical
+bytes** (sum of file sizes); the ~22 % gap is 4 KiB block rounding across ~250 000 loose
+objects, not an accounting bug. Say so in the CLI's own wording rather than letting the next
+reader "fix" the number against `du`.
+
+**New module — `test/bench/support/fixture-prune.ts`** (all prune logic lives here, so later
+prune edits never touch the hashed generator file and never bust the CI fixture cache)
+
+```ts
+export interface PrunedEntry {
+  readonly path: string;
+  /** Logical bytes — sum of file sizes under the directory, measured before removal. */
+  readonly bytes: number;
+}
+export interface PruneFailure {
+  readonly path: string;
+  readonly reason: string;
+}
+export interface PruneReport {
+  readonly root: string;
+  readonly removed: readonly PrunedEntry[];
+  readonly failed: readonly PruneFailure[];
+}
+
+export const pruneFixtureCache = (): Promise<PruneReport> => { … };
+```
+
+Structured data only: no rendered line, no pre-summed `bytesReclaimed`. The total is the
+caller's `reduce` — a stored total is a second source of truth that can drift from `removed`,
+and formatting (separators, MiB) is the CLI's job. The report carries `root` so the CLI can say
+*"nothing to prune under &lt;root&gt;"* without recomputing it.
+
+No parameters: the seam is `XDG_CACHE_HOME`, exactly as `tooling/test/unit/fixture-generator.test.ts`
+already uses it. A `root` parameter would exist only for tests.
+
+**What counts as stale — a pure, separately testable classifier**
+
+```ts
+export type CacheEntryVerdict = 'stale-version' | 'leftover' | 'keep';
+
+const VERSIONED = /^(?<label>[a-z][a-z0-9-]*)-v(?<version>\d+)$/;
+const LEFTOVER = /\.(?:tmp|corrupt)\.\d+\.\d+$/;
+
+/** Exhaustive by construction: a new `FixtureSpec` label that is not listed fails `check:types`. */
+const KNOWN_LABELS: Readonly<Record<FixtureSpec['label'], true>> = { small: true, /* …14 */ };
+
+export const classifyCacheEntry = (name: string): CacheEntryVerdict => { … };
+```
+
+- `LEFTOVER` is tested **first** and is anchored to the exact shapes the generator builds
+  (`.tmp.<pid>.<ms>` / `.corrupt.<pid>.<ms>`), not to a loose "contains `.tmp.`". The two
+  patterns are disjoint anyway — `medium-v2.tmp.9.17…` cannot match `VERSIONED`'s `$` anchor —
+  so the order is defensive, not load-bearing.
+- The label must be **known**: membership via `Object.hasOwn(KNOWN_LABELS, label)`, no cast.
+  ADR-799 says "known-label" and that is also the safe side of the sibling-worktree hazard: a
+  branch that adds a label this checkout has never heard of keeps its directories.
+  The `Record<FixtureSpec['label'], true>` shape is what makes the list self-correcting — the
+  alternative (deriving the union from a `FIXTURE_LABELS` array exported by the generator) is
+  DRY-er but restructures `FixtureSpec`, which ADR-474 fixes and this PR does not touch.
+- The version predicate is **D10** — `N < FIXTURE_GENERATOR_VERSION` (recommended) or
+  ADR-799's literal `N !== …`. Everything else in this part is identical either way.
+
+**What is never touched**
+
+- Anything classified `keep`: current-version directories, unknown labels, and any name that is
+  not `<label>-v<N>` or a leftover.
+- **Symlinks.** The top-level scan is `readdir(root, { withFileTypes: true })` filtered on
+  `entry.isDirectory()`, and a `Dirent` reflects `lstat`, so a symlink answers `false` and never
+  reaches the removal branch. Nothing is ever dereferenced and no link target is removed.
+- Plain files at the root, and the cache root itself — even when it ends up empty.
+- Anything outside the root: `readdir` names cannot contain a path separator, no path is built
+  from user input, and the byte walk never follows a symlink, so the traversal cannot escape.
+- A directory whose byte walk failed: recorded in `failed`, left in place. Sizing is the step
+  that proves the directory is readable; refusing to delete what we could not read is the
+  conservative half of a destructive verb.
+- A missing root (`ENOENT` on the first `readdir`) is an empty report and exit 0, not an error:
+  a machine that has never run a bench has nothing to prune.
+
+**Byte accounting.** A recursive walk, before `rm`: `readdir(dir, { withFileTypes: true })`,
+recurse into real directories, `lstat(...).size` for everything else (a symlink contributes its
+own link size, never its target's). Measured cost on the full stale set above — ~250 000 files,
+1.4 GB — **≈ 4.0 s** wall (`find … | xargs stat`), against an `rm` that dominates it. `--prune`
+is a developer verb run occasionally, so no bounded-concurrency machinery is warranted.
+
+**Failure semantics: continue, collect, exit non-zero.** One unreadable directory must not
+block reclaiming the other 1.4 GB, and a failure that only whispers is a swallowed error — so
+each failure carries its path and the underlying `err.message`, prints to `stderr`, and moves
+the process exit code. `rm(dir, { recursive: true, force: true })`: `force` collapses `ENOENT`
+(a directory a concurrent run already removed is not a failure); every other error is caught
+per directory. Bytes are measured before the removal and only enter `removed` when the removal
+succeeded, so the reported total never over-reports.
+
+**Concurrency, stated rather than engineered.** `--prune` is explicit and single-shot; a
+leftover `.tmp.<pid>.<ms>` belonging to a build that is *running right now* would be removed.
+Gating on `process.kill(pid, 0)` liveness was considered and rejected: pid reuse makes it wrong
+in both directions, and it does nothing for the 1.3 GB `large-v1` case, which carries no pid.
+The documentation instead says what the verb is: do not prune while a bench run or a
+`bench:fixture` build is in flight.
+
+**CLI — `tooling/gen-bench-fixture.ts`**
+
+```ts
+type FixtureAction =
+  | { readonly kind: 'generate'; readonly spec: FixtureSpec }
+  | { readonly kind: 'prune' }
+  | { readonly kind: 'usage' };
+
+/** Pure argv routing — exported so it can be unit-tested without running `main`. */
+export const selectFixtureAction = (label: string | undefined): FixtureAction => { … };
+```
+
+The script gains the house `invokedDirectly()` guard around `main().catch(…)`, copied in shape
+from `bench-check.ts` — without it, importing the module in a unit test would run `main()` and
+either build a fixture or call `process.exit` inside the worker. The usage line becomes
+`usage: gen-bench-fixture <medium|large|delta-chain|many-pack|--prune>`.
+
+`--prune` occupies the same `argv[2]` slot as a label, so it cannot be combined with one: one
+verb per invocation, which is what makes the router a total function over a single token. The
+prune path spawns nothing — no `git`, no generation — and never creates a directory, so a
+`--prune` on a machine with no `git` and no cache is a no-op that exits 0.
+
+Rendering (the CLI's job, not the module's):
+
+```
+removed /Users/…/.cache/tsgit-bench/large-v1 (1080819906 bytes)
+…
+reclaimed 1406757162 bytes from 9 directories under /Users/…/.cache/tsgit-bench
+```
+
+with `could not remove <path>: <reason>` on `stderr` and exit 1 when `failed` is non-empty,
+and `nothing to prune under <root>` + exit 0 when both lists are empty.
+
+**Generator exports this part adds** — `cacheRoot` and `FIXTURE_GENERATOR_VERSION`, two `export`
+keywords, no logic. That edits the hashed file, which Parts 2 and 5 already do; the key is busted
+once for the PR.
+
+**Documentation touched by this part.** Three surfaces name the pre-warm verb and the cache, and
+the prune verb belongs beside each:
+
+- `CONTRIBUTING.md:192` — `npm run bench:fixture -- medium   # pre-warm the scaled-bench fixture`
+  gains a sibling line for `-- --prune`.
+- `docs/understand/performance.md:45` — the *Fixtures* bullet describes `~/.cache/tsgit-bench`
+  and how fixtures get there; it gains one clause on how they leave.
+- `RUNBOOK.md:87-91` — the *Pre-warm the cache first* bullet. Its sentence *"The tiered benches
+  skip cleanly when a fixture is unavailable"* is also the one Part 5 sharpens: it stays true,
+  and gains *"any other failure fails the bench file"*.
+
 ## Decision candidates
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| **D1** | Where the shared fixture-copy helper lives | (a) new `test/bench/support/fixture-scratch.ts`; (b) extend `test/bench/support/write-scratch.ts`; (c) put it in `test/bench/support/fixture-generator.ts` | **(a)** | (c) is disqualified by the CI cache key: `hashFiles('…/fixture-generator.ts')` means every future tweak to the copier would bust every fixture cache. (b) mixes two concerns and two dependency sets — `write-scratch.ts` exists to *build* repos through `openRepository`; a copier imports nothing from `src/`. |
-| **D2** | Which tiers `checkout.bench.ts` runs on, given the copy cost | (a) unchanged `MULTI_TIERS`, one copy per scenario per tier (measured ≈ 21 s added collection); (b) small tier only; (c) one copy per tier shared by both scenarios (≈ 11 s) | **(a)** | (b) drops the medium-scale signal the R16 oracle was built for. (c) makes the no-force scenario's clean-tree precondition depend on the force scenario's iteration-count parity — reintroducing exactly the coupling this PR removes, to save 11 s of a 30-minute budget. |
-| **D3** | What a non-pristine cached fixture triggers | (a) identity probe (`HEAD` symref + `refs/heads/main` oid) → `stderr` warning + replace; (b) identity probe → throw a distinct error and let benches skip; (c) identity probe **plus** `git status --porcelain` working-tree cleanliness → replace | **(a)** | (b) is silently swallowed by `resolveScaledContext`'s bare `catch`, turning a corrupt fixture into a missing benchmark row — the worst outcome — unless that catch is narrowed too. (c) costs an O(20 000-file) `status` scan on every one of the 38 resolutions and must special-case the fixture's own untracked `meta.json`, which is the only thing a pristine fixture's `status --porcelain` prints; it would still miss the tags and the dangling commit, which `status` does not report at all — so it buys a narrow slice of extra coverage for a wide cost. Rebuild is measured at 147 ms (small) / 3.65 s (medium), so replacing is cheap enough to be the default. |
-| **D4** | Bump `FIXTURE_GENERATOR_VERSION` 3 → 4 | (a) do not bump; (b) bump to 4 | **(a)** | Nothing about the fixture *shape* changed, so the version constant would be lying. Part 2 already busts the `actions/cache` key by editing the same file, so (b) buys no cache invalidation that is not already happening. Against it: every developer's `-v3` directories are stranded — this machine holds **2.0 GB** across `v1`/`v2`/`v3` already, and nothing ever reclaims them. The one thing (b) buys — a forced local rebuild of the already-mutated `small-v3` — the Part 2 guard does for free, and more precisely. |
-| **D5** | `describe.bench.ts` / `name-rev.bench.ts` writing tags into shared fixtures | (a) leave as-is — additive, idempotent, `HEAD` untouched, and the D3(a) guard tolerates them by construction; (b) move both onto scratch copies for a uniform "never write a shared fixture" rule; (c) leave as-is and add a mechanical bench-suite check that fails when `fixture.cwd` reaches a writing API | **(a)** | (b) costs another ≈ 21 s per run (2 files × 2 tiers, medium dominating) to remove a class of write that has never broken anything and that the fixtures were built to absorb. (c) is the honest long-term answer but needs a taxonomy of "writing API" the repo does not have; it is a follow-up, not a chore-PR item — and per house policy a follow-up needs your explicit go rather than being filed silently. |
-| **D6** | `check:deps` treatment of `@cloudflare/workers-types` | (a) grep exception + rationale in `.claude/workflow.md`; (b) exception **and** a dependabot `ignore` entry, bumped on a manual cadence; (c) no exception — pin and bump on a cadence | **(a)** | Same treadmill rationale the other six exceptions already encode. (c) reds CI on every day the cadence is missed — the status quo that opened this PR. (b) removes the one mechanism that keeps the pin from rotting (dependabot's weekly PR) in exchange for nothing: the exception already stops the row from failing the gate, whether or not a bump PR is open. |
-| **D7** | How the fix is proved before merging | (a) two `gh workflow run bench.yml --ref <branch>` dispatches — first cold, second against the branch's own restored entry; (b) one dispatch (cold path only); (c) add the `bench` label so `benchmark-compare` runs on the PR | **(a)** | `benchmark-snapshot` runs only on `push` to `main`, so nothing on the PR exercises it; `bench.yml` runs the same `test:bench` under the same cache key. Only the second dispatch proves the case that has actually been failing — a *restored* fixture that `describe.bench.ts` then tags. (c) is worse than merely uninformative: `benchmark-compare` runs the base and head trees against **one shared** `~/.cache/tsgit-bench`, and the base tree still mutates it — so the head side's guard would fire every round, and the job is `continue-on-error: true` anyway. |
+D1–D9 are settled; the ADR that settled each says whether it was adopted as recommended or
+ratified by the user. D10 and D11 are new, raised by this revision, and are **not** decided here.
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why | Settled by |
+|---|---|---|---|---|---|
+| **D1** | Where the shared fixture-copy helper lives | (a) new `test/bench/support/fixture-scratch.ts`; (b) extend `test/bench/support/write-scratch.ts`; (c) put it in `test/bench/support/fixture-generator.ts` | **(a)** | (c) is disqualified by the CI cache key: `hashFiles('…/fixture-generator.ts')` means every future tweak to the copier would bust every fixture cache. (b) mixes two concerns and two dependency sets — `write-scratch.ts` exists to *build* repos through `openRepository`; a copier imports nothing from `src/`. | **ADR-791** — adopted as recommended |
+| **D2** | Which tiers `checkout.bench.ts` runs on, given the copy cost | (a) unchanged `MULTI_TIERS`, one copy per scenario per tier (measured ≈ 21 s added collection); (b) small tier only; (c) one copy per tier shared by both scenarios (≈ 11 s) | **(a)** | (b) drops the medium-scale signal the R16 oracle was built for. (c) makes the no-force scenario's clean-tree precondition depend on the force scenario's iteration-count parity — reintroducing exactly the coupling this PR removes, to save 11 s of a 30-minute budget. | **ADR-792** — adopted as recommended |
+| **D3** | What a non-pristine cached fixture triggers | (a) identity probe (`HEAD` symref + `refs/heads/main` oid) → `stderr` warning + replace; (b) identity probe → throw a distinct error and let benches skip; (c) identity probe **plus** `git status --porcelain` working-tree cleanliness → replace | **(a)** | (b) is silently swallowed by `resolveScaledContext`'s bare `catch`, turning a corrupt fixture into a missing benchmark row — the worst outcome — unless that catch is narrowed too. (c) costs an O(20 000-file) `status` scan on every one of the 38 resolutions and must special-case the fixture's own untracked `meta.json`, which is the only thing a pristine fixture's `status --porcelain` prints; it would still miss the tags and the dangling commit, which `status` does not report at all — so it buys a narrow slice of extra coverage for a wide cost. Rebuild is measured at 147 ms (small) / 3.65 s (medium), so replacing is cheap enough to be the default. | **ADR-793** — **ratified by the user** |
+| **D4** | Bump `FIXTURE_GENERATOR_VERSION` 3 → 4 | (a) do not bump; (b) bump to 4 | **(a)** | Nothing about the fixture *shape* changed, so the version constant would be lying. Part 2 already busts the `actions/cache` key by editing the same file, so (b) buys no cache invalidation that is not already happening. Against it: every developer's `-v3` directories are stranded — this machine holds **2.0 GB** across `v1`/`v2`/`v3` already, and nothing ever reclaims them. The one thing (b) buys — a forced local rebuild of the already-mutated `small-v3` — the Part 2 guard does for free, and more precisely. The stranded directories are reclaimed by Part 6 instead. | **ADR-794** — **ratified by the user** |
+| **D5** | `describe.bench.ts` / `name-rev.bench.ts` writing tags into shared fixtures | (a) leave as-is — additive, idempotent, `HEAD` untouched, and the D3(a) guard tolerates them by construction; (b) move both onto scratch copies for a uniform "never write a shared fixture" rule; (c) leave as-is and add a mechanical bench-suite check that fails when `fixture.cwd` reaches a writing API | **(a)** | (b) costs another ≈ 21 s per run (2 files × 2 tiers, medium dominating) to remove a class of write that has never broken anything and that the fixtures were built to absorb. (c) is the honest long-term answer but needs a taxonomy of "writing API" the repo does not have; it is a follow-up, not a chore-PR item — and per house policy a follow-up needs your explicit go rather than being filed silently. | **ADR-795** — adopted as recommended |
+| **D6** | `check:deps` treatment of `@cloudflare/workers-types` | (a) grep exception + rationale in `.claude/workflow.md`; (b) exception **and** a dependabot `ignore` entry, bumped on a manual cadence; (c) no exception — pin and bump on a cadence | **(a)** | Same treadmill rationale the other six exceptions already encode. (c) reds CI on every day the cadence is missed — the status quo that opened this PR. (b) removes the one mechanism that keeps the pin from rotting (dependabot's weekly PR) in exchange for nothing: the exception already stops the row from failing the gate, whether or not a bump PR is open. | **ADR-796** — adopted as recommended |
+| **D7** | How the fix is proved before merging | (a) two `gh workflow run bench.yml --ref <branch>` dispatches — first cold, second against the branch's own restored entry; (b) one dispatch (cold path only); (c) add the `bench` label so `benchmark-compare` runs on the PR | **(a)** | `benchmark-snapshot` runs only on `push` to `main`, so nothing on the PR exercises it; `bench.yml` runs the same `test:bench` under the same cache key. Only the second dispatch proves the case that has actually been failing — a *restored* fixture that `describe.bench.ts` then tags. (c) is worse than merely uninformative: `benchmark-compare` runs the base and head trees against **one shared** `~/.cache/tsgit-bench`, and the base tree still mutates it — so the head side's guard would fire every round, and the job is `continue-on-error: true` anyway. | **ADR-797** — adopted as recommended |
+| **D8** | Whether `resolveScaledContext`'s bare `catch` is narrowed here (this design had it out of scope) | (a) narrow to the unavailable condition, rethrow everything else; (b) leave the bare `catch`; (c) log and skip | **(a)** | (b) hides every future generator defect — including Part 2's own rebuild failures — as a benchmark row that silently stopped existing. (c) still drops the row from the snapshot series, and one log line inside a 30-minute CI log is not a signal. | **ADR-798** — **ratified by the user**, scope fold (§ Part 5) |
+| **D9** | Whether stale `<label>-v<N>` caches are ever reclaimed (this design had it out of scope) | (a) explicit `npm run bench:fixture -- --prune`; (b) automatic on the first resolution per process; (c) automatic with a 30-day age gate | **(a)** | (b) lets a `v3` bench run in one worktree delete the `v4` fixtures a sibling worktree is benchmarking, and the reverse. (c) narrows that hazard without removing it, and adds a time rule to test plus a magic number to justify. | **ADR-799** — **ratified by the user**, scope fold (§ Part 6) |
+| **D10** | Which versions `--prune` removes | (a) `N !== FIXTURE_GENERATOR_VERSION` — ADR-799's literal wording; (b) `N < FIXTURE_GENERATOR_VERSION`; (c) (a) plus a typed confirmation | **(b)** | ADR-799's context says "the **previous** `<label>-v<N>` directories", and its two rejected options were rejected because worktrees at different versions would "delete each other's live fixtures". (a) re-enters that hazard in one direction: run from a `v3` checkout it deletes a sibling worktree's live `v4` fixtures — under an explicit verb, but with no way for the developer to know. (b) matches the stated intent and cannot touch a future version; its only cost is that a downgrade leaves the newer directories behind until a `--prune` from that newer checkout reclaims them. (c) adds a prompt to a verb that is already opt-in, and makes the tool interactive for the first time. | **open — needs your ruling** |
+| **D11** | The same misclassification in the two profiling/memory tools | (a) leave them; (b) narrow both with the exported predicate — friendly "install git" message for the unavailable case, the real error otherwise; (c) fix only the message text | **(b)** | ADR-798's consequence line says those tools "already let errors propagate". They do not, and the design should say so in its own words: `tooling/profile.ts:224-232` and `tooling/bench-memory.ts:984-991` each wrap the call in a bare `catch (err)` that prints "fixture unavailable … install the `git` CLI and retry" and exits 1 for *every* failure. The ADR's ruling is unaffected — they fail **loudly**, with a non-zero exit and the real message in the parenthesis, which is the property `resolveScaledContext` lacked — but a corrupt-fixture rebuild failure is reported as a missing `git`. With the predicate exported for Part 5, (b) is two lines per site in the same PR; (a) leaves a misdiagnosis in the two tools a developer reaches for when the benches misbehave. `tooling/gen-bench-fixture.ts` genuinely does propagate (top-level `main().catch` ⇒ message + exit 1) and needs nothing. | **open — needs your ruling** |
 
 ## Test strategy
 
-### Unit — `tooling/test/unit/fixture-generator.test.ts` (extend; `unit` vitest project)
+### Unit, Part 2 — `tooling/test/unit/fixture-generator.test.ts` (extend; `unit` vitest project)
 
 The file's existing scaffold is reused verbatim: `describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)`,
 `XDG_CACHE_HOME` redirected to a `mkdtemp` in `beforeAll` and restored in `afterAll`, `gitEnv()`
@@ -701,6 +995,74 @@ round-trip pair, not a compositional matcher over an array, not a total function
 algebraic grammar, and has no idempotence/counting invariant — it is a two-clause comparison
 over two strings. A property here would be a tautology.
 
+### Unit, Part 5 — `tooling/test/unit/scaled-bench.test.ts` (new; `unit` vitest project)
+
+`test/bench/support/**` is outside the coverage gate and outside Stryker's `mutate` globs, so
+these three tests are the only mechanical guard on the narrowing.
+
+Scaffold, decided rather than left open: **`vi.mock` with `importOriginal`, not an injected
+seam.** A `deps` parameter on `resolveScaledContext` would exist solely for the test, would be
+threaded through `tieredScenario` and 12 module-top-level call sites, and would widen a
+zero-or-one-argument API — test-induced damage, not composition. `vi.mock` is the house
+pattern (53 uses, every one of them with `importOriginal` and a `.js` specifier). The factory
+replaces **only** `ensureScaledFixture` and defaults it to the real implementation
+(`vi.fn(original.ensureScaledFixture)`), so the real `isFixtureUnavailable` and the real
+`FixtureUnavailableError` stay in play — mocking the whole module would make the test assert
+against its own stub and prove nothing. Specifier:
+`'../../../test/bench/support/fixture-generator.js'`, which resolves to the same module id as
+the SUT's `./fixture-generator.js` import (vite's `.js`→`.ts` resolution;
+`tooling/test/unit/test-pyramid/*.test.ts` already relies on it). File-level
+`describe.skipIf(RUNNING_UNDER_STRYKER)` — under Stryker `resolveScaledContext` returns before
+the code these tests exercise. No `HAS_GIT` guard: two of the three never spawn anything, and
+the third *requires* `git` to be unreachable.
+
+| # | Given / When | Then (oracle) |
+|---|---|---|
+| U1 | `XDG_CACHE_HOME` on an empty `mkdtemp` and `PATH` on an empty `mkdtemp` (both restored in a `finally`), the spy delegating to the real generator / `resolveScaledContext(SMALL_FIXTURE)` | resolves; `fixture` is `undefined`; `given` is the exact small-fixture phrase; the spy was called. The skip is reached through the **real** `FixtureUnavailableError` and the **real** predicate — the one assertion a mocked error cannot make — and it costs one failed spawn, not a fixture build. An empty *directory* rather than an empty `PATH` string: empty-`PATH` search semantics are platform-dependent, an empty directory is not |
+| U2 | the spy rejecting with `new Error('git fast-import exited with 128')` / same call | **rejects**; the caught error's `message` is exactly that string. try/catch + `.message`, never `toThrow(Class)` — the `bareClassToThrow` heuristic in `test-pyramid-budgets.json` gates that form anyway |
+| U3 | `STRYKER_MUTANT_ID` set for the duration of the call (restored in a `finally`), the spy rejecting | `fixture` is `undefined` **and** the spy was never called — kills the mutant that drops the Stryker early return and lets the call fall through into the catch, which U1 alone would not notice |
+
+U1 and U2 are separate because `if (isFixtureUnavailable(err)) return …; throw err;` has two
+outcomes on one branch: one test each, or an always-return / always-throw mutant survives.
+
+### Unit, Part 6 — `tooling/test/unit/fixture-prune.test.ts` and `gen-bench-fixture.test.ts` (both new)
+
+`fixture-prune.test.ts` reuses `fixture-generator.test.ts`'s `beforeAll`/`afterAll`
+`XDG_CACHE_HOME` mkdtemp scaffold, minus the git and Stryker guards — the module spawns
+nothing. Directory trees are built with `mkdir` + `writeFile` of known byte lengths, so byte
+assertions are exact rather than approximate. The pure classifier and the filesystem pass are
+tested apart: the name-level table needs no I/O at all.
+
+| # | Given / When | Then (oracle) |
+|---|---|---|
+| P1 | a cache root holding `medium-v2` with two files of known size / `pruneFixtureCache()` | `medium-v2` is gone; `removed` carries its path and `bytes` equal to the exact written total |
+| P2 | a cache root holding `medium-v3` (the current version) / same | the directory and its files still exist; `removed` is empty — isolates the version guard |
+| P3 | `medium-v3.tmp.123.1700000000000` / same | removed — isolates the `.tmp.` leftover branch |
+| P4 | `medium-v3.corrupt.123.1700000000000` / same | removed — isolates the `.corrupt.` branch, which P3 leaves unproven |
+| P5 | `not-a-fixture-v1` / same | kept — isolates the known-label guard, which the version guard alone would let through |
+| P6 | a plain file and a directory named `scratch` at the root / same | both kept; `removed` is empty |
+| P7 | an empty cache root / same | `removed` and `failed` both empty, `root` set, root itself still present |
+| P8 | no cache root at all / same | empty report, no throw |
+| P9 | two stale directories of different known sizes / same | each `PrunedEntry.bytes` is exact and the caller's sum matches the written total — pins the accounting, not just the removal |
+| P10 | `vi.mock('node:fs/promises', importOriginal)` whose `rm` **defaults to the real one** and is overridden inside this test to reject `EACCES` for one of two stale directories / same | the other is still removed; `failed` carries the failing path **and** the reason string; the failed directory is absent from `removed`, so the byte total does not over-report. The default-to-real wiring is load-bearing: `vi.mock` is hoisted file-wide, and P1–P9 plus the `afterAll` teardown all need the genuine `rm`. Mocked rather than `chmod`-driven: a mode-based failure is platform-dependent and does not fail at all for root |
+| P11 | a symlink at the cache root named like a stale directory (`skipIf(process.platform === 'win32')` — a stock Windows runner cannot create one, and the unit matrix includes `windows-latest`) / same | the link and its target both survive; `removed` is empty — pins the `Dirent.isDirectory()` filter that keeps the traversal inside the root |
+
+`gen-bench-fixture.test.ts` pins the argv routing, which nothing else covers: a parameterised
+sweep over `medium`, `large`, `delta-chain`, `many-pack`, `--prune`, an unknown token and
+`undefined`, asserting the `FixtureAction.kind` and, for `generate`, `spec.label`. It is worth
+the file only because the router is the single thing standing between `--prune` and the usage
+line, and because a mis-route degrades silently to exit 1. It requires the `invokedDirectly()`
+guard — importing the script today runs `main()`.
+
+**No property test in either part, and here is the four-lens check so the review pass does not
+re-open it.** `classifyCacheEntry` is not half of a round-trip pair (nothing serialises a
+verdict back to a name), not a compositional matcher over an array of rules, and has no
+idempotence or counting invariant. Lens 3 (total function over a grammar) is the near miss:
+the function has no throw site to defend, and the only interesting property —
+"`${knownLabel}-v${n}` is stale iff `n` is stale" — is the implementation restated, which the
+house rule names as a tautology. A closed sweep of seven argv tokens and eleven directory
+shapes says the same thing more legibly.
+
 ### Integration / suite-level
 
 - **S1 (R1, the real regression oracle)** — after `npm run test:bench`, assert every
@@ -713,6 +1075,16 @@ over two strings. A property here would be a tautology.
 - **S3** — `npm run validate` green at each commit. Watch for the known local
   oversubscription signature (timeouts only, zero assertion failures, varying failing set):
   re-run with `WIREIT_PARALLEL=1`, never `--no-verify`.
+- **S4 (R12, the one path Part 5 must not break)** — with `git` removed from `PATH` and
+  `XDG_CACHE_HOME` on an empty directory, `npm run test:bench` still **collects and skips**
+  every scaled scenario instead of failing. No unit test exercises the whole suite's collection,
+  and this is the behaviour 16 bench files depend on.
+- **S5 (R13)** — build a throwaway cache root under an isolated `XDG_CACHE_HOME` mirroring the
+  real one (one current-version directory, two stale, one `.tmp.` and one `.corrupt.` leftover,
+  one unknown-label directory), run `npm run bench:fixture -- --prune` against it, and diff the
+  surviving entries against the expected set. Then run it once for real: on this machine today
+  that is nine directories and **1 406 757 162** logical bytes, against a `du` reading of
+  1.68 GiB for the same nine — confirm the CLI's total matches the walk, not `du`.
 
 ### CI (R11, D7)
 
@@ -740,17 +1112,20 @@ for the first time since 2026-08-29.
 - **Changing `describe.bench.ts`'s `HEAD~10` / `TAG_DISTANCE`, or `name-rev.bench.ts`'s
   measured `sut`** — the benches are correct; the fixture was wrong.
 - **A `FixtureSpec` shape, tier or strategy change** — ADR-474 and ADR-503 stand untouched; no
-  new label, no new strategy, no tier retuning.
+  new label, no new strategy, no tier retuning. Part 6 reads the label vocabulary through an
+  exhaustive `Record` in its own module rather than restructuring the union into an array.
 - **Moving `describe`/`name-rev` onto scratch copies** — D5(b)/(c); ≈ 21 s per run to close a
   class of write that has never broken anything.
-- **Narrowing `resolveScaledContext`'s bare `catch`** — a real latent defect (it converts every
-  error, including programming errors, into a silently skipped benchmark) but a behavioural
-  change to the skip contract, not a fix for either red job. Named here so it is not
-  rediscovered as new; raising it as a follow-up needs your explicit go.
 - **A mechanical "no writes to `fixture.cwd`" bench-suite check** — D5(c); needs a taxonomy of
   writing APIs the repo does not have.
+- **Automatic reclaim of stale fixture caches** — ADR-799 rules it out explicitly: no code path
+  deletes a cache directory on its own. Part 2's replacement of a directory that failed its
+  identity probe is the sole exception, and it acts only on a directory it can prove is not the
+  one the generator wrote. An automatic sweep — on first resolution, or age-gated — would let a
+  checkout at one generator version delete the live fixtures of a sibling worktree at another.
 - **Bumping `typescript`, `vitest`, `@vitest/coverage-v8`, `jscpd`, `knip`, `@ls-lint/ls-lint`**
   — each pinned for a recorded reason; bumping any of them here would make a mutation or build
   regression unattributable.
-- **Reclaiming the stranded `-v1` / `-v2` fixture cache directories** (2.0 GB on this machine)
-  — a developer-ergonomics cleanup with no bearing on either red job.
+- **Narrowing the bare `catch` in `tooling/profile.ts` and `tooling/bench-memory.ts`** — only
+  until D11 is ruled on. Both already fail loudly (non-zero exit, the real message in the
+  parenthesis); what is open is whether they stop calling every failure an absent `git`.
