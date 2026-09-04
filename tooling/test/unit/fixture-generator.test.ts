@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   DEEP_ANCESTRY_SMALL,
@@ -103,6 +103,220 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
           .trim();
         expect(stableBlobId).toMatch(HEX40);
         expect(result.firstBlobId).toBe(stableBlobId);
+      });
+    });
+  });
+
+  describe('Given a cached small fixture whose HEAD was detached at its root', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it('Then it rebuilds the fixture back onto refs/heads/main', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const rootCommitId = execFileSync(
+          'git',
+          ['-C', original.cwd, 'rev-list', '--max-parents=0', 'refs/heads/main'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        execFileSync('git', ['-C', original.cwd, 'checkout', '-q', '--detach', rootCommitId], {
+          env: gitEnv(),
+        });
+        const sut = ensureScaledFixture;
+
+        // Act
+        const result = await sut(SMALL_FIXTURE);
+
+        // Assert
+        const headSymbolicName = execFileSync(
+          'git',
+          ['-C', result.cwd, 'rev-parse', '--symbolic-full-name', 'HEAD'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        expect(headSymbolicName).toBe('refs/heads/main');
+        expect(result.headCommitId).toBe(original.headCommitId);
+      });
+    });
+  });
+
+  describe('Given a cached small fixture whose refs/heads/main was moved while HEAD stayed symbolic', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it('Then it rebuilds the fixture back onto the original commit', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const rootCommitId = execFileSync(
+          'git',
+          ['-C', original.cwd, 'rev-list', '--max-parents=0', 'refs/heads/main'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        execFileSync('git', ['-C', original.cwd, 'update-ref', 'refs/heads/main', rootCommitId], {
+          env: gitEnv(),
+        });
+        const sut = ensureScaledFixture;
+
+        // Act
+        const result = await sut(SMALL_FIXTURE);
+
+        // Assert
+        const mainCommitId = execFileSync(
+          'git',
+          ['-C', result.cwd, 'rev-parse', 'refs/heads/main'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        expect(mainCommitId).toBe(original.headCommitId);
+      });
+    });
+  });
+
+  describe('Given a pristine cached small fixture carrying a sentinel file', () => {
+    describe('When ensureScaledFixture resolves it twice', () => {
+      it('Then the hit path returns the cache without rebuilding it', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const sentinelPath = path.join(original.cwd, 'sentinel.txt');
+        await writeFile(sentinelPath, 'sentinel');
+        const sut = ensureScaledFixture;
+
+        // Act
+        await sut(SMALL_FIXTURE);
+        await sut(SMALL_FIXTURE);
+
+        // Assert
+        const sentinelContent = await readFile(sentinelPath, 'utf8');
+        expect(sentinelContent).toBe('sentinel');
+      });
+    });
+  });
+
+  describe('Given a detached cached small fixture', () => {
+    describe('When ensureScaledFixture rebuilds it', () => {
+      it('Then it warns naming the label, the expected ref, and the observed HEAD', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const rootCommitId = execFileSync(
+          'git',
+          ['-C', original.cwd, 'rev-list', '--max-parents=0', 'refs/heads/main'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        execFileSync('git', ['-C', original.cwd, 'checkout', '-q', '--detach', rootCommitId], {
+          env: gitEnv(),
+        });
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        const sut = ensureScaledFixture;
+
+        // Act
+        await sut(SMALL_FIXTURE);
+
+        // Assert
+        const written = stderrSpy.mock.calls.map((call) => String(call[0])).join('');
+        stderrSpy.mockRestore();
+        expect(written).toContain('small');
+        expect(written).toContain('refs/heads/main');
+        expect(written).toContain('HEAD');
+      });
+    });
+  });
+
+  describe('Given a detached cached small fixture and no git reachable via PATH', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it('Then it degrades to the cached fixture without rebuilding or throwing', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const rootCommitId = execFileSync(
+          'git',
+          ['-C', original.cwd, 'rev-list', '--max-parents=0', 'refs/heads/main'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        execFileSync('git', ['-C', original.cwd, 'checkout', '-q', '--detach', rootCommitId], {
+          env: gitEnv(),
+        });
+        const emptyPathDir = await mkdtemp(
+          path.join(os.tmpdir(), 'tsgit-fixture-generator-test-empty-path-'),
+        );
+        const originalPath = process.env.PATH;
+        const sut = ensureScaledFixture;
+
+        // Act
+        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        try {
+          process.env.PATH = emptyPathDir;
+          result = await sut(SMALL_FIXTURE);
+        } finally {
+          if (originalPath === undefined) {
+            delete process.env.PATH;
+          } else {
+            process.env.PATH = originalPath;
+          }
+          await rm(emptyPathDir, { recursive: true, force: true });
+        }
+
+        // Assert
+        expect(result.headCommitId).toBe(original.headCommitId);
+        const headSymbolicName = execFileSync(
+          'git',
+          ['-C', result.cwd, 'rev-parse', '--symbolic-full-name', 'HEAD'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        expect(headSymbolicName).toBe('HEAD');
+      });
+    });
+  });
+
+  describe('Given a populated cache directory whose meta.json was deleted', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it('Then it rebuilds the fixture instead of failing on ENOTEMPTY', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        await rm(path.join(original.cwd, 'meta.json'), { force: true });
+        const sut = ensureScaledFixture;
+
+        // Act
+        const result = await sut(SMALL_FIXTURE);
+
+        // Assert
+        expect(result.headCommitId).toMatch(HEX40);
+      });
+    });
+  });
+
+  describe('Given a cached small fixture resolved, detached, and resolved again', () => {
+    describe('When ensureScaledFixture repairs it', () => {
+      it('Then the cache root has no leftover corrupt or temp directories', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const rootCommitId = execFileSync(
+          'git',
+          ['-C', original.cwd, 'rev-list', '--max-parents=0', 'refs/heads/main'],
+          { env: gitEnv() },
+        )
+          .toString()
+          .trim();
+        execFileSync('git', ['-C', original.cwd, 'checkout', '-q', '--detach', rootCommitId], {
+          env: gitEnv(),
+        });
+        const sut = ensureScaledFixture;
+
+        // Act
+        await sut(SMALL_FIXTURE);
+
+        // Assert
+        const cacheRootEntries = await readdir(path.dirname(original.cwd));
+        const leftovers = cacheRootEntries.filter(
+          (entry) => entry.includes('.corrupt.') || entry.includes('.tmp.'),
+        );
+        expect(leftovers).toEqual([]);
       });
     });
   });

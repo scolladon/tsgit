@@ -215,7 +215,8 @@ export const HEADER_CACHE_FIXTURE: FixtureSpec = {
 };
 
 export interface ScaledFixture {
-  /** Cached repo path. Never delete it — it is the cache. */
+  /** Cached repo path. Never delete or mutate it — it is the shared cache; copy it first
+   * (`fixture-scratch.ts`). */
   readonly cwd: string;
   readonly headCommitId: string;
   readonly firstBlobId: string;
@@ -441,12 +442,82 @@ const runGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<str
   return stdout.trim();
 };
 
-const assertGitAvailable = async (): Promise<void> => {
+const PRISTINE_HEAD_NAME = 'refs/heads/main';
+
+interface FixtureIdentity {
+  readonly headSymbolicName: string;
+  readonly mainCommitId: string;
+}
+
+const readFixtureIdentity = async (cacheDir: string): Promise<FixtureIdentity> => ({
+  headSymbolicName: await runGit(cacheDir, ['rev-parse', '--symbolic-full-name', 'HEAD']),
+  mainCommitId: await runGit(cacheDir, ['rev-parse', PRISTINE_HEAD_NAME]),
+});
+
+/** `undefined` when the cached repo still matches what the generator wrote. */
+const identityMismatch = (identity: FixtureIdentity, meta: FixtureMeta): string | undefined => {
+  if (identity.headSymbolicName !== PRISTINE_HEAD_NAME)
+    return `HEAD is ${identity.headSymbolicName}, expected ${PRISTINE_HEAD_NAME}`;
+  if (identity.mainCommitId !== meta.headCommitId)
+    return `${PRISTINE_HEAD_NAME} is ${identity.mainCommitId}, expected ${meta.headCommitId}`;
+  return undefined;
+};
+
+/** `undefined` ⇒ trust the cache. A string ⇒ replace it, and say why. */
+const cacheRejection = async (cacheDir: string, meta: FixtureMeta): Promise<string | undefined> => {
+  try {
+    return identityMismatch(await readFixtureIdentity(cacheDir), meta);
+  } catch (err) {
+    if (!(await gitAvailable())) return undefined; // degrade, do not fail
+    return `git could not read its refs (${err instanceof Error ? err.message : String(err)})`;
+  }
+};
+
+/** Predicate half of `assertGitAvailable`, which becomes its throwing wrapper. */
+const gitAvailable = async (): Promise<boolean> => {
   try {
     await execFileAsync('git', ['--version'], { env: gitEnv() });
+    return true;
   } catch {
-    throw new FixtureUnavailableError('the `git` CLI is not on PATH');
+    return false;
   }
+};
+
+/** The `ScaledFixture` literal `ensureScaledFixture` currently spells out twice. */
+const toScaledFixture = (
+  cacheDir: string,
+  meta: FixtureMeta,
+  spec: FixtureSpec,
+): ScaledFixture => ({
+  cwd: cacheDir,
+  headCommitId: meta.headCommitId,
+  firstBlobId: meta.firstBlobId,
+  spec,
+  ...(meta.lastBlobId !== undefined ? { lastBlobId: meta.lastBlobId } : {}),
+});
+
+const assertGitAvailable = async (): Promise<void> => {
+  if (!(await gitAvailable())) throw new FixtureUnavailableError('the `git` CLI is not on PATH');
+};
+
+/** Moves a non-pristine cache aside atomically, then removes it. A no-op when absent. */
+const retireCacheDir = async (cacheDir: string): Promise<void> => {
+  const retired = `${cacheDir}.corrupt.${process.pid}.${Date.now()}`;
+  try {
+    await rename(cacheDir, retired);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    return; // absent, or another process already retired it
+  }
+  await rm(retired, { recursive: true, force: true });
+};
+
+const warnNotPristine = (spec: FixtureSpec, reason: string): void => {
+  process.stderr.write(
+    `[bench] cached fixture "${spec.label}" is not pristine: ${reason}. Rebuilding it. ` +
+      `A bench mutated the shared cache — copy it first ` +
+      `(test/bench/support/fixture-scratch.ts).\n`,
+  );
 };
 
 const runFastImport = async (
@@ -658,16 +729,15 @@ export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixt
   const cacheDir = cacheDirFor(spec);
   const cached = await readCachedMeta(cacheDir);
   if (cached !== undefined) {
-    return {
-      cwd: cacheDir,
-      headCommitId: cached.headCommitId,
-      firstBlobId: cached.firstBlobId,
-      spec,
-      ...(cached.lastBlobId !== undefined ? { lastBlobId: cached.lastBlobId } : {}),
-    };
+    const rejection = await cacheRejection(cacheDir, cached);
+    if (rejection === undefined) return toScaledFixture(cacheDir, cached, spec);
+    warnNotPristine(spec, rejection);
   }
-
+  // git first: never destroy a cache directory we could not rebuild.
   await assertGitAvailable();
+  // Also covers a directory that exists with no readable `meta.json` — without
+  // this the generate path's `rename` would hit ENOTEMPTY on it.
+  await retireCacheDir(cacheDir);
   await mkdir(cacheRoot(), { recursive: true });
   const tmpDir = `${cacheDir}.tmp.${process.pid}.${Date.now()}`;
   let meta: FixtureMeta;
@@ -679,13 +749,14 @@ export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixt
     await rm(tmpDir, { recursive: true, force: true });
     const won = await readCachedMeta(cacheDir);
     if (won === undefined) throw err;
+    // A losing race reuses the winner's cache — but only after the winner's
+    // directory passes the same identity check the hit path applies.
+    const rejection = await cacheRejection(cacheDir, won);
+    if (rejection !== undefined) {
+      warnNotPristine(spec, rejection);
+      throw err;
+    }
     meta = won;
   }
-  return {
-    cwd: cacheDir,
-    headCommitId: meta.headCommitId,
-    firstBlobId: meta.firstBlobId,
-    spec,
-    ...(meta.lastBlobId !== undefined ? { lastBlobId: meta.lastBlobId } : {}),
-  };
+  return toScaledFixture(cacheDir, meta, spec);
 };
