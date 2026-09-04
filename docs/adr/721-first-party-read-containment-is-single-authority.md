@@ -40,9 +40,10 @@ than refused. The config-scope `allowSet` sequencing is preserved: scope reads k
 resolving to an empty scope, never a throw.
 
 Superseded from ADR-541: the premise that the facade wrapper is a load-bearing read-path
-layer for first-party adapters. Carried forward from ADR-541: everything else — the
-adapter's root-set containment model, canonical-prefix derivation for not-yet-existing
-roots, and the write-path posture, all unchanged.
+layer for first-party adapters.
+Carried forward from ADR-541: everything else — the adapter's root-set containment model,
+canonical-prefix derivation for not-yet-existing roots, and the write-path posture, all
+unchanged.
 
 ## Consequences
 

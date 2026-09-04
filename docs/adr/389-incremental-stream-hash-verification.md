@@ -7,7 +7,7 @@
 
 ## Status
 
-- **Status:** superseded by ADR-718 (default posture; the incremental mechanism stands)
+- **Status:** superseded by ADR-718
 
 - **Date:** 2026-06-20
 - **Design:** [design/blob-streaming.md](../design/blob-streaming.md)
