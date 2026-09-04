@@ -4,7 +4,51 @@
 > mutates the shared cached fixture in place, and `deps` re-reds every day because
 > `@cloudflare/workers-types` publishes a date-versioned release daily. Fix the cause of
 > each, ship as one chore PR.
-> Status: draft → self-reviewed ×3 → revised against ADRs 791–799 → self-reviewed ×2 → D10/D11 settled against amended ADRs 798–799
+> Status: draft → self-reviewed ×3 → revised against ADRs 791–799 → self-reviewed ×2 → D10/D11 settled against amended ADRs 798–799 → review refinements folded (see § Review refinements)
+
+## Review refinements (fold-back after the four-dimension review)
+
+Five review findings changed mechanisms below. The corrected rule is stated here once; the
+part text that still shows the pre-review shape is marked where it matters, and ADRs 791, 793
+and 799 carry the amended decisions.
+
+1. **Identity probe by exit code, and an unverifiable cache is kept** (security MEDIUM; ADR-793
+   amended). The probe is `symbolic-ref -q HEAD` and `rev-parse --verify -q
+   refs/heads/main^{commit}`, run through `probeGit`, which reports the exit code instead of
+   rejecting. Exit 1 is git's own answer — detached, or the ref is missing — and is a **proven**
+   mismatch; any other non-zero exit (dubious ownership, a spawn that could not start, no git at all) makes the cache
+   **unverifiable**: it is handed out unchanged, with a `could not be verified` warning when git
+   is present and silently when it is absent (R7, restated). Only a proven mismatch is retired.
+   The Part 2 snippet `cacheRejection` and the "chosen over `symbolic-ref -q`" rationale are
+   superseded by this rule. Every generator git spawn now runs with an isolated `HOME`,
+   `XDG_CONFIG_HOME` and `GIT_CONFIG_NOSYSTEM=1`.
+2. **`ensureScaledFixture` is split** (code MEDIUM): `inspectCache` (meta + verdict),
+   `trustCached`, `rebuildCache` (re-inspects right before retiring, so a concurrent build's
+   pristine winner is reused, never destroyed), `buildIntoCache`, `discardTempBuild` (a cleanup
+   failure is logged, never replaces the build error) and `reuseWinnerOrRethrow`. The
+   `toScaledFixture` helper and `leftoverDirName(cacheDir, kind, pid, stamp)` are exported.
+3. **Leftovers are reclaimed only when their pid is dead, and only for known labels**
+   (security MEDIUM; ADR-799 amended). The Part 6 paragraph rejecting a liveness gate is
+   superseded: `process.kill(pid, 0)` errs only towards *keeping* (a reused pid keeps a stale
+   leftover until the next prune), which is the safe direction, and the shape check alone was
+   matching a build in flight. `walkBytes` and the candidate loop run sequentially — the
+   fan-out measured 814 MB of pending `lstat`s on a 200 000-file fixture. A candidate that
+   vanished between listing and walking is skipped, not reported as a failure. The CLI renders
+   through an exported `formatPruneReport` and sets `process.exitCode` rather than exiting.
+4. **Scratch copies live beside their fixture** as `<label>-v<N>.scratch.<pid>.<random>`
+   (security LOW + perf LOW; ADR-791 amended): same filesystem as every measured fixture, and an
+   orphaned copy is a leftover the prune verb can reclaim once its pid is gone. The `slug`
+   parameter is gone. A failed `openRepository` disposes the copy before the error propagates.
+5. **`afterAll` never runs under `vitest bench`** (found by the session's smoke, not by the
+   review): `runBenchmarkSuite` calls no suite hooks, so every `afterAll` in `test/bench/**`
+   has always been dead — the maintenance copies and every `write-scratch` directory leaked into
+   `os.tmpdir()` on every run. `BenchComparison` gains a `teardown` that the bench DSL attaches
+   to the scenario's last bench as tinybench's run-phase hook. tinybench 2.9.0 does **not**
+   await that hook, so a file's last scenario loses an async removal to the worker's exit (a
+   `process.on('exit')` sweep does not run either — the pool kills the worker); the copy is
+   therefore removed through `FixtureScratch.disposeSync` first, and the repository handle's
+   asynchronous close may float. The `afterAll` sites in the other 14 bench files stay as they
+   are: harmless no-ops the process exit covers, surfaced rather than swept in this change.
 
 ## Context
 
@@ -196,8 +240,9 @@ Verifiable statements that must hold when this ships.
    replaces the directory, and returns a fixture that satisfies R1.
 6. **R6** The replacement path never leaves a partially deleted repository visible at the
    shared cache path, and never fails with `ENOTEMPTY`.
-7. **R7** With `git` absent from `PATH`, a cache hit still returns the cached fixture — the
-   guard degrades to today's behaviour rather than failing.
+7. **R7** With `git` absent from `PATH`, or when git cannot execute the identity probe
+   (any exit code other than 0 or 1), a cache hit still returns the cached fixture — an
+   unverifiable cache is never destroyed; when git is present the warning names the cause.
 8. **R8** `npm run check:deps` is green on a day when `@cloudflare/workers-types` has
    published a newer release than the pinned one, and still **red** when any
    non-excepted package is stale.
@@ -213,8 +258,9 @@ Verifiable statements that must hold when this ships.
     are pinned by unit tests that never build a scaled fixture.
 13. **R13** `npm run bench:fixture -- --prune` removes, under the cache root, exactly the
     stale `<label>-v<N>` directories for known labels — stale meaning `N` **older than**
-    the current version (D10, settled by ADR-799) — plus every `*.tmp.<pid>.<ms>` /
-    `*.corrupt.<pid>.<ms>` leftover, and nothing else. It reports each removed path with its
+    the current version (D10, settled by ADR-799) — plus every `.tmp.<pid>.<ms>`,
+    `.corrupt.<pid>.<ms>` or `.scratch.<pid>.<random>` sibling of a known-label directory
+    whose pid no longer belongs to a running process, and nothing else. It reports each removed path with its
     byte count, leaves the cache root and every current-version directory in place, and exits
     non-zero if any removal failed. No other code path removes a cache directory — R5's
     identity-probe replacement is the only exception.
@@ -258,9 +304,10 @@ export const copyFixtureToScratch = async (
                                        // dispose = rm(cwd, { recursive: true, force: true })
 ```
 
-Same `mkdtemp` + `fs.cp` body as today's `copyToScratch`; the only shape change is returning
-`{ cwd, dispose }` instead of a bare string, mirroring `ScratchRepo`'s house shape so the
-caller writes `afterAll(scratch.dispose)` instead of hand-rolling `rm`. The module imports
+*Superseded by § Review refinements (4) and (5):* the copy is created beside its source
+(`mkdtemp(\`${sourceCwd}.scratch.${process.pid}.\`)`, no `slug`), and the returned shape is
+`{ cwd, dispose, disposeSync }` — the scenario's `teardown` (not `afterAll`, which never runs
+under `vitest bench`) calls `disposeSync` first. Same `fs.cp` body as today's `copyToScratch`. The module imports
 nothing from `src/` — that is the reason it does not live in `write-scratch.ts`, which exists
 to *build* repos through the library API (D1).
 
@@ -377,9 +424,11 @@ Pinned against real `git` 2.55.0 in a `mktemp` throwaway:
 | detached | `HEAD` | 0 | `<oid>` | 0 |
 | detached (`symbolic-ref -q HEAD`) | *(empty)* | **1** | — | — |
 
-`rev-parse --symbolic-full-name` is chosen over `symbolic-ref -q` precisely because it exits
-**0** in both states: `runGit` rejects on non-zero exit, so `symbolic-ref` would force
-exit-code sniffing to distinguish "detached" from "broken".
+*Superseded by § Review refinements (1):* the shipped probe **is** `symbolic-ref -q` plus
+`rev-parse --verify -q`, read through a helper that reports the exit code — exit 1 is the
+proven "no" the guard acts on, and any other failure keeps the cache. Pinned on git 2.55.0:
+detached ⇒ `symbolic-ref -q` exit 1; ref deleted ⇒ `rev-parse --verify -q` exit 1 while
+`symbolic-ref` still answers `refs/heads/main`; not a repository / garbage `.git/HEAD` ⇒ 128.
 
 **What the guard deliberately does not check.** It catches `HEAD` and `refs/heads/main`
 movement. It does **not** catch a merely dirty working tree, an extra tag, or a dangling
@@ -413,7 +462,9 @@ const identityMismatch = (identity: FixtureIdentity, meta: FixtureMeta): string 
   return undefined;
 };
 
-/** `undefined` ⇒ trust the cache. A string ⇒ replace it, and say why. */
+// Superseded by § Review refinements (1): the shipped code returns a three-way
+// CacheVerdict — pristine | mismatch(reason) | unverifiable(reason) — and only a
+// mismatch ever reaches retireCacheDir.
 const cacheRejection = async (cacheDir: string, meta: FixtureMeta): Promise<string | undefined> => {
   try {
     return identityMismatch(await readFixtureIdentity(cacheDir), meta);
@@ -902,12 +953,12 @@ the process exit code. `rm(dir, { recursive: true, force: true })`: `force` coll
 per directory. Bytes are measured before the removal and only enter `removed` when the removal
 succeeded, so the reported total never over-reports.
 
-**Concurrency, stated rather than engineered.** `--prune` is explicit and single-shot; a
-leftover `.tmp.<pid>.<ms>` belonging to a build that is *running right now* would be removed.
-Gating on `process.kill(pid, 0)` liveness was considered and rejected: pid reuse makes it wrong
-in both directions, and it does nothing for the 1.3 GB `large-v1` case, which carries no pid.
-The documentation instead says what the verb is: do not prune while a bench run or a
-`bench:fixture` build is in flight.
+**Concurrency — engineered after all** (*superseded by § Review refinements (3)*). The
+first draft rejected a liveness gate; review showed the shape check alone matched the very
+build another process was writing. The shipped classifier keeps any leftover whose embedded
+pid is alive (`process.kill(pid, 0)`; `EPERM` counts as alive) and any leftover of an unknown
+label; pid reuse can only keep a stale directory one prune longer. Stale `<label>-v<N>`
+directories carry no pid and are governed by the version predicate alone.
 
 **CLI — `tooling/gen-bench-fixture.ts`**
 
