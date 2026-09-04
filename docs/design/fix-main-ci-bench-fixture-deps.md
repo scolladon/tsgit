@@ -4,7 +4,7 @@
 > mutates the shared cached fixture in place, and `deps` re-reds every day because
 > `@cloudflare/workers-types` publishes a date-versioned release daily. Fix the cause of
 > each, ship as one chore PR.
-> Status: draft → self-reviewed ×3 → revised against ADRs 791–799 → self-reviewed ×2
+> Status: draft → self-reviewed ×3 → revised against ADRs 791–799 → self-reviewed ×2 → D10/D11 settled against amended ADRs 798–799
 
 ## Context
 
@@ -212,8 +212,8 @@ Verifiable statements that must hold when this ships.
     failure raised by `ensureScaledFixture` propagates and fails the bench file. Both halves
     are pinned by unit tests that never build a scaled fixture.
 13. **R13** `npm run bench:fixture -- --prune` removes, under the cache root, exactly the
-    stale `<label>-v<N>` directories for known labels (D10 settles whether "stale" means
-    older-than-current or merely different) plus every `*.tmp.<pid>.<ms>` /
+    stale `<label>-v<N>` directories for known labels — stale meaning `N` **older than**
+    the current version (D10, settled by ADR-799) — plus every `*.tmp.<pid>.<ms>` /
     `*.corrupt.<pid>.<ms>` leftover, and nothing else. It reports each removed path with its
     byte count, leaves the cache root and every current-version directory in place, and exits
     non-zero if any removal failed. No other code path removes a cache directory — R5's
@@ -756,6 +756,17 @@ cache miss ⇒ `assertGitAvailable()` ⇒ `FixtureUnavailableError` — still sk
 repair moves from 16 quiet bench files to a red `test:bench` naming the failure. That is the
 intended trade, and it is the direction the tooling already points (§ D11).
 
+**The two tooling callers (D11, settled by ADR-798 as amended).** `tooling/profile.ts:224-232`
+wraps only `ensureScaledFixture(MEDIUM_FIXTURE)`; `tooling/bench-memory.ts:984-991` wraps the
+**whole** workload run, so today any workload failure is also reported as "fixture unavailable
+… install the `git` CLI". Both narrow the same way: the existing message and `process.exit(1)`
+stay for `isFixtureUnavailable(err)`; every other error is rethrown so it reaches the script's
+own top-level error path with its real message (the plan pins where that path is in each file
+and adds one if it is missing). Exit status stays non-zero on every failure; only the
+diagnosis changes. Unit-testing these two CLI entry points is out of proportion to a two-line
+`if`; the exported predicate is what is tested (Part 5's unit file), and the two sites are
+reviewed by reading.
+
 **`actions/cache` key: this part edits the hashed file** (one added export). Parts 2, 5 and 6
 all edit `fixture-generator.ts` in the same PR, so the key is busted exactly **once**.
 
@@ -856,8 +867,10 @@ export const classifyCacheEntry = (name: string): CacheEntryVerdict => { … };
   The `Record<FixtureSpec['label'], true>` shape is what makes the list self-correcting — the
   alternative (deriving the union from a `FIXTURE_LABELS` array exported by the generator) is
   DRY-er but restructures `FixtureSpec`, which ADR-474 fixes and this PR does not touch.
-- The version predicate is **D10** — `N < FIXTURE_GENERATOR_VERSION` (recommended) or
-  ADR-799's literal `N !== …`. Everything else in this part is identical either way.
+- The version predicate is `N < FIXTURE_GENERATOR_VERSION` — D10, settled by ADR-799 as
+  amended: a prune run from an older checkout must never be able to remove a sibling
+  worktree's newer, live fixtures; a downgrade leaves newer directories until a prune from
+  that newer checkout reclaims them.
 
 **What is never touched**
 
@@ -946,8 +959,9 @@ the prune verb belongs beside each:
 
 ## Decision candidates
 
-D1–D9 are settled; the ADR that settled each says whether it was adopted as recommended or
-ratified by the user. D10 and D11 are new, raised by this revision, and are **not** decided here.
+D1–D11 are settled; the ADR that settled each says whether it was adopted as recommended or
+ratified by the user. D10 and D11 were raised by this revision and settled by amending
+ADRs 799 and 798 respectively, both adopted as recommended.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why | Settled by |
 |---|---|---|---|---|---|
@@ -960,8 +974,8 @@ ratified by the user. D10 and D11 are new, raised by this revision, and are **no
 | **D7** | How the fix is proved before merging | (a) two `gh workflow run bench.yml --ref <branch>` dispatches — first cold, second against the branch's own restored entry; (b) one dispatch (cold path only); (c) add the `bench` label so `benchmark-compare` runs on the PR | **(a)** | `benchmark-snapshot` runs only on `push` to `main`, so nothing on the PR exercises it; `bench.yml` runs the same `test:bench` under the same cache key. Only the second dispatch proves the case that has actually been failing — a *restored* fixture that `describe.bench.ts` then tags. (c) is worse than merely uninformative: `benchmark-compare` runs the base and head trees against **one shared** `~/.cache/tsgit-bench`, and the base tree still mutates it — so the head side's guard would fire every round, and the job is `continue-on-error: true` anyway. | **ADR-797** — adopted as recommended |
 | **D8** | Whether `resolveScaledContext`'s bare `catch` is narrowed here (this design had it out of scope) | (a) narrow to the unavailable condition, rethrow everything else; (b) leave the bare `catch`; (c) log and skip | **(a)** | (b) hides every future generator defect — including Part 2's own rebuild failures — as a benchmark row that silently stopped existing. (c) still drops the row from the snapshot series, and one log line inside a 30-minute CI log is not a signal. | **ADR-798** — **ratified by the user**, scope fold (§ Part 5) |
 | **D9** | Whether stale `<label>-v<N>` caches are ever reclaimed (this design had it out of scope) | (a) explicit `npm run bench:fixture -- --prune`; (b) automatic on the first resolution per process; (c) automatic with a 30-day age gate | **(a)** | (b) lets a `v3` bench run in one worktree delete the `v4` fixtures a sibling worktree is benchmarking, and the reverse. (c) narrows that hazard without removing it, and adds a time rule to test plus a magic number to justify. | **ADR-799** — **ratified by the user**, scope fold (§ Part 6) |
-| **D10** | Which versions `--prune` removes | (a) `N !== FIXTURE_GENERATOR_VERSION` — ADR-799's literal wording; (b) `N < FIXTURE_GENERATOR_VERSION`; (c) (a) plus a typed confirmation | **(b)** | ADR-799's context says "the **previous** `<label>-v<N>` directories", and its two rejected options were rejected because worktrees at different versions would "delete each other's live fixtures". (a) re-enters that hazard in one direction: run from a `v3` checkout it deletes a sibling worktree's live `v4` fixtures — under an explicit verb, but with no way for the developer to know. (b) matches the stated intent and cannot touch a future version; its only cost is that a downgrade leaves the newer directories behind until a `--prune` from that newer checkout reclaims them. (c) adds a prompt to a verb that is already opt-in, and makes the tool interactive for the first time. | **open — needs your ruling** |
-| **D11** | The same misclassification in the two profiling/memory tools | (a) leave them; (b) narrow both with the exported predicate — friendly "install git" message for the unavailable case, the real error otherwise; (c) fix only the message text | **(b)** | ADR-798's consequence line says those tools "already let errors propagate". They do not, and the design should say so in its own words: `tooling/profile.ts:224-232` and `tooling/bench-memory.ts:984-991` each wrap the call in a bare `catch (err)` that prints "fixture unavailable … install the `git` CLI and retry" and exits 1 for *every* failure. The ADR's ruling is unaffected — they fail **loudly**, with a non-zero exit and the real message in the parenthesis, which is the property `resolveScaledContext` lacked — but a corrupt-fixture rebuild failure is reported as a missing `git`. With the predicate exported for Part 5, (b) is two lines per site in the same PR; (a) leaves a misdiagnosis in the two tools a developer reaches for when the benches misbehave. `tooling/gen-bench-fixture.ts` genuinely does propagate (top-level `main().catch` ⇒ message + exit 1) and needs nothing. | **open — needs your ruling** |
+| **D10** | Which versions `--prune` removes | (a) `N !== FIXTURE_GENERATOR_VERSION` — ADR-799's literal wording; (b) `N < FIXTURE_GENERATOR_VERSION`; (c) (a) plus a typed confirmation | **(b)** | ADR-799's context says "the **previous** `<label>-v<N>` directories", and its two rejected options were rejected because worktrees at different versions would "delete each other's live fixtures". (a) re-enters that hazard in one direction: run from a `v3` checkout it deletes a sibling worktree's live `v4` fixtures — under an explicit verb, but with no way for the developer to know. (b) matches the stated intent and cannot touch a future version; its only cost is that a downgrade leaves the newer directories behind until a `--prune` from that newer checkout reclaims them. (c) adds a prompt to a verb that is already opt-in, and makes the tool interactive for the first time. | **ADR-799 (amended)** — adopted-as-recommended (no user judgment) |
+| **D11** | The same misclassification in the two profiling/memory tools | (a) leave them; (b) narrow both with the exported predicate — friendly "install git" message for the unavailable case, the real error otherwise; (c) fix only the message text | **(b)** | ADR-798's consequence line says those tools "already let errors propagate". They do not, and the design should say so in its own words: `tooling/profile.ts:224-232` and `tooling/bench-memory.ts:984-991` each wrap the call in a bare `catch (err)` that prints "fixture unavailable … install the `git` CLI and retry" and exits 1 for *every* failure. The ADR's ruling is unaffected — they fail **loudly**, with a non-zero exit and the real message in the parenthesis, which is the property `resolveScaledContext` lacked — but a corrupt-fixture rebuild failure is reported as a missing `git`. With the predicate exported for Part 5, (b) is two lines per site in the same PR; (a) leaves a misdiagnosis in the two tools a developer reaches for when the benches misbehave. `tooling/gen-bench-fixture.ts` genuinely does propagate (top-level `main().catch` ⇒ message + exit 1) and needs nothing. | **ADR-798 (amended)** — adopted-as-recommended (no user judgment) |
 
 ## Test strategy
 
@@ -1126,6 +1140,3 @@ for the first time since 2026-08-29.
 - **Bumping `typescript`, `vitest`, `@vitest/coverage-v8`, `jscpd`, `knip`, `@ls-lint/ls-lint`**
   — each pinned for a recorded reason; bumping any of them here would make a mutation or build
   regression unattributable.
-- **Narrowing the bare `catch` in `tooling/profile.ts` and `tooling/bench-memory.ts`** — only
-  until D11 is ruled on. Both already fail loudly (non-zero exit, the real message in the
-  parenthesis); what is open is whether they stop calling every failure an absent `git`.
