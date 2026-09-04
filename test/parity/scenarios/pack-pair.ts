@@ -75,7 +75,11 @@ export async function writeScenarioPackPair(
     ),
     trailer,
   );
-  const idxBytes = await sealPackIndex(idxBody, repo.ctx.hash.hash, repo.ctx.hash.digestLength);
+  const idxBytes = await sealPackIndex(
+    idxBody,
+    (bytes) => repo.ctx.hash.hash(bytes),
+    repo.ctx.hash.digestLength,
+  );
 
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${opts.name}`;
   await repo.ctx.fs.write(`${packBase}.pack`, packBytes);

@@ -157,7 +157,11 @@ export async function buildSyntheticPack(
   );
   // `serializePackIndex` reserves the idx-over-idx checksum zeroed and does
   // not hash its own output; sealing fills it in place.
-  const idxBytes = await sealPackIndex(idxFromWriter, ctx.hash.hash, ctx.hash.digestLength);
+  const idxBytes = await sealPackIndex(
+    idxFromWriter,
+    (bytes) => ctx.hash.hash(bytes),
+    ctx.hash.digestLength,
+  );
 
   return { packBytes, idxBytes, ids, offsets };
 }

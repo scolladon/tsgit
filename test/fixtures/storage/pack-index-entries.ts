@@ -42,6 +42,10 @@ export function packIndexEntriesOf(
  */
 export async function sealPackIndex(
   idx: Uint8Array,
+  /** Pass a bound call — `(b) => ctx.hash.hash(b)` — never the bare method.
+   *  The memory adapter defines `hash` as an arrow class-property and so
+   *  survives an unbound reference; the browser adapter uses a regular method
+   *  reading `this.algoName`, and only the browser e2e run catches it. */
   hash: (bytes: Uint8Array) => Promise<Uint8Array>,
   digestLength: number,
 ): Promise<Uint8Array> {

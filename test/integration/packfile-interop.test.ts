@@ -105,7 +105,11 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
           sortPackIndexEntries(packIndexEntriesOf(indexEntries, packTrailer.length)),
           packTrailer,
         );
-        const idxBytes = await sealPackIndex(idxBody, ctx.hash.hash, ctx.hash.digestLength);
+        const idxBytes = await sealPackIndex(
+          idxBody,
+          (bytes) => ctx.hash.hash(bytes),
+          ctx.hash.digestLength,
+        );
 
         // Drop both into peer and validate.
         runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);
@@ -190,7 +194,11 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
           sortPackIndexEntries(packIndexEntriesOf(indexEntries, packTrailer.length)),
           packTrailer,
         );
-        const idxBytes = await sealPackIndex(idxBody, ctx.hash.hash, ctx.hash.digestLength);
+        const idxBytes = await sealPackIndex(
+          idxBody,
+          (bytes) => ctx.hash.hash(bytes),
+          ctx.hash.digestLength,
+        );
 
         // Drop both into peer and validate.
         runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);

@@ -160,7 +160,11 @@ async function buildAndPackChain(repo: Repository): Promise<PackedChain> {
     sortPackIndexEntries(packIndexEntriesOf(idxEntries, trailer.length)),
     trailer,
   );
-  const idxBytes = await sealPackIndex(idxBody, repo.ctx.hash.hash, repo.ctx.hash.digestLength);
+  const idxBytes = await sealPackIndex(
+    idxBody,
+    (bytes) => repo.ctx.hash.hash(bytes),
+    repo.ctx.hash.digestLength,
+  );
 
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${PACK_NAME}`;
   await repo.ctx.fs.write(`${packBase}.pack`, packBytes);
