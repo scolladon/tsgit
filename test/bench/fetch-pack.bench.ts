@@ -12,7 +12,6 @@ import { fetchPack, type NegotiatePackBytes } from '../../src/application/primit
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { buildSyntheticPack, type EntrySpec } from '../unit/application/primitives/pack-fixture.js';
 import { benchScenario } from './support/bench-dsl.js';
-import { removeSync } from './support/fixture-scratch.js';
 
 const ENCODER = new TextEncoder();
 const CHAIN_DEPTH = 200;
@@ -64,7 +63,6 @@ benchScenario(
     const ctx = createMemoryContext();
     const built = await buildSyntheticPack(ctx, buildChainedEntries());
     const negotiator = toNegotiator(built.packBytes);
-    const packDirs: string[] = [];
 
     const sut = async (): Promise<void> => {
       const result = await fetchPack(ctx, negotiator, {
@@ -73,13 +71,11 @@ benchScenario(
         capabilities: ['side-band-64k', 'ofs-delta'],
         progressOp: 'test:write-objects',
       });
-      packDirs.push(result.packPath, result.idxPath);
+      // The packs land in the memory adapter's own store; it dies with the
+      // worker, so there is nothing on disk to release. Reading a field keeps
+      // the write observable to the runner.
+      if (result.packPath === '') throw new Error('fetchPack wrote no pack');
     };
-    return {
-      teardown: (): void => {
-        for (const dir of packDirs) removeSync(dir);
-      },
-      sut,
-    };
+    return { sut };
   },
 );

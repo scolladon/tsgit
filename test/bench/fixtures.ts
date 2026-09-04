@@ -7,7 +7,7 @@
  * resulting on-disk layout. That isolates the benchmark to read-path
  * performance rather than write-path differences.
  */
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -35,7 +35,6 @@ export interface BenchRepo {
   readonly cwd: string;
   readonly headCommitId: string;
   readonly firstBlobId: string;
-  readonly cleanup: () => Promise<void>;
 }
 
 const AUTHOR = {
@@ -81,7 +80,6 @@ export const setupSmallRepo = async (opts: { commits?: number } = {}): Promise<B
     cwd,
     headCommitId,
     firstBlobId,
-    cleanup: () => rm(cwd, { recursive: true, force: true }),
   };
 };
 
@@ -136,7 +134,6 @@ async function writeCorrectRevIndex(ctx: Context, packName: string): Promise<voi
 
 export interface OffsetTablePackFixture {
   readonly cwd: string;
-  readonly cleanup: () => Promise<void>;
 }
 
 /** Large enough that gathering the offset table in O(n) from a `.rev` is
@@ -169,7 +166,7 @@ export const setupManyObjectPackFixture = async (
   }
   if (withRevIndex) await writeCorrectRevIndex(ctx, packName);
 
-  return { cwd, cleanup: () => rm(cwd, { recursive: true, force: true }) };
+  return { cwd };
 };
 
 /** Pack count large enough that one extra `.rev` open+read per pack can
@@ -224,7 +221,7 @@ export const setupManySmallPacksFixture = async (
   }
   await assertManyPackFiles(ctx);
 
-  return { cwd, cleanup: () => rm(cwd, { recursive: true, force: true }) };
+  return { cwd };
 };
 
 // ---------------------------------------------------------------------------
@@ -383,7 +380,6 @@ async function writeHealthyChainBitmap(
 export interface BitmapClosureFixture {
   readonly cwd: string;
   readonly headCommitId: string;
-  readonly cleanup: () => Promise<void>;
 }
 
 const CLOSURE_PACK_NAME = 'bitmap-closure';
@@ -419,7 +415,7 @@ export const setupBitmapClosureFixture = async (commits: number): Promise<Bitmap
     throw new Error('bitmap-closure fixture: chain produced no commits');
   }
 
-  return { cwd, headCommitId, cleanup: () => rm(cwd, { recursive: true, force: true }) };
+  return { cwd, headCommitId };
 };
 
 // ---------------------------------------------------------------------------
@@ -429,7 +425,6 @@ export const setupBitmapClosureFixture = async (commits: number): Promise<Bitmap
 
 export interface FsckArtefactFixture {
   readonly cwd: string;
-  readonly cleanup: () => Promise<void>;
 }
 
 const FSCK_ARTEFACT_PACK_NAME = 'fsck-artefacts';
@@ -489,5 +484,5 @@ export const setupFsckArtefactFixture = async (
     await writeMinimalHealthyBitmap(ctx, FSCK_ARTEFACT_PACK_NAME, ids.length);
   }
 
-  return { cwd, cleanup: () => rm(cwd, { recursive: true, force: true }) };
+  return { cwd };
 };

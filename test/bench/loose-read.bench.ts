@@ -51,6 +51,8 @@ benchScenario(
   },
 );
 
+// This scenario owns the shared fixture's removal, so it must stay the last
+// one in the file: a scenario added after it would read a deleted directory.
 benchScenario(
   'Given a repository handle opened once and reused across calls',
   'When readBlob() reads a blob on the open handle, Then compare tsgit against isomorphic-git',

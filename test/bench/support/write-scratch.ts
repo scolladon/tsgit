@@ -9,7 +9,7 @@
  * (`git repack -ad`), always with an isolated, scrubbed environment.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -32,14 +32,8 @@ export const SCRATCH_AUTHOR: AuthorIdentity = {
 export type ScratchRepo = {
   readonly cwd: string;
   readonly repo: Repository;
-  dispose(): Promise<void>;
   /** For a bench scenario's `teardown`, which tinybench fires without awaiting. */
   disposeSync(): void;
-};
-
-const disposeScratch = (cwd: string, repo: Repository) => async (): Promise<void> => {
-  await repo.dispose();
-  await rm(cwd, { recursive: true, force: true });
 };
 
 // The directory goes synchronously; the handle close may float — process
@@ -57,12 +51,7 @@ const newScratch = async (): Promise<ScratchRepo> => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-scratch-'));
   const repo = await openRepository({ cwd });
   await repo.init();
-  return {
-    cwd,
-    repo,
-    dispose: disposeScratch(cwd, repo),
-    disposeSync: disposeScratchSync(cwd, repo),
-  };
+  return { cwd, repo, disposeSync: disposeScratchSync(cwd, repo) };
 };
 
 /** Stages one small file, ready for the measured `commit` call. */

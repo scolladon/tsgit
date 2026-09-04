@@ -70,8 +70,9 @@ export interface BenchScenarioOptions {
 /**
  * Declare a benchmark scenario. `given` is the context phrase, `whenThen` the
  * action + expectation phrase; together they form the describe title. `build`
- * runs inside the describe body — it may boot fixtures and register `afterAll`
- * — and returns the `sut` (plus optional `baseline`) to measure.
+ * runs inside the describe body — it may boot fixtures, and must release them
+ * through the returned `teardown`, since `afterAll` never fires under
+ * `vitest bench` — and returns the `sut` (plus optional `baseline`) to measure.
  */
 export const benchScenario = (
   given: string,
