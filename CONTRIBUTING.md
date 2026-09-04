@@ -190,6 +190,7 @@ npx playwright install --with-deps chromium             # first-time setup
 npm run test:bench                                      # raw JSON in reports/benchmarks/
 npm run bench:summary                                   # markdown summary
 npm run bench:fixture -- medium                         # pre-warm the scaled-bench fixture
+npm run bench:fixture -- --prune                        # reclaim stale fixture caches
 
 # Per-command CPU profiling (names-preserved build; commits docs/perf/baseline.{json,md})
 npm run profile                                        # profile every registered command

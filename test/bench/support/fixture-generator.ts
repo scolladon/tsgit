@@ -22,7 +22,7 @@ const execFileAsync = promisify(execFile);
  * `bench.yml` keys its `actions/cache` on a hash of this file, so a version
  * bump there propagates the same way.
  */
-const FIXTURE_GENERATOR_VERSION = 3;
+export const FIXTURE_GENERATOR_VERSION = 3;
 
 const BLOBS_PER_COMMIT = 4;
 const SHARD_SIZE = 512;
@@ -245,7 +245,7 @@ class FixtureUnavailableError extends Error {
 export const isFixtureUnavailable = (err: unknown): boolean =>
   err instanceof FixtureUnavailableError;
 
-const cacheRoot = (): string => {
+export const cacheRoot = (): string => {
   const xdg = process.env.XDG_CACHE_HOME;
   const base = xdg !== undefined && xdg !== '' ? xdg : path.join(os.homedir(), '.cache');
   return path.join(base, 'tsgit-bench');
