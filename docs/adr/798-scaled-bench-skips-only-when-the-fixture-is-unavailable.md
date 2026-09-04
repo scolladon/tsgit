@@ -2,6 +2,8 @@
 subjects:
   - test/bench/support/scaled-bench.ts
   - test/bench/support/fixture-generator.ts
+  - tooling/profile.ts
+  - tooling/bench-memory.ts
 ---
 # 798 — Scaled benches skip only when the fixture is unavailable
 
@@ -36,8 +38,16 @@ jobs; the user ruled that it rides in this change rather than being left as a fo
 condition) or when running under Stryker; any other error propagates and fails the bench file.
 The generator exports the narrowing predicate rather than asking callers to inspect messages.
 
+The two profiling tools that resolve the same fixtures, `tooling/profile.ts` and
+`tooling/bench-memory.ts`, narrow their own `catch` with the same predicate (adopted as
+recommended in the design's revision, no user judgment): the "install the `git` CLI" message
+is printed only for the unavailable condition, and every other error surfaces with its own
+message. Both already exit non-zero on every failure, so the change is to the diagnosis, not
+to the exit status.
+
 ## Consequences
 
 - A generator regression is a red `test:bench`, not a shorter benchmark table.
-- `tooling/gen-bench-fixture.ts` and the profiling and memory tools already let errors
-  propagate; the bench suite now agrees with them.
+- `tooling/gen-bench-fixture.ts` already lets errors propagate through its top-level
+  `main().catch`. The profiling and memory tools did not: each relabelled every failure as a
+  missing `git`; with the shared predicate all four callers of the generator agree.
