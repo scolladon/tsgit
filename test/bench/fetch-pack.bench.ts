@@ -60,20 +60,22 @@ benchScenario(
   'Given a pack with 8 independent 200-deep OFS delta chains',
   'When fetchPack receives and indexes it in two passes, Then measure tsgit',
   async () => {
-    const ctx = createMemoryContext();
-    const built = await buildSyntheticPack(ctx, buildChainedEntries());
+    const seedCtx = createMemoryContext();
+    const built = await buildSyntheticPack(seedCtx, buildChainedEntries());
     const negotiator = toNegotiator(built.packBytes);
 
     const sut = async (): Promise<void> => {
-      const result = await fetchPack(ctx, negotiator, {
+      const result = await fetchPack(createMemoryContext(), negotiator, {
         wants: [(built.ids[0] ?? 'a'.repeat(40)) as ObjectId],
         haves: [],
         capabilities: ['side-band-64k', 'ofs-delta'],
         progressOp: 'test:write-objects',
       });
-      // The packs land in the memory adapter's own store; it dies with the
-      // worker, so there is nothing on disk to release. Reading a field keeps
-      // the write observable to the runner.
+      // A fresh destination per iteration: a shared one would serve a warm
+      // delta cache from iteration 2 on, pricing something this scenario
+      // does not claim to measure, and re-receiving into an occupied store
+      // throws FILE_EXISTS on the writer's sibling artefacts. Reading a
+      // field keeps the write observable to the runner.
       if (result.packPath === '') throw new Error('fetchPack wrote no pack');
     };
     return { sut };
