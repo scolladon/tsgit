@@ -10,8 +10,7 @@
  * summary script, the `benchmark-compare` CI job, and the snapshot converter
  * all key on them. Only the describe title changes.
  */
-import type { Options } from 'tinybench';
-import { bench, describe } from 'vitest';
+import { type BenchOptions, bench, describe } from 'vitest';
 
 export interface BenchComparison {
   /** The tsgit code path under measurement. */
@@ -25,14 +24,38 @@ export interface BenchComparison {
    * Runs once after the scenario's last measurement. This is the ONLY cleanup
    * that fires under `vitest bench`: the benchmark runner never calls
    * `afterAll`, so a handle or scratch copy released there is never released.
+   * tinybench does not await it — remove directories synchronously. It also
+   * never fires when the measured function throws during warmup (tinybench
+   * skips the run phase); a scratch copy left that way is reclaimed by
+   * `bench:fixture -- --prune` once its process is gone.
    */
   readonly teardown?: () => Promise<void> | void;
 }
 
+type Teardown = () => Promise<void> | void;
+type HookMode = 'warmup' | 'run';
+
 /** tinybench calls the hook after warmup and after the measured run; cleanup waits for the run. */
-const afterMeasuredRun = (teardown: () => Promise<void> | void): Options => ({
-  teardown: (_task, mode) => (mode === 'run' ? teardown() : undefined),
+export const onMeasuredRun =
+  (teardown: Teardown) =>
+  (mode: HookMode): Promise<void> | void =>
+    mode === 'run' ? teardown() : undefined;
+
+const afterMeasuredRun = (teardown: Teardown): BenchOptions => ({
+  teardown: (_task, mode) => onMeasuredRun(teardown)(mode),
 });
+
+export interface ScenarioHooks {
+  readonly tsgit?: BenchOptions;
+  readonly baseline?: BenchOptions;
+}
+
+/** The hooks ride on the scenario's LAST bench, so a baseline still measures on an intact scratch. */
+export const hooksFor = (comparison: BenchComparison): ScenarioHooks => {
+  if (comparison.teardown === undefined) return {};
+  const hooks = afterMeasuredRun(comparison.teardown);
+  return comparison.baseline === undefined ? { tsgit: hooks } : { baseline: hooks };
+};
 
 export interface BenchScenarioOptions {
   /** Skip the whole scenario (missing fixture, Stryker sandbox, …). */
@@ -57,9 +80,11 @@ export const benchScenario = (
     // when skipIf is true; without this return, `build` would run (booting
     // servers / fixtures) on a skipped scenario.
     if (skip) return;
-    const { sut, baseline, teardown } = await build();
-    const hooks = teardown === undefined ? undefined : afterMeasuredRun(teardown);
-    bench('tsgit', sut, baseline === undefined ? hooks : undefined);
-    if (baseline !== undefined) bench('isomorphic-git', baseline, hooks);
+    const comparison = await build();
+    const hooks = hooksFor(comparison);
+    bench('tsgit', comparison.sut, hooks.tsgit);
+    if (comparison.baseline !== undefined) {
+      bench('isomorphic-git', comparison.baseline, hooks.baseline);
+    }
   });
 };

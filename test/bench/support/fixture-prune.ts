@@ -68,34 +68,36 @@ const errorCode = (err: unknown): string | undefined =>
     ? err.code
     : undefined;
 
-/** Signal 0 delivers nothing; it only asks whether the pid exists (EPERM ⇒ it does, someone else's). */
+/**
+ * Signal 0 delivers nothing; it only asks whether the pid exists. Only "no such
+ * process" means dead: a pid that exists but is not ours (EPERM, EACCES) and any
+ * argument the kernel or Node refuses both keep the safe answer.
+ */
 export const isProcessAlive: ProcessLiveness = (pid) => {
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return errorCode(err) === 'EPERM';
+    return errorCode(err) !== 'ESRCH';
   }
 };
 
-const leftoverVerdict = (name: string, isAlive: ProcessLiveness): CacheEntryVerdict => {
-  const groups = LEFTOVER.exec(name)?.groups;
-  const label = groups?.label;
-  const pid = groups?.pid;
-  // Both groups are mandatory in the pattern; these checks exist for the type system.
-  if (label === undefined || pid === undefined) return 'keep';
-  if (!isKnownLabel(label) || isAlive(Number.parseInt(pid, 10))) return 'keep';
+type NamedGroups = Record<string, string | undefined>;
+
+const leftoverVerdict = (groups: NamedGroups, isAlive: ProcessLiveness): CacheEntryVerdict => {
+  const pid = Number(groups.pid);
+  if (!isKnownLabel(groups.label ?? '') || !Number.isSafeInteger(pid) || isAlive(pid)) {
+    return 'keep';
+  }
   return 'leftover';
 };
 
 const versionVerdict = (name: string): CacheEntryVerdict => {
   const groups = VERSIONED.exec(name)?.groups;
-  const label = groups?.label;
-  const version = groups?.version;
-  // Both groups are mandatory in the pattern; these checks exist for the type system.
-  if (label === undefined || version === undefined) return 'keep';
-  if (!isKnownLabel(label)) return 'keep';
-  return Number.parseInt(version, 10) < FIXTURE_GENERATOR_VERSION ? 'stale-version' : 'keep';
+  if (groups === undefined) return 'keep';
+  const version = Number(groups.version);
+  if (!isKnownLabel(groups.label ?? '') || !Number.isSafeInteger(version)) return 'keep';
+  return version < FIXTURE_GENERATOR_VERSION ? 'stale-version' : 'keep';
 };
 
 /**
@@ -107,8 +109,10 @@ const versionVerdict = (name: string): CacheEntryVerdict => {
 export const classifyCacheEntry = (
   name: string,
   isAlive: ProcessLiveness = isProcessAlive,
-): CacheEntryVerdict =>
-  LEFTOVER.test(name) ? leftoverVerdict(name, isAlive) : versionVerdict(name);
+): CacheEntryVerdict => {
+  const leftover = LEFTOVER.exec(name)?.groups;
+  return leftover === undefined ? versionVerdict(name) : leftoverVerdict(leftover, isAlive);
+};
 
 interface PruneCandidate {
   readonly name: string;

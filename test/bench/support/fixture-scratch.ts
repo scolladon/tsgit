@@ -29,7 +29,8 @@ export interface FixtureScratch {
 }
 
 // Windows refuses to unlink files still held open by the repository handle;
-// bounded retries give the handle's asynchronous close a moment to land.
+// bounded retries give the handle's asynchronous close a moment to land. No
+// gate exercises them: CI benches run on ubuntu only.
 const RM_RETRIES = 10;
 const RM_RETRY_DELAY_MS = 100;
 
@@ -41,13 +42,20 @@ export const copyFixtureToScratch = async (sourceCwd: string): Promise<FixtureSc
     dispose: async (): Promise<void> => {
       await rm(cwd, { recursive: true, force: true });
     },
+    // A cleanup failure must never abort the bench file that just measured:
+    // the copy is reclaimable by `bench:fixture -- --prune`, the run is not.
     disposeSync: (): void => {
-      rmSync(cwd, {
-        recursive: true,
-        force: true,
-        maxRetries: RM_RETRIES,
-        retryDelay: RM_RETRY_DELAY_MS,
-      });
+      try {
+        rmSync(cwd, {
+          recursive: true,
+          force: true,
+          maxRetries: RM_RETRIES,
+          retryDelay: RM_RETRY_DELAY_MS,
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[bench] could not remove ${cwd}: ${reason}\n`);
+      }
     },
   };
 };

@@ -447,6 +447,11 @@ const gitEnv = (): NodeJS.ProcessEnv => ({
   HOME: ISOLATED_GIT_HOME,
   XDG_CONFIG_HOME: ISOLATED_GIT_HOME,
   GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+  // Discovery must never walk above the cache root: a cache directory that is
+  // not a repository would otherwise be answered by an ancestor repository.
+  GIT_CEILING_DIRECTORIES: cacheRoot(),
 });
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -460,8 +465,10 @@ const runGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<str
 };
 
 const PRISTINE_HEAD_NAME = 'refs/heads/main';
-// `symbolic-ref -q` and `rev-parse --verify -q` answer "no" with exit 1 — a fact
-// about the repository. Any other non-zero exit means git could not run at all.
+const HEAD_FILE_PRISTINE = `ref: ${PRISTINE_HEAD_NAME}`;
+const OID_HEX = /^[0-9a-f]{40,64}$/;
+// `rev-parse --verify -q` answers "no" with exit 1 — a fact about the
+// repository. Any other non-zero exit means git could not run at all.
 const GIT_ANSWERED_NO = 1;
 
 interface GitProbe {
@@ -475,13 +482,18 @@ const exitCodeOf = (err: unknown): number =>
     ? err.code
     : Number.NaN;
 
+const stdoutOf = (err: unknown): string =>
+  typeof err === 'object' && err !== null && 'stdout' in err && typeof err.stdout === 'string'
+    ? err.stdout.trim()
+    : '';
+
 /** Runs a quiet git query and reports its exit code instead of rejecting on it. */
 const probeGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<GitProbe> => {
   try {
     const { stdout } = await execFileAsync('git', ['-C', repoDir, ...args], { env: gitEnv() });
     return { code: 0, stdout: stdout.trim(), detail: '' };
   } catch (err) {
-    return { code: exitCodeOf(err), stdout: '', detail: errorMessage(err) };
+    return { code: exitCodeOf(err), stdout: stdoutOf(err), detail: errorMessage(err) };
   }
 };
 
@@ -500,20 +512,39 @@ const unverifiable = (probe: GitProbe): CacheVerdict => ({
 });
 const orWord = (answer: string, word: string): string => (answer === '' ? word : answer);
 
+const describeHead = (content: string): string => {
+  if (OID_HEX.test(content)) return 'detached';
+  if (content.startsWith('ref: ')) return content.slice('ref: '.length);
+  return `"${content}"`;
+};
+
 /**
- * Identity of a cached repo against what the generator wrote: HEAD must name
- * `refs/heads/main` and that ref must be the recorded tip. Every strategy ends
- * with `checkout -f main`, so this holds for all specs. A mismatch is only ever
- * declared from an answer git actually gave; a probe git could not execute
- * (dubious ownership, a transient spawn failure, no git at all) is unverifiable,
- * and an unverifiable cache is never destroyed.
+ * What `.git/HEAD` says, read without git. Every strategy ends with
+ * `checkout -f main`, so a pristine fixture's HEAD file is exactly
+ * `ref: refs/heads/main`; anything else — a detached oid, another ref, garbage,
+ * or no file at all — is a fact about the directory, never a probe failure.
+ */
+const headFileVerdict = async (cacheDir: string): Promise<CacheVerdict | undefined> => {
+  try {
+    const content = (await readFile(path.join(cacheDir, '.git', 'HEAD'), 'utf8')).trim();
+    if (content === HEAD_FILE_PRISTINE) return undefined;
+    return mismatch(`HEAD is ${describeHead(content)}, expected ${PRISTINE_HEAD_NAME}`);
+  } catch (err) {
+    return mismatch(`HEAD file is unreadable: ${errorMessage(err)}`);
+  }
+};
+
+/**
+ * Identity of a cached repo against what the generator wrote: the HEAD file
+ * must name `refs/heads/main`, and that ref must be the recorded tip. A
+ * mismatch is only ever declared from a fact — the HEAD file's content, or an
+ * answer git actually gave (`--verify -q` exits 1 for a missing ref). A probe
+ * git could not execute (dubious ownership, a transient spawn failure, no git
+ * at all) is unverifiable, and an unverifiable cache is never destroyed.
  */
 const readCacheVerdict = async (cacheDir: string, meta: FixtureMeta): Promise<CacheVerdict> => {
-  const head = await probeGit(cacheDir, ['symbolic-ref', '-q', 'HEAD']);
-  if (!gitAnswered(head)) return unverifiable(head);
-  if (head.stdout !== PRISTINE_HEAD_NAME) {
-    return mismatch(`HEAD is ${orWord(head.stdout, 'detached')}, expected ${PRISTINE_HEAD_NAME}`);
-  }
+  const head = await headFileVerdict(cacheDir);
+  if (head !== undefined) return head;
   const main = await probeGit(cacheDir, [
     'rev-parse',
     '--verify',
@@ -590,16 +621,21 @@ const warnNotPristine = (spec: FixtureSpec, reason: string): void => {
   );
 };
 
-const warnUnverifiable = (spec: FixtureSpec, reason: string): void => {
+const warnUnverifiable = (spec: FixtureSpec, cacheDir: string, reason: string): void => {
   process.stderr.write(
     `[bench] cached fixture "${spec.label}" could not be verified: ` +
-      `${reason.replace(/\s+/g, ' ').trim()}. Keeping it — a mismatch is never assumed.\n`,
+      `${reason.replace(/\s+/g, ' ').trim()}. Keeping it — a mismatch is never assumed; ` +
+      `delete ${cacheDir} to force a rebuild.\n`,
   );
 };
 
 /** With no git at all the cache is handed out silently, exactly as before the probe existed. */
-const reportUnverified = async (spec: FixtureSpec, reason: string): Promise<void> => {
-  if (await gitAvailable()) warnUnverifiable(spec, reason);
+const reportUnverified = async (
+  spec: FixtureSpec,
+  cacheDir: string,
+  reason: string,
+): Promise<void> => {
+  if (await gitAvailable()) warnUnverifiable(spec, cacheDir, reason);
 };
 
 const runFastImport = async (
@@ -817,7 +853,9 @@ const trustCached = async (
   cached: InspectedCache,
   spec: FixtureSpec,
 ): Promise<ScaledFixture> => {
-  if (cached.verdict.kind === 'unverifiable') await reportUnverified(spec, cached.verdict.reason);
+  if (cached.verdict.kind === 'unverifiable') {
+    await reportUnverified(spec, cacheDir, cached.verdict.reason);
+  }
   return toScaledFixture(cacheDir, cached.meta, spec);
 };
 
@@ -861,10 +899,11 @@ const buildIntoCache = async (cacheDir: string, spec: FixtureSpec): Promise<Fixt
 
 const rebuildCache = async (cacheDir: string, spec: FixtureSpec): Promise<ScaledFixture> => {
   // Re-inspect right before retiring: a concurrent build may have renamed a
-  // cache into place since the first look, and it must be reused, not destroyed.
+  // pristine cache into place since the first look, and only a proven-pristine
+  // winner may override a retire this path already has evidence for.
   const winner = await inspectCache(cacheDir);
-  if (winner !== undefined && winner.verdict.kind !== 'mismatch') {
-    return trustCached(cacheDir, winner, spec);
+  if (winner !== undefined && winner.verdict.kind === 'pristine') {
+    return toScaledFixture(cacheDir, winner.meta, spec);
   }
   // Retiring is unconditional past this point: it also clears a directory that
   // exists with no readable `meta.json`, which the final `rename` would otherwise

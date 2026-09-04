@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -9,6 +10,7 @@ import {
   DEEP_ANCESTRY_SMALL,
   ensureScaledFixture,
   FIXTURE_GENERATOR_VERSION,
+  isFixtureUnavailable,
   SMALL_FIXTURE,
   toScaledFixture,
 } from '../../../test/bench/support/fixture-generator.ts';
@@ -19,7 +21,7 @@ import {
 // module and every other test still performs a genuine rename.
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, rename: vi.fn(actual.rename) };
+  return { ...actual, rename: vi.fn(actual.rename), rm: vi.fn(actual.rm) };
 });
 
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -257,7 +259,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
 
   describe('Given a detached cached small fixture and no git reachable via PATH', () => {
     describe('When ensureScaledFixture resolves it', () => {
-      it('Then it degrades to the cached fixture without rebuilding or throwing', async () => {
+      it('Then it reports the fixture unavailable and leaves the cache in place', async () => {
         // Arrange
         const original = await ensureScaledFixture(SMALL_FIXTURE);
         detachAtRoot(original.cwd);
@@ -265,14 +267,18 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
           path.join(os.tmpdir(), 'tsgit-fixture-generator-test-empty-path-'),
         );
         const originalPath = process.env.PATH;
+        const stderr = captureStderr();
         const sut = ensureScaledFixture;
 
         // Act
-        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        let caught: unknown;
         try {
           process.env.PATH = emptyPathDir;
-          result = await sut(SMALL_FIXTURE);
+          await sut(SMALL_FIXTURE);
+        } catch (err) {
+          caught = err;
         } finally {
+          stderr.restore();
           if (originalPath === undefined) {
             delete process.env.PATH;
           } else {
@@ -282,22 +288,30 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
         }
 
         // Assert
-        expect(result.headCommitId).toBe(original.headCommitId);
-        expect(gitOut(result.cwd, ['rev-parse', '--symbolic-full-name', 'HEAD'])).toBe('HEAD');
+        expect(isFixtureUnavailable(caught)).toBe(true);
+        expect((caught as Error).message).toBe(
+          'scaled bench fixture unavailable: the `git` CLI is not on PATH',
+        );
+        // The mismatch was proven from the HEAD file, but nothing could rebuild it:
+        // the cache is neither destroyed nor handed out.
+        await expect(readFile(path.join(original.cwd, 'meta.json'), 'utf8')).resolves.toContain(
+          original.headCommitId,
+        );
+        expect(gitOut(original.cwd, ['rev-parse', '--symbolic-full-name', 'HEAD'])).toBe('HEAD');
         // Leave the shared cache as this test found it: repaired, on refs/heads/main.
-        const stderr = captureStderr();
+        const repairStderr = captureStderr();
         try {
           await ensureScaledFixture(SMALL_FIXTURE);
         } finally {
-          stderr.restore();
+          repairStderr.restore();
         }
       });
     });
   });
 
-  describe('Given a cached small fixture whose .git/HEAD git cannot read', () => {
-    describe('When ensureScaledFixture resolves it with git present', () => {
-      it('Then it keeps the cache untouched and warns that it could not be verified', async () => {
+  describe('Given a cached small fixture whose .git/HEAD holds garbage', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it('Then the HEAD file itself proves the mismatch and the fixture is rebuilt', async () => {
         // Arrange
         const original = await ensureScaledFixture(SMALL_FIXTURE);
         const headPath = path.join(original.cwd, '.git', 'HEAD');
@@ -313,15 +327,130 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
           written = stderr.text();
         } finally {
           stderr.restore();
-          // Leave the shared cache as this test found it.
-          await writeFile(headPath, 'ref: refs/heads/main\n');
         }
 
         // Assert
         expect(result.headCommitId).toBe(original.headCommitId);
+        await expect(readFile(headPath, 'utf8')).resolves.toBe('ref: refs/heads/main\n');
+        expect(written).toContain('is not pristine: HEAD is "garbage", expected refs/heads/main.');
+      });
+    });
+  });
+
+  describe('Given a cached small fixture whose .git/HEAD file is missing', () => {
+    describe('When ensureScaledFixture resolves it', () => {
+      it('Then the missing file proves the mismatch and the fixture is rebuilt', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const headPath = path.join(original.cwd, '.git', 'HEAD');
+        await rm(headPath, { force: true });
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        let written: string;
+        try {
+          result = await sut(SMALL_FIXTURE);
+          written = stderr.text();
+        } finally {
+          stderr.restore();
+        }
+
+        // Assert
+        expect(result.headCommitId).toBe(original.headCommitId);
+        await expect(readFile(headPath, 'utf8')).resolves.toBe('ref: refs/heads/main\n');
+        expect(written).toContain('is not pristine: HEAD file is unreadable: ');
+      });
+    });
+  });
+
+  describe('Given a cached small fixture whose .git/config git refuses to parse', () => {
+    describe('When ensureScaledFixture resolves it with git present', () => {
+      it('Then it keeps the cache untouched and warns that it could not be verified', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const configPath = path.join(original.cwd, '.git', 'config');
+        const originalConfig = await readFile(configPath, 'utf8');
+        await writeFile(configPath, '[core\n');
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        let written: string;
+        try {
+          result = await sut(SMALL_FIXTURE);
+          written = stderr.text();
+        } finally {
+          stderr.restore();
+          // Leave the shared cache as this test found it.
+          await writeFile(configPath, originalConfig);
+        }
+
+        // Assert
+        expect(result.headCommitId).toBe(original.headCommitId);
+        await expect(readFile(configPath, 'utf8')).resolves.toBe(originalConfig);
         expect(written).toContain('[bench] cached fixture "small" could not be verified: ');
-        expect(written).toContain('Keeping it — a mismatch is never assumed.');
+        expect(written).toContain(
+          `Keeping it — a mismatch is never assumed; delete ${original.cwd} to force a rebuild.`,
+        );
         expect(written).not.toContain('Rebuilding it');
+      });
+    });
+  });
+
+  describe('Given a GIT_DIR in the environment that names another repository', () => {
+    describe('When ensureScaledFixture resolves the small fixture', () => {
+      it('Then the probe answers about the cache itself and nothing is rebuilt', async () => {
+        // Arrange
+        const original = await ensureScaledFixture(SMALL_FIXTURE);
+        const sentinelPath = path.join(original.cwd, 'sentinel.txt');
+        await writeFile(sentinelPath, 'sentinel');
+        const decoy = await mkdtemp(path.join(isolatedCacheHome, 'decoy-'));
+        execFileSync('git', ['init', '-q', '--initial-branch=main', decoy], { env: gitEnv() });
+        execFileSync(
+          'git',
+          [
+            '-C',
+            decoy,
+            '-c',
+            'user.name=t',
+            '-c',
+            'user.email=t@t',
+            'commit',
+            '-q',
+            '--allow-empty',
+            '-m',
+            'decoy',
+          ],
+          { env: gitEnv() },
+        );
+        const originalGitDir = process.env.GIT_DIR;
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let result: Awaited<ReturnType<typeof ensureScaledFixture>>;
+        let written: string;
+        try {
+          process.env.GIT_DIR = path.join(decoy, '.git');
+          result = await sut(SMALL_FIXTURE);
+          written = stderr.text();
+        } finally {
+          stderr.restore();
+          if (originalGitDir === undefined) {
+            delete process.env.GIT_DIR;
+          } else {
+            process.env.GIT_DIR = originalGitDir;
+          }
+          await rm(decoy, { recursive: true, force: true });
+        }
+
+        // Assert
+        expect(result.headCommitId).toBe(original.headCommitId);
+        await expect(readFile(sentinelPath, 'utf8')).resolves.toBe('sentinel');
+        expect(written).toBe('');
       });
     });
   });
@@ -399,15 +528,27 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
   /** Simulates another process winning the build race: its cache lands at the
    *  target first (`cp`), so this process's `rename` fails on the occupied path. */
   const loseTheRenameRace = async (
+    cacheDir: string,
     onWinnerLanded: (winnerDir: string) => void,
   ): Promise<() => void> => {
     const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
     const mockedRename = vi.mocked(rename);
     mockedRename.mockImplementation(async (from, to) => {
-      if (!String(from).includes('.tmp.')) return actualFs.rename(from, to);
+      if (String(to) !== cacheDir) return actualFs.rename(from, to);
       await actualFs.cp(String(from), String(to), { recursive: true });
       onWinnerLanded(String(to));
       throw Object.assign(new Error('ENOTEMPTY: directory not empty'), { code: 'ENOTEMPTY' });
+    });
+    return () => mockedRename.mockImplementation(actualFs.rename);
+  };
+
+  /** The build's final rename fails and nothing lands at the target — the plain build-failure path. */
+  const failTheFinalRename = async (cacheDir: string): Promise<() => void> => {
+    const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const mockedRename = vi.mocked(rename);
+    mockedRename.mockImplementation(async (from, to) => {
+      if (String(to) !== cacheDir) return actualFs.rename(from, to);
+      throw new Error('EIO: simulated rename failure');
     });
     return () => mockedRename.mockImplementation(actualFs.rename);
   };
@@ -418,7 +559,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
         // Arrange
         const cacheDir = (await ensureScaledFixture(SMALL_FIXTURE)).cwd;
         await rm(cacheDir, { recursive: true, force: true });
-        const restoreRename = await loseTheRenameRace(() => undefined);
+        const restoreRename = await loseTheRenameRace(cacheDir, () => undefined);
         const sut = ensureScaledFixture;
 
         // Act
@@ -446,7 +587,9 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
         // Arrange
         const cacheDir = (await ensureScaledFixture(SMALL_FIXTURE)).cwd;
         await rm(cacheDir, { recursive: true, force: true });
-        const restoreRename = await loseTheRenameRace((winnerDir) => detachAtRoot(winnerDir));
+        const restoreRename = await loseTheRenameRace(cacheDir, (winnerDir) =>
+          detachAtRoot(winnerDir),
+        );
         const stderr = captureStderr();
         const sut = ensureScaledFixture;
 
@@ -474,6 +617,116 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureScaledFixture', () => 
         } finally {
           repairStderr.restore();
         }
+      });
+    });
+  });
+  describe('Given a build whose final rename fails with nothing at the target', () => {
+    describe('When ensureScaledFixture recovers', () => {
+      it('Then the original build error surfaces and nothing is written to stderr', async () => {
+        // Arrange
+        const cacheDir = (await ensureScaledFixture(SMALL_FIXTURE)).cwd;
+        await rm(cacheDir, { recursive: true, force: true });
+        const restoreRename = await failTheFinalRename(cacheDir);
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let caught: unknown;
+        let written: string;
+        try {
+          await sut(SMALL_FIXTURE);
+        } catch (err) {
+          caught = err;
+        } finally {
+          written = stderr.text();
+          stderr.restore();
+          restoreRename();
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('EIO: simulated rename failure');
+        expect(written).toBe('');
+      });
+    });
+  });
+
+  describe('Given a build that loses the rename race to a winner git cannot verify', () => {
+    describe('When ensureScaledFixture recovers', () => {
+      it('Then it rethrows the original build error without calling the winner corrupt', async () => {
+        // Arrange
+        const cacheDir = (await ensureScaledFixture(SMALL_FIXTURE)).cwd;
+        await rm(cacheDir, { recursive: true, force: true });
+        const restoreRename = await loseTheRenameRace(cacheDir, (winnerDir) => {
+          writeFileSync(path.join(winnerDir, '.git', 'config'), '[core\n');
+        });
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let caught: unknown;
+        let written: string;
+        try {
+          await sut(SMALL_FIXTURE);
+        } catch (err) {
+          caught = err;
+        } finally {
+          written = stderr.text();
+          stderr.restore();
+          restoreRename();
+          // Leave no unverifiable cache behind for the next test: it cold-builds.
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('ENOTEMPTY: directory not empty');
+        expect(written).not.toContain('is not pristine');
+      });
+    });
+  });
+
+  describe('Given a failed build whose temp directory also refuses to be removed', () => {
+    describe('When ensureScaledFixture discards the temp build', () => {
+      it('Then the build error still surfaces and the cleanup failure is reported', async () => {
+        // Arrange
+        const cacheDir = (await ensureScaledFixture(SMALL_FIXTURE)).cwd;
+        await rm(cacheDir, { recursive: true, force: true });
+        const restoreRename = await failTheFinalRename(cacheDir);
+        const actualFs =
+          await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+        const mockedRm = vi.mocked(rm);
+        mockedRm.mockImplementation(async (target, options) => {
+          if (String(target).includes('.tmp.')) throw new Error('EBUSY: simulated rm failure');
+          return actualFs.rm(target, options);
+        });
+        const stderr = captureStderr();
+        const sut = ensureScaledFixture;
+
+        // Act
+        let caught: unknown;
+        let written: string;
+        try {
+          await sut(SMALL_FIXTURE);
+        } catch (err) {
+          caught = err;
+        } finally {
+          written = stderr.text();
+          stderr.restore();
+          restoreRename();
+          mockedRm.mockImplementation(actualFs.rm);
+          for (const entry of await readdir(path.dirname(cacheDir))) {
+            if (entry.includes('.tmp.')) {
+              await actualFs.rm(path.join(path.dirname(cacheDir), entry), {
+                recursive: true,
+                force: true,
+              });
+            }
+          }
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('EIO: simulated rename failure');
+        expect(written).toContain('[bench] could not remove ');
+        expect(written).toContain('EBUSY: simulated rm failure');
       });
     });
   });

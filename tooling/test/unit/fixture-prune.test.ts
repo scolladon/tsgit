@@ -434,23 +434,59 @@ describe('pruneFixtureCache', () => {
 });
 
 describe('classifyCacheEntry', () => {
-  describe('Given a cache-root entry name and a process-liveness answer', () => {
+  describe('Given a cache-root entry name and whether its embedded pid is still alive', () => {
     describe('When classifyCacheEntry judges it', () => {
       it.each([
-        ['medium-v2', dead, 'stale-version'],
-        ['medium-v3', dead, 'keep'],
-        ['medium-v4', dead, 'keep'],
-        ['medium-v03', dead, 'keep'],
-        ['not-a-fixture-v1', dead, 'keep'],
-        ['scratch', dead, 'keep'],
-        ['medium-v3.tmp.7.1700000000000', dead, 'leftover'],
-        ['medium-v3.tmp.7.1700000000000', alive, 'keep'],
-        ['medium-v3.corrupt.7.1700000000000', dead, 'leftover'],
-        ['medium-v3.scratch.7.Ab12cD', dead, 'leftover'],
-        ['medium-v9.scratch.7.Ab12cD', dead, 'leftover'],
-        ['not-a-fixture-v1.tmp.7.1700000000000', dead, 'keep'],
-        ['medium-v3.tmp.7', dead, 'keep'],
-      ] as const)('Then %s with liveness %p is %s', (name, isAlive, verdict) => {
+        { name: 'medium-v2', liveness: 'dead', isAlive: dead, verdict: 'stale-version' },
+        { name: 'medium-v3', liveness: 'dead', isAlive: dead, verdict: 'keep' },
+        { name: 'medium-v4', liveness: 'dead', isAlive: dead, verdict: 'keep' },
+        { name: 'medium-v03', liveness: 'dead', isAlive: dead, verdict: 'keep' },
+        { name: 'not-a-fixture-v1', liveness: 'dead', isAlive: dead, verdict: 'keep' },
+        { name: 'scratch', liveness: 'dead', isAlive: dead, verdict: 'keep' },
+        {
+          name: 'medium-v3.tmp.7.1700000000000',
+          liveness: 'dead',
+          isAlive: dead,
+          verdict: 'leftover',
+        },
+        {
+          name: 'medium-v3.tmp.7.1700000000000',
+          liveness: 'alive',
+          isAlive: alive,
+          verdict: 'keep',
+        },
+        {
+          name: 'medium-v3.corrupt.7.1700000000000',
+          liveness: 'dead',
+          isAlive: dead,
+          verdict: 'leftover',
+        },
+        {
+          name: 'medium-v3.scratch.7.Ab12cD',
+          liveness: 'dead',
+          isAlive: dead,
+          verdict: 'leftover',
+        },
+        {
+          name: 'medium-v9.scratch.7.Ab12cD',
+          liveness: 'dead',
+          isAlive: dead,
+          verdict: 'leftover',
+        },
+        {
+          name: 'not-a-fixture-v1.tmp.7.1700000000000',
+          liveness: 'dead',
+          isAlive: dead,
+          verdict: 'keep',
+        },
+        { name: 'medium-v3.tmp.7', liveness: 'dead', isAlive: dead, verdict: 'keep' },
+        {
+          name: `medium-v3.tmp.${'9'.repeat(400)}.x`,
+          liveness: 'dead',
+          isAlive: dead,
+          verdict: 'keep',
+        },
+      ])('Then $name with a $liveness pid is $verdict', ({ name, isAlive, verdict }) => {
         // Arrange
         const sut = classifyCacheEntry;
 
@@ -478,6 +514,23 @@ describe('isProcessAlive', () => {
         // Assert
         expect(self).toBe(true);
         expect(nobody).toBe(false);
+      });
+    });
+  });
+
+  describe('Given pid 1, a live process this user may not signal', () => {
+    describe('When isProcessAlive asks the kernel', () => {
+      // Signal-0 permission semantics are POSIX; under root the call simply
+      // succeeds, so the row can only pass, never falsely fail.
+      it.skipIf(process.platform === 'win32')('Then a refused signal still counts as alive', () => {
+        // Arrange
+        const sut = isProcessAlive;
+
+        // Act
+        const result = sut(1);
+
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

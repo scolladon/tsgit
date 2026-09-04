@@ -99,7 +99,8 @@ const main = async (): Promise<void> => {
   const action = selectFixtureAction(process.argv[2]);
   if (action.kind === 'usage') {
     process.stderr.write(USAGE);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   if (action.kind === 'prune') {
     await runPrune();
@@ -116,6 +117,6 @@ const invokedDirectly = (): boolean => {
 if (invokedDirectly()) {
   main().catch((err: unknown) => {
     process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

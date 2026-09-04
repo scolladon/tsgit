@@ -34,6 +34,11 @@ jobs:
       - run: npm run bench:summary
       - name: Capture memory probe
         run: npm run bench:memory
+      # A scenario that dies during warmup never reaches its teardown; its
+      # scratch copy must not ride into the cache the post-step saves.
+      - name: Sweep scratch copies out of the fixture cache
+        if: always()
+        run: rm -rf ~/.cache/tsgit-bench/*.scratch.*
       - uses: actions/upload-artifact@v7
         with:
           name: benchmarks

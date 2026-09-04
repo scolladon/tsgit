@@ -575,6 +575,11 @@ jobs:
           path: ~/.cache/tsgit-bench
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
       - run: npm run test:bench
+      # A scenario that dies during warmup never reaches its teardown; its
+      # scratch copy must not ride into the cache the post-step saves.
+      - name: Sweep scratch copies out of the fixture cache
+        if: always()
+        run: rm -rf ~/.cache/tsgit-bench/*.scratch.*
       - run: node --experimental-strip-types tooling/bench-to-snapshot.ts
         env:
           RESOLVED_NODE_VERSION: ${{ steps.setup.outputs.node-version }}

@@ -32,7 +32,8 @@
  * Cleanup rides on the scenario's `teardown`, the one hook `vitest bench`
  * actually runs — an `afterAll` here never fires.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -102,8 +103,8 @@ benchScenario(
     };
     return {
       sut,
-      teardown: async (): Promise<void> => {
-        await Promise.all(scratchDirs.map((cwd) => rm(cwd, { recursive: true, force: true })));
+      teardown: (): void => {
+        for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
       },
     };
   },
@@ -144,8 +145,8 @@ benchScenario(
     };
     return {
       sut,
-      teardown: async (): Promise<void> => {
-        await rm(cwd, { recursive: true, force: true });
+      teardown: (): void => {
+        rmSync(cwd, { recursive: true, force: true });
       },
     };
   },
