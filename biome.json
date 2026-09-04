@@ -22,6 +22,8 @@
       "tooling/test/unit/bench-ab.test.ts",
       "tooling/bench-to-snapshot.ts",
       "tooling/test/unit/bench-to-snapshot.test.ts",
+      "tooling/bench-summarize.ts",
+      "tooling/test/unit/bench-summarize.test.ts",
       "tooling/test/unit/fixture-generator.test.ts",
       "tooling/test/unit/scaled-bench.test.ts",
       "tooling/test/unit/bench-dsl.test.ts",
