@@ -51,6 +51,12 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   required and fails with `Missing: jscpd-windows-arm64-msvc@ from lock file`. A local
   `npm run validate` cannot catch this, because local `node_modules` is already correct;
   only `npm ci` sees it. Unpin when a release ships coherent optional-dependency versions.
+  **`@cloudflare/workers-types` is skipped**: it publishes a date-versioned release
+  (`5.<date>.<n>`) every day, so bumping it makes `deps` green for exactly one day and red
+  again the next morning — a treadmill, not a freshness signal. Dependabot's weekly npm PR
+  keeps the pin from rotting, and a `workers-types` change that actually matters shows up as
+  a type error, not as an `npm outdated` row. The exception existed before the v4 → v5
+  migration removed it; this restores it.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,
