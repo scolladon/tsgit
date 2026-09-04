@@ -26,7 +26,9 @@ const mockedEnsureScaledFixture = vi.mocked(ensureScaledFixture);
 
 describe.skipIf(process.env.STRYKER_MUTANT_ID !== undefined)('resolveScaledContext', () => {
   afterEach(() => {
-    mockedEnsureScaledFixture.mockClear();
+    // `mockReset` also drains a queued `mockRejectedValueOnce` a case never
+    // consumed, then restores the real generator passed to `vi.fn`.
+    mockedEnsureScaledFixture.mockReset();
   });
 
   describe('Given an empty cache root and no git on PATH', () => {

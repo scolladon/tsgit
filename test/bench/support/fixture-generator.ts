@@ -432,11 +432,24 @@ export const maxChainDepthOid = (verifyPackOutput: string): string => {
   return deepestOid;
 };
 
+// Isolated, deliberately non-existent HOME (and XDG config home) plus
+// GIT_CONFIG_NOSYSTEM: a spawned `git` must never read the developer's global or
+// system config. The identity probe below can retire a cache directory on its
+// verdict, so a `safe.directory` or `core.*` setting must not be able to steer
+// it — the same isolation class as the interop suite and `write-scratch.ts`.
+const ISOLATED_GIT_HOME = path.join(os.tmpdir(), 'tsgit-bench-fixture-nonexistent-home');
+
 // Child env with every GIT_* var stripped. A husky hook (or a parent `git`) can
 // export GIT_DIR/GIT_WORK_TREE, which take precedence over `-C <repoDir>` and would
 // silently redirect these subprocesses to the wrong repository.
-const gitEnv = (): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+const gitEnv = (): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+  HOME: ISOLATED_GIT_HOME,
+  XDG_CONFIG_HOME: ISOLATED_GIT_HOME,
+  GIT_CONFIG_NOSYSTEM: '1',
+});
+
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 const runGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<string> => {
   const { stdout } = await execFileAsync('git', ['-C', repoDir, ...args], {
@@ -447,37 +460,76 @@ const runGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<str
 };
 
 const PRISTINE_HEAD_NAME = 'refs/heads/main';
+// `symbolic-ref -q` and `rev-parse --verify -q` answer "no" with exit 1 — a fact
+// about the repository. Any other non-zero exit means git could not run at all.
+const GIT_ANSWERED_NO = 1;
 
-interface FixtureIdentity {
-  readonly headSymbolicName: string;
-  readonly mainCommitId: string;
+interface GitProbe {
+  readonly code: number;
+  readonly stdout: string;
+  readonly detail: string;
 }
 
-const readFixtureIdentity = async (cacheDir: string): Promise<FixtureIdentity> => ({
-  headSymbolicName: await runGit(cacheDir, ['rev-parse', '--symbolic-full-name', 'HEAD']),
-  mainCommitId: await runGit(cacheDir, ['rev-parse', PRISTINE_HEAD_NAME]),
-});
+const exitCodeOf = (err: unknown): number =>
+  typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'number'
+    ? err.code
+    : Number.NaN;
 
-/** `undefined` when the cached repo still matches what the generator wrote. */
-const identityMismatch = (identity: FixtureIdentity, meta: FixtureMeta): string | undefined => {
-  if (identity.headSymbolicName !== PRISTINE_HEAD_NAME)
-    return `HEAD is ${identity.headSymbolicName}, expected ${PRISTINE_HEAD_NAME}`;
-  if (identity.mainCommitId !== meta.headCommitId)
-    return `${PRISTINE_HEAD_NAME} is ${identity.mainCommitId}, expected ${meta.headCommitId}`;
-  return undefined;
-};
-
-/** `undefined` ⇒ trust the cache. A string ⇒ replace it, and say why. */
-const cacheRejection = async (cacheDir: string, meta: FixtureMeta): Promise<string | undefined> => {
+/** Runs a quiet git query and reports its exit code instead of rejecting on it. */
+const probeGit = async (repoDir: string, args: ReadonlyArray<string>): Promise<GitProbe> => {
   try {
-    return identityMismatch(await readFixtureIdentity(cacheDir), meta);
+    const { stdout } = await execFileAsync('git', ['-C', repoDir, ...args], { env: gitEnv() });
+    return { code: 0, stdout: stdout.trim(), detail: '' };
   } catch (err) {
-    if (!(await gitAvailable())) return undefined; // degrade, do not fail
-    return `git could not read its refs (${err instanceof Error ? err.message : String(err)})`;
+    return { code: exitCodeOf(err), stdout: '', detail: errorMessage(err) };
   }
 };
 
-/** Predicate half of `assertGitAvailable`, which becomes its throwing wrapper. */
+const gitAnswered = (probe: GitProbe): boolean =>
+  probe.code === 0 || probe.code === GIT_ANSWERED_NO;
+
+type CacheVerdict =
+  | { readonly kind: 'pristine' }
+  | { readonly kind: 'mismatch'; readonly reason: string }
+  | { readonly kind: 'unverifiable'; readonly reason: string };
+
+const mismatch = (reason: string): CacheVerdict => ({ kind: 'mismatch', reason });
+const unverifiable = (probe: GitProbe): CacheVerdict => ({
+  kind: 'unverifiable',
+  reason: probe.detail,
+});
+const orWord = (answer: string, word: string): string => (answer === '' ? word : answer);
+
+/**
+ * Identity of a cached repo against what the generator wrote: HEAD must name
+ * `refs/heads/main` and that ref must be the recorded tip. Every strategy ends
+ * with `checkout -f main`, so this holds for all specs. A mismatch is only ever
+ * declared from an answer git actually gave; a probe git could not execute
+ * (dubious ownership, a transient spawn failure, no git at all) is unverifiable,
+ * and an unverifiable cache is never destroyed.
+ */
+const readCacheVerdict = async (cacheDir: string, meta: FixtureMeta): Promise<CacheVerdict> => {
+  const head = await probeGit(cacheDir, ['symbolic-ref', '-q', 'HEAD']);
+  if (!gitAnswered(head)) return unverifiable(head);
+  if (head.stdout !== PRISTINE_HEAD_NAME) {
+    return mismatch(`HEAD is ${orWord(head.stdout, 'detached')}, expected ${PRISTINE_HEAD_NAME}`);
+  }
+  const main = await probeGit(cacheDir, [
+    'rev-parse',
+    '--verify',
+    '-q',
+    `${PRISTINE_HEAD_NAME}^{commit}`,
+  ]);
+  if (!gitAnswered(main)) return unverifiable(main);
+  if (main.stdout !== meta.headCommitId) {
+    return mismatch(
+      `${PRISTINE_HEAD_NAME} is ${orWord(main.stdout, 'missing')}, expected ${meta.headCommitId}`,
+    );
+  }
+  return { kind: 'pristine' };
+};
+
+/** Predicate half of `assertGitAvailable`, which is its throwing wrapper. */
 const gitAvailable = async (): Promise<boolean> => {
   try {
     await execFileAsync('git', ['--version'], { env: gitEnv() });
@@ -487,8 +539,8 @@ const gitAvailable = async (): Promise<boolean> => {
   }
 };
 
-/** The `ScaledFixture` literal `ensureScaledFixture` currently spells out twice. */
-const toScaledFixture = (
+/** The `ScaledFixture` handed to benches; `lastBlobId` is present only when the meta carries one. */
+export const toScaledFixture = (
   cacheDir: string,
   meta: FixtureMeta,
   spec: FixtureSpec,
@@ -504,9 +556,23 @@ const assertGitAvailable = async (): Promise<void> => {
   if (!(await gitAvailable())) throw new FixtureUnavailableError('the `git` CLI is not on PATH');
 };
 
+export type LeftoverKind = 'tmp' | 'corrupt';
+
+/**
+ * The two transient siblings the generator writes next to a cache directory: a
+ * build in flight (`tmp`) and a retired cache on its way out (`corrupt`).
+ * `fixture-prune.ts` parses exactly this shape to reclaim abandoned ones.
+ */
+export const leftoverDirName = (
+  cacheDir: string,
+  kind: LeftoverKind,
+  pid: number = process.pid,
+  stamp: number = Date.now(),
+): string => `${cacheDir}.${kind}.${pid}.${stamp}`;
+
 /** Moves a non-pristine cache aside atomically, then removes it. A no-op when absent. */
 const retireCacheDir = async (cacheDir: string): Promise<void> => {
-  const retired = `${cacheDir}.corrupt.${process.pid}.${Date.now()}`;
+  const retired = leftoverDirName(cacheDir, 'corrupt');
   try {
     await rename(cacheDir, retired);
   } catch (err) {
@@ -522,6 +588,18 @@ const warnNotPristine = (spec: FixtureSpec, reason: string): void => {
       `A bench mutated the shared cache — copy it first ` +
       `(test/bench/support/fixture-scratch.ts).\n`,
   );
+};
+
+const warnUnverifiable = (spec: FixtureSpec, reason: string): void => {
+  process.stderr.write(
+    `[bench] cached fixture "${spec.label}" could not be verified: ` +
+      `${reason.replace(/\s+/g, ' ').trim()}. Keeping it — a mismatch is never assumed.\n`,
+  );
+};
+
+/** With no git at all the cache is handed out silently, exactly as before the probe existed. */
+const reportUnverified = async (spec: FixtureSpec, reason: string): Promise<void> => {
+  if (await gitAvailable()) warnUnverifiable(spec, reason);
 };
 
 const runFastImport = async (
@@ -721,46 +799,101 @@ const readCachedMeta = async (cacheDir: string): Promise<FixtureMeta | undefined
   }
 };
 
+interface InspectedCache {
+  readonly meta: FixtureMeta;
+  readonly verdict: CacheVerdict;
+}
+
+/** The cached meta plus its identity verdict, or `undefined` when no usable `meta.json` exists. */
+const inspectCache = async (cacheDir: string): Promise<InspectedCache | undefined> => {
+  const meta = await readCachedMeta(cacheDir);
+  if (meta === undefined) return undefined;
+  return { meta, verdict: await readCacheVerdict(cacheDir, meta) };
+};
+
+/** Hands out a pristine cache, or an unverifiable one — saying so when git could have answered. */
+const trustCached = async (
+  cacheDir: string,
+  cached: InspectedCache,
+  spec: FixtureSpec,
+): Promise<ScaledFixture> => {
+  if (cached.verdict.kind === 'unverifiable') await reportUnverified(spec, cached.verdict.reason);
+  return toScaledFixture(cacheDir, cached.meta, spec);
+};
+
+/** Cleanup must never replace the build failure with its own error. */
+const discardTempBuild = async (tmpDir: string): Promise<void> => {
+  try {
+    await rm(tmpDir, { recursive: true, force: true });
+  } catch (cleanupErr) {
+    process.stderr.write(`[bench] could not remove ${tmpDir}: ${errorMessage(cleanupErr)}\n`);
+  }
+};
+
+/** A losing race reuses the winner's cache — but only a winner that passes the same probe. */
+const reuseWinnerOrRethrow = async (
+  cacheDir: string,
+  spec: FixtureSpec,
+  err: unknown,
+): Promise<FixtureMeta> => {
+  const winner = await inspectCache(cacheDir);
+  if (winner === undefined || winner.verdict.kind === 'unverifiable') throw err;
+  if (winner.verdict.kind === 'mismatch') {
+    warnNotPristine(spec, winner.verdict.reason);
+    throw err;
+  }
+  return winner.meta;
+};
+
+/** Builds into a unique temp directory and renames it into place. */
+const buildIntoCache = async (cacheDir: string, spec: FixtureSpec): Promise<FixtureMeta> => {
+  const tmpDir = leftoverDirName(cacheDir, 'tmp');
+  try {
+    const meta = await generateInto(tmpDir, spec);
+    await writeFile(path.join(tmpDir, 'meta.json'), JSON.stringify(meta), 'utf8');
+    await rename(tmpDir, cacheDir);
+    return meta;
+  } catch (err) {
+    await discardTempBuild(tmpDir);
+    return reuseWinnerOrRethrow(cacheDir, spec, err);
+  }
+};
+
+const rebuildCache = async (cacheDir: string, spec: FixtureSpec): Promise<ScaledFixture> => {
+  // Re-inspect right before retiring: a concurrent build may have renamed a
+  // cache into place since the first look, and it must be reused, not destroyed.
+  const winner = await inspectCache(cacheDir);
+  if (winner !== undefined && winner.verdict.kind !== 'mismatch') {
+    return trustCached(cacheDir, winner, spec);
+  }
+  // Retiring is unconditional past this point: it also clears a directory that
+  // exists with no readable `meta.json`, which the final `rename` would otherwise
+  // hit as ENOTEMPTY.
+  await retireCacheDir(cacheDir);
+  await mkdir(cacheRoot(), { recursive: true });
+  const meta = await buildIntoCache(cacheDir, spec);
+  return toScaledFixture(cacheDir, meta, spec);
+};
+
 /**
  * Returns the cached fixture, generating it on first use. Throws
- * `FixtureUnavailableError` when `git` is absent so benches can `skipIf`.
+ * `FixtureUnavailableError` when `git` is absent and a build is needed, so benches
+ * can `skipIf`.
  *
- * Concurrency-safe: the fixture is built in a unique temp directory and
- * atomically renamed into place. A losing race (target already exists)
- * discards the temp build and reuses the winner's cache.
+ * A cache hit is trusted only after its identity is probed (see
+ * `readCacheVerdict`): a proven mismatch is retired and rebuilt with a warning; a
+ * cache git could not verify is kept and reported. Concurrency-safe: the fixture
+ * is built in a unique temp directory and atomically renamed into place, and a
+ * losing race reuses the winner's cache once it passes the same probe.
  */
 export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixture> => {
   const cacheDir = cacheDirFor(spec);
-  const cached = await readCachedMeta(cacheDir);
+  const cached = await inspectCache(cacheDir);
   if (cached !== undefined) {
-    const rejection = await cacheRejection(cacheDir, cached);
-    if (rejection === undefined) return toScaledFixture(cacheDir, cached, spec);
-    warnNotPristine(spec, rejection);
+    if (cached.verdict.kind !== 'mismatch') return trustCached(cacheDir, cached, spec);
+    warnNotPristine(spec, cached.verdict.reason);
   }
   // git first: never destroy a cache directory we could not rebuild.
   await assertGitAvailable();
-  // Also covers a directory that exists with no readable `meta.json` — without
-  // this the generate path's `rename` would hit ENOTEMPTY on it.
-  await retireCacheDir(cacheDir);
-  await mkdir(cacheRoot(), { recursive: true });
-  const tmpDir = `${cacheDir}.tmp.${process.pid}.${Date.now()}`;
-  let meta: FixtureMeta;
-  try {
-    meta = await generateInto(tmpDir, spec);
-    await writeFile(path.join(tmpDir, 'meta.json'), JSON.stringify(meta), 'utf8');
-    await rename(tmpDir, cacheDir);
-  } catch (err) {
-    await rm(tmpDir, { recursive: true, force: true });
-    const won = await readCachedMeta(cacheDir);
-    if (won === undefined) throw err;
-    // A losing race reuses the winner's cache — but only after the winner's
-    // directory passes the same identity check the hit path applies.
-    const rejection = await cacheRejection(cacheDir, won);
-    if (rejection !== undefined) {
-      warnNotPristine(spec, rejection);
-      throw err;
-    }
-    meta = won;
-  }
-  return toScaledFixture(cacheDir, meta, spec);
+  return rebuildCache(cacheDir, spec);
 };
