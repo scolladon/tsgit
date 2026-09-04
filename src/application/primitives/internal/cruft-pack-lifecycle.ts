@@ -11,11 +11,7 @@
  * never a lookup with a fallback.
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
-import {
-  type PackIndexWriterEntry,
-  parseCruftMtimes,
-  sortPackIndexEntries,
-} from '../../../domain/storage/index.js';
+import { type PackIndexEntries, parseCruftMtimes } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { RegisteredPack } from '../pack-registry.js';
@@ -229,10 +225,10 @@ export async function writeCruftPack(
   ctx: Context,
   input: {
     readonly packDir: string;
-    readonly entries: ReadonlyArray<PackIndexWriterEntry>;
+    readonly entries: PackIndexEntries;
     readonly packBytes: Uint8Array;
     readonly packSha: string;
-    readonly mtimeOf: (id: ObjectId) => number;
+    readonly mtimeAt: (ordinal: number) => number;
   },
 ): Promise<WrittenCruftPack> {
   const written = await writePackArtifacts(ctx, {
@@ -242,14 +238,9 @@ export async function writeCruftPack(
     packSha: input.packSha,
     promisor: false,
   });
-  const sorted = sortPackIndexEntries(input.entries);
-  const mtimesBytes = await buildCruftMtimes(
-    ctx,
-    input.entries,
-    written.packSha,
-    input.mtimeOf,
-    sorted,
-  );
+  // `writePackArtifacts` already sorted this exact slab; sorting it again cost
+  // a second O(N log N) pass over the highest-object-count write path.
+  const mtimesBytes = await buildCruftMtimes(ctx, written.sorted, written.packSha, input.mtimeAt);
   await ctx.fs.writeExclusive(cruftMtimesFilePath(input.packDir, written.packSha), mtimesBytes);
   return { packSha: written.packSha };
 }

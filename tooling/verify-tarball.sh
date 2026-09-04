@@ -65,7 +65,19 @@ done
 # pack successor offsets gained a bounds refusal, and the window budget began
 # charging its delta index the way git charges sizeof_delta_index() — together
 # ~618 B beyond the first post-implementation measurement.
-SIZE_CAP=$((898 * 1024))
+# Raised 898 -> 904 KiB by the streaming index pass: the measured tarball landed
+# at 923 927 B, 4 375 B over the old cap. The receive path's single fixed-point
+# resolve loop is replaced by three modules that ship in every distribution
+# form — a sequential scan and a root-down forest walk, a typed-array record
+# store with two sorted child indexes, and the extracted pack byte source — plus
+# one byte-capped base cache. The pack-index slab widening pays some of it back
+# (the hex-bearing writer entry array and its `hexToBytes` round-trip are gone),
+# but not all: the net is a smaller raise than the delta packer's while carrying
+# more new code, because deleted code offsets it. None is removable without
+# giving up the bounded-memory indexer, which is the whole feature: it takes a
+# real clone of this repository's own history from 799.5 MB of peak residency
+# down to 207.4 MB, measured locally.
+SIZE_CAP=$((904 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

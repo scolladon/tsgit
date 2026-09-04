@@ -101,6 +101,7 @@
         "createSingleFlightIndexResolver",
         "createRawTreeResolver",
         "createPackRegistry",
+        "createPackRecordStore",
         "getPackRegistry",
         "createPromiseMemo",
         "withHandleLedger",

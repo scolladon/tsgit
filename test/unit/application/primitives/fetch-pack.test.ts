@@ -1,14 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { negotiatePackBytes } from '../../../../src/application/commands/internal/fetch-negotiation.js';
+import { buildPack } from '../../../../src/application/primitives/build-pack.js';
+import {
+  fetchPack,
+  type NegotiatePackBytes,
+  verifyPackTrailer,
+} from '../../../../src/application/primitives/fetch-pack.js';
 import {
   DISK_WALK_WINDOW_BYTES,
   type ExternalBaseResolver,
-  fetchPack,
-  type NegotiatePackBytes,
+  INDEX_PASS_BASE_CACHE_MAX_BYTES,
+  type IndexPackOptions,
+  indexQuarantinedPack,
   walkPackEntries,
-} from '../../../../src/application/primitives/fetch-pack.js';
+} from '../../../../src/application/primitives/internal/index-pack.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   fileExists,
   fileNotFound,
@@ -22,24 +30,68 @@ import {
   encodePktStream,
   type GitExchange,
 } from '../../../../src/domain/protocol/pkt-line.js';
+import { crc32 } from '../../../../src/domain/storage/crc32.js';
+import { serializeCruftMtimes } from '../../../../src/domain/storage/cruft-pack.js';
 import {
   encodePackEntryHeader,
   PACK_ENTRY_TYPE,
   parsePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import {
+  entryOffsets,
   lookupPackIndex,
   lookupPackIndexPosition,
+  objectIdAt,
   parsePackIndex,
 } from '../../../../src/domain/storage/pack-index.js';
+import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.js';
+import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
+import { serializePackRevIndex } from '../../../../src/domain/storage/rev-index.js';
 import { readableStreamToAsyncIterable } from '../../../../src/operators/readable-stream.js';
+import type { Context } from '../../../../src/ports/context.js';
 import type {
   HttpRequest,
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
 import { recordingProgress, withProgress } from '../commands/fixtures.js';
+import { INDEX_PASS_CORPUS } from './index-pass-corpus.js';
 import { buildSyntheticPack, type EntrySpec } from './pack-fixture.js';
+
+// Wraps `createPackRecordStore` in a call-through spy so a test can recover
+// the exact `PackRecordStore` a `fetchPack` call built — the only way to
+// observe its internal, ordinal-indexed `offsets` array, since the .idx and
+// .rev writers both re-derive their own orderings from VALUES (oid-sort,
+// offset-sort) and are therefore blind to the order the producer originally
+// populated its arrays in. Every other test in this file is unaffected: the
+// spy calls straight through to the real implementation.
+vi.mock(
+  '../../../../src/application/primitives/internal/pack-records.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../../src/application/primitives/internal/pack-records.js')
+      >();
+    return { ...actual, createPackRecordStore: vi.fn(actual.createPackRecordStore) };
+  },
+);
+const packRecordsModule = await import(
+  '../../../../src/application/primitives/internal/pack-records.js'
+);
+// Wraps `createLruCache` in a call-through spy so a test can observe how many
+// times `baseCacheSlotFor` actually built a fresh base cache — the only way
+// to tell "reused the session's existing slot" apart from "rebuilt one",
+// since both are otherwise externally invisible (the cache is cleared at the
+// end of every `indexPackEntries` call regardless of which happened).
+vi.mock('../../../../src/domain/storage/lru-cache.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/domain/storage/lru-cache.js')>();
+  return { ...actual, createLruCache: vi.fn(actual.createLruCache) };
+});
+const lruCacheModule = await import('../../../../src/domain/storage/lru-cache.js');
+const createLruCacheSpy = vi.mocked(lruCacheModule.createLruCache);
+
+const createPackRecordStoreSpy = vi.mocked(packRecordsModule.createPackRecordStore);
 
 const ENCODER = new TextEncoder();
 const REMOTE_URL = 'https://remote.example/r.git';
@@ -637,11 +689,12 @@ describe('fetchPack', () => {
 
     describe('Given an OFS_DELTA pointing before the pack body', () => {
       describe('When fetchPack runs', () => {
-        it('Then throws INVALID_PACK_HEADER referencing the offset', async () => {
+        it("Then throws INVALID_PACK_ENTRY naming the offset and git's out-of-bound reason", async () => {
           // Arrange — synthesize a pack with one entry whose OFS_DELTA distance is
           // larger than its own offset minus the 12-byte header. Real packs cannot
-          // produce such an entry; we craft it directly to exercise the negative
-          // base-offset guard inside tryResolveEntry. The entry header is hand-built:
+          // produce such an entry; we craft it directly to exercise the
+          // out-of-bound base-offset guard the record store applies while
+          // scanning. The entry header is hand-built:
           // type-byte sets OFS_DELTA(=6) with a 1-byte declared size of 2 (matching
           // the 2-byte delta payload below), the distance varint encodes 100, then
           // a 2-byte zlib stream for an empty target.
@@ -684,19 +737,21 @@ describe('fetchPack', () => {
             caught = err;
           }
 
-          // Assert
+          // Assert — the OFS guard is now the same widened, git-faithful
+          // out-of-bound check for every out-of-range distance (negative,
+          // self-referential, or forward of the entry's own offset), so the
+          // offset is no longer named in the reason.
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as { code: string; reason?: string };
-          expect(data.code).toBe('INVALID_PACK_HEADER');
-          expect(data.reason).toContain('OFS_DELTA');
-          expect(data.reason).toContain('before pack body');
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          expect(data.reason).toBe('delta base offset is out of bound');
         });
       });
     });
 
     describe('Given a REF_DELTA whose base is not in the pack', () => {
       describe('When fetchPack runs', () => {
-        it('Then throws unresolved REF_DELTA', async () => {
+        it('Then throws "pack has 1 unresolved delta"', async () => {
           // Arrange
           const ctx = createMemoryContext();
           const baseContent = ENCODER.encode('orphan base\n');
@@ -728,12 +783,172 @@ describe('fetchPack', () => {
             caught = err;
           }
 
+          // Assert — git's own count, singular at one; the base id is no
+          // longer named (a root-down walk discovers unresolved entries as
+          // a set, not in queue order, so naming "the first" would be an
+          // arbitrary choice this design does not make).
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('INVALID_PACK_HEADER');
+          expect(data.reason).toBe('pack has 1 unresolved delta');
+        });
+      });
+    });
+
+    describe("Given a REF_DELTA cycle with no base entry (two deltas naming each other's target oid)", () => {
+      describe('When fetchPack runs', () => {
+        it('Then throws "pack has 2 unresolved deltas"', async () => {
+          // Arrange — neither entry has a base entry to resolve from, so
+          // pass 2's root loop finds zero roots and neither delta is ever
+          // reached, regardless of what oid each declares as its base. This
+          // pins the plural template arm against a genuinely two-unresolved
+          // input, not a doubled one-unresolved case.
+          const ctx = createMemoryContext();
+          const targetA = ENCODER.encode('ref-cycle target A');
+          const targetB = ENCODER.encode('ref-cycle target B');
+          const idOfA = await computeBlobId(ctx, targetA);
+          const idOfB = await computeBlobId(ctx, targetB);
+          const built = await buildSyntheticPack(ctx, [
+            {
+              kind: 'ref-delta',
+              baseId: idOfB,
+              baseUncompressed: new Uint8Array(0),
+              targetContent: targetA,
+            },
+            {
+              kind: 'ref-delta',
+              baseId: idOfA,
+              baseUncompressed: new Uint8Array(0),
+              targetContent: targetB,
+            },
+          ]);
+          const body = buildUploadPackResponseBody({ packBytes: built.packBytes, sideBand: true });
+          const { transport } = captureRequests(body);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetchPack(ctx, toNegotiator(transport), {
+              wants: [idOfA as ObjectId],
+              haves: [],
+              capabilities: ['side-band-64k'],
+              progressOp: 'test:write-objects',
+            });
+          } catch (err) {
+            caught = err;
+          }
+
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as { code: string; reason?: string };
           expect(data.code).toBe('INVALID_PACK_HEADER');
-          expect(data.reason).toContain('unresolved');
-          expect(data.reason).toContain(unknownBaseId);
+          expect(data.reason).toBe('pack has 2 unresolved deltas');
+        });
+      });
+    });
+
+    describe('Given an OFS_DELTA whose base offset lands strictly inside another entry, not at its start', () => {
+      describe('When fetchPack runs', () => {
+        it('Then throws "pack has 1 unresolved delta" — mid-entry landing is a count, not the out-of-bound guard', async () => {
+          // Arrange — two independent base entries, then an OFS_DELTA whose
+          // declared distance is computed from a probe build so it targets
+          // one byte INSIDE entry B rather than at any real entry's start.
+          // That base offset passes `recordOfsDelta`'s range guard (it is
+          // >= PACK_HEADER_SIZE and < the delta's own offset) but never
+          // matches a real entry's stored offset, so it can only ever
+          // surface through the unresolved-delta count.
+          const ctx = createMemoryContext();
+          const midEntrySpecs: EntrySpec[] = [
+            { kind: 'base', type: 'blob', content: ENCODER.encode('mid-entry base A') },
+            { kind: 'base', type: 'blob', content: ENCODER.encode('mid-entry base B') },
+          ];
+          const probe = await buildSyntheticPack(ctx, [
+            ...midEntrySpecs,
+            {
+              kind: 'ofs-delta',
+              baseIndex: 0,
+              targetContent: ENCODER.encode('mid-entry delta target'),
+            },
+          ]);
+          const entryBOffset = probe.offsets[1] as number;
+          const deltaOffset = probe.offsets[2] as number;
+          const midEntryDistance = deltaOffset - (entryBOffset + 1);
+          const built = await buildSyntheticPack(ctx, [
+            ...midEntrySpecs,
+            {
+              kind: 'ofs-delta',
+              baseIndex: 0,
+              targetContent: ENCODER.encode('mid-entry delta target'),
+              distanceOverride: midEntryDistance,
+            },
+          ]);
+          const body = buildUploadPackResponseBody({ packBytes: built.packBytes, sideBand: true });
+          const { transport } = captureRequests(body);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetchPack(ctx, toNegotiator(transport), {
+              wants: [built.ids[0] as ObjectId],
+              haves: [],
+              capabilities: ['side-band-64k'],
+              progressOp: 'test:write-objects',
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('INVALID_PACK_HEADER');
+          expect(data.reason).toBe('pack has 1 unresolved delta');
+        });
+      });
+    });
+
+    describe('Given two base entries sharing the same oid, with one REF_DELTA child of that shared oid', () => {
+      describe('When fetchPack indexes the quarantined pack from disk', () => {
+        it('Then the shared child is applied exactly once — resolvedCount never overshoots objectCount', async () => {
+          // Arrange — two identical-content base blobs (same oid by
+          // construction) followed by a REF_DELTA whose declared base is
+          // that shared oid. Pass 2 discovers this delta as a child of BOTH
+          // duplicate roots — `refChildren` is keyed on oid VALUE, not on
+          // which root asked — so the `isResolved` guard is the only thing
+          // stopping the second discovery from re-applying it.
+          const ctx = createMemoryContext();
+          const sharedContent = ENCODER.encode('duplicate-oid shared base content');
+          const sharedId = await computeBlobId(ctx, sharedContent);
+          const entries: EntrySpec[] = [
+            { kind: 'base', type: 'blob', content: sharedContent },
+            { kind: 'base', type: 'blob', content: sharedContent },
+            {
+              kind: 'ref-delta',
+              baseId: sharedId,
+              baseUncompressed: sharedContent,
+              targetContent: ENCODER.encode('duplicate-oid shared child target'),
+            },
+          ];
+          const built = await buildSyntheticPack(ctx, entries);
+          const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+          const { transport } = captureRequests(body);
+          createPackRecordStoreSpy.mockClear();
+
+          // Act
+          const result = await fetchPack(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+
+          // Assert
+          expect(result.objectCount).toBe(3);
+          expect(createPackRecordStoreSpy).toHaveBeenCalledTimes(1);
+          const store = createPackRecordStoreSpy.mock.results[0]?.value as ReturnType<
+            typeof packRecordsModule.createPackRecordStore
+          >;
+          expect(store.resolvedCount).toBe(3);
         });
       });
     });
@@ -1014,6 +1229,68 @@ describe('fetchPack', () => {
           expect(data.code).toBe('PACK_TOO_LARGE');
           expect(data.objectCount).toBe(100);
           expect(data.limit).toBe(10);
+        });
+      });
+    });
+
+    describe('Given a pack declaring 50,000,000 entries but containing only 3 real ones', () => {
+      describe('When fetchPack indexes the quarantined pack from disk', () => {
+        it('Then the record store is sized from the pack bytes, not the declared count', async () => {
+          // Arrange — 3 real base entries, then the header's declared count
+          // is overwritten to a huge, server-controlled lie and the trailer
+          // recomputed so the pack still verifies. `maxObjectsPerPack` is
+          // raised well above the lie so PACK_TOO_LARGE never fires — this
+          // pins that nothing downstream of THAT gate ever sizes an
+          // allocation from `header.objectCount` either.
+          const baseCtx = createMemoryContext();
+          const entries: EntrySpec[] = [
+            { kind: 'base', type: 'blob', content: ENCODER.encode('r3 entry one') },
+            { kind: 'base', type: 'blob', content: ENCODER.encode('r3 entry two') },
+            { kind: 'base', type: 'blob', content: ENCODER.encode('r3 entry three') },
+          ];
+          const built = await buildSyntheticPack(baseCtx, entries);
+          const mutated = built.packBytes.slice();
+          new DataView(mutated.buffer).setUint32(8, 50_000_000);
+          const trailerLength = baseCtx.hash.digestLength;
+          const bodyLength = mutated.length - trailerLength;
+          const trailerHex = await baseCtx.hash.hashHex(mutated.subarray(0, bodyLength));
+          mutated.set(hexToBytes(trailerHex), bodyLength);
+          const ctx = withConfig(baseCtx, { maxObjectsPerPack: 60_000_000 });
+          const body = buildMultiChunkSidebandBody(mutated, 32_768);
+          const { transport } = captureRequests(body);
+          createPackRecordStoreSpy.mockClear();
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetchPack(ctx, toNegotiator(transport), {
+              wants: [built.ids[0] as ObjectId],
+              haves: [],
+              capabilities: ['side-band-64k'],
+              progressOp: 'test:write-objects',
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — the walk refuses once it runs past the 3 real entries
+          // into the trailer bytes (the exact refusal shape is incidental;
+          // the load-bearing assertion is the capacity spy below)...
+          expect(caught).toBeInstanceOf(TsgitError);
+          // ...and the record store's own capacity was never sized from the
+          // declared 50,000,000 — its second constructor argument (the
+          // structural clamp) is proportional to the pack's real byte
+          // length instead.
+          expect(createPackRecordStoreSpy).toHaveBeenCalledTimes(1);
+          const [, structuralMax] = createPackRecordStoreSpy.mock.calls[0] as [number, number];
+          // The exact clamp, recomputed here rather than bounded loosely: a
+          // slack bound survives a wrong minimum-entry size and survives
+          // dropping either subtracted term.
+          const PACK_HEADER_BYTES = 12;
+          const MIN_ENTRY_BYTES = 9;
+          expect(structuralMax).toBe(
+            Math.floor((mutated.length - PACK_HEADER_BYTES - trailerLength) / MIN_ENTRY_BYTES),
+          );
         });
       });
     });
@@ -1580,15 +1857,13 @@ describe('fetchPack', () => {
 
     describe('Given a pack with an OFS_DELTA whose base offset is itself (distance 0)', () => {
       describe('When fetchPack runs', () => {
-        it('Then throws "unresolved entry at offset"', async () => {
-          // Arrange — a single OFS_DELTA at offset 12 with a distance-0 varint.
-          // `tryResolveEntry` computes `baseOffset = 12 - 0 = 12`, which is NOT
-          // `< PACK_HEADER_BYTES`, so the negative-offset guard does not fire;
-          // `byOffset.get(12)` is never populated (the delta cannot resolve
-          // itself), so the entry stays unresolved. `firstUnresolvedError` then
-          // falls through `refDeltaBaseId` (OFS_DELTA → undefined) to the final
-          // `unresolved entry at offset ${first.offset}` arm — pinning that
-          // template literal against the empty-string mutant.
+        it("Then throws INVALID_PACK_ENTRY naming the offset and git's out-of-bound reason (the defect fix)", async () => {
+          // Arrange — a single OFS_DELTA at offset 12 with a distance-0
+          // varint. `scanEntries` computes `baseOffset = 12 - 0 = 12`, which
+          // IS `>= entryOffset` (12), so the widened guard in
+          // `recordOfsDelta` refuses here, at the entry — a self-referential
+          // delta is caught as out-of-bound rather than falling through to
+          // the unresolved-delta count.
           const ctx = createMemoryContext();
           // Pack header (12 bytes) — magic 'PACK', version 2, 1 entry.
           const header = new Uint8Array(12);
@@ -1630,11 +1905,8 @@ describe('fetchPack', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as { code: string; reason?: string };
-          expect(data.code).toBe('INVALID_PACK_HEADER');
-          expect(data.reason).toContain('unresolved entry at offset');
-          // The offset 12 must appear — proves the template literal interpolates
-          // `first.offset` and is not the empty string.
-          expect(data.reason).toContain('12');
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          expect(data.reason).toBe('delta base offset is out of bound');
         });
       });
     });
@@ -2381,6 +2653,108 @@ describe('quarantine disk-backed entry walk', () => {
     });
   });
 
+  describe('Given an entry whose zlib member yields no output and never terminates', () => {
+    describe('When the quarantined pack is indexed from disk', () => {
+      it('Then the growth ladder stops at the per-entry ceiling instead of reading the whole pack', async () => {
+        // Arrange — a deflate header followed by empty non-final stored
+        // blocks to the end of the body. Output is always zero, so neither
+        // the entry's declared size nor the adapter's inflate cap ever
+        // trips; every window ends mid-stream and every failure reads as
+        // retryable, which is what let the ladder climb to `trailerStart`
+        // and read the entire remaining pack in one slice.
+        const baseCtx = createMemoryContext();
+        const PACK_BODY_BYTES = 3 * DISK_WALK_WINDOW_BYTES;
+        const stream: number[] = [0x78, 0x01];
+        while (stream.length < PACK_BODY_BYTES) stream.push(0x00, 0x00, 0x00, 0xff, 0xff);
+        // PACK, version 2, one entry; then a blob entry header declaring a
+        // small size, then the endless member.
+        const header = [0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 1];
+        const entryHeader = [0x30 | 0x0a]; // type 3 (blob), size 10, no continuation
+        const body = new Uint8Array([...header, ...entryHeader, ...stream]);
+        const digestLength = baseCtx.hash.digestLength;
+        const packBytes = new Uint8Array(body.length + digestLength);
+        packBytes.set(body, 0);
+        packBytes.set(hexToBytes(await baseCtx.hash.hashHex(body)), body.length);
+
+        const requestedLengths: number[] = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number) => {
+            requestedLengths.push(length);
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_endless`;
+        await ctx.fs.write(tmpPath, packBytes);
+
+        // Act
+        let caught: unknown;
+        try {
+          await indexQuarantinedPack(ctx, tmpPath, packBytes.length, async () => undefined);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — still a refusal, but no single read is anywhere near the
+        // pack: the ceiling is the declared size (10 bytes) floored at one
+        // documented window, so growth stops there.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(Math.max(...requestedLengths)).toBeLessThanOrEqual(DISK_WALK_WINDOW_BYTES);
+        expect(requestedLengths).not.toContain(packBytes.length);
+      });
+    });
+  });
+
+  describe('Given the same endless zlib member, but with a declared size past the point where the ceiling floor stops binding', () => {
+    describe('When the quarantined pack is indexed from disk', () => {
+      it('Then the growth ladder stops at the declared-size-scaled ceiling, not the documented-window floor or the whole pack', async () => {
+        // Arrange — 300_000 clears the ~254 KB point where `entryGrowthCeiling`'s
+        // additive term (declaredSize scaled by its 1.6% zlib-expansion
+        // headroom, plus a flat 4096) overtakes the documented-window floor —
+        // unlike the tiny-declaredSize case above, THIS ceiling's own
+        // arithmetic is what growth stops at, not the floor. Pins the `/ 64`
+        // and `+ 4096` terms: a mutant that inflates or shrinks either moves
+        // this exact number.
+        const baseCtx = createMemoryContext();
+        const declaredSize = 300_000;
+        const PACK_BODY_BYTES = 3 * DISK_WALK_WINDOW_BYTES;
+        const stream: number[] = [0x78, 0x01];
+        while (stream.length < PACK_BODY_BYTES) stream.push(0x00, 0x00, 0x00, 0xff, 0xff);
+        const header = [0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 1];
+        const entryHeader = Array.from(encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, declaredSize));
+        const body = new Uint8Array([...header, ...entryHeader, ...stream]);
+        const digestLength = baseCtx.hash.digestLength;
+        const packBytes = new Uint8Array(body.length + digestLength);
+        packBytes.set(body, 0);
+        packBytes.set(hexToBytes(await baseCtx.hash.hashHex(body)), body.length);
+
+        const requestedLengths: number[] = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number) => {
+            requestedLengths.push(length);
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_endless_big`;
+        await ctx.fs.write(tmpPath, packBytes);
+
+        // Act
+        let caught: unknown;
+        try {
+          await indexQuarantinedPack(ctx, tmpPath, packBytes.length, async () => undefined);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — mirrors `entryGrowthCeiling` exactly: declaredSize plus
+        // its zlib-expansion headroom plus the flat 4096 allowance.
+        const expectedCeiling = declaredSize + Math.ceil(declaredSize / 64) + 4096;
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(Math.max(...requestedLengths)).toBe(expectedCeiling);
+        expect(requestedLengths).not.toContain(packBytes.length);
+      });
+    });
+  });
+
   describe('Given an entry whose zlib stream straddles a window boundary', () => {
     describe('When fetchPack walks the quarantined pack from disk', () => {
       it('Then it still inflates correctly by growing the window', async () => {
@@ -2423,6 +2797,76 @@ describe('quarantine disk-backed entry walk', () => {
         expect(requestedLengths).toContain(DISK_WALK_WINDOW_BYTES);
         expect(Math.max(...requestedLengths)).toBeGreaterThan(DISK_WALK_WINDOW_BYTES);
         expect(Math.max(...requestedLengths)).toBeLessThan(built.packBytes.length);
+      });
+    });
+  });
+
+  describe('Given a base entry larger than one window, several windows before a delta chained onto it', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then pass 2 re-anchors backward to re-read the base, regrowing its own window from scratch', async () => {
+        // Arrange — pass 1's forward scan walks past two large filler
+        // entries after the base, so by the time it finishes, the held
+        // window sits far past the base's own (small) offset. Resolving
+        // the delta in pass 2 then requires re-inflating that same base as
+        // a forest root — a read whose anchor is BEHIND the window pass 1
+        // left held, not merely a fresh one past it.
+        const baseCtx = createMemoryContext();
+        const bigContent = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 909);
+        const fillerOne = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 910);
+        const fillerTwo = pseudoRandomBytes(DISK_WALK_WINDOW_BYTES + 40_000, 911);
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: bigContent },
+          { kind: 'base', type: 'blob', content: fillerOne },
+          { kind: 'base', type: 'blob', content: fillerTwo },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: ENCODER.encode('backward-anchor delta target'),
+          },
+        ];
+        const built = await buildSyntheticPack(baseCtx, entries);
+        const calls: Array<{ offset: number; length: number }> = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            calls.push({ offset, length });
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+
+        // Act
+        const result = await fetchPack(ctx, toNegotiator(transport), {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        });
+
+        // Assert — every entry resolved correctly...
+        expect(result.objectCount).toBe(4);
+        const readBack = await readObject(ctx, built.ids[0] as ObjectId);
+        if (readBack.type !== 'blob') throw new Error('expected a blob');
+        expect(readBack.content).toEqual(bigContent);
+        // ...and the read-offset sequence proves a genuine backward jump:
+        // some later call's offset is LOWER than an earlier call's, which
+        // only happens once pass 2 re-anchors at the base's own (small)
+        // offset after pass 1 has already walked forward past it.
+        const offsets = calls.map((c) => c.offset);
+        const backwardJumpIndex = offsets.findIndex(
+          (o, i) => i > 0 && o < (offsets[i - 1] as number),
+        );
+        expect(backwardJumpIndex).toBeGreaterThan(0);
+        // The base's own offset (right after the pack header) is read at
+        // least twice — once by pass 1's forward scan, once by pass 2's
+        // backward re-anchor — and every read anchored there regrows from
+        // the documented window rather than requesting the whole pack.
+        const baseOffset = built.offsets[0] as number;
+        const atBaseOffset = calls.filter((c) => c.offset === baseOffset);
+        expect(atBaseOffset.length).toBeGreaterThanOrEqual(2);
+        for (const call of atBaseOffset) {
+          expect(call.length).toBeLessThan(built.packBytes.length);
+        }
       });
     });
   });
@@ -2766,6 +3210,725 @@ describe('quarantine disk-backed entry walk', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// index pass equivalence — the regression net every later part of the
+// streaming-index-pass change is measured against. Each corpus case's
+// (id, crc32, offset) set is asserted against an oracle the indexer had no
+// hand in producing: `buildSyntheticPack`'s own independently-computed
+// `ids`/`offsets`, plus a crc32 recomputed fresh from the packed bytes —
+// never a snapshot of what today's code returns.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface OracleEntry {
+  readonly id: string;
+  readonly crc32: number;
+  readonly offset: number;
+}
+
+/**
+ * The oracle: `built.ids[i]`/`built.offsets[i]` are the fixture builder's
+ * own independently-computed values (never derived from the indexer under
+ * test), and each entry's crc32 is recomputed fresh over the raw bytes
+ * `[offsets[i], offsets[i + 1])` — the same span `buildSyntheticPack`
+ * computed its own (unexposed) `crc32Values` over, but read back through
+ * the exported `crc32` function rather than trusted from the builder.
+ */
+const oracleWalkedEntries = (
+  built: Awaited<ReturnType<typeof buildSyntheticPack>>,
+  digestLength: number,
+): OracleEntry[] =>
+  built.ids.map((id, i) => {
+    const start = built.offsets[i] as number;
+    const end = built.offsets[i + 1] ?? built.packBytes.length - digestLength;
+    return { id, crc32: crc32(built.packBytes.subarray(start, end)), offset: start };
+  });
+
+/** Every offset is unique per entry, so sorting by offset gives a canonical
+ *  order for a set comparison — including the `duplicate-oid` corpus case,
+ *  where several entries share an id but never an offset. */
+const byOffsetAscending = <T extends { readonly offset: number }>(items: ReadonlyArray<T>): T[] =>
+  [...items].sort((a, b) => a.offset - b.offset);
+
+/** Reads every `.idx` position's `(id, crc32, offset)` triple directly,
+ *  rather than looking entries up by id — `lookupPackIndex`/
+ *  `lookupPackIndexPosition` assume a unique oid per index, which the
+ *  `duplicate-oid` corpus case deliberately violates. */
+const idxEntries = (idx: ReturnType<typeof parsePackIndex>): OracleEntry[] =>
+  entryOffsets(idx).map((offset, position) => ({
+    id: objectIdAt(idx, position) as string,
+    crc32: idx._view.getUint32(idx.crc32TableOffset + position * 4),
+    offset,
+  }));
+
+describe('index pass equivalence', () => {
+  const OFS_CHAIN_1000_TIMEOUT_MS = 30_000;
+
+  for (const corpusCase of INDEX_PASS_CORPUS) {
+    describe(`Given the "${corpusCase.name}" corpus case`, () => {
+      describe('When walkPackEntries walks the in-memory pack', () => {
+        it(
+          "Then the resulting (id, crc32, offset) set matches the fixture builder's own oracle",
+          async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const entries = await corpusCase.entries(ctx);
+            const built = await buildSyntheticPack(ctx, entries);
+            const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+            // Act
+            const result = await walkPackEntries(ctx, built.packBytes);
+
+            // Assert
+            expect(byOffsetAscending(result)).toEqual(expected);
+          },
+          corpusCase.name === 'ofs-chain-depth-1000' ? OFS_CHAIN_1000_TIMEOUT_MS : undefined,
+        );
+      });
+
+      describe('When fetchPack walks the quarantined pack from disk', () => {
+        it(
+          corpusCase.name === 'empty-pack'
+            ? 'Then it reaches the zero-entry suppression path: objectCount 0 and no .idx written'
+            : "Then the resulting .idx entries match the fixture builder's own oracle",
+          async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const entries = await corpusCase.entries(ctx);
+            const built = await buildSyntheticPack(ctx, entries);
+            // Chunked, not `buildUploadPackResponseBody`'s single frame: a
+            // few corpus cases (multi-window, deep chains) produce packs
+            // past the 65 516-byte pkt-line payload cap.
+            const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+            const { transport } = captureRequests(body);
+            const wants = [(built.ids[0] ?? 'a'.repeat(40)) as ObjectId];
+
+            // Act
+            const result = await fetchPack(ctx, toNegotiator(transport), {
+              wants,
+              haves: [],
+              capabilities: ['side-band-64k', 'ofs-delta'],
+              progressOp: 'test:write-objects',
+            });
+
+            // Assert
+            if (corpusCase.name === 'empty-pack') {
+              expect(result.objectCount).toBe(0);
+              expect(result.idxPath).toBe('');
+              return;
+            }
+            const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+            const idx = parsePackIndex(
+              await ctx.fs.read(result.idxPath),
+              ctx.hash.digestLength as 20 | 32,
+            );
+            expect(idx.objectCount).toBe(expected.length);
+            expect(byOffsetAscending(idxEntries(idx))).toEqual(expected);
+          },
+          corpusCase.name === 'ofs-chain-depth-1000' ? OFS_CHAIN_1000_TIMEOUT_MS : undefined,
+        );
+      });
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// index pass equivalence — the record store's offsets stay strictly
+// ascending even when resolution order does not match offset order.
+// `scanEntries` (pass 1) appends every record in strictly increasing pack
+// offset, so the store's documented strictly-ascending-`offsets` invariant
+// holds by construction, not by a sort — pinned here against a future
+// refactor that walked entries in a different order (e.g. resolution order,
+// which pass 2's root-down walk does not follow either).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('index pass equivalence — record-store offset ordering', () => {
+  const RESOLUTION_ORDER_CASES = ['ref-delta-before-base', 'branching-forest'] as const;
+
+  const assertStrictlyAscending = (offsets: ReadonlyArray<number>): void => {
+    expect(offsets.length).toBeGreaterThan(1);
+    for (let i = 1; i < offsets.length; i += 1) {
+      expect(offsets[i]!).toBeGreaterThan(offsets[i - 1]!);
+    }
+  };
+
+  for (const caseName of RESOLUTION_ORDER_CASES) {
+    const corpusCase = INDEX_PASS_CORPUS.find((c) => c.name === caseName);
+    if (corpusCase === undefined) {
+      throw new Error(`corpus case "${caseName}" not found`);
+    }
+
+    // `PackIndexEntries` documents emission order — ascending pack offset — as
+    // its contract, and the walk resolves in dependency order, not offset
+    // order. Both entry points expose the producer's own order directly:
+    // `walkPackEntries` materialises the slab positionally, and
+    // `indexQuarantinedPack` returns the slab itself. Neither needs the record
+    // store mocked to see it, and the `.idx`/`.rev` bytes cannot show it —
+    // both re-derive their own ordering from the values.
+    describe(`Given the "${caseName}" corpus case, whose resolution order differs from its offset order`, () => {
+      describe('When it is walked from memory', () => {
+        it('Then the returned entries are in strictly ascending offset order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const built = await buildSyntheticPack(ctx, await corpusCase.entries(ctx));
+
+          // Act
+          const result = await walkPackEntries(ctx, built.packBytes);
+
+          // Assert
+          assertStrictlyAscending(result.map((entry) => entry.offset));
+        });
+      });
+
+      describe('When it is indexed from a quarantined file on disk', () => {
+        it('Then the handed-over PackIndexEntries.offsets is strictly ascending', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const built = await buildSyntheticPack(ctx, await corpusCase.entries(ctx));
+          const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_order_${caseName}`;
+          await ctx.fs.write(tmpPath, built.packBytes);
+
+          // Act
+          const view = await indexQuarantinedPack(
+            ctx,
+            tmpPath,
+            built.packBytes.length,
+            async () => {
+              await ctx.fs.rmRecursive(tmpPath);
+            },
+          );
+
+          // Assert
+          assertStrictlyAscending(Array.from(view.offsets.subarray(0, view.count)));
+        });
+      });
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// index pass equivalence — the anti-producer-fork oracle. `buildPack`
+// (locally built packs) and `indexQuarantinedPack` (received packs) are the
+// two producers of a `PackIndexEntries` slab; feeding the SAME physical
+// bytes through both must yield the same `.idx`/`.rev`/`.mtimes` output, or
+// the two producers have silently forked on stride, digest width, or
+// emission order.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('index pass equivalence — anti-producer-fork oracle', () => {
+  describe('Given a pack built by buildPack, then re-indexed via indexQuarantinedPack, When both producers write their sibling artifacts', () => {
+    it('Then both producers agree byte-for-byte on the .idx, .rev and .mtimes bytes', async () => {
+      // Arrange — two similar blobs so buildPack's delta path has a real
+      // chance to emit an OFS_DELTA, exercising both producers' delta
+      // handling alongside the base-entry case.
+      const ctx = createMemoryContext();
+      const idA = await writeObject(ctx, {
+        type: 'blob',
+        content: ENCODER.encode('anti-producer-fork base content'),
+        id: '' as ObjectId,
+      });
+      const idB = await writeObject(ctx, {
+        type: 'blob',
+        content: ENCODER.encode('anti-producer-fork base content, extended a little'),
+        id: '' as ObjectId,
+      });
+      const built = await buildPack(ctx, { oids: [idA, idB], delta: true });
+      const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_s3_oracle`;
+      await ctx.fs.write(tmpPath, built.bytes);
+
+      // Act — index the EXACT SAME bytes buildPack produced, through the
+      // OTHER producer.
+      const reindexed = await indexQuarantinedPack(ctx, tmpPath, built.bytes.length, async () => {
+        await ctx.fs.rmRecursive(tmpPath);
+      });
+      const packChecksum = hexToBytes(built.sha);
+      const mtimeOf = (): number => 0;
+      const fromBuild = sortPackIndexEntries(built.entries);
+      const fromReindex = sortPackIndexEntries(reindexed);
+
+      // Assert
+      expect(serializePackIndex(fromReindex, packChecksum)).toEqual(
+        serializePackIndex(fromBuild, packChecksum),
+      );
+      expect(serializePackRevIndex(fromReindex, packChecksum)).toEqual(
+        serializePackRevIndex(fromBuild, packChecksum),
+      );
+      expect(serializeCruftMtimes(fromReindex, packChecksum, mtimeOf)).toEqual(
+        serializeCruftMtimes(fromBuild, packChecksum, mtimeOf),
+      );
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// index pass equivalence — the base cache budget sweep. The base
+// cache is an optimisation over an already-correct walk: every corpus case
+// runs TWICE, at baseCacheMaxBytes 0 and at the shipped default, and the two
+// runs must agree on everything except latency. `budget 0` is not a special
+// case in the implementation (createLruCache(0, …)'s `byteSize > maxSizeBytes`
+// guard simply never admits an entry), so this sweep is what proves that
+// degenerate path stays correct rather than merely "never crashes".
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BASE_CACHE_BUDGET_SWEEP: ReadonlyArray<number> = [0, INDEX_PASS_BASE_CACHE_MAX_BYTES];
+
+describe('index pass equivalence — base cache budget sweep', () => {
+  const DEEP_CHAIN_TIMEOUT_MS = 30_000;
+
+  for (const corpusCase of INDEX_PASS_CORPUS) {
+    describe(`Given the "${corpusCase.name}" corpus case`, () => {
+      describe('When walkPackEntries walks it at baseCacheMaxBytes 0 and at the default', () => {
+        it(
+          'Then both runs produce the identical (id, crc32, offset) set',
+          async () => {
+            // Arrange
+            const results: ReadonlyArray<
+              ReadonlyArray<{
+                readonly id: string;
+                readonly crc32: number;
+                readonly offset: number;
+              }>
+            > = await Promise.all(
+              BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes) => {
+                const ctx = createMemoryContext();
+                const entries = await corpusCase.entries(ctx);
+                const built = await buildSyntheticPack(ctx, entries);
+                const options: IndexPackOptions = { baseCacheMaxBytes };
+
+                // Act
+                const result = await walkPackEntries(ctx, built.packBytes, undefined, options);
+                return byOffsetAscending(result);
+              }),
+            );
+
+            // Assert
+            expect(results[1]).toEqual(results[0]);
+          },
+          corpusCase.name === 'ofs-chain-depth-1000' ? DEEP_CHAIN_TIMEOUT_MS : undefined,
+        );
+      });
+
+      describe('When indexQuarantinedPack indexes it at baseCacheMaxBytes 0 and at the default', () => {
+        it(
+          'Then both runs produce byte-identical .idx and .rev output',
+          async () => {
+            // Arrange
+            const serialized = await Promise.all(
+              BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes, i) => {
+                const ctx = createMemoryContext();
+                const entries = await corpusCase.entries(ctx);
+                const built = await buildSyntheticPack(ctx, entries);
+                const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_budget_sweep_${i}`;
+                await ctx.fs.write(tmpPath, built.packBytes);
+                const options: IndexPackOptions = { baseCacheMaxBytes };
+
+                // Act
+                const view = await indexQuarantinedPack(
+                  ctx,
+                  tmpPath,
+                  built.packBytes.length,
+                  async () => {
+                    await ctx.fs.rmRecursive(tmpPath);
+                  },
+                  options,
+                );
+                const packChecksum = built.packBytes.slice(-ctx.hash.digestLength);
+                const sorted = sortPackIndexEntries(view);
+                return {
+                  idx: serializePackIndex(sorted, packChecksum),
+                  rev: serializePackRevIndex(sorted, packChecksum),
+                };
+              }),
+            );
+
+            // Assert
+            expect(serialized[1]?.idx).toEqual(serialized[0]?.idx);
+            expect(serialized[1]?.rev).toEqual(serialized[0]?.rev);
+          },
+          corpusCase.name === 'ofs-chain-depth-1000' ? DEEP_CHAIN_TIMEOUT_MS : undefined,
+        );
+      });
+    });
+  }
+});
+
+describe('Given one session walked twice, the second walk asking for a different cache budget', () => {
+  describe('When the second walk would hit the cache the first walk filled', () => {
+    it('Then it gets the budget it asked for, not the budget the session was first opened with', async () => {
+      // Arrange — one base with one child, so the root is cached in pass 1 and
+      // re-read in pass 2 only on a miss. The session is shared deliberately:
+      // the slot is keyed on it, and a slot that ignored the later budget would
+      // serve the first walk's cache to the second.
+      const ctx = createMemoryContext();
+      const base = new Uint8Array(4096).fill(7);
+      const target = new Uint8Array(4097).fill(7);
+      const { packBytes } = await buildSyntheticPack(ctx, [
+        { kind: 'base', type: 'blob', content: base },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: target },
+      ]);
+      const inflateCallsFor = async (baseCacheMaxBytes: number): Promise<number> => {
+        const spy = vi.fn(ctx.compressor.streamInflate);
+        const spyCtx: Context = {
+          ...ctx,
+          compressor: { ...ctx.compressor, streamInflate: spy },
+        };
+        await walkPackEntries(spyCtx, packBytes, undefined, { baseCacheMaxBytes });
+        return spy.mock.calls.length;
+      };
+
+      // Act — a generous budget first, then none at all, over the same session.
+      const withCache = await inflateCallsFor(1024 * 1024);
+      const withoutCache = await inflateCallsFor(0);
+
+      // Assert — disabling the cache costs the root's second read. If the slot
+      // ignored the second budget, both numbers would be equal.
+      expect(withoutCache).toBe(withCache + 1);
+    });
+  });
+});
+
+describe('Given two REF deltas naming one base the external resolver cannot find', () => {
+  describe('When the pack is walked', () => {
+    it('Then the resolver is consulted once for that oid, not once per delta', async () => {
+      // Arrange — a not-found answer is cached too, which is the whole reason
+      // the indexer records `{ found: false }`. Without it the refusal is
+      // identical, so only the call count can observe the memoisation.
+      const ctx = createMemoryContext();
+      const baseContent = ENCODER.encode('absent shared base');
+      const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+      const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+      baseRaw.set(baseHeader, 0);
+      baseRaw.set(baseContent, baseHeader.length);
+      const baseId = await ctx.hash.hashHex(baseRaw);
+      const { packBytes } = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent: ENCODER.encode('absent shared base, first derivation'),
+        } as EntrySpec,
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent: ENCODER.encode('absent shared base, second derivation'),
+        } as EntrySpec,
+      ]);
+      const resolve = vi.fn<ExternalBaseResolver>(async () => undefined);
+
+      // Act
+      let caught: unknown;
+      try {
+        await walkPackEntries(ctx, packBytes, resolve);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual(
+        expect.objectContaining({
+          code: 'INVALID_PACK_HEADER',
+          reason: expect.stringContaining('unresolved delta'),
+        }),
+      );
+      expect(resolve).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe('index pass equivalence — base cache budget sweep, thin-pack half', () => {
+  const buildThinPackForBudgetSweep = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const baseContent = ENCODER.encode('budget-sweep thin-pack base content');
+    const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+    const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+    baseRaw.set(baseHeader, 0);
+    baseRaw.set(baseContent, baseHeader.length);
+    const baseId = await ctx.hash.hashHex(baseRaw);
+    const targetContent = ENCODER.encode('budget-sweep thin-pack derived content');
+    const { packBytes } = await buildSyntheticPack(ctx, [
+      { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent } as EntrySpec,
+    ]);
+    return { packBytes, baseId, baseContent };
+  };
+
+  describe('Given a thin pack whose external base resolver finds the base, When it is walked at base cache budget 0 and at the default', () => {
+    it('Then both budgets resolve the delta to the identical entry set', async () => {
+      // Arrange
+      const results = await Promise.all(
+        BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes) => {
+          const ctx = createMemoryContext();
+          const { packBytes, baseId, baseContent } = await buildThinPackForBudgetSweep(ctx);
+          const resolveBase: ExternalBaseResolver = async (oid) =>
+            oid === baseId ? { type: 'blob', content: baseContent } : undefined;
+          const options: IndexPackOptions = { baseCacheMaxBytes };
+
+          // Act
+          return walkPackEntries(ctx, packBytes, resolveBase, options);
+        }),
+      );
+
+      // Assert
+      expect(results[1]).toEqual(results[0]);
+    });
+  });
+
+  describe('Given a thin pack whose external base resolver never finds the base, When it is walked at base cache budget 0 and at the default', () => {
+    it('Then both budgets refuse with the identical error data', async () => {
+      // Arrange
+      const caught = await Promise.all(
+        BASE_CACHE_BUDGET_SWEEP.map(async (baseCacheMaxBytes) => {
+          const ctx = createMemoryContext();
+          const { packBytes } = await buildThinPackForBudgetSweep(ctx);
+          const resolveBase: ExternalBaseResolver = async () => undefined;
+          const options: IndexPackOptions = { baseCacheMaxBytes };
+
+          // Act
+          try {
+            await walkPackEntries(ctx, packBytes, resolveBase, options);
+            return undefined;
+          } catch (err) {
+            return (err as TsgitError).data;
+          }
+        }),
+      );
+
+      // Assert
+      expect(caught[1]).toEqual(caught[0]);
+      expect(caught[0]).toEqual({
+        code: 'INVALID_PACK_HEADER',
+        reason: 'pack has 1 unresolved delta',
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// the base cache's own invariants: bounded, keyed so two passes on one
+// session never collide, cleared on both the success and the failure exit.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('index pass base cache — invariants', () => {
+  describe('Given two packs each carrying a filler base-with-child ahead of a second base-with-child at the identical offset but with different content, When both are walked CONCURRENTLY over one session', () => {
+    it("Then each pack's own result matches its own oracle — pass B's write never leaks into pass A's read of the same offset", async () => {
+      // Arrange — the filler pair is byte-identical in both packs, so the
+      // second (colliding) base lands at the SAME offset in both — the only
+      // way to construct a genuine collision on `o:<passId>:<offset>`
+      // without control over internal timing. Concurrency (not two
+      // sequential calls) is essential: a single call's own pass-1 write for
+      // an offset always precedes that SAME call's pass-2 read of it, so a
+      // collision is unobservable unless a DIFFERENT, still-in-flight pass
+      // writes the identical key in between — which requires the two
+      // `walkPackEntries` calls to genuinely overlap. Confirmed against a
+      // deliberately-broken build (passId forced to a constant): this exact
+      // construction reproduces cross-pack corruption (an `INVALID_DELTA`
+      // from a delta applied against the wrong pack's cached base) under
+      // `Promise.all`, and stays green as written here.
+      const ctx = createMemoryContext();
+      const fillerBase = ENCODER.encode('shared filler base content, identical in both packs');
+      const fillerTarget = ENCODER.encode('shared filler derived content, identical in both packs');
+      const packAEntries: EntrySpec[] = [
+        { kind: 'base', type: 'blob', content: fillerBase },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: fillerTarget },
+        { kind: 'base', type: 'blob', content: ENCODER.encode('pack A colliding base content') },
+        {
+          kind: 'ofs-delta',
+          baseIndex: 2,
+          targetContent: ENCODER.encode('pack A colliding derived'),
+        },
+      ];
+      const packBEntries: EntrySpec[] = [
+        { kind: 'base', type: 'blob', content: fillerBase },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: fillerTarget },
+        {
+          kind: 'base',
+          type: 'blob',
+          content: ENCODER.encode('pack B colliding — DIFFERENT!!'),
+        },
+        {
+          kind: 'ofs-delta',
+          baseIndex: 2,
+          targetContent: ENCODER.encode('pack B colliding derived'),
+        },
+      ];
+      const builtA = await buildSyntheticPack(ctx, packAEntries);
+      const builtB = await buildSyntheticPack(ctx, packBEntries);
+      expect(builtA.offsets[2]).toBe(builtB.offsets[2]);
+      const expectedA = byOffsetAscending(oracleWalkedEntries(builtA, ctx.hash.digestLength));
+      const expectedB = byOffsetAscending(oracleWalkedEntries(builtB, ctx.hash.digestLength));
+
+      // Act
+      const [resultA, resultB] = await Promise.all([
+        walkPackEntries(ctx, builtA.packBytes),
+        walkPackEntries(ctx, builtB.packBytes),
+      ]);
+
+      // Assert
+      expect(byOffsetAscending(resultA)).toEqual(expectedA);
+      expect(byOffsetAscending(resultB)).toEqual(expectedB);
+    });
+  });
+
+  describe('Given a thin pack whose external base resolver is spied, When it is walked twice over one session', () => {
+    it('Then the resolver is invoked once per walk — the cache is cleared, not reused, across passes', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const baseContent = ENCODER.encode('clear-on-success base content');
+      const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+      const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+      baseRaw.set(baseHeader, 0);
+      baseRaw.set(baseContent, baseHeader.length);
+      const baseId = await ctx.hash.hashHex(baseRaw);
+      const buildPack = async (label: string) => {
+        const { packBytes } = await buildSyntheticPack(ctx, [
+          {
+            kind: 'ref-delta',
+            baseId,
+            baseUncompressed: baseContent,
+            targetContent: ENCODER.encode(`clear-on-success derived ${label}`),
+          } as EntrySpec,
+        ]);
+        return packBytes;
+      };
+      const resolveBase = vi.fn<ExternalBaseResolver>(async (oid) =>
+        oid === baseId ? { type: 'blob', content: baseContent } : undefined,
+      );
+
+      // Act
+      await walkPackEntries(ctx, await buildPack('first'), resolveBase);
+      await walkPackEntries(ctx, await buildPack('second'), resolveBase);
+
+      // Assert — a leaked cache entry from the first pass would serve the
+      // second pass's identical base oid without ever calling the resolver.
+      expect(resolveBase).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Given a first pack that resolves one external base then refuses on an unrelated unresolved delta, When a second pack needing that same external base is walked over the same session', () => {
+    it('Then the second pack still calls the resolver — the cache is cleared on the failure exit, not only the success one', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const baseContent = ENCODER.encode('clear-on-failure base content');
+      const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+      const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+      baseRaw.set(baseHeader, 0);
+      baseRaw.set(baseContent, baseHeader.length);
+      const baseId = await ctx.hash.hashHex(baseRaw);
+      const unresolvableBaseId = 'f'.repeat(40);
+      const resolveBase = vi.fn<ExternalBaseResolver>(async (oid) =>
+        oid === baseId ? { type: 'blob', content: baseContent } : undefined,
+      );
+      const { packBytes: firstPackBytes } = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent: ENCODER.encode('clear-on-failure resolvable derived'),
+        },
+        {
+          kind: 'ref-delta',
+          baseId: unresolvableBaseId,
+          baseUncompressed: ENCODER.encode('never present'),
+          targetContent: ENCODER.encode('clear-on-failure unresolvable derived'),
+        },
+      ] as EntrySpec[]);
+      const { packBytes: secondPackBytes } = await buildSyntheticPack(ctx, [
+        {
+          kind: 'ref-delta',
+          baseId,
+          baseUncompressed: baseContent,
+          targetContent: ENCODER.encode('clear-on-failure second-pack derived'),
+        } as EntrySpec,
+      ]);
+
+      // Act
+      let firstCallThrew = false;
+      try {
+        await walkPackEntries(ctx, firstPackBytes, resolveBase);
+      } catch {
+        firstCallThrew = true;
+      }
+      await walkPackEntries(ctx, secondPackBytes, resolveBase);
+
+      // Assert
+      expect(firstCallThrew).toBe(true);
+      expect(resolveBase).toHaveBeenCalledWith(baseId);
+      const callsForBase = resolveBase.mock.calls.filter(([oid]) => oid === baseId);
+      expect(callsForBase).toHaveLength(2);
+    });
+  });
+
+  describe('Given a pack with more base-with-children roots than the base cache holds entries for, every base tiny enough that the byte budget alone would never evict, When it is walked', () => {
+    it('Then the entry cap evicts the earliest roots independently of the byte budget', async () => {
+      // Arrange — one base blob + one ofs-delta child per pair, so pass 1
+      // inflates 2 entries and pass 2 inflates the child (always) plus the
+      // root (only on a cache miss) per pair. `ENTRY_CAP_OVERFLOW` pairs
+      // exceed the cache's entry cap while their combined bytes stay a tiny
+      // fraction of the byte budget explicitly forced generous below — an
+      // isolated entry-count guard, never the byte guard `createLruCache`
+      // already proves independently (at the default budget, this many
+      // entries' own per-entry overhead alone would exceed it, conflating
+      // the two guards).
+      const ENTRY_CAP_OVERFLOW = 2;
+      const FORCED_ENTRY_CAP = 4;
+      const pairCount = FORCED_ENTRY_CAP + ENTRY_CAP_OVERFLOW;
+      const GENEROUS_BYTE_BUDGET = 64 * 1024 * 1024;
+      const ctx = createMemoryContext();
+      const entries: EntrySpec[] = [];
+      for (let i = 0; i < pairCount; i += 1) {
+        entries.push({ kind: 'base', type: 'blob', content: new Uint8Array([i & 0xff]) });
+        entries.push({
+          kind: 'ofs-delta',
+          baseIndex: entries.length - 1,
+          targetContent: new Uint8Array([i & 0xff, 1]),
+        });
+      }
+      const built = await buildSyntheticPack(ctx, entries);
+      const streamInflateSpy = vi.fn(ctx.compressor.streamInflate);
+      const spyCtx: Context = {
+        ...ctx,
+        compressor: { ...ctx.compressor, streamInflate: streamInflateSpy },
+      };
+      const options: IndexPackOptions = {
+        baseCacheMaxBytes: GENEROUS_BYTE_BUDGET,
+        baseCacheMaxEntries: FORCED_ENTRY_CAP,
+      };
+
+      // Act
+      await walkPackEntries(spyCtx, built.packBytes, undefined, options);
+
+      // Assert — pass 1: 2 inflates per pair (base + delta). pass 2: 1
+      // inflate per pair for the child (always) plus 1 more for every root
+      // NOT served from cache. If the entry cap bound correctly, exactly
+      // `ENTRY_CAP_OVERFLOW` of the earliest roots were evicted and missed;
+      // fewer misses would mean the entry cap let the pack overflow it.
+      const expectedCalls = 3 * pairCount + ENTRY_CAP_OVERFLOW;
+      expect(streamInflateSpy).toHaveBeenCalledTimes(expectedCalls);
+    });
+  });
+
+  describe('Given a zero-length base entry with one child, When the child is resolved through the base cache', () => {
+    it('Then it is cached and served without the sizer ever needing a non-positive byteSize', async () => {
+      // Arrange — the fixed per-entry overhead is what keeps the sizer's
+      // result positive for a zero-length base's content; if a future edit
+      // dropped that overhead, `LruCache.set`'s `byteSize must be positive`
+      // guard would throw synchronously out of pass 1, uncaught by any
+      // `TsgitError` refusal path.
+      const ctx = createMemoryContext();
+      const entries: EntrySpec[] = [
+        { kind: 'base', type: 'blob', content: new Uint8Array(0) },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: ENCODER.encode('derived from empty') },
+      ];
+      const built = await buildSyntheticPack(ctx, entries);
+      const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+      // Act
+      const result = await walkPackEntries(ctx, built.packBytes);
+
+      // Assert
+      expect(byOffsetAscending(result)).toEqual(expected);
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // walkPackEntries — declared-size cap parity between the in-memory and disk
 // byte sources
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2846,10 +4009,10 @@ describe('walkPackEntries', () => {
     };
 
     describe('When walkPackEntries is called without an external resolver', () => {
-      it('Then throws INVALID_PACK_HEADER naming the unresolved REF_DELTA base', async () => {
+      it('Then throws "pack has 1 unresolved delta"', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, baseId } = await buildThinPack(ctx);
+        const { packBytes } = await buildThinPack(ctx);
 
         // Act
         let caught: unknown;
@@ -2859,12 +4022,12 @@ describe('walkPackEntries', () => {
           caught = err;
         }
 
-        // Assert
+        // Assert — git's own count, singular at one; the base id is no
+        // longer named.
         expect(caught).toBeInstanceOf(TsgitError);
         const tsErr = caught as TsgitError;
         expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
-        expect((tsErr.data as { reason: string }).reason).toContain('unresolved REF_DELTA');
-        expect((tsErr.data as { reason: string }).reason).toContain(baseId);
+        expect((tsErr.data as { reason: string }).reason).toBe('pack has 1 unresolved delta');
       });
     });
 
@@ -2894,10 +4057,10 @@ describe('walkPackEntries', () => {
     });
 
     describe('When walkPackEntries is called with a resolver that returns undefined', () => {
-      it('Then still throws INVALID_PACK_HEADER because the base is unresolvable', async () => {
+      it('Then still throws "pack has 1 unresolved delta"', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, baseId } = await buildThinPack(ctx);
+        const { packBytes } = await buildThinPack(ctx);
 
         const resolveBase: ExternalBaseResolver = async (_oid) => undefined;
 
@@ -2913,7 +4076,35 @@ describe('walkPackEntries', () => {
         expect(caught).toBeInstanceOf(TsgitError);
         const tsErr = caught as TsgitError;
         expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
-        expect((tsErr.data as { reason: string }).reason).toContain(baseId);
+        expect((tsErr.data as { reason: string }).reason).toBe('pack has 1 unresolved delta');
+      });
+    });
+
+    describe('When walkPackEntries is called with a resolver that returns a base of the wrong size', () => {
+      it('Then throws INVALID_DELTA instead of silently reconstructing garbage', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, baseId, baseContent } = await buildThinPack(ctx);
+        const wrongSizedContent = new Uint8Array(baseContent.length + 5);
+
+        const resolveBase: ExternalBaseResolver = async (oid) => {
+          if (oid !== baseId) return undefined;
+          return { type: 'blob', content: wrongSizedContent };
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await walkPackEntries(ctx, packBytes, resolveBase);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const tsErr = caught as TsgitError;
+        expect(tsErr.data.code).toBe('INVALID_DELTA');
+        expect((tsErr.data as { reason: string }).reason).toContain('source length mismatch');
       });
     });
   });
@@ -3600,6 +4791,354 @@ describe('disk-walk window bookkeeping', () => {
         expect((caught as { data: { code: string; reason: string } }).data.reason).toBe(
           'unexpected end of deflate stream',
         );
+      });
+    });
+  });
+});
+
+describe('verifyPackTrailer', () => {
+  describe('Given a pack shorter than header + trailer', () => {
+    describe('When verifyPackTrailer runs', () => {
+      it('Then throws INVALID_PACK_HEADER (too short)', async () => {
+        // Arrange — 31 bytes is one byte short of the SHA-1 minimum (12-byte
+        // header + 20-byte trailer). Mirrors fetchPack's own too-short guard
+        // test above (`receivePackToQuarantine`'s twin check), but exercises
+        // this in-memory verifier's own length guard directly.
+        const ctx = createMemoryContext();
+        const tooShort = new Uint8Array(31);
+        const sut = verifyPackTrailer;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(tooShort, ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('INVALID_PACK_HEADER');
+        expect(data.reason).toContain('trailer');
+        expect(data.reason).toContain('too short');
+      });
+    });
+  });
+
+  describe('Given a pack exactly header + trailer bytes long (empty-body boundary)', () => {
+    describe('When verifyPackTrailer runs', () => {
+      it('Then accepts it, returning the header digest', async () => {
+        // Arrange — boundary: 12-byte header + trailerLen = the shortest
+        // legal pack (zero body bytes). Together with the too-short test
+        // above, this pins the `<` vs `<=` mutant on the length guard.
+        const ctx = createMemoryContext();
+        const header = new Uint8Array(12);
+        const dv = new DataView(header.buffer);
+        dv.setUint32(0, 0x5041434b);
+        dv.setUint32(4, 2);
+        dv.setUint32(8, 0);
+        const expectedHex = await ctx.hash.hashHex(header);
+        const packBytes = new Uint8Array(12 + ctx.hash.digestLength);
+        packBytes.set(header, 0);
+        packBytes.set(hexToBytes(expectedHex), 12);
+        const sut = verifyPackTrailer;
+
+        // Act
+        const result = await sut(packBytes, ctx);
+
+        // Assert
+        expect(result).toBe(expectedHex);
+      });
+    });
+  });
+});
+
+describe('resolveFromRoots — non-blob base types with a child', () => {
+  describe.each([
+    [
+      'commit',
+      `tree ${'0'.repeat(40)}\nauthor a <a@a> 0 +0000\ncommitter a <a@a> 0 +0000\n\nmsg\n`,
+    ],
+    ['tree', ''],
+    ['tag', `object ${'0'.repeat(40)}\ntype commit\ntag t\ntagger a <a@a> 0 +0000\n\nm\n`],
+  ] as const)('Given a %s base entry with one OFS_DELTA child', (type, content) => {
+    describe('When walkPackEntries walks it', () => {
+      it("Then the child resolves against the parent's real content", async () => {
+        // Arrange — only a blob-typed root gets exercised with a child
+        // elsewhere in this file; commit/tree/tag roots are only ever tested
+        // childless, so a delta chained onto one never walks pass 2's root
+        // loop for that type.
+        const ctx = createMemoryContext();
+        const entries: EntrySpec[] = [
+          { kind: 'base', type, content: ENCODER.encode(content) },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: ENCODER.encode(`${content}, appended by the delta child`),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes);
+
+        // Assert
+        expect(byOffsetAscending(result)).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('resolveFromRoots — a delta chained onto a still-unresolved thin base', () => {
+  describe('Given a thin REF_DELTA with an OFS_DELTA chained onto its own offset', () => {
+    describe('When the pack is walked with a resolver that finds the external base', () => {
+      it("Then the OFS_DELTA child resolves against the REF_DELTA's real resolved content, not its raw delta bytes", async () => {
+        // Arrange — before the external base is resolved, entry0 (the
+        // REF_DELTA) is not yet a valid "root": treating it as one anyway
+        // (isBaseType wrongly true for delta types, or the >0 guard
+        // inverted to <=0) hands walkFromRoot entry0's raw, unresolved
+        // delta-instruction bytes as if they were real content, corrupting
+        // entry1's reconstruction.
+        const ctx = createMemoryContext();
+        const baseContent = ENCODER.encode('thin-base-with-ofs-child external base content');
+        const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+        const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+        baseRaw.set(baseHeader, 0);
+        baseRaw.set(baseContent, baseHeader.length);
+        const baseId = await ctx.hash.hashHex(baseRaw);
+        const entries: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId,
+            baseUncompressed: baseContent,
+            targetContent: ENCODER.encode('thin-base-with-ofs-child entry0 reconstructed'),
+          },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: ENCODER.encode('thin-base-with-ofs-child entry1, chained onto entry0'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const resolveBase: ExternalBaseResolver = async (oid) =>
+          oid === baseId ? { type: 'blob', content: baseContent } : undefined;
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes, resolveBase);
+
+        // Assert
+        expect(byOffsetAscending(result)).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('resolveFromRoots — a root with one already-resolved child and one still-unresolved child', () => {
+  describe('Given a duplicate-oid base pair where only the second base owns an additional OFS_DELTA child', () => {
+    describe('When the pack is walked', () => {
+      it("Then the second base's own unresolved child is still resolved, not skipped because its sibling base's shared child already is", async () => {
+        // Arrange — ord0 and ord1 share an oid and both list the REF_DELTA
+        // (ord2) as a child; ord0's walk resolves ord2 first. By the time
+        // the loop reaches ord1, its children are [ord2 (resolved), ord3
+        // (not)]. `every` correctly still descends (not ALL resolved);
+        // `some` would wrongly skip ord1 entirely, leaving ord3 (reachable
+        // only through ord1) permanently unresolved.
+        const ctx = createMemoryContext();
+        const sharedContent = ENCODER.encode('every-vs-some duplicate-oid shared base content');
+        const sharedId = await computeBlobId(ctx, sharedContent);
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: sharedContent },
+          { kind: 'base', type: 'blob', content: sharedContent },
+          {
+            kind: 'ref-delta',
+            baseId: sharedId,
+            baseUncompressed: sharedContent,
+            targetContent: ENCODER.encode('every-vs-some shared ref-delta child target'),
+          },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 1,
+            targetContent: ENCODER.encode('every-vs-some second-base-only ofs-delta child'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes);
+
+        // Assert
+        expect(byOffsetAscending(result)).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('resolveExternalBases — a ref-delta already resolved in-pack', () => {
+  describe('Given one REF_DELTA whose base is in the pack alongside a second REF_DELTA whose base is external', () => {
+    describe('When the pack is walked with an external resolver', () => {
+      it('Then the resolver is consulted only for the still-unresolved delta, never for the one pass 2 already resolved in-pack', async () => {
+        // Arrange — `resolveExternalBases` iterates every recorded
+        // REF_DELTA, not only the unresolved ones; the `isResolved` guard
+        // is what keeps it from re-deriving (and re-querying the resolver
+        // for) a delta pass 2 already settled against its in-pack base.
+        const ctx = createMemoryContext();
+        const inPackBaseContent = ENCODER.encode('resolveExternalBases in-pack base content');
+        const inPackBaseId = await computeBlobId(ctx, inPackBaseContent);
+        const externalBaseContent = ENCODER.encode('resolveExternalBases external base content');
+        const externalHeader = ENCODER.encode(`blob ${externalBaseContent.length}\0`);
+        const externalRaw = new Uint8Array(externalHeader.length + externalBaseContent.length);
+        externalRaw.set(externalHeader, 0);
+        externalRaw.set(externalBaseContent, externalHeader.length);
+        const externalBaseId = await ctx.hash.hashHex(externalRaw);
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: inPackBaseContent },
+          {
+            kind: 'ref-delta',
+            baseId: inPackBaseId,
+            baseUncompressed: inPackBaseContent,
+            targetContent: ENCODER.encode('resolveExternalBases in-pack-resolved target'),
+          },
+          {
+            kind: 'ref-delta',
+            baseId: externalBaseId,
+            baseUncompressed: externalBaseContent,
+            targetContent: ENCODER.encode('resolveExternalBases externally-resolved target'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const resolveBase = vi.fn<ExternalBaseResolver>(async (oid) =>
+          oid === externalBaseId ? { type: 'blob', content: externalBaseContent } : undefined,
+        );
+
+        // Act
+        await walkPackEntries(ctx, built.packBytes, resolveBase);
+
+        // Assert
+        expect(resolveBase).toHaveBeenCalledTimes(1);
+        expect(resolveBase).toHaveBeenCalledWith(externalBaseId);
+      });
+    });
+  });
+});
+
+describe('resolveExternalCached — two distinct external oids in one walk', () => {
+  describe('Given two REF_DELTAs whose bases are both external and both found, but under different oids', () => {
+    describe('When the pack is walked', () => {
+      it('Then the resolver is consulted once per distinct oid, not collapsed onto a shared cache key', async () => {
+        // Arrange — `externalCacheKey` must vary with the oid; a key that
+        // ignored it would let the second delta's cache lookup wrongly hit
+        // the first delta's cached (different) base.
+        const ctx = createMemoryContext();
+        const makeBase = async (label: string) => {
+          const content = ENCODER.encode(`external-cache-key ${label} base content`);
+          const header = ENCODER.encode(`blob ${content.length}\0`);
+          const raw = new Uint8Array(header.length + content.length);
+          raw.set(header, 0);
+          raw.set(content, header.length);
+          const id = await ctx.hash.hashHex(raw);
+          return { id, content };
+        };
+        const baseA = await makeBase('a');
+        const baseB = await makeBase('b');
+        const entries: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId: baseA.id,
+            baseUncompressed: baseA.content,
+            targetContent: ENCODER.encode('external-cache-key target a'),
+          },
+          {
+            kind: 'ref-delta',
+            baseId: baseB.id,
+            baseUncompressed: baseB.content,
+            targetContent: ENCODER.encode('external-cache-key target b'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const resolveBase = vi.fn<ExternalBaseResolver>(async (oid) => {
+          if (oid === baseA.id) return { type: 'blob', content: baseA.content };
+          if (oid === baseB.id) return { type: 'blob', content: baseB.content };
+          return undefined;
+        });
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = walkPackEntries;
+        const result = await sut(ctx, built.packBytes, resolveBase);
+
+        // Assert
+        expect(byOffsetAscending(result)).toEqual(expected);
+        expect(resolveBase).toHaveBeenCalledTimes(2);
+        expect(resolveBase.mock.calls.map(([oid]) => oid).sort()).toEqual(
+          [baseA.id, baseB.id].sort(),
+        );
+      });
+    });
+  });
+});
+
+describe('baseCacheSlotFor — session-scoped slot reuse', () => {
+  describe('Given two sequential walks over one session with identical cache options', () => {
+    describe('When the second walk asks for the same budget as the first', () => {
+      it("Then the second walk reuses the first walk's cache slot instead of rebuilding one", async () => {
+        // Arrange — matching maxBytes AND maxEntries must hit the early
+        // return in `baseCacheSlotFor`; a broken guard (or a guard whose
+        // block never fires, or whose result is never persisted) rebuilds a
+        // fresh LRU on every call regardless of a budget match.
+        const ctx = createMemoryContext();
+        const options: IndexPackOptions = { baseCacheMaxBytes: 4096, baseCacheMaxEntries: 8 };
+        const { packBytes: firstPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-reuse first pack') },
+        ]);
+        const { packBytes: secondPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-reuse second pack') },
+        ]);
+        createLruCacheSpy.mockClear();
+
+        // Act
+        await walkPackEntries(ctx, firstPack, undefined, options);
+        await walkPackEntries(ctx, secondPack, undefined, options);
+
+        // Assert
+        expect(createLruCacheSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('When the second walk asks for a different maxEntries budget than the first', () => {
+      it('Then the second walk builds a fresh cache slot rather than reusing the mismatched one', async () => {
+        // Arrange — only `maxEntries` differs between the two calls;
+        // `maxBytes` stays identical. A guard that dropped (or inverted)
+        // the maxEntries half of the comparison would wrongly treat these
+        // as the same slot.
+        const ctx = createMemoryContext();
+        const { packBytes: firstPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-rebuild first pack') },
+        ]);
+        const { packBytes: secondPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-rebuild second pack') },
+        ]);
+        createLruCacheSpy.mockClear();
+
+        // Act
+        await walkPackEntries(ctx, firstPack, undefined, {
+          baseCacheMaxBytes: 4096,
+          baseCacheMaxEntries: 8,
+        });
+        await walkPackEntries(ctx, secondPack, undefined, {
+          baseCacheMaxBytes: 4096,
+          baseCacheMaxEntries: 16,
+        });
+
+        // Assert
+        expect(createLruCacheSpy).toHaveBeenCalledTimes(2);
+        expect(createLruCacheSpy.mock.calls[1]).toEqual([4096, 16]);
       });
     });
   });

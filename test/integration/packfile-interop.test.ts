@@ -23,12 +23,14 @@ import { type ObjectId, serializeObject } from '../../src/domain/objects/index.j
 import { crc32 } from '../../src/domain/storage/crc32.js';
 import { encodeDelta } from '../../src/domain/storage/delta-encode.js';
 import { encodePackEntryHeader, PACK_ENTRY_TYPE } from '../../src/domain/storage/pack-entry.js';
+import { sortPackIndexEntries } from '../../src/domain/storage/pack-order.js';
 import {
   type PackWriterBaseEntry,
   type PackWriterEntry,
   serializePackfile,
   serializePackIndex,
 } from '../../src/domain/storage/pack-writer.js';
+import { packIndexEntriesOf, sealPackIndex } from '../fixtures/storage/pack-index-entries.js';
 import {
   GIT_AVAILABLE,
   initBothRepos,
@@ -99,11 +101,15 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
             offset: packResult.entries[i]?.offset ?? 0,
           });
         }
-        const idxBody = serializePackIndex(indexEntries, packTrailer);
-        const idxTrailerBytes = await ctx.hash.hash(idxBody);
-        const idxBytes = new Uint8Array(idxBody.length + idxTrailerBytes.length);
-        idxBytes.set(idxBody, 0);
-        idxBytes.set(idxTrailerBytes, idxBody.length);
+        const idxBody = serializePackIndex(
+          sortPackIndexEntries(packIndexEntriesOf(indexEntries, packTrailer.length)),
+          packTrailer,
+        );
+        const idxBytes = await sealPackIndex(
+          idxBody,
+          (bytes) => ctx.hash.hash(bytes),
+          ctx.hash.digestLength,
+        );
 
         // Drop both into peer and validate.
         runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);
@@ -184,11 +190,15 @@ describe.skipIf(!GIT_AVAILABLE)('packfile + pack-index interop', () => {
             offset: packResult.entries[1]!.offset,
           },
         ];
-        const idxBody = serializePackIndex(indexEntries, packTrailer);
-        const idxTrailerBytes = await ctx.hash.hash(idxBody);
-        const idxBytes = new Uint8Array(idxBody.length + idxTrailerBytes.length);
-        idxBytes.set(idxBody, 0);
-        idxBytes.set(idxTrailerBytes, idxBody.length);
+        const idxBody = serializePackIndex(
+          sortPackIndexEntries(packIndexEntriesOf(indexEntries, packTrailer.length)),
+          packTrailer,
+        );
+        const idxBytes = await sealPackIndex(
+          idxBody,
+          (bytes) => ctx.hash.hash(bytes),
+          ctx.hash.digestLength,
+        );
 
         // Drop both into peer and validate.
         runGit(['-C', pair.peer, 'config', 'gc.auto', '0']);

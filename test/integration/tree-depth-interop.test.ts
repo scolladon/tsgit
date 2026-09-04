@@ -49,7 +49,11 @@ import {
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
-const SETUP_TIMEOUT = 60_000;
+// Measured at ~24 s in isolation, but this hook builds ~2 000 nested trees by
+// spawning git per level, and it runs alongside coverage, parity and the dist
+// build under a full `validate`. A 2.5x margin was not enough — it timed out on
+// three consecutive full runs while passing every time on its own.
+const SETUP_TIMEOUT = 180_000;
 
 const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
   ...runGitEnv(),

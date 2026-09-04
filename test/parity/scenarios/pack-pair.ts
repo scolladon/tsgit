@@ -4,16 +4,17 @@
  * optionally stamped with a non-default header version, always the sole
  * source of its blob (the loose copy is removed).
  */
-import { hexToBytes } from '../../../src/domain/objects/encoding.ts';
 import type { ObjectId } from '../../../src/domain/objects/index.ts';
 import {
   PACK_ENTRY_TYPE,
   serializePackfile,
   serializePackIndex,
+  sortPackIndexEntries,
 } from '../../../src/domain/storage/index.ts';
 import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import { GENERATED_PACK_VERSION } from '../../../src/domain/storage/pack-entry.ts';
 import type { Repository } from '../../../src/repository.ts';
+import { packIndexEntriesOf, sealPackIndex } from '../../fixtures/storage/pack-index-entries.ts';
 
 interface WriteScenarioPackPairOptions {
   readonly name: string;
@@ -68,8 +69,17 @@ export async function writeScenarioPackPair(
 
   // serializePackIndex emits only the pack-checksum half of the 40-byte
   // idx trailer — append the idx-checksum half ourselves.
-  const idxBody = serializePackIndex([{ id, crc32: entry.crc32, offset: entry.offset }], trailer);
-  const idxBytes = concatBytes(idxBody, hexToBytes(await repo.ctx.hash.hashHex(idxBody)));
+  const idxBody = serializePackIndex(
+    sortPackIndexEntries(
+      packIndexEntriesOf([{ id, crc32: entry.crc32, offset: entry.offset }], trailer.length),
+    ),
+    trailer,
+  );
+  const idxBytes = await sealPackIndex(
+    idxBody,
+    (bytes) => repo.ctx.hash.hash(bytes),
+    repo.ctx.hash.digestLength,
+  );
 
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${opts.name}`;
   await repo.ctx.fs.write(`${packBase}.pack`, packBytes);

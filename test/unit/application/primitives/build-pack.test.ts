@@ -19,6 +19,7 @@ import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { crc32 } from '../../../../src/domain/storage/crc32.js';
 import {
   PACK_ENTRY_TYPE,
+  type PackIndexEntries,
   parsePackEntryHeader,
   parsePackHeader,
 } from '../../../../src/domain/storage/index.js';
@@ -50,18 +51,30 @@ async function seedPackConfig(
   __resetConfigCacheForTests();
 }
 
-/** Each result entry's own byte range in `bytes`, derived from `entries`
- *  (offset-sorted by emission) and the trailer boundary. */
+const TRAILER_BYTES = 20;
+
+/** Each result entry's own byte range in `bytes`, derived from the slab's
+ *  own `offsets` (offset-sorted by emission) and the trailer boundary — the
+ *  trailer width is `entries.digestLength`, never the SHA-1-only constant,
+ *  since the last entry's span would otherwise swallow part of a SHA-256
+ *  trailer. */
 function entrySpan(
-  entries: ReadonlyArray<{ readonly offset: number }>,
+  entries: PackIndexEntries,
   index: number,
   bytes: Uint8Array,
 ): { readonly start: number; readonly end: number } {
-  const start = entries[index]!.offset;
-  const next = entries[index + 1]?.offset ?? bytes.length - 20;
+  const start = entries.offsets[index]!;
+  const next =
+    index + 1 < entries.count ? entries.offsets[index + 1]! : bytes.length - entries.digestLength;
   return { start, end: next };
 }
-const TRAILER_BYTES = 20;
+
+/** Decodes the id at slab position `index` — the oid the fixed-width `oids`
+ *  range at that ordinal holds, never a retained per-entry string. */
+function entryIdAt(entries: PackIndexEntries, index: number): ObjectId {
+  const start = index * entries.digestLength;
+  return bytesToHex(entries.oids.subarray(start, start + entries.digestLength)) as ObjectId;
+}
 
 describe('buildPack', () => {
   describe('Given an empty oid list', () => {
@@ -241,13 +254,13 @@ describe('buildPack', () => {
 
         // Assert — one identified triple per oid, in emission order, each
         // offset strictly increasing from the header.
-        expect(result.entries).toHaveLength(2);
-        expect(result.entries[0]?.id).toBe(blobId);
-        expect(result.entries[1]?.id).toBe(treeId);
-        expect(result.entries[0]?.offset).toBe(PACK_HEADER_BYTES);
-        expect(result.entries[1]?.offset).toBeGreaterThan(result.entries[0]?.offset as number);
-        for (const entry of result.entries) {
-          expect(Number.isInteger(entry.crc32)).toBe(true);
+        expect(result.entries.count).toBe(2);
+        expect(entryIdAt(result.entries, 0)).toBe(blobId);
+        expect(entryIdAt(result.entries, 1)).toBe(treeId);
+        expect(result.entries.offsets[0]).toBe(PACK_HEADER_BYTES);
+        expect(result.entries.offsets[1]).toBeGreaterThan(result.entries.offsets[0] as number);
+        for (let i = 0; i < result.entries.count; i += 1) {
+          expect(Number.isInteger(result.entries.crcValues[i])).toBe(true);
         }
       });
     });
@@ -268,8 +281,31 @@ describe('buildPack', () => {
         const result = await buildPack(ctx, { oids });
 
         // Assert
-        const resultIds = new Set(result.entries.map((entry) => entry.id));
+        const resultIds = new Set(
+          Array.from({ length: result.entries.count }, (_, i) => entryIdAt(result.entries, i)),
+        );
         expect(resultIds).toEqual(new Set(oids));
+      });
+    });
+
+    describe('When buildPack runs without delta', () => {
+      it('Then result.emissionOrder is the identity permutation over input.oids', async () => {
+        // Arrange — the base-only route emits in input order, so
+        // emissionOrder must map every ordinal back to itself. A broken loop
+        // (e.g. never running) would leave a zero-filled Uint32Array instead,
+        // which entryIdAt-style consumers (gc's cruft mtimes) would silently
+        // misattribute to oids[0].
+        const ctx = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([4, 2]), id: '' as ObjectId };
+        const blobId = await writeObject(ctx, blob);
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'q.bin', blobId)]);
+        const oids = [blobId, treeId];
+
+        // Act
+        const result = await buildPack(ctx, { oids });
+
+        // Assert
+        expect([...result.emissionOrder]).toEqual(oids.map((_, i) => i));
       });
     });
   });
@@ -320,8 +356,10 @@ describe('buildPack', () => {
         const result = await buildPack(ctx, { oids: [idA, idB], delta: true });
 
         // Assert
-        const types = result.entries.map(
-          (e) => parsePackEntryHeader(result.bytes, e.offset, ctx.hashConfig).type,
+        const types = Array.from(
+          { length: result.entries.count },
+          (_, i) =>
+            parsePackEntryHeader(result.bytes, result.entries.offsets[i]!, ctx.hashConfig).type,
         );
         expect(types).toContain(PACK_ENTRY_TYPE.OFS_DELTA);
       });
@@ -330,37 +368,50 @@ describe('buildPack', () => {
 
   describe('Given delta:true and an input order opposite to the emission sort', () => {
     describe('When buildPack runs', () => {
-      it('Then each entries[] id, crc32, and offset all describe the SAME object', async () => {
-        // Arrange — small blob first in input.oids, big blob second; the
-        // emission sort (size DESC) reorders big-first, small-second, so a
-        // positional id<->entry pairing bug would swap the two objects'
-        // crc32/offset. Both blobs are mutually unrelated so both are
-        // guaranteed base entries, keeping the ground-truth check simple.
-        const ctx = await buildSeededContext();
-        const smallContent = pseudoRandomBytes(51, 10);
-        const bigContent = pseudoRandomBytes(52, 500);
-        const smallId = await writeBlob(ctx, smallContent);
-        const bigId = await writeBlob(ctx, bigContent);
+      it.each([
+        { algorithm: 'sha1' as const, label: 'SHA-1' },
+        { algorithm: 'sha256' as const, label: 'SHA-256' },
+      ])(
+        'Then every entries[] oid, crc32 and offset all describe the SAME object ($label)',
+        async ({ algorithm }) => {
+          // Arrange — small blob first in input.oids, big blob second; the
+          // emission sort (size DESC) reorders big-first, small-second, so an
+          // off-by-one oid<->meta pairing bug would swap the two objects'
+          // crc32/offset. Both blobs are mutually unrelated so both are
+          // guaranteed base entries, keeping the ground-truth check simple.
+          // `W` (the oid stride) is now `entries.digestLength`, an index
+          // stride rather than a string length, so both digest widths must
+          // be exercised.
+          const ctx = await buildSeededContext({ algorithm });
+          const smallContent = pseudoRandomBytes(51, 10);
+          const bigContent = pseudoRandomBytes(52, 500);
+          const smallId = await writeBlob(ctx, smallContent);
+          const bigId = await writeBlob(ctx, bigContent);
 
-        // Act
-        const result = await buildPack(ctx, { oids: [smallId, bigId], delta: true });
+          // Act
+          const result = await buildPack(ctx, { oids: [smallId, bigId], delta: true });
 
-        // Assert
-        expect(result.entries).toHaveLength(2);
-        for (const [i, entry] of result.entries.entries()) {
-          const span = entrySpan(result.entries, i, result.bytes);
-          const segment = result.bytes.subarray(span.start, span.end);
-          const recomputedCrc = crc32(segment);
-          expect(recomputedCrc).toBe(entry.crc32);
+          // Assert — for every i < count, the slab-decoded oid at position i
+          // pairs with crcValues[i]/offsets[i] describing THAT SAME object,
+          // never the next entry's.
+          expect(result.entries.count).toBe(2);
+          for (let i = 0; i < result.entries.count; i += 1) {
+            const id = entryIdAt(result.entries, i);
+            const span = entrySpan(result.entries, i, result.bytes);
+            const segment = result.bytes.subarray(span.start, span.end);
+            const recomputedCrc = crc32(segment);
+            // `crcValues` is unsigned, like `crc32()` itself — no normalisation.
+            expect(recomputedCrc).toBe(result.entries.crcValues[i]!);
 
-          const header = parsePackEntryHeader(result.bytes, span.start, ctx.hashConfig);
-          expect(header.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
-          const compressed = result.bytes.subarray(header.dataOffset, span.end);
-          const inflated = await ctx.compressor.inflate(compressed);
-          const expected = (await readRawObject(ctx, entry.id as ObjectId)).content;
-          expect(inflated).toEqual(expected);
-        }
-      });
+            const header = parsePackEntryHeader(result.bytes, span.start, ctx.hashConfig);
+            expect(header.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+            const compressed = result.bytes.subarray(header.dataOffset, span.end);
+            const inflated = await ctx.compressor.inflate(compressed);
+            const expected = (await readRawObject(ctx, id)).content;
+            expect(inflated).toEqual(expected);
+          }
+        },
+      );
     });
   });
 
@@ -486,15 +537,15 @@ describe('buildPack', () => {
         const result = await buildPack(ctx, { oids: ids, delta: true });
 
         // Assert
-        const headers = result.entries.map((e) => ({
-          entry: e,
-          header: parsePackEntryHeader(result.bytes, e.offset, ctx.hashConfig),
+        const headers = Array.from({ length: result.entries.count }, (_, i) => ({
+          offset: result.entries.offsets[i]!,
+          header: parsePackEntryHeader(result.bytes, result.entries.offsets[i]!, ctx.hashConfig),
         }));
         const chainDepthAt = (index: number): number => {
           const { header } = headers[index]!;
           if (header.type !== PACK_ENTRY_TYPE.OFS_DELTA) return 0;
-          const baseOffset = headers[index]!.entry.offset - header.baseDistance;
-          const baseIndex = headers.findIndex((h) => h.entry.offset === baseOffset);
+          const baseOffset = headers[index]!.offset - header.baseDistance;
+          const baseIndex = headers.findIndex((h) => h.offset === baseOffset);
           return 1 + chainDepthAt(baseIndex);
         };
         for (let i = 0; i < headers.length; i += 1) {
@@ -523,11 +574,55 @@ describe('buildPack', () => {
         const baseOnly = await buildPack(ctx, { oids: [idA, idB, idC] });
 
         // Assert
-        const types = withDelta.entries.map(
-          (e) => parsePackEntryHeader(withDelta.bytes, e.offset, ctx.hashConfig).type,
+        const types = Array.from(
+          { length: withDelta.entries.count },
+          (_, i) =>
+            parsePackEntryHeader(withDelta.bytes, withDelta.entries.offsets[i]!, ctx.hashConfig)
+              .type,
         );
         expect(types).not.toContain(PACK_ENTRY_TYPE.OFS_DELTA);
         expect(withDelta.bytes.length).toBeLessThanOrEqual(baseOnly.bytes.length);
+      });
+    });
+  });
+
+  describe('Given a corpus the delta selection reorders away from input order', () => {
+    describe('When buildPack runs with delta selection on', () => {
+      it('Then emissionOrder maps every emitted ordinal back to its own input oid', async () => {
+        // A wrong permutation is silent: gc reads per-object mtimes through it,
+        // so an off-by-one attaches each object's mtime to its neighbour and
+        // every artefact still parses. The invariant is checked directly
+        // against the slab rather than inferred from a downstream artefact.
+        {
+          // Arrange — mutually similar blobs of differing sizes, so the
+          // packer's (type, size DESC, oid) order is NOT the input order.
+          const ctx = await buildSeededContext();
+          const seed = pseudoRandomBytes(7, 4096);
+          const oids: ObjectId[] = [];
+          for (const extra of [0, 900, 300, 1500, 60]) {
+            const content = new Uint8Array(seed.length + extra);
+            content.set(seed, 0);
+            oids.push(await writeBlob(ctx, content));
+          }
+
+          // Act
+          const pack = await buildPack(ctx, { oids, delta: true });
+
+          // Assert — a genuine permutation of [0, count)...
+          expect(pack.emissionOrder).toHaveLength(pack.entries.count);
+          expect([...pack.emissionOrder].slice().sort((a, b) => a - b)).toEqual(
+            oids.map((_, i) => i),
+          );
+          // ...that is not the identity (otherwise the test proves nothing)...
+          expect([...pack.emissionOrder]).not.toEqual(oids.map((_, i) => i));
+          // ...and every ordinal's slab oid is the input oid it points at.
+          const { oids: slab, digestLength } = pack.entries;
+          for (let ordinal = 0; ordinal < pack.entries.count; ordinal += 1) {
+            const start = ordinal * digestLength;
+            const emitted = bytesToHex(slab.subarray(start, start + digestLength));
+            expect(emitted).toBe(oids[pack.emissionOrder[ordinal]!]);
+          }
+        }
       });
     });
   });

@@ -13,10 +13,9 @@
  * value leaves the pack directory untouched — see `writeReverseIndex`.
  */
 import { hexToBytes } from '../../../domain/objects/encoding.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
 import {
-  type PackIndexWriterEntry,
-  type SortedEntry,
+  type PackIndexEntries,
+  type SortedPackIndex,
   serializeCruftMtimes,
   serializePackIndex,
   serializePackRevIndex,
@@ -29,23 +28,20 @@ import { errorDataCode } from './error-data-code.js';
 
 export const buildIdx = async (
   ctx: Context,
-  entries: ReadonlyArray<PackIndexWriterEntry>,
+  sorted: SortedPackIndex,
   packSha: string,
-  presorted?: ReadonlyArray<SortedEntry>,
 ): Promise<Uint8Array> => {
   const packShaBytes = hexToBytes(packSha);
-  const body = serializePackIndex(entries, packShaBytes, presorted);
+  const body = serializePackIndex(sorted, packShaBytes);
   // serializePackIndex writes the pack trailer SHA as the file's first checksum
   // (packShaBytes.length bytes at the tail of `body`, so 20 or 32 depending on
   // the repository's algorithm); parsePackIndex expects a second checksum
   // immediately after — the SHA over the body itself. Real git produces both;
   // we follow suit so subsequent `parsePackIndex` reads round-trip cleanly.
-  const idxTrailerHex = await ctx.hash.hashHex(body);
-  const idxTrailerBytes = hexToBytes(idxTrailerHex);
-  const out = new Uint8Array(body.length + idxTrailerBytes.length);
-  out.set(body, 0);
-  out.set(idxTrailerBytes, body.length);
-  return out;
+  const digestStart = body.length - ctx.hash.digestLength;
+  const idxTrailerHex = await ctx.hash.hashHex(body.subarray(0, digestStart));
+  body.set(hexToBytes(idxTrailerHex), digestStart);
+  return body;
 };
 
 /**
@@ -56,12 +52,11 @@ export const buildIdx = async (
  */
 export const buildRev = async (
   ctx: Context,
-  entries: ReadonlyArray<PackIndexWriterEntry>,
+  sorted: SortedPackIndex,
   packSha: string,
-  presorted?: ReadonlyArray<SortedEntry>,
 ): Promise<Uint8Array> => {
   const packChecksum = hexToBytes(packSha);
-  const bytes = serializePackRevIndex(entries, packChecksum, presorted);
+  const bytes = serializePackRevIndex(sorted, packChecksum);
   // The trailer offset derives from the SAME width the serializer sized the
   // file with (`packChecksum.length`), never from `ctx.hash.digestLength` —
   // one width source, so a hash/pack width disagreement overflows loudly in
@@ -80,13 +75,12 @@ export const buildRev = async (
  */
 export const buildCruftMtimes = async (
   ctx: Context,
-  entries: ReadonlyArray<PackIndexWriterEntry>,
+  sorted: SortedPackIndex,
   packSha: string,
-  mtimeOf: (oid: ObjectId) => number,
-  presorted?: ReadonlyArray<SortedEntry>,
+  mtimeAt: (ordinal: number) => number,
 ): Promise<Uint8Array> => {
   const packChecksum = hexToBytes(packSha);
-  const bytes = serializeCruftMtimes(entries, packChecksum, mtimeOf, presorted);
+  const bytes = serializeCruftMtimes(sorted, packChecksum, mtimeAt);
   // Same one-width-source rule buildRev documents: the trailer offset comes
   // from the width the serializer actually sized the file with.
   const trailerStart = bytes.length - packChecksum.length;
@@ -115,7 +109,7 @@ const writeReverseIndex = async (ctx: Context): Promise<boolean> => {
 export interface WritePackArtifactsInput {
   readonly packDir: string;
   readonly packBytes: Uint8Array;
-  readonly entries: ReadonlyArray<PackIndexWriterEntry>;
+  readonly entries: PackIndexEntries;
   readonly packSha: string;
   readonly promisor: boolean;
 }
@@ -127,6 +121,10 @@ export interface WrittenPackArtifacts {
   /** Byte length of the written `.idx` — callers no longer recompute it. */
   readonly indexBytes: number;
   readonly packSha: string;
+  /** The oid-ascending permutation this write already computed. Handed back so
+   *  a caller writing a further artefact over the same slab — the cruft
+   *  `.mtimes` is the only one — does not sort it a second time. */
+  readonly sorted: SortedPackIndex;
 }
 
 interface ArtifactPaths {
@@ -157,17 +155,16 @@ const writeEmptySentinel = (ctx: Context, path: string): Promise<void> =>
 const writeRevArtifact = async (
   ctx: Context,
   path: string,
-  entries: ReadonlyArray<PackIndexWriterEntry>,
+  sorted: SortedPackIndex,
   packSha: string,
-  presorted: ReadonlyArray<SortedEntry>,
 ): Promise<void> => {
-  const revBytes = await buildRev(ctx, entries, packSha, presorted);
+  const revBytes = await buildRev(ctx, sorted, packSha);
   await ctx.fs.writeExclusive(path, revBytes);
 };
 
 export interface WritePackSiblingArtifactsInput {
   readonly packDir: string;
-  readonly entries: ReadonlyArray<PackIndexWriterEntry>;
+  readonly entries: PackIndexEntries;
   readonly packSha: string;
   readonly promisor: boolean;
 }
@@ -190,16 +187,17 @@ const writeSiblingsGiven = async (
   // One oid sort per pack write, shared by the `.idx` and `.rev` serializers —
   // the sort is the most expensive step of either artefact's assembly.
   const sorted = sortPackIndexEntries(input.entries);
-  const idxBytes = await buildIdx(ctx, input.entries, input.packSha, sorted);
+  const idxBytes = await buildIdx(ctx, sorted, input.packSha);
   await ctx.fs.writeExclusive(paths.idxPath, idxBytes);
   if (input.promisor) await writeEmptySentinel(ctx, paths.promisorPath);
-  if (wantRev) await writeRevArtifact(ctx, paths.revPath, input.entries, input.packSha, sorted);
+  if (wantRev) await writeRevArtifact(ctx, paths.revPath, sorted, input.packSha);
   return {
     packPath: paths.packPath,
     idxPath: paths.idxPath,
-    objectCount: input.entries.length,
+    objectCount: input.entries.count,
     indexBytes: idxBytes.length,
     packSha: input.packSha,
+    sorted,
   };
 };
 
@@ -303,7 +301,7 @@ export const writePackArtifactsViaQuarantine = async (
   const paths = artifactPaths(input.packDir, input.packSha);
   await ctx.fs.mkdir(input.packDir);
   const sorted = sortPackIndexEntries(input.entries);
-  const idxBytes = await buildIdx(ctx, input.entries, input.packSha, sorted);
+  const idxBytes = await buildIdx(ctx, sorted, input.packSha);
 
   const tmpPackPath = `${input.packDir}/${TMP_PACK_PREFIX}${randomTmpSuffix()}`;
   const tmpIdxPath = `${input.packDir}/${TMP_IDX_PREFIX}${randomTmpSuffix()}`;
@@ -337,13 +335,14 @@ export const writePackArtifactsViaQuarantine = async (
   }
   if (wantRev) {
     await rmTolerant(ctx, paths.revPath);
-    await writeRevArtifact(ctx, paths.revPath, input.entries, input.packSha, sorted);
+    await writeRevArtifact(ctx, paths.revPath, sorted, input.packSha);
   }
   return {
     packPath: paths.packPath,
     idxPath: paths.idxPath,
-    objectCount: input.entries.length,
+    objectCount: input.entries.count,
     indexBytes: idxBytes.length,
     packSha: input.packSha,
+    sorted,
   };
 };

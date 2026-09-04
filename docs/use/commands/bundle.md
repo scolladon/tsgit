@@ -115,12 +115,23 @@ to a named ref — `create` throws `BUNDLE_EMPTY` `reason: 'no-refs'` otherwise
 
 Checks prerequisite presence first. When any prerequisite is absent the command
 returns immediately with `prerequisitesPresent: false` — the full pack parse is
-skipped. When all prerequisites are present, performs a full embedded-pack parse
-(inflate every entry + verify the pack trailer). For incremental bundles
-(git-produced range bundles), the pack parse resolves thin-pack REF_DELTA entries
-whose base objects live in the prerequisite commits via the repository object
-store. Use `prerequisitesPresent` to gate an unbundle; missing prerequisites are
-data in the result, not a thrown error.
+skipped. When all prerequisites are present, performs a full embedded-pack parse:
+the trailer is verified, then every entry is inflated and hashed, but no entry's
+content is retained past the point it is used. Residency is bounded by the
+largest single object plus a byte-capped base cache, not by the bundle's total
+inflated size — a bundle of a large history no longer costs its own uncompressed
+weight in memory to verify.
+
+For incremental bundles (git-produced range bundles), the pack parse resolves
+thin-pack REF_DELTA entries whose base objects live in the prerequisite commits
+via the repository object store. Those externally-resolved bases share the same
+capped cache, so a bundle with many prerequisites is bounded too.
+
+A pack whose deltas cannot all be resolved refuses with `INVALID_PACK_HEADER`
+and git's own wording, `pack has <N> unresolved delta(s)` — singular at one.
+
+Use `prerequisitesPresent` to gate an unbundle; missing prerequisites are data
+in the result, not a thrown error.
 
 ### `listHeads`
 

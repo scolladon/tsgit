@@ -10,8 +10,7 @@
  *   format:  pack-rev-index-v1
  */
 import { invalidPackRevIndex } from './error.js';
-import { type SortedEntry, sortPackIndexEntries } from './pack-order.js';
-import type { PackIndexWriterEntry } from './pack-writer.js';
+import { assertValidSortedPackIndex, type SortedPackIndex } from './pack-order.js';
 
 const REV_MAGIC = 0x52494458; // 'RIDX'
 
@@ -97,8 +96,22 @@ export function parsePackRevIndex(
 }
 
 /**
- * Serializes a pack reverse index from writer entries and a verified pack
- * checksum — the same `PackIndexWriterEntry` pair `serializePackIndex`
+ * Structural shape guards for a `.rev` write's `SortedPackIndex` input,
+ * factored out purely to keep `serializePackRevIndex`'s own cognitive
+ * complexity under the repo's ceiling — every branch here is still its own
+ * coverage-gated test.
+ */
+const assertValidPackIndexInput = (sorted: SortedPackIndex, digestLength: number): void => {
+  // `RevIndexCheck` has no `'count'` member; an order/count disagreement is a
+  // structural size failure from this artefact's point of view.
+  assertValidSortedPackIndex(sorted, digestLength, (defect, reason) => {
+    throw invalidPackRevIndex(defect === 'count' ? 'size' : defect, reason);
+  });
+};
+
+/**
+ * Serializes a pack reverse index from a pre-sorted oid slab and a verified
+ * pack checksum — the same `PackIndexEntries` slab `serializePackIndex`
  * consumes, so the two artefacts cannot disagree about the entry set.
  *
  * `packChecksum`'s width picks `hashId` (SHA-1 ⇒ 1, SHA-256 ⇒ 2). An
@@ -110,23 +123,16 @@ export function parsePackRevIndex(
  * hash; the caller fills them in place over the returned buffer.
  */
 export function serializePackRevIndex(
-  entries: ReadonlyArray<PackIndexWriterEntry>,
+  sorted: SortedPackIndex,
   packChecksum: Uint8Array,
-  presorted?: ReadonlyArray<SortedEntry>,
 ): Uint8Array {
   const digestLength = packChecksum.length;
-  if (digestLength !== 20 && digestLength !== 32) {
-    throw invalidPackRevIndex(
-      'hash-id',
-      `packChecksum must be 20 or 32 bytes, got ${digestLength}`,
-    );
-  }
+  assertValidPackIndexInput(sorted, digestLength);
 
+  const { count } = sorted.entries;
   const hashId = digestLength === 32 ? 2 : 1;
-  const objectCount = entries.length;
-  // `presorted` MUST be `sortPackIndexEntries(entries)` — the sibling `.idx`
-  // writer's caller passes it so the oid sort runs once per pack write.
-  const body = packPositionsByOffset(presorted ?? sortPackIndexEntries(entries));
+  const objectCount = count;
+  const body = packPositionsByOffset(sorted);
 
   const bytes = new Uint8Array(REV_HEADER_SIZE + 4 * objectCount + 2 * digestLength);
   const view = new DataView(bytes.buffer);
@@ -149,18 +155,26 @@ export function serializePackRevIndex(
  * construction (each pack entry begins where the previous one ends), so tie
  * behaviour is undefined because ties cannot occur.
  */
-function packPositionsByOffset(byOid: ReadonlyArray<SortedEntry>): Uint32Array {
-  const positions = new Uint32Array(byOid.length);
-  // Offsets flattened into a typed array so the sort comparator does two
-  // array loads instead of two property-chain dereferences per comparison
+function packPositionsByOffset(sorted: SortedPackIndex): Uint32Array {
+  const { entries, order } = sorted;
+  const count = entries.count;
+  const positions = new Uint32Array(count);
+  // Offsets flattened into a typed array so the sort comparator does one
+  // array load instead of two (`entries.offsets[order[i]]`) per comparison
   // (measured 2x on 500k-entry packs). Float64 covers the full safe-integer
   // offset range where Uint32 would truncate >4 GiB packs.
-  const offsets = new Float64Array(byOid.length);
-  for (let indexPosition = 0; indexPosition < positions.length; indexPosition += 1) {
+  const offsetsByPosition = new Float64Array(count);
+  // Stryker disable next-line EqualityOperator: equivalent — `positions` and
+  // `offsetsByPosition` are fixed-length typed arrays (length `count`); an
+  // extra `indexPosition === count` iteration writes `positions[count]` and
+  // reads `order[count]` (both out-of-bounds), which typed arrays silently
+  // no-op/return `undefined` for rather than throw or grow, so the loop
+  // running to `<= count` is observationally identical to `< count`.
+  for (let indexPosition = 0; indexPosition < count; indexPosition += 1) {
     positions[indexPosition] = indexPosition;
-    offsets[indexPosition] = byOid[indexPosition]!.entry.offset;
+    offsetsByPosition[indexPosition] = entries.offsets[order[indexPosition]!]!;
   }
-  positions.sort((a, b) => offsets[a]! - offsets[b]!);
+  positions.sort((a, b) => offsetsByPosition[a]! - offsetsByPosition[b]!);
   return positions;
 }
 

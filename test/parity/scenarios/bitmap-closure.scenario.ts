@@ -17,7 +17,6 @@
  * Surfaces closed:
  *   commands: revList (the bitmap tier)
  */
-import { hexToBytes } from '../../../src/domain/objects/encoding.ts';
 import type { ObjectId } from '../../../src/domain/objects/index.ts';
 import { serializeObject } from '../../../src/domain/objects/index.ts';
 import { treeEntry } from '../../../src/domain/objects/tree.js';
@@ -26,10 +25,12 @@ import {
   PACK_ENTRY_TYPE,
   serializePackfile,
   serializePackIndex,
+  sortPackIndexEntries,
 } from '../../../src/domain/storage/index.ts';
 import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import type { Repository } from '../../../src/repository.ts';
 import { type BitmapEntrySpec, buildBitmap } from '../../fixtures/storage/bitmap-writers.ts';
+import { packIndexEntriesOf, sealPackIndex } from '../../fixtures/storage/pack-index-entries.ts';
 import { AUTHOR, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 
@@ -155,8 +156,15 @@ async function buildAndPackChain(repo: Repository): Promise<PackedChain> {
     crc32: entries[i]?.crc32 ?? 0,
     offset: entries[i]?.offset ?? 0,
   }));
-  const idxBody = serializePackIndex(idxEntries, trailer);
-  const idxBytes = concatBytes(idxBody, hexToBytes(await repo.ctx.hash.hashHex(idxBody)));
+  const idxBody = serializePackIndex(
+    sortPackIndexEntries(packIndexEntriesOf(idxEntries, trailer.length)),
+    trailer,
+  );
+  const idxBytes = await sealPackIndex(
+    idxBody,
+    (bytes) => repo.ctx.hash.hash(bytes),
+    repo.ctx.hash.digestLength,
+  );
 
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${PACK_NAME}`;
   await repo.ctx.fs.write(`${packBase}.pack`, packBytes);

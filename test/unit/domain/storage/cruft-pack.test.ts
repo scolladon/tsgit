@@ -9,17 +9,27 @@ import {
 } from '../../../../src/domain/storage/cruft-pack.js';
 import type { CruftMtimesCheck } from '../../../../src/domain/storage/error.js';
 import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.js';
-import type { PackIndexWriterEntry } from '../../../../src/domain/storage/pack-writer.js';
+import {
+  type PackIndexEntryLiteral,
+  packIndexEntriesOf,
+} from '../../../fixtures/storage/pack-index-entries.js';
 
 // --- Fixture helpers -------------------------------------------------------
 
-function fourEntries(): PackIndexWriterEntry[] {
+function fourEntries(): PackIndexEntryLiteral[] {
   return [
     { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 10 },
     { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 40 },
     { id: `cc${'00'.repeat(19)}`, crc32: 0, offset: 20 },
     { id: `dd${'00'.repeat(19)}`, crc32: 0, offset: 30 },
   ];
+}
+
+/** Wraps `{ id, crc32, offset }` literals through the shared fixture builder
+ *  and the mandatory sort — the shape every `serializeCruftMtimes` caller
+ *  now provides. */
+function sortedIndex(entries: ReadonlyArray<PackIndexEntryLiteral>, digestLength = 20) {
+  return sortPackIndexEntries(packIndexEntriesOf(entries, digestLength));
 }
 
 // Real bytes, `git gc` over a repo with 4 unreachable objects sharing one
@@ -72,11 +82,11 @@ describe('cruft-pack', () => {
       describe('When serializing', () => {
         it('Then bytes [0, 48) equal the real git sidecar and bytes [48, 68) are zero', () => {
           // Arrange
-          const entries = fourEntries();
+          const sorted = sortedIndex(fourEntries());
           const sut = serializeCruftMtimes;
 
           // Act
-          const result = sut(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const result = sut(sorted, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
 
           // Assert
           expect(result.length).toBe(68);
@@ -93,7 +103,7 @@ describe('cruft-pack', () => {
           // reverse of oid-ascending order (77a2 < 862d < e522). An
           // offset-indexed implementation places 1785538860 at position 0;
           // the correct, oid-indexed one places 1767225660 there.
-          const entries: PackIndexWriterEntry[] = [
+          const entries: PackIndexEntryLiteral[] = [
             { id: '77a24379436bd40df5c2c855e8a0c11408109968', crc32: 0, offset: 300 },
             { id: '862dcbda8e8d9fa19e65785e262f33b03c1e9156', crc32: 0, offset: 200 },
             { id: 'e522cdc3d5447b9b90ab38314fd550b036d1168f', crc32: 0, offset: 100 },
@@ -107,7 +117,11 @@ describe('cruft-pack', () => {
           const sut = serializeCruftMtimes;
 
           // Act
-          const result = sut(entries, packChecksum, (oid) => mtimeByOid.get(oid)!);
+          const result = sut(
+            sortedIndex(entries),
+            packChecksum,
+            (ordinal) => mtimeByOid.get(entries[ordinal]!.id)!,
+          );
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -122,7 +136,7 @@ describe('cruft-pack', () => {
       describe('When serializing', () => {
         it('Then hashId is 2 and size is 12 + 4N + 64', () => {
           // Arrange
-          const entries: PackIndexWriterEntry[] = [
+          const entries: PackIndexEntryLiteral[] = [
             { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 10 },
             { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 20 },
             { id: `cc${'00'.repeat(19)}`, crc32: 0, offset: 5 },
@@ -131,7 +145,7 @@ describe('cruft-pack', () => {
           const sut = serializeCruftMtimes;
 
           // Act
-          const result = sut(entries, packChecksum, () => 1);
+          const result = sut(sortedIndex(entries, 32), packChecksum, () => 1);
 
           // Assert
           const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
@@ -146,11 +160,11 @@ describe('cruft-pack', () => {
       describe('When serializing', () => {
         it('Then refuses with hash-id rather than truncating', () => {
           // Arrange
-          const entries = [{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }];
+          const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }]);
 
           // Act & Assert
           expectRefusal(
-            () => serializeCruftMtimes(entries, new Uint8Array(0), () => 0),
+            () => serializeCruftMtimes(sorted, new Uint8Array(0), () => 0),
             'hash-id',
             'got 0',
           );
@@ -162,32 +176,14 @@ describe('cruft-pack', () => {
       describe('When serializing', () => {
         it('Then refuses with hash-id rather than truncating', () => {
           // Arrange
-          const entries = [{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }];
+          const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }]);
 
           // Act & Assert
           expectRefusal(
-            () => serializeCruftMtimes(entries, new Uint8Array(33), () => 0),
+            () => serializeCruftMtimes(sorted, new Uint8Array(33), () => 0),
             'hash-id',
             'got 33',
           );
-        });
-      });
-    });
-
-    describe('Given a presorted entry list computed by the caller', () => {
-      describe('When serializing with it', () => {
-        it('Then the body is identical to the unsorted call — the sort is reused, not repeated', () => {
-          // Arrange
-          const entries = fourEntries();
-          const presorted = sortPackIndexEntries(entries);
-          const sut = serializeCruftMtimes;
-
-          // Act
-          const withPresorted = sut(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME, presorted);
-          const withoutPresorted = sut(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
-
-          // Assert
-          expect(withPresorted).toEqual(withoutPresorted);
         });
       });
     });
@@ -200,12 +196,131 @@ describe('cruft-pack', () => {
           const sut = serializeCruftMtimes;
 
           // Act
-          const result = sut([], packChecksum, () => 0);
+          const result = sut(sortedIndex([]), packChecksum, () => 0);
 
           // Assert
           expect(result.length).toBe(52);
           expect(result.subarray(12, 32)).toEqual(packChecksum);
           expect(result.subarray(32, 52)).toEqual(new Uint8Array(20));
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose entries.digestLength disagrees with packChecksum', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }], 20);
+          const packChecksum = new Uint8Array(32);
+
+          // Act & Assert
+          expectRefusal(
+            () => serializeCruftMtimes(sorted, packChecksum, () => 0),
+            'hash-id',
+            'digestLength',
+          );
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose oids slab is shorter than count*digestLength', () => {
+      describe('When serializing', () => {
+        it('Then refuses with size', () => {
+          // Arrange
+          const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }], 20);
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, oids: sorted.entries.oids.subarray(0, 19) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(
+            () => serializeCruftMtimes(truncated, packChecksum, () => 0),
+            'size',
+            'oids',
+          );
+        });
+
+        it('Then a slab exactly count*digestLength long passes', () => {
+          // Arrange — the equality boundary itself must NOT refuse.
+          const sorted = sortedIndex([{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }]);
+          const packChecksum = new Uint8Array(20);
+
+          // Act
+          const result = serializeCruftMtimes(sorted, packChecksum, () => 0);
+
+          // Assert
+          expect(result.length).toBeGreaterThan(0);
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose crcValues array is shorter than count', () => {
+      describe('When serializing', () => {
+        it('Then refuses with size', () => {
+          // Arrange
+          const sorted = sortedIndex([
+            { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
+            { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 2 },
+          ]);
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, crcValues: sorted.entries.crcValues.subarray(0, 1) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(
+            () => serializeCruftMtimes(truncated, packChecksum, () => 0),
+            'size',
+            'crcValues',
+          );
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose offsets array is shorter than count', () => {
+      describe('When serializing', () => {
+        it('Then refuses with size', () => {
+          // Arrange
+          const sorted = sortedIndex([
+            { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
+            { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 2 },
+          ]);
+          const truncated = {
+            ...sorted,
+            entries: { ...sorted.entries, offsets: sorted.entries.offsets.subarray(0, 1) },
+          };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(
+            () => serializeCruftMtimes(truncated, packChecksum, () => 0),
+            'size',
+            'offsets',
+          );
+        });
+      });
+    });
+
+    describe('Given a SortedPackIndex whose order length disagrees with entries.count', () => {
+      describe('When serializing', () => {
+        it('Then refuses with count', () => {
+          // Arrange
+          const sorted = sortedIndex([
+            { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 },
+            { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 2 },
+          ]);
+          const truncated = { ...sorted, order: sorted.order.subarray(0, 1) };
+          const packChecksum = new Uint8Array(20);
+
+          // Act & Assert
+          expectRefusal(
+            () => serializeCruftMtimes(truncated, packChecksum, () => 0),
+            'count',
+            'order',
+          );
         });
       });
     });
@@ -242,7 +357,7 @@ describe('cruft-pack', () => {
       describe('When serializing then parsing with the .idx oid list', () => {
         it('Then each oid recovers exactly its own mtime — not its neighbour’s', () => {
           // Arrange
-          const entries: PackIndexWriterEntry[] = [
+          const entries: PackIndexEntryLiteral[] = [
             { id: '77a24379436bd40df5c2c855e8a0c11408109968', crc32: 0, offset: 300 },
             { id: '862dcbda8e8d9fa19e65785e262f33b03c1e9156', crc32: 0, offset: 200 },
             { id: 'e522cdc3d5447b9b90ab38314fd550b036d1168f', crc32: 0, offset: 100 },
@@ -254,7 +369,11 @@ describe('cruft-pack', () => {
           ]);
           const packChecksum = new Uint8Array(20).fill(0xab);
           const oidsInIndexOrder = [...mtimeByOid.keys()].sort() as ObjectId[];
-          const bytes = serializeCruftMtimes(entries, packChecksum, (oid) => mtimeByOid.get(oid)!);
+          const bytes = serializeCruftMtimes(
+            sortedIndex(entries),
+            packChecksum,
+            (ordinal) => mtimeByOid.get(entries[ordinal]!.id)!,
+          );
 
           // Act
           const result = parseCruftMtimes(bytes, oidsInIndexOrder);
@@ -271,8 +390,11 @@ describe('cruft-pack', () => {
       describe('When parsing with too few oids', () => {
         it('Then it refuses with count', () => {
           // Arrange
-          const entries = fourEntries();
-          const bytes = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const bytes = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const tooFewOids = [`aa${'00'.repeat(19)}`, `bb${'00'.repeat(19)}`] as ObjectId[];
 
           // Act & Assert
@@ -283,8 +405,11 @@ describe('cruft-pack', () => {
       describe('When parsing with too many oids', () => {
         it('Then it refuses with count', () => {
           // Arrange
-          const entries = fourEntries();
-          const bytes = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const bytes = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const tooManyOids = [
             `aa${'00'.repeat(19)}`,
             `bb${'00'.repeat(19)}`,
@@ -380,10 +505,13 @@ describe('cruft-pack', () => {
       describe('When parsing', () => {
         it('Then it refuses with signature', () => {
           // Arrange
-          const entries = fourEntries();
-          const valid = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const valid = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const bytes = pokeByte(valid, 3, valid[3]! ^ 0xff);
-          const oids = entries.map((e) => e.id) as ObjectId[];
+          const oids = fourEntries().map((e) => e.id) as ObjectId[];
 
           // Act & Assert
           expectRefusal(() => parseCruftMtimes(bytes, oids), 'signature', 'signature');
@@ -395,10 +523,13 @@ describe('cruft-pack', () => {
       describe('When parsing', () => {
         it('Then it refuses with version', () => {
           // Arrange
-          const entries = fourEntries();
-          const valid = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const valid = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const bytes = pokeUint32(valid, 4, 0);
-          const oids = entries.map((e) => e.id) as ObjectId[];
+          const oids = fourEntries().map((e) => e.id) as ObjectId[];
 
           // Act & Assert
           expectRefusal(() => parseCruftMtimes(bytes, oids), 'version', 'version');
@@ -410,10 +541,13 @@ describe('cruft-pack', () => {
       describe('When parsing', () => {
         it('Then it refuses with version — there is no v2', () => {
           // Arrange
-          const entries = fourEntries();
-          const valid = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const valid = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const bytes = pokeUint32(valid, 4, 2);
-          const oids = entries.map((e) => e.id) as ObjectId[];
+          const oids = fourEntries().map((e) => e.id) as ObjectId[];
 
           // Act & Assert
           expectRefusal(() => parseCruftMtimes(bytes, oids), 'version', 'version');
@@ -425,10 +559,13 @@ describe('cruft-pack', () => {
       describe('When parsing', () => {
         it('Then it refuses with hash-id', () => {
           // Arrange
-          const entries = fourEntries();
-          const valid = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const valid = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const bytes = pokeUint32(valid, 8, 0);
-          const oids = entries.map((e) => e.id) as ObjectId[];
+          const oids = fourEntries().map((e) => e.id) as ObjectId[];
 
           // Act & Assert
           expectRefusal(() => parseCruftMtimes(bytes, oids), 'hash-id', 'hash id');
@@ -440,10 +577,13 @@ describe('cruft-pack', () => {
       describe('When parsing', () => {
         it('Then it refuses with hash-id', () => {
           // Arrange
-          const entries = fourEntries();
-          const valid = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const valid = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const bytes = pokeUint32(valid, 8, 3);
-          const oids = entries.map((e) => e.id) as ObjectId[];
+          const oids = fourEntries().map((e) => e.id) as ObjectId[];
 
           // Act & Assert
           expectRefusal(() => parseCruftMtimes(bytes, oids), 'hash-id', 'hash id');
@@ -455,10 +595,13 @@ describe('cruft-pack', () => {
       describe('When parsing', () => {
         it('Then the reported signature is zero-padded, not truncated', () => {
           // Arrange
-          const entries = fourEntries();
-          const valid = serializeCruftMtimes(entries, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const valid = serializeCruftMtimes(
+            sortedIndex(fourEntries()),
+            PIN_P_PACK_CHECKSUM,
+            () => PIN_P_MTIME,
+          );
           const bytes = pokeUint32(valid, 0, 1); // signature 0x00000001 -> hex '1' unpadded
-          const oids = entries.map((e) => e.id) as ObjectId[];
+          const oids = fourEntries().map((e) => e.id) as ObjectId[];
 
           // Act
           let caught: unknown;

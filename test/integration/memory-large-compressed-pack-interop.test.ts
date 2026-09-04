@@ -21,7 +21,7 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
-import { walkPackEntries } from '../../src/application/primitives/fetch-pack.js';
+import { walkPackEntries } from '../../src/application/primitives/internal/index-pack.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import {
   GIT_AVAILABLE,

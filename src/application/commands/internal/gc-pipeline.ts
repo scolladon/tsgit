@@ -564,7 +564,10 @@ async function buildAndWriteCruftPack(
     entries: pack.entries,
     packBytes: pack.bytes,
     packSha: pack.sha,
-    mtimeOf: (id) => mtimeOrThrow(mtimes, id),
+    // `buildPack` emits in its own (type, size, oid) order, so an emitted
+    // ordinal is mapped back through `emissionOrder` to this call's own
+    // `survivors` index — the oid never has to be decoded out of the slab.
+    mtimeAt: (ordinal) => mtimeOrThrow(mtimes, survivors[pack.emissionOrder[ordinal]!]!),
   });
   return written.packSha as ObjectId;
 }

@@ -14,11 +14,8 @@ import type { ObjectFilter } from '../../domain/protocol/object-filter.js';
 import { notARepository } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import { deriveContext } from '../primitives/derive-context.js';
-import {
-  type ExternalBaseResolver,
-  verifyPackTrailer,
-  walkPackEntries,
-} from '../primitives/fetch-pack.js';
+import { verifyPackTrailer } from '../primitives/fetch-pack.js';
+import { walkPackEntries } from '../primitives/internal/index-pack.js';
 import { layoutFailsAcceptance } from '../primitives/internal/layout-verdict.js';
 import { readObject } from '../primitives/read-object.js';
 import { readBundle } from './internal/read-bundle.js';
@@ -73,8 +70,11 @@ export const bundleVerify = async (
   // prerequisites, hence never refused above) still verifies correctly.
   const packCtx = contextForBundleAlgorithm(ctx, header.hashAlgorithm);
   await verifyPackTrailer(packBytes, packCtx);
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a 0-prerequisite (complete) bundle's pack is self-contained, so no REF_DELTA ever reaches the external resolver; always building it (mutant) only allocates a Map+closure walkPackEntries never invokes — identical outcome for every git-produced bundle, regardless of which algorithm frames the parse.
-  const resolver = header.prerequisites.length > 0 ? buildExternalBaseResolver(ctx) : undefined;
+  const resolver =
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a 0-prerequisite (complete) bundle's pack is self-contained, so no REF_DELTA ever reaches the external resolver; always building the closure (mutant) only allocates one arrow function walkPackEntries never invokes — identical outcome for every git-produced bundle, regardless of which algorithm frames the parse. Restated against the plain port call: the deleted Map+closure this proof once described no longer exists, but the verdict (never invoked on a complete bundle) still holds against what replaced it.
+    header.prerequisites.length > 0
+      ? (baseOid: ObjectId) => resolveExternalBase(ctx, baseOid)
+      : undefined;
   await walkPackEntries(packCtx, packBytes, resolver);
   return buildResult(header, []);
 };
@@ -165,16 +165,6 @@ const resolveExternalBase = async (ctx: Context, baseOid: ObjectId) => {
     if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return undefined;
     throw err;
   }
-};
-
-const buildExternalBaseResolver = (ctx: Context): ExternalBaseResolver => {
-  const cache = new Map<ObjectId, Awaited<ReturnType<ExternalBaseResolver>>>();
-  return async (baseOid: ObjectId) => {
-    if (cache.has(baseOid)) return cache.get(baseOid);
-    const resolved = await resolveExternalBase(ctx, baseOid);
-    cache.set(baseOid, resolved);
-    return resolved;
-  };
 };
 
 const findMissingPrerequisites = async (

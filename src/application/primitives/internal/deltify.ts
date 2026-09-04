@@ -41,10 +41,18 @@ import { boundedMapFor } from './concurrency.js';
 export interface DeltifiedEntry {
   readonly id: ObjectId;
   readonly entry: PackWriterEntry;
+  /** Where this object sat in `deltifyEntries`' input list. Emission order is
+   *  the packer's own (type, size, oid), so a caller holding per-object data
+   *  keyed by its input order needs this to line the two up — without it the
+   *  only bridge back is the oid, which costs a hex decode per object. */
+  readonly sourceIndex: number;
 }
 
 interface EmissionEntry extends PackEmissionKey {
   readonly id: ObjectId;
+  /** Index into `deltifyEntries`' input list, carried through the emission
+   *  sort so the caller can map an emitted ordinal back to its own input. */
+  readonly sourceIndex: number;
   /** The loose route's already-inflated content, when `buildEmissionOrder`
    *  could afford to carry it forward (see `boundCarriedContent`) — absent
    *  for every packed object and for any loose object beyond the residency
@@ -93,6 +101,7 @@ function boundCarriedContent(
     const meta = metas[i]!;
     const key = {
       id,
+      sourceIndex: i,
       type: objectTypeToPackEntryType(meta.type),
       uncompressedSize: meta.uncompressedSize,
     };
@@ -286,7 +295,7 @@ export async function deltifyEntries(
     const content = key.content ?? (await readRawObject(ctx, key.id)).content;
     const candidate = selectBestCandidate(content, state.window, key.type, policy);
     const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
-    results.push({ id: key.id, entry: outcome.entry });
+    results.push({ id: key.id, entry: outcome.entry, sourceIndex: key.sourceIndex });
     state = admitToWindow(state.window, state.residentBytes, policy, {
       id: key.id,
       type: key.type,

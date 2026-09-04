@@ -21,9 +21,11 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import { parsePackIndex } from '../../../../src/domain/storage/pack-index.js';
+import { sortPackIndexEntries } from '../../../../src/domain/storage/pack-order.js';
 import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
 import { REV_HEADER_SIZE } from '../../../../src/domain/storage/rev-index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { packIndexEntriesOf, sealPackIndex } from '../../../fixtures/storage/pack-index-entries.js';
 
 export interface BaseEntrySpec {
   readonly kind: 'base';
@@ -149,12 +151,17 @@ export async function buildSyntheticPack(
     crc32: crc32Values[i]!,
     offset: offsets[i]!,
   }));
-  const idxFromWriter = serializePackIndex(idxEntries, packChecksum);
-  // parsePackIndex expects a 40-byte trailer (pack-checksum + idx-checksum) but
-  // serializePackIndex currently emits only 20. Pad the idx with a computed
-  // idx-checksum so the parser accepts the file.
-  const idxChecksumHex = await ctx.hash.hashHex(idxFromWriter);
-  const idxBytes = concat(idxFromWriter, hexToBytes(idxChecksumHex));
+  const idxFromWriter = serializePackIndex(
+    sortPackIndexEntries(packIndexEntriesOf(idxEntries, packChecksum.length)),
+    packChecksum,
+  );
+  // `serializePackIndex` reserves the idx-over-idx checksum zeroed and does
+  // not hash its own output; sealing fills it in place.
+  const idxBytes = await sealPackIndex(
+    idxFromWriter,
+    (bytes) => ctx.hash.hash(bytes),
+    ctx.hash.digestLength,
+  );
 
   return { packBytes, idxBytes, ids, offsets };
 }
@@ -405,7 +412,17 @@ function encodeVarint(out: number[], value: number): void {
   out.push(v & 0x7f);
 }
 
+/** Small, fixed-arity call sites throughout this file — never called with a
+ *  large spread array (see {@link concatAll} for that case). */
 function concat(...arrays: ReadonlyArray<Uint8Array>): Uint8Array {
+  return concatAll(arrays);
+}
+
+/** Never `concat(...arrays)`: spreading a large array into individual call
+ *  arguments overflows the call stack near 125k arguments, and a pack built
+ *  from tens of thousands of tiny entries reaches exactly that shape. Sums
+ *  and copies in a loop instead — same result, no argument-count limit. */
+function concatAll(arrays: ReadonlyArray<Uint8Array>): Uint8Array {
   const total = arrays.reduce((s, a) => s + a.length, 0);
   const out = new Uint8Array(total);
   let offset = 0;
@@ -414,8 +431,4 @@ function concat(...arrays: ReadonlyArray<Uint8Array>): Uint8Array {
     offset += a.length;
   }
   return out;
-}
-
-function concatAll(arrays: ReadonlyArray<Uint8Array>): Uint8Array {
-  return concat(...arrays);
 }
