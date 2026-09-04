@@ -30,7 +30,7 @@
  * first: `gc` retires and rewrites packs in place, and the cache is reused,
  * byte-for-byte, by every other bench file that resolves the same spec.
  */
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -45,19 +45,11 @@ import {
   DELTA_CHAIN_FIXTURE,
   MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
 } from './support/fixture-generator.js';
+import { copyFixtureToScratch } from './support/fixture-scratch.js';
 import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
 import { buildManyLooseObjectsScratch } from './support/write-scratch.js';
 
 const enc = new TextEncoder();
-
-/** Copies a cached scaled fixture into a disposable scratch directory — `gc`
- *  retires and rewrites packs in place, and the cache must stay pristine for
- *  every other bench file that resolves the same spec. */
-async function copyToScratch(sourceCwd: string, slug: string): Promise<string> {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), `tsgit-bench-maintenance-${slug}-`));
-  await cp(sourceCwd, cwd, { recursive: true, preserveTimestamps: true });
-  return cwd;
-}
 
 // ---------------------------------------------------------------------
 // Scenario 1 — commit-graph write, over the medium fixture's commit count
@@ -69,10 +61,15 @@ scaledScenario(
   commitGraphCtx,
   "When maintenance({tasks:['commit-graph']}) writes the graph, Then measure tsgit",
   async (fixture) => {
-    const cwd = await copyToScratch(fixture.cwd, 'commit-graph');
-    const ctx = createNodeContext({ workDir: cwd, hooks: false, command: false, ssh: false });
+    const scratch = await copyFixtureToScratch(fixture.cwd, 'commit-graph');
+    const ctx = createNodeContext({
+      workDir: scratch.cwd,
+      hooks: false,
+      command: false,
+      ssh: false,
+    });
     afterAll(async () => {
-      await rm(cwd, { recursive: true, force: true });
+      await scratch.dispose();
     });
 
     const sut = async (): Promise<void> => {
@@ -161,10 +158,15 @@ scaledScenario(
   deltaChainCtx,
   "When maintenance({tasks:['gc']}) repeats over an already-consolidated repository, Then measure tsgit and report the size-trade ratio",
   async (fixture) => {
-    const cwd = await copyToScratch(fixture.cwd, 'delta-chain');
-    const ctx = createNodeContext({ workDir: cwd, hooks: false, command: false, ssh: false });
+    const scratch = await copyFixtureToScratch(fixture.cwd, 'delta-chain');
+    const ctx = createNodeContext({
+      workDir: scratch.cwd,
+      hooks: false,
+      command: false,
+      ssh: false,
+    });
     afterAll(async () => {
-      await rm(cwd, { recursive: true, force: true });
+      await scratch.dispose();
     });
 
     // First run: consolidates the fixture's git-deltified pack(s) into

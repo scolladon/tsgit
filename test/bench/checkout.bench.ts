@@ -19,19 +19,27 @@
  * a fixture strategy that also removes/rewrites paths across history —
  * tracked as a fixture-generator follow-up, not faked here with a strategy
  * that cannot produce it.
+ *
+ * Each tier runs on a disposable copy of the cached fixture: `checkout`
+ * moves `HEAD`, rewrites the index and rewrites the working tree, and the
+ * cache is reused byte-for-byte by every other bench file resolving the
+ * same spec — mutating it in place here would corrupt every later reader.
  */
 import { afterAll } from 'vitest';
 
 import { openRepository } from '../../src/index.node.js';
+import { copyFixtureToScratch } from './support/fixture-scratch.js';
 import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
 await tieredScenario(
   MULTI_TIERS,
   'When checkout() alternates tip and root with force, Then measure tsgit',
   async (fixture) => {
-    const repo = await openRepository({ cwd: fixture.cwd });
+    const scratch = await copyFixtureToScratch(fixture.cwd, `checkout-force-${fixture.spec.label}`);
+    const repo = await openRepository({ cwd: scratch.cwd });
     afterAll(async () => {
-      await repo.dispose();
+      await repo.dispose(); // close pack handles BEFORE removing the tree
+      await scratch.dispose();
     });
 
     const history = await repo.log({ order: 'first-parent' });
@@ -51,9 +59,14 @@ await tieredScenario(
   MULTI_TIERS,
   'When checkout() alternates tip and root without force, Then measure tsgit',
   async (fixture) => {
-    const repo = await openRepository({ cwd: fixture.cwd });
+    const scratch = await copyFixtureToScratch(
+      fixture.cwd,
+      `checkout-no-force-${fixture.spec.label}`,
+    );
+    const repo = await openRepository({ cwd: scratch.cwd });
     afterAll(async () => {
-      await repo.dispose();
+      await repo.dispose(); // close pack handles BEFORE removing the tree
+      await scratch.dispose();
     });
 
     const history = await repo.log({ order: 'first-parent' });
