@@ -1363,7 +1363,7 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/node": "26.4.1",
     "@vitest/coverage-v8": "4.1.11",
-    "cspell": "10.2.1",
+    "cspell": "10.2.2",
     "dependency-cruiser": "18.2.0",
     "fast-check": "4.9.0",
     "husky": "9.1.7",
