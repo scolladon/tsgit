@@ -78,6 +78,19 @@ vi.mock(
 const packRecordsModule = await import(
   '../../../../src/application/primitives/internal/pack-records.js'
 );
+// Wraps `createLruCache` in a call-through spy so a test can observe how many
+// times `baseCacheSlotFor` actually built a fresh base cache — the only way
+// to tell "reused the session's existing slot" apart from "rebuilt one",
+// since both are otherwise externally invisible (the cache is cleared at the
+// end of every `indexPackEntries` call regardless of which happened).
+vi.mock('../../../../src/domain/storage/lru-cache.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/domain/storage/lru-cache.js')>();
+  return { ...actual, createLruCache: vi.fn(actual.createLruCache) };
+});
+const lruCacheModule = await import('../../../../src/domain/storage/lru-cache.js');
+const createLruCacheSpy = vi.mocked(lruCacheModule.createLruCache);
+
 const createPackRecordStoreSpy = vi.mocked(packRecordsModule.createPackRecordStore);
 
 const ENCODER = new TextEncoder();
@@ -4836,6 +4849,292 @@ describe('verifyPackTrailer', () => {
 
         // Assert
         expect(result).toBe(expectedHex);
+      });
+    });
+  });
+});
+
+describe('resolveFromRoots — non-blob base types with a child', () => {
+  describe.each([
+    [
+      'commit',
+      `tree ${'0'.repeat(40)}\nauthor a <a@a> 0 +0000\ncommitter a <a@a> 0 +0000\n\nmsg\n`,
+    ],
+    ['tree', ''],
+    ['tag', `object ${'0'.repeat(40)}\ntype commit\ntag t\ntagger a <a@a> 0 +0000\n\nm\n`],
+  ] as const)('Given a %s base entry with one OFS_DELTA child', (type, content) => {
+    describe('When walkPackEntries walks it', () => {
+      it("Then the child resolves against the parent's real content", async () => {
+        // Arrange — only a blob-typed root gets exercised with a child
+        // elsewhere in this file; commit/tree/tag roots are only ever tested
+        // childless, so a delta chained onto one never walks pass 2's root
+        // loop for that type.
+        const ctx = createMemoryContext();
+        const entries: EntrySpec[] = [
+          { kind: 'base', type, content: ENCODER.encode(content) },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: ENCODER.encode(`${content}, appended by the delta child`),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = await walkPackEntries(ctx, built.packBytes);
+
+        // Assert
+        expect(byOffsetAscending(sut)).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('resolveFromRoots — a delta chained onto a still-unresolved thin base', () => {
+  describe('Given a thin REF_DELTA with an OFS_DELTA chained onto its own offset', () => {
+    describe('When the pack is walked with a resolver that finds the external base', () => {
+      it("Then the OFS_DELTA child resolves against the REF_DELTA's real resolved content, not its raw delta bytes", async () => {
+        // Arrange — before the external base is resolved, entry0 (the
+        // REF_DELTA) is not yet a valid "root": treating it as one anyway
+        // (isBaseType wrongly true for delta types, or the >0 guard
+        // inverted to <=0) hands walkFromRoot entry0's raw, unresolved
+        // delta-instruction bytes as if they were real content, corrupting
+        // entry1's reconstruction.
+        const ctx = createMemoryContext();
+        const baseContent = ENCODER.encode('thin-base-with-ofs-child external base content');
+        const baseHeader = ENCODER.encode(`blob ${baseContent.length}\0`);
+        const baseRaw = new Uint8Array(baseHeader.length + baseContent.length);
+        baseRaw.set(baseHeader, 0);
+        baseRaw.set(baseContent, baseHeader.length);
+        const baseId = await ctx.hash.hashHex(baseRaw);
+        const entries: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId,
+            baseUncompressed: baseContent,
+            targetContent: ENCODER.encode('thin-base-with-ofs-child entry0 reconstructed'),
+          },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 0,
+            targetContent: ENCODER.encode('thin-base-with-ofs-child entry1, chained onto entry0'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const resolveBase: ExternalBaseResolver = async (oid) =>
+          oid === baseId ? { type: 'blob', content: baseContent } : undefined;
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = await walkPackEntries(ctx, built.packBytes, resolveBase);
+
+        // Assert
+        expect(byOffsetAscending(sut)).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('resolveFromRoots — a root with one already-resolved child and one still-unresolved child', () => {
+  describe('Given a duplicate-oid base pair where only the second base owns an additional OFS_DELTA child', () => {
+    describe('When the pack is walked', () => {
+      it("Then the second base's own unresolved child is still resolved, not skipped because its sibling base's shared child already is", async () => {
+        // Arrange — ord0 and ord1 share an oid and both list the REF_DELTA
+        // (ord2) as a child; ord0's walk resolves ord2 first. By the time
+        // the loop reaches ord1, its children are [ord2 (resolved), ord3
+        // (not)]. `every` correctly still descends (not ALL resolved);
+        // `some` would wrongly skip ord1 entirely, leaving ord3 (reachable
+        // only through ord1) permanently unresolved.
+        const ctx = createMemoryContext();
+        const sharedContent = ENCODER.encode('every-vs-some duplicate-oid shared base content');
+        const sharedId = await computeBlobId(ctx, sharedContent);
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: sharedContent },
+          { kind: 'base', type: 'blob', content: sharedContent },
+          {
+            kind: 'ref-delta',
+            baseId: sharedId,
+            baseUncompressed: sharedContent,
+            targetContent: ENCODER.encode('every-vs-some shared ref-delta child target'),
+          },
+          {
+            kind: 'ofs-delta',
+            baseIndex: 1,
+            targetContent: ENCODER.encode('every-vs-some second-base-only ofs-delta child'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = await walkPackEntries(ctx, built.packBytes);
+
+        // Assert
+        expect(byOffsetAscending(sut)).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('resolveExternalBases — a ref-delta already resolved in-pack', () => {
+  describe('Given one REF_DELTA whose base is in the pack alongside a second REF_DELTA whose base is external', () => {
+    describe('When the pack is walked with an external resolver', () => {
+      it('Then the resolver is consulted only for the still-unresolved delta, never for the one pass 2 already resolved in-pack', async () => {
+        // Arrange — `resolveExternalBases` iterates every recorded
+        // REF_DELTA, not only the unresolved ones; the `isResolved` guard
+        // is what keeps it from re-deriving (and re-querying the resolver
+        // for) a delta pass 2 already settled against its in-pack base.
+        const ctx = createMemoryContext();
+        const inPackBaseContent = ENCODER.encode('resolveExternalBases in-pack base content');
+        const inPackBaseId = await computeBlobId(ctx, inPackBaseContent);
+        const externalBaseContent = ENCODER.encode('resolveExternalBases external base content');
+        const externalHeader = ENCODER.encode(`blob ${externalBaseContent.length}\0`);
+        const externalRaw = new Uint8Array(externalHeader.length + externalBaseContent.length);
+        externalRaw.set(externalHeader, 0);
+        externalRaw.set(externalBaseContent, externalHeader.length);
+        const externalBaseId = await ctx.hash.hashHex(externalRaw);
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: inPackBaseContent },
+          {
+            kind: 'ref-delta',
+            baseId: inPackBaseId,
+            baseUncompressed: inPackBaseContent,
+            targetContent: ENCODER.encode('resolveExternalBases in-pack-resolved target'),
+          },
+          {
+            kind: 'ref-delta',
+            baseId: externalBaseId,
+            baseUncompressed: externalBaseContent,
+            targetContent: ENCODER.encode('resolveExternalBases externally-resolved target'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const resolveBase = vi.fn<ExternalBaseResolver>(async (oid) =>
+          oid === externalBaseId ? { type: 'blob', content: externalBaseContent } : undefined,
+        );
+
+        // Act
+        await walkPackEntries(ctx, built.packBytes, resolveBase);
+
+        // Assert
+        expect(resolveBase).toHaveBeenCalledTimes(1);
+        expect(resolveBase).toHaveBeenCalledWith(externalBaseId);
+      });
+    });
+  });
+});
+
+describe('resolveExternalCached — two distinct external oids in one walk', () => {
+  describe('Given two REF_DELTAs whose bases are both external and both found, but under different oids', () => {
+    describe('When the pack is walked', () => {
+      it('Then the resolver is consulted once per distinct oid, not collapsed onto a shared cache key', async () => {
+        // Arrange — `externalCacheKey` must vary with the oid; a key that
+        // ignored it would let the second delta's cache lookup wrongly hit
+        // the first delta's cached (different) base.
+        const ctx = createMemoryContext();
+        const makeBase = async (label: string) => {
+          const content = ENCODER.encode(`external-cache-key ${label} base content`);
+          const header = ENCODER.encode(`blob ${content.length}\0`);
+          const raw = new Uint8Array(header.length + content.length);
+          raw.set(header, 0);
+          raw.set(content, header.length);
+          const id = await ctx.hash.hashHex(raw);
+          return { id, content };
+        };
+        const baseA = await makeBase('a');
+        const baseB = await makeBase('b');
+        const entries: EntrySpec[] = [
+          {
+            kind: 'ref-delta',
+            baseId: baseA.id,
+            baseUncompressed: baseA.content,
+            targetContent: ENCODER.encode('external-cache-key target a'),
+          },
+          {
+            kind: 'ref-delta',
+            baseId: baseB.id,
+            baseUncompressed: baseB.content,
+            targetContent: ENCODER.encode('external-cache-key target b'),
+          },
+        ];
+        const built = await buildSyntheticPack(ctx, entries);
+        const resolveBase = vi.fn<ExternalBaseResolver>(async (oid) => {
+          if (oid === baseA.id) return { type: 'blob', content: baseA.content };
+          if (oid === baseB.id) return { type: 'blob', content: baseB.content };
+          return undefined;
+        });
+        const expected = byOffsetAscending(oracleWalkedEntries(built, ctx.hash.digestLength));
+
+        // Act
+        const sut = await walkPackEntries(ctx, built.packBytes, resolveBase);
+
+        // Assert
+        expect(byOffsetAscending(sut)).toEqual(expected);
+        expect(resolveBase).toHaveBeenCalledTimes(2);
+        expect(resolveBase.mock.calls.map(([oid]) => oid).sort()).toEqual(
+          [baseA.id, baseB.id].sort(),
+        );
+      });
+    });
+  });
+});
+
+describe('baseCacheSlotFor — session-scoped slot reuse', () => {
+  describe('Given two sequential walks over one session with identical cache options', () => {
+    describe('When the second walk asks for the same budget as the first', () => {
+      it("Then the second walk reuses the first walk's cache slot instead of rebuilding one", async () => {
+        // Arrange — matching maxBytes AND maxEntries must hit the early
+        // return in `baseCacheSlotFor`; a broken guard (or a guard whose
+        // block never fires, or whose result is never persisted) rebuilds a
+        // fresh LRU on every call regardless of a budget match.
+        const ctx = createMemoryContext();
+        const options: IndexPackOptions = { baseCacheMaxBytes: 4096, baseCacheMaxEntries: 8 };
+        const { packBytes: firstPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-reuse first pack') },
+        ]);
+        const { packBytes: secondPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-reuse second pack') },
+        ]);
+        createLruCacheSpy.mockClear();
+
+        // Act
+        await walkPackEntries(ctx, firstPack, undefined, options);
+        await walkPackEntries(ctx, secondPack, undefined, options);
+
+        // Assert
+        expect(createLruCacheSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('When the second walk asks for a different maxEntries budget than the first', () => {
+      it('Then the second walk builds a fresh cache slot rather than reusing the mismatched one', async () => {
+        // Arrange — only `maxEntries` differs between the two calls;
+        // `maxBytes` stays identical. A guard that dropped (or inverted)
+        // the maxEntries half of the comparison would wrongly treat these
+        // as the same slot.
+        const ctx = createMemoryContext();
+        const { packBytes: firstPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-rebuild first pack') },
+        ]);
+        const { packBytes: secondPack } = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('slot-rebuild second pack') },
+        ]);
+        createLruCacheSpy.mockClear();
+
+        // Act
+        await walkPackEntries(ctx, firstPack, undefined, {
+          baseCacheMaxBytes: 4096,
+          baseCacheMaxEntries: 8,
+        });
+        await walkPackEntries(ctx, secondPack, undefined, {
+          baseCacheMaxBytes: 4096,
+          baseCacheMaxEntries: 16,
+        });
+
+        // Assert
+        expect(createLruCacheSpy).toHaveBeenCalledTimes(2);
+        expect(createLruCacheSpy.mock.calls[1]).toEqual([4096, 16]);
       });
     });
   });

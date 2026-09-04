@@ -435,6 +435,7 @@ const walkFromRoot = async <TCrcContext>(
   // taken. That invariant is what bounds residency — a linear chain holds the
   // parent and the child being built, never the whole root-to-leaf path.
   const stack: WalkFrame[] = [];
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — both call sites (`resolveFromRoots`, `resolveExternalBases`) already filter to non-empty children before calling `walkFromRoot`, so this guard is invariantly true; forcing it to `true`/`length >= 0` is unobservable.
   if (rootChildren.length > 0) {
     stack.push({ content: rootContent, typeName, children: rootChildren, cursor: 0 });
   }
@@ -506,6 +507,7 @@ const resolveFromRoots = async <TCrcContext>(
   passId: number,
 ): Promise<void> => {
   const { oids } = store.view();
+  // Stryker disable next-line EqualityOperator: equivalent — an out-of-bounds `ordinal === store.count` read yields a zero-filled (or genuinely out-of-bounds, bitmasked-to-zero) type, which is not COMMIT/TREE/BLOB/TAG (all non-zero), so `isBaseType` still fails and the extra iteration is a no-op.
   for (let ordinal = 0; ordinal < store.count; ordinal += 1) {
     const type = store.typeOf(ordinal);
     if (!isBaseType(type)) continue;
@@ -518,6 +520,7 @@ const resolveFromRoots = async <TCrcContext>(
     // unresolved. Either way, skipping avoids inflating a root whose subtree
     // the walk would immediately discard. `every` is true on an empty list, so
     // the two cases need no separate test.
+    // Stryker disable next-line ArrowFunction,ConditionalExpression: equivalent — forcing this outer skip to never fire (arrow always undefined, or the whole condition false) only makes an already-fully-resolved root's walk redundant, never wrong: `walkFromRoot`'s own `isResolved` guard (below) re-skips every already-resolved child, so the result is identical, just extra re-inflate work. Note: the sibling `every`→`some` mutant at this same line is NOT equivalent — see the "root with one already-resolved child" test.
     if (children.every((child) => store.isResolved(child))) continue;
     const rootContent = await rootContentOf(source, cache, passId, offset);
     await walkFromRoot(ctx, source, store, rootContent, baseTypeName(type), children);
@@ -577,6 +580,7 @@ const resolveExternalBases = async <TCrcContext>(
     store.setOid(ordinal, oidBytes);
     store.markResolved(ordinal);
     const children = collectChildren(store, offset, oidBytes);
+    // Stryker disable next-line ConditionalExpression: equivalent — forcing this to always fire calls `walkFromRoot` with possibly-empty `children`, which is itself a no-op on an empty list (see the guard inside `walkFromRoot`). NOT extending this directive to EqualityOperator: that mutator's `<= 0` replacement inverts the guard and is a real, killed mutant (see the "thin base with an OFS_DELTA chained onto it" test) — suppressing the pair would swallow it.
     if (children.length > 0) {
       await walkFromRoot(ctx, source, store, content, external.type, children);
     }
@@ -611,10 +615,12 @@ const indexPackEntries = async <TCrcContext>(
     options?.baseCacheMaxEntries ?? INDEX_PASS_BASE_CACHE_MAX_ENTRIES,
   );
   const passId = slot.passId;
+  // Stryker disable next-line AssignmentOperator: equivalent — `passId` only has to be distinct per call sharing this slot, never any particular sign or direction; `-= 1` produces 0, -1, -2, ... which is exactly as injective as `+= 1`'s 0, 1, 2, ..., so cache-key disambiguation (`o:<passId>:<offset>`) holds identically either way.
   slot.passId += 1;
   try {
     const store = await scanEntries(ctx, source, slot.cache, passId);
     await resolveFromRoots(ctx, source, store, slot.cache, passId);
+    // Stryker disable next-line EqualityOperator: equivalent — `resolvedCount` is monotonically bounded by `count` (each ordinal's `markResolved` fires at most once), so `<=` can never differ from `<` in practice; when they're equal, `resolveExternalBases` degenerates to a no-op (every ref-delta is already resolved, so the isResolved guard inside it skips them all).
     if (externalBaseResolver !== undefined && store.resolvedCount < store.count) {
       await resolveExternalBases(ctx, source, store, externalBaseResolver, slot.cache);
     }
