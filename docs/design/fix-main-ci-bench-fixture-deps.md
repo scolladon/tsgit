@@ -8,7 +8,7 @@
 
 ## Review refinements (fold-back after the four-dimension review)
 
-Five review findings changed mechanisms below. The corrected rule is stated here once; the
+Ten review findings changed mechanisms below. The corrected rule is stated here once; the
 part text that still shows the pre-review shape is marked where it matters, and ADRs 791, 793
 and 799 carry the amended decisions.
 
@@ -60,7 +60,18 @@ and 799 carry the amended decisions.
    post-step, unconditionally. The DSL's hook routing (`onMeasuredRun`, `hooksFor`) is unit-
    tested; the prune classifier keeps any leftover whose pid is alive or refused (only the
    kernel's no-such-process answer means dead), and leftovers of an unknown label.
-5. **`afterAll` never runs under `vitest bench`** (found by the session's smoke, not by the
+10. **Final cycle** (cycle-3 code/security/tests, applied without a fourth review): a HEAD
+   file that exists but cannot be read (permissions, I/O) is unverifiable, not a mismatch —
+   only an absent file is a fact; every reason interpolated into a warning is scrubbed to one
+   bounded printable line, since a bench can rewrite the file the warning quotes; the inert
+   `GIT_CONFIG_SYSTEM` switch is gone (`GIT_CONFIG_NOSYSTEM` already blocks it); every
+   synchronous bench cleanup goes through one guarded `removeSync`; the CI sweep covers
+   `.tmp.`, `.corrupt.` and `.scratch.` siblings on all three cache-writing jobs; the cache
+   root is resolved to an absolute path so the discovery ceiling can never be ignored; the
+   decoy repository in the tests is built under the same git isolation as the module. The
+   ceiling, the pristine-only winner rule, the read-error split, the scrub, the EPERM branch
+   and the guarded remover each gained a discriminating test.
+9. **`afterAll` never runs under `vitest bench`** (found by the session's smoke, not by the
    review): `runBenchmarkSuite` calls no suite hooks, so every `afterAll` in `test/bench/**`
    has always been dead — the maintenance copies and every `write-scratch` directory leaked into
    `os.tmpdir()` on every run. `BenchComparison` gains a `teardown` that the bench DSL attaches
@@ -261,9 +272,12 @@ Verifiable statements that must hold when this ships.
    replaces the directory, and returns a fixture that satisfies R1.
 6. **R6** The replacement path never leaves a partially deleted repository visible at the
    shared cache path, and never fails with `ENOTEMPTY`.
-7. **R7** With `git` absent from `PATH`, or when git cannot execute the identity probe
-   (any exit code other than 0 or 1), a cache hit still returns the cached fixture — an
-   unverifiable cache is never destroyed; when git is present the warning names the cause.
+7. **R7** When git cannot execute the tip probe (any exit code other than 0 or 1), or the
+   HEAD file cannot be read for a reason other than being absent, a cache hit still returns
+   the cached fixture — an unverifiable cache is never destroyed, and the warning names the
+   cause and the directory to delete. With `git` absent from `PATH` a pristine HEAD file is
+   trusted the same way; a mismatch proven from the HEAD file cannot be repaired without git
+   and is reported as an unavailable fixture instead of being handed out.
 8. **R8** `npm run check:deps` is green on a day when `@cloudflare/workers-types` has
    published a newer release than the pinned one, and still **red** when any
    non-excepted package is stale.
@@ -325,7 +339,7 @@ export const copyFixtureToScratch = async (
                                        // dispose = rm(cwd, { recursive: true, force: true })
 ```
 
-*Superseded by § Review refinements (4) and (5):* the copy is created beside its source
+*Superseded by § Review refinements (4) and (9):* the copy is created beside its source
 (`mkdtemp(\`${sourceCwd}.scratch.${process.pid}.\`)`, no `slug`), and the returned shape is
 `{ cwd, dispose, disposeSync }` — the scenario's `teardown` (not `afterAll`, which never runs
 under `vitest bench`) calls `disposeSync` first. Same `fs.cp` body as today's `copyToScratch`. The module imports
@@ -445,11 +459,13 @@ Pinned against real `git` 2.55.0 in a `mktemp` throwaway:
 | detached | `HEAD` | 0 | `<oid>` | 0 |
 | detached (`symbolic-ref -q HEAD`) | *(empty)* | **1** | — | — |
 
-*Superseded by § Review refinements (1):* the shipped probe **is** `symbolic-ref -q` plus
-`rev-parse --verify -q`, read through a helper that reports the exit code — exit 1 is the
-proven "no" the guard acts on, and any other failure keeps the cache. Pinned on git 2.55.0:
-detached ⇒ `symbolic-ref -q` exit 1; ref deleted ⇒ `rev-parse --verify -q` exit 1 while
-`symbolic-ref` still answers `refs/heads/main`; not a repository / garbage `.git/HEAD` ⇒ 128.
+*Superseded by § Review refinements (1) and (6):* the shipped guard reads the `.git/HEAD`
+**file** first (exactly `ref: refs/heads/main`, or a proven mismatch) and then runs only
+`rev-parse --verify -q refs/heads/main^{commit}` through a helper that reports the exit code —
+exit 1 is the proven "missing" the guard acts on, and any other failure keeps the cache. The
+matrix below was pinned on git 2.55.0 while `symbolic-ref -q` was still the HEAD probe and is
+kept as evidence for the exit-code split: detached ⇒ `symbolic-ref -q` exit 1; ref deleted ⇒
+`rev-parse --verify -q` exit 1; not a repository / garbage `.git/HEAD` ⇒ 128.
 
 **What the guard deliberately does not check.** It catches `HEAD` and `refs/heads/main`
 movement. It does **not** catch a merely dirty working tree, an extra tag, or a dangling
