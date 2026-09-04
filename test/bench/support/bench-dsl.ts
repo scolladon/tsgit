@@ -10,6 +10,7 @@
  * summary script, the `benchmark-compare` CI job, and the snapshot converter
  * all key on them. Only the describe title changes.
  */
+import type { Options } from 'tinybench';
 import { bench, describe } from 'vitest';
 
 export interface BenchComparison {
@@ -20,7 +21,18 @@ export interface BenchComparison {
    * walk can be impractically slow, so a scaled scenario may run tsgit-only.
    */
   readonly baseline?: () => Promise<void> | void;
+  /**
+   * Runs once after the scenario's last measurement. This is the ONLY cleanup
+   * that fires under `vitest bench`: the benchmark runner never calls
+   * `afterAll`, so a handle or scratch copy released there is never released.
+   */
+  readonly teardown?: () => Promise<void> | void;
 }
+
+/** tinybench calls the hook after warmup and after the measured run; cleanup waits for the run. */
+const afterMeasuredRun = (teardown: () => Promise<void> | void): Options => ({
+  teardown: (_task, mode) => (mode === 'run' ? teardown() : undefined),
+});
 
 export interface BenchScenarioOptions {
   /** Skip the whole scenario (missing fixture, Stryker sandbox, …). */
@@ -45,8 +57,9 @@ export const benchScenario = (
     // when skipIf is true; without this return, `build` would run (booting
     // servers / fixtures) on a skipped scenario.
     if (skip) return;
-    const { sut, baseline } = await build();
-    bench('tsgit', sut);
-    if (baseline !== undefined) bench('isomorphic-git', baseline);
+    const { sut, baseline, teardown } = await build();
+    const hooks = teardown === undefined ? undefined : afterMeasuredRun(teardown);
+    bench('tsgit', sut, baseline === undefined ? hooks : undefined);
+    if (baseline !== undefined) bench('isomorphic-git', baseline, hooks);
   });
 };

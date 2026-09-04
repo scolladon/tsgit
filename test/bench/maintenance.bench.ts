@@ -29,12 +29,12 @@
  * delta-chain) copy the SHARED, cached fixture into a scratch directory
  * first: `gc` retires and rewrites packs in place, and the cache is reused,
  * byte-for-byte, by every other bench file that resolves the same spec.
+ * Cleanup rides on the scenario's `teardown`, the one hook `vitest bench`
+ * actually runs — an `afterAll` here never fires.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-
-import { afterAll } from 'vitest';
 
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { maintenance } from '../../src/application/commands/maintenance.js';
@@ -61,21 +61,23 @@ scaledScenario(
   commitGraphCtx,
   "When maintenance({tasks:['commit-graph']}) writes the graph, Then measure tsgit",
   async (fixture) => {
-    const scratch = await copyFixtureToScratch(fixture.cwd, 'commit-graph');
+    const scratch = await copyFixtureToScratch(fixture.cwd);
     const ctx = createNodeContext({
       workDir: scratch.cwd,
       hooks: false,
       command: false,
       ssh: false,
     });
-    afterAll(async () => {
-      await scratch.dispose();
-    });
 
     const sut = async (): Promise<void> => {
       await maintenance(ctx, { tasks: ['commit-graph'] });
     };
-    return { sut };
+    return {
+      sut,
+      teardown: (): void => {
+        scratch.disposeSync();
+      },
+    };
   },
 );
 
@@ -91,9 +93,6 @@ benchScenario(
   "When maintenance({tasks:['gc']}) repacks them, Then measure tsgit",
   () => {
     const scratchDirs: string[] = [];
-    afterAll(async () => {
-      await Promise.all(scratchDirs.map((cwd) => rm(cwd, { recursive: true, force: true })));
-    });
 
     const sut = async (): Promise<void> => {
       const scratch = await buildManyLooseObjectsScratch(MANY_LOOSE_OBJECT_COUNT);
@@ -101,7 +100,12 @@ benchScenario(
       await scratch.repo.maintenance({ tasks: ['gc'] });
       await scratch.repo.dispose();
     };
-    return { sut };
+    return {
+      sut,
+      teardown: async (): Promise<void> => {
+        await Promise.all(scratchDirs.map((cwd) => rm(cwd, { recursive: true, force: true })));
+      },
+    };
   },
 );
 
@@ -135,14 +139,15 @@ benchScenario(
     // pack" precondition; every later sut() call is then a genuine repeat.
     await maintenance(ctx, { tasks: ['gc'] });
 
-    afterAll(async () => {
-      await rm(cwd, { recursive: true, force: true });
-    });
-
     const sut = async (): Promise<void> => {
       await maintenance(ctx, { tasks: ['gc'] });
     };
-    return { sut };
+    return {
+      sut,
+      teardown: async (): Promise<void> => {
+        await rm(cwd, { recursive: true, force: true });
+      },
+    };
   },
 );
 
@@ -158,15 +163,12 @@ scaledScenario(
   deltaChainCtx,
   "When maintenance({tasks:['gc']}) repeats over an already-consolidated repository, Then measure tsgit and report the size-trade ratio",
   async (fixture) => {
-    const scratch = await copyFixtureToScratch(fixture.cwd, 'delta-chain');
+    const scratch = await copyFixtureToScratch(fixture.cwd);
     const ctx = createNodeContext({
       workDir: scratch.cwd,
       hooks: false,
       command: false,
       ssh: false,
-    });
-    afterAll(async () => {
-      await scratch.dispose();
     });
 
     // First run: consolidates the fixture's git-deltified pack(s) into
@@ -184,6 +186,11 @@ scaledScenario(
     const sut = async (): Promise<void> => {
       await maintenance(ctx, { tasks: ['gc'] });
     };
-    return { sut };
+    return {
+      sut,
+      teardown: (): void => {
+        scratch.disposeSync();
+      },
+    };
   },
 );

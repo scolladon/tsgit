@@ -25,7 +25,7 @@ import {
   MANY_PACK_FIXTURE,
   MEDIUM_FIXTURE,
 } from '../test/bench/support/fixture-generator.ts';
-import { pruneFixtureCache } from '../test/bench/support/fixture-prune.ts';
+import { type PruneReport, pruneFixtureCache } from '../test/bench/support/fixture-prune.ts';
 
 type FixtureAction =
   | { readonly kind: 'generate'; readonly spec: FixtureSpec }
@@ -61,27 +61,38 @@ const runGenerate = async (spec: FixtureSpec): Promise<void> => {
   );
 };
 
-/** Rendering is the CLI's job, not the module's — `pruneFixtureCache` returns
- *  structured data only. Byte counts are logical bytes (sum of file sizes),
- *  not `du`'s block-rounded count, so say so rather than let a reader "fix"
- *  the number against `du`. */
-const runPrune = async (): Promise<void> => {
-  const report = await pruneFixtureCache();
+export interface PruneRendering {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number;
+}
+
+/**
+ * Rendering is the CLI's job, not the module's — `pruneFixtureCache` returns
+ * structured data only. Byte counts are logical bytes (sum of file sizes), not
+ * `du`'s block-rounded count, so the wording says so rather than let a reader
+ * "fix" the number against `du`. Exported so the three shapes are unit-tested.
+ */
+export const formatPruneReport = (report: PruneReport): PruneRendering => {
   if (report.removed.length === 0 && report.failed.length === 0) {
-    process.stdout.write(`nothing to prune under ${report.root}\n`);
-    return;
-  }
-  for (const entry of report.removed) {
-    process.stdout.write(`removed ${entry.path} (${entry.bytes} bytes)\n`);
+    return { stdout: `nothing to prune under ${report.root}\n`, stderr: '', exitCode: 0 };
   }
   const reclaimed = report.removed.reduce((total, entry) => total + entry.bytes, 0);
-  process.stdout.write(
-    `reclaimed ${reclaimed} logical bytes from ${report.removed.length} directories under ${report.root}\n`,
-  );
-  for (const failure of report.failed) {
-    process.stderr.write(`could not remove ${failure.path}: ${failure.reason}\n`);
-  }
-  if (report.failed.length > 0) process.exit(1);
+  const lines = report.removed.map((entry) => `removed ${entry.path} (${entry.bytes} bytes)\n`);
+  const summary = `reclaimed ${reclaimed} logical bytes from ${report.removed.length} directories under ${report.root}\n`;
+  const stderr = report.failed
+    .map((failure) => `could not remove ${failure.path}: ${failure.reason}\n`)
+    .join('');
+  return { stdout: lines.join('') + summary, stderr, exitCode: report.failed.length > 0 ? 1 : 0 };
+};
+
+const runPrune = async (): Promise<void> => {
+  const rendering = formatPruneReport(await pruneFixtureCache());
+  process.stdout.write(rendering.stdout);
+  process.stderr.write(rendering.stderr);
+  // `exitCode`, never `process.exit`: both streams are pipes under `npm run`,
+  // where a hard exit can truncate the diagnostics just written.
+  process.exitCode = rendering.exitCode;
 };
 
 const main = async (): Promise<void> => {

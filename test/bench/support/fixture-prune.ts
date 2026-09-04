@@ -1,9 +1,11 @@
 /**
  * Reclaims stale bench fixture caches under `cacheRoot()` — the `<label>-v<N>`
- * directories `fixture-generator.ts` no longer builds, plus `.tmp.<pid>.<ms>`
- * / `.corrupt.<pid>.<ms>` leftovers from an interrupted build or a rebuild
- * that failed its identity probe. Reclaim is a deliberate developer action
- * (`bench:fixture -- --prune`) — nothing here runs automatically.
+ * directories `fixture-generator.ts` no longer builds, plus the transient
+ * siblings a run leaves behind when it dies: `.tmp.<pid>.<ms>` builds,
+ * `.corrupt.<pid>.<ms>` retirements and `.scratch.<pid>.<random>` copies. A
+ * sibling whose pid is still alive belongs to a running process and is never
+ * touched. Reclaim is a deliberate developer action (`bench:fixture -- --prune`)
+ * — nothing here runs automatically.
  */
 import { lstat, readdir, rm } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -32,8 +34,14 @@ export interface PruneReport {
 
 export type CacheEntryVerdict = 'stale-version' | 'leftover' | 'keep';
 
+/** Answers whether a pid still belongs to a running process. */
+export type ProcessLiveness = (pid: number) => boolean;
+
 const VERSIONED = /^(?<label>[a-z][a-z0-9-]*)-v(?<version>\d+)$/;
-const LEFTOVER = /\.(?:tmp|corrupt)\.\d+\.\d+$/;
+// `leftoverDirName` (fixture-generator.ts) and `copyFixtureToScratch`
+// (fixture-scratch.ts) both write `<label>-v<N>.<kind>.<pid>.<token>`.
+const LEFTOVER =
+  /^(?<label>[a-z][a-z0-9-]*)-v\d+\.(?:tmp|corrupt|scratch)\.(?<pid>\d+)\.[A-Za-z0-9]+$/;
 
 /** Exhaustive by construction: a new `FixtureSpec` label that is not listed fails `check:types`. */
 const KNOWN_LABELS: Readonly<Record<FixtureSpec['label'], true>> = {
@@ -53,16 +61,54 @@ const KNOWN_LABELS: Readonly<Record<FixtureSpec['label'], true>> = {
   'loose-only': true,
 };
 
-export const classifyCacheEntry = (name: string): CacheEntryVerdict => {
-  if (LEFTOVER.test(name)) return 'leftover';
-  const match = VERSIONED.exec(name);
-  const label = match?.groups?.label;
-  const version = match?.groups?.version;
-  if (label === undefined || version === undefined || !Object.hasOwn(KNOWN_LABELS, label)) {
-    return 'keep';
+const isKnownLabel = (label: string): boolean => Object.hasOwn(KNOWN_LABELS, label);
+
+const errorCode = (err: unknown): string | undefined =>
+  typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string'
+    ? err.code
+    : undefined;
+
+/** Signal 0 delivers nothing; it only asks whether the pid exists (EPERM ⇒ it does, someone else's). */
+export const isProcessAlive: ProcessLiveness = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return errorCode(err) === 'EPERM';
   }
+};
+
+const leftoverVerdict = (name: string, isAlive: ProcessLiveness): CacheEntryVerdict => {
+  const groups = LEFTOVER.exec(name)?.groups;
+  const label = groups?.label;
+  const pid = groups?.pid;
+  // Both groups are mandatory in the pattern; these checks exist for the type system.
+  if (label === undefined || pid === undefined) return 'keep';
+  if (!isKnownLabel(label) || isAlive(Number.parseInt(pid, 10))) return 'keep';
+  return 'leftover';
+};
+
+const versionVerdict = (name: string): CacheEntryVerdict => {
+  const groups = VERSIONED.exec(name)?.groups;
+  const label = groups?.label;
+  const version = groups?.version;
+  // Both groups are mandatory in the pattern; these checks exist for the type system.
+  if (label === undefined || version === undefined) return 'keep';
+  if (!isKnownLabel(label)) return 'keep';
   return Number.parseInt(version, 10) < FIXTURE_GENERATOR_VERSION ? 'stale-version' : 'keep';
 };
+
+/**
+ * Name-level classification of one cache-root entry. Only known labels are ever
+ * candidates: a directory left by a checkout that knows a label this one does
+ * not is kept. Versions newer than this checkout's are kept too — a prune run
+ * from an older checkout must never remove a sibling worktree's live fixtures.
+ */
+export const classifyCacheEntry = (
+  name: string,
+  isAlive: ProcessLiveness = isProcessAlive,
+): CacheEntryVerdict =>
+  LEFTOVER.test(name) ? leftoverVerdict(name, isAlive) : versionVerdict(name);
 
 interface PruneCandidate {
   readonly name: string;
@@ -77,44 +123,61 @@ const listCandidates = async (root: string): Promise<readonly PruneCandidate[]> 
       .filter((entry) => entry.isDirectory() && classifyCacheEntry(entry.name) !== 'keep')
       .map((entry) => ({ name: entry.name, path: path.join(root, entry.name) }));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    if (errorCode(err) === 'ENOENT') return [];
     throw err;
   }
 };
 
-/** `entry.isDirectory()` reflects `lstat`, so a symlink never recurses into its
- *  target — it is sized as its own link, exactly like any other non-directory entry. */
+/**
+ * Sequential on purpose: a fan-out over every entry queues the whole tree's
+ * `lstat`s at once, which measured hundreds of MB on a 200 000-file fixture.
+ * `entry.isDirectory()` reflects `lstat`, so a symlink never recurses into its
+ * target — it is sized as its own link, like any other non-directory entry.
+ */
 const walkBytes = async (dir: string): Promise<number> => {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const sizes = await Promise.all(
-    entries.map((entry) => {
-      const entryPath = path.join(dir, entry.name);
-      return entry.isDirectory()
-        ? walkBytes(entryPath)
-        : lstat(entryPath).then((stat) => stat.size);
-    }),
-  );
-  return sizes.reduce((total, size) => total + size, 0);
+  let total = 0;
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    total += entry.isDirectory() ? await walkBytes(entryPath) : (await lstat(entryPath)).size;
+  }
+  return total;
 };
 
+const isGone = async (target: string): Promise<boolean> => {
+  try {
+    await lstat(target);
+    return false;
+  } catch (err) {
+    return errorCode(err) === 'ENOENT';
+  }
+};
+
+interface PruneOutcome {
+  readonly removed?: PrunedEntry;
+  readonly failed?: PruneFailure;
+}
+
 /** Bytes are measured before removal so a failed `rm` never inflates the report. */
-const pruneCandidate = async (
-  candidate: PruneCandidate,
-): Promise<{ readonly removed?: PrunedEntry; readonly failed?: PruneFailure }> => {
+const pruneCandidate = async (candidate: PruneCandidate): Promise<PruneOutcome> => {
   try {
     const bytes = await walkBytes(candidate.path);
     await rm(candidate.path, { recursive: true, force: true });
     return { removed: { path: candidate.path, bytes } };
   } catch (err) {
+    // A concurrent run that already removed the whole candidate is not a failure.
+    if (errorCode(err) === 'ENOENT' && (await isGone(candidate.path))) return {};
     const reason = err instanceof Error ? err.message : String(err);
     return { failed: { path: candidate.path, reason } };
   }
 };
 
+/** One candidate at a time — an occasional developer verb, sized for memory, not for speed. */
 export const pruneFixtureCache = async (): Promise<PruneReport> => {
   const root = cacheRoot();
-  const candidates = await listCandidates(root);
-  const outcomes = await Promise.all(candidates.map(pruneCandidate));
+  const outcomes: PruneOutcome[] = [];
+  for (const candidate of await listCandidates(root)) {
+    outcomes.push(await pruneCandidate(candidate));
+  }
   return {
     root,
     removed: outcomes.flatMap((outcome) =>

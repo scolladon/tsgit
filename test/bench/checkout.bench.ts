@@ -25,22 +25,39 @@
  * cache is reused byte-for-byte by every other bench file resolving the
  * same spec — mutating it in place here would corrupt every later reader.
  */
-import { afterAll } from 'vitest';
-
 import { openRepository } from '../../src/index.node.js';
-import { copyFixtureToScratch } from './support/fixture-scratch.js';
+import type { Repository } from '../../src/repository.js';
+import type { ScaledFixture } from './support/fixture-generator.js';
+import { copyFixtureToScratch, type FixtureScratch } from './support/fixture-scratch.js';
 import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
+
+interface OpenedCopy {
+  readonly repo: Repository;
+  readonly scratch: FixtureScratch;
+}
+
+/** Copies the fixture and opens the copy; a failed open disposes the copy so nothing leaks. */
+const openFixtureCopy = async (fixture: ScaledFixture): Promise<OpenedCopy> => {
+  const scratch = await copyFixtureToScratch(fixture.cwd);
+  try {
+    return { repo: await openRepository({ cwd: scratch.cwd }), scratch };
+  } catch (err) {
+    await scratch.dispose();
+    throw err;
+  }
+};
 
 await tieredScenario(
   MULTI_TIERS,
   'When checkout() alternates tip and root with force, Then measure tsgit',
   async (fixture) => {
-    const scratch = await copyFixtureToScratch(fixture.cwd, `checkout-force-${fixture.spec.label}`);
-    const repo = await openRepository({ cwd: scratch.cwd });
-    afterAll(async () => {
-      await repo.dispose(); // close pack handles BEFORE removing the tree
-      await scratch.dispose();
-    });
+    const { repo, scratch } = await openFixtureCopy(fixture);
+    // The copy is removed synchronously so the un-awaited teardown still
+    // completes; the handle close may float — the process exit closes it too.
+    const teardown = async (): Promise<void> => {
+      scratch.disposeSync();
+      await repo.dispose();
+    };
 
     const history = await repo.log({ order: 'first-parent' });
     const rootCommitId = history.at(-1)?.id ?? fixture.headCommitId;
@@ -51,7 +68,7 @@ await tieredScenario(
       atTip = !atTip;
       await repo.checkout({ rev, force: true });
     };
-    return { sut };
+    return { sut, teardown };
   },
 );
 
@@ -59,15 +76,13 @@ await tieredScenario(
   MULTI_TIERS,
   'When checkout() alternates tip and root without force, Then measure tsgit',
   async (fixture) => {
-    const scratch = await copyFixtureToScratch(
-      fixture.cwd,
-      `checkout-no-force-${fixture.spec.label}`,
-    );
-    const repo = await openRepository({ cwd: scratch.cwd });
-    afterAll(async () => {
-      await repo.dispose(); // close pack handles BEFORE removing the tree
-      await scratch.dispose();
-    });
+    const { repo, scratch } = await openFixtureCopy(fixture);
+    // The copy is removed synchronously so the un-awaited teardown still
+    // completes; the handle close may float — the process exit closes it too.
+    const teardown = async (): Promise<void> => {
+      scratch.disposeSync();
+      await repo.dispose();
+    };
 
     const history = await repo.log({ order: 'first-parent' });
     const rootCommitId = history.at(-1)?.id ?? fixture.headCommitId;
@@ -81,6 +96,6 @@ await tieredScenario(
       // clean tree — this measures its overhead, never a refusal.
       await repo.checkout({ rev, force: false });
     };
-    return { sut };
+    return { sut, teardown };
   },
 );
