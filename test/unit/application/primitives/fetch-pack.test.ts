@@ -5,6 +5,7 @@ import { buildPack } from '../../../../src/application/primitives/build-pack.js'
 import {
   fetchPack,
   type NegotiatePackBytes,
+  verifyPackTrailer,
 } from '../../../../src/application/primitives/fetch-pack.js';
 import {
   DISK_WALK_WINDOW_BYTES,
@@ -2690,6 +2691,57 @@ describe('quarantine disk-backed entry walk', () => {
     });
   });
 
+  describe('Given the same endless zlib member, but with a declared size past the point where the ceiling floor stops binding', () => {
+    describe('When the quarantined pack is indexed from disk', () => {
+      it('Then the growth ladder stops at the declared-size-scaled ceiling, not the documented-window floor or the whole pack', async () => {
+        // Arrange — 300_000 clears the ~254 KB point where `entryGrowthCeiling`'s
+        // additive term (declaredSize scaled by its 1.6% zlib-expansion
+        // headroom, plus a flat 4096) overtakes the documented-window floor —
+        // unlike the tiny-declaredSize case above, THIS ceiling's own
+        // arithmetic is what growth stops at, not the floor. Pins the `/ 64`
+        // and `+ 4096` terms: a mutant that inflates or shrinks either moves
+        // this exact number.
+        const baseCtx = createMemoryContext();
+        const declaredSize = 300_000;
+        const PACK_BODY_BYTES = 3 * DISK_WALK_WINDOW_BYTES;
+        const stream: number[] = [0x78, 0x01];
+        while (stream.length < PACK_BODY_BYTES) stream.push(0x00, 0x00, 0x00, 0xff, 0xff);
+        const header = [0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 1];
+        const entryHeader = Array.from(encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, declaredSize));
+        const body = new Uint8Array([...header, ...entryHeader, ...stream]);
+        const digestLength = baseCtx.hash.digestLength;
+        const packBytes = new Uint8Array(body.length + digestLength);
+        packBytes.set(body, 0);
+        packBytes.set(hexToBytes(await baseCtx.hash.hashHex(body)), body.length);
+
+        const requestedLengths: number[] = [];
+        const ctx = withFsPatch(baseCtx, {
+          readSlice: async (path: string, offset: number, length: number) => {
+            requestedLengths.push(length);
+            return baseCtx.fs.readSlice(path, offset, length);
+          },
+        });
+        const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_endless_big`;
+        await ctx.fs.write(tmpPath, packBytes);
+
+        // Act
+        let caught: unknown;
+        try {
+          await indexQuarantinedPack(ctx, tmpPath, packBytes.length, async () => undefined);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — mirrors `entryGrowthCeiling` exactly: declaredSize plus
+        // its zlib-expansion headroom plus the flat 4096 allowance.
+        const expectedCeiling = declaredSize + Math.ceil(declaredSize / 64) + 4096;
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(Math.max(...requestedLengths)).toBe(expectedCeiling);
+        expect(requestedLengths).not.toContain(packBytes.length);
+      });
+    });
+  });
+
   describe('Given an entry whose zlib stream straddles a window boundary', () => {
     describe('When fetchPack walks the quarantined pack from disk', () => {
       it('Then it still inflates correctly by growing the window', async () => {
@@ -4726,6 +4778,64 @@ describe('disk-walk window bookkeeping', () => {
         expect((caught as { data: { code: string; reason: string } }).data.reason).toBe(
           'unexpected end of deflate stream',
         );
+      });
+    });
+  });
+});
+
+describe('verifyPackTrailer', () => {
+  describe('Given a pack shorter than header + trailer', () => {
+    describe('When verifyPackTrailer runs', () => {
+      it('Then throws INVALID_PACK_HEADER (too short)', async () => {
+        // Arrange — 31 bytes is one byte short of the SHA-1 minimum (12-byte
+        // header + 20-byte trailer). Mirrors fetchPack's own too-short guard
+        // test above (`receivePackToQuarantine`'s twin check), but exercises
+        // this in-memory verifier's own length guard directly.
+        const ctx = createMemoryContext();
+        const tooShort = new Uint8Array(31);
+        const sut = verifyPackTrailer;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(tooShort, ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; reason?: string };
+        expect(data.code).toBe('INVALID_PACK_HEADER');
+        expect(data.reason).toContain('trailer');
+        expect(data.reason).toContain('too short');
+      });
+    });
+  });
+
+  describe('Given a pack exactly header + trailer bytes long (empty-body boundary)', () => {
+    describe('When verifyPackTrailer runs', () => {
+      it('Then accepts it, returning the header digest', async () => {
+        // Arrange — boundary: 12-byte header + trailerLen = the shortest
+        // legal pack (zero body bytes). Together with the too-short test
+        // above, this pins the `<` vs `<=` mutant on the length guard.
+        const ctx = createMemoryContext();
+        const header = new Uint8Array(12);
+        const dv = new DataView(header.buffer);
+        dv.setUint32(0, 0x5041434b);
+        dv.setUint32(4, 2);
+        dv.setUint32(8, 0);
+        const expectedHex = await ctx.hash.hashHex(header);
+        const packBytes = new Uint8Array(12 + ctx.hash.digestLength);
+        packBytes.set(header, 0);
+        packBytes.set(hexToBytes(expectedHex), 12);
+        const sut = verifyPackTrailer;
+
+        // Act
+        const result = await sut(packBytes, ctx);
+
+        // Assert
+        expect(result).toBe(expectedHex);
       });
     });
   });

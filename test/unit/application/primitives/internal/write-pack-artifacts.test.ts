@@ -59,6 +59,33 @@ interface BadBooleanData {
   readonly value: string;
 }
 
+describe('buildIdx', () => {
+  describe('Given a set of writer entries and a verified pack checksum', () => {
+    describe('When buildIdx computes the file bytes', () => {
+      it('Then the second trailer holds the digest of everything before it, and the bytes reparse cleanly', async () => {
+        // Arrange — serializePackIndex leaves this trailer ZEROED; only
+        // buildIdx's in-place fill makes it the real digest, so a zeroed
+        // trailer surviving here (rather than only failing against real
+        // git in the interop suite) is what pins the fill inside this
+        // unit's own scope.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(4);
+        const sorted = sortPackIndexEntries(entries);
+        const sut = buildIdx;
+
+        // Act
+        const idxBytes = await sut(ctx, sorted, PACK_SHA);
+
+        // Assert
+        const digestStart = idxBytes.length - ctx.hash.digestLength;
+        const expectedDigest = await ctx.hash.hash(idxBytes.subarray(0, digestStart));
+        expect(idxBytes.subarray(digestStart)).toEqual(expectedDigest);
+        expect(() => parsePackIndex(idxBytes, ctx.hash.digestLength)).not.toThrow();
+      });
+    });
+  });
+});
+
 describe('buildRev', () => {
   describe('Given a set of writer entries and a verified pack checksum', () => {
     describe('When buildRev computes the file bytes', () => {

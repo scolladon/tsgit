@@ -187,7 +187,7 @@ const isRetryableWindowFailure = (err: unknown): boolean => {
  * Errors of any other shape pass through unchanged.
  */
 const withAbsoluteEntryOffset = (err: unknown, windowStart: number): unknown => {
-  // Stryker disable next-line EqualityOperator: equivalent — withAbsoluteEntryOffset has one caller (entryHeader's catch, fed only by parsePackEntryHeader), and every throw site in parsePackEntryHeader (pack-entry.ts) uses invalidPackEntry — the pass-through arm for a different code is unreachable.
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — withAbsoluteEntryOffset has one caller (entryHeader's catch, fed only by parsePackEntryHeader), and every throw site in parsePackEntryHeader (pack-entry.ts) uses invalidPackEntry — the pass-through arm for a different code is unreachable, so this condition is always false in practice; forcing it to the literal `false` (ConditionalExpression) cannot change behaviour either.
   if (errorDataCode(err) !== 'INVALID_PACK_ENTRY') return err;
   const data = (err as { readonly data: { readonly offset: number; readonly reason: string } })
     .data;
@@ -271,6 +271,7 @@ export const diskPackByteSource = (
    *  digest — tens of bytes. Two documented windows is enormous slack, and it
    *  still bounds the same never-terminating shape when it strikes during
    *  header parsing rather than inflation. */
+  // Stryker disable next-line ArithmeticOperator: equivalent — this value only feeds nextRung's doubling branch (priorRung !== 0), reached only once a documented-size retry already failed; every header shape is bounded to ~38 bytes (MAX_SIZE_EXTENSION_BYTES + max digestLength, pack-entry.ts), so a documented window (>=256 KiB, or exactly trailerStart-anchor when clamped near the trailer) either satisfies the header outright or growOrRethrow's trailerStart exhaustion check throws first — this multiplier is never read.
   const headerGrowthCeiling = (anchor: number): number => initialWindowSize(anchor) * 2;
 
   const nextRung = (priorRung: number, anchor: number, maxSpan: number): number =>
