@@ -79,8 +79,11 @@ and 799 carry the amended decisions.
    await that hook, so a file's last scenario loses an async removal to the worker's exit (a
    `process.on('exit')` sweep does not run either — the pool kills the worker); the copy is
    therefore removed through `FixtureScratch.disposeSync` first, and the repository handle's
-   asynchronous close may float. The `afterAll` sites in the other 14 bench files stay as they
-   are: harmless no-ops the process exit covers, surfaced rather than swept in this change.
+   asynchronous close may float. The user then ruled that the `afterAll` sites in every other
+   bench file move to the same channel in this change: 27 cleanups across 22 files, every
+   directory removal synchronous through `removeSync`, handle closes left asynchronous (the
+   process exit covers them), the module-level fixture cleanup in `loose-read.bench.ts` folded
+   into its last scenario. No `afterAll` remains under `test/bench/`.
 
 ## Context
 
