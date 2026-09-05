@@ -105,7 +105,7 @@ export class MemoryFileSystem implements FileSystem {
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const normalized = this.resolve(path);
-    if (this.files.has(normalized) || this.symlinks.has(normalized)) {
+    if (this.occupied(normalized)) {
       throw fileExists(path);
     }
     this.ensureParentDirs(normalized);
@@ -320,17 +320,21 @@ export class MemoryFileSystem implements FileSystem {
 
   symlink = async (target: string, path: string): Promise<void> => {
     const normalized = this.resolve(path);
-    if (
-      this.files.has(normalized) ||
-      this.symlinks.has(normalized) ||
-      this.directories.has(normalized)
-    ) {
+    if (this.occupied(normalized)) {
       throw fileExists(path);
     }
     this.ensureParentDirs(normalized);
     this.symlinks.set(normalized, target);
     this.touch(normalized);
   };
+
+  private occupied(normalized: string): boolean {
+    return (
+      this.files.has(normalized) ||
+      this.symlinks.has(normalized) ||
+      this.directories.has(normalized)
+    );
+  }
 
   chmod = async (path: string, _mode: number): Promise<void> => {
     this.resolve(path);

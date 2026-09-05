@@ -64,7 +64,9 @@ export interface FileSystem {
   readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>) => Promise<void>;
 
   /**
-   * Write bytes to file. Fails with FILE_EXISTS if the file already exists (exclusive create).
+   * Write bytes to file. Fails with FILE_EXISTS if anything already occupies `path` — a regular
+   * file, a directory (empty or not), or a symbolic link, including a dangling one (exclusive
+   * create).
    *
    * Contract obligations:
    * - **Parent-directory creation:** the adapter MUST ensure parent directories exist before the
@@ -76,6 +78,10 @@ export interface FileSystem {
    *  of `path` is a symbolic link whose resolved target is outside the containment root. This
    *  closes the attack where an attacker replaces `objects/xx/` with a symlink pointing elsewhere.
    *  Implementation: lstat-walk the ancestor chain, or use `openat`-style relative opens.
+   * - **Ancestor obligation:** a non-directory occupying an ancestor segment of `path` also
+   *  refuses. The code at the immediate parent is adapter-dependent (Node reports FILE_EXISTS,
+   *  matching its own `mkdir -p`'s EEXIST; the memory adapter reports NOT_A_DIRECTORY carrying
+   *  the ancestor path); every deeper ancestor reports NOT_A_DIRECTORY on both.
    */
   readonly writeExclusive: (path: string, data: Uint8Array) => Promise<void>;
 

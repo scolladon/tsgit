@@ -808,9 +808,9 @@ describe('MemoryFileSystem', () => {
       });
     });
 
-    describe('Given the memory fs has no real symlinks', () => {
+    describe('Given a multi-level nested path whose ancestors do not exist', () => {
       describe('When writeExclusive is called', () => {
-        it('Then succeeds (symlink-safe contract trivially holds)', async () => {
+        it('Then every missing ancestor directory is auto-created and write succeeds', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
 
@@ -819,6 +819,127 @@ describe('MemoryFileSystem', () => {
 
           // Assert
           expect(await sut.exists('/repo/a/b/c.bin')).toBe(true);
+        });
+      });
+    });
+
+    describe('Given an empty directory occupies the target path', () => {
+      describe('When writeExclusive is called', () => {
+        it('Then throws FILE_EXISTS carrying the requested path', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.mkdir('/repo/empty-dir');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeExclusive('/repo/empty-dir', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('FILE_EXISTS');
+          if (data.code === 'FILE_EXISTS') expect(data.path).toBe('/repo/empty-dir');
+        });
+      });
+    });
+
+    describe('Given a directory holding a child file occupies the target path', () => {
+      describe('When writeExclusive is called', () => {
+        it('Then throws FILE_EXISTS, and the child and directory kind are unchanged', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          const childData = new Uint8Array([9, 8, 7]);
+          await sut.write('/repo/occupied-dir/child.bin', childData);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeExclusive('/repo/occupied-dir', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('FILE_EXISTS');
+          if (data.code === 'FILE_EXISTS') expect(data.path).toBe('/repo/occupied-dir');
+          expect(await sut.read('/repo/occupied-dir/child.bin')).toEqual(childData);
+          expect((await sut.lstat('/repo/occupied-dir')).isDirectory).toBe(true);
+        });
+      });
+    });
+
+    describe("Given the target path is the adapter's root", () => {
+      describe('When writeExclusive is called', () => {
+        it('Then throws FILE_EXISTS, and a later write elsewhere in the tree still succeeds', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeExclusive('/repo', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('FILE_EXISTS');
+          if (data.code === 'FILE_EXISTS') expect(data.path).toBe('/repo');
+          await sut.write('/repo/after-root-refusal.bin', new Uint8Array([2]));
+          expect(await sut.exists('/repo/after-root-refusal.bin')).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a regular file occupies the target path', () => {
+      describe('When writeExclusive is called', () => {
+        it('Then throws FILE_EXISTS', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/occupied-file.bin', new Uint8Array([1]));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeExclusive('/repo/occupied-file.bin', new Uint8Array([2]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('FILE_EXISTS');
+        });
+      });
+    });
+
+    describe('Given a symlink occupies the target path', () => {
+      describe('When writeExclusive is called', () => {
+        it('Then throws FILE_EXISTS', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/link-target.bin', new Uint8Array([1]));
+          await sut.symlink('/repo/link-target.bin', '/repo/occupied-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeExclusive('/repo/occupied-link', new Uint8Array([2]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('FILE_EXISTS');
         });
       });
     });

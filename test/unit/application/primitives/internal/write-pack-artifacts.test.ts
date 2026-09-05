@@ -889,31 +889,21 @@ describe('writePackSiblingArtifacts — artefacts already present', () => {
   describe('Given a directory occupying the .idx sibling name', () => {
     describe('When writePackSiblingArtifacts runs', () => {
       it('Then it refuses naming the index instead of surfacing a raw filesystem error', async () => {
-        // Arrange — a real directory: `ctx.fs.stat` reports isFile: false
-        // and `ctx.fs.read` throws FILE_NOT_FOUND (a directory is never in
-        // the files map) — the raw error this refusal replaces. Real POSIX
-        // `open(path, 'wx')` throws EEXIST for an existing directory too
-        // (confirmed against Node), which the memory adapter's
-        // `writeExclusive` does not model — it only checks files/symlinks —
-        // so `writeExclusive` is patched here to reject the same way a
-        // correct adapter (or a real one) would.
+        // Arrange — a real directory: `ctx.fs.writeExclusive` now refuses it
+        // with FILE_EXISTS directly, so no test-side patch is needed to reach
+        // that catch. The directory's reported size is still faked to match
+        // the index length exactly, so the only thing left to distinguish it
+        // from a genuine match is `isFile: false` — proving that field, not
+        // size, is what trips the mismatch.
         const ctx = createMemoryContext();
         const entries = buildEntries(3);
         const dir = packDirOf(ctx);
         const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
         await ctx.fs.mkdir(idxPath);
-        // The directory's stat is patched to report the exact size of the
-        // index about to be written, so `isFile` is the only discriminator
-        // this case can trip — the size check is pinned by its own case.
         const idxBytes = await buildIdx(ctx, sortPackIndexEntries(entries), PACK_SHA);
-        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
         const originalStat = ctx.fs.stat.bind(ctx.fs);
         const failingFs: Context['fs'] = {
           ...ctx.fs,
-          writeExclusive: async (path: string, data: Uint8Array) => {
-            if (path === idxPath) throw new TsgitError({ code: 'FILE_EXISTS', path });
-            return originalWriteExclusive(path, data);
-          },
           stat: async (path: string) => {
             const real = await originalStat(path);
             return path === idxPath ? { ...real, size: idxBytes.length } : real;

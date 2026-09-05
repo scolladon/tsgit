@@ -412,6 +412,41 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(await env.fs.read(path)).toEqual(data);
     });
 
+    it('Given an existing directory, When writeExclusive, Then throws FILE_EXISTS', async () => {
+      // Arrange
+      const path = `${env.rootDir}/existing-dir`;
+      await env.fs.mkdir(path);
+
+      // Act
+      try {
+        await env.fs.writeExclusive(path, new Uint8Array([1]));
+        expect.fail('expected FILE_EXISTS');
+      } catch (err) {
+        // Assert
+        assertFileExists(err);
+      }
+    });
+
+    // Depth-1 (a file at the immediate parent) is deliberately not a row here:
+    // it is adapter-dependent — Node reports FILE_EXISTS, memory reports
+    // NOT_A_DIRECTORY carrying the ancestor. Depth >= 2 agrees on the code
+    // across both drivers.
+    it('Given a file at a grandparent path segment, When writeExclusive, Then throws NOT_A_DIRECTORY', async () => {
+      // Arrange
+      const grandparent = `${env.rootDir}/grandparent.bin`;
+      await env.fs.write(grandparent, new Uint8Array([1]));
+      const path = `${grandparent}/mid/leaf.bin`;
+
+      // Act
+      try {
+        await env.fs.writeExclusive(path, new Uint8Array([2]));
+        expect.fail('expected NOT_A_DIRECTORY');
+      } catch (err) {
+        // Assert
+        assertNotADirectory(err);
+      }
+    });
+
     it('Given file with known content, When readSlice(0, 3), Then returns first 3 bytes', async () => {
       // Arrange
       const path = `${env.rootDir}/slice.bin`;
