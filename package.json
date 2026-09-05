@@ -1161,7 +1161,9 @@
         "test-pyramid-budgets.json",
         "test/unit/**/*.test.ts",
         "test/integration/**/*.test.ts",
-        "test/browser/**/*.spec.ts"
+        "test/browser/**/*.spec.ts",
+        "tooling/test/unit/**/*.test.ts",
+        "tooling/test/integration/**/*.test.ts"
       ],
       "output": [
         "reports/test-pyramid.json",

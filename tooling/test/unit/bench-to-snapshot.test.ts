@@ -151,7 +151,7 @@ describe('assertEveryBenchmarkValued', () => {
 
   describe('Given a report with two benchmarks carrying neither median nor mean', () => {
     describe('When the guard runs', () => {
-      it('Then the message names both keys', () => {
+      it('Then the message names the exact prefix and both keys, comma-separated', () => {
         // Arrange
         const report: RawReport = {
           files: [
@@ -170,8 +170,9 @@ describe('assertEveryBenchmarkValued', () => {
 
         // Assert
         expect(thrown).toBeInstanceOf(Error);
-        expect((thrown as Error).message).toContain('log:walk > tsgit');
-        expect((thrown as Error).message).toContain('status:clean > isomorphic-git');
+        expect((thrown as Error).message).toBe(
+          'Benchmark(s) with no value (neither median nor mean): log:walk > tsgit, status:clean > isomorphic-git',
+        );
       });
     });
   });

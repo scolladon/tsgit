@@ -91,6 +91,7 @@ describe('hooksFor', () => {
         // Assert
         expect(callsAfterWarmup).toBe(0);
         expect(teardown).toHaveBeenCalledTimes(1);
+        expect(result.tsgit?.throws).toBe(true);
         expect(result.baseline?.throws).toBe(true);
         expect(result.baseline?.teardown).toBeUndefined();
       });
@@ -111,6 +112,7 @@ describe('hooksFor', () => {
         // Assert
         expect(teardown).toHaveBeenCalledTimes(1);
         expect(result.tsgit?.throws).toBe(true);
+        expect(result.baseline?.throws).toBe(true);
         expect(result.tsgit?.teardown).toBeUndefined();
       });
     });

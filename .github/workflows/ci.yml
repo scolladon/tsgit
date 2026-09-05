@@ -606,6 +606,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'bench')
     needs: [changes, unit-tests]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     # Informative only — a flagged regression is a prompt to look, never a
     # merge gate. Same-runner benchmarking measures too much noise to block on.
     # Compares per-scenario median-ms, asymmetric (improvements never flag),

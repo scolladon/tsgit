@@ -41,7 +41,9 @@
       "tooling/truthful-dts.ts",
       "tooling/audit-assert-tier.ts",
       "tooling/audit-assert-tier/**/*.ts",
-      "tooling/test/unit/audit-assert-tier.test.ts"
+      "tooling/test/unit/audit-assert-tier.test.ts",
+      "tooling/test/integration/bench-warmup-throw.test.ts",
+      "tooling/test/fixtures/bench/throwing-warmup.bench.ts"
     ]
   },
   "formatter": {

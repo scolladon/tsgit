@@ -18,7 +18,6 @@ interface BenchEntry {
   readonly hz?: number;
   readonly mean?: number;
   readonly median?: number;
-  readonly p99?: number;
   readonly rme: number;
 }
 

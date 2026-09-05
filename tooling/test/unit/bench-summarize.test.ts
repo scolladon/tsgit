@@ -157,6 +157,27 @@ describe('renderRow', () => {
     });
   });
 
+  describe('Given a tsgit entry with an hz and neither median nor mean', () => {
+    describe('When renderRow renders it', () => {
+      it('Then both cells render as missing', () => {
+        // Arrange
+        const group: BenchGroup = {
+          fullName: 'inflate a 64 KiB zlib member',
+          benchmarks: [{ name: 'tsgit', hz: 1953, rme: 2.1 }],
+        };
+        const sut = renderRow;
+
+        // Act
+        const result = sut(group);
+
+        // Assert
+        expect(result).toBe(
+          '| inflate a 64 KiB zlib member | _missing entry_ | _missing entry_ | n/a |',
+        );
+      });
+    });
+  });
+
   describe('Given a group whose tsgit entry is measured and whose isomorphic-git entry is not', () => {
     describe('When renderRow renders it', () => {
       it('Then the row renders as a tsgit-only row', () => {
@@ -254,6 +275,68 @@ describe('renderSummary', () => {
             '|---|---|---|---|',
             '| first scenario | 3.698 ms (256/s, ±5.26%) | 1.233 ms (529/s, ±13.78%) | 0.33× |',
             '| second scenario | 0.512 ms (1953/s, ±2.10%) | — | n/a |',
+            '',
+            '> _speedup > 1×_ means tsgit beat isomorphic-git on median runtime. Raw',
+            '> data in `reports/benchmarks/raw.json` includes p75/p99/RME and per-run',
+            '> sample counts. GitHub Actions runners introduce ±20% variance — trust',
+            '> direction more than absolute numbers. The speedup column applies to',
+            '> paired rows only.',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a report with two files, each holding one group, and a fixed environment', () => {
+    describe('When renderSummary builds the document', () => {
+      it('Then both rows appear, the first file’s group before the second’s', () => {
+        // Arrange
+        const raw: RawReport = {
+          files: [
+            {
+              filepath: 'test/bench/a.bench.ts',
+              groups: [
+                {
+                  fullName: 'from file a',
+                  benchmarks: [{ name: 'tsgit', median: 1, hz: 1000, rme: 1 }],
+                },
+              ],
+            },
+            {
+              filepath: 'test/bench/b.bench.ts',
+              groups: [
+                {
+                  fullName: 'from file b',
+                  benchmarks: [{ name: 'tsgit', median: 2, hz: 500, rme: 2 }],
+                },
+              ],
+            },
+          ],
+        };
+        const environment: SummaryEnvironment = {
+          generatedAt: '2026-09-05T00:00:00.000Z',
+          platform: 'darwin',
+          arch: 'arm64',
+          nodeVersion: 'v24.19.0',
+          cpuModel: 'Apple M4',
+        };
+        const sut = renderSummary;
+
+        // Act
+        const result = sut(raw, environment);
+
+        // Assert
+        expect(result).toBe(
+          [
+            '# Benchmark results',
+            '',
+            'Generated 2026-09-05T00:00:00.000Z on `darwin-arm64` (Node v24.19.0, Apple M4).',
+            '',
+            '| Scenario | tsgit | isomorphic-git | speedup (tsgit faster) |',
+            '|---|---|---|---|',
+            '| from file a | 1.000 ms (1000/s, ±1.00%) | — | n/a |',
+            '| from file b | 2.000 ms (500/s, ±2.00%) | — | n/a |',
             '',
             '> _speedup > 1×_ means tsgit beat isomorphic-git on median runtime. Raw',
             '> data in `reports/benchmarks/raw.json` includes p75/p99/RME and per-run',
