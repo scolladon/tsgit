@@ -1,5 +1,33 @@
 # Changelog
 
+## [4.0.0](https://github.com/scolladon/tsgit/compare/v3.6.0...v4.0.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **fetch-pack:** index received packs in two bounded-memory passes ([#293](https://github.com/scolladon/tsgit/issues/293))
+* **pack:** select and emit offset deltas from gc, pack-objects and bundle-create ([#292](https://github.com/scolladon/tsgit/issues/292))
+* **tree:** compare entry-name bytes on every tree read path ([#291](https://github.com/scolladon/tsgit/issues/291))
+
+### Features
+
+* **fetch-pack:** index received packs in two bounded-memory passes ([#293](https://github.com/scolladon/tsgit/issues/293)) ([1c6c5e5](https://github.com/scolladon/tsgit/commit/1c6c5e5d80ae7f126aafa2e851916ba99358e4c3))
+* **pack:** select and emit offset deltas from gc, pack-objects and bundle-create ([#292](https://github.com/scolladon/tsgit/issues/292)) ([5d2e435](https://github.com/scolladon/tsgit/commit/5d2e435fcc83c0850a5ddc798ab9eea0d6a1dac2))
+* **tree:** compare entry-name bytes on every tree read path ([#291](https://github.com/scolladon/tsgit/issues/291)) ([5ac0cf0](https://github.com/scolladon/tsgit/commit/5ac0cf0a823ecd6a6a802703d3e9c6586b5de0aa))
+
+
+### Bug Fixes
+
+* **adapters:** handle broken-pipe errors when writing command stdin ([#288](https://github.com/scolladon/tsgit/issues/288)) ([f83c342](https://github.com/scolladon/tsgit/commit/f83c342116f56906016c2b0ca15a8fdf2586a66c))
+* **bench:** keep shared fixtures pristine and except workers-types from check:deps ([#294](https://github.com/scolladon/tsgit/issues/294)) ([18dff9c](https://github.com/scolladon/tsgit/commit/18dff9cabe060779937ff18c24ed2f18b800d487))
+* publish the benchmark snapshot again and receive already-present packs as git does ([#295](https://github.com/scolladon/tsgit/issues/295)) ([dedd61b](https://github.com/scolladon/tsgit/commit/dedd61b6cedf6ae9c9f36fd72f559ed597b5fc81))
+* **reflog:** read reflogs leniently and rewrite them byte-faithfully, matching git ([#290](https://github.com/scolladon/tsgit/issues/290)) ([aa4d273](https://github.com/scolladon/tsgit/commit/aa4d273e187dae2b8605a8e0b117a8fdf1f1a2cf))
+
+
+### Performance
+
+* remediate the 2026-08 performance review — reads, walks, checkout, caches, concurrency, gc ([#285](https://github.com/scolladon/tsgit/issues/285)) ([cc80014](https://github.com/scolladon/tsgit/commit/cc80014e94243893d44561b1f207a820cc0231ef))
+
 ## [3.6.0](https://github.com/scolladon/tsgit/compare/v3.5.0...v3.6.0) (2026-08-24)
 
 
