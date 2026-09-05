@@ -1003,6 +1003,41 @@ describe('writePackSiblingArtifacts — artefacts already present', () => {
     });
   });
 
+  describe('Given a .idx occupant whose size differs from the index about to be written', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it refuses naming the index without ever reading the occupant', async () => {
+        // Arrange — a wrong-size occupant must be refused on its stat alone; a
+        // read that reaches it is the unbounded-read defect, so it fails loudly.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
+        await ctx.fs.writeExclusive(idxPath, new TextEncoder().encode('short occupant'));
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const spiedFs: Context['fs'] = {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === idxPath) throw new Error('occupant was read before its size was checked');
+            return originalRead(path);
+          },
+        };
+        const spiedCtx: Context = { ...ctx, fs: spiedFs };
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(spiedCtx, siblingInput(dir, entries));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expectMismatch(caught, idxPath);
+      });
+    });
+  });
+
   describe('Given an identical .rev already present and no .idx', () => {
     describe('When writePackSiblingArtifacts runs', () => {
       it('Then it writes the index and keeps the existing reverse index untouched', async () => {

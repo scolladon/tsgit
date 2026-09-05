@@ -209,6 +209,9 @@ const sameFileContents = async (ctx: Context, left: string, right: string): Prom
   const size = (await ctx.fs.stat(left)).size;
   const rightStat = await ctx.fs.stat(right);
   if (!rightStat.isFile || rightStat.size !== size) return false;
+  // Stryker disable next-line EqualityOperator: equivalent — `<=` only adds an iteration when
+  // `size` is an exact multiple of the window, and that iteration compares two zero-length
+  // slices, which are equal, then exits; every other size never reaches it.
   for (let offset = 0; offset < size; offset += COMPARE_CHUNK_BYTES) {
     const length = Math.min(COMPARE_CHUNK_BYTES, size - offset);
     const [a, b] = await Promise.all([

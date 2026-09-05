@@ -5651,6 +5651,9 @@ describe('fetchPack — an already-present pack', () => {
         expect(sliceRequests.map((request) => request.offset)).toEqual(
           sliceRequests.map((_, index) => index * (1 << 20)),
         );
+        expect(sliceRequests.reduce((total, request) => total + request.length, 0)).toBe(
+          built.packBytes.length,
+        );
       });
     });
   });
