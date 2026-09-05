@@ -1881,6 +1881,55 @@ describe('MemoryFileSystem', () => {
     });
   });
 
+  describe('ancestor refusals leave no directory behind', () => {
+    describe('Given a regular file at a grandparent segment of the target path', () => {
+      describe('When write is called', () => {
+        it('Then throws NOT_A_DIRECTORY and records no intermediate directory', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/blocker', new Uint8Array([1]));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/blocker/mid/leaf.bin', new Uint8Array([2]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — refused, and the tree is exactly what it was before the call
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect(await sut.exists('/repo/blocker/mid')).toBe(false);
+          expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['blocker']);
+        });
+      });
+
+      describe('When mkdir is called', () => {
+        it('Then throws NOT_A_DIRECTORY and records neither the leaf nor the intermediate directory', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/blocker', new Uint8Array([1]));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.mkdir('/repo/blocker/mid/leaf');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect(await sut.exists('/repo/blocker/mid/leaf')).toBe(false);
+          expect(await sut.exists('/repo/blocker/mid')).toBe(false);
+          expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['blocker']);
+        });
+      });
+    });
+  });
+
   describe('rmRecursive subtree boundaries', () => {
     describe('Given a sibling file outside the target subtree', () => {
       describe('When rmRecursive on the subtree', () => {

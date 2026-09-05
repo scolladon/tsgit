@@ -219,7 +219,7 @@ export class MemoryFileSystem implements FileSystem {
 
   mkdir = async (path: string): Promise<void> => {
     const normalized = this.resolve(path);
-    // Stryker disable next-line ConditionalExpression,BlockStatement,LogicalOperator: equivalent — addDirectoryRecursive's first iteration re-checks `files.has(normalized) || symlinks.has(normalized)` and throws the identical NOT_A_DIRECTORY, so weakening or removing this guard cannot change behavior.
+    // Stryker disable next-line ConditionalExpression,BlockStatement,LogicalOperator: equivalent — addDirectoryRecursive validates the chain first, and that check's first segment re-tests `files.has(normalized) || symlinks.has(normalized)` and throws the identical NOT_A_DIRECTORY, so weakening or removing this guard cannot change behavior.
     if (this.files.has(normalized) || this.symlinks.has(normalized)) {
       throw notADirectory(path);
     }
@@ -457,17 +457,30 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   private addDirectoryRecursive(normalizedPath: string): void {
+    // Refuse before recording anything: a file or symlink anywhere on the ancestor chain
+    // must leave the tree untouched — the all-or-nothing shape of `mkdir -p`, and the only
+    // way a refused write can promise it left no directory behind.
+    this.assertAncestorChainFree(normalizedPath);
     let current = normalizedPath;
-    // equivalent-mutant: changing `>=` to `>` (or dropping the `break` when current === rootDir)
+    // Same bound as the check below; rootDir is already recorded, so its iteration re-adds.
+    while (current.length >= this.rootDir.length) {
+      this.directories.add(current);
+      if (current === this.rootDir) break;
+      current = parentOf(current);
+    }
+  }
+
+  private assertAncestorChainFree(normalizedPath: string): void {
+    let current = normalizedPath;
+    // equivalent-mutant: changing `>=` to `>` (or dropping the `return` when current === rootDir)
     // has no observable effect — rootDir is seeded into `this.directories` in the constructor
-    // and nothing else can store a file/symlink at that exact path, so the extra iteration
-    // (or the skipped one) is a no-op for every reachable state.
+    // and no write surface can store a file/symlink at that exact path, so the extra
+    // iteration (or the skipped one) is a no-op for every reachable state.
     while (current.length >= this.rootDir.length) {
       if (this.files.has(current) || this.symlinks.has(current)) {
         throw notADirectory(current);
       }
-      this.directories.add(current);
-      if (current === this.rootDir) break;
+      if (current === this.rootDir) return;
       current = parentOf(current);
     }
   }

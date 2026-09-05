@@ -577,20 +577,32 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
     // it is adapter-dependent — Node reports FILE_EXISTS, memory reports
     // NOT_A_DIRECTORY carrying the ancestor. Depth >= 2 agrees on the code
     // across both drivers.
-    it('Given a file at a grandparent path segment, When writeExclusive, Then throws NOT_A_DIRECTORY', async () => {
+    it('Given a file at a grandparent path segment, When writeExclusive, Then throws NOT_A_DIRECTORY and records no intermediate directory', async () => {
       // Arrange
       const grandparent = `${env.rootDir}/grandparent.bin`;
       await env.fs.write(grandparent, new Uint8Array([1]));
       const path = `${grandparent}/mid/leaf.bin`;
 
       // Act
+      let caught: unknown;
       try {
         await env.fs.writeExclusive(path, new Uint8Array([2]));
-        expect.fail('expected NOT_A_DIRECTORY');
+        expect.fail('expected a refusal');
       } catch (err) {
-        // Assert
-        assertNotADirectory(err);
+        caught = err;
       }
+
+      // Assert — refused, and neither driver recorded the intermediate directory on the
+      // way (Node's mkdir -p stops at the file; memory validates the whole chain before
+      // adding), so probing it fails on both: NOT_A_DIRECTORY on Node, FILE_NOT_FOUND on memory.
+      assertNotADirectory(caught);
+      let probe: unknown;
+      try {
+        await env.fs.lstat(`${grandparent}/mid`);
+      } catch (err) {
+        probe = err;
+      }
+      expect(probe).toBeInstanceOf(TsgitError);
     });
 
     it('Given file with known content, When readSlice(0, 3), Then returns first 3 bytes', async () => {
