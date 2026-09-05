@@ -433,6 +433,40 @@ describe('writePackArtifactsViaQuarantine', () => {
     });
   });
 
+  describe('Given a non-empty .promisor sentinel already sitting at the sha name', () => {
+    describe('When writePackArtifactsViaQuarantine runs with promisor: true', () => {
+      it('Then the sentinel is replaced empty rather than kept as it was', async () => {
+        // Arrange — unlike the receive path (writeSentinelIfAbsent, which
+        // keeps whatever an existing sentinel holds), gc's own rewrite of a
+        // sha it already produced REPLACES its prior-run sentinel: without
+        // the `rmTolerant` removal below, `writeSentinelIfAbsent` would find
+        // this non-empty sentinel already present and leave it untouched.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sentinelPath = `${dir}/pack-${PACK_SHA}.promisor`;
+        await ctx.fs.mkdir(dir);
+        await ctx.fs.writeExclusive(
+          sentinelPath,
+          new TextEncoder().encode('from a prior gc run\n'),
+        );
+        const sut = writePackArtifactsViaQuarantine;
+
+        // Act
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: true,
+        });
+
+        // Assert
+        expect(await ctx.fs.read(sentinelPath)).toEqual(new Uint8Array(0));
+      });
+    });
+  });
+
   describe('Given a normal (non-colliding) quarantine write', () => {
     describe('When writePackArtifactsViaQuarantine claims its tmp names', () => {
       it('Then both claimed names match the tmp_pack_/tmp_idx_ + 6-char alphabet shape exactly', async () => {
@@ -778,6 +812,303 @@ describe('writePackSiblingArtifacts', () => {
 
         // Assert
         expect(written.objectCount).toBe(3);
+      });
+    });
+  });
+});
+
+describe('writePackSiblingArtifacts — artefacts already present', () => {
+  const siblingInput = (packDir: string, entries: PackIndexEntries) => ({
+    packDir,
+    entries,
+    packSha: PACK_SHA,
+    promisor: false,
+  });
+
+  const expectMismatch = (caught: unknown, path: string): void => {
+    expect(caught).toBeInstanceOf(TsgitError);
+    if (!(caught instanceof TsgitError)) expect.unreachable();
+    expect(caught.data.code).toBe('PACK_ARTIFACT_MISMATCH');
+    if (caught.data.code !== 'PACK_ARTIFACT_MISMATCH') expect.unreachable();
+    expect(caught.data.path).toBe(path);
+  };
+
+  describe('Given an identical .idx already occupying its sibling name', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it keeps the existing index untouched and still writes the .rev', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
+        const idxBytes = await buildIdx(ctx, sortPackIndexEntries(entries), PACK_SHA);
+        await ctx.fs.writeExclusive(idxPath, idxBytes);
+        const before = await ctx.fs.stat(idxPath);
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        const result = await sut(ctx, siblingInput(dir, entries));
+
+        // Assert
+        expect(result.idxPath).toBe(idxPath);
+        expect(await ctx.fs.read(idxPath)).toEqual(idxBytes);
+        expect((await ctx.fs.stat(idxPath)).mtimeMs).toBe(before.mtimeMs);
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.rev`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a .idx with different bytes already occupying its sibling name', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it refuses naming the index, leaves the existing bytes untouched and writes no .rev', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
+        const foreign = new TextEncoder().encode('not an index');
+        await ctx.fs.writeExclusive(idxPath, foreign);
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, siblingInput(dir, entries));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expectMismatch(caught, idxPath);
+        expect(await ctx.fs.read(idxPath)).toEqual(foreign);
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.rev`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a directory occupying the .idx sibling name', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it refuses naming the index instead of surfacing a raw filesystem error', async () => {
+        // Arrange — a real directory: `ctx.fs.stat` reports isFile: false
+        // and `ctx.fs.read` throws FILE_NOT_FOUND (a directory is never in
+        // the files map) — the raw error this refusal replaces. Real POSIX
+        // `open(path, 'wx')` throws EEXIST for an existing directory too
+        // (confirmed against Node), which the memory adapter's
+        // `writeExclusive` does not model — it only checks files/symlinks —
+        // so `writeExclusive` is patched here to reject the same way a
+        // correct adapter (or a real one) would.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
+        await ctx.fs.mkdir(idxPath);
+        // The directory's stat is patched to report the exact size of the
+        // index about to be written, so `isFile` is the only discriminator
+        // this case can trip — the size check is pinned by its own case.
+        const idxBytes = await buildIdx(ctx, sortPackIndexEntries(entries), PACK_SHA);
+        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        const failingFs: Context['fs'] = {
+          ...ctx.fs,
+          writeExclusive: async (path: string, data: Uint8Array) => {
+            if (path === idxPath) throw new TsgitError({ code: 'FILE_EXISTS', path });
+            return originalWriteExclusive(path, data);
+          },
+          stat: async (path: string) => {
+            const real = await originalStat(path);
+            return path === idxPath ? { ...real, size: idxBytes.length } : real;
+          },
+        };
+        const failingCtx: Context = { ...ctx, fs: failingFs };
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(failingCtx, siblingInput(dir, entries));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expectMismatch(caught, idxPath);
+      });
+    });
+  });
+
+  describe('Given a same-size, differing-bytes .idx already occupying its sibling name', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it refuses naming the index, leaves the existing bytes untouched and writes no .rev', async () => {
+        // Arrange — same length as the real buildIdx output, so only the
+        // byte-compare guard (not the stat-based size short-circuit) can
+        // observe the difference — keeps that branch alive as a fixture.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
+        const idxBytes = await buildIdx(ctx, sortPackIndexEntries(entries), PACK_SHA);
+        const flipped = idxBytes.slice();
+        flipped[0] = (flipped[0] ?? 0) ^ 0xff;
+        await ctx.fs.writeExclusive(idxPath, flipped);
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, siblingInput(dir, entries));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expectMismatch(caught, idxPath);
+        expect(await ctx.fs.read(idxPath)).toEqual(flipped);
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.rev`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given writeExclusive rejects the .promisor path with something other than FILE_EXISTS', () => {
+    describe('When writePackSiblingArtifacts runs with promisor: true', () => {
+      it('Then the rejection propagates rather than being treated as tolerable absence', async () => {
+        // Arrange — mirrors the `.rev` failing-fs case above, for
+        // writeSentinelIfAbsent's own rethrow branch.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const failingFs: Context['fs'] = {
+          ...ctx.fs,
+          writeExclusive: async (path: string, data: Uint8Array) => {
+            if (path.endsWith('.promisor')) {
+              throw new TsgitError({ code: 'PERMISSION_DENIED', path });
+            }
+            return ctx.fs.writeExclusive(path, data);
+          },
+        };
+        const failingCtx: Context = { ...ctx, fs: failingFs };
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(failingCtx, { packDir: dir, entries, packSha: PACK_SHA, promisor: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given a .idx occupant whose size differs from the index about to be written', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it refuses naming the index without ever reading the occupant', async () => {
+        // Arrange — a wrong-size occupant must be refused on its stat alone; a
+        // read that reaches it is the unbounded-read defect, so it fails loudly.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
+        await ctx.fs.writeExclusive(idxPath, new TextEncoder().encode('short occupant'));
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const spiedFs: Context['fs'] = {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === idxPath) throw new Error('occupant was read before its size was checked');
+            return originalRead(path);
+          },
+        };
+        const spiedCtx: Context = { ...ctx, fs: spiedFs };
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(spiedCtx, siblingInput(dir, entries));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expectMismatch(caught, idxPath);
+      });
+    });
+  });
+
+  describe('Given an identical .rev already present and no .idx', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it writes the index and keeps the existing reverse index untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const revPath = `${dir}/pack-${PACK_SHA}.rev`;
+        const revBytes = await buildRev(ctx, sortPackIndexEntries(entries), PACK_SHA);
+        await ctx.fs.writeExclusive(revPath, revBytes);
+        const before = await ctx.fs.stat(revPath);
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        await sut(ctx, siblingInput(dir, entries));
+
+        // Assert
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.idx`)).toBe(true);
+        expect(await ctx.fs.read(revPath)).toEqual(revBytes);
+        expect((await ctx.fs.stat(revPath)).mtimeMs).toBe(before.mtimeMs);
+      });
+    });
+  });
+
+  describe('Given a .rev with different bytes already present', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then it refuses naming the reverse index after the index was written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const revPath = `${dir}/pack-${PACK_SHA}.rev`;
+        const foreign = new TextEncoder().encode('not a reverse index');
+        await ctx.fs.writeExclusive(revPath, foreign);
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, siblingInput(dir, entries));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expectMismatch(caught, revPath);
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.idx`)).toBe(true);
+        expect(await ctx.fs.read(revPath)).toEqual(foreign);
+      });
+    });
+  });
+
+  describe('Given promisor: true and a .promisor sentinel already present', () => {
+    describe('When writePackSiblingArtifacts runs', () => {
+      it('Then the existing sentinel is kept as it is and the write succeeds', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = buildEntries(2);
+        const dir = packDirOf(ctx);
+        const sentinelPath = `${dir}/pack-${PACK_SHA}.promisor`;
+        const existing = new TextEncoder().encode('from origin\n');
+        await ctx.fs.writeExclusive(sentinelPath, existing);
+        const sut = writePackSiblingArtifacts;
+
+        // Act
+        const result = await sut(ctx, { ...siblingInput(dir, entries), promisor: true });
+
+        // Assert
+        expect(result.packSha).toBe(PACK_SHA);
+        expect(await ctx.fs.read(sentinelPath)).toEqual(existing);
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.idx`)).toBe(true);
       });
     });
   });

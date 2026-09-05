@@ -41,7 +41,25 @@ describe('onMeasuredRun', () => {
 describe('hooksFor', () => {
   describe('Given a comparison without a teardown', () => {
     describe('When hooksFor routes it', () => {
-      it('Then neither bench receives options', () => {
+      it('Then both benches receive throwing options and neither carries a teardown', () => {
+        // Arrange
+        const sut = hooksFor;
+
+        // Act
+        const result = sut({ sut: noop });
+
+        // Assert
+        expect(result.tsgit?.throws).toBe(true);
+        expect(result.baseline?.throws).toBe(true);
+        expect(result.tsgit?.teardown).toBeUndefined();
+        expect(result.baseline?.teardown).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a comparison with a baseline and no teardown', () => {
+    describe('When hooksFor routes it', () => {
+      it('Then both benches receive throwing options and neither carries a teardown', () => {
         // Arrange
         const sut = hooksFor;
 
@@ -49,7 +67,10 @@ describe('hooksFor', () => {
         const result = sut({ sut: noop, baseline: noop });
 
         // Assert
-        expect(result).toEqual({});
+        expect(result.tsgit?.throws).toBe(true);
+        expect(result.baseline?.throws).toBe(true);
+        expect(result.tsgit?.teardown).toBeUndefined();
+        expect(result.baseline?.teardown).toBeUndefined();
       });
     });
   });
@@ -70,7 +91,9 @@ describe('hooksFor', () => {
         // Assert
         expect(callsAfterWarmup).toBe(0);
         expect(teardown).toHaveBeenCalledTimes(1);
-        expect(Object.hasOwn(result, 'baseline')).toBe(false);
+        expect(result.tsgit?.throws).toBe(true);
+        expect(result.baseline?.throws).toBe(true);
+        expect(result.baseline?.teardown).toBeUndefined();
       });
     });
   });
@@ -88,7 +111,9 @@ describe('hooksFor', () => {
 
         // Assert
         expect(teardown).toHaveBeenCalledTimes(1);
-        expect(Object.hasOwn(result, 'tsgit')).toBe(false);
+        expect(result.tsgit?.throws).toBe(true);
+        expect(result.baseline?.throws).toBe(true);
+        expect(result.tsgit?.teardown).toBeUndefined();
       });
     });
   });

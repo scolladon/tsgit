@@ -152,10 +152,12 @@ readonly promisor?: boolean;
 `promisor` is set. The empty-pack early-return path writes no `.promisor`
 (there is no pack to vouch for).
 
-`writePackArtifacts` uses `writeExclusive`; a `FILE_EXISTS` collision means a
-byte-identical pack (the name is the content SHA) is already on disk. The
-lazy-fetch caller (§8) tolerates `FILE_EXISTS` and treats it as success;
-`fetchPack` itself is unchanged so `clone` / `fetch` semantics do not move.
+The receive path itself compares-and-completes each artefact at its
+content-addressed name (see ADR-804 as amended): an identical pack, `.idx`,
+`.rev` or sentinel already on disk is adopted; a differing one refuses with
+`PACK_ARTIFACT_MISMATCH` naming the artefact. The lazy-fetch caller (§8) has
+no separate tolerance of its own to add — the receive path's own posture
+already covers it, so `clone` / `fetch` semantics do not move.
 
 ## 7. Configuration
 
@@ -296,7 +298,9 @@ Algorithm (`fetchMissingInternal`):
 5. `withDefaults` transport → `discoverRefs` → `selectFetchCapabilities`.
 6. `fetchPack({ wants: missing, haves: [], capabilities, url, promisor: true,
    progressOp: 'fetch-missing:write-objects' })`. **No `filter`** (§8.4).
-   A `FILE_EXISTS` from a concurrent identical pack write is swallowed.
+   An identical pack from a concurrent write at the same content-addressed
+   name is adopted by the receive path itself (ADR-804 as amended); a
+   differing one refuses with `PACK_ARTIFACT_MISMATCH`.
 7. Return.
 
 ### 8.3 Wiring into `readObject`
@@ -445,7 +449,8 @@ src/repository.ts                                fetchMissing + promisor wiring
   after retry ⇒ `OBJECT_NOT_FOUND`. Uses a fake `PromisorRemote`.
 - `fetch-missing` — no promisor ⇒ `NO_PROMISOR_REMOTE`; no remote URL ⇒
   `REMOTE_NOT_CONFIGURED`; already-local oids filtered out (no network);
-  empty oid list ⇒ no-op; `FILE_EXISTS` tolerated.
+  empty oid list ⇒ no-op; an identical pack already on disk at the receive's
+  content-addressed name is adopted, completing the siblings.
 - `clone` — `filter` validated before discovery; `REMOTE_FILTER_UNSUPPORTED`
   when the server lacks the capability; config block written correctly.
 
@@ -490,8 +495,9 @@ Equivalent mutants documented inline with `// equivalent-mutant:`.
   silent corruption. Documented; the integration fixture enables it.
 - **Concurrent pack writes.** Two parallel lazy-fetches of the same object
   would write the same `pack-<sha>`. The in-flight map de-dupes within a
-  `Context`; cross-`Context` collisions are absorbed by the `FILE_EXISTS`
-  tolerance (the SHA-named pack is content-identical).
+  `Context`; cross-`Context` collisions are absorbed by the receive path's
+  own compare-and-complete rule (ADR-804 as amended) — the SHA-named pack is
+  content-identical, so both writers succeed.
 - **`tree:depth` over-fetch.** Accepted and documented (ADR-080); does not
   affect correctness, only transfer volume, and only for `tree:` clones.
 </content>

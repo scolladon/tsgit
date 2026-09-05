@@ -1,27 +1,32 @@
 /**
- * pack-fetch primitive. Shared between clone (12.1) and the
- * forthcoming fetch (12.2) / push (12.3) commands.
+ * pack-fetch primitive. Shared by clone, fetch and push.
  *
  * Performs the `git-upload-pack` POST and streams the side-banded response
  * straight to a quarantine file (`objects/pack/tmp_pack_<random>`), bounded
  * by `config.maxResponseBytes` and hashed incrementally as bytes arrive —
  * the whole pack is never held in memory at once. Once the trailer verifies
- * against the incrementally-computed digest, the quarantine file is renamed
- * to `pack-<sha>.pack` and its `.idx`/`.rev` siblings are written — exactly
- * git's own on-disk shape for a received pack.
+ * against the incrementally-computed digest, the quarantine file lands at
+ * `pack-<sha>.pack` — by rename when the name is free, discarded when an
+ * identical pack already occupies it, refused when a differing file does —
+ * and any missing `.idx`/`.rev` sibling is written beside it: exactly
+ * git's own on-disk shape and finalize posture for a received pack.
  *
  * Out of scope here (handled by callers): URL validation, capability
  * negotiation, ref-update propagation.
  */
-import { fileExists, TsgitError } from '../../domain/error.js';
-import { bytesToHex } from '../../domain/objects/encoding.js';
+import { fileExists, packArtifactMismatch, TsgitError } from '../../domain/error.js';
+import { bytesEqual, bytesToHex } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
-import { invalidPackHeader } from '../../domain/storage/index.js';
+import { invalidPackHeader, type PackIndexEntries } from '../../domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import { indexQuarantinedPack } from './internal/index-pack.js';
-import { packFilePath, writePackSiblingArtifacts } from './internal/write-pack-artifacts.js';
+import {
+  packFilePath,
+  type WrittenPackArtifacts,
+  writePackSiblingArtifacts,
+} from './internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { refreshPackRegistry } from './read-object.js';
 
@@ -121,11 +126,15 @@ const emptyPackResult = (
 
 /**
  * Post-download tail: stream the pack into quarantine, verify the trailer,
- * walk entries, then either suppress or promote it (rename + sibling
- * artefacts). Split out of `fetchPack` so the negotiated response can be
- * fully verified (trailer + entry walk) before deciding whether it is
- * empty — a malformed pack that merely *looks* empty (bad trailer,
- * truncated entries) must still throw, never be silently dropped.
+ * walk entries, then settle the quarantine copy at its content-addressed
+ * name (rename, adopt an identical occupant, or refuse a differing one) and
+ * complete whichever siblings are missing. An empty pack is suppressed and
+ * an adopted copy discarded as handled outcomes, so the temp-file posture is
+ * the same across every path.
+ * Split out of `fetchPack` so the negotiated response can be fully verified
+ * (trailer + entry walk) before deciding whether it is empty — a malformed
+ * pack that merely *looks* empty (bad trailer, truncated entries) must still
+ * throw, never be silently dropped.
  */
 const materializePack = async (
   ctx: Context,
@@ -133,32 +142,10 @@ const materializePack = async (
   input: FetchPackInput,
 ): Promise<FetchPackResult> => {
   const packDir = packsDir(commonGitDir(ctx));
-  const receipt = await receivePackToQuarantine(ctx, input, packDir, download.packBody);
-  // git-upload-pack returns a zero-byte body when the client's `have` set
-  // already covers every wanted oid. This is a legitimate protocol state
-  // (the server has nothing to send), not an error. Surface it as an
-  // empty result so the caller can advance refs and return cleanly.
-  if (receipt.totalBytes === 0) {
-    return emptyPackResult(download.shallow, download.unshallow);
-  }
-  const entries = await indexQuarantinedPack(ctx, receipt.tmpPath, receipt.totalBytes, (p) =>
-    cleanupQuarantine(ctx, p),
-  );
-  // A verified pack can legitimately carry zero entries (e.g. the negotiated
-  // response round-tripped a pack rather than a zero-byte body). Suppress
-  // promoting it, same as the zero-byte-body guard above.
-  if (entries.count === 0) {
-    await cleanupQuarantine(ctx, receipt.tmpPath);
-    return emptyPackResult(download.shallow, download.unshallow);
-  }
-  try {
-    await renamePackIntoPlace(ctx, receipt.tmpPath, packFilePath(packDir, receipt.packSha));
-  } catch (err) {
-    // A rename failure leaves the verified quarantine file behind unless
-    // cleaned up here — nothing later in this function gets a chance to.
-    await cleanupQuarantine(ctx, receipt.tmpPath);
-    throw err;
-  }
+  const verified = await receiveVerified(ctx, input, packDir, download.packBody);
+  if (verified === undefined) return emptyPackResult(download.shallow, download.unshallow);
+  const { receipt, entries } = verified;
+  await settleQuarantine(ctx, receipt, packFilePath(packDir, receipt.packSha));
   const written = await writePackSiblingArtifacts(ctx, {
     packDir,
     entries,
@@ -166,16 +153,119 @@ const materializePack = async (
     promisor: input.promisor === true,
   });
   // Drop the per-Context pack-registry cache so reads through this same
-  // handle (e.g. a follow-up merge in `pull`) see the just-written pack.
+  // handle (e.g. a follow-up merge in `pull`) see the pack now on disk —
+  // whether this call wrote it or another writer landed it first.
   refreshPackRegistry(ctx);
-  return {
-    packPath: written.packPath,
-    idxPath: written.idxPath,
-    objectCount: written.objectCount,
-    packSha: written.packSha,
-    shallow: download.shallow,
-    unshallow: download.unshallow,
-  };
+  return packResult(written, download);
+};
+
+interface VerifiedReceipt {
+  readonly receipt: QuarantineReceipt;
+  readonly entries: PackIndexEntries;
+}
+
+/**
+ * Streams the pack into quarantine and indexes it. `undefined` means the
+ * response carried nothing to land: git-upload-pack returns a zero-byte body
+ * when the client's `have` set already covers every wanted oid, and a
+ * verified pack can legitimately carry zero entries (a round-tripped pack
+ * rather than an empty body). Both are legitimate protocol states, surfaced
+ * as an empty result so the caller can advance refs and return cleanly — a
+ * malformed pack that merely *looks* empty still throws from the index pass.
+ */
+const receiveVerified = async (
+  ctx: Context,
+  input: FetchPackInput,
+  packDir: string,
+  body: AsyncIterable<Uint8Array>,
+): Promise<VerifiedReceipt | undefined> => {
+  const receipt = await receivePackToQuarantine(ctx, input, packDir, body);
+  if (receipt.totalBytes === 0) return undefined;
+  const entries = await indexQuarantinedPack(ctx, receipt.tmpPath, receipt.totalBytes, (p) =>
+    cleanupQuarantine(ctx, p),
+  );
+  if (entries.count > 0) return { receipt, entries };
+  await cleanupQuarantine(ctx, receipt.tmpPath);
+  return undefined;
+};
+
+const packResult = (written: WrittenPackArtifacts, download: PackDownload): FetchPackResult => ({
+  packPath: written.packPath,
+  idxPath: written.idxPath,
+  objectCount: written.objectCount,
+  packSha: written.packSha,
+  shallow: download.shallow,
+  unshallow: download.unshallow,
+});
+
+const COMPARE_CHUNK_BYTES = 1 << 20;
+
+/** Byte-for-byte comparison of two files, one bounded window at a time —
+ *  a pack can be larger than memory, and this runs only on the rare path
+ *  where the destination is already occupied. A non-regular occupant (a
+ *  directory, most concretely) is a mismatch, never a raw read failure:
+ *  the `isFile` check settles that before any window is ever read. */
+const sameFileContents = async (ctx: Context, left: string, right: string): Promise<boolean> => {
+  const size = (await ctx.fs.stat(left)).size;
+  const rightStat = await ctx.fs.stat(right);
+  if (!rightStat.isFile || rightStat.size !== size) return false;
+  // Stryker disable next-line EqualityOperator: equivalent — `<=` only adds an iteration when
+  // `size` is an exact multiple of the window, and that iteration compares two zero-length
+  // slices, which are equal, then exits; every other size never reaches it.
+  for (let offset = 0; offset < size; offset += COMPARE_CHUNK_BYTES) {
+    const length = Math.min(COMPARE_CHUNK_BYTES, size - offset);
+    const [a, b] = await Promise.all([
+      ctx.fs.readSlice(left, offset, length),
+      ctx.fs.readSlice(right, offset, length),
+    ]);
+    if (!bytesEqual(a, b)) return false;
+  }
+  return true;
+};
+
+/**
+ * Lands the verified quarantine copy at its content-addressed name the way
+ * git's finalize step does: a free name takes the copy by rename; an
+ * occupant with identical bytes keeps its place (same inode, same mtime)
+ * and the copy is discarded; an occupant with differing bytes is refused,
+ * never overwritten — packs are content-addressed, so a differing file at
+ * this name is corruption or tampering, not this pack.
+ */
+const settleQuarantine = async (
+  ctx: Context,
+  receipt: QuarantineReceipt,
+  destination: string,
+): Promise<void> => {
+  if (!(await ctx.fs.exists(destination))) {
+    await promoteQuarantine(ctx, receipt.tmpPath, destination);
+    return;
+  }
+  // The quarantine copy must be released on every exit from the compare —
+  // a concurrent gc removing the occupant (FILE_NOT_FOUND) or an unreadable
+  // one (PERMISSION_DENIED) must not strand it, so cleanup runs in `finally`
+  // and the original error, whatever it is, still propagates.
+  let identical: boolean;
+  try {
+    identical = await sameFileContents(ctx, receipt.tmpPath, destination);
+  } finally {
+    await cleanupQuarantine(ctx, receipt.tmpPath);
+  }
+  if (!identical) throw packArtifactMismatch(destination);
+};
+
+const promoteQuarantine = async (
+  ctx: Context,
+  tmpPath: string,
+  destination: string,
+): Promise<void> => {
+  try {
+    await renamePackIntoPlace(ctx, tmpPath, destination);
+  } catch (err) {
+    // A rename failure leaves the verified quarantine file behind unless
+    // cleaned up here — nothing later in the receive gets a chance to.
+    await cleanupQuarantine(ctx, tmpPath);
+    throw err;
+  }
 };
 
 /**

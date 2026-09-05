@@ -9,6 +9,27 @@
  * The two `bench()` names stay exactly `tsgit` / `isomorphic-git` — the
  * summary script, the `benchmark-compare` CI job, and the snapshot converter
  * all key on them. Only the describe title changes.
+ *
+ * Every bench receives `throws: true` (see `hooksFor`). Without it, a warmup
+ * error is stored on the task and `run` returns before dispatching `complete`
+ * or `error`, so vitest reports a pass with an empty `samples` array. Three
+ * consequences of that choice, deliberate and recorded here so a future
+ * reader does not diagnose them as fresh defects:
+ *
+ * - A warmup throw aborts the whole bench **file**: scenarios declared after
+ *   the failing one never run, so a truncated `reports/benchmarks/raw.json`
+ *   is expected, not a second bug.
+ * - A throw during the measured **run** (after warmup) rejects inside the
+ *   timer callback vitest wraps the run in; that promise never settles and
+ *   the worker hangs. Nothing in-process can bound this — the
+ *   `benchmark-snapshot` CI job carries `timeout-minutes: 30` (matching
+ *   `bench.yml`) so the worst case is a bounded red run.
+ * - `removeSync` in `fixture-scratch.ts` swallows and logs rather than
+ *   rethrowing. tinybench fires a bench's teardown hook un-awaited, inside
+ *   `run`'s own body, so a teardown that throws would land in the same
+ *   never-resolving promise as a run-phase failure. Do not "tidy" that
+ *   swallow into a rethrow — it is what keeps a cleanup failure from hanging
+ *   the runner.
  */
 import { type BenchOptions, bench, describe } from 'vitest';
 
@@ -26,7 +47,8 @@ export interface BenchComparison {
    * `afterAll`, so a handle or scratch copy released there is never released.
    * tinybench does not await it — remove directories synchronously. It also
    * never fires when the measured function throws during warmup (tinybench
-   * skips the run phase); a scratch copy left that way is reclaimed by
+   * skips the run phase and, under `throws: true`, aborts the rest of the
+   * bench file with it); a scratch copy left that way is reclaimed by
    * `bench:fixture -- --prune` once its process is gone.
    */
   readonly teardown?: () => Promise<void> | void;
@@ -41,26 +63,34 @@ export const onMeasuredRun =
   (mode: HookMode): Promise<void> | void =>
     mode === 'run' ? teardown() : undefined;
 
-/** The bench options a scenario attaches; the task argument is never read, so callers need not build one. */
-export interface MeasuredRunHooks extends BenchOptions {
-  readonly teardown: (task: unknown, mode: HookMode) => Promise<void> | void;
+/**
+ * The bench options a scenario attaches. `throws: true` is always set: without it,
+ * tinybench stores a warmup error on the task and `run` returns before dispatching
+ * `complete` or `error`, so the placeholder `{ rank: 0, rme: 0, samples: [] }` result
+ * reports a pass. The task argument is never read, so callers need not build one.
+ */
+export interface MeasuredRunOptions extends BenchOptions {
+  readonly throws: true;
+  readonly teardown?: (task: unknown, mode: HookMode) => Promise<void> | void;
 }
 
-const afterMeasuredRun = (teardown: Teardown): MeasuredRunHooks => ({
-  teardown: (_task, mode) => onMeasuredRun(teardown)(mode),
+const throwingOptions = (teardown?: Teardown): MeasuredRunOptions => ({
+  throws: true,
+  ...(teardown === undefined
+    ? {}
+    : { teardown: (_task: unknown, mode: HookMode) => onMeasuredRun(teardown)(mode) }),
 });
 
 export interface ScenarioHooks {
-  readonly tsgit?: MeasuredRunHooks;
-  readonly baseline?: MeasuredRunHooks;
+  readonly tsgit: MeasuredRunOptions;
+  readonly baseline: MeasuredRunOptions;
 }
 
-/** The hooks ride on the scenario's LAST bench, so a baseline still measures on an intact scratch. */
-export const hooksFor = (comparison: BenchComparison): ScenarioHooks => {
-  if (comparison.teardown === undefined) return {};
-  const hooks = afterMeasuredRun(comparison.teardown);
-  return comparison.baseline === undefined ? { tsgit: hooks } : { baseline: hooks };
-};
+/** Every bench gets throwing options; the teardown rides on the scenario's LAST bench, so a baseline still measures on an intact scratch. */
+export const hooksFor = (comparison: BenchComparison): ScenarioHooks =>
+  comparison.baseline === undefined
+    ? { tsgit: throwingOptions(comparison.teardown), baseline: throwingOptions() }
+    : { tsgit: throwingOptions(), baseline: throwingOptions(comparison.teardown) };
 
 export interface BenchScenarioOptions {
   /** Skip the whole scenario (missing fixture, Stryker sandbox, …). */

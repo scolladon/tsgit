@@ -81,6 +81,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'EMPTY_RECEIVE_UPDATES':
     case 'RESOURCE_LOCKED':
     case 'PACK_TOO_LARGE':
+    case 'PACK_ARTIFACT_MISMATCH':
     case 'SHALLOW_FILE_MALFORMED':
     case 'NOT_A_REPOSITORY':
     case 'DUBIOUS_OWNERSHIP':

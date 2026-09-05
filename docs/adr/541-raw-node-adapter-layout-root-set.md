@@ -5,7 +5,7 @@
 > containment model, canonical-prefix derivation and write-path posture are carried
 > forward unchanged.
 
-- **Status:** superseded by ADR-721 (read-path wrapper role for first-party adapters; root-set model stands)
+- **Status:** superseded by ADR-721
 - **Date:** 2026-07-29
 - **Design:** docs/design/linked-worktree-discovery.md · **Supersedes/Refines:** refines ADR-535/ADR-537; revises the design's original §3 rooting; refines ADR-495 (commonAncestor's discovery role retired)
 

@@ -57,6 +57,12 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   keeps the pin from rotting, and a `workers-types` change that actually matters shows up as
   a type error, not as an `npm outdated` row. The exception existed before the v4 → v5
   migration removed it; this restores it.
+  **`@playwright/test` is held at 1.62.1**: 1.63.0 ships WebKit 26.6, and on the
+  `ubuntu-latest` runner every headless WebKit page then fails
+  `navigator.storage.getDirectory()` with `UnknownError: The operation failed for an unknown
+  transient reason`, so the whole `e2e (webkit)` job goes red (reproduced twice on PR #295;
+  green on the previous build; Chromium and Firefox unaffected). Unpin once a later release
+  passes the WebKit e2e job.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,

@@ -839,7 +839,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^jscpd \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -v \"^@cloudflare/workers-types \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^jscpd \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -v \"^@cloudflare/workers-types \" | grep -v \"^@playwright/test \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -866,6 +866,7 @@
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
+        "test/bench/**/*.ts",
         "tooling/**/*.ts",
         "vitest.config.ts"
       ],
@@ -879,7 +880,11 @@
       "files": [
         "src/**/*.ts",
         "test/integration/**/*.ts",
+        "test/bench/**/*.ts",
+        "tooling/test/integration/**/*.ts",
+        "tooling/test/fixtures/**/*.ts",
         "vitest.config.ts",
+        "vitest.bench.config.ts",
         "tooling/dts-entries.ts",
         "tooling/dts-value-exports.ts",
         "tooling/truthful-dts.ts",
@@ -1161,7 +1166,12 @@
         "test-pyramid-budgets.json",
         "test/unit/**/*.test.ts",
         "test/integration/**/*.test.ts",
-        "test/browser/**/*.spec.ts"
+        "test/parity/**/*.test.ts",
+        "test/runtime-parity/**/*.test.ts",
+        "test/perf/**/*.test.ts",
+        "test/browser/**/*.spec.ts",
+        "tooling/test/unit/**/*.test.ts",
+        "tooling/test/integration/**/*.test.ts"
       ],
       "output": [
         "reports/test-pyramid.json",
@@ -1370,7 +1380,7 @@
     "isomorphic-git": "1.41.9",
     "jscpd": "5.0.16",
     "knip": "6.33.0",
-    "lint-staged": "17.4.1",
+    "lint-staged": "17.5.0",
     "minimatch": "10.2.6",
     "rollup": "4.63.1",
     "rollup-plugin-dts": "6.5.1",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertEveryBenchmarkValued,
   type RawReport,
   resolveNodeVersion,
   toSnapshotEntries,
@@ -93,6 +94,136 @@ describe('toSnapshotEntries', () => {
           { name: 'log:walk > isomorphic-git', unit: 'ms', value: 2 },
           { name: 'status:clean > tsgit', unit: 'ms', value: 3 },
         ]);
+      });
+    });
+  });
+
+  describe('Given a group holding one valued benchmark and one carrying neither median nor mean', () => {
+    describe('When toSnapshotEntries runs', () => {
+      it('Then only the valued benchmark becomes an entry', () => {
+        // Arrange
+        const report: RawReport = {
+          files: [
+            {
+              groups: [
+                {
+                  fullName: 'log:walk',
+                  benchmarks: [{ name: 'tsgit', mean: 1, median: 1 }, { name: 'isomorphic-git' }],
+                },
+              ],
+            },
+          ],
+        };
+
+        // Act
+        const result = toSnapshotEntries(report);
+
+        // Assert
+        expect(result).toEqual([{ name: 'log:walk > tsgit', unit: 'ms', value: 1 }]);
+      });
+    });
+  });
+});
+
+describe('assertEveryBenchmarkValued', () => {
+  describe('Given a report whose only benchmark carries neither median nor mean', () => {
+    describe('When the guard runs', () => {
+      it('Then it throws naming that benchmark', () => {
+        // Arrange
+        const report: RawReport = {
+          files: [{ groups: [{ fullName: 'log:walk', benchmarks: [{ name: 'tsgit' }] }] }],
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          assertEveryBenchmarkValued(report);
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(Error);
+        expect((thrown as Error).message).toContain('log:walk > tsgit');
+      });
+    });
+  });
+
+  describe('Given a report with two benchmarks carrying neither median nor mean', () => {
+    describe('When the guard runs', () => {
+      it('Then the message names the exact prefix and both keys, comma-separated', () => {
+        // Arrange
+        const report: RawReport = {
+          files: [
+            { groups: [{ fullName: 'log:walk', benchmarks: [{ name: 'tsgit' }] }] },
+            { groups: [{ fullName: 'status:clean', benchmarks: [{ name: 'isomorphic-git' }] }] },
+          ],
+        };
+
+        // Act
+        let thrown: unknown;
+        try {
+          assertEveryBenchmarkValued(report);
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(Error);
+        expect((thrown as Error).message).toBe(
+          'Benchmark(s) with no value (neither median nor mean): log:walk > tsgit, status:clean > isomorphic-git',
+        );
+      });
+    });
+  });
+
+  describe('Given a benchmark with a mean and no median', () => {
+    describe('When the guard runs', () => {
+      it('Then it returns the report unchanged', () => {
+        // Arrange
+        const report: RawReport = {
+          files: [{ groups: [{ fullName: 'log:walk', benchmarks: [{ name: 'tsgit', mean: 9 }] }] }],
+        };
+
+        // Act
+        const result = assertEveryBenchmarkValued(report);
+
+        // Assert
+        expect(result).toBe(report);
+      });
+    });
+  });
+
+  describe('Given a benchmark with a median and no mean', () => {
+    describe('When the guard runs', () => {
+      it('Then it returns the report unchanged', () => {
+        // Arrange
+        const report: RawReport = {
+          files: [
+            { groups: [{ fullName: 'log:walk', benchmarks: [{ name: 'tsgit', median: 4 }] }] },
+          ],
+        };
+
+        // Act
+        const result = assertEveryBenchmarkValued(report);
+
+        // Assert
+        expect(result).toBe(report);
+      });
+    });
+  });
+
+  describe('Given a report with no files', () => {
+    describe('When the guard runs', () => {
+      it('Then it returns the report unchanged', () => {
+        // Arrange
+        const report: RawReport = { files: [] };
+
+        // Act
+        const result = assertEveryBenchmarkValued(report);
+
+        // Assert
+        expect(result).toBe(report);
       });
     });
   });

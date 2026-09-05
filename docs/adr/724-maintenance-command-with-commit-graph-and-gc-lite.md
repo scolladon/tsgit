@@ -16,7 +16,8 @@ subjects:
 > structured result shape, the midx/`.rev` constraints and the Tier-1 surface gates
 > are carried forward unchanged.
 
-- **Status:** superseded by ADR-731 (prune semantics), ADR-732 (pack consolidation) and ADR-733 (promisor consolidation); the command and commit-graph task stand
+- **Status:** superseded by ADR-731
+- **Also superseded by:** ADR-732 (pack consolidation) and ADR-733 (promisor consolidation); the command and commit-graph task stand
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-2) · **Supersedes/Refines:** un-parks the gc/repack/prune backlog entry (docs/BACKLOG.md)
 

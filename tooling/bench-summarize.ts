@@ -9,21 +9,19 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as url from 'node:url';
 
-const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const RAW = path.join(ROOT, 'reports', 'benchmarks', 'raw.json');
 const OUT = path.join(ROOT, 'reports', 'benchmarks', 'summary.md');
 
 interface BenchEntry {
   readonly name: string;
-  readonly hz: number;
-  readonly mean: number;
+  readonly hz?: number;
+  readonly mean?: number;
   readonly median?: number;
-  readonly p99: number;
   readonly rme: number;
 }
 
-interface BenchGroup {
+export interface BenchGroup {
   readonly fullName: string;
   readonly benchmarks: ReadonlyArray<BenchEntry>;
 }
@@ -33,8 +31,26 @@ interface BenchFile {
   readonly groups: ReadonlyArray<BenchGroup>;
 }
 
-interface RawReport {
+export interface RawReport {
   readonly files: ReadonlyArray<BenchFile>;
+}
+
+/** The three impure facts `main()` alone is allowed to read (clock, `process`,
+ * `os`) — a fixed value here keeps {@link renderSummary} deterministic. */
+export interface SummaryEnvironment {
+  readonly generatedAt: string;
+  readonly platform: string;
+  readonly arch: string;
+  readonly nodeVersion: string;
+  readonly cpuModel: string;
+}
+
+/** A {@link BenchEntry} narrowed to the fields a rendered cell needs, once it
+ * has passed the measured predicate below. */
+interface MeasuredBenchEntry {
+  readonly value: number;
+  readonly hz: number;
+  readonly rme: number;
 }
 
 const scenarioName = (fullName: string): string => {
@@ -53,26 +69,41 @@ const formatSpeedup = (a: number, b: number): string => {
   return `${ratio.toFixed(2)}×`;
 };
 
-const renderRow = (group: BenchGroup): string => {
-  const scenario = scenarioName(group.fullName);
-  const tsgit = findByName(group, 'tsgit');
-  const iso = findByName(group, 'isomorphic-git');
-  if (tsgit === undefined || iso === undefined) {
-    return `| ${scenario} | _missing entry_ | _missing entry_ | n/a |`;
-  }
-  const tsgitMean = tsgit.median ?? tsgit.mean;
-  const isoMean = iso.median ?? iso.mean;
-  const speedup = formatSpeedup(isoMean, tsgitMean);
-  return `| ${scenario} | ${formatMs(tsgitMean)} (${formatHz(tsgit.hz)}, ±${tsgit.rme.toFixed(2)}%) | ${formatMs(isoMean)} (${formatHz(iso.hz)}, ±${iso.rme.toFixed(2)}%) | ${speedup} |`;
+/**
+ * An entry counts as measured when `median ?? mean` is a number AND `hz` is
+ * a number — vitest emits those together (a full result), never one without
+ * the other. A benchmark that threw during warmup yields neither.
+ */
+const asMeasured = (entry: BenchEntry | undefined): MeasuredBenchEntry | undefined => {
+  if (entry === undefined) return undefined;
+  const value = entry.median ?? entry.mean;
+  if (typeof value !== 'number' || typeof entry.hz !== 'number') return undefined;
+  return { value, hz: entry.hz, rme: entry.rme };
 };
 
-const main = async (): Promise<void> => {
-  const raw = JSON.parse(await readFile(RAW, 'utf8')) as RawReport;
+const formatCell = (entry: MeasuredBenchEntry): string =>
+  `${formatMs(entry.value)} (${formatHz(entry.hz)}, ±${entry.rme.toFixed(2)}%)`;
+
+export const renderRow = (group: BenchGroup): string => {
+  const scenario = scenarioName(group.fullName);
+  const tsgit = asMeasured(findByName(group, 'tsgit'));
+  if (tsgit === undefined) {
+    return `| ${scenario} | _missing entry_ | _missing entry_ | n/a |`;
+  }
+  const iso = asMeasured(findByName(group, 'isomorphic-git'));
+  if (iso === undefined) {
+    return `| ${scenario} | ${formatCell(tsgit)} | — | n/a |`;
+  }
+  const speedup = formatSpeedup(iso.value, tsgit.value);
+  return `| ${scenario} | ${formatCell(tsgit)} | ${formatCell(iso)} | ${speedup} |`;
+};
+
+export const renderSummary = (raw: RawReport, environment: SummaryEnvironment): string => {
   const groups = raw.files.flatMap((file) => file.groups);
   const lines: string[] = [
     '# Benchmark results',
     '',
-    `Generated ${new Date().toISOString()} on \`${process.platform}-${process.arch}\` (Node ${process.version}, ${os.cpus()[0]?.model ?? 'unknown CPU'}).`,
+    `Generated ${environment.generatedAt} on \`${environment.platform}-${environment.arch}\` (Node ${environment.nodeVersion}, ${environment.cpuModel}).`,
     '',
     '| Scenario | tsgit | isomorphic-git | speedup (tsgit faster) |',
     '|---|---|---|---|',
@@ -81,14 +112,34 @@ const main = async (): Promise<void> => {
     '> _speedup > 1×_ means tsgit beat isomorphic-git on median runtime. Raw',
     '> data in `reports/benchmarks/raw.json` includes p75/p99/RME and per-run',
     '> sample counts. GitHub Actions runners introduce ±20% variance — trust',
-    '> direction more than absolute numbers.',
+    '> direction more than absolute numbers. The speedup column applies to',
+    '> paired rows only.',
     '',
   ];
-  await writeFile(OUT, lines.join('\n'), 'utf8');
+  return lines.join('\n');
+};
+
+const invokedDirectly = (): boolean => {
+  const entry = process.argv[1];
+  return entry !== undefined && path.resolve(entry) === url.fileURLToPath(import.meta.url);
+};
+
+const main = async (): Promise<void> => {
+  const raw = JSON.parse(await readFile(RAW, 'utf8')) as RawReport;
+  const environment: SummaryEnvironment = {
+    generatedAt: new Date().toISOString(),
+    platform: process.platform,
+    arch: process.arch,
+    nodeVersion: process.version,
+    cpuModel: os.cpus()[0]?.model ?? 'unknown CPU',
+  };
+  await writeFile(OUT, renderSummary(raw, environment), 'utf8');
   process.stdout.write(`Wrote ${OUT}\n`);
 };
 
-main().catch((err: unknown) => {
-  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});
+if (invokedDirectly()) {
+  main().catch((err: unknown) => {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}

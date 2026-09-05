@@ -68,6 +68,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `OBJECT_TOO_LARGE` | `id, actualSize, limit` | Object exceeds `maxBytes` cap. |
 | `OBJECT_NOT_FOUND` | `id` | Id missing locally and (if applicable) the promisor remote did not deliver it. |
 | `PACK_TOO_LARGE` | `bytes, limit` | Pack exceeded the adapter's size guard. |
+| `PACK_ARTIFACT_MISMATCH` | `path` | A file already at a pack artefact's content-addressed name holds different bytes; the receive refuses rather than overwrite, as git's finalize step does. |
 | `UNEXPECTED_OBJECT_TYPE` | `id, expected, actual` | Resolved object's type does not match the caller's expectation (e.g. asked for tree, got blob). |
 
 ### Refs, reflog, revparse

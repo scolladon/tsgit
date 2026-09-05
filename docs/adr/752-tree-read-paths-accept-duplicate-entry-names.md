@@ -50,11 +50,11 @@ keep **last**-wins; `fsck` remains the sole detector and continues to report a d
 finding. `Tree.entries` is an ordered array and may legitimately contain two entries
 sharing a name.
 
-**Superseded from ADR-723:** the duplicate-entry-name refusal on read paths — both the
+Superseded from ADR-723: the duplicate-entry-name refusal on read paths — both the
 per-directory `Set` re-implemented in the cursor descent and `parseTreeContent`'s own
 `names` set — together with the unpinned premise that git's behaviour here was unknown.
 
-**Carried forward from ADR-723:** the ruling that the cursor's own unconditional scan
+Carried forward from ADR-723: the ruling that the cursor's own unconditional scan
 stays minimal and that name-shape validation is re-implemented per consumer rather than
 inside `TreeCursor`; the finding that the raw merge-join deliberately carries neither
 check; and the entire mode-tier addendum, which ADR-754 acts on rather than reverses.

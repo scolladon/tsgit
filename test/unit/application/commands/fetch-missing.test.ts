@@ -405,9 +405,9 @@ describe('fetchMissing', () => {
     });
   });
 
-  describe('Given a concurrent identical pack already on disk', () => {
-    describe('When fetchMissing', () => {
-      it('Then the FILE_EXISTS collision is tolerated', async () => {
+  describe('Given a corrupt index already occupying the pack sibling name', () => {
+    describe('When fetchMissing receives the pack', () => {
+      it('Then it refuses naming the index, as git does', async () => {
         // Arrange
         const base = createMemoryContext();
         await seedRepo(base, {});
@@ -417,15 +417,27 @@ describe('fetchMissing', () => {
         const ctx: Context = { ...base, transport };
         const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
         const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const idxPath = `${packDir}/pack-${packSha}.idx`;
         await ctx.fs.mkdir(packDir);
-        await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.pack`, packBytes);
+        await ctx.fs.writeExclusive(idxPath, new Uint8Array(0));
+        const sut = fetchMissing;
 
         // Act
-        const result = await fetchMissing(ctx, { oids: [blobId] });
+        let caught: unknown;
+        try {
+          await sut(ctx, { oids: [blobId] });
+        } catch (err) {
+          caught = err;
+        }
 
-        // Assert — the pre-existing pack made writeExclusive throw FILE_EXISTS,
-        // which fetchMissing swallows: the objects are already on disk.
-        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        // Assert — the pack itself is absent, so the receive renames its quarantine
+        // copy into place, then finds the zero-byte index differs from the one it
+        // would write: a refusal, never a silent success over an unreadable pack.
+        expect(caught).toBeInstanceOf(TsgitError);
+        if (!(caught instanceof TsgitError)) expect.unreachable();
+        expect(caught.data.code).toBe('PACK_ARTIFACT_MISMATCH');
+        if (caught.data.code !== 'PACK_ARTIFACT_MISMATCH') expect.unreachable();
+        expect(caught.data.path).toBe(idxPath);
       });
     });
   });
@@ -471,7 +483,7 @@ describe('fetchMissing', () => {
     });
   });
 
-  describe('Given fetchPack fails with a non-FILE_EXISTS error', () => {
+  describe('Given fetchPack fails', () => {
     describe('When fetchMissing', () => {
       it('Then the error propagates', async () => {
         // Arrange — discovery succeeds, the upload-pack POST returns 500.
@@ -496,9 +508,38 @@ describe('fetchMissing', () => {
           caught = err;
         }
 
-        // Assert — a non-FILE_EXISTS failure is rethrown, not swallowed.
+        // Assert — the failure propagates.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('HTTP_ERROR');
+      });
+    });
+  });
+
+  describe('Given the identical pack already occupies the sibling artefact name', () => {
+    describe('When fetchMissing', () => {
+      it('Then the receive adopts it and completes the siblings', async () => {
+        // Arrange — the receive path adopts an identical occupant itself; a
+        // pre-created pack at the same content-addressed name must not be
+        // treated as a failure.
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'already present\n');
+        const { transport } = fakeRemote(packBytes);
+        const ctx: Context = { ...base, transport };
+        const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const packPath = `${packDir}/pack-${packSha}.pack`;
+        await ctx.fs.mkdir(packDir);
+        await ctx.fs.writeExclusive(packPath, packBytes);
+
+        // Act
+        const result = await fetchMissing(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        expect(await ctx.fs.exists(`${packDir}/pack-${packSha}.idx`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${packSha}.rev`)).toBe(true);
       });
     });
   });

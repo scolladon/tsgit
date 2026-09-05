@@ -256,10 +256,15 @@ export const topReflogSubject = (dir: string, ref: string): string =>
  */
 export const tryRunGitWithExit = (
   args: ReadonlyArray<string>,
-  options: { readonly env?: NodeJS.ProcessEnv } = {},
+  options: { readonly input?: string | Uint8Array; readonly env?: NodeJS.ProcessEnv } = {},
 ): { readonly stdout: string; readonly stderr: string; readonly exitCode: number } => {
   const env = options.env ?? SAFE_ENV;
-  const result = spawnSync('git', args as string[], { env, encoding: 'utf8' });
+  const opts = {
+    env,
+    encoding: 'utf8' as const,
+    ...(options.input === undefined ? {} : { input: options.input }),
+  };
+  const result = spawnSync('git', args as string[], opts);
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
