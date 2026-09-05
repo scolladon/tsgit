@@ -142,10 +142,9 @@ export const packFilePath = (packDir: string, packSha: string): string =>
   `${packDir}/pack-${packSha}.pack`;
 
 /** The on-disk path for a pack's `.idx` sibling, keyed the same way as
- *  `packFilePath` — shared so a caller checking whether a pack is already
- *  present (fetch-pack) and this module's own writer agree on the exact
- *  same name. */
-export const packIdxFilePath = (packDir: string, packSha: string): string =>
+ *  `packFilePath`. Only `artifactPaths` builds an `ArtifactPaths` record, so
+ *  this stays in-module rather than exported. */
+const packIdxFilePath = (packDir: string, packSha: string): string =>
   `${packDir}/pack-${packSha}.idx`;
 
 const artifactPaths = (packDir: string, packSha: string): ArtifactPaths => ({
@@ -157,7 +156,10 @@ const artifactPaths = (packDir: string, packSha: string): ArtifactPaths => ({
 
 /** Writes `bytes` at `path` unless an identical artefact already occupies
  *  it — git's finalize step keeps an identical file in place and reports a
- *  mismatch on anything else, never overwriting. */
+ *  mismatch on anything else, never overwriting. The stat pre-check runs
+ *  before the occupant is ever read: a non-regular file (a planted FIFO
+ *  would hang the read) or one of a different size (read in full otherwise)
+ *  is a mismatch by shape alone, with no read attempted. */
 const writeOrKeepArtifact = async (
   ctx: Context,
   path: string,
@@ -167,6 +169,8 @@ const writeOrKeepArtifact = async (
     await ctx.fs.writeExclusive(path, bytes);
   } catch (err) {
     if (errorDataCode(err) !== 'FILE_EXISTS') throw err;
+    const occupant = await ctx.fs.stat(path);
+    if (!occupant.isFile || occupant.size !== bytes.length) throw packArtifactMismatch(path);
     if (!bytesEqual(await ctx.fs.read(path), bytes)) throw packArtifactMismatch(path);
   }
 };
@@ -358,14 +362,21 @@ export const writePackArtifactsViaQuarantine = async (
   }
 
   if (input.promisor) {
-    // A same-sha rewrite (Pin W's no-op boundary, promisor class included)
-    // finds its own sentinel from the PRIOR run still in place at this exact
-    // path — `writeExclusive` alone would refuse with `FILE_EXISTS`, exactly
-    // as the `.rev` write below tolerates the same shape of stale sibling.
+    // Unlike the receive path (fetch-pack's writeOrKeepArtifact /
+    // writeSentinelIfAbsent), which KEEPS whatever sits at a sibling name,
+    // gc's own rewrite of a sha it already produced must REPLACE its
+    // prior-run sentinel and `.rev`: `rmTolerant` clears the stale artefact
+    // first, so the write below is always fresh rather than adopting bytes
+    // an earlier gc run left behind. The receive path's tolerant "keep
+    // whatever it holds" sibling write is an affordance this path
+    // deliberately does not rely on.
     await rmTolerant(ctx, paths.promisorPath);
     await writeSentinelIfAbsent(ctx, paths.promisorPath);
   }
   if (wantRev) {
+    // Same REPLACE posture as the sentinel above: any stale `.rev` from a
+    // prior gc run at this sha is removed first, then rebuilt fresh from
+    // the entries this call already has — never kept, never compared.
     await rmTolerant(ctx, paths.revPath);
     await writeRevArtifact(ctx, paths.revPath, sorted, input.packSha);
   }

@@ -483,7 +483,7 @@ describe('fetchMissing', () => {
     });
   });
 
-  describe('Given fetchPack fails with a non-FILE_EXISTS error', () => {
+  describe('Given fetchPack fails', () => {
     describe('When fetchMissing', () => {
       it('Then the error propagates', async () => {
         // Arrange — discovery succeeds, the upload-pack POST returns 500.
@@ -508,9 +508,36 @@ describe('fetchMissing', () => {
           caught = err;
         }
 
-        // Assert — a non-FILE_EXISTS failure is rethrown, not swallowed.
+        // Assert — the failure propagates.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('HTTP_ERROR');
+      });
+    });
+  });
+
+  describe('Given the identical pack already occupies the sibling artefact name', () => {
+    describe('When fetchMissing', () => {
+      it('Then the receive adopts it and completes the siblings', async () => {
+        // Arrange — the receive path adopts an identical occupant itself; a
+        // pre-created pack at the same content-addressed name must not be
+        // treated as a failure.
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'already present\n');
+        const { transport } = fakeRemote(packBytes);
+        const ctx: Context = { ...base, transport };
+        const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const packPath = `${packDir}/pack-${packSha}.pack`;
+        await ctx.fs.mkdir(packDir);
+        await ctx.fs.writeExclusive(packPath, packBytes);
+
+        // Act
+        const result = await fetchMissing(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
       });
     });
   });

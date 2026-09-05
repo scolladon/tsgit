@@ -1,3 +1,9 @@
+/**
+ * @proves
+ *   surface: benchDsl.throws
+ *   bucket:  coverage-gap
+ *   unique:  a warmup throw fails the vitest bench run instead of reporting a silent zero-sample pass; only a spawned run can observe the verdict
+ */
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -34,6 +40,11 @@ interface CliRun {
   readonly stdout: string;
   readonly stderr: string;
   readonly code: number;
+  /** True when `execFile`'s own timeout killed the process — the guard this
+   *  test names can only fail with a non-zero `code` for the RIGHT reason
+   *  (the fixture's warmup throw) if this is false; a hang would also
+   *  produce a non-zero code, but via a forced kill instead. */
+  readonly killed: boolean;
 }
 
 const runVitestBenchAgainstFixture = async (configPath: string): Promise<CliRun> => {
@@ -43,10 +54,15 @@ const runVitestBenchAgainstFixture = async (configPath: string): Promise<CliRun>
       ['bench', '--run', '--config', configPath],
       { cwd: REPO_ROOT, timeout: SPAWN_KILL_TIMEOUT_MS },
     );
-    return { stdout, stderr, code: 0 };
+    return { stdout, stderr, code: 0, killed: false };
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; code?: number };
-    return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', code: e.code ?? 1 };
+    const e = err as { stdout?: string; stderr?: string; code?: number; killed?: boolean };
+    return {
+      stdout: e.stdout ?? '',
+      stderr: e.stderr ?? '',
+      code: e.code ?? 1,
+      killed: e.killed ?? false,
+    };
   }
 };
 
@@ -98,20 +114,27 @@ describe('vitest bench run-phase-throw guard (integration)', () => {
       it(
         'Then the run fails, naming the warmup error, instead of hanging or passing silently',
         async () => {
-          // Arrange
-          const configDir = await mkdtemp(path.join(REPO_ROOT, '.bench-warmup-throw-'));
-          const configPath = path.join(configDir, 'vitest.config.ts');
-          await writeFixtureOnlyConfig(configPath);
-
+          // Arrange — mkdtemp itself lives inside the try: a config-write
+          // failure between the two must not leak the directory past the
+          // finally below.
+          let configDir: string | undefined;
           try {
-            // Act
-            const result = await runVitestBenchAgainstFixture(configPath);
+            configDir = await mkdtemp(path.join(REPO_ROOT, '.bench-warmup-throw-'));
+            const configPath = path.join(configDir, 'vitest.config.ts');
+            await writeFixtureOnlyConfig(configPath);
+            const sut = runVitestBenchAgainstFixture;
 
-            // Assert
+            // Act
+            const result = await sut(configPath);
+
+            // Assert — a non-zero code without a forced kill proves the
+            // fixture's warmup throw failed the run rather than a hang
+            // getting reaped by execFile's own timeout.
             expect(result.code).not.toBe(0);
+            expect(result.killed).toBe(false);
             expect(`${result.stdout}${result.stderr}`).toContain(WARMUP_ERROR_MESSAGE);
           } finally {
-            await rm(configDir, { recursive: true, force: true });
+            if (configDir !== undefined) await rm(configDir, { recursive: true, force: true });
           }
         },
         TEST_TIMEOUT_MS,

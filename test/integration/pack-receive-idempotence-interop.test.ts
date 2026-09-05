@@ -117,21 +117,10 @@ describe.skipIf(!GIT_AVAILABLE)('pack-receive-idempotence interop', () => {
         try {
           runGit(['init', '-q', '-b', 'main', dir]);
           const ctx = createNodeContext({ workDir: dir });
-          const negotiator: NegotiatePackBytes = async () => ({
-            packBody: (async function* singleChunk() {
-              yield packBytes;
-            })(),
-            shallow: [],
-            unshallow: [],
-          });
-          const input = {
-            wants: ['a'.repeat(40) as ObjectId],
-            haves: [],
-            capabilities: [],
-            progressOp: 'test:write-objects',
-          };
+          const negotiator = singleChunk(packBytes);
+          const sut = fetchPack;
 
-          const first = await fetchPack(ctx, negotiator, input);
+          const first = await sut(ctx, negotiator, RECEIVE_INPUT);
           const revPath = `${path.dirname(first.idxPath)}/pack-${first.packSha}.rev`;
           const packBytesAfterFirst = await ctx.fs.read(first.packPath);
           const idxBytesAfterFirst = await ctx.fs.read(first.idxPath);
@@ -141,7 +130,7 @@ describe.skipIf(!GIT_AVAILABLE)('pack-receive-idempotence interop', () => {
           const revStatAfterFirst = await ctx.fs.stat(revPath);
 
           // Act
-          const second = await fetchPack(ctx, negotiator, input);
+          const second = await sut(ctx, negotiator, RECEIVE_INPUT);
 
           // Assert — same artefacts, same identity.
           expect(second.packPath).toBe(first.packPath);

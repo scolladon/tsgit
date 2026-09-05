@@ -43,12 +43,14 @@ quarantine copy at the content-addressed name the way git's finalize step does, 
   and the copy is discarded as a handled outcome;
 - an occupant whose bytes differ is refused with `PACK_ARTIFACT_MISMATCH` naming the artefact,
   never overwritten;
-- then every sibling (`.idx`, `.rev`, the `.promisor` sentinel) is written where its name is
-  free, kept where an identical file already sits, and refused where a differing one does — the
-  sentinel is kept whatever it holds, since git writes free-form text there.
+- then the `.idx` and `.rev` siblings are each written where their name is free, kept where an
+  identical file already sits, and refused where a differing one does; the `.promisor` sentinel is
+  kept whatever it holds whenever its name is already occupied — git treats it as free-form text,
+  so this receive path never compares or refuses it.
 
-The comparison is by content, in bounded windows, so a pack larger than memory is never held at
-once. The check happens before any rename, so nothing is clobbered. A cross-tool interop test
+The `.pack` is compared in bounded windows, so a pack larger than memory is never held at once;
+siblings are compared in full, after a size check bounds the read to the size of the artefact just
+built. The check happens before any rename, so nothing is clobbered. A cross-tool interop test
 receives one pack twice and asserts the second call succeeds with the artefacts unchanged, that a
 planted foreign file and a zero-byte index are refused, and that missing siblings are recreated,
 with real git reproducing every sequence in the same fixture. `fetch-missing`'s former

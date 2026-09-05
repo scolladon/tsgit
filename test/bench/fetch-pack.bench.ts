@@ -71,11 +71,11 @@ benchScenario(
         capabilities: ['side-band-64k', 'ofs-delta'],
         progressOp: 'test:write-objects',
       });
-      // A fresh destination per iteration: a shared one would serve a warm
-      // delta cache from iteration 2 on, pricing something this scenario
-      // does not claim to measure, and re-receiving into an occupied store
-      // throws FILE_EXISTS on the writer's sibling artefacts. Reading a
-      // field keeps the write observable to the runner.
+      // A fresh destination per iteration keeps every iteration a genuine
+      // cold-cache receive: a shared one would serve a warm delta cache
+      // from iteration 2 on, and would also adopt the identical occupant
+      // rather than receive it, pricing the compare path instead. Reading
+      // a field keeps the write observable to the runner.
       if (result.packPath === '') throw new Error('fetchPack wrote no pack');
     };
     return { sut };

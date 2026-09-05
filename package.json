@@ -866,6 +866,7 @@
       "files": [
         "src/**/*.ts",
         "test/unit/**/*.ts",
+        "test/bench/**/*.ts",
         "tooling/**/*.ts",
         "vitest.config.ts"
       ],
@@ -879,7 +880,11 @@
       "files": [
         "src/**/*.ts",
         "test/integration/**/*.ts",
+        "test/bench/**/*.ts",
+        "tooling/test/integration/**/*.ts",
+        "tooling/test/fixtures/**/*.ts",
         "vitest.config.ts",
+        "vitest.bench.config.ts",
         "tooling/dts-entries.ts",
         "tooling/dts-value-exports.ts",
         "tooling/truthful-dts.ts",
@@ -1161,6 +1166,7 @@
         "test-pyramid-budgets.json",
         "test/unit/**/*.test.ts",
         "test/integration/**/*.test.ts",
+        "test/parity/**/*.test.ts",
         "test/browser/**/*.spec.ts",
         "tooling/test/unit/**/*.test.ts",
         "tooling/test/integration/**/*.test.ts"

@@ -35,4 +35,6 @@ A run-phase benchmark error surfaces as a job timeout within the hour, with the 
 output preserved for diagnosis. The bound is a job-level fact, not a per-scenario one; a scenario
 that legitimately needs longer than the job allows is a change to this number, recorded here.
 The bound covers every job running the bench suite: `benchmark-snapshot` at 30 minutes for its
-one pass, `benchmark-compare` at 60 for its six (2 × `BENCH_ROUNDS` sides).
+one full-sweep pass, `benchmark-compare` at 60 for its six passes over the hot-path-scoped subset
+(2 × `BENCH_ROUNDS` sides) — it is the subset, not the full sweep, that lets six passes fit inside
+a bound sized for one.

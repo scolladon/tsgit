@@ -202,10 +202,13 @@ const COMPARE_CHUNK_BYTES = 1 << 20;
 
 /** Byte-for-byte comparison of two files, one bounded window at a time —
  *  a pack can be larger than memory, and this runs only on the rare path
- *  where the destination is already occupied. */
+ *  where the destination is already occupied. A non-regular occupant (a
+ *  directory, most concretely) is a mismatch, never a raw read failure:
+ *  the `isFile` check settles that before any window is ever read. */
 const sameFileContents = async (ctx: Context, left: string, right: string): Promise<boolean> => {
   const size = (await ctx.fs.stat(left)).size;
-  if ((await ctx.fs.stat(right)).size !== size) return false;
+  const rightStat = await ctx.fs.stat(right);
+  if (!rightStat.isFile || rightStat.size !== size) return false;
   for (let offset = 0; offset < size; offset += COMPARE_CHUNK_BYTES) {
     const length = Math.min(COMPARE_CHUNK_BYTES, size - offset);
     const [a, b] = await Promise.all([
@@ -234,8 +237,16 @@ const settleQuarantine = async (
     await promoteQuarantine(ctx, receipt.tmpPath, destination);
     return;
   }
-  const identical = await sameFileContents(ctx, receipt.tmpPath, destination);
-  await cleanupQuarantine(ctx, receipt.tmpPath);
+  // The quarantine copy must be released on every exit from the compare —
+  // a concurrent gc removing the occupant (FILE_NOT_FOUND) or an unreadable
+  // one (PERMISSION_DENIED) must not strand it, so cleanup runs in `finally`
+  // and the original error, whatever it is, still propagates.
+  let identical: boolean;
+  try {
+    identical = await sameFileContents(ctx, receipt.tmpPath, destination);
+  } finally {
+    await cleanupQuarantine(ctx, receipt.tmpPath);
+  }
   if (!identical) throw packArtifactMismatch(destination);
 };
 

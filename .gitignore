@@ -63,3 +63,7 @@ reports/stryker-incremental.json
 
 # graft re-creates this on every build to re-admit graft/ to ripgrep; see .rgignore.
 /.ignore
+
+# Scratch vitest config dir for the bench warmup-throw spawn guard test —
+# must live under the repo root to resolve `vitest/config`.
+.bench-warmup-throw-*/

@@ -373,6 +373,10 @@ const pseudoRandomBytes = (length: number, seed: number): Uint8Array => {
 const MULTI_WINDOW_ENTRY_COUNT = 12;
 const MULTI_WINDOW_ENTRY_BYTES = 60_000;
 
+/** Comfortably over `1 << 20` (1 MiB) once packed — incompressible content,
+ *  so the deflated pack tracks this size almost 1:1 (see `pseudoRandomBytes`). */
+const OVER_COMPARE_WINDOW_BYTES = 1_100_000;
+
 const buildMultiWindowPack = (
   ctx: ReturnType<typeof createMemoryContext>,
 ): Promise<Awaited<ReturnType<typeof buildSyntheticPack>>> => {
@@ -5258,6 +5262,148 @@ describe('fetchPack — an already-present pack', () => {
     });
   });
 
+  describe('Given a first receive landed the pack, and readSlice then fails reading the destination back', () => {
+    describe('When fetchPack receives the identical pack a second time', () => {
+      it('Then the failure propagates and no quarantine file is left behind', async () => {
+        // Arrange — a concurrent gc (FILE_NOT_FOUND) or an unreadable
+        // occupant (PERMISSION_DENIED) must not strand the quarantine copy:
+        // the compare arm has to release it on every exit, not only the
+        // clean ones.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'compare read failure\n');
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const negotiator = toNegotiator(transport);
+        const input = {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        };
+        const sut = fetchPack;
+        const first = await sut(ctx, negotiator, input);
+        const destination = first.packPath;
+        const failingCtx = withFsPatch(ctx, {
+          readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
+            if (path === destination) throw permissionDenied(destination);
+            return ctx.fs.readSlice(path, offset, length);
+          },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(failingCtx, negotiator, input);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        if (!(caught instanceof TsgitError)) expect.unreachable();
+        expect(caught.data.code).toBe('PERMISSION_DENIED');
+        if (caught.data.code !== 'PERMISSION_DENIED') expect.unreachable();
+        expect(caught.data.path).toBe(destination);
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a directory whose stat happens to report the same size as the pack, occupying the content-addressed destination', () => {
+    describe('When fetchPack receives a pack whose trailer names that destination', () => {
+      it('Then it refuses naming the destination instead of surfacing a raw filesystem error, and leaves no quarantine file', async () => {
+        // Arrange — a real filesystem can report a nonzero directory size
+        // (block-aligned); stubbing stat to coincidentally match the pack's
+        // size is what actually exercises the isFile guard — the plain
+        // size check alone cannot distinguish this from a same-size file,
+        // and `readSlice` on the (real, memory-backed) directory would
+        // otherwise surface a raw FILE_NOT_FOUND instead of a clean refusal.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'directory occupant\n');
+        const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
+        const destination = `${packDir(ctx)}/pack-${packSha}.pack`;
+        await ctx.fs.mkdir(destination);
+        const realStat = ctx.fs.stat.bind(ctx.fs);
+        const patchedCtx = withFsPatch(ctx, {
+          stat: async (path: string) => {
+            const stat = await realStat(path);
+            return path === destination ? { ...stat, size: packBytes.length } : stat;
+          },
+        });
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(patchedCtx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        if (!(caught instanceof TsgitError)) expect.unreachable();
+        expect(caught.data.code).toBe('PACK_ARTIFACT_MISMATCH');
+        if (caught.data.code !== 'PACK_ARTIFACT_MISMATCH') expect.unreachable();
+        expect(caught.data.path).toBe(destination);
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a pack file with extra trailing bytes appended already occupying the content-addressed destination', () => {
+    describe('When fetchPack receives a pack whose trailer names that destination', () => {
+      it('Then it refuses naming the destination and leaves the superset bytes untouched', async () => {
+        // Arrange — the size-mismatch short-circuit is otherwise only ever
+        // exercised by a SMALLER foreign occupant in every existing
+        // fixture; a mutant flipping it would adopt this corruption as a
+        // successful receive instead of refusing it.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'superset occupant\n');
+        const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
+        const destination = `${packDir(ctx)}/pack-${packSha}.pack`;
+        const extraBytes = ENCODER.encode('extra trailing bytes');
+        const superset = new Uint8Array(packBytes.length + extraBytes.length);
+        superset.set(packBytes, 0);
+        superset.set(extraBytes, packBytes.length);
+        await ctx.fs.mkdir(packDir(ctx));
+        await ctx.fs.writeExclusive(destination, superset);
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, toNegotiator(transport), {
+            wants: [blobId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        if (!(caught instanceof TsgitError)) expect.unreachable();
+        expect(caught.data.code).toBe('PACK_ARTIFACT_MISMATCH');
+        if (caught.data.code !== 'PACK_ARTIFACT_MISMATCH') expect.unreachable();
+        expect(caught.data.path).toBe(destination);
+        expect(await ctx.fs.read(destination)).toEqual(superset);
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
   describe('Given a pack already received once into this repository, When fetchPack receives it a second time', () => {
     it('Then no quarantine file is left behind', async () => {
       // Arrange
@@ -5451,6 +5597,128 @@ describe('fetchPack — an already-present pack', () => {
         // Assert
         expect(result.type).toBe('blob');
         expect(result.id).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given a pack whose bytes exceed one compare window (over 1 MiB)', () => {
+    describe('When fetchPack receives the byte-identical pack a second time', () => {
+      it('Then it succeeds and returns the artefacts already on disk', async () => {
+        // Arrange — incompressible content so the deflated pack itself, not
+        // just the source blob, exceeds one compare window: a one-window
+        // fixture could never distinguish the multi-window loop from a
+        // single bounds check.
+        const ctx = createMemoryContext();
+        const built = await buildSyntheticPack(ctx, [
+          {
+            kind: 'base',
+            type: 'blob',
+            content: pseudoRandomBytes(OVER_COMPARE_WINDOW_BYTES, 9001),
+          },
+        ]);
+        expect(built.packBytes.length).toBeGreaterThan(1 << 20);
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+        const negotiator = toNegotiator(transport);
+        const input = {
+          wants: [built.ids[0] as ObjectId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        };
+        const sut = fetchPack;
+        const first = await sut(ctx, negotiator, input);
+
+        // Act
+        const second = await sut(ctx, negotiator, input);
+
+        // Assert
+        expect(second.packSha).toBe(first.packSha);
+        expect(await ctx.fs.read(second.packPath)).toEqual(await ctx.fs.read(first.packPath));
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a same-size occupant (over 1 MiB) differing only in its last compare window', () => {
+    describe('When fetchPack receives the pack whose trailer names that destination', () => {
+      it('Then it refuses naming the destination and leaves the differing bytes untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const built = await buildSyntheticPack(ctx, [
+          {
+            kind: 'base',
+            type: 'blob',
+            content: pseudoRandomBytes(OVER_COMPARE_WINDOW_BYTES, 9002),
+          },
+        ]);
+        expect(built.packBytes.length).toBeGreaterThan(1 << 20);
+        const packSha = await ctx.hash.hashHex(built.packBytes.subarray(0, -20));
+        const destination = `${packDir(ctx)}/pack-${packSha}.pack`;
+        const differing = built.packBytes.slice();
+        const lastWindowIndex = differing.length - 5;
+        differing[lastWindowIndex] = (differing[lastWindowIndex] ?? 0) ^ 0xff;
+        await ctx.fs.mkdir(packDir(ctx));
+        await ctx.fs.writeExclusive(destination, differing);
+        const body = buildMultiChunkSidebandBody(built.packBytes, 32_768);
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, toNegotiator(transport), {
+            wants: [built.ids[0] as ObjectId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        if (!(caught instanceof TsgitError)) expect.unreachable();
+        expect(caught.data.code).toBe('PACK_ARTIFACT_MISMATCH');
+        if (caught.data.code !== 'PACK_ARTIFACT_MISMATCH') expect.unreachable();
+        expect(caught.data.path).toBe(destination);
+        expect(await ctx.fs.read(destination)).toEqual(differing);
+      });
+    });
+  });
+
+  describe('Given two concurrent receives of the same pack over one memory context', () => {
+    describe('When both calls run via Promise.all', () => {
+      it('Then both resolve with the same artefacts and no quarantine file is left behind', async () => {
+        // Arrange — captureRequests builds a fresh ReadableStream (a fresh
+        // `body.slice()`) on every `request()` call, so both concurrent
+        // negotiations each get their own independent copy of the body.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'concurrent receive\n');
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const negotiator = toNegotiator(transport);
+        const input = {
+          wants: [blobId],
+          haves: [],
+          capabilities: ['side-band-64k'],
+          progressOp: 'test:write-objects',
+        };
+        const sut = fetchPack;
+
+        // Act
+        const [first, second] = await Promise.all([
+          sut(ctx, negotiator, input),
+          sut(ctx, negotiator, input),
+        ]);
+
+        // Assert
+        expect(second.packSha).toBe(first.packSha);
+        expect(await ctx.fs.exists(first.idxPath)).toBe(true);
+        const revPath = `${packDir(ctx)}/pack-${first.packSha}.rev`;
+        expect(await ctx.fs.exists(revPath)).toBe(true);
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
       });
     });
   });
