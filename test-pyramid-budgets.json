@@ -216,6 +216,7 @@
     "tooling/test/integration/audit-write-surfaces.test.ts",
     "tooling/test/integration/check-mutation-budgets.test.ts",
     "tooling/test/integration/compute-mutation-scope.test.ts",
-    "tooling/test/integration/has-code-changes.test.ts"
+    "tooling/test/integration/has-code-changes.test.ts",
+    "tooling/test/integration/bench-warmup-throw.test.ts"
   ]
 }
