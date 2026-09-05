@@ -268,6 +268,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       let caught: unknown;
       try {
         await env.fs.write(dir, new Uint8Array([9]));
+        expect.fail('expected a refusal');
       } catch (err) {
         caught = err;
       }

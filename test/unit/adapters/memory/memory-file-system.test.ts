@@ -854,6 +854,7 @@ describe('MemoryFileSystem', () => {
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           const childData = new Uint8Array([9, 8, 7]);
           await sut.write('/repo/occupied-dir/child.bin', childData);
+          const before = await sut.lstat('/repo/occupied-dir');
 
           // Act
           let caught: unknown;
@@ -869,7 +870,10 @@ describe('MemoryFileSystem', () => {
           expect(data.code).toBe('FILE_EXISTS');
           if (data.code === 'FILE_EXISTS') expect(data.path).toBe('/repo/occupied-dir');
           expect(await sut.read('/repo/occupied-dir/child.bin')).toEqual(childData);
-          expect((await sut.lstat('/repo/occupied-dir')).isDirectory).toBe(true);
+          const after = await sut.lstat('/repo/occupied-dir');
+          expect(after.isDirectory).toBe(true);
+          expect(after.mtimeMs).toBe(before.mtimeMs);
+          expect(after.ctimeMs).toBe(before.ctimeMs);
         });
       });
     });
@@ -1571,6 +1575,80 @@ describe('MemoryFileSystem', () => {
       });
     });
 
+    describe('Given two files, src === dst for the first', () => {
+      describe('When renaming', () => {
+        it('Then the directory listing order is unchanged — a self-rename is a true no-op', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/a.txt', new Uint8Array([1]));
+          await sut.write('/repo/b.txt', new Uint8Array([2]));
+
+          // Act
+          await sut.rename('/repo/a.txt', '/repo/a.txt');
+
+          // Assert — a re-inserted entry would move to the end of the listing
+          expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual([
+            'a.txt',
+            'b.txt',
+          ]);
+        });
+      });
+    });
+
+    describe('Given a regular file at src and an existing symlink at dst', () => {
+      describe('When renaming', () => {
+        it('Then the link is replaced by the file and its target is untouched', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          const srcBytes = new Uint8Array([4, 5, 6]);
+          const targetBytes = new Uint8Array([1, 2, 3]);
+          await sut.write('/repo/moved.bin', srcBytes);
+          await sut.write('/repo/target.bin', targetBytes);
+          await sut.symlink('/repo/target.bin', '/repo/dst-link');
+
+          // Act
+          await sut.rename('/repo/moved.bin', '/repo/dst-link');
+
+          // Assert — the destination is now the file, not a link, and the old target is intact
+          const dst = await sut.lstat('/repo/dst-link');
+          expect(dst.isFile).toBe(true);
+          expect(dst.isSymbolicLink).toBe(false);
+          expect(await sut.read('/repo/dst-link')).toEqual(srcBytes);
+          expect(await sut.read('/repo/target.bin')).toEqual(targetBytes);
+          expect(await sut.exists('/repo/moved.bin')).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a symlink at src and an existing regular file at dst', () => {
+      describe('When renaming', () => {
+        it('Then the file is replaced by the link, which keeps its target', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/target.bin', new Uint8Array([1]));
+          await sut.symlink('/repo/target.bin', '/repo/moved-link');
+          await sut.write('/repo/dst-file.bin', new Uint8Array([9]));
+
+          // Act
+          await sut.rename('/repo/moved-link', '/repo/dst-file.bin');
+
+          // Assert — the destination is the link; the file entry it replaced is gone
+          // (memory `read` never follows a link, so a surviving file entry would read back)
+          const dst = await sut.lstat('/repo/dst-file.bin');
+          expect(dst.isSymbolicLink).toBe(true);
+          expect(await sut.readlink('/repo/dst-file.bin')).toBe('/repo/target.bin');
+          let caught: unknown;
+          try {
+            await sut.read('/repo/dst-file.bin');
+          } catch (err) {
+            caught = err;
+          }
+          expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+          expect(await sut.exists('/repo/moved-link')).toBe(false);
+        });
+      });
+    });
+
     describe('Given a directory at /repo/a and the sibling /repo/ab at dst', () => {
       describe('When renaming', () => {
         it('Then it succeeds — /repo/ab is not inside /repo/a', async () => {
@@ -1767,7 +1845,7 @@ describe('MemoryFileSystem', () => {
 
     describe('Given a directory holding a child occupies the target path', () => {
       describe('When appendUtf8 is called', () => {
-        it('Then throws PERMISSION_DENIED, and the child is unchanged — nothing was read or written first', async () => {
+        it('Then throws PERMISSION_DENIED, and the child is unchanged — nothing was written before the refusal', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           const childData = new Uint8Array([9, 8, 7]);
