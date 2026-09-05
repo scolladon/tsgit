@@ -232,6 +232,10 @@ export class BrowserFileSystem implements FileSystem {
       return await dir.getFileHandle(leaf, { create });
     } catch (err) {
       if (err instanceof TsgitError) throw err;
+      // A directory at the leaf rejects with TypeMismatchError whether or not `create` is
+      // set. Only the writing arm may report it as a refusal: stat/exists read
+      // FILE_NOT_FOUND here as "not a file, try a directory handle" and fall back.
+      if (create && isTypeMismatch(err)) throw permissionDenied(path);
       throw fileNotFound(path);
     }
   }
@@ -279,8 +283,9 @@ export class BrowserFileSystem implements FileSystem {
       await dir.getFileHandle(leaf, { create: false });
     } catch (err) {
       if (err instanceof TsgitError) throw err;
-      // NotFoundError → safe to create.
-      return;
+      if (isTypeMismatch(err)) throw fileExists(path);
+      if (isNotFoundRejection(err)) return;
+      throw err;
     }
     throw fileExists(path);
   }
@@ -294,6 +299,14 @@ function leafSegment(segments: ReadonlyArray<string>, path: string): string {
 
 function isFileNotFound(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND';
+}
+
+function isTypeMismatch(err: unknown): boolean {
+  return err instanceof Error && err.name === 'TypeMismatchError';
+}
+
+function isNotFoundRejection(err: unknown): boolean {
+  return err instanceof Error && err.name === 'NotFoundError';
 }
 
 function buildFileStat(size: number, timeMs: number, isFile: boolean): FileStat {
