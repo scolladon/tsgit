@@ -73,4 +73,5 @@ corruption or tampering as success. Because every artefact is attempted and tole
 than pre-checked, two concurrent receives of the same pack both succeed whichever lands first.
 The refusal is a new public error code (`PACK_ARTIFACT_MISMATCH`, with the artefact path), so the
 error reference and the committed API snapshot carry it. ADR-728's temp-file posture is
-unchanged: the quarantine copy is unlinked as a handled outcome.
+unchanged: the quarantine copy is unlinked as a handled outcome. The compare-and-complete path
+adds about 0.2 kB gzipped to the primitives chunk, so its size budget rises from 61 to 62 kB.
