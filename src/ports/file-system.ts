@@ -57,10 +57,17 @@ export interface FileSystem {
   /** Read entire file as UTF-8 string. Throws FILE_NOT_FOUND if not found. */
   readonly readUtf8: (path: string) => Promise<string>;
 
-  /** Write bytes to file, creating parent directories as needed. Overwrites if exists. */
+  /**
+   * Write bytes to file, creating parent directories as needed. Overwrites a regular file;
+   * refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.
+   */
   readonly write: (path: string, data: Uint8Array) => Promise<void>;
 
-  /** Stream bytes to file from an async source, creating parent directories as needed. Overwrites if exists. Writes bytes verbatim. */
+  /**
+   * Stream bytes to file from an async source, creating parent directories as needed. Overwrites
+   * a regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.
+   * Writes bytes verbatim.
+   */
   readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>) => Promise<void>;
 
   /**
@@ -85,12 +92,17 @@ export interface FileSystem {
    */
   readonly writeExclusive: (path: string, data: Uint8Array) => Promise<void>;
 
-  /** Write UTF-8 string to file, creating parent directories as needed. */
+  /**
+   * Write UTF-8 string to file, creating parent directories as needed. Overwrites a regular
+   * file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.
+   */
   readonly writeUtf8: (path: string, content: string) => Promise<void>;
 
   /**
    * Append UTF-8 to a file, creating parent directories and the file as
-   * needed. Atomic per-call for line-sized writes (relies on `O_APPEND`).
+   * needed. Refuses a directory or a symbolic link at the leaf with
+   * PERMISSION_DENIED. Atomic per-call for line-sized writes (relies on
+   * `O_APPEND`).
    */
   readonly appendUtf8: (path: string, content: string) => Promise<void>;
 

@@ -95,6 +95,17 @@ function assertNotADirectory(err: unknown): void {
   expect((err as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
 }
 
+/**
+ * Weaker than the code-specific asserters above: the unit project also runs
+ * on the windows-latest matrix cell, and libuv's directory-open mapping
+ * there is unprobed. The exact code is pinned per-platform elsewhere; this
+ * contract row proves only the cross-adapter refusal shape and
+ * non-destructiveness.
+ */
+function assertRefusedWithoutCode(err: unknown): void {
+  expect(err).toBeInstanceOf(TsgitError);
+}
+
 export function fileSystemContractTests(createSut: () => Promise<FileSystemContractEnv>): void {
   describe('FileSystem contract', () => {
     let env: FileSystemContractEnv;
@@ -244,6 +255,28 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
       // Assert
       expect(result).toEqual(new Uint8Array([9, 9]));
+    });
+
+    it('Given a directory at the target path, When write, Then it refuses and the directory is intact', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/write-leaf-dir`;
+      const childData = new Uint8Array([1, 2, 3]);
+      await env.fs.mkdir(dir);
+      await env.fs.write(`${dir}/child.bin`, childData);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.write(dir, new Uint8Array([9]));
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertRefusedWithoutCode(caught);
+      const names = (await env.fs.readdir(dir)).map((entry) => entry.name);
+      expect(names).toContain('child.bin');
+      expect(await env.fs.read(`${dir}/child.bin`)).toEqual(childData);
     });
 
     it('Given empty Uint8Array, When write then read, Then returns empty array', async () => {

@@ -1056,6 +1056,297 @@ describe('MemoryFileSystem', () => {
     });
   });
 
+  describe('write leaf guard', () => {
+    describe('Given an empty directory occupies the target path', () => {
+      describe('When write is called', () => {
+        it('Then throws PERMISSION_DENIED carrying the requested path, and lstat still reports a directory', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.mkdir('/repo/empty-dir');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/empty-dir', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('PERMISSION_DENIED');
+          if (data.code === 'PERMISSION_DENIED') expect(data.path).toBe('/repo/empty-dir');
+          expect((await sut.lstat('/repo/empty-dir')).isDirectory).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a symlink to an existing file occupies the target path', () => {
+      describe('When write is called', () => {
+        it('Then throws PERMISSION_DENIED carrying the requested path, and readlink and the target bytes are unchanged', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          const targetData = new Uint8Array([1, 2, 3]);
+          await sut.write('/repo/link-target.bin', targetData);
+          await sut.symlink('/repo/link-target.bin', '/repo/occupied-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/occupied-link', new Uint8Array([9, 9]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('PERMISSION_DENIED');
+          if (data.code === 'PERMISSION_DENIED') expect(data.path).toBe('/repo/occupied-link');
+          expect(await sut.readlink('/repo/occupied-link')).toBe('/repo/link-target.bin');
+          expect(await sut.read('/repo/link-target.bin')).toEqual(targetData);
+        });
+      });
+    });
+
+    describe('Given a directory holding a child file occupies the target path', () => {
+      describe('When write is called', () => {
+        it('Then throws PERMISSION_DENIED, and the child reads back byte-identical', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          const childData = new Uint8Array([9, 8, 7]);
+          await sut.write('/repo/occupied-dir/child.bin', childData);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/occupied-dir', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          const entries = await sut.readdir('/repo/occupied-dir');
+          expect(entries.map((entry) => entry.name)).toContain('child.bin');
+          expect(await sut.read('/repo/occupied-dir/child.bin')).toEqual(childData);
+        });
+      });
+    });
+
+    describe("Given the target path is the adapter's root", () => {
+      describe('When write is called', () => {
+        it('Then throws PERMISSION_DENIED, and a later write elsewhere still succeeds', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await sut.write('/repo/after-root-refusal.bin', new Uint8Array([2]));
+          expect(await sut.exists('/repo/after-root-refusal.bin')).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a dangling symlink occupies the target path', () => {
+      describe('When write is called', () => {
+        it('Then throws PERMISSION_DENIED, and readlink still returns the original target', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.symlink('/repo/missing-target', '/repo/link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/link', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(await sut.readlink('/repo/link')).toBe('/repo/missing-target');
+        });
+      });
+    });
+
+    describe('Given an empty directory occupies the target path', () => {
+      describe('When writeUtf8 is called', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.mkdir('/repo/empty-dir');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeUtf8('/repo/empty-dir', 'hello');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        });
+      });
+    });
+
+    describe('Given an empty directory occupies the target path', () => {
+      describe('When writeStream is called', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.mkdir('/repo/empty-dir');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeStream(
+              '/repo/empty-dir',
+              (async function* () {
+                yield new Uint8Array([1]);
+              })(),
+            );
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        });
+      });
+    });
+
+    describe('Given a directory holding a child occupies the target path', () => {
+      describe('When appendUtf8 is called', () => {
+        it('Then throws PERMISSION_DENIED, and the child is unchanged — nothing was read or written first', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          const childData = new Uint8Array([9, 8, 7]);
+          await sut.write('/repo/occupied-dir/child.bin', childData);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.appendUtf8('/repo/occupied-dir', 'hello');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(await sut.read('/repo/occupied-dir/child.bin')).toEqual(childData);
+        });
+      });
+    });
+
+    describe('Given a symlink occupies the target path', () => {
+      describe('When writeUtf8 is called', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/link-target.bin', new Uint8Array([1]));
+          await sut.symlink('/repo/link-target.bin', '/repo/occupied-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeUtf8('/repo/occupied-link', 'hello');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        });
+      });
+    });
+
+    describe('Given a symlink occupies the target path', () => {
+      describe('When writeStream is called', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/link-target.bin', new Uint8Array([1]));
+          await sut.symlink('/repo/link-target.bin', '/repo/occupied-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.writeStream(
+              '/repo/occupied-link',
+              (async function* () {
+                yield new Uint8Array([1]);
+              })(),
+            );
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        });
+      });
+    });
+
+    describe('Given a symlink occupies the target path', () => {
+      describe('When appendUtf8 is called', () => {
+        it('Then throws PERMISSION_DENIED, and readlink is unchanged', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/link-target.bin', new Uint8Array([1]));
+          await sut.symlink('/repo/link-target.bin', '/repo/occupied-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.appendUtf8('/repo/occupied-link', 'hello');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(await sut.readlink('/repo/occupied-link')).toBe('/repo/link-target.bin');
+        });
+      });
+    });
+
+    describe('Given a regular file occupies the target path', () => {
+      describe('When write is called', () => {
+        it('Then overwrites, and reads back the new bytes', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/occupied-file.bin', new Uint8Array([1, 2, 3]));
+
+          // Act
+          await sut.write('/repo/occupied-file.bin', new Uint8Array([9, 9]));
+
+          // Assert
+          expect(await sut.read('/repo/occupied-file.bin')).toEqual(new Uint8Array([9, 9]));
+        });
+      });
+    });
+  });
+
   describe('rmRecursive subtree boundaries', () => {
     describe('Given a sibling file outside the target subtree', () => {
       describe('When rmRecursive on the subtree', () => {

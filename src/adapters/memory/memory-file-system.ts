@@ -85,6 +85,11 @@ export class MemoryFileSystem implements FileSystem {
 
   write = async (path: string, data: Uint8Array): Promise<void> => {
     const normalized = this.resolve(path);
+    // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
+    // mapErrno sends both to PERMISSION_DENIED.
+    if (this.directories.has(normalized) || this.symlinks.has(normalized)) {
+      throw permissionDenied(path);
+    }
     this.ensureParentDirs(normalized);
     this.files.set(normalized, data.slice());
     this.touch(normalized);

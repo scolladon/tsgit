@@ -804,7 +804,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Atomic per-call for line-sized writes (relies on "
+										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Refuses a directory or a symbolic link at the leaf with\nPERMISSION_DENIED. Atomic per-call for line-sized writes (relies on\n"
 									},
 									{
 										"kind": "code",
@@ -827,7 +827,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Atomic per-call for line-sized writes (relies on "
+												"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Refuses a directory or a symbolic link at the leaf with\nPERMISSION_DENIED. Atomic per-call for line-sized writes (relies on\n"
 											},
 											{
 												"kind": "code",
@@ -2493,7 +2493,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write bytes to file, creating parent directories as needed. Overwrites if exists."
+										"text": "Write bytes to file, creating parent directories as needed. Overwrites a regular file;\nrefuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
@@ -2508,7 +2508,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Write bytes to file, creating parent directories as needed. Overwrites if exists."
+												"text": "Write bytes to file, creating parent directories as needed. Overwrites a regular file;\nrefuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 											}
 										]
 									},
@@ -2813,7 +2813,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites if exists. Writes bytes verbatim."
+										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites\na regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.\nWrites bytes verbatim."
 									}
 								]
 							},
@@ -2828,7 +2828,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites if exists. Writes bytes verbatim."
+												"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites\na regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.\nWrites bytes verbatim."
 											}
 										]
 									},
@@ -2925,7 +2925,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write UTF-8 string to file, creating parent directories as needed."
+										"text": "Write UTF-8 string to file, creating parent directories as needed. Overwrites a regular\nfile; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
@@ -2940,7 +2940,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Write UTF-8 string to file, creating parent directories as needed."
+												"text": "Write UTF-8 string to file, creating parent directories as needed. Overwrites a regular\nfile; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 											}
 										]
 									},
@@ -4959,7 +4959,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Atomic per-call for line-sized writes (relies on "
+										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Refuses a directory or a symbolic link at the leaf with\nPERMISSION_DENIED. Atomic per-call for line-sized writes (relies on\n"
 									},
 									{
 										"kind": "code",
@@ -6450,7 +6450,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write bytes to file, creating parent directories as needed. Overwrites if exists."
+										"text": "Write bytes to file, creating parent directories as needed. Overwrites a regular file;\nrefuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
@@ -6682,7 +6682,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites if exists. Writes bytes verbatim."
+										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites\na regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.\nWrites bytes verbatim."
 									}
 								]
 							},
@@ -6786,7 +6786,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write UTF-8 string to file, creating parent directories as needed."
+										"text": "Write UTF-8 string to file, creating parent directories as needed. Overwrites a regular\nfile; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
@@ -9648,7 +9648,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Atomic per-call for line-sized writes (relies on "
+										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Refuses a directory or a symbolic link at the leaf with\nPERMISSION_DENIED. Atomic per-call for line-sized writes (relies on\n"
 									},
 									{
 										"kind": "code",
@@ -11211,7 +11211,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write bytes to file, creating parent directories as needed. Overwrites if exists."
+										"text": "Write bytes to file, creating parent directories as needed. Overwrites a regular file;\nrefuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
@@ -11443,7 +11443,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites if exists. Writes bytes verbatim."
+										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites\na regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.\nWrites bytes verbatim."
 									}
 								]
 							},
@@ -11547,7 +11547,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write UTF-8 string to file, creating parent directories as needed."
+										"text": "Write UTF-8 string to file, creating parent directories as needed. Overwrites a regular\nfile; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
@@ -86624,7 +86624,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Atomic per-call for line-sized writes (relies on "
+										"text": "Append UTF-8 to a file, creating parent directories and the file as\nneeded. Refuses a directory or a symbolic link at the leaf with\nPERMISSION_DENIED. Atomic per-call for line-sized writes (relies on\n"
 									},
 									{
 										"kind": "code",
@@ -88154,7 +88154,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write bytes to file, creating parent directories as needed. Overwrites if exists."
+										"text": "Write bytes to file, creating parent directories as needed. Overwrites a regular file;\nrefuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
@@ -88390,7 +88390,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites if exists. Writes bytes verbatim."
+										"text": "Stream bytes to file from an async source, creating parent directories as needed. Overwrites\na regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.\nWrites bytes verbatim."
 									}
 								]
 							},
@@ -88496,7 +88496,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Write UTF-8 string to file, creating parent directories as needed."
+										"text": "Write UTF-8 string to file, creating parent directories as needed. Overwrites a regular\nfile; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED."
 									}
 								]
 							},
