@@ -128,6 +128,13 @@ export interface FileSystem {
    * Rename `src` to `dst`. Atomic where the platform supports it (Node: yes on POSIX;
    * Browser OPFS: no — emulated as read + write + rm, caller must tolerate partial
    * failure between steps). Both paths must be on the same logical root.
+   * A non-directory source refuses a directory destination with PERMISSION_DENIED; a
+   * directory source refuses a non-directory destination with NOT_A_DIRECTORY and a
+   * non-empty directory destination with DIRECTORY_NOT_EMPTY; an empty directory
+   * destination is replaced; `src === dst` is a no-op regardless of kind or emptiness.
+   * Every refusal above carries `data.path === src`. Renaming a directory onto a
+   * destination that lies inside itself is refused with UNSUPPORTED_OPERATION instead,
+   * and that variant carries no `path`.
    */
   readonly rename: (src: string, dst: string) => Promise<void>;
 
@@ -139,6 +146,8 @@ export interface FileSystem {
    * browser adapter omits it. Omission is a documented answer, not an oversight:
    * a lock-file protocol that finds this absent must take its own degraded path
    * rather than assuming `rename` is safe to commit through.
+   * Inherits every `rename` refusal above by delegation, and stays atomic because
+   * the guard is pure inspection with no `await` between it and the mutation.
    */
   readonly atomicRename?: (src: string, dst: string) => Promise<void>;
 

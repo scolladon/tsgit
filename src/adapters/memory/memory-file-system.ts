@@ -28,6 +28,10 @@ interface Timestamps {
 
 const MEMORY_FILE_MODE = 0o100644;
 
+// POSIX's invalid-argument errno name — the literal `mapErrno`'s `default` arm forwards for
+// "an attempt was made to make a directory a subdirectory of itself".
+const INVALID_ARGUMENT = 'EINVAL';
+
 export class MemoryFileSystem implements FileSystem {
   private readonly files = new Map<string, Uint8Array>();
   private readonly directories = new Set<string>();
@@ -251,15 +255,47 @@ export class MemoryFileSystem implements FileSystem {
   rename = async (src: string, dst: string): Promise<void> => {
     const normalizedSrc = this.resolve(src);
     const normalizedDst = this.resolve(dst);
+    this.assertRenamable(normalizedSrc, normalizedDst, src);
+    if (normalizedSrc === normalizedDst) return;
+    if (this.directories.has(normalizedSrc)) {
+      this.renameDirectory(normalizedSrc, normalizedDst);
+      return;
+    }
+    this.renameLeaf(normalizedSrc, normalizedDst);
+  };
+
+  // `rename` above is synchronous `Map` surgery with no `await` between the
+  // deletes and the sets, so it is already atomic with respect to the event
+  // loop; the capability is that guarantee exposed under its own name.
+  atomicRename = async (src: string, dst: string): Promise<void> => {
+    await this.rename(src, dst);
+  };
+
+  private assertRenamable(src: string, dst: string, reported: string): void {
+    const srcIsDirectory = this.directories.has(src);
+    if (!srcIsDirectory && !this.files.has(src) && !this.symlinks.has(src)) {
+      throw fileNotFound(reported);
+    }
+    if (src === dst) return;
+    if (!srcIsDirectory) {
+      if (this.directories.has(dst)) throw permissionDenied(reported);
+      return;
+    }
+    if (dst.startsWith(`${src}/`)) {
+      throw unsupportedOperation('filesystem', INVALID_ARGUMENT);
+    }
+    if (!this.directories.has(dst)) {
+      if (this.files.has(dst) || this.symlinks.has(dst)) {
+        throw notADirectory(reported);
+      }
+      return;
+    }
+    if (this.hasChildren(dst)) throw directoryNotEmpty(reported);
+  }
+
+  private renameLeaf(normalizedSrc: string, normalizedDst: string): void {
     const fileBytes = this.files.get(normalizedSrc);
     const linkTarget = this.symlinks.get(normalizedSrc);
-    if (fileBytes === undefined && linkTarget === undefined) {
-      if (this.directories.has(normalizedSrc)) {
-        this.renameDirectory(normalizedSrc, normalizedDst);
-        return;
-      }
-      throw fileNotFound(src);
-    }
     // Invariant: files.set / symlinks.set always touch(); rm always deletes the timestamp.
     // So when a file or symlink exists at src, times.get(src) is guaranteed to be defined.
     const timestamp = this.times.get(normalizedSrc) as Timestamps;
@@ -277,14 +313,7 @@ export class MemoryFileSystem implements FileSystem {
     }
     this.times.delete(normalizedSrc);
     this.times.set(normalizedDst, timestamp);
-  };
-
-  // `rename` above is synchronous `Map` surgery with no `await` between the
-  // deletes and the sets, so it is already atomic with respect to the event
-  // loop; the capability is that guarantee exposed under its own name.
-  atomicRename = async (src: string, dst: string): Promise<void> => {
-    await this.rename(src, dst);
-  };
+  }
 
   /**
    * Move a directory subtree by re-keying every files/symlinks/times/directories

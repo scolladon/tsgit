@@ -419,6 +419,119 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(await env.fs.read(dst)).toEqual(srcData);
     });
 
+    it('Given a directory at the destination, When rename, Then it refuses and neither side moves', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src.bin`;
+      const dst = `${env.rootDir}/rename-kind-dst-dir`;
+      const data = new Uint8Array([1, 2, 3]);
+      await env.fs.write(src, data);
+      await env.fs.mkdir(dst);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.rename(src, dst);
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertRefusedWithoutCode(caught);
+      expect(await env.fs.read(src)).toEqual(data);
+      expect(await env.fs.readdir(dst)).toEqual([]);
+    });
+
+    it('Given a directory source and a file destination, When rename, Then it refuses and neither side moves', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src-dir`;
+      const dst = `${env.rootDir}/rename-kind-dst.bin`;
+      const childData = new Uint8Array([4]);
+      await env.fs.write(`${src}/child.bin`, childData);
+      const dstData = new Uint8Array([9, 9]);
+      await env.fs.write(dst, dstData);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.rename(src, dst);
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertRefusedWithoutCode(caught);
+      expect(await env.fs.read(dst)).toEqual(dstData);
+      expect(await env.fs.read(`${src}/child.bin`)).toEqual(childData);
+    });
+
+    it('Given a directory source and a non-empty directory destination, When rename, Then it refuses and neither tree merges', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src-dir2`;
+      const dst = `${env.rootDir}/rename-kind-dst-dir2`;
+      await env.fs.write(`${src}/a.bin`, new Uint8Array([1]));
+      await env.fs.write(`${dst}/b.bin`, new Uint8Array([2]));
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.rename(src, dst);
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertRefusedWithoutCode(caught);
+      const srcEntries = await env.fs.readdir(src);
+      const dstEntries = await env.fs.readdir(dst);
+      expect(srcEntries.map((entry) => entry.name)).toEqual(['a.bin']);
+      expect(dstEntries.map((entry) => entry.name)).toEqual(['b.bin']);
+    });
+
+    it('Given a directory source and an empty directory destination, When rename, Then the subtree lands at the destination', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src-dir3`;
+      const dst = `${env.rootDir}/rename-kind-dst-dir3`;
+      const data = new Uint8Array([5, 6]);
+      await env.fs.write(`${src}/child.bin`, data);
+      await env.fs.mkdir(dst);
+
+      // Act
+      await env.fs.rename(src, dst);
+
+      // Assert
+      expect(await env.fs.read(`${dst}/child.bin`)).toEqual(data);
+      expect(await env.fs.exists(src)).toBe(false);
+    });
+
+    it('Given src === dst for a file, When rename, Then it resolves and the entry is unchanged', async () => {
+      // Arrange
+      const path = `${env.rootDir}/rename-kind-same.bin`;
+      const data = new Uint8Array([7, 8]);
+      await env.fs.write(path, data);
+
+      // Act
+      await env.fs.rename(path, path);
+
+      // Assert
+      expect(await env.fs.read(path)).toEqual(data);
+    });
+
+    it('Given src === dst for a non-empty directory, When rename, Then it resolves and every child is still reachable', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/rename-kind-same-dir`;
+      const data = new Uint8Array([9]);
+      await env.fs.write(`${dir}/child.bin`, data);
+
+      // Act
+      await env.fs.rename(dir, dir);
+
+      // Assert
+      expect(await env.fs.read(`${dir}/child.bin`)).toEqual(data);
+    });
+
     it('Given existing file, When writeExclusive, Then throws FILE_EXISTS', async () => {
       // Arrange
       const path = await env.getExistingInRoot();
