@@ -77,16 +77,19 @@ done
 # giving up the bounded-memory indexer, which is the whole feature: it takes a
 # real clone of this repository's own history from 799.5 MB of peak residency
 # down to 207.4 MB, measured locally.
-# Raised 904 -> 905 KiB by the adapter occupant-refusal work: the measured tarball
-# landed at 926 548 B, 852 B over the old cap. The memory adapter gained three
-# guards that ship in every distribution form — a shared occupancy predicate for
-# exclusive create, a leaf guard on non-exclusive write, and a rename precondition
-# with its leaf/directory dispatch split — the browser adapter gained two rejection
-# classifiers and a create-gated arm, and the port's write-surface comments now
-# name every occupant shape, which every emitted `.d.ts` carries. None is removable:
-# each guard closes a path where the adapter silently overwrote or merged what the
-# node adapter and canonical git refuse.
-SIZE_CAP=$((905 * 1024))
+# Raised 904 -> 906 KiB by the adapter occupant-refusal work: the measured tarball
+# landed at 926 548 B after the five implementation parts (852 B over the old cap) and
+# at 927 105 B after the review round. Measured attribution, not assumed: with only the
+# port's expanded write-surface JSDoc reverted inside the two emitted type chunks, the
+# gzip -9 archive shrinks by 898 B — the prose alone exceeds the original overage,
+# because every `.d.ts` AND `.d.cts` carries it verbatim 3.7 MB apart, beyond gzip's
+# window. The adapter guards themselves (a shared occupancy predicate, a leaf guard on
+# non-exclusive write, a rename precondition with its dispatch split, the browser's
+# rejection classifiers and self-rename guard) are the remainder. The prose is
+# removable without behaviour loss but not without dropping the port contract from
+# consumers' editors, which is why it stays; the guards close paths where the adapter
+# silently overwrote or merged what the node adapter and canonical git refuse.
+SIZE_CAP=$((906 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
