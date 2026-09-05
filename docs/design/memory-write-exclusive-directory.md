@@ -1,13 +1,19 @@
-# Design — the memory adapter refuses a directory occupant on every write surface
+# Design — the memory and browser adapters refuse an occupied name on every write surface
 
 > Brief: `MemoryFileSystem.writeExclusive` refuses a **file** or a **symlink** occupant but not a
 > **directory** — it overwrites the name with a file entry and returns success. The node adapter
 > refuses with `FILE_EXISTS`, and so does canonical git. Close the gap, prove it cross-adapter,
 > and drop the test-side patches that existed only to fake the POSIX behaviour.
-> **Scope after the decisions phase:** the same defect family in non-exclusive `write` and in
+> **Scope after the first decisions round:** the same defect family in non-exclusive `write` and in
 > `rename` is in scope too — the user ratified option 3 of DC-F against the design's own
 > recommendation.
+> **Scope after the second decisions round:** the browser adapter's `write`/`rename` mapping
+> (ADR-816, again ratified against the design's recommendation), the `rename`-into-itself clause
+> (ADR-817), the symlink-leaf write refusal (ADR-818) and the posix-only home for node's strict
+> codes (ADR-819). Every decision candidate this document ever raised is now settled; the candidate
+> table below raises none.
 > Status: draft → self-reviewed ×3 → accepted (ADRs 810–815) → revised (write + rename folded in)
+> → self-reviewed ×3 → accepted (ADRs 816–819) → revised (browser write/rename folded in)
 > → self-reviewed ×3
 
 ## Context
@@ -63,10 +69,14 @@ pass, which only added a row whose errno (`EEXIST` from `O_EXCL`) is universal.
 | **ADR-052** `DIRECTORY_NOT_EMPTY` (`mapErrno` ENOTEMPTY split) | The exact precedent: *"the memory adapter's analogous error path must produce the same code for cross-adapter parity"*. This change is the same move for `FILE_EXISTS`, `PERMISSION_DENIED` and — now — `DIRECTORY_NOT_EMPTY` itself, on `rename` |
 | **ADR-810** one `occupied()` predicate | Settles DC-A. `writeExclusive` and `symlink` share one three-namespace predicate; `exists` is not folded in |
 | **ADR-811** a file at an ancestor keeps memory's own report | Settles DC-B. Memory keeps `NOT_A_DIRECTORY` + ancestor path at every depth; the depth-1 divergence is documented, not fixed. Binds `write` and `rename` too — both funnel through `addDirectoryRecursive` |
-| **ADR-812** cross-adapter proof lives in the contract suite | Settles DC-C. Strict codes, no `test/parity/` scenario, no symlink-occupant row |
+| **ADR-812** cross-adapter proof lives in the contract suite | Settles DC-C. Strict codes, no `test/parity/` scenario, no symlink-occupant row. **Refined by ADR-819** for the two new surfaces: `writeExclusive` stays strict, `write`/`rename` do not |
 | **ADR-813** the port comment names every occupant shape | Settles DC-D. Rewrite the `writeExclusive` JSDoc; correct `ports-and-adapters.md:561` |
-| **ADR-814** browser maps a directory occupant to `FILE_EXISTS` | Settles DC-E for `writeExclusive` **only**. Explicitly leaves browser `write`/`rename` to this revision → §1f, DC-G |
-| **ADR-815** non-exclusive `write` and `rename` refuse a directory occupant | Settles DC-F as **option 3**, against the design's recommendation. Requires the `rename` matrix in this revision *before* implementation → §1e |
+| **ADR-814** browser maps a directory occupant to `FILE_EXISTS` | Settles DC-E for `writeExclusive` **only**. Its `assertDoesNotExist` narrowing and ADR-816's `resolveFileHandle` arm share one `TypeMismatchError` predicate → §3f |
+| **ADR-815** non-exclusive `write` and `rename` refuse a directory occupant | Settles DC-F as **option 3**, against the design's recommendation. Required the `rename` matrix *before* implementation → §1e |
+| **ADR-816** browser `write`/`rename` map a directory occupant to `PERMISSION_DENIED` | Settles DC-G as **option 2**, against the design's recommendation. `resolveFileHandle` gains a `create: true`-**only** arm; the `create: false` mapping `stat`/`exists` depend on is untouched; two Playwright cases pin it → §1f, §3f |
+| **ADR-817** `rename` into itself refuses **before** the destination-kind check | Settles DC-H as **option 1**. One clause throwing `unsupportedOperation('filesystem', <the invalid-argument errno>)`, matching linux; darwin's `NOT_A_DIRECTORY` on the one divergent arrangement is a knowing divergence → §3c |
+| **ADR-818** non-exclusive writes refuse a **symlink** leaf | Settles DC-I as **option 1**. The `write` guard is two terms, so `files`/`directories`/`symlinks` become pairwise disjoint under every port call → §3b, R8a |
+| **ADR-819** node's strict codes live in the posix-only suite | Settles DC-J as **option 2**. Contract rows for `write`/`rename` assert instance + non-destructiveness; a new `test/integration/posix-only/` file carries the strict node codes; `writeExclusive` rows stay strict → §5 |
 | **ADR-721** first-party read containment is single-authority | Governs `node-file-system.ts`'s read path. Untouched: this change adds nothing to the node adapter |
 | **ADR-782** pass-two reads go through `readSlice` | Governs the `readSlice` seam on `ports/file-system.ts`. Untouched |
 | **ADR-789** the `.idx`/`.rev` serializers take the oid slab | Governs `write-pack-artifacts.ts`'s input shape. This change touches that module's **tests** only |
@@ -83,8 +93,14 @@ directly by the user, so nothing gets ticked.
 
 ## Requirements
 
-Every statement below is checked by a test named in §Test strategy, except **R8b**, which is an
-explicitly *unclosed* invariant clause (§2d, DC-I), and **R27**, which is conditional on DC-H.
+Every statement below is checked by a test named in §Test strategy, except **R8b**, which records a
+route deliberately left open and therefore has nothing to assert. Nothing here is conditional any
+more: the second decisions round settled the four candidates the previous revision left open, so no
+requirement is written as *"depends on DC-x"*.
+
+**Numbers are stable identifiers, not an ordering.** R28–R32 were added by that round and sit in the
+block they belong to rather than at the end, so cross-references from the ADRs and from §1–§7 keep
+pointing at the same statements.
 
 **Exclusive create — settled by ADR-810**
 
@@ -99,7 +115,7 @@ explicitly *unclosed* invariant clause (§2d, DC-I), and **R27**, which is condi
   `isDirectory: true` with unchanged timestamps, and every child under `p/` reads back
   byte-identical. (Stated on the port surface, not on the private `files`/`times` maps.)
 
-**Non-exclusive write — settled by ADR-815**
+**Non-exclusive write — settled by ADR-815, extended by ADR-818**
 
 - **R12** — `write(p, d)` throws `PERMISSION_DENIED` with `data.path === p` when an **empty
   directory** occupies `p` (node: `EISDIR` → `mapErrno`; §1d row W1).
@@ -113,6 +129,12 @@ explicitly *unclosed* invariant clause (§2d, DC-I), and **R27**, which is condi
   `PERMISSION_DENIED` with no partial effect.
 - **R16** — Unchanged: `write` over a regular file overwrites; over an absent path it creates the
   file and its missing parents.
+- **R28** *(ADR-818)* — `write(p, d)` throws `PERMISSION_DENIED` with `data.path === p` when a
+  **symlink** occupies `p`, live or dangling, and `readlink(p)` still returns the original target
+  and `read` of the target is unchanged (node: `ELOOP` from `O_NOFOLLOW`; §1d row W9).
+  `writeUtf8`, `writeStream` and `appendUtf8` inherit it by delegation — one named test each for
+  the *directory* term (R15) and one for the *symlink* term, because a single test tripping both
+  disjuncts proves neither (§3e).
 
 **Rename — settled by ADR-815, codes pinned by §1e**
 
@@ -137,26 +159,33 @@ operation in `runFs(op, src)`.
 - **R23** — `atomicRename` inherits R17–R22 by delegation, and stays atomic: the guard is pure
   inspection with no `await`, so the "no observer sees an intermediate state" claim in the port
   JSDoc survives.
-- **R27** *(conditional on DC-H)* — `rename(s, d)` refuses when `d` lies **inside** `s`, with the
-  code and the clause position DC-H picks, and `s`'s subtree is intact afterwards. This is a
-  *separate* invariant from R8a: it never produces a cross-namespace collision, it produces a
-  `directories` set holding a path whose own parent is absent — a directory reachable by `readdir`
-  through a parent that `lstat` reports as `FILE_NOT_FOUND`. If DC-H lands option 3, this
-  requirement is struck and §2b's second paragraph is the record of what stays broken.
+- **R27** *(ADR-817)* — `rename(s, d)` refuses when `s` is a directory and `d` lies **inside** `s`,
+  throwing `UNSUPPORTED_OPERATION` with `operation: 'filesystem'` and the invalid-argument errno
+  name as `reason` (no `path` field — that variant of `AdapterError` has none), for every occupant
+  at `d`: absent, an existing directory empty or not, an existing regular file, an existing
+  symlink, at any depth. `rename(rootDir, <inside>)` is the same clause (N12). Afterwards `s`'s
+  subtree is intact and `lstat(s)` still reports a directory. This is a *separate* invariant from
+  R8a: it never produces a cross-namespace collision, it produces a `directories` set holding a
+  path whose own parent is absent — a directory reachable by `readdir` through a parent that
+  `lstat` reports as `FILE_NOT_FOUND`.
 - **R24** — Unchanged: an absent `s` throws `FILE_NOT_FOUND` with `data.path === s`; a file renamed
   over a symlink replaces the link and leaves its target untouched; a symlink renamed over a file
   replaces the file; a directory renamed to a fresh name re-keys its whole subtree.
 
 **Invariant**
 
-- **R8a** — After the change, `files ∩ directories = ∅` and `symlinks ∩ directories = ∅` hold under
-  every reachable sequence of `FileSystem` port calls. Not a new invariant: five committed Stryker
-  equivalence proofs already assume it (§2c), and after ADR-810 + ADR-815 every method that could
-  violate it is guarded — so R1–R3, R12–R14 and R17–R19 are where it is actually enforced.
-- **R8b** — `files ∩ symlinks = ∅` is **not** closed by this change. Two routes survive: `write` /
-  `writeStream` / `appendUtf8` over a symlink leaf (§1d row W9 — **DC-I**), and the constructor's
-  `files` seeding (§2d). Both are named rather than claimed, so no later reader mistakes R8a for a
-  total disjointness claim.
+- **R8a** — After the change, `files`, `directories` and `symlinks` are **pairwise disjoint** under
+  every reachable sequence of `FileSystem` port calls — all three pairs, not two. Not a new
+  invariant: five committed Stryker equivalence proofs already assume it (§2c), and after
+  ADR-810 + ADR-815 + ADR-817 + ADR-818 every method that could violate it is guarded — so R1–R3,
+  R12–R14, R17–R19 and R28 are where it is actually enforced. §2d walks the routes and shows each
+  is now closed.
+- **R8b** — The invariant is stated over **port calls**, and one route outside them stays open: the
+  constructor's `files` option can seed a key that a later entry's `ensureParentDirs` has already
+  put in `directories` (§2d) — a `files ∩ directories` collision reachable only from a test fixture.
+  It is named rather than claimed, so no later reader mistakes R8a for an unconditional claim about
+  every way a `MemoryFileSystem` can come into existence. `files ∩ symlinks` — the pair the previous
+  revision left open — **is** closed by R28.
 
 **Cross-adapter**
 
@@ -164,9 +193,27 @@ operation in `runFs(op, src)`.
   **both** drivers pass, asserting `FILE_EXISTS` strictly (ADR-812).
 - **R10** — `writeOrKeepArtifact` classifies a directory occupying `pack-<sha>.idx` as
   `PACK_ARTIFACT_MISMATCH` on the memory adapter **with no test-side patch of `writeExclusive`**.
-- **R25** — The contract suite carries a row for each new refusal family that both drivers pass, at
-  the strictness §5 justifies per row (strict code where the code is proven platform-independent,
-  refusal-plus-non-destructiveness where it is not).
+- **R25** *(ADR-819)* — The contract suite carries a row for each new `write` / `rename` refusal
+  family that both drivers pass, asserting a structured `TsgitError` **plus non-destructiveness**
+  and no code — the `:676` precedent — because §1e verified darwin and linux while that file also
+  runs on `windows-latest`. The `writeExclusive` rows stay strict (R9).
+- **R32** *(ADR-819)* — A new file under `test/integration/posix-only/` pins the **node** adapter's
+  exact `data.code` (and `data.path` where the variant carries one) for every §1d / §1e row on which
+  darwin and linux agree. It runs in the `posix-integration` project only.
+
+**Browser — settled by ADR-816**
+
+- **R29** — `BrowserFileSystem.write` throws `PERMISSION_DENIED` with `data.path === path` when a
+  directory occupies the leaf, and `writeUtf8`, `writeStream` and `appendUtf8` inherit it.
+  `rename(src, dst)` with a **file** at `src` and a **directory** at `dst` throws the same and
+  leaves `src` readable byte-identical, because `rm(src)` never runs.
+- **R30** — The `create: false` mapping is **unchanged**: `resolveFileHandle(path, false)` still
+  raises `FILE_NOT_FOUND` for a directory occupant, so `stat` and `exists` still fall back to
+  `resolveDirHandle` and report a directory. This is the regression the fix must not cause, and it
+  is the reason the new arm is conditional on `create` rather than helper-wide.
+- **R31** — A regular file at an **ancestor** segment still reports `FILE_NOT_FOUND` on every write
+  surface. `walkToParent` converts its own `TypeMismatchError` before `resolveFileHandle`'s `catch`
+  is reachable (§3f), so the new arm cannot mis-map an ancestor fault as `PERMISSION_DENIED`.
 
 **Documentation**
 
@@ -289,7 +336,7 @@ from `fs/promises` on the same arrangements, verified on **two platforms** (see 
 | W6 | `writeUtf8` | empty directory | `EISDIR` | `PERMISSION_DENIED` | requested | **writes** | inherits W1 |
 | W7 | `writeStream` | empty directory / with children | `EISDIR` | `PERMISSION_DENIED` | requested | **writes** | inherits W1 |
 | W8 | `appendUtf8` | empty directory / with children | `EISDIR` (open) | `PERMISSION_DENIED` | requested | **writes** | inherits W1 |
-| W9 | `write` / `writeStream` / `appendUtf8` | **symlink** at the leaf (live or dangling) | `ELOOP` (open, `O_NOFOLLOW`) | `PERMISSION_DENIED` | requested | **writes** — key lands in `files` *and* `symlinks`; `lstat` still says symlink, `read` returns the new bytes, `readlink` returns the old target | **undecided — DC-I** |
+| W9 | `write` / `writeStream` / `appendUtf8` | **symlink** at the leaf (live or dangling) | `ELOOP` (open, `O_NOFOLLOW`) | `PERMISSION_DENIED` | requested | **writes** — key lands in `files` *and* `symlinks`; `lstat` still says symlink, `read` returns the new bytes, `readlink` returns the old target | `PERMISSION_DENIED(path)` — ADR-818 |
 | W10 | `writeExclusive` | empty directory (control) | `EEXIST` (open, `O_EXCL`) | `FILE_EXISTS` | requested | **writes** | `FILE_EXISTS` — ADR-810 |
 
 **The four surfaces really are one guard.** `writeStream` (`memory-file-system.ts:93–104`) and
@@ -303,12 +350,24 @@ single guard at the top of `write` covers all four, and `appendUtf8`'s observabl
 The matrix ADR-815 requires before implementation. Same construction as §1d.
 
 **Notation.** POSIX's invalid-argument errno is written `INVALID-ARGUMENT` throughout this document.
-Its real six-letter name is not in `cspell.json` — its siblings `EEXIST`, `EISDIR`, `ELOOP`,
-`ENOENT`, `ENOTDIR` and `ENOTEMPTY` all are — and this design commit is scoped to a single file, so
-adding the dictionary entry is an implementation-phase chore (§Gates), never a `cspell:disable`
-comment. It is the errno POSIX defines for *"an attempt was made to make a directory a subdirectory
-of itself"*. `mapErrno` has **no case for it**, so it falls to the `default` arm, which forwards the
-raw errno name verbatim as `reason` — the `reason` string on that error *is* the errno's real name.
+Its real six-letter name is not in `cspell.json` — its siblings `EACCES`, `EEXIST`, `EISDIR`,
+`ELOOP`, `ENOENT`, `ENOTDIR`, `ENOTEMPTY` and `EPERM` all are — and this design commit is scoped to
+a single file, so adding the dictionary entry is an implementation-phase chore, never a
+`cspell:disable` comment. Verified for this revision: `npx cspell` flags both the full errno name
+and its five-letter tail as unknown words, which is why the stand-in survives the fold rather than
+being replaced by the literal now that ADR-817 has settled the clause.
+
+It is the errno POSIX defines for *"an attempt was made to make a directory a subdirectory of
+itself"*. `mapErrno` (`node-file-system.ts:217–247`) has **no case for it**, so it falls to the
+`default` arm (`:244–245`) — `unsupportedOperation('filesystem', err.code ?? 'UNKNOWN')` — which forwards the raw
+errno name verbatim as `reason`. The `reason` string on that error *is* the errno's real name, and
+`'filesystem'` is node's own operation label, not an invention of this design.
+
+**The exact dictionary insertion, for the plan.** `cspell.json`'s word list is case-insensitively
+alphabetical and interleaves lower- and upper-case spellings (`EEXIST`, `effectful`, `EISDIR`,
+`elementwise`, …). The errno name sorts **between `effectful` and `EISDIR`** — one line above the
+`EISDIR` entry, which is `cspell.json:288` today. Insert it there and **do not re-sort the file**;
+a re-sort would bury a one-word change in a several-hundred-line diff.
 
 **`data.path` anchoring on the node adapter.** `NodeFileSystem.rename` (`node-file-system.ts:745`)
 resolves both sides, then wraps the `mkdir -p` + `rename(2)` in `runFs(op, src)` — so **every errno
@@ -328,9 +387,9 @@ carries `src`). This asymmetry is node's observable; it is recorded, not fixed.
 | N8 | empty directory | directory with children | `ENOTEMPTY` | `DIRECTORY_NOT_EMPTY` | `src` | **succeeds** — silently merges | `DIRECTORY_NOT_EMPTY(src)` |
 | N9 | directory with children | directory with children | `ENOTEMPTY` | `DIRECTORY_NOT_EMPTY` | `src` | **succeeds** — silently merges both trees | `DIRECTORY_NOT_EMPTY(src)` |
 | N10 | directory | its own **parent** (dst contains src) | `ENOTEMPTY` | `DIRECTORY_NOT_EMPTY` | `src` | **succeeds** — subtree flattened into the parent, src key vanishes | `DIRECTORY_NOT_EMPTY(src)` |
-| N11 | directory | a path **inside itself** that is **absent or a directory** (direct child, deep child with a missing mid segment, existing empty dir, existing non-empty dir — all four probed) | `INVALID-ARGUMENT` | `UNSUPPORTED_OPERATION` (`operation: 'filesystem'`, `reason: 'INVALID-ARGUMENT'`, **no `path` field**) | — | **succeeds** — `/repo/src.d` disappears from `directories` while `/repo/src.d/inner` remains: `lstat(src)` throws `FILE_NOT_FOUND` yet `readdir(src/inner)` works | **undecided — DC-H** |
-| **N11b** | directory | a path **inside itself** that **exists as a non-directory** (regular file or symlink, at any depth) | **darwin `ENOTDIR` · linux `INVALID-ARGUMENT`** | **darwin `NOT_A_DIRECTORY` (`src`) · linux `UNSUPPORTED_OPERATION`/`INVALID-ARGUMENT`** | darwin `src`, linux none | **succeeds** — the directory key lands on the file key *and* the subtree is re-parented under it | **undecided — DC-H; the only platform-divergent row in this design** |
-| N12 | the containment **root** | a fresh name inside it | `INVALID-ARGUMENT` | `UNSUPPORTED_OPERATION` / `INVALID-ARGUMENT` | — | **succeeds** — the root vanishes from `directories` (`lstat(rootDir)` now throws `FILE_NOT_FOUND`) and the **entire repository is silently re-keyed one level deeper** under `dst`. The adapter is not bricked — the next write re-creates the root through `addDirectoryRecursive` — it is relocated, which is quieter and worse | **undecided — DC-H** |
+| N11 | directory | a path **inside itself** that is **absent or a directory** (direct child, deep child with a missing mid segment, existing empty dir, existing non-empty dir — all four probed) | `INVALID-ARGUMENT` | `UNSUPPORTED_OPERATION` (`operation: 'filesystem'`, `reason: 'INVALID-ARGUMENT'`, **no `path` field**) | — | **succeeds** — `/repo/src.d` disappears from `directories` while `/repo/src.d/inner` remains: `lstat(src)` throws `FILE_NOT_FOUND` yet `readdir(src/inner)` works | `UNSUPPORTED_OPERATION` / `INVALID-ARGUMENT` — ADR-817 |
+| **N11b** | directory | a path **inside itself** that **exists as a non-directory** (regular file or symlink, at any depth) | **darwin `ENOTDIR` · linux `INVALID-ARGUMENT`** | **darwin `NOT_A_DIRECTORY` (`src`) · linux `UNSUPPORTED_OPERATION`/`INVALID-ARGUMENT`** | darwin `src`, linux none | **succeeds** — the directory key lands on the file key *and* the subtree is re-parented under it | `UNSUPPORTED_OPERATION` / `INVALID-ARGUMENT` — ADR-817 picks **linux**; the only platform-divergent row in this design, so it is memory-side only and can never be a strict contract row |
+| N12 | the containment **root** | a fresh name inside it | `INVALID-ARGUMENT` | `UNSUPPORTED_OPERATION` / `INVALID-ARGUMENT` | — | **succeeds** — the root vanishes from `directories` (`lstat(rootDir)` now throws `FILE_NOT_FOUND`) and the **entire repository is silently re-keyed one level deeper** under `dst`. The adapter is not bricked — the next write re-creates the root through `addDirectoryRecursive` — it is relocated, which is quieter and worse | `UNSUPPORTED_OPERATION` / `INVALID-ARGUMENT` — ADR-817, same clause as N11 |
 | N13 | file | symlink | — | **succeeds** (link replaced, its target untouched) | — | succeeds, identical | unchanged |
 | N14 | symlink | regular file | — | **succeeds** (dst becomes the link) | — | succeeds, identical | unchanged |
 | N15 | file | the containment **root** | `EISDIR` | `PERMISSION_DENIED` | `src` | **succeeds** — the root becomes a file | `PERMISSION_DENIED(src)` |
@@ -371,24 +430,61 @@ both platforms**, and at the composed level on darwin, where `NodeFileSystem.ren
 `NOT_A_DIRECTORY` carrying `src`. The composed linux leg was not run; it follows from the raw errno
 plus `mapErrno`, which is the one inference in this matrix that is not a direct observation. There is
 therefore **no single node behaviour for the memory adapter to match on that row**, exactly the shape
-ADR-811 ruled on for the depth-1 ancestor case. It also decides a *clause-ordering* question inside
-the guard (§3c), which is why it belongs to **DC-H** rather than being settled here.
+ADR-811 ruled on for the depth-1 ancestor case. It also decided a *clause-ordering* question inside
+the guard (§3c). **ADR-817 resolved it as option 1 — reproduce linux** — because linux is the CI
+platform that gates every merge, so the code has a home that actually runs (R32), and because the
+invalid-argument errno is the *specific* diagnosis where darwin's `ENOTDIR` is the incidental one it
+reaches first. The darwin divergence on N11b is knowingly kept, exactly as ADR-811 kept the
+depth-1 ancestor divergence.
 
 **Windows is a different question again and is NOT verified here.** No Windows host was available,
 and node's `fs.rename` on Windows goes through `MoveFileExW`, not `rename(2)`. The unit project — and
-therefore the contract suite — runs on `windows-latest`. §5 and **DC-J** carry the consequence;
-nothing in this section may be read as a Windows claim.
+therefore the contract suite — runs on `windows-latest`. §5 carries the consequence, now settled by
+ADR-819; nothing in this section may be read as a Windows claim.
 
-#### §1f The browser adapter — derived, not executed
+#### §1f The browser adapter — the OPFS rejections, now pinned on two engines
 
-`BrowserFileSystem` has no OPFS fake (`test/unit/adapters/browser/` holds one
-`'atomicRename' in sut` capability test and nothing else), so Playwright is the only oracle and
-everything below is derived from the adapter source plus the WHATWG File System Standard's normative
-rejections:
+The previous revision derived this section from the WHATWG File System Standard's normative
+rejections because `BrowserFileSystem` has no OPFS fake (`test/unit/adapters/browser/` holds one
+`'atomicRename' in sut` capability test and nothing else). Deriving an external system's behaviour
+from its spec is the thing the faithfulness rule forbids, so **this revision ran it**.
 
-> *"If child is a directory entry: Reject result with a `TypeMismatchError` DOMException"* (`getFileHandle`)
-> *"If child is a file entry: Reject result with a `TypeMismatchError` DOMException"* (`getDirectoryHandle`)
-> *"If options['create'] is false: Reject result with a `NotFoundError` DOMException"*
+**Probe.** A bare secure-context page on `127.0.0.1` (no tsgit build involved — raw
+`navigator.storage.getDirectory()` handles only), driven by the repo's own Playwright install on
+**chromium** and **firefox**, 2026-09-05. WebKit is excluded for the same reason the OPFS spec file
+already skips it: Playwright's headless WebKit does not expose `navigator.storage.getDirectory`.
+Arrangement: a directory `d` holding `inner.txt` (1 byte) and a regular file `f`, both at the OPFS
+root.
+
+| Call | Occupant | chromium | firefox | `constructor.name` |
+|---|---|---|---|---|
+| `getFileHandle(n, { create: true })` | **directory** | `TypeMismatchError` | `TypeMismatchError` | `DOMException` |
+| `getFileHandle(n, { create: false })` | **directory** | `TypeMismatchError` | `TypeMismatchError` | `DOMException` |
+| `getDirectoryHandle(n, { create: true })` | **regular file** | `TypeMismatchError` | `TypeMismatchError` | `DOMException` |
+| `getDirectoryHandle(n, { create: false })` | **regular file** | `TypeMismatchError` | `TypeMismatchError` | `DOMException` |
+| `getFileHandle(n, { create: false })` | absent | `NotFoundError` | `NotFoundError` | `DOMException` |
+| `getDirectoryHandle(n, { create: false })` | absent | `NotFoundError` | `NotFoundError` | `DOMException` |
+| `removeEntry(n)` (no `recursive`) | **non-empty directory** | `InvalidModificationError` | `InvalidModificationError` | `DOMException` |
+| `removeEntry(n)` | absent | `NotFoundError` | `NotFoundError` | `DOMException` |
+
+`err instanceof DOMException` was `true` for every row in-page on both engines, and — probed
+separately, because §3f's classifier depends on it — `err instanceof Error` was `true` too, with the
+prototype chain `DOMException → Error` on both. **Every refusal was non-destructive**: after the
+eight probes the root still listed exactly `d` and `f`, and `d/inner.txt` was still 1 byte.
+
+**Three things this pin settles that the spec text alone did not.**
+
+1. `create` does **not** change the rejection for a type mismatch. `getFileHandle` on a directory
+   rejects with `TypeMismatchError` at `create: false` too — which is precisely why `stat` and
+   `exists` work today (R30) and why the fix must key on `create`, not on the rejection name alone.
+2. `getDirectoryHandle` on a **file** — `walkToParent`'s ancestor step — also rejects with
+   `TypeMismatchError`, the *same* name as the leaf fault. Without the placement argument in §3f
+   that would be a real mis-mapping hazard.
+3. The three engine-visible names are stable across two independent implementations, so classifying
+   on `err.name` is a pin, not a guess.
+
+Everything below is the adapter's *routing* over those pinned rejections — read off
+`browser-file-system.ts`, not recalled:
 
 **`writeExclusive` — ADR-814, ratified.** `assertDoesNotExist` (`browser-file-system.ts:273–286`)
 catches every non-`TsgitError` rejection and `return`s, reading `TypeMismatchError` as *"not found,
@@ -397,21 +493,22 @@ safe to create"*. Control reaches `dir.getFileHandle(leaf, { create: true })`, w
 `errorDataCode(err)` returns `undefined` and `writeOrKeepArtifact` rethrows instead of raising
 `PACK_ARTIFACT_MISMATCH`. ADR-814 fixes this and pins it in `test/browser/opfs-roundtrip.spec.ts`.
 
-**`write` (and `writeStream`, `writeUtf8`, `appendUtf8`) — derived here.** All four route through
+**`write` (and `writeStream`, `writeUtf8`, `appendUtf8`) — today.** All four route through
 `resolveFileHandle(path, /* create */ true)` (`:226–237`), whose `catch` maps every non-`TsgitError`
 rejection to `fileNotFound(path)`. A directory at the leaf therefore surfaces as **`FILE_NOT_FOUND`**
 — a *mapped but wrong* code where node and the memory target say `PERMISSION_DENIED`. Nothing is
-written: `createWritable()` is never reached. A regular file at an ancestor segment takes the same
-route through `walkToParent`'s `getDirectoryHandle(..., { create: true })` and also reports
-`FILE_NOT_FOUND`.
+written: `createWritable()` is never reached. A regular file at an ancestor segment takes a
+*different* route — `walkToParent`'s own `catch` — and also reports `FILE_NOT_FOUND`; §3f shows why
+that difference is what makes the fix safe.
 
-**`rename` — derived here.** `rename` (`:153–162`) is `read(src)` → `write(dst, data)` → `rm(src)`.
-A directory `src` fails at `read` (its `getFileHandle` hits `TypeMismatchError`) → `FILE_NOT_FOUND`;
-a directory `dst` fails at `write` → `FILE_NOT_FOUND`, and `rm(src)` never runs. So the browser
-adapter **never corrupts** on any §1e arrangement and never leaves a half-move — it reports the wrong
-code, in contract.
+**`rename` — today.** `rename` (`:153–162`) is `read(src)` → `write(dst, data)` → `rm(src)`.
+A directory `src` fails at `read` (`getFileHandle(leaf, { create: false })` hits
+`TypeMismatchError`) → `FILE_NOT_FOUND`; a directory `dst` fails at `write` → `FILE_NOT_FOUND`, and
+`rm(src)` never runs. So the browser adapter **never corrupts** on any §1e arrangement and never
+leaves a half-move — it reports the wrong code, in contract.
 
-**Why this is materially milder than ADR-814's case**, and why the fix is *not* the same size:
+**Why this is materially milder than ADR-814's case** — the reasoning the design recommended
+option 1 on, recorded because ADR-816 overrode it and a later reader is owed the argument that lost:
 
 - The failure stays **inside** the port's error contract. `errorDataCode` works; no caller sees a raw
   `DOMException`. Every `FILE_NOT_FOUND` branch site in `src/application` and `src/repository` sits
@@ -428,10 +525,19 @@ code, in contract.
   back** — a strictly worse bug than the one being fixed. Any fix must be scoped to the `create: true`
   arm only.
 
-This is **DC-G**. Note the harness page (`test/browser/index.html`) exposes only three adapters on
-`window.__tsgit.adapters`, but `BrowserFileSystem` is a public export of
-`/dist/esm/adapters/browser/index.js`, so a Playwright case can reach it with a dynamic `import()`
-inside `page.evaluate` without touching the harness page.
+**ADR-816 ratified option 2 anyway**, and the second bullet is the constraint it carries into §3f
+rather than an argument against it: the arm is `create: true`-only precisely because the
+`create: false` mapping is load-bearing (R30). The first bullet's finding — no production caller
+branches on `FILE_NOT_FOUND` after a write or a rename — survives as the reason this change is
+**behaviour-additive on the browser**: it can only narrow an error code that nothing reads.
+
+**How a Playwright case reaches the adapter.** The harness page (`test/browser/index.html`) exposes
+only three adapters on `window.__tsgit.adapters` — `BrowserCompressor`, `BrowserHashService`,
+`BrowserHttpTransport` — not `BrowserFileSystem`. But `BrowserFileSystem` *is* a public export of
+`src/adapters/browser/index.ts`, and `index.html` already imports from
+`/dist/esm/adapters/browser/index.js`, so that module is served, resolvable and already in the
+page's module cache. A case reaches it with a dynamic `import()` inside `page.evaluate`, with no
+edit to a harness page every one of the six specs in `test/browser/` loads (§Test strategy).
 
 ### §2 What the bug actually breaks
 
@@ -465,7 +571,8 @@ bricks the adapter instance. All three guards close this for free, because `root
 Row N12 — `rename(rootDir, x)` — reaches the root by a *different* mechanism with a *different*
 outcome, and the two must not be conflated: `renameDirectory` deletes the root key rather than
 shadowing it, so the adapter is **not** bricked (the next write re-creates the root) — the entire
-repository is silently re-keyed one level deeper instead. That row is DC-H's, not this section's.
+repository is silently re-keyed one level deeper instead. ADR-817 closes that row with its own
+clause (§3c), not with the `rootDir ∈ directories` argument above — the two must not be conflated.
 
 #### §2c The bug falsifies an invariant five equivalence proofs rest on
 
@@ -493,20 +600,44 @@ were previously conditional on a bug not being hit. Per the repo rule that equiv
 structure-specific, each is re-read during implementation and kept only if its wording still matches
 the code it annotates — §Test strategy carries the per-proof verdict.
 
-#### §2d Two routes to `files ∩ symlinks` this change does not close
+#### §2d Every route to a namespace collision, re-derived after ADRs 815–818
 
-Probed, so they are stated rather than assumed:
+The previous revision listed *"two routes to `files ∩ symlinks` this change does not close"*, which
+mis-stated one of them — the constructor route produces a `files ∩ directories` collision, not a
+`files ∩ symlinks` one; the constructor cannot create a symlink at all. Here is the full derivation,
+one line per writer. The list is exhaustive by construction: it is every `files.set` /
+`symlinks.set` / `directories.add` in `memory-file-system.ts` (lines 46, 49, 89, 112, 267, 271, 304,
+331, 399, 431), so R8a rests on an enumeration rather than on a claim.
 
-1. **`write` over a symlink leaf** (§1d row W9). `files.set` lands beside the surviving `symlinks`
-   entry. `lstat` still reports a symlink (it consults `symlinks` first), `readlink` still returns
-   the old target, but `read` returns the newly written bytes. **DC-I.**
-2. **Constructor seeding.** `MemoryFileSystem({ rootDir: '/repo', files: { '/repo/a/b': …, '/repo/a': … } })`
-   seeds in `Object.entries` order: `/repo/a/b` makes `/repo/a` a directory, then
-   `files.set('/repo/a')` collides — `lstat('/repo/a')` reports a file while `readdir('/repo/a')`
-   throws `NOT_A_DIRECTORY`. The reverse order throws `NOT_A_DIRECTORY` at construction, so only one
-   of the two orders is a hole; `{ files: { '/repo': … } }` is the same hole at depth 0. This is a
-   *fixture-authoring* route reachable only from test code, not from the port surface, and the sweep
-   found **zero** occurrences across 15 929 unit + parity tests. Named in §Out of scope, not fixed.
+| Writer | Keys it can create | Guard after this change | Can it collide? |
+|---|---|---|---|
+| `write` (+ `writeUtf8`, `writeStream`, `appendUtf8`) | `files` | `directories.has(n) \|\| symlinks.has(n)` → `PERMISSION_DENIED` (§3b) | **no** — ADR-815 closes the directory term, ADR-818 the symlink term |
+| `writeExclusive` | `files` | `occupied(n)` over all three (§3a) | **no** |
+| `symlink` | `symlinks` | already tests all three (`:321–333`) | **no** — pre-existing |
+| `mkdir` | `directories` | `addDirectoryRecursive` re-tests `files`/`symlinks` at **every** segment (§3d) | **no** — pre-existing |
+| `rename`, leaf arm | `files` or `symlinks` at `dst` | `assertRenamable` refuses a `directories` `dst`; the body still `delete`s `files[dst]` / `symlinks[dst]` before setting (§3c) | **no** |
+| `rename`, directory arm | `directories` + re-keyed `files`/`symlinks` under `dst` | `assertRenamable` leaves `dst` provably **absent everywhere or an empty directory**, and refuses `dst` inside `src` (§3c) | **no** |
+| the `FileHandle` from `openWithNoFollow` (`:399`) | `files` | `openWithNoFollow` (`:375–385`) refuses a symlink leaf and requires `files.has(normalized)` before handing the handle out | **no** — the key it writes already exists in `files`, so it creates none |
+| `rm`, `rmRecursive` | — (delete only) | n/a | **no** |
+| constructor `rootDir` seed (`:46`) | `directories` | runs first, on an empty adapter | **no** |
+| **constructor `files` option** (`:49`) | `files` | **none** | **yes — the one surviving route** |
+
+**The surviving route, stated precisely.**
+`MemoryFileSystem({ rootDir: '/repo', files: { '/repo/a/b': …, '/repo/a': … } })` seeds in
+`Object.entries` order: `/repo/a/b` makes `/repo/a` a directory via `ensureParentDirs`, then
+`files.set('/repo/a')` collides — `lstat('/repo/a')` reports a file while `readdir('/repo/a')` throws
+`NOT_A_DIRECTORY`. The reverse order throws `NOT_A_DIRECTORY` at construction, so only one of the two
+orders is a hole; `{ files: { '/repo': … } }` is the same hole at depth 0. This is a
+*fixture-authoring* route reachable only from test code, not from the port surface, and the sweep
+found **zero** occurrences across 15 929 unit + parity tests. Named in §Out of scope, not fixed
+(**R8b**).
+
+**One row that reads like a violation and is not.** `rename` of a file onto a **symlink** destination
+(N13) is allowed on node too — the link is replaced and its target is untouched — so the leaf body's
+`symlinks.delete(normalizedDst)` before `files.set(normalizedDst, …)` is *correct*, not a gap.
+`renameLeaf` must keep all three destination deletes (`files`, `symlinks`, `times`); dropping any of
+them to "simplify" after the guard lands would reopen exactly the collision the guard was added to
+prevent.
 
 ### §3 The fix
 
@@ -541,28 +672,40 @@ Node's `exists` follows symlinks by design, while `writeExclusive` refuses a dan
 `FILE_EXISTS` (row G) — *not existing* and *occupied* are genuinely different predicates. Sharing a
 helper would cement a coincidence as intent.
 
-#### §3b `write` — ADR-815
+#### §3b `write` — ADR-815 and ADR-818
 
 ```ts
 write = async (path: string, data: Uint8Array): Promise<void> => {
   const normalized = this.resolve(path);
-  if (this.directories.has(normalized)) throw permissionDenied(path);   // node: EISDIR
+  // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
+  // mapErrno sends both to PERMISSION_DENIED.
+  if (this.directories.has(normalized) || this.symlinks.has(normalized)) {
+    throw permissionDenied(path);
+  }
   this.ensureParentDirs(normalized);
   this.files.set(normalized, data.slice());
   this.touch(normalized);
 };
 ```
 
-One added line, four surfaces (§1d). `rootDir ∈ directories`, so W3 is covered without a second
-clause.
+One added guard, four surfaces (§1d), two occupant kinds. `rootDir ∈ directories`, so W3 is covered
+without a third clause. Both disjuncts produce the **same** code, which is not a coincidence to be
+tidied away: `mapErrno` sends `EISDIR` (`node-file-system.ts:239–243`) and `ELOOP` (`:234–238`) to
+`permissionDenied` through two adjacent arms, and the committed equivalence proof at `:234` says so
+outright — *"emptying this case's consequent makes ELOOP fall through to the EISDIR
+`permissionDenied` arm, yielding the identical TsgitError"*. The
+in-house precedent is one method away — `openWithNoFollow` (`:375–385`) refuses a symlink leaf with
+exactly `permissionDenied`, citing `O_NOFOLLOW`.
+
 The guard sits **before** `ensureParentDirs`, which keeps the ancestor-fault behaviour ADR-811
 ratified: when a file blocks an ancestor, the leaf itself is in no namespace, the guard falls
 through, and `addDirectoryRecursive` throws `NOT_A_DIRECTORY` carrying the ancestor — unchanged, and
 the existing case at `memory-file-system.test.ts:452` still passes.
 
-Whether this guard also names `symlinks` is **DC-I**. If it does, the code is the same
-`PERMISSION_DENIED` on both adapters (node maps `ELOOP` and `EISDIR` to it alike), so the extension
-is one term: `if (this.directories.has(n) || this.symlinks.has(n))`.
+Because the two disjuncts share a code, **only a single-occupant test per term proves each one**;
+a fixture holding both a directory and a symlink is impossible anyway (they are disjoint), but a
+single test that only ever plants a directory leaves the `symlinks` term free to be mutated to
+`false` undetected. §3e and §Test strategy carry the pair.
 
 #### §3c `rename` — ADR-815, shape pinned by §1e
 
@@ -584,7 +727,9 @@ private assertRenamable(src: string, dst: string, reported: string): void {
     if (this.directories.has(dst)) throw permissionDenied(reported); // N1 / N2 / N3 / N15
     return;                                                          // N13 / N14
   }
-  if (dst.startsWith(`${src}/`)) throw /* shape + position: DC-H */; // N11 / N11b / N12
+  if (dst.startsWith(`${src}/`)) {                                   // N11 / N11b / N12
+    throw unsupportedOperation('filesystem', INVALID_ARGUMENT);      // ADR-817, before the kind check
+  }
   if (!this.directories.has(dst)) {
     if (this.files.has(dst) || this.symlinks.has(dst)) {
       throw notADirectory(reported);                                 // N4 / N5 / N6
@@ -595,17 +740,34 @@ private assertRenamable(src: string, dst: string, reported: string): void {
 }                                                                    // else N7 — empty dst, replace
 ```
 
-**The `dst`-inside-`src` clause's *position* is itself a decision, not a detail.** As drafted it
-precedes the file/symlink clause, which reproduces **linux** on N11b and contradicts **darwin**;
-moving it below reproduces darwin and contradicts linux. Every other ordering is equivalent because
-the arrangements are disjoint. §1e proves there is no third answer, so DC-H owns both the code and
-the position.
+**The `dst`-inside-`src` clause's *position* was itself a decision — ADR-817 settled it.** Placed
+**above** the file/symlink clause, as written, it reproduces **linux** on N11b and contradicts
+**darwin**; below it reproduces darwin and contradicts linux. Every other ordering is equivalent
+because the arrangements are disjoint. §1e proves there is no third answer, and ADR-817 chose linux:
+it is the CI platform that gates every merge, so the strict node-side code has a home that actually
+runs (R32), and the invalid-argument errno is the *specific* diagnosis where darwin's `ENOTDIR` is
+the incidental one it reaches first. The cost taken knowingly: this error carries **no `path`**, so a
+caller cannot name what failed, and an adapter with no errnos now carries an errno name as a string
+literal — the same species of borrowing ADR-811 declined for `mkdir -p`, accepted here because the
+literal is one the node adapter already emits.
 
-`reported` is the caller's raw `src` string, matching node's `runFs(op, src)` anchoring. The
-`hasChildren` helper already exists (`:488–501`) and is exactly the predicate node's `ENOTEMPTY`
-expresses.
+`INVALID_ARGUMENT` above stands for a module-level `const` holding POSIX's invalid-argument errno
+name — the literal that `mapErrno`'s `default` arm forwards. Naming it once keeps the magic value out
+of the guard and gives the dictionary entry a single point of truth in the file.
 
-**Ordering is load-bearing in three further places** (the DC-H clause position above is the fourth):
+`reported` is the caller's raw `src` string, matching node's `runFs(op, src)` anchoring. It is
+**deliberately unused by the ADR-817 clause**, because that error variant has no `path` field; every
+other clause consumes it.
+
+The `hasChildren` helper already exists (`:488–501`) and is exactly the predicate node's `ENOTEMPTY`
+expresses. **Its cost, stated:** it scans all three collections linearly, so this guard makes
+`rename(dir, dir)` O(files + symlinks + dirs). That is acceptable — it runs only on the
+directory-source-onto-existing-directory arm, which no tsgit call site reaches (`working-tree.ts:138`
+renames leaves only, §Context), and `rm` already pays the identical scan on every directory removal.
+No new hot path is created; if one ever appears, the fix is a child index, not a weaker guard.
+
+**Ordering is load-bearing in three further places** (the inside-source clause position above is the
+fourth):
 
 1. **Source existence first.** N17 must win over every destination verdict, because
    `rename(absent, anything)` is `ENOENT` on POSIX regardless of `dst`.
@@ -618,6 +780,21 @@ expresses.
 `dst.startsWith(`${src}/`)` is *inside*, not *ancestor*: N10 (renaming a directory onto its own
 parent) is `ENOTEMPTY`, not `INVALID-ARGUMENT`, and correctly falls through to the non-empty clause, because a
 parent is not inside its child.
+
+**A leaf source with a destination inside it needs no clause either.**
+`rename('/repo/f.txt', '/repo/f.txt/x')` takes the `!srcIsDirectory` branch and returns, then
+`renameLeaf`'s `ensureParentDirs` hits `addDirectoryRecursive('/repo/f.txt')`, which finds the key in
+`files` and throws `NOT_A_DIRECTORY` carrying the ancestor. Node reports `FILE_EXISTS` carrying `src`
+there (its `mkdir -p` sees `EEXIST`, exactly the N18 shape) — so this is the ADR-811 ancestor family
+one method over, already ratified and already out of scope, not a hole the new clause leaves.
+
+**N12 needs no clause of its own.** `rename(rootDir, x)` reaches the same test: `rootDir` is seeded
+into `directories` at construction, so `srcIsDirectory` is true, and any `x` the adapter will accept
+has already been through `resolve`, which refuses anything not equal to `rootDir` or under
+`${rootDir}/`. `x === rootDir` is caught by the `src === dst` escape one line above; everything else
+starts with `${rootDir}/` and trips the clause. This rests on the file's existing assumption that
+`rootDir` is not `/` — `parentOf` (`:537–540`) already states it in a comment — so no new precondition
+is introduced.
 
 The body then dispatches on the kind already established, which removes the now-unreachable
 `throw fileNotFound(src)` from the leaf arm (dead code is a non-negotiable):
@@ -684,6 +861,119 @@ own right — the N7, N13/N14, N21/N22 and N23/N24 *positive* rows are what kill
 Extracting `occupied()` (ADR-810) halves the exclusive-create guard's mutant population by having one
 expression instead of two — not by suppressing anything.
 
+Two guards now carry a `||` and therefore need the isolated-term treatment: `write`'s
+`directories || symlinks` (§3b — one directory-occupant case *and* one symlink-occupant case, R12 and
+R28) and `assertRenamable`'s source-existence and destination-kind disjunctions (§3c). The
+`assertRenamable` clause ADR-817 adds is a single `startsWith`, so its mutants are
+`ConditionalExpression` and `StringLiteral` (the `/` in `` `${src}/` ``): the string mutant is killed
+by the N10 *parent* row, which must **not** refuse — with the slash dropped, `'/repo'.startsWith('/repo')`
+is true and N10 would flip to `UNSUPPORTED_OPERATION`.
+
+**The browser fix is outside the mutation gate entirely** (`stryker.config.mjs` excludes
+`src/adapters/browser/**`) and outside the 100 % coverage gate (`vitest.config.ts` `coverage.include`
+omits it). Its only proof is the three Playwright cases in §Test strategy, which is why each asserts
+a *code plus a non-destructiveness observation* rather than the fact of throwing.
+
+#### §3f The browser adapter — ADR-814 and ADR-816
+
+Two changes in `browser-file-system.ts`, sharing one predicate. Nothing else in the file moves.
+
+**One shared classifier**, module-level beside `isFileNotFound` (`:295–297`):
+
+```ts
+function isTypeMismatch(err: unknown): boolean {
+  return err instanceof Error && err.name === 'TypeMismatchError';
+}
+```
+
+Shaped exactly like the node adapter's `isErrnoException` (`node-file-system.ts:140–142`,
+`err instanceof Error && 'code' in err`) — the house idiom for narrowing an `unknown` rejection with
+no cast and no `any`. Two facts make it sound, both **measured** in the §1f probe rather than
+assumed: `DOMException` inherits from `Error` on chromium and firefox (`err instanceof Error` was
+`true`, prototype chain `DOMException → Error`), and the `name` is the engine-visible string
+`'TypeMismatchError'` on both.
+
+Keying on `name` rather than `err instanceof DOMException` is deliberate: it is realm-independent, it
+needs no DOM global at runtime, and it follows the repo's rule that adapter errors are classified
+structurally rather than by constructor identity. It cannot collide with a `TsgitError`, whose `name`
+is the literal `'TsgitError'` (`domain/error.ts:85`) — and in both call sites the
+`err instanceof TsgitError` check runs **first** regardless, so the existing propagation is
+untouched.
+
+**(a) `assertDoesNotExist` (`:273–286`) — ADR-814.** Today its `catch` swallows every
+non-`TsgitError` rejection and `return`s, reading `TypeMismatchError` as *"absent, safe to create"*.
+After: a `TypeMismatchError` becomes `fileExists(path)`; a `NotFoundError` still `return`s (absent,
+proceed); every other rejection **propagates** rather than being read as absence.
+
+**One residual, stated so it is not mistaken for an oversight.** After (a), an *unexpected* rejection
+— `NotAllowedError`, a quota failure — leaves `writeExclusive` as a raw `DOMException`, which is the
+shape ADR-814 set out to eliminate. That is the trade ADR-814 ratified and it is the right way round:
+the alternative is what the code does today, silently reading a permission failure as *"absent, safe
+to create"* and then writing. A diagnostic escape on a condition nothing anticipated beats a silent
+misclassification, and it is not a swallowed error — nothing is discarded.
+
+**(b) `resolveFileHandle` (`:226–237`) — ADR-816.** The `catch` gains one arm, gated on `create`:
+
+```ts
+try {
+  return await dir.getFileHandle(leaf, { create });
+} catch (err) {
+  if (err instanceof TsgitError) throw err;
+  // A directory at the leaf rejects with TypeMismatchError whether or not `create` is set.
+  // Only the writing arm may report it as a refusal: `stat`/`exists` read FILE_NOT_FOUND
+  // here as "not a file, try a directory handle" and fall back.
+  if (create && isTypeMismatch(err)) throw permissionDenied(path);
+  throw fileNotFound(path);
+}
+```
+
+**Why the `create` gate is not optional (R30).** §1f pins that `getFileHandle` rejects with
+`TypeMismatchError` at `create: false` too. `stat` (`:99–109`) and `exists` (`:82–97`) catch exactly
+`FILE_NOT_FOUND` and fall back to `resolveDirHandle`; a helper-wide re-map would make both **rethrow**
+on every directory — `stat` on a directory is used across the codebase, so that is a strictly worse
+bug than the one being fixed. `chmod` (`:172–180`) has the same fallback shape and the same exposure.
+
+**Exactly three callers can reach the new arm.** All nine, read off the file:
+
+| Caller | `create` | Reaches the new arm? |
+|---|---|---|
+| `read` (`:22`) | `false` | no |
+| `readSlice` (`:29`) | `false` | no |
+| `readUtf8` (`:37`) | `false` | no |
+| `exists` (`:84`) | `false` | no — depends on the `false` mapping (R30) |
+| `stat` (`:101`) | `false` | no — depends on the `false` mapping (R30) |
+| `chmod` (`:175`) | `false` | no — same fallback shape |
+| **`write` (`:43`)** | **`true`** | **yes** — and `writeUtf8` (`:70`) and `rename` (`:160`) through it |
+| **`writeStream` (`:50`)** | **`true`** | **yes** — the identical call, not a delegation |
+| **`appendUtf8` (`:75`)** | **`true`** | **yes** |
+
+`writeExclusive` (`:58–68`) does **not** use `resolveFileHandle` at all — it walks and probes by
+hand, which is why ADR-814 needs its own change at (a).
+
+**Ancestor faults keep their current mapping (R31).** `walkToParent(segments, true)` calls
+`getDirectoryHandle(segment, { create: true })`, which §1f pins as rejecting with the **same**
+`TypeMismatchError` when a regular file blocks an ancestor. That would be a genuine mis-mapping
+hazard — node reports `FILE_EXISTS` at depth 1 and `NOT_A_DIRECTORY` deeper (ADR-811), never
+`PERMISSION_DENIED` — except that `walkToParent` (`:255–271`) has its **own** `catch` that converts it
+to `fileNotFound(segments.join('/'))`, and `resolveFileHandle` awaits `walkToParent` **outside** its
+`try` block. So the new arm is structurally unreachable from an ancestor fault: it only ever sees
+rejections from the single leaf `getFileHandle` call. No guard, no ordering rule and no extra test is
+needed to keep this true — but a future refactor that moves the `walkToParent` call inside the `try`
+would silently break it, which is why R31 gets its own Playwright observation.
+
+**`rename` with a directory *source* is not covered by ADR-816, and does not change.** ADR-816's text
+is *"plant a directory at the target"* — the destination. A directory `src` still fails at
+`read(src)` → `resolveFileHandle(src, false)` → `TypeMismatchError` → the untouched `create: false`
+arm → `FILE_NOT_FOUND`, where node would **succeed** for a fresh `dst` (N23/N24). That is not a code
+mapping this fix can improve into correctness: OPFS has no directory rename and the adapter's
+read/write/rm emulation is leaf-only, so making the code right would mean implementing recursive
+copy-then-remove — a capability change, not an error-mapping change. It is recorded in §Out of scope
+alongside browser `rm` on a non-empty directory, which the §1f probe pins as
+`InvalidModificationError` → `FILE_NOT_FOUND` where node gives `DIRECTORY_NOT_EMPTY`. **Consequence to
+state plainly:** after this change the browser reports `PERMISSION_DENIED` for a directory
+*destination* and `FILE_NOT_FOUND` for a directory *source*. The asymmetry is deliberate and bounded
+by ADR-816's wording; it is not a half-applied fix.
+
 ### §4 The test-side patches this retires
 
 `writeOrKeepArtifact`'s directory arm is currently proven on the memory adapter by patching
@@ -735,29 +1025,40 @@ already carries **two** tolerance precedents built for exactly this situation:
   — an enumerated pair, with an in-file comment saying the exact code is platform-dependent.
 - `:676` `Given non-empty directory, When rm, Then throws a TsgitError` — instance only, no code.
 
-Per row, then:
+**ADR-819 settles it as option 2**, and the table below is the placement, per row. "Code after the
+change" is what **both** adapters produce once the guards land — memory today produces nothing at all
+on most of these rows.
 
-"Code after the change" is what **both** adapters produce once the guards land — memory today
-produces nothing at all on most of these rows.
+| Row | Code after the change | Platform risk | Contract strictness | Strict node code pinned in |
+|---|---|---|---|---|
+| `writeExclusive` → directory occupant | `FILE_EXISTS` | none — `O_EXCL`/`EEXIST` is universal, and the existing strict `writeExclusive`-over-a-file row already passes Windows CI | **strict** (ADR-812) | the contract row itself |
+| `writeExclusive` → file at a grandparent segment | `NOT_A_DIRECTORY` | none (`mkdir -p` `ENOTDIR`; the depth-1 case is the adapter-dependent one and is excluded) | **strict, code only** (ADR-812) | the contract row itself |
+| `write` → directory at the leaf | `PERMISSION_DENIED` | **unverified on Windows** — libuv's directory-open mapping was not probed | instance + non-destructiveness | posix-only file |
+| `write` → **symlink** at the leaf | `PERMISSION_DENIED` | **unverified on Windows**, and symlink creation itself is gated there | **no contract row** — same reasoning as the two `rename` symlink rows below | posix-only file (the existing `node-fs-real-symlinks.test.ts` is its neighbour) |
+| `rename` file → directory | `PERMISSION_DENIED` | **unverified on Windows** | instance + non-destructiveness | posix-only file |
+| `rename` directory → regular file | `NOT_A_DIRECTORY` | **unverified on Windows** | instance + non-destructiveness | posix-only file |
+| `rename` directory → non-empty directory | `DIRECTORY_NOT_EMPTY` | **unverified on Windows** | instance + non-destructiveness | posix-only file |
+| `rename` directory → **empty** directory (positive, R20) | it succeeds | **unverified on Windows** — `MoveFileEx`'s replace-existing flag is documented not to replace directories, so this is the likeliest Windows failure | **positive row, kept in the contract suite** — see below | posix-only file (same arrangement, asserted on node alone) |
+| `rename` src === dst, **regular file** (positive, R21) | it succeeds | none | **strict** (positive row, no code asserted) | — |
+| `rename` src === dst, **non-empty directory** (positive, R21) | it succeeds | **unverified on Windows** — same `MoveFileEx` question as the R20 row | **positive row, kept in the contract suite** | posix-only file |
+| `rename` symlink → directory, directory → symlink | `PERMISSION_DENIED` / `NOT_A_DIRECTORY` | — | **no contract row.** ADR-812's reasoning applies verbatim: the file gates symlink behaviour per adapter through a capability hook, and a row that happens to agree without such a declaration would over-constrain a future adapter | posix-only file; memory-side unit rows too |
+| `rename` dst inside src, dst absent or a directory (N11/N12) | `UNSUPPORTED_OPERATION` / `INVALID-ARGUMENT` | — | **no contract row.** The `reason` string is a node errno name and would over-constrain any adapter that has no errnos | posix-only file |
+| `rename` dst inside src, dst an existing file or symlink (N11b) | **darwin and linux disagree** | **proven POSIX-divergent** | **never a strict contract row** | **nowhere on the node side** — memory-side unit row only, asserting ADR-817's linux-shaped choice |
 
-| Row | Code after the change | Platform risk | Contract strictness |
-|---|---|---|---|
-| `writeExclusive` → directory occupant | `FILE_EXISTS` | none — `O_EXCL`/`EEXIST` is universal, and the existing strict `writeExclusive`-over-a-file row already passes Windows CI | **strict** (ADR-812) |
-| `writeExclusive` → file at a grandparent segment | `NOT_A_DIRECTORY` | none (`mkdir -p` `ENOTDIR`; the depth-1 case is the adapter-dependent one and is excluded) | **strict, code only** (ADR-812) |
-| `write` → directory at the leaf | `PERMISSION_DENIED` | **unverified on Windows** — libuv's directory-open mapping was not probed | **DC-J** |
-| `rename` file → directory | `PERMISSION_DENIED` | **unverified on Windows** | **DC-J** |
-| `rename` directory → regular file | `NOT_A_DIRECTORY` | **unverified on Windows** | **DC-J** |
-| `rename` directory → non-empty directory | `DIRECTORY_NOT_EMPTY` | **unverified on Windows** | **DC-J** |
-| `rename` directory → **empty** directory (positive, R20) | it succeeds | **unverified on Windows** — `MoveFileEx`'s replace-existing flag is documented not to replace directories, so this is the likeliest Windows failure | **DC-J** |
-| `rename` src === dst, **regular file** (positive, R21) | it succeeds | none | **strict** (positive row, no code asserted) |
-| `rename` src === dst, **non-empty directory** (positive, R21) | it succeeds | **unverified on Windows** — same `MoveFileEx` question as the R20 row | **DC-J** |
-| `rename` symlink → directory, directory → symlink | `PERMISSION_DENIED` / `NOT_A_DIRECTORY` | — | **no contract row.** ADR-812's reasoning applies verbatim: the file gates symlink behaviour per adapter through a capability hook, and a row that happens to agree without such a declaration would over-constrain a future adapter. These stay memory-side |
-| `rename` dst inside src, dst absent or a directory (N11/N12) | `UNSUPPORTED_OPERATION` / `INVALID-ARGUMENT` | — | **no contract row** until DC-H is settled; the `reason: 'INVALID-ARGUMENT'` string is a node errno and would over-constrain any adapter |
-| `rename` dst inside src, dst an existing file or symlink (N11b) | **darwin and linux disagree** | **proven POSIX-divergent** | **never a strict contract row**, under any DC-H outcome. Memory-side only, where the code is whatever DC-H picks |
+**The two positive rows stay in the contract suite even though they carry Windows risk**, and that is
+deliberate: a positive row has no tolerant form — "it succeeds or it throws something" asserts
+nothing. ADR-819's own consequence section says so: if Windows genuinely cannot replace a directory
+through `rename`, the row goes red on the `windows-latest` unit cell and becomes a **recorded
+decision** rather than a silent tolerance. That is the failure mode this design accepts, in exchange
+for not shipping an unverified claim. Both are additionally proven on the memory side, where there is
+no platform.
 
-Every row marked **DC-J** is proven on the memory side regardless — strictly, since memory has no
-platform, and for the two positive rows by asserting the outcome rather than a code. The open
-question is only what the *node-side* assertion looks like and where it lives.
+Every "instance + non-destructiveness" row is proven **strictly on the memory side** regardless —
+memory has no platform — so no code goes unasserted anywhere; ADR-819 moves only where the *node*
+assertion lives. The price it names is real: the cross-adapter proof for these rows is now two-file
+(the contract suite proves *both refuse and neither corrupts*; the posix-only file proves *node's
+exact code*), which is more moving parts than ADR-812 envisaged for `writeExclusive` alone. The
+join point between the two files is this table.
 
 ### §6 The port's wording is the thing that let this happen
 
@@ -790,12 +1091,17 @@ The port contract is the oracle for this change and **no new interop test ships*
   plus the node adapter (§1d, §1e) rather than the `git` binary: git never writes over or renames
   onto a directory on purpose, so there is no git-level refusal message to reproduce — the refusal
   *is* the syscall's, and the syscall was probed on two platforms.
+- The browser adapter's anchor is neither git nor POSIX but the **WHATWG File System Standard**, and
+  the rule is the same one: it was **run**, not recalled. §1f records the rejection names measured on
+  chromium and firefox, and the two ADR-816 Playwright cases re-assert them end-to-end on every CI
+  run so the mapping cannot rot silently. That probe is this design's only external-system pin
+  besides §1a's `git` run.
 
 ---
 
 ## Decision candidates
 
-### Settled by the decisions phase — folded into the design above
+### Settled by the first decisions round — folded into the design above
 
 | # | Choice | Outcome |
 |---|---|---|
@@ -812,14 +1118,36 @@ would also cover file → symlink (N13) and symlink → file (N14), on which nod
 settles it: the only axis that produces a refusal is directory-versus-non-directory, so the clause is
 read as "differ in kind *where the node adapter refuses*", and R17–R20 are the exact set.
 
-### New — raised by this revision, not settled by ADRs 810–815
+### Settled by the second decisions round — folded into the design above
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| **DC-G** | Browser `write` (and its three delegating siblings) and `rename` report **`FILE_NOT_FOUND`** for a directory occupant where node and the memory target say `PERMISSION_DENIED` (§1f — derived from the adapter source + the normative WHATWG spec, not executed). ADR-814 covers `writeExclusive` only and explicitly defers this | **1.** Out of scope: record the derivation here and change nothing. **2.** Fix in this PR — give `resolveFileHandle` a `create: true`-only arm mapping `TypeMismatchError` to `permissionDenied(path)`, leaving the `create: false` mapping untouched — and pin it with **two** new cases in `test/browser/opfs-roundtrip.spec.ts` (one `write`, one `rename`). **3.** Fix with no end-to-end pin. | **1** | This is deliberately a *different* verdict from ADR-814's, for two reasons the derivation makes concrete. **(a) The failure differs in kind, not just degree.** ADR-814's defect put the browser *outside* the port's error contract — a bare `DOMException` defeats `errorDataCode` and turns a `PACK_ARTIFACT_MISMATCH` into an opaque throw. This one stays inside it: a structured `TsgitError`, wrong code, **no corruption and no half-move** (`createWritable` is never reached; `rm(src)` never runs). A sweep of `src/application` + `src/repository` found no production caller branching on `FILE_NOT_FOUND` after a write or a rename. **(b) The fix's blast radius is much larger.** `assertDoesNotExist` has exactly one caller; `resolveFileHandle` has nine, and **`stat` and `exists` depend on its current mapping** — `stat` catches `FILE_NOT_FOUND` and falls back to `resolveDirHandle`, so a helper-wide re-map would make `stat` on a directory rethrow instead of falling back, a strictly worse bug. Option 2 is therefore only safe as a conditional inside the adapter's most-shared helper, in the one adapter outside both the coverage and the mutation gates. **Cost of option 1 to weigh:** the port's cross-adapter guarantee stays partly false on the browser after this PR closes it everywhere else, and re-opening it later costs a second Playwright round. Option 3 ships an unverified behaviour change to the ungated adapter — the least defensible |
-| **DC-H** | `rename` where **`dst` is inside `src`** (§1e N11 / N11b / N12) — the one family ADR-815's text does not reach, and the one row in this design where **the two POSIX platforms disagree**. Node throws `UNSUPPORTED_OPERATION` (`operation: 'filesystem'`, `reason: 'INVALID-ARGUMENT'`, **no `path` field** — `INVALID-ARGUMENT` is not in `mapErrno`'s switch, so it hits the `default` arm), *except* when `dst` already exists as a file or a symlink, where darwin says `NOT_A_DIRECTORY` and linux says `UNSUPPORTED_OPERATION`. Memory today re-parents the subtree under its own descendant, leaving `lstat(src)` throwing `FILE_NOT_FOUND` while `readdir(src/inner)` works; `rename(rootDir, x)` silently relocates the whole repository one level deeper | **1.** One clause, placed **before** the file/symlink check: `unsupportedOperation('rename', <the invalid-argument errno name>)` for every dst-inside-src arrangement (the literal string is that errno's real name, not this document's stand-in spelling). Matches linux exactly, matches darwin on N11 and N12 and diverges from it on N11b. **2.** Same clause placed **after** the file/symlink check, so an existing file or symlink at `dst` yields `notADirectory(src)` first. Matches darwin exactly, diverges from linux on N11b. **3.** Out of scope: ADR-815 names "a directory occupies the destination" and "source and destination differ in kind", and this is neither; leave the corruption in place | **1** | Option 3 is the honest reading of ADR-815's *letter* and is flagged as available — but it leaves the only arrangements in the whole matrix that produce a **structurally incoherent tree** (a directory reachable only through a parent that reports `FILE_NOT_FOUND`), and N12 is reachable from `rename(rootDir, x)`, a one-argument mistake, with no error at all. Between 1 and 2 there is no correct answer — §1e proves node is not self-consistent across platforms, which is precisely the situation ADR-811 resolved by picking one behaviour and documenting the divergence rather than chasing an oracle that does not exist. **Option 1 over option 2 because linux is the CI platform that gates every merge**, so the strict-code assertion has a home that actually runs (DC-J), and because `INVALID-ARGUMENT` is the *specific* diagnosis while `ENOTDIR` is the incidental one darwin reaches first. **Costs to weigh, both real:** `UNSUPPORTED_OPERATION` carries no `path`, so a caller cannot name what failed; and importing an errno name as a string literal into an adapter that has no errnos is the same species of borrowing ADR-811 rejected for `mkdir -p`. Whichever is chosen, **N11b can never be a strict cross-adapter contract row** and its memory-side row is strict only because memory has no platform |
-| **DC-I** | `write` / `writeStream` / `writeUtf8` / `appendUtf8` over a **symlink leaf** (§1d row W9). Node refuses with `PERMISSION_DENIED` (`ELOOP` from `O_NOFOLLOW`); memory writes a `files` key beside the surviving `symlinks` key, so `lstat` says symlink, `readlink` returns the old target, and `read` returns the new bytes. This is **R8b** — the reason R8 could not be restated as a total disjointness claim | **1.** Extend the §3b guard by one term: `if (this.directories.has(n) \|\| this.symlinks.has(n)) throw permissionDenied(path)`. Node maps both `EISDIR` and `ELOOP` to `PERMISSION_DENIED`, so **one code covers both occupants** and it is the same contract row. **2.** Out of scope — ADR-815 says "a directory occupant" and "a file entry on a name held by a directory"; a symlink is neither. **3.** Refuse the symlink case in `write`/`writeStream`/`writeUtf8` but leave `appendUtf8` alone, since it is the only one that reads first | **1** | The marginal cost is one `\|\|` term and one unit row per surface, in a guard being added anyway, and it is the only way R8a can be stated without an embarrassing footnote: `symlinks ∩ directories = ∅` gets closed by the `rename` guard in the same PR, so leaving `files ∩ symlinks` open means this change closes two thirds of an invariant and documents the third. The adapter already has the in-house precedent — `openWithNoFollow` (`:375–385`) refuses a symlink leaf with exactly `permissionDenied`, citing `O_NOFOLLOW`. **Cost to weigh:** it is scope growth beyond ADR-815's text, and it makes `write` refuse something that silently succeeds today — the regression sweep found **zero** memory-backed call sites (`WRITE_ONTO_SYMLINK`: 0 hits across 15 929 unit + parity tests), so the risk is measured, not assumed. Option 3 is incoherent — the four surfaces are one code path by delegation — and is listed only to be rejected |
-| **DC-J** | How the **node-side** assertion for the new `write` and `rename` refusals is written, given that `test/unit/ports/file-system.contract.ts` runs on `windows-latest` while §1e verified only darwin + linux | **1.** Strict codes in the contract suite; if Windows disagrees, CI is the oracle and the implementer converts the offending row to the `:567` enumerated-pair precedent. **2.** Contract rows in the `:676` precedent — assert `TsgitError` **plus non-destructiveness**, no code — and put the strict node-side codes in a new `test/integration/posix-only/` file, which the `posix-integration` CI job already runs on ubuntu + macos only (`ci.yml:393–395`). **3.** Contract rows in the `:676` precedent only; the strict codes live on the memory side alone, and §1e's matrix is the sole record of node's | **2** | Option 1 designs a claim that cannot be supported here: `MoveFileExW` is documented not to replace an existing directory, so the **R20 positive row** is the likeliest Windows failure — and a positive row failing is not something a tolerant code list can absorb. Guessing and letting CI correct it burns a full matrix round and puts an unverified assertion in a committed design. Option 2 is the only one that keeps a strict node-side code *somewhere* while honouring the rule that a platform-unverified code cannot be a strict cross-platform row, and the home already exists and is already wired into CI — the cost is one new file, not new infrastructure. Its price: the cross-adapter proof for these rows becomes two-file (the contract suite proves *both refuse and neither corrupts*; the posix-only file proves *node's exact code*), which is more moving parts than ADR-812 envisaged for `writeExclusive`. Option 3 is cheapest and leaves node's `rename` codes asserted nowhere — every future node-side change to them would be caught only by this document |
+| # | Choice | Outcome |
+|---|---|---|
+| **DC-G** | Browser `write` / `writeStream` / `writeUtf8` / `appendUtf8` and `rename` report `FILE_NOT_FOUND` for a directory occupant where node and the memory target say `PERMISSION_DENIED` | **→ ADR-816, user ratified option 2, against the design's recommendation.** `resolveFileHandle` gains a `create: true`-**only** arm mapping `TypeMismatchError` to `permissionDenied(path)`; the `create: false` mapping `stat` and `exists` depend on is untouched (**R30**). Two new Playwright cases — one `write`, one `rename` — join ADR-814's, so `opfs-roundtrip.spec.ts` carries three directory-occupant pins. §1f, §3f |
+| **DC-H** | `rename` where `dst` is inside `src` (N11 / N11b / N12) — the one family ADR-815's text does not reach, and the one row where the two POSIX platforms disagree | **→ ADR-817, user ratified option 1 (as recommended).** One clause **before** the destination-kind check throwing `unsupportedOperation('filesystem', <invalid-argument errno>)` for every inside-source arrangement, including `rename(rootDir, <inside>)`. Reproduces linux exactly; the darwin `NOT_A_DIRECTORY` on N11b is a knowing divergence, documented not chased. Never a strict cross-adapter row. §3c |
+| **DC-I** | `write` and its three delegating surfaces over a **symlink** leaf (row W9) | **→ ADR-818, user ratified option 1 (as recommended).** The `write` guard is `directories.has(n) \|\| symlinks.has(n)` → `permissionDenied(path)`; the three delegating surfaces inherit; one single-occupant test per term. Closes the last open pair of R8a, leaving only the constructor-seeding route (§2d). §3b, **R28** |
+| **DC-J** | How the node-side assertion for the new `write` / `rename` refusals is written, given that the contract suite also runs on `windows-latest` | **→ ADR-819, adopted as recommended (option 2).** Contract rows assert a structured `TsgitError` plus non-destructiveness, no code — the `:676` precedent; the strict node codes move to a new file under `test/integration/posix-only/`, run by the `posix-integration` job on ubuntu + macos. `writeExclusive` rows stay strict per ADR-812. The two **positive** rows (R20, R21) stay in the contract suite, because a positive row has no tolerant form. §5, **R25**, **R32** |
+
+### New — raised by this fold
+
+**None.**
+
+The fold is a pure consequence of ADRs 816–819, and every question it opened resolved inside the
+material those records already decide. Three that a reader might expect to see raised, and why each
+is not a candidate:
+
+- **Browser `rename` with a directory *source*** stays `FILE_NOT_FOUND` where node succeeds for a
+  fresh destination. ADR-816's scope is a directory at the *target*, the fix is `create: true`-only,
+  and the `create: false` path it travels is untouched — so the fold changes nothing here. Making it
+  correct means implementing directory rename on OPFS (recursive copy then remove), a capability
+  change with no defect behind it: the current behaviour refuses, it does not corrupt. §3f, §Out of
+  scope.
+- **The `TypeMismatchError` predicate's shape** (`err.name` versus `err instanceof DOMException`) is
+  an implementation detail settled by evidence, not judgement: §1f measured `DOMException` on both
+  engines, so both work, and the structural check is chosen because it is realm-independent and
+  matches the repo's existing rule for classifying adapter errors. §3f.
+- **The errno literal's spelling in this document** is a tooling constraint, not a decision: the name
+  is not in `cspell.json`, this commit is one file, and a `cspell` suppression comment is forbidden.
+  §1e names the exact insertion point for the implementation commit.
 
 ---
 
@@ -879,6 +1207,21 @@ Not covered by the sweep, and stated as such: `test/browser/**` (Playwright, run
 adapter, not memory), `test/bench/**` (not a gate), and `test/integration/win-only/**` (not runnable
 here). `npm run validate` remains the arbiter, not this table.
 
+**Two of those zeroes are now load-bearing rather than informational.** `WRITE_ONTO_SYMLINK: 0` was a
+DC-I data point when the symlink term was still a candidate; ADR-818 shipped that term, so the zero is
+the evidence that no memory-backed test writes through a symlink today. `RENAME_DST_INSIDE_SRC: 0` is
+the same for ADR-817. Both risks are therefore measured, not assumed — but the sweep instrumented the
+**memory** adapter only, so neither says anything about the node adapter (unchanged) or the browser
+adapter.
+
+**The browser change's blast radius, reasoned separately** because the sweep could not reach it: the
+new arm can only fire where `resolveFileHandle(path, true)` already threw, and it changes
+`FILE_NOT_FOUND` to `PERMISSION_DENIED` on that one path. `test/browser/parity.spec.ts` runs the whole
+`SCENARIOS` registry against real OPFS, and no scenario can be relying on a *failed* write's code —
+a scenario that hit this path would already be failing. The one mapping a passing scenario does rely
+on is `create: false` → `FILE_NOT_FOUND` (every `exists`/`stat` probe on a directory), and that arm is
+untouched by construction (R30) and asserted explicitly in Playwright case 2.
+
 ### New memory-adapter unit cases
 
 `test/unit/adapters/memory/memory-file-system.test.ts`, house GWT split
@@ -898,7 +1241,10 @@ assert those two fields plus the non-destructiveness observation.
 | R4 | a regular file occupies the target path | `writeExclusive` | throws `FILE_EXISTS` |
 | R5 | a symlink occupies the target path | `writeExclusive` | throws `FILE_EXISTS` |
 
-**`write` and its delegates — `describe('write over a directory')`**
+**`write` and its delegates — `describe('write over an occupied leaf')`**
+
+Every row plants **one** occupant, never two, so each disjunct of the §3b guard is tripped alone
+(§3e). The directory rows kill the `directories` term; the symlink rows kill the `symlinks` term.
 
 | Req | Given | When | Then |
 |---|---|---|---|
@@ -909,7 +1255,11 @@ assert those two fields plus the non-destructiveness observation.
 | R15 | an empty directory occupies the target path | `writeStream` | throws `PERMISSION_DENIED` |
 | R15 | a directory holding a child occupies the target path | `appendUtf8` | throws `PERMISSION_DENIED`, and the child is unchanged (nothing was read or written first) |
 | R16 | a regular file occupies the target path | `write` | overwrites, and reads back the new bytes |
-| DC-I | a symlink occupies the target path | `write` | *(only under DC-I option 1)* throws `PERMISSION_DENIED`, and `readlink` still returns the original target |
+| **R28** | a **symlink to an existing file** occupies the target path | `write` | throws `PERMISSION_DENIED` carrying the requested path; `readlink` still returns the original target and the target file's bytes are unchanged |
+| **R28** | a **dangling symlink** occupies the target path | `write` | throws `PERMISSION_DENIED`; `readlink` still returns the original target |
+| **R28** | a symlink occupies the target path | `writeUtf8` | throws `PERMISSION_DENIED` |
+| **R28** | a symlink occupies the target path | `writeStream` | throws `PERMISSION_DENIED` |
+| **R28** | a symlink occupies the target path | `appendUtf8` | throws `PERMISSION_DENIED`, and `readlink` is unchanged |
 
 **`rename` — `describe('rename kind guard')`**, one arrangement per case so each guard clause is
 tripped alone (§3e):
@@ -924,16 +1274,18 @@ tripped alone (§3e):
 | R18 | a directory at src and a **symlink** at dst | `rename` | throws `NOT_A_DIRECTORY` carrying src; `readlink(dst)` unchanged |
 | R19 | a directory at src and a **non-empty directory** at dst | `rename` | throws `DIRECTORY_NOT_EMPTY` carrying src; both trees intact, neither merged |
 | R19 | an **empty** directory at src and a non-empty directory at dst | `rename` | throws `DIRECTORY_NOT_EMPTY` carrying src |
-| R19 | a directory at src and dst = src's own **parent** | `rename` | throws `DIRECTORY_NOT_EMPTY` carrying src — not the DC-H code, because a parent is not inside its child |
+| R19 | a directory at src and dst = src's own **parent** | `rename` | throws `DIRECTORY_NOT_EMPTY` carrying src — **not** ADR-817's code, because a parent is not inside its child |
 | R20 | a directory with children at src and an **empty directory** at dst | `rename` | succeeds; every child is reachable under dst and none under src |
 | R21 | a **regular file**, src === dst | `rename` | resolves; the bytes are unchanged |
 | R21 | a **non-empty directory**, src === dst | `rename` | resolves; every child is still reachable (the clause that would otherwise refuse) |
 | R23 | a file at src and a directory at dst | `atomicRename` | throws `PERMISSION_DENIED` carrying src — proves the delegation, not a second guard |
 | R24 | absent src | `rename` | throws `FILE_NOT_FOUND` carrying src *(existing case at `:431`, retained)* |
-| R27 | a directory at src and an **absent** dst inside src | `rename` | *(shape depends on DC-H)* refuses, and src's subtree is intact |
-| R27 | a directory at src and an **existing non-empty directory** dst inside src | `rename` | *(shape depends on DC-H)* refuses, and both levels are intact |
-| R27 (N11b) | a directory at src and an **existing regular file** dst inside src | `rename` | *(shape and clause order depend on DC-H)* refuses, and the file is unchanged. **Memory-only** — POSIX-divergent, so it can never be a contract row |
-| R27 | src = the adapter's **root**, dst inside it | `rename` | *(shape depends on DC-H)* refuses, and `lstat(rootDir)` still reports a directory |
+| R27 | a directory at src and an **absent** dst inside src | `rename` | throws `UNSUPPORTED_OPERATION` with `operation === 'filesystem'` and the invalid-argument errno as `reason`; src's subtree is intact |
+| R27 | a directory at src and an **existing non-empty directory** dst inside src | `rename` | same error; both levels intact — proves the clause wins over the `DIRECTORY_NOT_EMPTY` check |
+| R27 (N11b) | a directory at src and an **existing regular file** dst inside src | `rename` | same error, and the file is unchanged — proves the clause sits **above** the file/symlink check (ADR-817's ordering). **Memory-only**: POSIX-divergent, never a contract row, and pinned nowhere on the node side |
+| R27 (N11b) | a directory at src and an **existing symlink** dst inside src | `rename` | same error; `readlink(dst)` unchanged |
+| R27 | src = the adapter's **root**, dst inside it | `rename` | same error, `lstat(rootDir)` still reports a directory, and a later write anywhere still succeeds |
+| R27 | a directory at src, dst a **deep** path inside src whose mid segment is absent | `rename` | same error — the clause is a prefix test, not a lookup |
 
 R3 / R14 (the `rootDir` cases) are memory-specific: node's root is a real directory the contract
 driver cannot reasonably occupy, so they have no contract counterpart.
@@ -941,19 +1293,26 @@ driver cannot reasonably occupy, so they have no contract counterpart.
 ### New shared contract rows
 
 `test/unit/ports/file-system.contract.ts`, in that file's existing 1-level
-`it('Given …, When …, Then …')` style, run by **both** drivers. Strictness per §5; the DC-J rows are
-written once that candidate is settled.
+`it('Given …, When …, Then …')` style, run by **both** drivers. Strictness per §5, now settled by
+ADR-819: `writeExclusive` rows keep a strict code; every `write` / `rename` **refusal** row asserts a
+structured `TsgitError` plus a non-destructiveness observation and no code; the two **positive** rows
+assert the outcome.
+
+The refusal rows need one new local helper beside the four existing assertion helpers (`:78–95`) —
+call it `assertRefusedWithoutCode`, matching the `:676` precedent's body: `expect(caught).toBeInstanceOf(TsgitError)`
+and nothing about `data`. Each row then adds its own non-destructiveness assertions inline, because
+what "intact" means differs per arrangement.
 
 | Req | Row | Strictness |
 |---|---|---|
 | R9 | `Given an existing directory, When writeExclusive, Then throws FILE_EXISTS` | **strict**, via `assertFileExists` (`:88`) |
 | — | `Given a file at a grandparent path segment, When writeExclusive, Then throws NOT_A_DIRECTORY` | **strict on the code**, via `assertNotADirectory` (`:93`), which asserts no `data.path`. Depth ≥ 2 only; an in-file comment records that depth 1 is adapter-dependent |
-| R25 | `Given a directory at the target path, When write, Then it refuses and the directory is intact` | **DC-J** |
-| R25 | `Given a directory at the destination, When rename, Then it refuses and neither side moves` | **DC-J** |
-| R25 | `Given a directory source and a file destination, When rename, Then it refuses and neither side moves` | **DC-J** |
-| R25 | `Given a directory source and a non-empty directory destination, When rename, Then it refuses and neither tree merges` | **DC-J** |
-| R20 | `Given a directory source and an empty directory destination, When rename, Then the subtree lands at the destination` | **DC-J** — the row most at risk on Windows |
-| R21 | `Given src === dst, When rename, Then it resolves and the entry is unchanged` — one file case, one non-empty-directory case | **strict** (positive rows; no code asserted, no platform risk) |
+| R25 | `Given a directory at the target path, When write, Then it refuses and the directory is intact` | instance + `readdir(dir)` still lists the child, and the child reads back byte-identical |
+| R25 | `Given a directory at the destination, When rename, Then it refuses and neither side moves` | instance + `read(src)` unchanged, `readdir(dst)` unchanged |
+| R25 | `Given a directory source and a file destination, When rename, Then it refuses and neither side moves` | instance + the destination file's bytes unchanged, the source's children still under the source |
+| R25 | `Given a directory source and a non-empty directory destination, When rename, Then it refuses and neither tree merges` | instance + each tree still holds exactly its own child |
+| R20 | `Given a directory source and an empty directory destination, When rename, Then the subtree lands at the destination` | **positive row, outcome asserted** — the row most at risk on Windows, kept because a positive row has no tolerant form (§5) |
+| R21 | `Given src === dst, When rename, Then it resolves and the entry is unchanged` — one file case, one non-empty-directory case | **positive rows**, outcome asserted, no code |
 
 New rows go beside the existing `Given existing file, When writeExclusive, Then throws FILE_EXISTS`
 (`:389`), `Given non-existent path, When writeExclusive, Then creates file` (`:403`), and the two
@@ -968,15 +1327,101 @@ different method and a different occupant shape from every row above. Probed in 
 a *symlink* has the same split (node `FILE_EXISTS`, memory `NOT_A_DIRECTORY`) and has no row today;
 none is added.
 
-### Node-side strict rows *(only under DC-J option 2)*
+### Node-side strict rows — the new posix-only file (ADR-819)
 
-A new `test/integration/posix-only/node-file-system-write-refusals.test.ts`, run by the
-`posix-integration` project on ubuntu + macos only, constructing `NodeFileSystem` over a `mkdtemp`
-root the way the unit driver does. One case per §1d/§1e row that DC-J pulls out of the contract
-suite, asserting `data.code` **and** `data.path` — including the two anchoring oddities node exhibits
-and this design deliberately does not fix (N18's `FILE_EXISTS` carrying **src**, N19's
-`NOT_A_DIRECTORY` carrying **dst**), so a future refactor of `runFs` anchoring cannot move them
-silently.
+**`test/integration/posix-only/node-fs-write-rename-refusals.test.ts`** — the name follows the
+directory's own `node-fs-<subject>.test.ts` convention (`node-fs-locked-directory`, `node-fs-mode-bits`,
+`node-fs-real-symlinks`), not the `node-file-system-…` shape the previous revision guessed.
+
+It is run by the `posix-integration` project (`vitest.config.ts:54–60`, `include:
+test/integration/posix-only/**/*.test.ts`) via `npm run test:posix-integration`, which is
+`vitest run --project posix-integration` — confirmed present in `package.json` (`wireit`
+`test:posix-integration`, files `src/**/*.ts` + `test/integration/posix-only/**/*.ts` +
+`vitest.config.ts`, dependency `check:types`). It is **not** part of `npm run validate` and **not**
+part of `npm run test:integration` (the `integration` project explicitly excludes
+`test/integration/posix-only/**`), so it must be run explicitly — §Gates.
+
+**Header.** All five existing files in the directory open with a block comment saying *why the case
+is platform-bound*, followed by a `@proves` block (`surface:` / `bucket: platform-only` / `unique:`).
+`check:test-pyramid`'s `integrationProof` heuristic is **off** in `test-pyramid-budgets.json`, so the
+header is not mechanically gated — it is a house convention, and the new file follows it:
+`surface: nodeFs.writeRenameRefusals`, `bucket: platform-only`, `unique:` the POSIX errno mapping for
+directory- and symlink-occupant refusals through `NodeFileSystem`.
+
+**Tier constraints that *are* gated.** This file lands in the `integration` tier, where
+`gwtTitle`, `aaaBody`, `sutNaming`, `sutBindsResult`, `bareClassToThrow`, `emptyAaaSection` and
+`underAssertedUnit` all apply, and `overMockedIntegration` has a threshold of **0** — so the file
+must contain no `vi.mock` / `vi.fn` / `vi.spyOn` / `vi.stubGlobal` / `vi.stubEnv`. It needs none: it
+constructs a real `NodeFileSystem` over a `mkdtemp` root then `realpath`, exactly as the contract
+driver does (`node-file-system.test.ts:63–74`), because macOS `os.tmpdir()` is a symlink. The `sut`
+binding is `const sut = new NodeFileSystem(rootDir)` — the shape
+`node-fs-mode-bits.test.ts:28` already uses and the audit already passes, so `sutBindsResult` is
+satisfied without touching its factory allowlist. Tier share is unaffected — the audit counts
+**files**, and integration sits at 146/17.2 % with a 25 % warn-above, so one more file is 147/17.3 %.
+
+**Rows** — every §1d / §1e arrangement on which darwin and linux agree, asserting `data.code` and,
+where the variant carries one, `data.path`:
+
+| From | Arrangement | Assert |
+|---|---|---|
+| W1 / W2 / W3 | `write` over an empty directory, a directory with children, the root | `PERMISSION_DENIED`, `path` = requested |
+| W6 / W7 / W8 | `writeUtf8`, `writeStream`, `appendUtf8` over a directory | `PERMISSION_DENIED`, `path` = requested |
+| W9 | `write` over a symlink leaf, live and dangling | `PERMISSION_DENIED`, `path` = requested |
+| W4 / W5 | file at the immediate parent / at the grandparent | `FILE_EXISTS` / `NOT_A_DIRECTORY`, `path` = requested — the ADR-811 depth split, pinned so it cannot move silently |
+| N1 / N2 / N3 / N15 | leaf → directory destination (file, file-with-children, symlink, the root) | `PERMISSION_DENIED`, `path` = **src** |
+| N4 / N5 / N6 | directory → regular file / → symlink destination | `NOT_A_DIRECTORY`, `path` = **src** |
+| N8 / N9 / N10 / N16 | directory → non-empty directory, → its own parent, → the root | `DIRECTORY_NOT_EMPTY`, `path` = **src** |
+| N7 / N20 / N21 / N22 / N23 / N24 | the positive rows: replace an empty directory, `src === dst` for a file and for a non-empty directory, fresh-name moves | they resolve, and the tree is where it should be |
+| N11 / N12 | dst inside src, dst absent or a directory; the root renamed inside itself | `UNSUPPORTED_OPERATION`, `operation: 'filesystem'`, `reason` = the invalid-argument errno, **no `path`** |
+| N18 / N19 | the two anchoring oddities this design deliberately does not fix — N18's `FILE_EXISTS` carrying **src**, N19's `NOT_A_DIRECTORY` carrying **dst** | both, so a future refactor of `runFs` anchoring cannot move them silently |
+
+**N11b is excluded** — it is the one row where darwin and linux disagree (§1e), and this job runs on
+both. It is pinned memory-side only.
+
+### Browser Playwright cases — ADR-814 + ADR-816
+
+**File:** `test/browser/opfs-roundtrip.spec.ts`, which after this change carries **three**
+directory-occupant pins. They go in a **second** `test.describe` — the existing one is titled
+*OPFS round-trip* and its body is one init→add→commit→status case — and that new describe **must
+repeat the webkit skip**: `test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed
+in Playwright WebKit')`. Playwright's headless WebKit does not expose
+`navigator.storage.getDirectory`, and a `test.skip` on one describe does not reach a sibling. This is
+the whole of the per-driver gating obligation here — ADR-812 adds no parity scenario, so nothing has
+to land in the five dist-bundle drivers.
+
+**How the page gets a `BrowserFileSystem`.** Inside `page.evaluate`, a dynamic
+`import('/dist/esm/adapters/browser/index.js')` — the module `index.html` already imports from, so it
+is served and in the page's module cache — then `new BrowserFileSystem(await
+navigator.storage.getDirectory())`. Note the constructor takes the **handle directly**
+(`browser-file-system.ts:19`), not a `BrowserFileSystemOptions` object, despite that interface being
+exported. The alternative — exposing `BrowserFileSystem` on `window.__tsgit.adapters` — is rejected:
+every one of the six specs in `test/browser/` loads `index.html` (`no-build-bundle.spec.ts` loads it
+*and* `no-build.html`), and a harness edit to reach one adapter class is blast radius for nothing.
+
+**How the occupant is planted.** Through the adapter's own `mkdir` / `write`, not raw
+`navigator.storage.getDirectory()` handles. That is what the memory unit rows and the contract suite
+already do (`file-system.contract.ts:676–680` plants with `env.fs.mkdir`), it keeps the case in one
+vocabulary, and `mkdir` is not the method under test in any of the three. `resetOpfs` in the
+`readyPage` fixture guarantees an empty root per test, so no cleanup is needed.
+
+**How the assertion crosses the boundary.** `page.evaluate` returns **plain data only** — never a
+`TsgitError` instance, whose class identity and `data` field do not survive serialisation. Each case
+plucks `{ code, path }` off `err.data` inside the page and returns it alongside the
+non-destructiveness observations, then asserts on the Node side. Titles use the file's existing
+1-level `Given …, When …, Then …` form; `check:test-pyramid`'s GWT / AAA / `sut` heuristics do not
+cover the `e2e` tier, so this is house style rather than a gate.
+
+| # | Req | Given → When → Then | Steps |
+|---|---|---|---|
+| 1 | ADR-814 | `Given a directory occupying the target path, When writeExclusive, Then it throws FILE_EXISTS against real OPFS` | the code and the requested path; the directory and its child still there afterwards |
+| 2 | **R29**, R30, R31 | `Given a directory occupying the target path, When write, Then it throws PERMISSION_DENIED against real OPFS` | (a) the code and the requested path; (b) non-destructiveness — `readdir` still lists the child and the child's bytes are unchanged; (c) **the mappings that must not move** — `stat(dir).isDirectory` is still `true` and `exists(dir)` is still `true` (R30), and a `write` under a path whose ancestor segment is a regular file still reports `FILE_NOT_FOUND`, not `PERMISSION_DENIED` (R31) |
+| 3 | **R29** | `Given a file source and a directory destination, When rename, Then it throws PERMISSION_DENIED and the source survives` | the code and the requested path; `read(src)` returns the original bytes — `rm(src)` never ran; the destination directory's child is unchanged |
+
+Case 2's step (c) is where the fix's real risk lives. The `create: false` mapping is what `stat` and
+`exists` fall back through, and the existing round-trip case already depends on it — `init` probes
+for `.git` through `exists`, which reaches `resolveFileHandle(path, false)` on a directory on every
+run — so a helper-wide re-map would turn the whole spec file red. Step (c) makes that dependency
+**explicit** rather than incidental, so a future reader cannot delete it as redundant.
 
 ### Receive-path test edit
 
@@ -994,7 +1439,7 @@ structure-specific and a data-structure or control-flow change falsifies a carri
 | `:186` `readdir` files/dirs disjoint | wording unchanged and now unconditionally true | **KEEP as written.** The annotated line is not edited |
 | `:352` `removeLeafEntry` file arm | same | **KEEP as written** |
 | `:359` `removeLeafEntry` symlink arm (*"symlinks/dirs are disjoint"*) | the premise becomes true only because of the **`rename`** guard, not `writeExclusive` | **KEEP as written**, re-verified: the sentence is about the disjointness, not about which method enforces it, so it still matches the code it annotates |
-| `:515` `addDirectEntry` pairwise disjoint | same | **KEEP as written** |
+| `:515` `addDirectEntry` pairwise disjoint | this is the one proof whose wording names **all three** pairs, so it is the one ADR-818 completes: before it, `write` over a symlink leaf could put a name in `files` *and* `symlinks`, and the two iterators would build `{isFile:true}` and `{isSymbolicLink:true}` for the same first segment | **KEEP as written**, and it becomes unconditionally true only with R28 in place |
 | `:343` `rmRecursive` (*"not a directory ⇒ missing entirely"*) | does not name disjointness; the claim is now sound where it was conditional | **KEEP as written** |
 | `:291` `renameDirectory` remap (*"remap only runs when key === src or key startsWith `${src}/` …"*) | the reasoning is about the **key filter**, untouched by a guard sitting in `rename` above the call. **But** if the implementation adds an explicit `directories.delete(dst)` inside `renameDirectory` for the R20 replace path, the directive's anchor line moves — Stryker anchors on the expression line, so the comment must move with `const remap = …` | **KEEP the wording; re-check the anchor** if `renameDirectory` gains a statement |
 | `:213` `mkdir`, `:204` `readdir`, `:392` handle read, `:497` `hasChildren`, `:544` / `:553` collectors | none is on a line this change edits, and none rests on a premise this change moves | **KEEP** |
@@ -1037,8 +1482,9 @@ recorded reason.** Lenses 1 (round-trip) and 3 (total function over a grammar) d
 | Surface | Change | Owner |
 |---|---|---|
 | `src/ports/file-system.ts` `writeExclusive` JSDoc | occupancy stated as *anything at `path`* + the ancestor obligation line (R11) | implementation, ADR-813 |
-| `src/ports/file-system.ts` `write` / `writeStream` / `writeUtf8` / `appendUtf8` JSDoc | *"Overwrites if exists"* → overwrites a **regular file**; refuses a directory with `PERMISSION_DENIED` (R26) | implementation |
-| `src/ports/file-system.ts` `rename` / `atomicRename` JSDoc | the §1e kind matrix in one sentence, plus `data.path === src` on every refusal (R26) | implementation |
+| `src/ports/file-system.ts` `write` / `writeStream` / `writeUtf8` / `appendUtf8` JSDoc | *"Overwrites if exists"* → overwrites a **regular file**; refuses a **directory or a symlink** at the leaf with `PERMISSION_DENIED` (R26, extended by ADR-818) | implementation |
+| `src/ports/file-system.ts` `rename` / `atomicRename` JSDoc | the §1e kind matrix in one sentence, plus `data.path === src` on every refusal, plus the inside-source refusal and its `UNSUPPORTED_OPERATION` shape (R26, extended by ADR-817) | implementation |
+| `cspell.json` | one word: POSIX's invalid-argument errno, inserted between the `effectful` and `EISDIR` entries (`:288` today). **Never re-sort the file.** Lands in the implementation commit that introduces the literal, never as a `cspell:disable` comment | implementation, ADR-817 |
 | `docs/design/ports-and-adapters.md:561` | the `writeExclusive` line that codified the narrow reading | docs phase, ADR-813 |
 | `docs/design/ports-and-adapters.md:565` | the `rename` line — *"Delete old key + insert new key"* is now an incomplete description of the guarded method | docs phase |
 | `docs/design/ports-and-adapters.md` memory bullet list | has no `write` bullet at all; add one naming the directory refusal | docs phase |
@@ -1058,18 +1504,36 @@ excepted packages, `.claude/workflow.md`).
 
 Coverage stays at 100 % on `src/adapters/memory/**`; the mutation gate covers it too
 (`stryker.config.mjs` mutates all of `src` except `index.ts`, `*.d.ts` and
-`src/adapters/browser/**`). The ADR-814 browser fix — and anything taken under DC-G — is outside both
-gates and is proven only by the Playwright cases, which need `npx playwright install` and a local run
-before the PR.
+`src/adapters/browser/**`).
 
-**Three gates the first pass did not name.** The contract suite runs on the `windows-latest` unit
-matrix cell, so a red Windows job is the expected failure mode if DC-J option 1 is taken.
-`test/integration/posix-only/**` is a *separate CI job* (`ci.yml:393`), not part of
-`npm run test:integration` — a new file there must be run explicitly with
-`npx vitest run --project posix-integration`. And if DC-H lands option 1 or 2, the memory adapter
-will carry POSIX's invalid-argument errno as a string literal, so **`cspell.json` gains that one
-word** in the implementation commit that introduces it — a dictionary entry, next to the six errno
-siblings already listed there, never a `cspell:disable` comment.
+**Three gates `npm run validate` does not run, each of which this change needs.** Verified against
+`package.json`'s `wireit.validate.dependencies`, which lists neither `test:e2e` nor
+`test:posix-integration`.
+
+1. **The browser part.** `src/adapters/browser/**` is outside *both* the coverage gate
+   (`vitest.config.ts` `coverage.include`) and the mutation gate, so the three Playwright cases are
+   its only proof — and `validate` does not run them. During the browser slice, run
+   `npm run build` **first**, then
+   `npx playwright test test/browser/opfs-roundtrip.spec.ts --project=chromium --project=firefox`;
+   a bare `npx playwright test` bypasses wireit's build dependency and every spec then times out
+   uniformly against a stale `dist/`. Before the PR, run `npm run test:e2e`, whose wireit entry
+   depends on `build` **and** `build:parity`, so the whole browser tier is covered from a clean
+   build. `npx playwright install` is a prerequisite of both.
+2. **The posix-only file.** `test/integration/posix-only/**` is a separate CI job (`ci.yml:393`) and
+   the `integration` vitest project explicitly **excludes** that directory — so neither
+   `npm run validate` nor `npm run test:integration` touches the new file. Run
+   `npm run test:posix-integration` (`vitest run --project posix-integration`) explicitly in its
+   slice and again before the PR.
+3. **The Windows leg.** The contract suite runs on the `windows-latest` unit matrix cell and cannot
+   be run locally. Under ADR-819 the refusal rows carry no code, so they are Windows-safe by
+   construction; the two **positive** rows (R20, R21-directory) are the ones that can go red there,
+   and §5 records that as an accepted, recorded outcome rather than a surprise.
+
+**One dictionary chore.** The memory adapter will carry POSIX's invalid-argument errno as a string
+literal (ADR-817), so **`cspell.json` gains that one word** in the implementation commit that
+introduces it — inserted between the `effectful` and `EISDIR` entries, file not re-sorted, never a
+`cspell:disable` comment. §1e carries the exact anchor and the reason this design document still uses
+a stand-in spelling.
 
 ---
 
@@ -1097,10 +1561,11 @@ siblings already listed there, never a `cspell:disable` comment.
 - **`mkdir` over a symlink or a regular file.** Node `FILE_EXISTS`, memory `NOT_A_DIRECTORY` — the
   same ADR-811 family, a different method. The contract suite's tolerant row (`:567`) already absorbs
   the file case; the symlink case has no row and gains none.
-- **Constructor-seeded namespace collisions** (§2d route 2). Reachable only from test fixtures, not
-  from the port surface; the sweep found zero occurrences. Closing it means either ordering the
-  seeded entries or checking `directories` before `files.set` in the constructor loop — a change to a
-  test-facing API with no production caller.
+- **Constructor-seeded namespace collisions** (§2d, the one surviving route). A `files ∩ directories`
+  collision reachable only from test fixtures, not from the port surface; the sweep found zero
+  occurrences. Closing it means either ordering the seeded entries or checking `directories` before
+  `files.set` in the constructor loop — a change to a test-facing API with no production caller.
+  This is the whole of **R8b**.
 - **`write-object.ts`'s treatment of a directory occupant as "we already have this object".** Once
   memory refuses, both adapters take the `isFileExists` arm and return the oid **without the object
   being written** — a pre-existing question about the *caller*, identical on node today, and not
@@ -1108,10 +1573,18 @@ siblings already listed there, never a `cspell:disable` comment.
 - **A `test/parity/` scenario.** A slot *does* exist — the brief's premise was wrong and §5 corrects
   it — but ADR-812 records the decision to add none, because every registered scenario also runs
   against real OPFS in `test/browser/parity.spec.ts`.
-- **Browser `rm` on a non-empty directory.** Derived alongside §1f: `removeEntry` without `recursive`
-  rejects with `InvalidModificationError`, which the bare `catch` at `browser-file-system.ts:146–150`
-  maps to `FILE_NOT_FOUND` where node gives `DIRECTORY_NOT_EMPTY`. Same class as DC-G, a third
-  method, not opened here.
+- **Browser `rm` on a non-empty directory.** Now *measured*, not derived (§1f): `removeEntry` without
+  `recursive` rejects with `InvalidModificationError` on chromium and firefox, which the bare `catch`
+  at `browser-file-system.ts:146–150` maps to `FILE_NOT_FOUND` where node gives
+  `DIRECTORY_NOT_EMPTY`. Same class as ADR-816's defect, a third method, not opened here — ADR-816's
+  scope is `write` and `rename`.
+- **Browser `rename` with a directory *source*.** After ADR-816 the browser reports
+  `PERMISSION_DENIED` for a directory *destination* and still `FILE_NOT_FOUND` for a directory
+  *source*, where node succeeds for a fresh destination (N23/N24). ADR-816's wording is *"plant a
+  directory at the target"*, the new arm is `create: true`-only, and the source travels the untouched
+  `create: false` path — so the fold changes nothing here. It is a **capability** gap, not a mapping
+  bug: OPFS has no directory rename, the adapter's read/write/rm emulation is leaf-only, and the
+  current behaviour refuses rather than corrupts. Closing it means recursive copy-then-remove with
+  its own atomicity story. §3f states the resulting asymmetry plainly so it is not read as a
+  half-applied fix.
 - **A `BACKLOG.md` tick.** This is not a backlog item.
-- **Anything under DC-G, DC-H, DC-I or DC-J the user declines.** All four are honest scope questions
-  raised by the pinned matrices; none is assumed.
