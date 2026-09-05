@@ -14,7 +14,7 @@
 > table below raises none.
 > Status: draft → self-reviewed ×3 → accepted (ADRs 810–815) → revised (write + rename folded in)
 > → self-reviewed ×3 → accepted (ADRs 816–819) → revised (browser write/rename folded in)
-> → self-reviewed ×3
+> → self-reviewed ×3 → review round folded in
 
 ## Context
 
@@ -200,6 +200,21 @@ operation in `runFs(op, src)`.
 - **R32** *(ADR-819)* — A new file under `test/integration/posix-only/` pins the **node** adapter's
   exact `data.code` (and `data.path` where the variant carries one) for every §1d / §1e row on which
   darwin and linux agree. It runs in the `posix-integration` project only.
+
+**Review round — added by the four-dimension review**
+
+- **R33** — A refused `write`, `writeExclusive`, `mkdir` or `rename` whose ancestor chain holds a
+  regular file or a symlink records **no** directory entry: `addDirectoryRecursive` validates the
+  whole chain before adding any of it, so the tree after a refusal is byte-for-byte the tree before
+  it. Asserted by two memory rows (`write`, `mkdir`) and a probe in the shared contract grandparent
+  row that both drivers pass.
+- **R34** — `BrowserFileSystem.rename(p, p)` is a no-op: the file survives with its bytes, and an
+  absent `p` still reports `FILE_NOT_FOUND`. Asserted against real OPFS.
+- **R35** — The port's `rename` contract is scoped per adapter: the kind matrix and the
+  `data.path === src` anchoring hold on node and memory; the browser's emulation reports
+  `FILE_NOT_FOUND` for a directory source and `PERMISSION_DENIED` carrying `dst` for a directory
+  destination, and replaces no directory. The `writeStream` contract records that a refused write
+  may already have consumed its source on either adapter.
 
 **Browser — settled by ADR-816**
 
@@ -974,6 +989,47 @@ state plainly:** after this change the browser reports `PERMISSION_DENIED` for a
 *destination* and `FILE_NOT_FOUND` for a directory *source*. The asymmetry is deliberate and bounded
 by ADR-816's wording; it is not a half-applied fix.
 
+#### §3g What the review round changed
+
+The four-dimension review over the landed parts found and fixed six things; none reopened a
+decision.
+
+1. **Orphan directories on an ancestor refusal (security, MEDIUM).** `addDirectoryRecursive` walked
+   upward adding each directory key *before* testing the next segment, so a write refused by a
+   file at a grandparent left the intermediate directory registered, unreachable from its parent
+   and untouched by `rmRecursive`. Pre-existing, but the branch's non-destructive-refusal posture
+   made it normative. It now validates the chain first (`assertAncestorChainFree`) and adds only
+   afterwards — one synchronous pass, so `atomicRename`'s guarantee is unchanged. R33.
+2. **Browser self-rename destroyed the file (code, MEDIUM).** The read/write/rm emulation
+   overwrote `p` with itself and then unlinked it. Pre-existing; the port sentence this branch added
+   ("`src === dst` is a no-op") made it a contract violation. An early return after the read
+   closes it; the read stays first so an absent source still reports `FILE_NOT_FOUND`. R34.
+3. **The port's `rename` paragraph was false for the browser (code MEDIUM, security LOW, tests
+   MEDIUM — three dimensions converged).** Directory source, directory destination anchoring and
+   the empty-directory replace all differ on the browser. The paragraph is now scoped the way its
+   atomicity sentence already was. R35.
+4. **Rejection classification read `instanceof Error` (security, PROBE).** The browser predicates
+   now read `name` structurally through one `rejectionName` helper — realm-independent, the same
+   posture `errorDataCode` takes on `data.code`.
+5. **Two measured mutation survivors on the `rename` dispatcher (tests, HIGH + MEDIUM).** With
+   `directories.has(normalizedSrc)` forced true, every leaf rename routed through
+   `renameDirectory`, which never deletes a colliding `dst` key — no test renamed a leaf over a
+   leaf of the other kind. With the `normalizedSrc === normalizedDst` early return forced false,
+   nothing observed the difference. Both are killed: a file renamed over a symlink (the link is
+   replaced, its target untouched), its mirror, and a self-rename that must leave the directory
+   listing order unchanged. Every other new guard term was hand-verified killed before the
+   mutation phase.
+6. **The tarball cap paragraph misattributed the growth (perf, MEDIUM).** Measured by reverting
+   only the new port JSDoc inside the emitted type chunks: the prose alone costs ~898 B gzip'd
+   because `.d.ts` and `.d.cts` both carry it verbatim beyond gzip's window. The paragraph in
+   `tooling/verify-tarball.sh` now records that split; the cap is 906 KiB against a measured
+   927 105 B after the review round.
+
+Smaller: `assertRenamable`'s parameters are named `normalizedSrc` / `normalizedDst` /
+`reportedPath` like `renameLeaf`'s; the contract `write` row carries the same `expect.fail` guard
+as its `rename` siblings; the `appendUtf8` test title no longer claims nothing was read (the read
+happens and yields the empty string); the R7 row asserts the directory's timestamps unchanged.
+
 ### §4 The test-side patches this retires
 
 `writeOrKeepArtifact`'s directory arm is currently proven on the memory adapter by patching
@@ -1492,6 +1548,17 @@ recorded reason.** Lenses 1 (round-trip) and 3 (total function over a grammar) d
 | `docs/use/errors.md:46` `PERMISSION_DENIED` | add: a non-exclusive write whose leaf is a directory, and a `rename` that would replace a directory with a non-directory | docs phase |
 | `docs/use/errors.md:41` `DIRECTORY_NOT_EMPTY` | *"A directory delete on a non-empty target"* → also a `rename` whose destination is a non-empty directory | docs phase |
 | `docs/use/errors.md:44` `NOT_A_DIRECTORY` | *"Directory operation against a non-directory"* → also a `rename` of a directory onto a non-directory | docs phase |
+
+### Review-round additions
+
+| Req | Where | Case |
+|---|---|---|
+| R33 | `memory-file-system.test.ts` → `describe('ancestor refusals leave no directory behind')` | `write` and `mkdir` under a file-blocked grandparent: `NOT_A_DIRECTORY`, the intermediate directory absent, the root listing unchanged |
+| R33 | `file-system.contract.ts` grandparent row | after the strict `NOT_A_DIRECTORY`, `lstat` of the intermediate rejects on both drivers (`NOT_A_DIRECTORY` on node, `FILE_NOT_FOUND` on memory) |
+| R24 | `describe('rename kind guard')` | file over symlink (link replaced, target untouched — kills the dispatcher's forced-`true` mutant); symlink over file (link keeps its target, the replaced file entry is gone) |
+| R21 | `describe('rename kind guard')` | two files, `rename(a, a)`: listing order unchanged — a re-inserted entry would move to the end (kills the forced-`false` early-return mutant) |
+| R7 | `describe('writeExclusive contract')` | the directory's `mtimeMs`/`ctimeMs` before and after the refusal are equal |
+| R34 | `test/browser/opfs-roundtrip.spec.ts` | `rename('same.txt', 'same.txt')` leaves the file with its bytes; `rename('missing.txt', 'missing.txt')` reports `FILE_NOT_FOUND` |
 
 ### Gates
 
