@@ -538,6 +538,8 @@ describe('fetchMissing', () => {
 
         // Assert
         expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        expect(await ctx.fs.exists(`${packDir}/pack-${packSha}.idx`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${packSha}.rev`)).toBe(true);
       });
     });
   });

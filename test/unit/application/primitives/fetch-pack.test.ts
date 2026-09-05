@@ -5628,14 +5628,29 @@ describe('fetchPack — an already-present pack', () => {
         };
         const sut = fetchPack;
         const first = await sut(ctx, negotiator, input);
+        // Every slice the compare requests from the occupant is recorded:
+        // both adapters clamp a read at end of file, so only the requested
+        // lengths can prove the compare stays inside its window.
+        const sliceRequests: Array<{ readonly offset: number; readonly length: number }> = [];
+        const spied = withFsPatch(ctx, {
+          readSlice: async (path: string, offset: number, length: number) => {
+            if (path === first.packPath) sliceRequests.push({ offset, length });
+            return ctx.fs.readSlice(path, offset, length);
+          },
+        });
 
         // Act
-        const second = await sut(ctx, negotiator, input);
+        const second = await sut(spied, negotiator, input);
 
         // Assert
         expect(second.packSha).toBe(first.packSha);
         expect(await ctx.fs.read(second.packPath)).toEqual(await ctx.fs.read(first.packPath));
         expect(await tmpPackNames(ctx)).toHaveLength(0);
+        expect(sliceRequests.length).toBeGreaterThanOrEqual(2);
+        expect(sliceRequests.every((request) => request.length <= 1 << 20)).toBe(true);
+        expect(sliceRequests.map((request) => request.offset)).toEqual(
+          sliceRequests.map((_, index) => index * (1 << 20)),
+        );
       });
     });
   });

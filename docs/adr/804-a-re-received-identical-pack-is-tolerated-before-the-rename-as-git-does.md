@@ -41,7 +41,8 @@ quarantine copy at the content-addressed name the way git's finalize step does, 
 - a free name takes the copy by rename;
 - an occupant whose bytes are identical to the copy keeps its place — same inode, same mtime —
   and the copy is discarded as a handled outcome;
-- an occupant whose bytes differ is refused with `PACK_ARTIFACT_MISMATCH` naming the artefact,
+- an occupant that is not a regular file, or whose bytes differ, is refused with
+  `PACK_ARTIFACT_MISMATCH` naming the artefact,
   never overwritten;
 - then the `.idx` and `.rev` siblings are each written where their name is free, kept where an
   identical file already sits, and refused where a differing one does; the `.promisor` sentinel is

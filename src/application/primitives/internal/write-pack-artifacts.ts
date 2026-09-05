@@ -362,21 +362,21 @@ export const writePackArtifactsViaQuarantine = async (
   }
 
   if (input.promisor) {
-    // Unlike the receive path (fetch-pack's writeOrKeepArtifact /
-    // writeSentinelIfAbsent), which KEEPS whatever sits at a sibling name,
-    // gc's own rewrite of a sha it already produced must REPLACE its
+    // Unlike this module's own sibling writers on the receive path —
+    // `writeOrKeepArtifact` keeps only a byte-identical occupant and refuses
+    // anything else, `writeSentinelIfAbsent` keeps a sentinel whatever it
+    // holds — gc's rewrite of a sha it already produced must REPLACE its
     // prior-run sentinel and `.rev`: `rmTolerant` clears the stale artefact
-    // first, so the write below is always fresh rather than adopting bytes
-    // an earlier gc run left behind. The receive path's tolerant "keep
-    // whatever it holds" sibling write is an affordance this path
-    // deliberately does not rely on.
+    // first, so the write below is fresh rather than adopting bytes an
+    // earlier gc run left behind.
     await rmTolerant(ctx, paths.promisorPath);
     await writeSentinelIfAbsent(ctx, paths.promisorPath);
   }
   if (wantRev) {
     // Same REPLACE posture as the sentinel above: any stale `.rev` from a
     // prior gc run at this sha is removed first, then rebuilt fresh from
-    // the entries this call already has — never kept, never compared.
+    // the entries this call already has — the keep-or-refuse compare arm
+    // is not the intended path here.
     await rmTolerant(ctx, paths.revPath);
     await writeRevArtifact(ctx, paths.revPath, sorted, input.packSha);
   }

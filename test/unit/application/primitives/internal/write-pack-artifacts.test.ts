@@ -902,12 +902,21 @@ describe('writePackSiblingArtifacts — artefacts already present', () => {
         const dir = packDirOf(ctx);
         const idxPath = `${dir}/pack-${PACK_SHA}.idx`;
         await ctx.fs.mkdir(idxPath);
+        // The directory's stat is patched to report the exact size of the
+        // index about to be written, so `isFile` is the only discriminator
+        // this case can trip — the size check is pinned by its own case.
+        const idxBytes = await buildIdx(ctx, sortPackIndexEntries(entries), PACK_SHA);
         const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
         const failingFs: Context['fs'] = {
           ...ctx.fs,
           writeExclusive: async (path: string, data: Uint8Array) => {
             if (path === idxPath) throw new TsgitError({ code: 'FILE_EXISTS', path });
             return originalWriteExclusive(path, data);
+          },
+          stat: async (path: string) => {
+            const real = await originalStat(path);
+            return path === idxPath ? { ...real, size: idxBytes.length } : real;
           },
         };
         const failingCtx: Context = { ...ctx, fs: failingFs };
