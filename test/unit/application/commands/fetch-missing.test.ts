@@ -405,9 +405,9 @@ describe('fetchMissing', () => {
     });
   });
 
-  describe('Given a concurrent identical pack already on disk', () => {
-    describe('When fetchMissing', () => {
-      it('Then the FILE_EXISTS collision is tolerated', async () => {
+  describe('Given a corrupt index already occupying the pack sibling name', () => {
+    describe('When fetchMissing receives the pack', () => {
+      it('Then it refuses naming the index, as git does', async () => {
         // Arrange
         const base = createMemoryContext();
         await seedRepo(base, {});
@@ -417,17 +417,27 @@ describe('fetchMissing', () => {
         const ctx: Context = { ...base, transport };
         const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
         const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const idxPath = `${packDir}/pack-${packSha}.idx`;
         await ctx.fs.mkdir(packDir);
-        await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.idx`, new Uint8Array(0));
+        await ctx.fs.writeExclusive(idxPath, new Uint8Array(0));
+        const sut = fetchMissing;
 
         // Act
-        const result = await fetchMissing(ctx, { oids: [blobId] });
+        let caught: unknown;
+        try {
+          await sut(ctx, { oids: [blobId] });
+        } catch (err) {
+          caught = err;
+        }
 
-        // Assert — the pack itself is absent, so fetchPack renames its quarantine
-        // copy into place, then the pre-existing .idx sibling makes writeExclusive
-        // throw FILE_EXISTS, which fetchMissing swallows: the objects are already
-        // on disk.
-        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        // Assert — the pack itself is absent, so the receive renames its quarantine
+        // copy into place, then finds the zero-byte index differs from the one it
+        // would write: a refusal, never a silent success over an unreadable pack.
+        expect(caught).toBeInstanceOf(TsgitError);
+        if (!(caught instanceof TsgitError)) expect.unreachable();
+        expect(caught.data.code).toBe('PACK_ARTIFACT_MISMATCH');
+        if (caught.data.code !== 'PACK_ARTIFACT_MISMATCH') expect.unreachable();
+        expect(caught.data.path).toBe(idxPath);
       });
     });
   });

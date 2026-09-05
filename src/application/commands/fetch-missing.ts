@@ -8,7 +8,6 @@
  *  - `createPromisorRemote` — the `PromisorRemote` port implementation behind
  *    `readObject`'s automatic lazy-fetch; reports `attempted: false` instead.
  */
-import { TsgitError } from '../../domain/error.js';
 import { noPromisorRemote, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -75,9 +74,6 @@ const collectMissing = async (
   return missing;
 };
 
-const isFileExists = (err: unknown): boolean =>
-  err instanceof TsgitError && err.data.code === 'FILE_EXISTS';
-
 const fetchMissingInternal = async (
   ctx: Context,
   oids: ReadonlyArray<ObjectId>,
@@ -109,21 +105,16 @@ const fetchMissingInternal = async (
       discovery.advertisement.capabilities,
       ctx.hashConfig.algorithm,
     );
-    try {
-      // No `filter`: a lazy-fetch requests exact oids.
-      await fetchPack(ctx, (c, req) => negotiatePackBytes(c, session, discovery.version, req), {
-        wants: missing,
-        haves: [],
-        capabilities,
-        progressOp: FETCH_MISSING_OP,
-        promisor: true,
-      });
-    } catch (err) {
-      // Packs are content-addressed (`pack-<sha>.*`), so any FILE_EXISTS from
-      // `fetchPack` — on the `.pack`, `.idx`, or `.promisor` write — means a
-      // concurrent fetch already landed byte-identical artifacts. Tolerate it.
-      if (!isFileExists(err)) throw err;
-    }
+    // No `filter`: a lazy-fetch requests exact oids. A pack another fetch
+    // landed first is adopted by the receive path itself, so nothing is
+    // tolerated here — a differing artefact at that name is a refusal.
+    await fetchPack(ctx, (c, req) => negotiatePackBytes(c, session, discovery.version, req), {
+      wants: missing,
+      haves: [],
+      capabilities,
+      progressOp: FETCH_MISSING_OP,
+      promisor: true,
+    });
   } finally {
     await session.close();
   }

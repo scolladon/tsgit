@@ -12,7 +12,8 @@
  * The gate is resolved before any artefact is created, so a refused config
  * value leaves the pack directory untouched — see `writeReverseIndex`.
  */
-import { hexToBytes } from '../../../domain/objects/encoding.js';
+import { packArtifactMismatch } from '../../../domain/error.js';
+import { bytesEqual, hexToBytes } from '../../../domain/objects/encoding.js';
 import {
   type PackIndexEntries,
   type SortedPackIndex,
@@ -154,10 +155,32 @@ const artifactPaths = (packDir: string, packSha: string): ArtifactPaths => ({
   revPath: `${packDir}/pack-${packSha}.rev`,
 });
 
+/** Writes `bytes` at `path` unless an identical artefact already occupies
+ *  it — git's finalize step keeps an identical file in place and reports a
+ *  mismatch on anything else, never overwriting. */
+const writeOrKeepArtifact = async (
+  ctx: Context,
+  path: string,
+  bytes: Uint8Array,
+): Promise<void> => {
+  try {
+    await ctx.fs.writeExclusive(path, bytes);
+  } catch (err) {
+    if (errorDataCode(err) !== 'FILE_EXISTS') throw err;
+    if (!bytesEqual(await ctx.fs.read(path), bytes)) throw packArtifactMismatch(path);
+  }
+};
+
 // A promisor pack vouches for the objects it references but omits; the
-// empty `.promisor` sentinel marks it so missing objects read as promised.
-const writeEmptySentinel = (ctx: Context, path: string): Promise<void> =>
-  ctx.fs.writeExclusive(path, new Uint8Array(0));
+// `.promisor` sentinel marks it so missing objects read as promised. An
+// existing sentinel is kept whatever it holds — git writes free-form text there.
+const writeSentinelIfAbsent = async (ctx: Context, path: string): Promise<void> => {
+  try {
+    await ctx.fs.writeExclusive(path, new Uint8Array(0));
+  } catch (err) {
+    if (errorDataCode(err) !== 'FILE_EXISTS') throw err;
+  }
+};
 
 const writeRevArtifact = async (
   ctx: Context,
@@ -166,7 +189,7 @@ const writeRevArtifact = async (
   packSha: string,
 ): Promise<void> => {
   const revBytes = await buildRev(ctx, sorted, packSha);
-  await ctx.fs.writeExclusive(path, revBytes);
+  await writeOrKeepArtifact(ctx, path, revBytes);
 };
 
 export interface WritePackSiblingArtifactsInput {
@@ -183,6 +206,8 @@ export interface WritePackSiblingArtifactsInput {
  * separate from `writePackSiblingArtifacts` so `writePackArtifacts` can
  * resolve the gate BEFORE writing `.pack` — a refused config value must
  * leave the pack directory untouched, not just the `.idx`/`.rev` pair.
+ * Each sibling is written only where its name is free: an identical
+ * occupant is kept, a differing one is refused — git's finalize posture.
  */
 const writeSiblingsGiven = async (
   ctx: Context,
@@ -195,8 +220,8 @@ const writeSiblingsGiven = async (
   // the sort is the most expensive step of either artefact's assembly.
   const sorted = sortPackIndexEntries(input.entries);
   const idxBytes = await buildIdx(ctx, sorted, input.packSha);
-  await ctx.fs.writeExclusive(paths.idxPath, idxBytes);
-  if (input.promisor) await writeEmptySentinel(ctx, paths.promisorPath);
+  await writeOrKeepArtifact(ctx, paths.idxPath, idxBytes);
+  if (input.promisor) await writeSentinelIfAbsent(ctx, paths.promisorPath);
   if (wantRev) await writeRevArtifact(ctx, paths.revPath, sorted, input.packSha);
   return {
     packPath: paths.packPath,
@@ -338,7 +363,7 @@ export const writePackArtifactsViaQuarantine = async (
     // path — `writeExclusive` alone would refuse with `FILE_EXISTS`, exactly
     // as the `.rev` write below tolerates the same shape of stale sibling.
     await rmTolerant(ctx, paths.promisorPath);
-    await writeEmptySentinel(ctx, paths.promisorPath);
+    await writeSentinelIfAbsent(ctx, paths.promisorPath);
   }
   if (wantRev) {
     await rmTolerant(ctx, paths.revPath);

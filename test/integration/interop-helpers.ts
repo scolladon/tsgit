@@ -259,11 +259,11 @@ export const tryRunGitWithExit = (
   options: { readonly input?: string | Uint8Array; readonly env?: NodeJS.ProcessEnv } = {},
 ): { readonly stdout: string; readonly stderr: string; readonly exitCode: number } => {
   const env = options.env ?? SAFE_ENV;
-  const opts: { env: NodeJS.ProcessEnv; encoding: 'utf8'; input?: string | Uint8Array } = {
+  const opts = {
     env,
-    encoding: 'utf8',
+    encoding: 'utf8' as const,
+    ...(options.input === undefined ? {} : { input: options.input }),
   };
-  if (options.input !== undefined) opts.input = options.input;
   const result = spawnSync('git', args as string[], opts);
   return {
     stdout: result.stdout ?? '',

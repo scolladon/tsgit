@@ -35,16 +35,42 @@ lifecycle and explicitly did not pin the already-present destination. The prime 
 
 ## Decision
 
-**Ratified by the user: option 2.** When the content-addressed destination pack already exists,
-the receive path discards its quarantine copy and returns the existing artefacts without
-renaming or rewriting anything; the check happens before the rename. A cross-tool interop test
-receives one pack twice and asserts the second call succeeds with the artefacts unchanged, with
-real git reproducing the same sequence in the same fixture. The `fetch-missing` tolerance test
-is repaired to pre-create the sibling the writer actually collides on. The user chose to run the
-mutation harness standalone on the `src/` diff before the PR, since this run waived it.
+**Ratified by the user: option 2, amended after review.** The receive path lands its verified
+quarantine copy at the content-addressed name the way git's finalize step does, per artefact:
+
+- a free name takes the copy by rename;
+- an occupant whose bytes are identical to the copy keeps its place — same inode, same mtime —
+  and the copy is discarded as a handled outcome;
+- an occupant whose bytes differ is refused with `PACK_ARTIFACT_MISMATCH` naming the artefact,
+  never overwritten;
+- then every sibling (`.idx`, `.rev`, the `.promisor` sentinel) is written where its name is
+  free, kept where an identical file already sits, and refused where a differing one does — the
+  sentinel is kept whatever it holds, since git writes free-form text there.
+
+The comparison is by content, in bounded windows, so a pack larger than memory is never held at
+once. The check happens before any rename, so nothing is clobbered. A cross-tool interop test
+receives one pack twice and asserts the second call succeeds with the artefacts unchanged, that a
+planted foreign file and a zero-byte index are refused, and that missing siblings are recreated,
+with real git reproducing every sequence in the same fixture. `fetch-missing`'s former
+`FILE_EXISTS` tolerance is removed as dead code: the receive path now adopts an identical pack
+itself, and a differing artefact is a refusal there too. The user chose to run the mutation
+harness standalone on the `src/` diff before the PR, since this run waived it.
+
+**Amended 2026-09-05 (review).** The first ruling adopted an existing destination by path alone,
+on the design's pin that git's already-present test is "path existence, never content". That pin
+came from a loose-object control and does not carry to packs: pinned against git 2.55.0, a
+planted foreign `.pack` at the content-addressed name makes `index-pack` refuse with "differ in
+contents" (exit 128), a zero-byte `.idx` beside a real pack is refused the same way, and a
+`.pack` whose siblings went missing gets them silently recreated. The per-artefact
+compare-and-complete rule above replaces the path-only rule; ADR-728's quarantine posture is
+untouched.
 
 ## Consequences
 
-Receiving an already-present pack is idempotent and silent, as in git. The existing-pack check
-is by path, matching git's own already-present test (which keeps even a tampered loose object).
-ADR-728's temp-file posture is unchanged: the quarantine copy is unlinked as a handled outcome.
+Receiving an already-present pack is idempotent and silent, as in git; a receive that finds a
+differing artefact at a content-addressed name refuses loudly, as in git, instead of adopting
+corruption or tampering as success. Because every artefact is attempted and tolerated rather
+than pre-checked, two concurrent receives of the same pack both succeed whichever lands first.
+The refusal is a new public error code (`PACK_ARTIFACT_MISMATCH`, with the artefact path), so the
+error reference and the committed API snapshot carry it. ADR-728's temp-file posture is
+unchanged: the quarantine copy is unlinked as a handled outcome.

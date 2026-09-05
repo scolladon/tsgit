@@ -581,7 +581,8 @@ Only if D5 lands on (b) or (c). A cross-tool interop test in
 `test/integration/*-interop.test.ts` receives one pack twice and asserts the second call
 succeeds with the artefacts unchanged, with real `git` reproducing the same sequence in the
 same fixture — parity tests are cross-adapter and prove nothing about faithfulness. Unit
-coverage extends to both adapters, since `writeExclusive` refuses identically on each. The
+coverage is memory-only: `exists`, `readSlice` and `writeExclusive` behave identically on both
+first-party adapters, and the node adapter is covered end to end by the git-gated interop file. The
 existing `fetch-missing` tolerance test is repaired in the same slice: it pre-creates only the
 `.pack`, which `rename` overwrites, so the refusal it claims to exercise is never reached and
 its assertion cannot distinguish the two outcomes — it must pre-create the sibling the writer

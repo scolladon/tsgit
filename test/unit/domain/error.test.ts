@@ -759,6 +759,23 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given PACK_ARTIFACT_MISMATCH', () => {
+      describe('When TsgitError.message is read', () => {
+        it('Then it names the artefact that differs in contents', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'PACK_ARTIFACT_MISMATCH',
+            path: '/repo/.git/objects/pack/pack-abc.idx',
+          });
+
+          // Assert
+          expect(result.message).toBe(
+            'PACK_ARTIFACT_MISMATCH: existing pack artefact differs in contents: pack-abc.idx',
+          );
+        });
+      });
+    });
+
     describe('Given SHALLOW_FILE_MALFORMED', () => {
       describe('When TsgitError.message is read', () => {
         it('Then it equals the documented format with line number and reason', () => {
