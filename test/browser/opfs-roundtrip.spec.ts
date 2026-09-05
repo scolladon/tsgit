@@ -227,4 +227,38 @@ test.describe('OPFS directory-occupant refusals', () => {
       expect(result.dstChildBytes).toEqual([4, 5, 6]);
     });
   });
+  test('Given a regular file, When rename onto itself, Then it is a no-op and the file survives', async ({
+    readyPage,
+  }) => {
+    const result = await readyPage.evaluate(async () => {
+      const MODULE_PATH = '/dist/esm/adapters/browser/index.js';
+      const mod = (await import(MODULE_PATH)) as {
+        BrowserFileSystem: new (rootHandle: FileSystemDirectoryHandle) => OpfsFs;
+      };
+      const sut = new mod.BrowserFileSystem(await navigator.storage.getDirectory());
+      await sut.write('same.txt', new Uint8Array([7, 8, 9]));
+
+      await sut.rename('same.txt', 'same.txt');
+      const survivor = await sut.exists('same.txt');
+      const bytes = survivor ? Array.from(await sut.read('same.txt')) : [];
+
+      let absentCode: string | undefined;
+      try {
+        await sut.rename('missing.txt', 'missing.txt');
+      } catch (err) {
+        absentCode = (err as { data?: { code?: string } }).data?.code;
+      }
+
+      return { survivor, bytes, absentCode };
+    });
+
+    await test.step('the file is still there with its bytes — the emulation never unlinked it', () => {
+      expect(result.survivor).toBe(true);
+      expect(result.bytes).toEqual([7, 8, 9]);
+    });
+
+    await test.step('an absent source is still refused with FILE_NOT_FOUND', () => {
+      expect(result.absentCode).toBe('FILE_NOT_FOUND');
+    });
+  });
 });

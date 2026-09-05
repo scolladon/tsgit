@@ -271,26 +271,30 @@ export class MemoryFileSystem implements FileSystem {
     await this.rename(src, dst);
   };
 
-  private assertRenamable(src: string, dst: string, reported: string): void {
-    const srcIsDirectory = this.directories.has(src);
-    if (!srcIsDirectory && !this.files.has(src) && !this.symlinks.has(src)) {
-      throw fileNotFound(reported);
+  private assertRenamable(
+    normalizedSrc: string,
+    normalizedDst: string,
+    reportedPath: string,
+  ): void {
+    const srcIsDirectory = this.directories.has(normalizedSrc);
+    if (!srcIsDirectory && !this.files.has(normalizedSrc) && !this.symlinks.has(normalizedSrc)) {
+      throw fileNotFound(reportedPath);
     }
-    if (src === dst) return;
+    if (normalizedSrc === normalizedDst) return;
     if (!srcIsDirectory) {
-      if (this.directories.has(dst)) throw permissionDenied(reported);
+      if (this.directories.has(normalizedDst)) throw permissionDenied(reportedPath);
       return;
     }
-    if (dst.startsWith(`${src}/`)) {
+    if (normalizedDst.startsWith(`${normalizedSrc}/`)) {
       throw unsupportedOperation('filesystem', INVALID_ARGUMENT);
     }
-    if (!this.directories.has(dst)) {
-      if (this.files.has(dst) || this.symlinks.has(dst)) {
-        throw notADirectory(reported);
+    if (!this.directories.has(normalizedDst)) {
+      if (this.files.has(normalizedDst) || this.symlinks.has(normalizedDst)) {
+        throw notADirectory(reportedPath);
       }
       return;
     }
-    if (this.hasChildren(dst)) throw directoryNotEmpty(reported);
+    if (this.hasChildren(normalizedDst)) throw directoryNotEmpty(reportedPath);
   }
 
   private renameLeaf(normalizedSrc: string, normalizedDst: string): void {

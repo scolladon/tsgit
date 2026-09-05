@@ -157,6 +157,10 @@ export class BrowserFileSystem implements FileSystem {
     // exactly this reason — callers must branch on its absence rather than assume
     // `rename` is safe to commit through. See FileSystem port JSDoc.
     const data = await this.read(src);
+    // A self-rename is a no-op on every adapter (checked after the read so an absent
+    // source still reports FILE_NOT_FOUND); without it the emulation's `rm(src)` would
+    // unlink the file it had just rewritten.
+    if (this.splitPath(src).join('/') === this.splitPath(dst).join('/')) return;
     await this.write(dst, data);
     await this.rm(src);
   }
@@ -301,12 +305,21 @@ function isFileNotFound(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND';
 }
 
+// Reads a rejection's `name` structurally rather than through `instanceof Error`, so a
+// DOMException raised in another realm (a handle handed across a worker boundary) is
+// still classified — the same posture the application layer takes on `data.code`.
+function rejectionName(err: unknown): string | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const name = (err as { readonly name?: unknown }).name;
+  return typeof name === 'string' ? name : undefined;
+}
+
 function isTypeMismatch(err: unknown): boolean {
-  return err instanceof Error && err.name === 'TypeMismatchError';
+  return rejectionName(err) === 'TypeMismatchError';
 }
 
 function isNotFoundRejection(err: unknown): boolean {
-  return err instanceof Error && err.name === 'NotFoundError';
+  return rejectionName(err) === 'NotFoundError';
 }
 
 function buildFileStat(size: number, timeMs: number, isFile: boolean): FileStat {

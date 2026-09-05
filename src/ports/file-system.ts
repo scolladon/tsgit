@@ -66,7 +66,9 @@ export interface FileSystem {
   /**
    * Stream bytes to file from an async source, creating parent directories as needed. Overwrites
    * a regular file; refuses a directory or a symbolic link at the leaf with PERMISSION_DENIED.
-   * Writes bytes verbatim.
+   * Writes bytes verbatim. A refused write may already have consumed the source: the memory
+   * adapter buffers it before writing, while Node refuses at the open — a single-use source is
+   * not reusable after a refusal on either.
    */
   readonly writeStream: (path: string, source: AsyncIterable<Uint8Array>) => Promise<void>;
 
@@ -128,13 +130,15 @@ export interface FileSystem {
    * Rename `src` to `dst`. Atomic where the platform supports it (Node: yes on POSIX;
    * Browser OPFS: no — emulated as read + write + rm, caller must tolerate partial
    * failure between steps). Both paths must be on the same logical root.
-   * A non-directory source refuses a directory destination with PERMISSION_DENIED; a
+   * `src === dst` is a no-op on every adapter. On the node and memory adapters: a
+   * non-directory source refuses a directory destination with PERMISSION_DENIED; a
    * directory source refuses a non-directory destination with NOT_A_DIRECTORY and a
    * non-empty directory destination with DIRECTORY_NOT_EMPTY; an empty directory
-   * destination is replaced; `src === dst` is a no-op regardless of kind or emptiness.
-   * Every refusal above carries `data.path === src`. Renaming a directory onto a
-   * destination that lies inside itself is refused with UNSUPPORTED_OPERATION instead,
-   * and that variant carries no `path`.
+   * destination is replaced; every refusal above carries `data.path === src`; and
+   * renaming a directory onto a destination inside itself is refused with
+   * UNSUPPORTED_OPERATION, a variant that carries no `path`. The browser adapter's
+   * emulation moves files only: a directory source reports FILE_NOT_FOUND, a directory
+   * destination reports PERMISSION_DENIED carrying `dst`, and no directory is replaced.
    */
   readonly rename: (src: string, dst: string) => Promise<void>;
 
