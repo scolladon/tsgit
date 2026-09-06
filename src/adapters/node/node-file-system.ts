@@ -829,7 +829,8 @@ export class NodeFileSystem implements FileSystem {
   /**
    * One directory under two spellings: by device and inode when the
    * filesystem reports them, else by canonical path — a volume with no
-   * inodes still has one final path per entry.
+   * inodes still has one final path per entry, and `realpath` already
+   * returns the platform's own spelling of it, so the compare is exact.
    */
   private async sameDirectory(
     source: fs.BigIntStats,
@@ -838,9 +839,19 @@ export class NodeFileSystem implements FileSystem {
     realDst: string,
   ): Promise<boolean> {
     if (reportsInode(source) && reportsInode(destination)) return sameEntry(source, destination);
-    const canonicalDst = await this.fsOps.realpath(realDst);
-    const policy = this.pathPolicy;
-    return policy.normalizeForCompare(canonicalSrc) === policy.normalizeForCompare(canonicalDst);
+    return (await this.realpathOrMissing(realDst)) === canonicalSrc;
+  }
+
+  /** The canonical path, or `undefined` for a destination that vanished since its probe. */
+  private async realpathOrMissing(real: string): Promise<string | undefined> {
+    try {
+      return await this.fsOps.realpath(real);
+    } catch (err) {
+      if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+        return undefined;
+      }
+      throw err;
+    }
   }
 
   /** `child` is strictly below `parent` — equality is NOT containment here. */
@@ -884,13 +895,15 @@ export class NodeFileSystem implements FileSystem {
     }
   }
 
+  /**
+   * Best effort: an errno here means the restoration itself failed, and the
+   * rename failure being reported is the one that matters. Anything else is
+   * a programming error and surfaces in its place.
+   */
   private async restoreEmptyDirectory(real: string): Promise<void> {
     try {
       await this.fsOps.mkdir(real);
     } catch (err) {
-      // An errno here means the restoration itself failed; the rename
-      // failure being reported is the one that matters. Anything else is a
-      // programming error and must surface.
       if (!isErrnoException(err)) throw err;
     }
   }
