@@ -90,16 +90,23 @@ const APPEND_FLAGS =
  */
 type WriteStreamNumericFlags = Omit<fs.WriteStreamOptions, 'flags'> & { readonly flags: number };
 
+/** What `lstat` reports for `ino` on a volume that has no inodes (FAT, some network shares). */
+const NO_INODE = 0n;
+
+function reportsInode(stat: fs.BigIntStats): boolean {
+  return stat.ino !== NO_INODE;
+}
+
 /**
  * Same directory entry, decided by device and inode rather than by name:
  * Win32 accepts several spellings of one entry (a trailing dot or space the
  * kernel strips, an 8.3 short name), and a case-fold can equate two DISTINCT
- * entries on a case-sensitive directory. A filesystem that reports no inode
- * (`0`) leaves the question open, and the caller falls through to its kind
- * checks.
+ * entries on a case-sensitive directory. Asked only when both sides report
+ * an inode; compared as bigints because an NTFS file reference exceeds the
+ * precision of a double.
  */
-function sameEntry(a: fs.Stats, b: fs.Stats): boolean {
-  return Number.isInteger(a.ino) && a.ino !== 0 && a.ino === b.ino && a.dev === b.dev;
+function sameEntry(a: fs.BigIntStats, b: fs.BigIntStats): boolean {
+  return a.ino === b.ino && a.dev === b.dev;
 }
 
 /**
@@ -773,10 +780,10 @@ export class NodeFileSystem implements FileSystem {
     } finally {
       // Deliberately a full clear, not a `dirname(src)`/`dirname(dst)`-scoped
       // delete — see `parentRealpathCache`'s field doc for why a directory
-      // rename makes that narrowing unsound. Cleared even when the replace
-      // arm already removed the destination and the following `rename` then
-      // fails: an empty directory the fallback plan resolved is gone either
-      // way, so the cache must not keep serving its stale parent realpath.
+      // rename makes that narrowing unsound. Cleared on the failure path too:
+      // the replace arm may have removed the destination and may or may not
+      // have recreated it, so no cached parent realpath for either side is
+      // known to be current.
       this.parentRealpathCache.clear();
     }
   };
@@ -795,6 +802,9 @@ export class NodeFileSystem implements FileSystem {
     reported: string,
   ): Promise<boolean> {
     if (this.pathPolicy.honoursRenameKinds) return false;
+    // Byte-identical spellings are one entry with no case-fold involved: the
+    // platform's own no-op, decided before any syscall and any removal.
+    if (realSrc === realDst) return false;
     // A destination strictly inside the source is the platform's own
     // invalid-argument refusal; deciding it here, before any syscall, also
     // keeps the removal below away from a directory nested in the source.
@@ -805,15 +815,32 @@ export class NodeFileSystem implements FileSystem {
     if (source === undefined || !source.isDirectory()) return false;
     const destination = await this.lstatOrMissing(realDst);
     if (destination === undefined) return false;
-    // The same entry under two spellings is the platform's own no-op; the
-    // string compare above cannot see through Win32 name aliases.
-    if (sameEntry(source, destination)) return false;
     if (!destination.isDirectory()) throw notADirectory(reported);
     // The source leaf was never canonicalised (an alias of the directory may
     // spell it), while the destination's parent chain was: only the
     // canonical source can say whether the destination sits inside it.
     const canonicalSrc = await this.fsOps.realpath(realSrc);
+    // One directory under two spellings is the platform's own no-op; the
+    // string compares above cannot see through Win32 name aliases.
+    if (await this.sameDirectory(source, destination, canonicalSrc, realDst)) return false;
     return !this.strictlyContains(canonicalSrc, realDst);
+  }
+
+  /**
+   * One directory under two spellings: by device and inode when the
+   * filesystem reports them, else by canonical path — a volume with no
+   * inodes still has one final path per entry.
+   */
+  private async sameDirectory(
+    source: fs.BigIntStats,
+    destination: fs.BigIntStats,
+    canonicalSrc: string,
+    realDst: string,
+  ): Promise<boolean> {
+    if (reportsInode(source) && reportsInode(destination)) return sameEntry(source, destination);
+    const canonicalDst = await this.fsOps.realpath(realDst);
+    const policy = this.pathPolicy;
+    return policy.normalizeForCompare(canonicalSrc) === policy.normalizeForCompare(canonicalDst);
   }
 
   /** `child` is strictly below `parent` — equality is NOT containment here. */
@@ -830,26 +857,29 @@ export class NodeFileSystem implements FileSystem {
    * The emulated replacement: remove the destination, then rename. A
    * destination that is not empty fails the removal with ENOTEMPTY, which the
    * enclosing operation maps to DIRECTORY_NOT_EMPTY; one that vanished since
-   * the probe has already reached the state the removal wanted. When the
-   * rename then fails, the empty directory is recreated on a best-effort
-   * basis so the refusal still changes nothing; a failure of that restoration
-   * is subordinate to the rename failure being reported and is not surfaced.
+   * the probe has already reached the state the removal wanted, and is not
+   * recreated. When the rename then fails, a directory this arm removed is
+   * recreated on a best-effort basis so the refusal still changes nothing; an
+   * errno failure of that restoration is subordinate to the rename failure
+   * being reported and is not surfaced.
    */
   private async replaceDirectory(realSrc: string, realDst: string): Promise<void> {
-    await this.removeEmptyDirectory(realDst);
+    const removed = await this.removeEmptyDirectory(realDst);
     try {
       await this.fsOps.rename(realSrc, realDst);
     } catch (err) {
-      await this.restoreEmptyDirectory(realDst);
+      if (removed) await this.restoreEmptyDirectory(realDst);
       throw err;
     }
   }
 
-  private async removeEmptyDirectory(real: string): Promise<void> {
+  /** `false` when nothing was there to remove. */
+  private async removeEmptyDirectory(real: string): Promise<boolean> {
     try {
       await this.fsOps.rmdir(real);
+      return true;
     } catch (err) {
-      if (isErrnoException(err) && err.code === 'ENOENT') return;
+      if (isErrnoException(err) && err.code === 'ENOENT') return false;
       throw err;
     }
   }
@@ -857,15 +887,18 @@ export class NodeFileSystem implements FileSystem {
   private async restoreEmptyDirectory(real: string): Promise<void> {
     try {
       await this.fsOps.mkdir(real);
-    } catch {
-      // Best effort only: the rename failure is the one to report.
+    } catch (err) {
+      // An errno here means the restoration itself failed; the rename
+      // failure being reported is the one that matters. Anything else is a
+      // programming error and must surface.
+      if (!isErrnoException(err)) throw err;
     }
   }
 
   /** "Is there an entry here" — never "what is it". Swallows nothing but absence. */
-  private async lstatOrMissing(real: string): Promise<fs.Stats | undefined> {
+  private async lstatOrMissing(real: string): Promise<fs.BigIntStats | undefined> {
     try {
-      return await this.fsOps.lstat(real);
+      return await this.fsOps.lstat(real, { bigint: true });
     } catch (err) {
       if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
         return undefined;

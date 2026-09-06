@@ -40,12 +40,14 @@ const einval = (): NodeJS.ErrnoException =>
 const enotempty = (): NodeJS.ErrnoException =>
   Object.assign(new Error('directory not empty'), { code: 'ENOTEMPTY' });
 
-/** A fabricated `lstat` answer: the kind, plus the entry identity a real `Stats` carries. */
-const entry = (kind: 'directory' | 'file' | 'symlink', ino: number, dev = 1): unknown => ({
+type EntryStats = Pick<fs.BigIntStats, 'isDirectory' | 'isSymbolicLink' | 'ino' | 'dev'>;
+
+/** A fabricated bigint `lstat` answer: the kind, plus the entry identity a real `BigIntStats` carries. */
+const entry = (kind: 'directory' | 'file' | 'symlink', ino: number, dev = 1): EntryStats => ({
   isDirectory: () => kind === 'directory',
   isSymbolicLink: () => kind === 'symlink',
-  ino,
-  dev,
+  ino: BigInt(ino),
+  dev: BigInt(dev),
 });
 
 /**
@@ -2089,9 +2091,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
         const rootDir = 'C:\\Root';
         const src = 'C:\\Root\\srcfile';
         const dst = 'C:\\Root\\dst';
-        const lstatSpy = vi
-          .fn()
-          .mockResolvedValueOnce({ isDirectory: () => false, isSymbolicLink: () => false });
+        const lstatSpy = vi.fn().mockResolvedValueOnce(entry('file', 101));
         const rmdirSpy = vi.fn().mockResolvedValue(undefined);
         const renameSpy = vi.fn().mockResolvedValue(undefined);
         const fsOps = fakeFsOps({
@@ -2181,7 +2181,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
+            .mockResolvedValueOnce(entry('directory', 102))
             .mockRejectedValueOnce(enoent()),
           rmdir: rmdirSpy,
           rename: renameSpy,
@@ -2211,7 +2211,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
+            .mockResolvedValueOnce(entry('directory', 103))
             .mockRejectedValueOnce(enotdir()),
           rmdir: rmdirSpy,
           rename: renameSpy,
@@ -2242,7 +2242,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
+            .mockResolvedValueOnce(entry('directory', 104))
             .mockRejectedValueOnce(original),
           rmdir: rmdirSpy,
           rename: renameSpy,
@@ -2277,7 +2277,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
+            .mockResolvedValueOnce(entry('directory', 105))
             .mockRejectedValueOnce(eacces()),
           rename: renameSpy,
         });
@@ -2312,8 +2312,8 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
-            .mockResolvedValueOnce({ isDirectory: () => false, isSymbolicLink: () => false }),
+            .mockResolvedValueOnce(entry('directory', 106))
+            .mockResolvedValueOnce(entry('file', 107)),
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
@@ -2385,8 +2385,8 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false }),
+            .mockResolvedValueOnce(entry('directory', 108))
+            .mockResolvedValueOnce(entry('directory', 109)),
           rmdir: vi.fn().mockRejectedValue(enotempty()),
           rename: renameSpy,
         });
@@ -2420,8 +2420,8 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false }),
+            .mockResolvedValueOnce(entry('directory', 110))
+            .mockResolvedValueOnce(entry('directory', 111)),
           rmdir: vi.fn().mockRejectedValue(eacces()),
           rename: renameSpy,
         });
@@ -2450,15 +2450,17 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
         const rootDir = 'C:\\Root';
         const src = 'C:\\Root\\srcdir';
         const dst = 'C:\\Root\\newdir';
+        const mkdirSpy = vi.fn().mockResolvedValue(undefined);
         const rmdirSpy = vi.fn().mockResolvedValue(undefined);
         const renameSpy = vi.fn().mockResolvedValue(undefined);
         const readdirSpy = vi.fn().mockRejectedValue(enoent());
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
+          mkdir: mkdirSpy,
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false }),
+            .mockResolvedValueOnce(entry('directory', 112))
+            .mockResolvedValueOnce(entry('directory', 113)),
           rmdir: rmdirSpy,
           rename: renameSpy,
           readdir: readdirSpy,
@@ -2476,6 +2478,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
         expect(Math.min(...rmdirSpy.mock.invocationCallOrder)).toBeLessThan(
           Math.min(...renameSpy.mock.invocationCallOrder),
         );
+        expect(mkdirSpy).toHaveBeenCalledTimes(1);
         expect(readdirSpy).not.toHaveBeenCalled();
       });
     });
@@ -2493,8 +2496,8 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: realpathSpy,
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false }),
+            .mockResolvedValueOnce(entry('directory', 114))
+            .mockResolvedValueOnce(entry('directory', 115)),
           rmdir: vi.fn().mockResolvedValue(undefined),
           rename: vi.fn().mockRejectedValue(eacces()),
         });
@@ -2536,8 +2539,8 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi
             .fn()
-            .mockResolvedValueOnce({ isDirectory: () => true, isSymbolicLink: () => false })
-            .mockResolvedValueOnce({ isDirectory: () => false, isSymbolicLink: () => false }),
+            .mockResolvedValueOnce(entry('directory', 116))
+            .mockResolvedValueOnce(entry('file', 117)),
           rename: renameSpy,
         });
         const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
@@ -2656,6 +2659,169 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
         // Assert
         expect(renameSpy).toHaveBeenCalledTimes(1);
         expect(renameSpy).toHaveBeenCalledWith(src, dst);
+      });
+    });
+  });
+
+  describe('Given a directory renamed onto itself on a filesystem that reports no inode', () => {
+    describe('When rename fires with the two spellings byte-identical', () => {
+      it('Then it delegates: rmdir is never called and rename(src, src) is called once', async () => {
+        // Arrange — identity is undecidable by inode here; the spelling decides.
+        const rootDir = 'C:\\Root';
+        const src = 'C:\\Root\\self-dir';
+        const rmdirSpy = vi.fn().mockResolvedValue(undefined);
+        const renameSpy = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: vi
+            .fn()
+            .mockResolvedValueOnce(entry('directory', 0))
+            .mockResolvedValueOnce(entry('directory', 0)),
+          rmdir: rmdirSpy,
+          rename: renameSpy,
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        await sut.rename(src, src);
+
+        // Assert
+        expect(rmdirSpy).not.toHaveBeenCalled();
+        expect(renameSpy).toHaveBeenCalledTimes(1);
+        expect(renameSpy).toHaveBeenCalledWith(src, src);
+      });
+    });
+  });
+
+  describe('Given two spellings of one directory on a filesystem that reports no inode', () => {
+    describe('When rename fires and both canonical paths agree', () => {
+      it('Then it delegates: rmdir is never called and rename is called once', async () => {
+        // Arrange — the canonical path is the identity when the inode cannot be.
+        const rootDir = 'C:\\Root';
+        const src = 'C:\\Root\\aliased';
+        const dst = 'C:\\Root\\ALIASED.';
+        const rmdirSpy = vi.fn().mockResolvedValue(undefined);
+        const renameSpy = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi
+            .fn()
+            .mockImplementation(async (input: string) => (input === dst ? src : input)),
+          lstat: vi
+            .fn()
+            .mockResolvedValueOnce(entry('directory', 0))
+            .mockResolvedValueOnce(entry('directory', 0)),
+          rmdir: rmdirSpy,
+          rename: renameSpy,
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        await sut.rename(src, dst);
+
+        // Assert
+        expect(rmdirSpy).not.toHaveBeenCalled();
+        expect(renameSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given two distinct directories sharing an inode on different devices', () => {
+    describe('When rename fires', () => {
+      it('Then they are not one entry: the replace arm runs and rmdir names the destination', async () => {
+        // Arrange
+        const rootDir = 'C:\\Root';
+        const src = 'C:\\Root\\srcdir';
+        const dst = 'C:\\Root\\other-device';
+        const rmdirSpy = vi.fn().mockResolvedValue(undefined);
+        const renameSpy = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: vi
+            .fn()
+            .mockResolvedValueOnce(entry('directory', 7, 1))
+            .mockResolvedValueOnce(entry('directory', 7, 2)),
+          rmdir: rmdirSpy,
+          rename: renameSpy,
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        await sut.rename(src, dst);
+
+        // Assert
+        expect(rmdirSpy).toHaveBeenCalledWith(dst);
+        expect(renameSpy).toHaveBeenCalledWith(src, dst);
+      });
+    });
+  });
+
+  describe('Given a directory source over a directory destination whose rmdir rejects a non-errno throwable', () => {
+    describe('When rename fires', () => {
+      it('Then the exact throwable propagates and rename is never called', async () => {
+        // Arrange
+        const rootDir = 'C:\\Root';
+        const src = 'C:\\Root\\srcdir';
+        const dst = 'C:\\Root\\dst-dir';
+        const thrown = new RangeError('not an errno');
+        const renameSpy = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: vi
+            .fn()
+            .mockResolvedValueOnce(entry('directory', 61))
+            .mockResolvedValueOnce(entry('directory', 62)),
+          rmdir: vi.fn().mockRejectedValue(thrown),
+          rename: renameSpy,
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.rename(src, dst);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(thrown);
+        expect(renameSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a directory source over a destination that vanishes before the removal', () => {
+    describe('When the rename then rejects too', () => {
+      it('Then nothing is recreated: mkdir ran only for the parent chain', async () => {
+        // Arrange — the arm removed nothing, so it has nothing to restore.
+        const rootDir = 'C:\\Root';
+        const src = 'C:\\Root\\srcdir';
+        const dst = 'C:\\Root\\gone';
+        const mkdirSpy = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: vi
+            .fn()
+            .mockResolvedValueOnce(entry('directory', 71))
+            .mockResolvedValueOnce(entry('directory', 72)),
+          mkdir: mkdirSpy,
+          rmdir: vi.fn().mockRejectedValue(enoent()),
+          rename: vi.fn().mockRejectedValue(eacces()),
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.rename(src, dst);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(dataFor(caught, 'PERMISSION_DENIED').path).toBe(src);
+        expect(mkdirSpy).toHaveBeenCalledTimes(1);
+        expect(mkdirSpy).not.toHaveBeenCalledWith(dst);
       });
     });
   });
