@@ -2,10 +2,9 @@
  * Dependency-injection tests for `NodeFileSystem.rename`'s Windows
  * rename-kind emulation.
  *
- * All tests here inject a fake `FsOperations` directly into the
- * `NodeFileSystem` constructor (third parameter). NO `vi.mock` — the
- * dependencies are explicit, the tests are cross-platform by construction,
- * and there's no module-system magic.
+ * All tests here inject a fake `FsOperations` into the `NodeFileSystem`
+ * constructor; `node-fs-fakes.ts` holds the fakes and the reason there is
+ * no `vi.mock` here.
  *
  * Compare with `node-file-system.test.ts` which runs the cross-adapter
  * `FileSystemContract` suite against the REAL filesystem.

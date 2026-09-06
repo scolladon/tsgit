@@ -31,7 +31,7 @@ export const einval = (): NodeJS.ErrnoException =>
 export const enotempty = (): NodeJS.ErrnoException =>
   Object.assign(new Error('directory not empty'), { code: 'ENOTEMPTY' });
 
-export type EntryStats = Pick<fs.BigIntStats, 'isDirectory' | 'isSymbolicLink' | 'ino' | 'dev'>;
+type EntryStats = Pick<fs.BigIntStats, 'isDirectory' | 'isSymbolicLink' | 'ino' | 'dev'>;
 
 /** A fabricated bigint `lstat` answer: the kind, plus the entry identity a real `BigIntStats` carries. */
 export const entry = (
