@@ -163,6 +163,18 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && 'code' in err;
 }
 
+/** Absence is the only thing swallowed: `ENOENT`/`ENOTDIR` become `undefined`, anything else rethrows. */
+async function orMissing<T>(probe: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await probe();
+  } catch (err) {
+    if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+      return undefined;
+    }
+    throw err;
+  }
+}
+
 /**
  * On Windows, `O_NOFOLLOW` against a symlink leaf surfaces as `EACCES`,
  * `EPERM`, or `EISDIR` depending on the link target — `mapErrno` cannot
@@ -844,14 +856,7 @@ export class NodeFileSystem implements FileSystem {
 
   /** The canonical path, or `undefined` for a destination that vanished since its probe. */
   private async realpathOrMissing(real: string): Promise<string | undefined> {
-    try {
-      return await this.fsOps.realpath(real);
-    } catch (err) {
-      if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
-        return undefined;
-      }
-      throw err;
-    }
+    return orMissing(() => this.fsOps.realpath(real));
   }
 
   /** `child` is strictly below `parent` — equality is NOT containment here. */
@@ -910,14 +915,7 @@ export class NodeFileSystem implements FileSystem {
 
   /** "Is there an entry here" — never "what is it". Swallows nothing but absence. */
   private async lstatOrMissing(real: string): Promise<fs.BigIntStats | undefined> {
-    try {
-      return await this.fsOps.lstat(real, { bigint: true });
-    } catch (err) {
-      if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
-        return undefined;
-      }
-      throw err;
-    }
+    return orMissing(() => this.fsOps.lstat(real, { bigint: true }));
   }
 
   // `rename` above is already atomic on POSIX (`rename(2)`) and clears the
