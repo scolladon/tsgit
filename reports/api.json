@@ -1980,7 +1980,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " is a no-op on every adapter. On the node and memory adapters: a\nnon-directory source refuses a directory destination with PERMISSION_DENIED; a\ndirectory source refuses a non-directory destination with NOT_A_DIRECTORY and a\nnon-empty directory destination with DIRECTORY_NOT_EMPTY; an empty directory\ndestination is replaced; every refusal above carries "
+										"text": " is a no-op on every adapter once "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " exists — an absent "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " is still\nrefused with FILE_NOT_FOUND. On the node and memory adapters: a non-directory source\nrefuses a directory destination with PERMISSION_DENIED; a directory source refuses a\nnon-directory destination with NOT_A_DIRECTORY and a non-empty directory destination\nwith DIRECTORY_NOT_EMPTY; an empty directory destination is replaced; every refusal\nabove carries "
 									},
 									{
 										"kind": "code",
@@ -1988,7 +2004,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; and\nrenaming a directory onto a destination inside itself is refused with\nUNSUPPORTED_OPERATION, a variant that carries no "
+										"text": "; renaming a directory onto a destination inside itself\nis refused with UNSUPPORTED_OPERATION, a variant that carries no "
 									},
 									{
 										"kind": "code",
@@ -1996,7 +2012,23 @@
 									},
 									{
 										"kind": "text",
-										"text": ". The browser adapter's\nemulation moves files only: a directory source reports FILE_NOT_FOUND, a directory\ndestination reports PERMISSION_DENIED carrying "
+										"text": "; and a regular\nfile or symlink on the destination's ancestor chain refuses with NOT_A_DIRECTORY carrying\nan adapter-chosen path (node: "
+									},
+									{
+										"kind": "code",
+										"text": "`dst`"
+									},
+									{
+										"kind": "text",
+										"text": "; memory: the blocking ancestor), changing nothing.\nThe browser adapter's emulation moves files only: a directory source reports\nFILE_NOT_FOUND (a directory "
+									},
+									{
+										"kind": "code",
+										"text": "`src === dst`"
+									},
+									{
+										"kind": "text",
+										"text": " included), a directory destination reports\nPERMISSION_DENIED carrying "
 									},
 									{
 										"kind": "code",
@@ -2043,7 +2075,23 @@
 											},
 											{
 												"kind": "text",
-												"text": " is a no-op on every adapter. On the node and memory adapters: a\nnon-directory source refuses a directory destination with PERMISSION_DENIED; a\ndirectory source refuses a non-directory destination with NOT_A_DIRECTORY and a\nnon-empty directory destination with DIRECTORY_NOT_EMPTY; an empty directory\ndestination is replaced; every refusal above carries "
+												"text": " is a no-op on every adapter once "
+											},
+											{
+												"kind": "code",
+												"text": "`src`"
+											},
+											{
+												"kind": "text",
+												"text": " exists — an absent "
+											},
+											{
+												"kind": "code",
+												"text": "`src`"
+											},
+											{
+												"kind": "text",
+												"text": " is still\nrefused with FILE_NOT_FOUND. On the node and memory adapters: a non-directory source\nrefuses a directory destination with PERMISSION_DENIED; a directory source refuses a\nnon-directory destination with NOT_A_DIRECTORY and a non-empty directory destination\nwith DIRECTORY_NOT_EMPTY; an empty directory destination is replaced; every refusal\nabove carries "
 											},
 											{
 												"kind": "code",
@@ -2051,7 +2099,7 @@
 											},
 											{
 												"kind": "text",
-												"text": "; and\nrenaming a directory onto a destination inside itself is refused with\nUNSUPPORTED_OPERATION, a variant that carries no "
+												"text": "; renaming a directory onto a destination inside itself\nis refused with UNSUPPORTED_OPERATION, a variant that carries no "
 											},
 											{
 												"kind": "code",
@@ -2059,7 +2107,23 @@
 											},
 											{
 												"kind": "text",
-												"text": ". The browser adapter's\nemulation moves files only: a directory source reports FILE_NOT_FOUND, a directory\ndestination reports PERMISSION_DENIED carrying "
+												"text": "; and a regular\nfile or symlink on the destination's ancestor chain refuses with NOT_A_DIRECTORY carrying\nan adapter-chosen path (node: "
+											},
+											{
+												"kind": "code",
+												"text": "`dst`"
+											},
+											{
+												"kind": "text",
+												"text": "; memory: the blocking ancestor), changing nothing.\nThe browser adapter's emulation moves files only: a directory source reports\nFILE_NOT_FOUND (a directory "
+											},
+											{
+												"kind": "code",
+												"text": "`src === dst`"
+											},
+											{
+												"kind": "text",
+												"text": " included), a directory destination reports\nPERMISSION_DENIED carrying "
 											},
 											{
 												"kind": "code",
@@ -6121,7 +6185,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " is a no-op on every adapter. On the node and memory adapters: a\nnon-directory source refuses a directory destination with PERMISSION_DENIED; a\ndirectory source refuses a non-directory destination with NOT_A_DIRECTORY and a\nnon-empty directory destination with DIRECTORY_NOT_EMPTY; an empty directory\ndestination is replaced; every refusal above carries "
+										"text": " is a no-op on every adapter once "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " exists — an absent "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " is still\nrefused with FILE_NOT_FOUND. On the node and memory adapters: a non-directory source\nrefuses a directory destination with PERMISSION_DENIED; a directory source refuses a\nnon-directory destination with NOT_A_DIRECTORY and a non-empty directory destination\nwith DIRECTORY_NOT_EMPTY; an empty directory destination is replaced; every refusal\nabove carries "
 									},
 									{
 										"kind": "code",
@@ -6129,7 +6209,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; and\nrenaming a directory onto a destination inside itself is refused with\nUNSUPPORTED_OPERATION, a variant that carries no "
+										"text": "; renaming a directory onto a destination inside itself\nis refused with UNSUPPORTED_OPERATION, a variant that carries no "
 									},
 									{
 										"kind": "code",
@@ -6137,7 +6217,23 @@
 									},
 									{
 										"kind": "text",
-										"text": ". The browser adapter's\nemulation moves files only: a directory source reports FILE_NOT_FOUND, a directory\ndestination reports PERMISSION_DENIED carrying "
+										"text": "; and a regular\nfile or symlink on the destination's ancestor chain refuses with NOT_A_DIRECTORY carrying\nan adapter-chosen path (node: "
+									},
+									{
+										"kind": "code",
+										"text": "`dst`"
+									},
+									{
+										"kind": "text",
+										"text": "; memory: the blocking ancestor), changing nothing.\nThe browser adapter's emulation moves files only: a directory source reports\nFILE_NOT_FOUND (a directory "
+									},
+									{
+										"kind": "code",
+										"text": "`src === dst`"
+									},
+									{
+										"kind": "text",
+										"text": " included), a directory destination reports\nPERMISSION_DENIED carrying "
 									},
 									{
 										"kind": "code",
@@ -10890,7 +10986,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " is a no-op on every adapter. On the node and memory adapters: a\nnon-directory source refuses a directory destination with PERMISSION_DENIED; a\ndirectory source refuses a non-directory destination with NOT_A_DIRECTORY and a\nnon-empty directory destination with DIRECTORY_NOT_EMPTY; an empty directory\ndestination is replaced; every refusal above carries "
+										"text": " is a no-op on every adapter once "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " exists — an absent "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " is still\nrefused with FILE_NOT_FOUND. On the node and memory adapters: a non-directory source\nrefuses a directory destination with PERMISSION_DENIED; a directory source refuses a\nnon-directory destination with NOT_A_DIRECTORY and a non-empty directory destination\nwith DIRECTORY_NOT_EMPTY; an empty directory destination is replaced; every refusal\nabove carries "
 									},
 									{
 										"kind": "code",
@@ -10898,7 +11010,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; and\nrenaming a directory onto a destination inside itself is refused with\nUNSUPPORTED_OPERATION, a variant that carries no "
+										"text": "; renaming a directory onto a destination inside itself\nis refused with UNSUPPORTED_OPERATION, a variant that carries no "
 									},
 									{
 										"kind": "code",
@@ -10906,7 +11018,23 @@
 									},
 									{
 										"kind": "text",
-										"text": ". The browser adapter's\nemulation moves files only: a directory source reports FILE_NOT_FOUND, a directory\ndestination reports PERMISSION_DENIED carrying "
+										"text": "; and a regular\nfile or symlink on the destination's ancestor chain refuses with NOT_A_DIRECTORY carrying\nan adapter-chosen path (node: "
+									},
+									{
+										"kind": "code",
+										"text": "`dst`"
+									},
+									{
+										"kind": "text",
+										"text": "; memory: the blocking ancestor), changing nothing.\nThe browser adapter's emulation moves files only: a directory source reports\nFILE_NOT_FOUND (a directory "
+									},
+									{
+										"kind": "code",
+										"text": "`src === dst`"
+									},
+									{
+										"kind": "text",
+										"text": " included), a directory destination reports\nPERMISSION_DENIED carrying "
 									},
 									{
 										"kind": "code",
@@ -87909,7 +88037,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " is a no-op on every adapter. On the node and memory adapters: a\nnon-directory source refuses a directory destination with PERMISSION_DENIED; a\ndirectory source refuses a non-directory destination with NOT_A_DIRECTORY and a\nnon-empty directory destination with DIRECTORY_NOT_EMPTY; an empty directory\ndestination is replaced; every refusal above carries "
+										"text": " is a no-op on every adapter once "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " exists — an absent "
+									},
+									{
+										"kind": "code",
+										"text": "`src`"
+									},
+									{
+										"kind": "text",
+										"text": " is still\nrefused with FILE_NOT_FOUND. On the node and memory adapters: a non-directory source\nrefuses a directory destination with PERMISSION_DENIED; a directory source refuses a\nnon-directory destination with NOT_A_DIRECTORY and a non-empty directory destination\nwith DIRECTORY_NOT_EMPTY; an empty directory destination is replaced; every refusal\nabove carries "
 									},
 									{
 										"kind": "code",
@@ -87917,7 +88061,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; and\nrenaming a directory onto a destination inside itself is refused with\nUNSUPPORTED_OPERATION, a variant that carries no "
+										"text": "; renaming a directory onto a destination inside itself\nis refused with UNSUPPORTED_OPERATION, a variant that carries no "
 									},
 									{
 										"kind": "code",
@@ -87925,7 +88069,23 @@
 									},
 									{
 										"kind": "text",
-										"text": ". The browser adapter's\nemulation moves files only: a directory source reports FILE_NOT_FOUND, a directory\ndestination reports PERMISSION_DENIED carrying "
+										"text": "; and a regular\nfile or symlink on the destination's ancestor chain refuses with NOT_A_DIRECTORY carrying\nan adapter-chosen path (node: "
+									},
+									{
+										"kind": "code",
+										"text": "`dst`"
+									},
+									{
+										"kind": "text",
+										"text": "; memory: the blocking ancestor), changing nothing.\nThe browser adapter's emulation moves files only: a directory source reports\nFILE_NOT_FOUND (a directory "
+									},
+									{
+										"kind": "code",
+										"text": "`src === dst`"
+									},
+									{
+										"kind": "text",
+										"text": " included), a directory destination reports\nPERMISSION_DENIED carrying "
 									},
 									{
 										"kind": "code",
