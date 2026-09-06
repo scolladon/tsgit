@@ -1131,7 +1131,7 @@ describe('NodeFileSystem', () => {
       describe('Given ok=true with isSymlink=false', () => {
         describe('When interpreting', () => {
           it('Then reports no symlink leaf', () => {
-            // Act
+            // Arrange + Act
             const result = isCreationLeafSymlink({ ok: true, isSymlink: false }, '/x');
 
             // Assert
@@ -1143,7 +1143,7 @@ describe('NodeFileSystem', () => {
       describe('Given ok=true with isSymlink=true', () => {
         describe('When interpreting', () => {
           it('Then reports a symlink leaf', () => {
-            // Act
+            // Arrange + Act
             const result = isCreationLeafSymlink({ ok: true, isSymlink: true }, '/symlinked-leaf');
 
             // Assert
@@ -1155,7 +1155,7 @@ describe('NodeFileSystem', () => {
       describe('Given ok=false with ENOENT error', () => {
         describe('When interpreting', () => {
           it('Then reports no symlink leaf (leaf absent is expected)', () => {
-            // Act
+            // Arrange + Act
             const result = isCreationLeafSymlink(
               { ok: false, err: makeErrnoError('ENOENT') },
               '/to-create',
