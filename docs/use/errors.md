@@ -38,14 +38,14 @@ Codes are grouped by domain. Within each group, alphabetical.
 | Code | Payload | Raised when |
 |---|---|---|
 | `ADAPTER_UNAVAILABLE` | `runtime, reason` | A runtime-specific adapter is missing in the current environment — e.g. an `ssh://`/scp-like remote on Browser or Memory, which wire no `SshTransport`. |
-| `DIRECTORY_NOT_EMPTY` | `path` | A directory delete on a non-empty target. |
-| `FILE_EXISTS` | `path` | Write attempted with `wx` flag against an existing file. |
+| `DIRECTORY_NOT_EMPTY` | `path` | A directory delete on a non-empty target, or a `rename` of a directory onto a non-empty directory (node and memory). |
+| `FILE_EXISTS` | `path` | An exclusive create (`writeExclusive`) against anything already occupying the path — a regular file, a directory (empty or not), or a symbolic link, including a dangling one; also the lock-file contention signal. |
 | `FILE_NOT_FOUND` | `path` | Read against a path that does not exist. |
-| `NOT_A_DIRECTORY` | `path` | Directory operation against a non-directory. |
+| `NOT_A_DIRECTORY` | `path` | Directory operation against a non-directory, or a regular file or symlink on an ancestor segment of a write's path (the reported path is adapter-dependent at the immediate parent: node `FILE_EXISTS`, memory `NOT_A_DIRECTORY` carrying the ancestor); also a directory renamed onto a file or a symlink. |
 | `OPERATION_ABORTED` | — | An `AbortSignal` fired during an operation. |
-| `PERMISSION_DENIED` | `path` | Filesystem permission error, including lexical out-of-root rejections, **write**-side symlink-escape rejections (a symlinked leading directory or leaf resolving outside the root set), and 8.3 path mismatches on Windows. A **read** through a symlink resolving outside the root set is not refused — reads are lexical, matching git. |
+| `PERMISSION_DENIED` | `path` | Filesystem permission error, including lexical out-of-root rejections, **write**-side symlink-escape rejections (a symlinked leading directory or leaf resolving outside the root set), and 8.3 path mismatches on Windows. A **read** through a symlink resolving outside the root set is not refused — reads are lexical, matching git. Also a non-exclusive write (`write`, `writeUtf8`, `writeStream`, `appendUtf8`) over a directory or a symlink at the leaf, and a non-directory renamed onto a directory (node and memory anchor `src`; the browser adapter anchors `dst`). |
 | `RESOURCE_LOCKED` | `path` | A `.lock` file already exists; another writer holds it. |
-| `UNSUPPORTED_OPERATION` | `operation, reason` | Feature not available in this adapter / runtime. |
+| `UNSUPPORTED_OPERATION` | `operation, reason` | Feature not available in this adapter / runtime. Also renaming a directory onto a destination inside itself, or the root into itself: `operation: 'filesystem'`, `reason` the invalid-argument errno name; carries no `path`. |
 
 ### Objects, storage, packs
 

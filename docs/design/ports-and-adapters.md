@@ -558,11 +558,12 @@ function createMemoryContext(options?: MemoryAdapterOptions): Context;
 - **First-class, not afterthought:** The memory adapter is the primary test adapter. All domain and application tests use it.
 - **Path containment:** Normalizes paths (resolve `.`/`..`, strip trailing slashes). Checks paths don't escape root after normalization.
 - **`readSlice`:** Retrieves `Uint8Array` from map, returns `data.slice(offset, offset + length)` (defensive copy).
-- **`writeExclusive`:** Checks `Map.has(path)` — throws `FILE_EXISTS` if present. Single-threaded JS means no TOCTOU race.
+- **`write`:** Overwrites a regular file; refuses a directory or a symbolic link at the leaf with `PERMISSION_DENIED`. `writeUtf8`, `writeStream` and `appendUtf8` delegate to it and inherit the refusal. A `FileHandle` write against a file removed after `open` lands nowhere — it never re-files the path, matching the POSIX unlinked-inode outcome.
+- **`writeExclusive`:** One occupancy predicate checks all three namespaces — `files`, `symlinks`, `directories` — and throws `FILE_EXISTS` if any occupies `path`, a directory occupant included, same as node and git. Single-threaded JS means no TOCTOU race.
 - **`FileStat`:** Synthetic values — `ctimeMs`/`mtimeMs` from write timestamp, `size` from data length, `mode` = `0o100644`, `dev`/`ino`/`uid`/`gid` = 0. `ctimeNs`/`mtimeNs` = undefined.
 - **`readdir`:** Derives entries from Map key prefixes matching `${dirPath}/` (one level deep).
-- **`mkdir`:** Adds path and all parents to directories Set.
-- **`rename`:** Delete old key + insert new key (not atomic, but single-threaded JS is safe).
+- **`mkdir`:** Validates the whole ancestor chain — no file or symlink blocking any segment — before recording any of it, so a refused call leaves nothing behind; a segment already recorded as a directory short-circuits the walk.
+- **`rename`:** A precondition mirrors POSIX `rename(2)`'s refusals (the source/destination kind matrix, a non-empty destination, a destination inside the source) and runs before any mutation; only then does a leaf move (delete old key, insert new) or a subtree re-key happen. `atomicRename` delegates to it.
 - **`chmod`:** No-op (mode metadata not tracked in memory adapter).
 - **Symlinks:** Stored in a separate `Map<string, string>` (path → target). `readlink` looks up the map. `symlink` writes to it.
 - **Pre-seeded files:** `createMemoryContext({ files: { 'path': bytes } })` populates the map at construction.

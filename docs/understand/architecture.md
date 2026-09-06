@@ -131,6 +131,7 @@ See [`security.md`](security.md) for the full table. Highlights:
 - **TLS enforcement** — `http://` rejected by default; opt-in via `allowInsecureHttp`. Certificate validation never disabled.
 - **Defensive copying** in the Memory adapter — every read / write clones the `Uint8Array`.
 - **Symlink loop protection** — Memory adapter caps at 40 hops (POSIX `SYMLOOP_MAX`).
+- **Uniform occupied-name refusals** — the node, memory and browser adapters agree on every write surface: an exclusive create (`writeExclusive`) refuses a file, directory or symlink occupant with `FILE_EXISTS`; a plain write refuses a directory or symlink leaf with `PERMISSION_DENIED`; `rename` refuses what POSIX `rename(2)` refuses. The memory adapter cannot be tricked into a state the node adapter would have refused.
 
 ## Cross-adapter parity (test layer)
 
