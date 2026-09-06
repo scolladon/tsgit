@@ -300,8 +300,10 @@ Every row id is a probe row from §8a.
   `UNSUPPORTED_OPERATION` with the invalid-argument errno, which Windows already reports), a
   non-directory source (N1 / N2 / N3 / N13 / N14 / N15 / N25), an absent source (N17), a fresh
   destination (N23 / N24), and both ancestor-fault rows (N18 / N19 / N20).
-- **R41** — Cost: **zero** extra syscalls on a non-emulating policy; **one** `lstat` on an emulating
-  one when the source is not a directory — the shape every production `rename` caller has (§8i).
+- **R41** — Cost: **zero** extra syscalls on a non-emulating policy (the `async` verdict's own
+  promise is the only allocation, ~30 ns against a ~97 µs rename); **one** `lstat` on an emulating
+  policy for a non-directory source — every production caller; **two** for a directory source onto
+  a fresh name; two `lstat` plus one `realpath` plus one `rmdir` for a directory onto a directory.
 - **R42** *(ADR-823)* — `atomicRename` inherits R37–R41 by delegation. The replace arm (R39) is two
   syscalls — `rmdir` then `rename` — so the port's *"no observer ever sees an intermediate state"*
   claim is **scoped**, not dropped: it holds for every arrangement on a non-emulating platform and
@@ -348,6 +350,14 @@ Every row id is a probe row from §8a.
   into `DIRECTORY_NOT_EMPTY` carrying `src` (R38); every other `rmdir` errno passes through the same
   map — an `EACCES` on a locked destination surfaces as `PERMISSION_DENIED` carrying `src`, and no
   `rename` is issued.
+- **R51** *(review round)* — On an emulating platform, `src` and `dst` are the same entry when the
+  two `lstat` results share a device and a non-zero inode, whatever their spelling; that
+  arrangement delegates to the platform (a no-op), and a string compare decides only strict
+  containment. A source whose leaf is an alias is canonicalised with `realpath` before the replace
+  arm, so a destination inside it delegates too.
+- **R52** *(review round)* — When the replace arm's `rename` fails after the destination was
+  removed, the empty destination is recreated on a best-effort basis before the failure is
+  rethrown; a removal that finds the destination already gone (`ENOENT`) proceeds to the rename.
 
 **Documentation**
 
@@ -1654,35 +1664,52 @@ rename = async (src: string, dst: string): Promise<void> => {
   const realDst = await this.resolveWrite(dst);
   try {
     await runFs(async () => {
-      const plan = await this.planRename(realSrc, realDst, src);
+      const replace = await this.mustReplaceDirectory(realSrc, realDst, src);
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
-      if (plan === 'replace-directory') await this.fsOps.rmdir(realDst);   // ENOTEMPTY → runFs
-      await this.fsOps.rename(realSrc, realDst);
+      if (replace) await this.replaceDirectory(realSrc, realDst);
+      else await this.fsOps.rename(realSrc, realDst);
     }, src);
   } finally {
     this.parentRealpathCache.clear();          // R43
   }
 };
 
+/** Same directory entry, decided by device and inode rather than by name (R51). */
+function sameEntry(a: fs.Stats, b: fs.Stats): boolean {
+  return Number.isInteger(a.ino) && a.ino !== 0 && a.ino === b.ino && a.dev === b.dev;
+}
+
 /**
  * POSIX `rename(2)`'s kind rules, enforced here only on a platform whose own
- * rename does not enforce them. Refuses on positive evidence and delegates on
- * everything else, so no arrangement the platform already decides correctly
- * changes shape.
+ * rename does not enforce them. `true` means the destination is a directory
+ * other than the source that must be removed before the rename; whether it
+ * is empty is the removal's own verdict.
  */
-private async planRename(realSrc: string, realDst: string, reported: string): Promise<RenamePlan> {
-  if (this.pathPolicy.honoursRenameKinds) return 'rename-only';                   // POSIX — 0 syscalls
-  if (pathContains(realSrc, realDst, this.pathPolicy)) return 'rename-only';      // N21 / N22, N11 … N12
-  const source = await this.lstatOrMissing(realSrc);                              // syscall 1
-  if (source === undefined || !source.isDirectory() || source.isSymbolicLink()) {
-    return 'rename-only';                        // N1 / N2 / N3 / N13 / N14 / N15 / N17 / N25
+private async mustReplaceDirectory(realSrc, realDst, reported): Promise<boolean> {
+  if (this.pathPolicy.honoursRenameKinds) return false;                 // POSIX — 0 syscalls
+  if (this.strictlyContains(realSrc, realDst)) return false;            // N11 … N12, exact spelling
+  const source = await this.lstatOrMissing(realSrc);                    // syscall 1
+  if (source === undefined || !source.isDirectory()) return false;      // N1 / N2 / N3 / N13 / N14 / N15 / N17 / N25
+  const destination = await this.lstatOrMissing(realDst);               // syscall 2
+  if (destination === undefined) return false;                          // N23 / N24
+  if (sameEntry(source, destination)) return false;                     // N21 / N22 under any spelling
+  if (!destination.isDirectory()) throw notADirectory(reported);        // N4 / N5 / N6
+  const canonicalSrc = await this.fsOps.realpath(realSrc);              // syscall 3 — the source leaf was never canonicalised
+  return !this.strictlyContains(canonicalSrc, realDst);                 // N7 replaces; N8 / N9 / N10 / N16 fail the rmdir
+}
+
+/** `child` strictly below `parent` — equality is NOT containment here. */
+private strictlyContains(parent: string, child: string): boolean { … }
+
+/** rmdir(dst) (ENOENT = already gone), then rename; on a failed rename, best-effort mkdir(dst) back. */
+private async replaceDirectory(realSrc: string, realDst: string): Promise<void> {
+  await this.removeEmptyDirectory(realDst);
+  try {
+    await this.fsOps.rename(realSrc, realDst);
+  } catch (err) {
+    await this.restoreEmptyDirectory(realDst);                          // R52
+    throw err;
   }
-  const destination = await this.lstatOrMissing(realDst);                         // syscall 2
-  if (destination === undefined) return 'rename-only';                            // N23 / N24
-  if (!destination.isDirectory() || destination.isSymbolicLink()) {
-    throw notADirectory(reported);                                                // N4 / N5 / N6
-  }
-  return 'replace-directory';        // N7 replaces; N8 / N9 / N10 / N16 fail the rmdir with ENOTEMPTY
 }
 ```
 
@@ -1708,16 +1735,17 @@ that holds nothing, which is what makes remove-first safe here in a way it would
 
 | Rows | Source | Destination | Arm | `fsOps` calls the arm makes |
 |---|---|---|---|---|
-| N21 / N22 | anything | itself | delegate | none — `pathContains` answers `true` on equality |
-| N11 / N11b / N11c / N11d / N12 | directory | inside itself | delegate | none — `pathContains` |
+| N21 | a file or symlink | itself | delegate | `lstat(src)` — a non-directory source never reaches the identity test |
+| N22 | a directory | itself, under any spelling | delegate | `lstat(src)`, `lstat(dst)` — the same device and inode (R51) |
+| N11 / N11b / N11c / N11d / N12 | directory | inside itself | delegate | none when the spelling shows it (strict containment); a source leaf spelled by an alias adds `lstat(src)`, `lstat(dst)`, `realpath(src)` |
 | N1 / N2 / N3 / N15 | file or symlink | any directory | delegate | `lstat(src)` |
 | N13 / N14 / N25 | file or symlink | file or symlink | delegate | `lstat(src)` |
 | N17 | absent | anything | delegate | `lstat(src)` (missing) |
 | N18 / N19 / N20 | ancestor-fault rows | — | delegate | `lstat` of the affected side, treated as missing |
 | N23 / N24 | directory | absent | delegate | `lstat(src)`, `lstat(dst)` |
 | **N4 / N5 / N6** | directory | **file or symlink** | **refuse `NOT_A_DIRECTORY(src)`** | `lstat(src)`, `lstat(dst)` — **no `rename`** |
-| **N8 / N9 / N10 / N16** | directory | **non-empty directory** | **refuse — the `rmdir` rejects `ENOTEMPTY`, `mapErrno` returns `DIRECTORY_NOT_EMPTY(src)`** | `lstat(src)`, `lstat(dst)`, `rmdir(dst)` **rejecting** — **no `rename`** |
-| **N7** | directory | **empty directory** | **replace** | `lstat(src)`, `lstat(dst)`, then `mkdir -p`, `rmdir(dst)`, `rename` **in that order** |
+| **N8 / N9 / N10 / N16** | directory | **non-empty directory** | **refuse — the `rmdir` rejects `ENOTEMPTY`, `mapErrno` returns `DIRECTORY_NOT_EMPTY(src)`** | `lstat(src)`, `lstat(dst)`, `realpath(src)`, `rmdir(dst)` **rejecting** — **no `rename`** |
+| **N7** | directory | **empty directory** | **replace** | `lstat(src)`, `lstat(dst)`, `realpath(src)`, then `mkdir -p`, `rmdir(dst)`, `rename` **in that order**; a failing `rename` is followed by a best-effort `mkdir(dst)` |
 
 `readdir` appears in no row: after ADR-825 the arm never calls it, on any branch.
 
@@ -1727,7 +1755,7 @@ it runs between the plan and the removal on both directory-destination arms. On 
 above lists it only where its ordering is load-bearing — before the `rmdir` and the `rename` of the
 replace arm — and the syscall budget in §8i counts only what the emulation adds.
 
-**Nine design points, each of which a DI test will pin.**
+**Eleven design points, each of which a DI test pins.**
 
 1. **The refusals are raised from inside `runFs`, and pass through it untouched.** `runFs`
    (`:254`) rethrows anything `isErrnoException` rejects, and that predicate is
@@ -1736,35 +1764,42 @@ replace arm — and the syscall budget in §8i counts only what the emulation ad
    the caller verbatim. Placing the plan inside `runFs` is what gives its own stray errnos the
    `src` anchoring every other error in this operation already has.
 2. **The gate is the first line and short-circuits to nothing.** On a `honoursRenameKinds: true`
-   policy — every POSIX host — `planRename` issues zero syscalls and allocates nothing (**R41**).
-3. **`src === dst` is decided by `pathContains`'s equality arm, which compares both sides through
-   `pathPolicy.normalizeForCompare` — never with `===` on the raw strings.** On Windows that
-   case-folds and normalises separators, so `C:\r\A.BIN` and `c:\r\a.bin` are the same entry.
-   Without it, a case-differing self-rename of a **non-empty directory** would fall through to the
-   `rmdir` and newly refuse `DIRECTORY_NOT_EMPTY` — the same regression §3c calls the sharpest one
-   this work can introduce, one adapter over. A separate self-rename escape above `pathContains`
-   would be dead code: `pathContainsNormalized` (`:191`) returns `true` on equality before its
-   prefix test, with the same verdict, so N21 / N22 are delegated by the same line as N11 … N12.
-   `pathContains` receives the policy **object** and calls `normalizeForCompare` through it; the
-   method is never lifted into a local binding. A `PathPolicy` is an interface, and only the shipped
-   factory happens to build it from arrow properties — a hand-written policy in a test can implement
-   it with ordinary methods, where an unbound reference loses `this`. That failure mode is invisible
-   to every suite that injects the shipped policies and shows up only where a different
-   implementation is supplied.
-4. **The inside-source test comes before every kind test, and *delegates* rather than refusing.**
-   Windows already reports the invalid-argument errno for N11 / N11b / N11c / N11d / N12 (§8a), so
-   the platform's own answer is already the one ADR-817 chose for memory. Refusing here instead
-   would (a) re-code N11b from the invalid-argument errno to `NOT_A_DIRECTORY`, making Windows
-   disagree with linux on a row where they currently agree, and (b) — the destructive one — take the
-   replace arm on N11d, removing an existing empty directory *inside* the source before a rename
-   that then fails anyway. `pathContains` is reused rather than re-spelled: it is the adapter's own
-   normalised prefix test (`:175`), already case- and separator-correct, and because it returns
-   `true` for equality it is also the self-rename delegation (point 3).
-5. **Symlinks are never followed, on either side.** Both probes are `lstat`, and both arms test
-   `isSymbolicLink()` explicitly *before* `isDirectory()` matters — a symlink to a directory is a
-   non-directory for `rename(2)`, which is the property §1e's closing paragraph already pins on
-   POSIX (N3, N6). Windows reports directory reparse points as directories to `stat`; only `lstat`
-   plus the explicit symlink test keeps N6 refusing rather than replacing.
+   policy — every POSIX host — `mustReplaceDirectory` issues zero syscalls; the only allocation is
+   the `async` function's own promise, measured at about 30 ns against a 97 µs rename (**R41**).
+3. **Identity is decided by the entry, never by the spelling (R51).** A string compare — even
+   through `pathPolicy.normalizeForCompare`, which case-folds and normalises separators — cannot
+   see the aliases Win32 accepts for one entry: a trailing dot or space the kernel strips, an 8.3
+   short name. `resolveWrite` canonicalises the *parent* chain and joins the raw leaf, so both
+   `C:\r\d` and `C:\r\d.` reach the arm as different strings for the same directory; a string
+   self-rename escape would miss them, both `lstat`s would report that directory, and the replace
+   arm would remove the **source** (the review round's sharpest finding). The opposite error also
+   exists: on a per-directory case-sensitive NTFS tree `A` (a directory) and `a` (a file) are
+   distinct entries that a case-fold equates, and a string escape would delegate — letting the
+   platform replace the file with the directory, the very N4 hazard the arm exists to refuse. So
+   equality is asked of the two `lstat` results — same device and same inode, when the filesystem
+   reports one (`ino !== 0`; libuv fills both on NTFS from the volume serial and the file index) —
+   and a self-rename of a directory costs two probes on Windows (N22), which nothing hot pays. A
+   filesystem that reports no inode leaves identity undecided and the kind checks decide (a
+   documented residual, not a silent one).
+4. **Containment is asked twice, strictly, and delegates rather than refusing.** Windows already
+   reports the invalid-argument errno for N11 / N11b / N11c / N11d / N12 (§8a), so the platform's
+   own answer is the one ADR-817 chose for memory; refusing here would re-code N11b and — the
+   destructive case — take the replace arm on N11d, removing an existing empty directory *inside*
+   the source before a rename that then fails anyway. The first test is the cheap string one
+   (`strictlyContains`, equality excluded — equality belongs to point 3), before any syscall. The
+   second runs only on the directory-onto-directory arm: the destination's parent chain is
+   canonical but the source leaf may be an alias (`C:\r\LONG-N~1` for `C:\r\long-name`), so
+   only `realpath(src)` can show that the destination sits inside the source; that one extra
+   syscall sits on the arm no command reaches (§7). `pathContainsNormalized` is reused for the
+   prefix test — the adapter's own, case- and separator-correct — with the equality arm masked off.
+5. **Symlinks are never followed, on either side.** Both probes are `lstat`, and `lstat` never
+   reports a link as a directory: `Stats.isDirectory()` and `isSymbolicLink()` test `S_IFMT`
+   against distinct values, and libuv reports a directory junction as `S_IFLNK` too. So
+   `isDirectory()` alone decides the kind — a symlink to a directory is a non-directory for
+   `rename(2)`, the property §1e's closing paragraph already pins on POSIX (N3, N6) — and an
+   explicit `isSymbolicLink()` disjunct could never change a verdict (the review round removed the
+   two it had, and the two DI rows that had to fabricate a `Stats` that is both). Only a
+   `stat`-based probe, which follows the link, would need the extra test.
 6. **`lstatOrMissing` answers "is there an entry here", and swallows nothing.** `ENOENT` and
    `ENOTDIR` both mean *no entry at this path* and return `undefined`; every other errno propagates
    through `runFs` and is mapped. `ENOTDIR` is included deliberately: it is the ancestor-blocked
@@ -1785,7 +1820,9 @@ replace arm — and the syscall budget in §8i counts only what the emulation ad
 8. **The replace arm is `rmdir` → `rename`, and the emptiness verdict is the platform's own
    (ADR-825).** `rmdir(dst)` runs inside the same errno-mapped operation as the rename: an empty
    destination is removed and the rename proceeds; a non-empty one rejects `ENOTEMPTY`, which
-   `mapErrno` turns into `DIRECTORY_NOT_EMPTY(src)`. This is literally `mingw_rename`'s sequence
+   `mapErrno` turns into `DIRECTORY_NOT_EMPTY(src)`; one that vanished between the probe and the
+   removal rejects `ENOENT`, which the arm reads as *already in the state the removal wanted* and
+   proceeds to the rename — reporting `FILE_NOT_FOUND(src)` there would name the wrong side. This is literally `mingw_rename`'s sequence
    (`mingw.c:2638–2639`), it is one syscall cheaper than reading the directory first, and its
    refusal code comes from the same errno map every other refusal in the adapter uses rather than
    from a second, hand-written verdict. It rested on one unmeasured fact — node's own Windows errno
@@ -1804,7 +1841,24 @@ replace arm — and the syscall budget in §8i counts only what the emulation ad
    caller sees `DIRECTORY_NOT_EMPTY` — the refusal the arrangement would have produced anyway, which
    is why the race degrades into the correct answer rather than into a wrong one. With the removal
    *as* the check there is no window between check and act at all; the only remaining window is
-   between the removal and the rename.
+   between the removal and the rename, and it needs no adversary on Windows — an indexer or an
+   antivirus holding a handle inside the source makes the `rename` fail with a sharing violation
+   after the destination is gone. So a failed rename on that arm is followed by a best-effort
+   `mkdir(dst)` (**R52**): the refusal keeps the contract's *changing nothing*, the rename failure
+   stays the one reported, and a failure of the restoration itself is subordinate to it and is not
+   surfaced. One check-then-act window remains and is documented rather than closed: a directory
+   source over an *absent* destination delegates after `lstat(dst)`, and a regular file planted
+   there before the `rename` still meets the platform's own replace — `mingw_rename` has the same
+   window, and no native primitive closes it.
+10. **The verdict is a boolean, not a string enum.** A `'rename-only' | 'replace-directory'` plan
+    was consumed by one `===`, so every `'rename-only'` literal was a provably equivalent
+    string-literal mutant (four of them, hand-verified surviving); a boolean has no such class, and
+    its forced-true and forced-false mutants both die on the rows that assert which syscalls ran.
+11. **The rows pin the targets, not only the order.** A `rmdir(realSrc)` in place of
+    `rmdir(realDst)` is a one-token defect that deletes the source, and Stryker emits no
+    identifier-swap mutant for it; every replace-arm row therefore asserts `rmdir` was called with
+    the destination and `rename` with the pair, and the restoration row asserts the recreating
+    `mkdir` names the removed destination.
 
 **What does not change on Windows.** N1 / N2 / N3 keep `PERMISSION_DENIED` (already POSIX-shaped),
 N11–N12 keep the invalid-argument errno, N18 keeps `FILE_EXISTS(src)`, and the two oddities N19 and
@@ -1945,6 +1999,14 @@ git-on-Windows *"Is a directory"* is the recorded non-replication of §8b. A **d
 takes the identical `lstat` verdict as a live one — the adapter never resolves the target — which is
 no longer an inference: W13b measures it on all three OS.
 
+**A residual window, stated.** The exclusive-create guard's `lstat` and the `writeFile` it guards
+are separated by an `await`; on Windows a dangling symlink planted in that window is followed by
+libuv's open, the target is created, and `writeExclusive` returns success. The pre-change guard had
+the identical shape, so the change neither introduces nor widens the window — only the code it
+reports moved — and no portable fix exists at this layer without a Win32 no-follow open. The guard
+is load-bearing against the arrangement that exists *before* the call, not against one planted
+during it.
+
 #### §8g N15 — the divergence inside POSIX, and a latently red row
 
 **The measurement.** `rename(<file>, <the containment root>)`: darwin `PERMISSION_DENIED`
@@ -2027,6 +2089,23 @@ same `rmdir` in both, and what separates the verdicts is the errno `mapErrno` re
 where the *absence* of `readdir` is asserted — once, on the arm that used to call it — so a future
 re-introduction of an emptiness probe fails a row instead of passing silently.
 
+**Review-round additions to the DI rows.** The two rows that fabricated a `Stats` that is both a
+directory and a symlink became a plain symlink source and a plain symlink destination (point 5); the
+case-differing self-rename row became the entry-identity row (same device and inode under two
+spellings → delegate, two `lstat`s, no `rmdir`); three rows joined it — spellings that fold equal but
+are distinct entries (a directory `A` over a file `a` on a case-sensitive directory → `NOT_A_DIRECTORY`
+carrying src, no `rename`), a filesystem reporting no inode (identity undecided → the kind checks take
+the replace arm), and a source leaf spelled by an alias whose canonical path contains the destination
+(→ delegate, no `rmdir`); the replace arm gained the target pins (point 11), a restoration row (the
+recreating `mkdir` names the removed destination and runs after the removal; `PERMISSION_DENIED`
+carrying src surfaces), a row where the restoration itself fails (the rename failure is still the one
+reported), and an `ENOENT`-on-removal row (the rename still runs); the cache-clear row asserts the
+exact code and path; the two `posixPolicy` delegation rows arrange the `Stats` their `Given` names,
+even though the gate keeps `lstat` from being called; and every fabricated `Stats` in the block now
+carries an inode and a device so the identity test is decided, not defaulted. The `dataFor` /
+`captureError` helpers moved to `test/fixtures/tsgit-error-data.ts`, shared by the three files that
+had copies.
+
 **(b) Real-NTFS rows — a new `test/integration/win-only/node-fs-windows-rename-refusals.test.ts`.**
 The name mirrors its posix-only sibling; the directory's convention is a `@proves` header
 (`surface: nodeFs.windowsRenameRefusals`, `bucket: platform-only`, `unique:` the POSIX kind rules the
@@ -2047,6 +2126,13 @@ W13 and W13b → `writeExclusive` over a live **and** over a dangling symlink �
 the dangling row the link's target is still **absent** afterwards, which is the half the platform's
 own exclusive open gets wrong (§8f) · W7 / W8 → `write` over the same two leaves →
 `PERMISSION_DENIED`, so the two verdicts are pinned apart on the platform where they differ.
+
+Two rows joined after the review round: N11c — a directory renamed onto an existing symlink inside
+itself (`UNSUPPORTED_OPERATION`, link and target intact, behind the symlink guard) — and the
+cheapest real-platform proof of R51: a directory renamed onto its own name spelled with a trailing
+dot resolves as a no-op and keeps its child (Win32 strips the dot; the identity test sees one entry
+before anything is removed). The directory-with-child-onto-file row now also asserts the destination
+file's bytes are byte-identical, the observation §8h(b) names.
 
 ⚠️ **Every path expectation in this file is built with `node:path`.** The adapter reports joined
 paths, and on Windows those carry `\` (N10's `p\s`, N20's `p\f`); a `/`-spelled literal would fail
@@ -2084,13 +2170,25 @@ only by a direct port call.
 `writeExclusive` pays nothing new: the leaf `lstat` on `honoursNoFollow: false` platforms is already
 issued today; §8f only changes which error it raises.
 
-**Tarball.** `tooling/verify-tarball.sh`'s cap is 906 KiB (`SIZE_CAP=$((906 * 1024))` at `:94`) and
-the last measured pack was 927 329 B — **415 B of headroom**. The node adapter's new code and the
-R47 JSDoc will exceed that. Raising the cap is an **implementation-phase chore**, one commit, with
-the measurement rule this repo already learned the hard way: `rm -rf dist .wireit` first, then a
-clean `npm run build`, then read the number — a stale chunk inflates the reading and has produced a
-false failure before. The raise gets its own paragraph in that script's header, naming the
-attribution as measured, exactly as the eight raises above it do.
+**Tarball and the browser bundle — measured, and the limits they set.** `tooling/verify-tarball.sh`'s
+cap was 906 KiB with 415 B of headroom before this leg; the arm, the fourth flag and the port JSDoc
+put a clean-build pack at 928 803 B, and the cap moved to **908 KiB** (929 792 B) with its own header
+paragraph, the smallest whole-KiB step that admits the measurement (907 KiB = 928 768 B is under it).
+After the exclusive-create verdict two consecutive clean-build measurements read **929 011 B** — 781 B
+of headroom. The one field `portable-posix-policy.ts` gained put `dist/browser/tsgit.js` at
+**190 003 B** gzipped against a 190 000 B limit; `.size-limit.json` now says **190.1 kB**
+(`bytes-iec` parses it as 190 100 B) — 97 B of headroom, chosen so the ratchet keeps its sensitivity
+rather than the 1 kB step first taken (`size-limit`'s kB is 1 000 B, and JSON carries no comment, so
+this paragraph is the attribution). The measurement rule stands: `rm -rf dist .wireit`, a clean
+`npm run build`, then the number — a stale chunk has produced a false failure here before.
+
+**What the perf round measured on a quiet machine.** The POSIX arm's cost over 20 000 renames in one
+process, both dists loaded: +0.35 % / −0.18 % / +0.61 % (noise; ~30 ns of added work against a
+~97 µs floor). The memory adapter's 2048-deep chain — not this leg's code — seeds in 21.4 ms on the
+branch against 10.9 ms on main (the two-phase ancestor walk doubles a constant, the class stays
+O(depth²)), while the deep-walk test's own `readdir` fan-out is O(depth³), unchanged, and ~9.8 s on
+both trees; on the checkout-shaped workload (20 000 files into a depth-4 tree) the branch is 23 %
+faster. The three timeouts that test produced under a loaded full gate were load, not the code.
 
 **The named measurement gaps — two closed, one standing.** Each was a gap in the *data*, not a guess
 this design made; the second probe run (same two hosted runners, same harness shape, node v24.19 on
@@ -2598,6 +2696,19 @@ recorded reason.** Lenses 1 (round-trip) and 3 (total function over a grammar) d
 | stale handle | `describe('stale handle writes')` | a handle write after `rm` leaves the path absent; a handle write after `rm` + `mkdir` at the same name leaves the directory intact and a child write beneath it works |
 | browser classifier | (same file) | a fake root handle rejecting with `null` → `FILE_NOT_FOUND` |
 | R34 | `test/browser/opfs-roundtrip.spec.ts` | `rename('same.txt', 'same.txt')` leaves the file with its bytes; `rename('missing.txt', 'missing.txt')` reports `FILE_NOT_FOUND` |
+
+**Windows round (one cycle so far).** Four dimensions on `7be746cf..e72cc711`. Security: MEDIUM ×3
+— string identity misses Win32 name aliases (R51, point 3), the post-removal residue (R52, point 9),
+no unit pin on the removal's target (point 11) — LOW ×2 (`ENOENT` on the removal → the rename
+proceeds; the residual exclusive-create window, documented in §8f). Code: MEDIUM ×2 — the port's
+"on every platform … PERMISSION_DENIED" clause needed the linux ancestor exception, and the ancestor
+clause conflated the immediate parent (`FILE_EXISTS` carrying src) with higher ancestors — LOW ×4
+(the `atomicRename` sentence's reason, three stale guard comments, the verdict's doc comment, the
+redundant symlink disjuncts — all applied). Tests: MEDIUM ×1 (converging with security's target pin)
+— LOW ×5 applied (strict cache row, honest `posixPolicy` fakes, shared helpers, hoisted errno
+factories, N11c) — and the PROBE that turned the verdict into a boolean (point 10). Perf: LOW ×1
+(the bundle limit, applied), everything else RULED-OUT with measurements (§8i). Every MEDIUM was fixed
+with rows that fail on the pre-fix code.
 
 ### Gates
 
