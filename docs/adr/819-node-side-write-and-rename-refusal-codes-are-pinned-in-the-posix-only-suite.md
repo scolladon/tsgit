@@ -5,7 +5,14 @@ subjects:
 ---
 # 819 — Node-side write and rename refusal codes are pinned in the posix-only integration suite
 
-- **Status:** accepted
+> **Superseded by [ADR-824](824-write-and-rename-refusal-rows-in-the-shared-contract-suite-assert-exact-codes.md)**
+> for the tolerant write and rename refusal rows in the shared contract suite: every cell of the
+> Windows-risk column this record rested on has since been measured on the Windows runner, and the
+> node adapter now enforces the POSIX kind rules there, so those rows assert exact codes. Everything
+> else here — the posix-only file as the home of the node adapter's exact codes for the rows the
+> contract suite does not carry, and the strict exclusive-create rows — still stands.
+
+- **Status:** superseded by ADR-824
 - **Date:** 2026-09-05
 - **Design:** docs/design/memory-write-exclusive-directory.md (DC-J) · **Supersedes/Refines:** refines ADR-812
 
