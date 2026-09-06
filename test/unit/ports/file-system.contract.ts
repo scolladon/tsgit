@@ -95,15 +95,9 @@ function assertNotADirectory(err: unknown): void {
   expect((err as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
 }
 
-/**
- * Weaker than the code-specific asserters above: the unit project also runs
- * on the windows-latest matrix cell, and libuv's directory-open mapping
- * there is unprobed. The exact code is pinned per-platform elsewhere; this
- * contract row proves only the cross-adapter refusal shape and
- * non-destructiveness.
- */
-function assertRefusedWithoutCode(err: unknown): void {
+function assertDirectoryNotEmpty(err: unknown): void {
   expect(err).toBeInstanceOf(TsgitError);
+  expect((err as TsgitError).data.code).toBe('DIRECTORY_NOT_EMPTY');
 }
 
 export function fileSystemContractTests(createSut: () => Promise<FileSystemContractEnv>): void {
@@ -274,7 +268,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       }
 
       // Assert
-      assertRefusedWithoutCode(caught);
+      assertPermissionDenied(caught);
       const names = (await env.fs.readdir(dir)).map((entry) => entry.name);
       expect(names).toContain('child.bin');
       expect(await env.fs.read(`${dir}/child.bin`)).toEqual(childData);
@@ -438,7 +432,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       }
 
       // Assert
-      assertRefusedWithoutCode(caught);
+      assertPermissionDenied(caught);
       expect(await env.fs.read(src)).toEqual(data);
       expect(await env.fs.readdir(dst)).toEqual([]);
     });
@@ -462,7 +456,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       }
 
       // Assert
-      assertRefusedWithoutCode(caught);
+      assertNotADirectory(caught);
       expect(await env.fs.read(dst)).toEqual(dstData);
       expect(await env.fs.read(`${src}/child.bin`)).toEqual(childData);
     });
@@ -484,7 +478,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       }
 
       // Assert
-      assertRefusedWithoutCode(caught);
+      assertDirectoryNotEmpty(caught);
       const srcEntries = await env.fs.readdir(src);
       const dstEntries = await env.fs.readdir(dst);
       expect(srcEntries.map((entry) => entry.name)).toEqual(['a.bin']);

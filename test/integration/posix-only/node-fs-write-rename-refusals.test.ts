@@ -285,17 +285,31 @@ describe('NodeFileSystem — write and rename refusal codes (POSIX)', () => {
   });
 
   describe('Given a file renamed onto the containment root, When rename', () => {
-    it('Then throws PERMISSION_DENIED', async () => {
-      // Arrange
+    it('Then throws PERMISSION_DENIED or DIRECTORY_NOT_EMPTY', async () => {
+      // Arrange — a non-directory source renamed onto one of its own
+      // ancestors is the one rename(2) shape POSIX does not order: darwin's
+      // kernel checks EISDIR before ENOTEMPTY, ubuntu's checks the reverse.
+      // Not an emptiness axis — a file onto a *sibling* non-empty directory
+      // is PERMISSION_DENIED on both (see the row above).
       const sut = env.fs;
       const src = nodePath.join(env.rootDir, 'r4-file');
-      await fsPromises.writeFile(src, 'r4');
+      const data = 'r4';
+      await fsPromises.writeFile(src, data);
 
       // Act
       const caught = await captureError(() => sut.rename(src, env.rootDir));
 
       // Assert
-      expect(dataFor(caught, 'PERMISSION_DENIED').path).toBe(src);
+      expect(caught).toBeInstanceOf(TsgitError);
+      const { data: errData } = caught as TsgitError;
+      expect(['PERMISSION_DENIED', 'DIRECTORY_NOT_EMPTY']).toContain(errData.code);
+      const { path } = errData as Extract<
+        TsgitError['data'],
+        { code: 'PERMISSION_DENIED' | 'DIRECTORY_NOT_EMPTY' }
+      >;
+      expect(path).toBe(src);
+      expect(await fsPromises.readFile(src, 'utf8')).toBe(data);
+      expect(await fsPromises.readdir(env.rootDir)).toContain('r4-file');
     });
   });
 
