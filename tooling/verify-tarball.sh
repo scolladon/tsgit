@@ -107,7 +107,13 @@ done
 # JSDoc corrections to `rename`/`atomicRename` — carried verbatim by every `.d.ts` AND
 # `.d.cts`. Each closes a data-loss route the review measured on Windows; none is removable
 # without reopening one.
-SIZE_CAP=$((909 * 1024))
+# Raised 909 -> 910 KiB by the second and third review cycles of the rename-kind emulation:
+# the measured tarball landed at 931 069 B, 253 B over the old cap. Attribution: the
+# byte-identical self-rename short-circuit, the bigint entry-identity compare with its
+# canonical-path fallback and the absence-tolerant realpath it needs, and the restoration
+# that runs only for a directory the arm itself removed — each closes a self-rename or
+# residue route the second cycle measured; none is removable without reopening one.
+SIZE_CAP=$((910 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
