@@ -87,6 +87,9 @@ const APPEND_FLAGS =
  */
 type WriteStreamNumericFlags = Omit<fs.WriteStreamOptions, 'flags'> & { readonly flags: number };
 
+/** `NodeFileSystem.planRename`'s verdict: delegate untouched, or replace an empty directory. */
+type RenamePlan = 'rename-only' | 'replace-directory';
+
 /**
  * Bounded-concurrency map. Issues up to `limit` `fn(item)` calls in
  * parallel; the next item runs as each in-flight call resolves.
@@ -748,15 +751,63 @@ export class NodeFileSystem implements FileSystem {
     // symlink moves the link and leaves whatever it points at untouched.
     const realSrc = await this.resolveWrite(src);
     const realDst = await this.resolveWrite(dst);
-    await runFs(async () => {
-      await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
-      await this.fsOps.rename(realSrc, realDst);
-    }, src);
-    // Deliberately a full clear, not a `dirname(src)`/`dirname(dst)`-scoped
-    // delete — see `parentRealpathCache`'s field doc for why a directory
-    // rename makes that narrowing unsound.
-    this.parentRealpathCache.clear();
+    try {
+      await runFs(async () => {
+        const plan = await this.planRename(realSrc, realDst, src);
+        await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
+        if (plan === 'replace-directory') await this.fsOps.rmdir(realDst);
+        await this.fsOps.rename(realSrc, realDst);
+      }, src);
+    } finally {
+      // Deliberately a full clear, not a `dirname(src)`/`dirname(dst)`-scoped
+      // delete — see `parentRealpathCache`'s field doc for why a directory
+      // rename makes that narrowing unsound. Cleared even when the replace
+      // arm already removed the destination and the following `rename` then
+      // fails: an empty directory the fallback plan resolved is gone either
+      // way, so the cache must not keep serving its stale parent realpath.
+      this.parentRealpathCache.clear();
+    }
   };
+
+  /**
+   * POSIX `rename(2)`'s kind rules, enforced here only on a platform whose
+   * own rename does not enforce them. Refuses on positive evidence and
+   * delegates on everything else, so no arrangement the platform already
+   * decides correctly changes shape.
+   */
+  private async planRename(
+    realSrc: string,
+    realDst: string,
+    reported: string,
+  ): Promise<RenamePlan> {
+    if (this.pathPolicy.honoursRenameKinds) return 'rename-only';
+    // Returns true on normalised equality as well as strict containment, so a
+    // case-differing self-rename delegates here rather than falling through
+    // to the kind checks and newly refusing a non-empty directory.
+    if (pathContains(realSrc, realDst, this.pathPolicy)) return 'rename-only';
+    const source = await this.lstatOrMissing(realSrc);
+    if (source === undefined || !source.isDirectory() || source.isSymbolicLink()) {
+      return 'rename-only';
+    }
+    const destination = await this.lstatOrMissing(realDst);
+    if (destination === undefined) return 'rename-only';
+    if (!destination.isDirectory() || destination.isSymbolicLink()) {
+      throw notADirectory(reported);
+    }
+    return 'replace-directory';
+  }
+
+  /** "Is there an entry here" — never "what is it". Swallows nothing but absence. */
+  private async lstatOrMissing(real: string): Promise<fs.Stats | undefined> {
+    try {
+      return await this.fsOps.lstat(real);
+    } catch (err) {
+      if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+        return undefined;
+      }
+      throw err;
+    }
+  }
 
   // `rename` above is already atomic on POSIX (`rename(2)`) and clears the
   // parent-realpath cache; the capability is just that guarantee exposed

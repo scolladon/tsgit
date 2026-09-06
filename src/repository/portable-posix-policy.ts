@@ -27,6 +27,7 @@ export const portablePosixPolicy: PathPolicy = {
   caseInsensitive: false,
   windowsSyntax: false,
   honoursNoFollow: true,
+  honoursRenameKinds: true,
   isAbsolute: (path) => path.startsWith('/'),
   resolve: (...parts) => normalizeAbsolutePosixPath(parts.join('/')),
   join: (...parts) => normalizeAbsolutePosixPath(parts.join('/')),
