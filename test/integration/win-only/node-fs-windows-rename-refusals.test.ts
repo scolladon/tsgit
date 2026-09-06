@@ -373,22 +373,25 @@ describe('NodeFileSystem — rename refusal codes (Windows)', () => {
     });
   });
 
-  describe('Given a directory renamed onto its own name spelled with a trailing dot, When rename', () => {
-    it('Then it resolves as a no-op and the directory keeps its child', async () => {
-      // Arrange — Win32 strips a trailing dot, so both spellings are one entry;
-      // the adapter must see the identity before it removes anything.
+  describe('Given a directory renamed onto its own name in another case, When rename', () => {
+    it('Then it resolves, the directory keeps its child and the replace arm never ran', async () => {
+      // Arrange — one entry under two spellings on a case-insensitive volume;
+      // the identity test must see that before anything is removed (a replace
+      // arm taken by mistake would refuse DIRECTORY_NOT_EMPTY here), and the
+      // platform then applies the case change itself.
       const sut = env.fs;
       const src = nodePath.join(env.rootDir, 'wr18-dir');
+      const dst = nodePath.join(env.rootDir, 'WR18-DIR');
       const child = nodePath.join(src, 'child.txt');
       await fsPromises.mkdir(src);
       await fsPromises.writeFile(child, 'wr18-child');
 
       // Act
-      await sut.rename(src, `${src}.`);
+      await sut.rename(src, dst);
 
       // Assert
-      expect((await fsPromises.lstat(src)).isDirectory()).toBe(true);
-      expect(await fsPromises.readFile(child, 'utf8')).toBe('wr18-child');
+      expect((await fsPromises.lstat(dst)).isDirectory()).toBe(true);
+      expect(await fsPromises.readFile(nodePath.join(dst, 'child.txt'), 'utf8')).toBe('wr18-child');
     });
   });
 

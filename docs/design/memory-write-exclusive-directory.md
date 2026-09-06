@@ -2157,9 +2157,14 @@ own exclusive open gets wrong (§8f) · W7 / W8 → `write` over the same two le
 
 Two rows joined after the review round: N11c — a directory renamed onto an existing symlink inside
 itself (`UNSUPPORTED_OPERATION`, link and target intact, behind the symlink guard) — and the
-cheapest real-platform proof of R51: a directory renamed onto its own name spelled with a trailing
-dot resolves as a no-op and keeps its child (Win32 strips the dot; the identity test sees one entry
-before anything is removed). The directory-with-child-onto-file row now also asserts the destination
+cheapest real-platform proof of R51: a directory renamed onto its own name in another case resolves,
+keeps its child and lands under the new spelling (the identity test sees one entry before anything
+is removed; a replace arm taken by mistake would refuse `DIRECTORY_NOT_EMPTY`; the platform then
+applies the case change itself). The row first shipped with a trailing-dot spelling and went red on
+the Windows runner for a reason worth recording: both `lstat`s did see one entry and the arm
+delegated, but node's own rename then created a literal dotted NT name — an alias spelling is the
+platform's to interpret, and the adapter passes it through unchanged, exactly as it must for the
+case-only rename a caller relies on. The directory-with-child-onto-file row now also asserts the destination
 file's bytes are byte-identical, the observation §8h(b) names.
 
 ⚠️ **Every path expectation in this file is built with `node:path`.** The adapter reports joined
