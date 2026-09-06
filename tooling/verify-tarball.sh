@@ -99,7 +99,15 @@ done
 # AND `.d.cts` carries verbatim, costing about 1.3 KB per edit here, as the prior raise's
 # measurement established. None of it is removable without dropping POSIX rename-kind
 # parity on a platform whose own rename does not enforce it.
-SIZE_CAP=$((908 * 1024))
+# Raised 908 -> 909 KiB by the review round of the Windows rename-kind emulation: the
+# measured tarball landed at 930 255 B, 463 B over the old cap. Attribution: the
+# entry-identity test (device and inode) that replaced the string self-rename escape, the
+# canonical-source containment re-check, the two-step replacement's own method with its
+# ENOENT fall-through and best-effort restoration of an emptied destination, and the port
+# JSDoc corrections to `rename`/`atomicRename` — carried verbatim by every `.d.ts` AND
+# `.d.cts`. Each closes a data-loss route the review measured on Windows; none is removable
+# without reopening one.
+SIZE_CAP=$((909 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
