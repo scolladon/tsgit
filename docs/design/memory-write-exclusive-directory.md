@@ -17,11 +17,18 @@
 > architecture allows us easily."* The **node adapter emulates POSIX `rename(2)` kind rules and the
 > exclusive-create symlink verdict on Windows**, behind the `PathPolicy` / `FsOperations` seam,
 > inside this PR; the two red rows must pass on `windows-latest` unchanged. §8 designs that leg
-> against a three-OS probe of the adapter *and* of real `git`, and raises six new candidates for the
-> choices the settled decision leaves open.
+> against a three-OS probe of the adapter *and* of real `git`.
+> **Scope after the third decisions round (this revision):** the six candidates that leg raised are
+> settled — ADR-820 (a fourth `PathPolicy` flag, `honoursRenameKinds`), ADR-821 (the enumerated
+> root-rename pair), ADR-822 (the Windows ancestor shapes documented and pinned), ADR-823 (the
+> scoped atomicity claim), ADR-824 (every `write` / `rename` refusal row in the shared contract
+> suite asserts its exact code, superseding ADR-819's tolerant clause) and ADR-825 (the replace arm
+> removes the destination with `rmdir` and lets `mapErrno` translate the failure). A second probe
+> run closed two of the three measurement gaps §8i named, and §8 is rewritten against it.
 > Status: draft → self-reviewed ×3 → accepted (ADRs 810–815) → revised (write + rename folded in)
 > → self-reviewed ×3 → accepted (ADRs 816–819) → revised (browser write/rename folded in)
 > → self-reviewed ×3 → three review cycles folded in → revised (Windows leg folded in)
+> → self-reviewed ×3 → accepted (ADRs 820–825) → revised (Windows decisions folded in)
 > → self-reviewed ×3
 
 ## Context
@@ -84,8 +91,14 @@ pass, which only added a row whose errno (`EEXIST` from `O_EXCL`) is universal.
 | **ADR-816** browser `write`/`rename` map a directory occupant to `PERMISSION_DENIED` | Settles DC-G as **option 2**, against the design's recommendation. `resolveFileHandle` gains a `create: true`-**only** arm; the `create: false` mapping `stat`/`exists` depend on is untouched; two Playwright cases pin it → §1f, §3f |
 | **ADR-817** `rename` into itself refuses **before** the destination-kind check | Settles DC-H as **option 1**. One clause throwing `unsupportedOperation('filesystem', <the invalid-argument errno>)`, matching linux; darwin's `NOT_A_DIRECTORY` on the one divergent arrangement is a knowing divergence → §3c |
 | **ADR-818** non-exclusive writes refuse a **symlink** leaf | Settles DC-I as **option 1**. The `write` guard is two terms, so `files`/`directories`/`symlinks` become pairwise disjoint under every port call → §3b, R8a |
-| **ADR-819** node's strict codes live in the posix-only suite | Settles DC-J as **option 2**. Contract rows for `write`/`rename` assert instance + non-destructiveness; a new `test/integration/posix-only/` file carries the strict node codes; `writeExclusive` rows stay strict → §5. Its Context sentence about `MoveFileExW` is measured **false** and its accepted failure mode has **fired** → §8c |
-| **ADR-046** the `PathPolicy` abstraction | The seam the Windows emulation is gated on. Its capability flags are independent *by doctrine* — *"each say exactly what they gate … instead of one flag standing in for all three"* — which is why §8e adds a fourth rather than overloading `honoursNoFollow` (DC-K) |
+| **ADR-819** node's strict codes live in the posix-only suite | Settles DC-J as **option 2**. Its tolerant-row clause is **superseded by ADR-824**; what survives is the posix-only file as the home of the node codes the contract suite does not carry, and the strict `writeExclusive` rows → §5. Its Context sentence about `MoveFileExW` is measured **false** and its accepted failure mode has **fired** → §8c |
+| **ADR-820** a fourth `PathPolicy` flag gates the emulation | Settles DC-K as **option 1**. `honoursRenameKinds` — `true` on `posixPolicy`, `false` on `windowsPolicy`, set through `PathPolicyCapabilities`; `honoursNoFollow` is not overloaded and `isSymlinkLeaf`'s equivalence note stands → §8e, **R48** |
+| **ADR-821** the root-rename row accepts both codes POSIX allows | Settles DC-M as **option 1**. The posix-only N15 row asserts `PERMISSION_DENIED` **or** `DIRECTORY_NOT_EMPTY` plus non-destructiveness, with a comment naming the axis; memory keeps `PERMISSION_DENIED` → §8g, **R46** |
+| **ADR-822** the Windows ancestor-fault shapes are documented, not normalised | Settles DC-N as **option 1**. N19 and N20 are pinned in their Windows shapes in the win-only file and the `rename` JSDoc calls the ancestor report adapter- **and** platform-chosen → §6, §8h, **R47**, **R49** |
+| **ADR-823** `atomicRename` is atomic where the platform renames in one step | Settles DC-O as **option 1**. The JSDoc scopes the claim rather than dropping it; the emulated replacement is two steps, as git's own is → §6, §8d, **R42** |
+| **ADR-824** the contract suite's `write`/`rename` refusal rows assert exact codes | Settles DC-P as **option 3**, user-ratified. Four rows go strict; `assertRefusedWithoutCode` loses its callers and is deleted; supersedes ADR-819's tolerant clause and refines ADR-812 → §5, **R25** |
+| **ADR-825** the replace arm removes the destination first | Settles DC-L as **option 2**, user-ratified through *"the measurement decides"*. `rmdir(dst)` inside the same errno-mapped operation, `ENOTEMPTY` → `DIRECTORY_NOT_EMPTY(src)` through `mapErrno`, `readdir` never called → §8d, **R50** |
+| **ADR-046** the `PathPolicy` abstraction | The seam the Windows emulation is gated on. Its capability flags are independent *by doctrine* — *"each say exactly what they gate … instead of one flag standing in for all three"* — which is why §8e adds a fourth rather than overloading `honoursNoFollow` (DC-K → ADR-820) |
 | **ADR-047** `FsOperations` dependency injection | The seam the Windows arm is *tested* through: `windowsPolicy` plus a fake `FsOperations` reaches every branch on any host, which is how the linux mutation runner reaches Windows-only code at all → §8h |
 | **ADR-043** errno-mapping placement | The precedent for where a platform discriminator lives: `mapErrno` stays a pure errno lookup and the platform-specific decision sits at the call site holding its inputs. §8d and §8f both follow it |
 | **ADR-041 / ADR-048** Windows testing strategy, platform-segregated test folders | Why the strict Windows codes go in `test/integration/win-only/` rather than in the cross-platform contract suite → §8h |
@@ -111,8 +124,12 @@ more: the second decisions round settled the four candidates the previous revisi
 requirement is written as *"depends on DC-x"*.
 
 **Numbers are stable identifiers, not an ordering.** R28–R32 were added by the second decisions
-round and R37–R47 by the Windows revision; each sits in the block it belongs to rather than at the
-end, so cross-references from the ADRs and from §1–§8 keep pointing at the same statements.
+round, R37–R47 by the Windows revision and R48–R50 by the third decisions round; each sits in the
+block it belongs to rather than at the end, so cross-references from the ADRs and from §1–§8 keep
+pointing at the same statements. Two earlier statements were **rewritten in place** rather than
+renumbered, because the record they carry is superseded and a second number for the same obligation
+would leave the old one live: **R25** (the contract rows are strict now, ADR-824) and **R46** (the
+root-rename row asserts the enumerated pair, ADR-821).
 
 The Windows block below is the one part of this document that constrains the **node** adapter's
 behaviour. Everything above it still holds: R1–R36 are memory- and browser-side.
@@ -208,13 +225,20 @@ operation in `runFs(op, src)`.
   **both** drivers pass, asserting `FILE_EXISTS` strictly (ADR-812).
 - **R10** — `writeOrKeepArtifact` classifies a directory occupying `pack-<sha>.idx` as
   `PACK_ARTIFACT_MISMATCH` on the memory adapter **with no test-side patch of `writeExclusive`**.
-- **R25** *(ADR-819)* — The contract suite carries a row for each new `write` / `rename` refusal
-  family that both drivers pass, asserting a structured `TsgitError` **plus non-destructiveness**
-  and no code — the `:676` precedent — because §1e verified darwin and linux while that file also
-  runs on `windows-latest`. The `writeExclusive` rows stay strict (R9).
-- **R32** *(ADR-819)* — A new file under `test/integration/posix-only/` pins the **node** adapter's
-  exact `data.code` (and `data.path` where the variant carries one) for every §1d / §1e row on which
-  darwin and linux agree. It runs in the `posix-integration` project only.
+- **R25** *(ADR-824, superseding ADR-819's tolerant clause)* — The contract suite carries a row for
+  each new `write` / `rename` refusal family that both drivers pass, asserting the **exact**
+  `data.code` **plus non-destructiveness**: `PERMISSION_DENIED` for a non-exclusive write onto a
+  directory and for a non-directory renamed onto a directory, `NOT_A_DIRECTORY` for a directory
+  renamed onto a regular file, `DIRECTORY_NOT_EMPTY` for a directory renamed onto a non-empty
+  directory. The instance-only helper `assertRefusedWithoutCode` has no callers afterwards and is
+  deleted in the same change — a helper nothing calls is dead code. The `writeExclusive` rows stay
+  strict (R9).
+- **R32** *(ADR-819, narrowed by ADR-824)* — A new file under `test/integration/posix-only/` pins the
+  **node** adapter's exact `data.code` (and `data.path` where the variant carries one) for every §1d
+  / §1e row on which darwin and linux agree. It runs in the `posix-integration` project only. Four of
+  those codes are now also asserted cross-adapter in the contract suite (R25); the posix-only rows
+  stay, because they assert what the contract helpers do not — `data.path`, the `rootDir`
+  arrangements, the symlink occupants, the delegating write surfaces, and the `reason` strings.
 
 **Review round — added by the four-dimension review**
 
@@ -265,7 +289,8 @@ Every row id is a probe row from §8a.
   (N4 / N5 / N6, where Windows today *replaces* the destination and loses it).
 - **R38** — Same platform: a directory source onto a **non-empty directory** destination refuses
   with `DIRECTORY_NOT_EMPTY` carrying `src`, and neither tree moves or merges (N8 / N9 / N10 / N16,
-  today `PERMISSION_DENIED`).
+  today `PERMISSION_DENIED`). The refusal is the destination `rmdir`'s own `ENOTEMPTY` translated by
+  `mapErrno` inside the operation's `runFs(…, src)` wrapper, not a code the arm chooses (R50).
 - **R39** — Same platform: a directory source onto an **empty directory** destination **succeeds**,
   replacing it — the subtree lands at the destination and the source name is gone (N7, today
   `PERMISSION_DENIED`). This is the row `test/unit/ports/file-system.contract.ts:494` asserts.
@@ -277,25 +302,52 @@ Every row id is a probe row from §8a.
   destination (N23 / N24), and both ancestor-fault rows (N18 / N19 / N20).
 - **R41** — Cost: **zero** extra syscalls on a non-emulating policy; **one** `lstat` on an emulating
   one when the source is not a directory — the shape every production `rename` caller has (§8i).
-- **R42** — `atomicRename` inherits R37–R41 by delegation. The replace arm (R39) is two syscalls, so
-  the port's *"no observer ever sees an intermediate state"* claim is **scoped**, not dropped: it
-  holds for every arrangement on a non-emulating platform and for every non-replace arrangement on
-  an emulating one (DC-O).
+- **R42** *(ADR-823)* — `atomicRename` inherits R37–R41 by delegation. The replace arm (R39) is two
+  syscalls — `rmdir` then `rename` — so the port's *"no observer ever sees an intermediate state"*
+  claim is **scoped**, not dropped: it holds for every arrangement on a non-emulating platform and
+  for every non-replace arrangement on an emulating one. If the destination is filled between the
+  two steps the `rmdir` fails and the caller sees `DIRECTORY_NOT_EMPTY` — the same refusal the
+  arrangement would have produced — so the window degrades into the correct answer, and the only
+  loss it can cause is an empty directory removed before a rename that then fails.
 - **R43** — The parent-realpath cache is cleared even when the replace arm has already removed the
   destination and the following `rename` then fails.
 - **R44** — `writeExclusive` over a **symlink** leaf, live or dangling, refuses with `FILE_EXISTS`
   carrying the requested path on **every** platform — including one whose `open(2)` ignores
-  `O_NOFOLLOW`, where the adapter's own leaf `lstat` decides it (W13, today `PERMISSION_DENIED` on
-  Windows against `FILE_EXISTS` on POSIX). The link and its target are unchanged. The
-  **non-exclusive** surfaces keep `PERMISSION_DENIED` on every platform (W7 / W8 agree on all
-  three), so the two verdicts are pinned apart by a pair of rows.
+  `O_NOFOLLOW`, where the adapter's own leaf `lstat` decides it (W13 / W13b, today
+  `PERMISSION_DENIED` on Windows against `FILE_EXISTS` on POSIX). The link and its target are
+  unchanged — and on a **dangling** link that means the target is still **absent**, which is the
+  half the platform's own exclusive open gets wrong (§8f). The **non-exclusive** surfaces keep
+  `PERMISSION_DENIED` on every platform (W7 / W8 agree on all three), so the two verdicts are pinned
+  apart by a pair of rows.
 - **R45** — `test/unit/ports/file-system.contract.ts:446` and `:494` pass on the `windows-latest`
   unit cells with **no arrangement edited and no assertion weakened**. That is the settled
-  constraint. Whether they are additionally *tightened* — the opposite move — is DC-P, and R45 holds
-  under every option there.
-- **R46** — `test/integration/posix-only/node-fs-write-rename-refusals.test.ts`'s "file renamed onto
-  the containment root" row passes on **both** `posix-integration` cells. It is latently red on
-  ubuntu today (§8g).
+  constraint. Three refusal rows in that file are additionally *tightened* to exact codes — the
+  opposite move — under R25 / ADR-824, so R45 holds.
+- **R46** *(ADR-821)* — `test/integration/posix-only/node-fs-write-rename-refusals.test.ts`'s "file
+  renamed onto the containment root" row passes on **both** `posix-integration` cells, by accepting
+  `PERMISSION_DENIED` **or** `DIRECTORY_NOT_EMPTY` and asserting non-destructiveness, with an
+  in-file comment naming the axis that splits the two POSIX kernels. It is measured red on ubuntu
+  today (§8g).
+- **R48** *(ADR-820)* — `PathPolicy` carries a fourth capability flag, `honoursRenameKinds`, set
+  through `PathPolicyCapabilities`: `true` on `posixPolicy`, `false` on `windowsPolicy`. It is the
+  only thing the rename arm reads to decide whether to enforce the kind rules itself, so the arm is
+  reachable through dependency injection on **every** host — which is what lets the linux mutation
+  runner kill its mutants. `honoursNoFollow` is not overloaded to carry it, so `isSymlinkLeaf`'s
+  carried equivalence note stays true of that method; every hand-built policy in the suite names the
+  fourth flag, and the compiler points at each one.
+- **R49** *(ADR-822)* — The two Windows ancestor-fault reports are **pinned in their Windows shape**
+  rather than normalised: N19 refuses `NOT_A_DIRECTORY` carrying `src` where POSIX carries `dst`,
+  and N20 refuses `FILE_NOT_FOUND` where POSIX refuses `NOT_A_DIRECTORY`. No adapter behaviour
+  changes; a future change to either shape turns a pinned row red instead of drifting. Every path
+  expectation in those rows is built with `node:path`, because the adapter reports joined paths and
+  Windows joins with `\`.
+- **R50** *(ADR-825)* — On an emulating platform, once two `lstat` probes have proved a directory
+  source and a directory destination, the arm removes the destination with `rmdir` **inside the same
+  errno-mapped operation as the rename** and renames on success. `readdir` is **never** called, on
+  any branch. A non-empty destination fails the `rmdir` with `ENOTEMPTY`, which `mapErrno` turns
+  into `DIRECTORY_NOT_EMPTY` carrying `src` (R38); every other `rmdir` errno passes through the same
+  map — an `EACCES` on a locked destination surfaces as `PERMISSION_DENIED` carrying `src`, and no
+  `rename` is issued.
 
 **Documentation**
 
@@ -304,13 +356,15 @@ Every row id is a probe row from §8a.
 - **R26** — The port JSDoc for `write`, `writeStream`, `writeUtf8`, `appendUtf8`, `rename` and
   `atomicRename` states the directory-occupant refusal and its code. `write`'s current summary —
   *"Overwrites if exists"* — is the same narrow reading ADR-813 condemns, one method over.
-- **R47** — The port JSDoc becomes **true on Windows**: `rename` and `atomicRename` state that the
-  kind matrix holds on the node and memory adapters on **every** platform, that the empty-directory
-  replacement is emulated in two steps where the platform's own `rename` refuses it, and that the
-  ancestor-chain refusal's adapter-chosen path is *also* platform-chosen on node (`dst` on POSIX,
-  `src` on Windows — today's text says `dst` flatly, which §8a measures false); `writeExclusive`
-  states that a symlink leaf is an occupant on every platform. `reports/api.json` is regenerated in
-  the same commit — the `docs:json` pre-push gate refuses a stale report.
+- **R47** *(ADR-822, ADR-823)* — The port JSDoc becomes **true on Windows**: `rename` and
+  `atomicRename` state that the kind matrix holds on the node and memory adapters on **every**
+  platform, emulated on Windows in two steps for the empty-directory replacement; that the atomicity
+  claim is scoped to the arrangements the platform renames in one step; and that the ancestor-chain
+  refusal is adapter- **and** platform-chosen on node (`dst` on POSIX, `src` on Windows — today's
+  text says `dst` flatly, which §8a measures false). `writeExclusive`'s occupancy sentence already
+  names a symlink leaf, dangling included, and needs no edit — §8f is what makes it true on Windows.
+  §6 carries the exact sentences. `reports/api.json` is regenerated in the same commit — the
+  `docs:json` pre-push gate refuses a stale report.
 
 ---
 
@@ -1212,9 +1266,13 @@ the decision to add none.
 `test/unit/ports/file-system.contract.ts` remains the purpose-built home: one exported
 `fileSystemContractTests(createSut)` driven by the memory suite (`memory-file-system.test.ts:7–24`,
 `rootDir: '/repo'`) and the node suite (`node-file-system.test.ts:63–96`, real `mkdtemp` root). Its
-four assertion helpers (`assertFileNotFound` `:78`, `assertPermissionDenied` `:83`,
+four code-checking assertion helpers (`assertFileNotFound` `:78`, `assertPermissionDenied` `:83`,
 `assertFileExists` `:88`, `assertNotADirectory` `:93`) all check the instance and `data.code`, and
-**none** checks `data.path`.
+**none** checks `data.path`. There is **no** `DIRECTORY_NOT_EMPTY` helper — ADR-824 adds one in the
+same shape — and the fifth helper the previous revision added, `assertRefusedWithoutCode` (its
+comment at `:97–104`, its body at `:105–107`), checks the instance only; its four call sites
+(`:277`, `:441`, `:465`, `:487`) are exactly the four rows ADR-824 makes strict, so the helper is
+deleted with the last of them.
 
 **The new constraint the first pass did not have.** The unit project runs on `windows-latest`
 (`ci.yml:257`), so every node-side assertion in that file runs on Windows. §1e verified darwin and
@@ -1224,27 +1282,41 @@ for exactly this situation:
 
 - `:567` `Given mkdir on existing file path, When mkdir, Then throws FILE_EXISTS or NOT_A_DIRECTORY`
   — an enumerated pair, with an in-file comment saying the exact code is platform-dependent.
-- `:676` `Given non-empty directory, When rm, Then throws a TsgitError` — instance only, no code.
+- `Given non-empty directory, When rm, Then throws a TsgitError` — instance only, no code, with its
+  own in-body comment saying the code is platform-dependent. It was at `:676` when the previous
+  revision cited it and sits at `:871` after the new rows shipped. It asserts inline rather than
+  through a helper, and ADR-824 leaves it alone: it is a different method, and its adapters
+  genuinely disagree.
 
-**ADR-819 settles it as option 2**, and the table below is the placement, per row. "Code after the
-change" is what **both** adapters produce once the guards land — memory today produces nothing at all
-on most of these rows.
+**ADR-819 settled it as option 2 and ADR-824 has since superseded that clause**, and the table below
+is the placement, per row. "Code after the change" is what **both** adapters produce once the guards
+land — memory today produces nothing at all on most of these rows.
 
 🔴 **The "platform risk" column is no longer speculation.** Every cell that read *"unverified on
 Windows"* has been measured (§8a) and is replaced by its verdict below. Two of them came back
 **red**, which is exactly the outcome ADR-819 recorded as acceptable; §8 is the design of the
-response the user chose. Whether the now-measured rows should also become *strict* is DC-P — this
-table records today's ADR-819 placement, not that decision's outcome.
+response the user chose.
+
+🔴 **And the tolerance those measurements were the reason for is gone.** ADR-824 makes every `write`
+and `rename` **refusal** row assert its exact code, because the premise of the tolerance — an
+unmeasured Windows column — no longer holds. Two of the four rows already refuse identically on all
+three operating systems before any change (`write` onto a directory: W1 / W2 / W3; a file renamed
+onto a directory: N1 / N2 / N3). The other two are exactly what the emulation fixes: a directory onto
+a regular file, which Windows does not refuse at all, and a directory onto a non-empty directory,
+which it refuses with `PERMISSION_DENIED` where POSIX says `DIRECTORY_NOT_EMPTY`. After §8 all four
+agree, so all four can be asserted strictly, and the instance-only helper the tolerance needed is
+deleted with its last caller. What ADR-819 still governs is the table's right-hand column: the
+posix-only file keeps the node codes the contract suite does **not** carry.
 
 | Row | Code after the change | Windows column, measured (§8a) | Contract strictness | Strict node code pinned in |
 |---|---|---|---|---|
 | `writeExclusive` → directory occupant | `FILE_EXISTS` | **agrees** (W11) — `O_EXCL`/`EEXIST` is universal, and the existing strict `writeExclusive`-over-a-file row already passes Windows CI (W12) | **strict** (ADR-812) | the contract row itself |
 | `writeExclusive` → file at a grandparent segment | `NOT_A_DIRECTORY` | **agrees** (W14); the depth-1 case is the adapter-dependent one and is excluded (W15) | **strict, code only** (ADR-812) | the contract row itself |
-| `write` → directory at the leaf | `PERMISSION_DENIED` | **agrees** (W1 / W2 / W3) | instance + non-destructiveness | posix-only file |
+| `write` → directory at the leaf | `PERMISSION_DENIED` | **agrees** (W1 / W2 / W3) | **strict** (ADR-824), via `assertPermissionDenied`, plus non-destructiveness | the contract row itself; the `writeUtf8` / `writeStream` / `appendUtf8` delegations stay posix-only |
 | `write` → **symlink** at the leaf | `PERMISSION_DENIED` | **agrees** (W7 live, W8 dangling); symlink creation itself works on the runner (`CAP-symlink`) | **no contract row** — same reasoning as the two `rename` symlink rows below | posix-only file (the existing `node-fs-real-symlinks.test.ts` is its neighbour) |
-| `rename` file → directory | `PERMISSION_DENIED` | **agrees** (N1 / N2 / N3) | instance + non-destructiveness | posix-only file |
-| `rename` directory → regular file | `NOT_A_DIRECTORY` | 🔴 **RED — Windows *replaces* the file** (N4 / N5 / N6). `:446` is one of the two failing rows; §8d refuses it before the syscall | instance + non-destructiveness | posix-only file + the new win-only file (§8h) |
-| `rename` directory → non-empty directory | `DIRECTORY_NOT_EMPTY` | **passes today, on the wrong code** — Windows reports `PERMISSION_DENIED` (N8 / N9 / N10 / N16), which the tolerant row admits; §8d re-codes it | instance + non-destructiveness | posix-only file + the new win-only file |
+| `rename` file → directory | `PERMISSION_DENIED` | **agrees** (N1 / N2 / N3) | **strict** (ADR-824), via `assertPermissionDenied`, plus non-destructiveness | the contract row itself; the root arrangement (N15) stays posix-only, where the two kernels split |
+| `rename` directory → regular file | `NOT_A_DIRECTORY` | 🔴 **RED — Windows *replaces* the file** (N4 / N5 / N6). `:446` is one of the two failing rows; §8d refuses it before the syscall | **strict** (ADR-824), via `assertNotADirectory`, plus non-destructiveness | the contract row itself, on all three OS; the symlink-destination variant is posix-only + win-only (§8h) |
+| `rename` directory → non-empty directory | `DIRECTORY_NOT_EMPTY` | **was passing on the wrong code** — Windows reported `PERMISSION_DENIED` (N8 / N9 / N10 / N16), which the tolerant row admitted; §8d re-codes it and the strict row now says so | **strict** (ADR-824), via a **new** `assertDirectoryNotEmpty` helper, plus non-destructiveness | the contract row itself; the ancestor variants (N10 / N16) posix-only + win-only |
 | `rename` directory → **empty** directory (positive, R20) | it succeeds | 🔴 **RED — Windows refuses `PERMISSION_DENIED`** (N7). `:494` is the other failing row; §8d emulates the replacement in two steps, which is what git's own compat layer does (§8b) | **positive row, kept in the contract suite** — see below | posix-only file + the new win-only file |
 | `rename` src === dst, **regular file** (positive, R21) | it succeeds | **agrees** (N21) | **strict** (positive row, no code asserted) | — |
 | `rename` src === dst, **non-empty directory** (positive, R21) | it succeeds | **agrees** (N22) — the `MoveFileEx` worry §8c corrects never applied here | **positive row, kept in the contract suite** | posix-only file |
@@ -1261,18 +1333,29 @@ directory through `rename`, the row goes red on the `windows-latest` unit cell a
 🔴 **That is what happened.** `:494` (R20, the empty-directory replacement) went red, and so did
 `:446` (a directory source onto a file destination) — the second one for the opposite reason and the
 worse one: Windows does not refuse it at all, it **replaces the file with the directory** (N4 / N5 /
-N6). A tolerant row would have hidden that; the strict positive row and the refusal row together
-surfaced it. The recorded decision the ADR anticipated has been taken, and it is not to weaken the
-rows: **the node adapter emulates the POSIX kind rules on Windows** (§8), so both rows pass
-unchanged (**R45**). Both are still additionally proven on the memory side, where there is no
-platform.
+N6). Tolerance did not hide *that* one — a row that admits any code still fails when nothing is
+thrown — but it is exactly what hid the wrong code on the neighbouring row, where Windows refused
+`PERMISSION_DENIED` for a non-empty directory destination and the row accepted it. The recorded
+decision the ADR anticipated has been taken, and it is not to weaken the rows: **the node adapter
+emulates the POSIX kind rules on Windows** (§8), so both rows pass with their arrangements and
+assertions unchanged (**R45**), and the refusal rows around them gain the codes tolerance was
+withholding (**R25**). All of them are still additionally proven on the memory side, where there is
+no platform.
 
-Every "instance + non-destructiveness" row is proven **strictly on the memory side** regardless —
-memory has no platform — so no code goes unasserted anywhere; ADR-819 moves only where the *node*
-assertion lives. The price it names is real: the cross-adapter proof for these rows is now two-file
-(the contract suite proves *both refuse and neither corrupts*; the posix-only file proves *node's
-exact code*), which is more moving parts than ADR-812 envisaged for `writeExclusive` alone. The
-join point between the two files is this table.
+**The cross-adapter proof for these four refusals is one file again (ADR-824).** Each row asserts the
+exact code through the file's own helpers — `assertPermissionDenied` (`:83`), `assertNotADirectory`
+(`:93`) and one new sibling for `DIRECTORY_NOT_EMPTY`, which the file does not have today — plus its
+own non-destructiveness observations, on **both** drivers and on all three operating systems. The
+consequence is stated rather than discovered later: a Windows regression in the emulation now turns a
+**shared** row red on every push instead of staying confined to the `win-integration` job. That is
+the signal wanted, and it is the same reason the two positive rows were kept strict from the start.
+
+What the posix-only file still carries is everything the contract suite deliberately does **not**:
+the symlink-occupant rows, the inside-source `reason` string, the root arrangement's enumerated pair
+(**R46**), the two ancestor oddities, and the delegating write surfaces. So the join point between
+the two files is still this table — but the line between them now runs where ADR-812 always put it,
+between *what every adapter must do* and *what this adapter does on this platform family*, rather
+than between *code* and *no code*.
 
 ### §6 The port's wording is the thing that let this happen
 
@@ -1289,6 +1372,37 @@ directories as needed. **Overwrites if exists.**"* — which reads as licence to
 R26 extends ADR-813's principle to `write`, `writeStream`, `writeUtf8`, `appendUtf8`, `rename` and
 `atomicRename`: each states the directory-occupant refusal and its code, and `rename`'s obligation
 list gains the §1e kind matrix in one sentence plus the `data.path === src` anchoring rule.
+
+**The three sentences the Windows leg adds — R47, verbatim.** ADR-822 and ADR-823 bind wording, so
+the text is fixed here rather than left to the implementation to phrase. Each replaces or extends an
+existing clause in `src/ports/file-system.ts`; nothing else in those blocks moves.
+
+1. **`rename`, replacing the clause that today reads *"On the node and memory adapters:"*** — the
+   kind rules become explicitly platform-wide:
+   > On the node and memory adapters, on every platform: a non-directory source refuses a directory
+   > destination with PERMISSION_DENIED; a directory source refuses a non-directory destination with
+   > NOT_A_DIRECTORY and a non-empty directory destination with DIRECTORY_NOT_EMPTY; an empty
+   > directory destination is replaced — in one step where the platform's own rename honours these
+   > rules, and on Windows in two, where the node adapter removes the empty destination and then
+   > renames.
+2. **`rename`, replacing the ancestor-chain clause's parenthesis** — today *"(node: `dst`; memory:
+   the blocking ancestor)"*, which is false on Windows:
+   > …refuses with NOT_A_DIRECTORY carrying an adapter- and platform-chosen path (node: `dst` on
+   > POSIX and `src` on Windows; memory: the blocking ancestor), changing nothing. On Windows a
+   > regular file on the **source's** ancestor chain reports FILE_NOT_FOUND rather than
+   > NOT_A_DIRECTORY, because a different resolution step fails first.
+3. **`atomicRename`, replacing *"stays atomic because the guard is pure inspection…"*** — the claim
+   is scoped, not dropped:
+   > Inherits every `rename` refusal above by delegation. Atomic for every arrangement on a platform
+   > whose own rename honours the kind rules, and for every non-replacing arrangement everywhere:
+   > the guard is pure inspection with no `await` between it and the mutation. The one exception is
+   > the emulated empty-directory replacement on Windows, which is a removal followed by a rename;
+   > if the destination is filled in between, the removal fails and the caller sees
+   > DIRECTORY_NOT_EMPTY — the refusal the arrangement would have produced anyway.
+
+`writeExclusive`'s summary already says *"a symbolic link, including a dangling one"* after ADR-813,
+and that sentence becomes **true on Windows** for the first time with §8f; the JSDoc needs no further
+edit, which is the point of having written it as an occupancy rule rather than a POSIX errno rule.
 
 ### §7 Faithfulness posture
 
@@ -1365,6 +1479,7 @@ guessing.
 |---|---|---|
 | `tooling/probe-windows-rename-matrix.mjs` | the **composed `NodeFileSystem`** (never a bare syscall — the §1b rule), against a real `mkdtemp` + `realpath` root, occupants planted with raw `node:fs` | 44 rows per OS; CI run 34017803355 for the two hosted cells |
 | `tooling/probe-windows-git-rename.mjs` | **real `git`**, scrubbed `GIT_*`, empty global config, `core.symlinks=true` | 20 rows per OS; CI run 34035733959 |
+| the same rename-matrix harness, extended (probe branch commit `741c2808`) | the gap-closing rows: `writeExclusive` over a **dangling** symlink through the adapter (W13b), the **raw** `node:fs` calls under the mapped codes (`rmdir` on a non-empty directory, four `rename` arrangements, `open(…, 'wx')` over a live link, a dangling link and a directory), and a direct `npm run test:posix-integration` on ubuntu | 53 rows per OS, green on `windows-latest` and `ubuntu-latest`; the rows are cited in §8d, §8f, §8g and §8i |
 
 **Columns.** `windows-latest` (node v24.19.0, git 2.55.0.windows.5) · `ubuntu-latest` (node
 v24.20.0, git 2.55.0) · darwin 25.5.0 (node v22.22.3, git 2.55.0). `CAP-symlink` is `ok` on all
@@ -1383,11 +1498,11 @@ different meanings. Read every `W…` below through this table:
 | W7 / W8 | `write` over a **live** / a **dangling** symlink | §1d W9 (both halves) |
 | W9 / W10 | `write` with a file at the immediate parent / the grandparent | §1d W4 / W5 |
 | W11 / W12 | `writeExclusive` over an empty directory / a regular file | §1d W10 / §1b row B |
-| W13 | `writeExclusive` over a **live** symlink | §1b row E |
+| W13 / W13b | `writeExclusive` over a **live** / a **dangling** symlink | §1b row E / row G |
 | W14 / W15 | `writeExclusive` with a file at the grandparent / the immediate parent | §1b row I / row H |
 
-**The eleven arrangements where Windows differs from *both* POSIX columns.** Everything not listed
-here is identical on all three, including all fifteen `W…` rows except W13, and N11 / N11b / N11c /
+**The twelve arrangements where Windows differs from *both* POSIX columns.** Everything not listed
+here is identical on all three, including every `W…` row except W13 and W13b, and N11 / N11b / N11c /
 N11d / N12 / N13 / N14 / N17 / N18 / N21 / N22 / N23 / N24 / N25.
 
 | Row | windows-latest | ubuntu-latest | darwin | Verdict |
@@ -1400,9 +1515,10 @@ N11d / N12 / N13 / N14 / N17 / N18 / N21 / N22 / N23 / N24 / N25.
 | N9 directory with a child → non-empty directory | `PERMISSION_DENIED(src)` | `DIRECTORY_NOT_EMPTY(src)` | idem | wrong code |
 | N10 directory → its own parent | `PERMISSION_DENIED`, path `p\s` | `DIRECTORY_NOT_EMPTY(p/s)` | idem | wrong code |
 | N16 directory with a child → the containment root | `PERMISSION_DENIED(src)` | `DIRECTORY_NOT_EMPTY(src)` | idem | wrong code |
-| N19 file → destination whose **grandparent** is a file | `NOT_A_DIRECTORY`, path **`src`** | `NOT_A_DIRECTORY`, path `p/m/x` (**`dst`**) | idem | anchoring oddity — DC-N |
-| N20 source whose **immediate parent** is a file → fresh | **`FILE_NOT_FOUND`**, path `p\f` | `NOT_A_DIRECTORY(p/f)` | idem | code oddity — DC-N |
-| W13 `writeExclusive` over a symlink | **`PERMISSION_DENIED(l)`** | `FILE_EXISTS(l)` | `FILE_EXISTS(l)` | §8f |
+| N19 file → destination whose **grandparent** is a file | `NOT_A_DIRECTORY`, path **`src`** | `NOT_A_DIRECTORY`, path `p/m/x` (**`dst`**) | idem | anchoring oddity — ADR-822 |
+| N20 source whose **immediate parent** is a file → fresh | **`FILE_NOT_FOUND`**, path `p\f` | `NOT_A_DIRECTORY(p/f)` | idem | code oddity — ADR-822 |
+| W13 `writeExclusive` over a **live** symlink | **`PERMISSION_DENIED(l)`** | `FILE_EXISTS(l)` | `FILE_EXISTS(l)` | §8f |
+| W13b `writeExclusive` over a **dangling** symlink | **`PERMISSION_DENIED(l)`** | `FILE_EXISTS(l)` | `FILE_EXISTS(l)` | §8f — same arm as W13 on every OS, and the raw syscall underneath it is worse than the code suggests |
 
 **Two more rows the third platform changed inside POSIX**, neither of them a Windows-versus-POSIX
 difference:
@@ -1540,7 +1656,7 @@ rename = async (src: string, dst: string): Promise<void> => {
     await runFs(async () => {
       const plan = await this.planRename(realSrc, realDst, src);
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
-      if (plan === 'replace-empty-directory') await this.fsOps.rmdir(realDst);
+      if (plan === 'replace-directory') await this.fsOps.rmdir(realDst);   // ENOTEMPTY → runFs
       await this.fsOps.rename(realSrc, realDst);
     }, src);
   } finally {
@@ -1570,12 +1686,27 @@ private async planRename(realSrc: string, realDst: string, reported: string): Pr
   if (!destination.isDirectory() || destination.isSymbolicLink()) {
     throw notADirectory(reported);                                                // N4 / N5 / N6
   }
-  if ((await this.fsOps.readdir(realDst)).length > 0) {                           // syscall 3
-    throw directoryNotEmpty(reported);                                            // N8 / N9 / N10 / N16
-  }
-  return 'replace-empty-directory';                                               // N7
+  return 'replace-directory';        // N7 replaces; N8 / N9 / N10 / N16 fail the rmdir with ENOTEMPTY
 }
 ```
+
+**The emptiness verdict is the `rmdir`'s, not the plan's (ADR-825, R50).** The plan proves only that
+both sides are directories; the removal itself decides whether the destination was empty, because
+`rmdir` on a non-empty directory rejects `ENOTEMPTY` on `windows-latest` exactly as it does on linux
+and darwin — that is measured, on node v24.19, and it is what turned this from a guess into a
+decision. The refusal then costs nothing to produce: the `rmdir` runs inside the operation's existing
+`runFs(…, src)`, so `mapErrno`'s `ENOTEMPTY` arm returns `directoryNotEmpty(src)` (`:225–229`) with
+the `src` anchoring every other error in this operation already has. Every other `rmdir` errno takes
+the same route — an `EACCES` on a destination another process holds open surfaces as
+`PERMISSION_DENIED(src)` — so the arm has one failure path, not two. `readdir` is never called.
+
+**Why removing before checking cannot destroy an ancestor.** The arm reaches its `rmdir` with a
+directory at both ends, and the two arrangements whose destination is an **ancestor** of the source —
+N10 (the source's own parent) and N16 (the containment root) — are exactly the arrangements where the
+destination cannot be empty: it contains the source. Their `rmdir` therefore always fails
+`ENOTEMPTY`, which is the refusal those rows want. The only directory this arm can ever remove is one
+that holds nothing, which is what makes remove-first safe here in a way it would not be for a general
+`rm`.
 
 **Row by row against §1e, and what each arm costs.**
 
@@ -1589,8 +1720,16 @@ private async planRename(realSrc: string, realDst: string, reported: string): Pr
 | N18 / N19 / N20 | ancestor-fault rows | — | delegate | `lstat` of the affected side, treated as missing |
 | N23 / N24 | directory | absent | delegate | `lstat(src)`, `lstat(dst)` |
 | **N4 / N5 / N6** | directory | **file or symlink** | **refuse `NOT_A_DIRECTORY(src)`** | `lstat(src)`, `lstat(dst)` — **no `rename`** |
-| **N8 / N9 / N10 / N16** | directory | **non-empty directory** | **refuse `DIRECTORY_NOT_EMPTY(src)`** | `lstat(src)`, `lstat(dst)`, `readdir(dst)` — **no `rmdir`, no `rename`** |
-| **N7** | directory | **empty directory** | **replace** | `lstat(src)`, `lstat(dst)`, `readdir(dst)`, then `mkdir -p`, `rmdir(dst)`, `rename` **in that order** |
+| **N8 / N9 / N10 / N16** | directory | **non-empty directory** | **refuse — the `rmdir` rejects `ENOTEMPTY`, `mapErrno` returns `DIRECTORY_NOT_EMPTY(src)`** | `lstat(src)`, `lstat(dst)`, `rmdir(dst)` **rejecting** — **no `rename`** |
+| **N7** | directory | **empty directory** | **replace** | `lstat(src)`, `lstat(dst)`, then `mkdir -p`, `rmdir(dst)`, `rename` **in that order** |
+
+`readdir` appears in no row: after ADR-825 the arm never calls it, on any branch.
+
+**Where the `mkdir -p` sits.** It is the operation's own pre-existing step, not the emulation's, and
+it runs between the plan and the removal on both directory-destination arms. On those arms it is a
+**no-op**: both require the destination to exist, which requires its parent to exist. So the row
+above lists it only where its ordering is load-bearing — before the `rmdir` and the `rename` of the
+replace arm — and the syscall budget in §8i counts only what the emulation adds.
 
 **Nine design points, each of which a DI test will pin.**
 
@@ -1635,39 +1774,47 @@ private async planRename(realSrc: string, realDst: string, reported: string): Pr
    documents; whether the two share one helper is a refactor-phase call, and if `isSymlinkLeaf` is
    re-expressed on top of it, its carried equivalence prose is re-read against the new structure per
    the repo rule.
-7. **The plan runs before the `mkdir -p`, and the ordering is provably immaterial.** As written, a
-   refusal happens before the `mkdir -p` runs at all. The opposite ordering would be observationally
-   identical, because both refusals require the destination to **exist**, which requires its parent
-   to exist, which makes the `mkdir -p` a no-op on exactly those arms — so it can never create a
-   directory on a path that then refuses, under either ordering. The one written keeps the diff to a
-   single inserted line and keeps the "nothing is mutated before the verdict" posture the memory
-   guard already has (§3c, R22).
-8. **The replace arm is `readdir` → `rmdir` → `rename`, and the emptiness verdict is the adapter's
-   own.** Deciding emptiness with `readdir` and raising `directoryNotEmpty` directly means the
-   design depends on **no** unmeasured Windows errno. The alternative — call `rmdir` first and let
-   `mapErrno` translate its failure, which is literally what `mingw_rename` does — is cheaper by one
-   syscall and closer to git's shape, but it rests on node-on-Windows mapping a non-empty `rmdir` to
-   `ENOTEMPTY`, which this probe did not measure (§8i, gap G2). That trade is **DC-L**.
-9. **Atomicity is scoped, not silently dropped.** The replace arm is two syscalls with a window
-   between them, so `atomicRename` — which delegates (`:764`) — is no longer a single atomic
-   operation for that one arrangement on that one platform. git accepts the identical window
-   (`mingw.c:2638–2639`), and no `atomicRename` caller renames a directory at all (§7). What the
-   port JSDoc must say about it is **DC-O**. The window's failure mode is bounded: only an *empty*
-   directory can be removed, and only after `readdir` proved it empty; if the following `rename`
-   fails, an empty directory is gone. If a concurrent writer fills the destination between the
-   `readdir` and the `rmdir`, the `rmdir` fails with `ENOTEMPTY` and the caller sees
-   `DIRECTORY_NOT_EMPTY` — the same code the guard would have produced, which is why this race
-   degrades into the correct answer rather than into a wrong one.
+7. **The plan runs before the `mkdir -p`, and the ordering is provably immaterial.** As written, the
+   one refusal the plan raises — `NOT_A_DIRECTORY` on N4 / N5 / N6 — happens before the `mkdir -p`
+   runs at all. The opposite ordering would be observationally identical, because that refusal
+   requires the destination to **exist**, which requires its parent to exist, which makes the
+   `mkdir -p` a no-op on exactly that arm — so it can never create a directory on a path that then
+   refuses, under either ordering. The same argument covers the `rmdir` refusal one line below it.
+   The order written keeps the diff to two inserted lines and keeps the "nothing is mutated before
+   the verdict" posture the memory guard already has (§3c, R22).
+8. **The replace arm is `rmdir` → `rename`, and the emptiness verdict is the platform's own
+   (ADR-825).** `rmdir(dst)` runs inside the same errno-mapped operation as the rename: an empty
+   destination is removed and the rename proceeds; a non-empty one rejects `ENOTEMPTY`, which
+   `mapErrno` turns into `DIRECTORY_NOT_EMPTY(src)`. This is literally `mingw_rename`'s sequence
+   (`mingw.c:2638–2639`), it is one syscall cheaper than reading the directory first, and its
+   refusal code comes from the same errno map every other refusal in the adapter uses rather than
+   from a second, hand-written verdict. It rested on one unmeasured fact — node's own Windows errno
+   for a non-empty `rmdir` — and that fact was measured: **`ENOTEMPTY`**, the same as on linux and
+   darwin (§8i, gap G2, now closed). The rejected alternative, `readdir` first, bought independence
+   from an errno that turned out not to need it, at one syscall and a second code path for one
+   verdict.
+9. **Atomicity is scoped, not silently dropped (ADR-823).** The replace arm is two syscalls with a
+   window between them, so `atomicRename` — which delegates (`:764`) — is no longer a single atomic
+   operation for that one arrangement on that one platform. git accepts the identical window in the
+   identical place (`mingw.c:2638–2639`), and no `atomicRename` caller renames a directory at all
+   (§7). The port JSDoc states the scope instead of the bare word; §6 carries the sentence. The
+   window's failure mode is bounded: only a directory the `rmdir` itself could remove — that is, an
+   empty one — is ever removed, and if the following `rename` fails, an empty directory is gone. A
+   concurrent writer that fills the destination first makes the `rmdir` fail with `ENOTEMPTY`, so the
+   caller sees `DIRECTORY_NOT_EMPTY` — the refusal the arrangement would have produced anyway, which
+   is why the race degrades into the correct answer rather than into a wrong one. With the removal
+   *as* the check there is no window between check and act at all; the only remaining window is
+   between the removal and the rename.
 
 **What does not change on Windows.** N1 / N2 / N3 keep `PERMISSION_DENIED` (already POSIX-shaped),
 N11–N12 keep the invalid-argument errno, N18 keeps `FILE_EXISTS(src)`, and the two oddities N19 and
-N20 keep their Windows shapes — documented, not normalised (**DC-N**).
+N20 keep their Windows shapes — documented and pinned, not normalised (ADR-822, **R49**).
 
 #### §8e The gate — a fourth `PathPolicy` capability flag
 
 `path-policy.ts`'s own header states the doctrine: the capability flags are independent so *"a
 policy that mixes capabilities … sets each on its own merits instead of one flag standing in for all
-three"*. The emulation needs a fourth:
+three"*. ADR-820 settles the gate as a fourth flag of exactly that kind (**R48**):
 
 ```ts
 /**
@@ -1690,15 +1837,28 @@ would stay coupled only by accident: one is about `open(2)` and symlink leaves, 
 built precisely to stop that coincidence from being encoded (ADR-046). Reusing it would also make
 `isSymlinkLeaf`'s carried equivalence prose — *"this method is only called when
 `!pathPolicy.honoursNoFollow`"* — quietly wrong, since a second, unrelated caller would appear under
-the same condition.
+the same condition. §8f does add a second *reader of the flag* — the new exclusive-create assert —
+which leaves that note intact, because the note is about which platform reaches `isSymlinkLeaf`'s
+body and not about how many places consult `honoursNoFollow`. The new reader gets its own POSIX row
+(§8h(a), row 20) so its gate is not itself an unkilled mutant.
+
+**What the fourth flag costs.** Every policy built by hand in the suite gains a field; the compiler
+points at each one, which is the whole of the migration. Nothing becomes public: `PathPolicy` stays
+`@internal` to the node adapter and is not re-exported, so `reports/api.json` does not move for this
+flag — only for the port JSDoc (**R47**).
 
 **Why `PathPolicy` at all, given its header says "path operation".** `honoursNoFollow` is already a
 syscall-semantics flag living there, and it is the precedent: the interface is *"every platform-aware
 operation `NodeFileSystem` needs"* in practice, and adding a second seam for one boolean would give
-the adapter two places to ask what platform it is on. `PathPolicy` stays `@internal` to the node
-adapter and is not re-exported (ADR-046's neutral consequence), so the flag adds no public API. This
-is **DC-K**, because it adds a capability to a shared interface and the two rejected shapes are both
-defensible.
+the adapter two places to ask what platform it is on. The rejected shape — a separate capability
+record injected beside `PathPolicy` — buys interface purity for a second platform seam and a fourth
+constructor parameter, which ADR-820 weighed and declined.
+
+**What the flag buys the test tiers.** Because the emulation is gated on an injectable capability
+rather than on `process.platform`, the Windows arm is reachable on **every** host: the DI rows of
+§8h(a) construct `new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ … }))` on darwin and on the
+linux mutation runner alike. Without that, every mutant inside the arm would be an unreachable-code
+survivor on the only platform Stryker runs on.
 
 #### §8f `writeExclusive` over a symlink leaf — the exclusive-create verdict
 
@@ -1710,6 +1870,35 @@ For `writeExclusive` it is wrong: POSIX's `O_EXCL` gives `EEXIST` → `FILE_EXIS
 darwin), git's own compat layer forces `EEXIST` for a reparse point under `O_CREAT|O_EXCL`
 (`mingw.c:869–878`), and real git on Windows refuses `index.lock` occupied by a live **or** a
 dangling symlink with *"File exists."* (L1 / L2).
+
+🔴 **The guard is load-bearing for correctness, not only for the error code — measured.** The second
+probe run took the raw syscall underneath the adapter, `fs.open(path, 'wx')`, on all three OS:
+
+| Leaf at `path` | windows-latest | ubuntu-latest | darwin |
+|---|---|---|---|
+| a **live** symlink | `EEXIST` | `EEXIST` | `EEXIST` |
+| a **dangling** symlink | **succeeds — and creates the link's target** | `EEXIST` | `EEXIST` |
+| an empty directory | `EEXIST` | `EEXIST` | `EEXIST` |
+
+On Windows libuv **follows** a dangling link under an exclusive create and materialises the file the
+link points at — anywhere the link points, including outside the containment root. That is precisely
+the hazard git's own comment names (`mingw.c:869–878`): *"`_wopen(symlink, O_CREAT | O_EXCL)` would
+create that file. Not what we want."* Two consequences bind the implementation:
+
+- The adapter's pre-open `lstat` on the `!honoursNoFollow` arm must **keep firing for a dangling
+  link**. It is what stops the write, not merely what renames the error: today it refuses with the
+  wrong code, and §8f's change makes the code right without touching the moment the refusal happens.
+- *"Drop the guard on `writeExclusive` and let the platform's own `EEXIST` answer"* is not available
+  on Windows: for a **live** link the raw open does report `EEXIST`, but for a **dangling** one it
+  reports success and a created file, so the platform cannot be trusted to answer for the family. It
+  is recorded here so no later reader tries it, and DI row 20 (§8h(a)) pins the POSIX half — where the
+  flag *is* `true` and the platform's `EEXIST` genuinely is the answer on both.
+
+W13 (live) and W13b (dangling) take the **same** adapter arm on all three OS — `PERMISSION_DENIED` on
+Windows, `FILE_EXISTS` on ubuntu and darwin — which the second probe run measured through the
+composed adapter rather than inferred (§8i, gap G1, now closed). After this change both are
+`FILE_EXISTS` everywhere, and both are pinned as rows in the win-only file (§8h(b)), because the
+platform where they used to differ is the platform where the fix has to hold.
 
 **The fix — turn the shared helper into a classifier and let each surface name its own verdict.**
 `interpretCreationLstat` currently *decides* (`void`, throws `permissionDenied`). It becomes a query
@@ -1754,7 +1943,7 @@ platform is the one that does not change.
 `FILE_EXISTS` (W11) through `writeFile`'s own `EEXIST`; nothing is added for it, and L3's
 git-on-Windows *"Is a directory"* is the recorded non-replication of §8b. A **dangling** symlink
 takes the identical `lstat` verdict as a live one — the adapter never resolves the target — which is
-an inference the win-only rows convert into a measurement (§8i, gap G1).
+no longer an inference: W13b measures it on all three OS.
 
 #### §8g N15 — the divergence inside POSIX, and a latently red row
 
@@ -1776,11 +1965,21 @@ Windows cells — so the ubuntu cell has never run this row. It is **latently re
 the moment §8 turns the unit job green. It must be fixed in the same PR, or the Windows fix would
 merely swap one red job for another (**R46**).
 
-**Three ways to fix it — DC-M.** The recommendation is the **enumerated pair**, following the
-contract suite's own precedent at `:567` (`mkdir` over a file accepts `FILE_EXISTS` **or**
-`NOT_A_DIRECTORY`, with an in-file comment saying the code is platform-dependent): assert
-`PERMISSION_DENIED` or `DIRECTORY_NOT_EMPTY`, plus the non-destructiveness observation, plus a
-comment naming the axis above so the next reader does not "fix" it back to one code.
+**And it is no longer latent in the "unproven" sense.** The second probe run executed
+`npm run test:posix-integration` directly on `ubuntu-latest`, outside the job's `needs:` chain:
+32 rows pass and exactly one fails — *"Given a file renamed onto the containment root, When rename,
+Then throws `PERMISSION_DENIED`"*, with `AssertionError: expected 'DIRECTORY_NOT_EMPTY' to be
+'PERMISSION_DENIED'`. The row is the one named above and the failure is the one predicted; nothing
+else in the file moves.
+
+**ADR-821 settles it as the enumerated pair**, following the contract suite's own precedent at
+`:567` (`mkdir` over a file accepts `FILE_EXISTS` **or** `NOT_A_DIRECTORY`, with an in-file comment
+saying the code is platform-dependent): the row asserts `PERMISSION_DENIED` or
+`DIRECTORY_NOT_EMPTY`, plus the non-destructiveness observation, plus a comment naming the axis
+above so the next reader does not "fix" it back to one code. The rejected alternatives were a
+`process.platform` branch — a conditional oracle inside a test, with a new arm for every future
+POSIX platform — and swapping the arrangement for the sibling non-empty directory, which loses the
+`rootDir` arrangement §2b exists to close.
 
 **The memory adapter's N15 target does not change.** `assertRenamable` refuses any directory
 destination under a non-directory source with `permissionDenied` (§3c), which matches darwin and
@@ -1802,25 +2001,31 @@ row that trips two of them proves neither (§3e):
 
 | # | Given (all under `windowsPolicy` unless stated) | Then |
 |---|---|---|
-| 1 | `posixPolicy` and a directory source over a regular-file destination | delegates: `rename` called once, `lstat` and `readdir` **never** called — kills the forced-false gate |
+| 1 | `posixPolicy` and a directory source over a regular-file destination | delegates: `rename` called once, `lstat` and `rmdir` **never** called — kills the forced-false gate |
 | 2 | `src` and `dst` differing only in case | delegates, `lstat` never called — pins the `normalizeForCompare` compare |
-| 3 | `dst` inside `src`, `dst` an existing empty directory, `fsOps.rename` rejecting the invalid-argument errno | `UNSUPPORTED_OPERATION` / that errno, with `lstat`, `readdir` and `rmdir` **never** called — the row that proves the inside-source test delegates instead of taking the replace arm and destroying `dst` |
-| 4 | a regular-file source, any destination | exactly **one** `lstat`; `readdir` never called |
+| 3 | `dst` inside `src`, `dst` an existing empty directory, `fsOps.rename` rejecting the invalid-argument errno | `UNSUPPORTED_OPERATION` / that errno, with `lstat` and `rmdir` **never** called — the row that proves the inside-source test delegates instead of taking the replace arm and destroying `dst` |
+| 4 | a regular-file source, any destination | exactly **one** `lstat`; `rmdir` never called |
 | 5 | a symlink source over a directory destination | delegates after one `lstat` — the symlink test, not the directory test, decides it |
 | 6 | source `lstat` rejecting `ENOENT` | delegates; the platform's own `rename` reports it |
-| 7 | a directory source, destination `lstat` rejecting `ENOENT` | delegates; `readdir` never called |
+| 7 | a directory source, destination `lstat` rejecting `ENOENT` | delegates; `rmdir` never called |
 | 8 | a directory source, destination `lstat` rejecting `ENOTDIR` | delegates — the ancestor-blocked case keeps today's code |
 | 9 | a directory source, destination `lstat` rejecting `EACCES` | `PERMISSION_DENIED` carrying **src**; `rename` never called — proves the probe does not swallow |
-| 10 | a directory source, a **regular-file** destination | `NOT_A_DIRECTORY` carrying src; `rename` never called |
+| 10 | a directory source, a **regular-file** destination | `NOT_A_DIRECTORY` carrying src; `rmdir` and `rename` never called |
 | 11 | a directory source, a **symlink** destination | idem — the second disjunct, alone |
-| 12 | a directory source, a directory destination whose `readdir` returns one entry | `DIRECTORY_NOT_EMPTY` carrying src; `rmdir` and `rename` never called |
-| 13 | a directory source, a directory destination whose `readdir` returns `[]` | `rmdir(realDst)` then `rename(realSrc, realDst)`, **in that order** (`mock.invocationCallOrder`) |
-| 14 | row 13 with `fsOps.rename` rejecting | the error surfaces **and** the parent-realpath cache was cleared (a following call re-issues `realpath`) — R43 |
-| 15 | `atomicRename` on row 10's arrangement | the same error — delegation, not a second guard |
-| 16 | `writeExclusive` with a symlink leaf | `FILE_EXISTS` carrying the requested path; `writeFile` never called |
-| 17 | `writeExclusive` with a non-symlink leaf | `writeFile` called with the exclusive flags |
-| 18 | `write` with a symlink leaf | still `PERMISSION_DENIED` — the pair that must not collapse |
-| 19 | `posixPolicy` and `writeExclusive` over a symlink leaf, with the fake `writeFile` rejecting `EEXIST` | `FILE_EXISTS` **and no `lstat` at all** — kills the forced-false `honoursNoFollow` gate in the new assert, which is otherwise outcome-equivalent on POSIX and observable only by call count |
+| 12 | a directory source, a directory destination, `fsOps.rmdir` rejecting `ENOTEMPTY` | `DIRECTORY_NOT_EMPTY` carrying **src**; `rename` never called — the refusal comes from `mapErrno`, not from the arm |
+| 13 | the same, `fsOps.rmdir` rejecting `EACCES` | `PERMISSION_DENIED` carrying **src**; `rename` never called — pins *"every other `rmdir` errno passes through the same map"* (**R50**) rather than only the non-empty one |
+| 14 | a directory source, a directory destination, `fsOps.rmdir` resolving | `rmdir(realDst)` then `rename(realSrc, realDst)`, **in that order** (`mock.invocationCallOrder`), and `readdir` **never called on any arm** — the one row that pins ADR-825's removal of the emptiness probe |
+| 15 | row 14 with `fsOps.rename` rejecting | the error surfaces **and** the parent-realpath cache was cleared (a following call re-issues `realpath`) — R43 |
+| 16 | `atomicRename` on row 10's arrangement | the same error — delegation, not a second guard |
+| 17 | `writeExclusive` with a symlink leaf | `FILE_EXISTS` carrying the requested path; `writeFile` never called |
+| 18 | `writeExclusive` with a non-symlink leaf | `writeFile` called with the exclusive flags |
+| 19 | `write` with a symlink leaf | still `PERMISSION_DENIED` — the pair that must not collapse |
+| 20 | `posixPolicy` and `writeExclusive` over a symlink leaf, with the fake `writeFile` rejecting `EEXIST` | `FILE_EXISTS` **and no `lstat` at all** — kills the forced-false `honoursNoFollow` gate in the new assert, which is otherwise outcome-equivalent on POSIX and observable only by call count |
+
+Rows 12 and 13 are the pair ADR-825 turns from one branch into one code path: the arm issues the
+same `rmdir` in both, and what separates the verdicts is the errno `mapErrno` receives. Row 14 is
+where the *absence* of `readdir` is asserted — once, on the arm that used to call it — so a future
+re-introduction of an emptiness probe fails a row instead of passing silently.
 
 **(b) Real-NTFS rows — a new `test/integration/win-only/node-fs-windows-rename-refusals.test.ts`.**
 The name mirrors its posix-only sibling; the directory's convention is a `@proves` header
@@ -1837,22 +2042,26 @@ child reachable under the destination · N8 / N9 / N10 / N16 → `DIRECTORY_NOT_
 neither tree merged · N1 / N2 / N3 / N15 → `PERMISSION_DENIED` carrying src (unchanged, pinned so a
 regression shows) · N11 / N11b / N11c / N11d / N12 → `UNSUPPORTED_OPERATION`, `operation:
 'filesystem'`, the invalid-argument errno as `reason`, no `path` · N19 / N20 → the two anchoring
-oddities, pinned in their **Windows** shapes (DC-N) · N21 / N22 / N23 / N24 positives · W13 →
-`writeExclusive` over a live **and** a dangling symlink → `FILE_EXISTS` · W7 / W8 → `write` over the
-same two leaves → `PERMISSION_DENIED`, so the two verdicts are pinned apart on the platform where
-they differ.
+oddities, pinned in their **Windows** shapes (ADR-822, **R49**) · N21 / N22 / N23 / N24 positives ·
+W13 and W13b → `writeExclusive` over a live **and** over a dangling symlink → `FILE_EXISTS`, and on
+the dangling row the link's target is still **absent** afterwards, which is the half the platform's
+own exclusive open gets wrong (§8f) · W7 / W8 → `write` over the same two leaves →
+`PERMISSION_DENIED`, so the two verdicts are pinned apart on the platform where they differ.
 
 ⚠️ **Every path expectation in this file is built with `node:path`.** The adapter reports joined
 paths, and on Windows those carry `\` (N10's `p\s`, N20's `p\f`); a `/`-spelled literal would fail
 against a correct implementation. `readlink` results are Windows-shaped too, so any predicate on link
 text normalises separators before matching.
 
-**(c) The shared contract rows do not move.** `:446` and `:494` keep their arrangements and their
-assertions and simply go green on Windows (**R45**). Whether the now-measured rows should become
-*strict* is **DC-P**; §5's table records today's placement either way.
+**(c) The shared contract rows keep their arrangements and gain their codes.** `:446` and `:494` are
+edited in neither arrangement nor assertion and simply go green on Windows (**R45**). The four rows
+that call `assertRefusedWithoutCode` — `:277`, `:441`, `:465`, `:487` — swap that call for a
+code-checking helper (ADR-824, **R25**), and the helper itself is deleted with its last caller. No
+row is added, moved or removed; §5's table carries the per-row placement.
 
-**(d) The posix-only file gains the N15 fix** (§8g, DC-M) and nothing else — every other row in it is
-darwin-and-linux agreeing, which the ubuntu column of §8a re-confirms.
+**(d) The posix-only file gains the N15 fix** (§8g, ADR-821) and nothing else — every other row in it
+is darwin-and-linux agreeing, which the ubuntu column of §8a re-confirms and the direct ubuntu run of
+the file (32 passing rows, one failure, §8g) demonstrates end to end.
 
 #### §8i Cost, the tarball, and the named measurement gaps
 
@@ -1864,7 +2073,7 @@ darwin-and-linux agreeing, which the ubuntu column of §8a re-confirms.
 | Windows, self-rename or destination inside source | **0** |
 | Windows, non-directory source — *every* production caller | **1** `lstat` |
 | Windows, directory source onto a fresh name (`worktreeMove` after `assertTargetFree`) | 2 `lstat` |
-| Windows, directory source onto an existing directory | 2 `lstat` + 1 `readdir` (+ 1 `rmdir` on the replace arm) |
+| Windows, directory source onto an existing directory | 2 `lstat` + 1 `rmdir`, and nothing else — the `rmdir` is both the removal and the emptiness verdict (ADR-825) |
 
 The hot callers are all in the third row: `atomic-write.ts:36` (every ref update),
 `index-lock.ts:137`, `ref-store.ts:712`, `reftable-transaction.ts:712,749,1015`,
@@ -1883,13 +2092,22 @@ clean `npm run build`, then read the number — a stale chunk inflates the readi
 false failure before. The raise gets its own paragraph in that script's header, naming the
 attribution as measured, exactly as the eight raises above it do.
 
-**Named measurement gaps.** Each is a gap in the *data*, not a guess this design made:
+**The named measurement gaps — two closed, one standing.** Each was a gap in the *data*, not a guess
+this design made; the second probe run (same two hosted runners, same harness shape, node v24.19 on
+`windows-latest` and v24.20 on `ubuntu-latest`) closed the two that anything could have depended on.
 
-| # | Gap | Does anything here depend on it? |
+| # | Gap | Status |
 |---|---|---|
-| **G1** | `writeExclusive` over a **dangling** symlink was not probed on the adapter on any OS — the harness's W13 plants a **live** link. | No. The adapter's verdict comes from `lstat`, which never resolves a target, so live and dangling take the same arm; git's L2 pins the dangling case for git itself. The win-only file's two W13 rows convert the inference into a measurement. Re-running the probe branch with a dangling-link row would close it earlier. |
-| **G2** | node's own Windows errno for `rmdir` on a **non-empty** directory. | Only **DC-L option 2** depends on it. The recommended option decides emptiness with `readdir` and raises the code itself. |
-| **G3** | Which Win32 call node/libuv issues for `fs.rename` on Windows. | **No.** §8c states this explicitly; every claim is written against measured adapter outcomes and git's own compat source. |
+| **G1** | `writeExclusive` over a **dangling** symlink, through the adapter, on any OS — the first harness planted a **live** link only. | **Closed.** W13b measures it: `PERMISSION_DENIED` on Windows, `FILE_EXISTS` on ubuntu and darwin — the same arm as the live link on every OS, as the `lstat`-based verdict implied. The inference is now a measurement, and the raw-syscall row beside it (§8f) turned the guard from an error-code question into a correctness one. |
+| **G2** | node's own Windows errno for `rmdir` on a **non-empty** directory. | **Closed.** `ENOTEMPTY` on `windows-latest`, the same as on linux and darwin. That is the fact ADR-825's option 2 rested on, and it is why the replace arm removes first and maps the errno instead of reading the directory. |
+| **G3** | Which Win32 call node/libuv issues for `fs.rename` on Windows. | **Open, and nothing depends on it.** §8c says so explicitly; every claim in §8 is written against measured adapter outcomes and git's own compat source. It stays open deliberately — closing it would add a fact the design has no use for. |
+
+The raw-syscall rows the second run added are recorded where they bind rather than only here: the
+`rmdir` errno in §8d point 8, the exclusive-open behaviour over a dangling link in §8f. For the
+record, the raw Windows `rename` errnos underneath the adapter's mapped codes are `EPERM` for a
+directory onto an empty directory, `EPERM` for a directory onto a non-empty directory, `EPERM` for a
+file onto an empty directory, and **success** for a directory onto a regular file — the destructive
+row, at the syscall level.
 
 ---
 
@@ -1919,13 +2137,11 @@ read as "differ in kind *where the node adapter refuses*", and R17–R20 are the
 | **DC-G** | Browser `write` / `writeStream` / `writeUtf8` / `appendUtf8` and `rename` report `FILE_NOT_FOUND` for a directory occupant where node and the memory target say `PERMISSION_DENIED` | **→ ADR-816, user ratified option 2, against the design's recommendation.** `resolveFileHandle` gains a `create: true`-**only** arm mapping `TypeMismatchError` to `permissionDenied(path)`; the `create: false` mapping `stat` and `exists` depend on is untouched (**R30**). Two new Playwright cases — one `write`, one `rename` — join ADR-814's, so `opfs-roundtrip.spec.ts` carries three directory-occupant pins. §1f, §3f |
 | **DC-H** | `rename` where `dst` is inside `src` (N11 / N11b / N12) — the one family ADR-815's text does not reach, and the one row where the two POSIX platforms disagree | **→ ADR-817, user ratified option 1 (as recommended).** One clause **before** the destination-kind check throwing `unsupportedOperation('filesystem', <invalid-argument errno>)` for every inside-source arrangement, including `rename(rootDir, <inside>)`. Reproduces linux exactly; the darwin `NOT_A_DIRECTORY` on N11b is a knowing divergence, documented not chased. Never a strict cross-adapter row. §3c |
 | **DC-I** | `write` and its three delegating surfaces over a **symlink** leaf (row W9) | **→ ADR-818, user ratified option 1 (as recommended).** The `write` guard is `directories.has(n) \|\| symlinks.has(n)` → `permissionDenied(path)`; the three delegating surfaces inherit; one single-occupant test per term. Closes the last open pair of R8a, leaving only the constructor-seeding route (§2d). §3b, **R28** |
-| **DC-J** | How the node-side assertion for the new `write` / `rename` refusals is written, given that the contract suite also runs on `windows-latest` | **→ ADR-819, adopted as recommended (option 2).** Contract rows assert a structured `TsgitError` plus non-destructiveness, no code — the `:676` precedent; the strict node codes move to a new file under `test/integration/posix-only/`, run by the `posix-integration` job on ubuntu + macos. `writeExclusive` rows stay strict per ADR-812. The two **positive** rows (R20, R21) stay in the contract suite, because a positive row has no tolerant form. §5, **R25**, **R32** |
+| **DC-J** | How the node-side assertion for the new `write` / `rename` refusals is written, given that the contract suite also runs on `windows-latest` | **→ ADR-819, adopted as recommended (option 2).** Contract rows assert a structured `TsgitError` plus non-destructiveness, no code — the `:676` precedent; the strict node codes move to a new file under `test/integration/posix-only/`, run by the `posix-integration` job on ubuntu + macos. `writeExclusive` rows stay strict per ADR-812. The two **positive** rows (R20, R21) stay in the contract suite, because a positive row has no tolerant form. **The tolerant-row half is superseded by ADR-824** once the Windows column was measured; the posix-only file survives it. §5, **R25**, **R32** |
 
-### New — raised by this fold
+### Considered and not candidates — recorded by the second fold
 
-**None.**
-
-The fold is a pure consequence of ADRs 816–819, and every question it opened resolved inside the
+That fold was a pure consequence of ADRs 816–819, and every question it opened resolved inside the
 material those records already decide. Three that a reader might expect to see raised, and why each
 is not a candidate:
 
@@ -1944,21 +2160,38 @@ is not a candidate:
   so the constraint is gone; the stand-in spelling is kept throughout for consistency with the rows
   and ADR text already written against it. §8's Windows rows report the same errno.
 
-### New — raised by the Windows revision
+### Settled by the third decisions round — folded into the design above
 
-Six. The emulation **itself** is not among them: the user settled it directly (§8's opening), and
-"Way 2" — loosen the two contract rows and describe Windows truthfully — is rejected, not deferred.
-What follows are the choices that decision leaves open. Each names the ADRs it would refine so the
-decisions round can author ADR-820 and its siblings against them.
+The six choices the Windows revision raised. The emulation **itself** was never among them: the user
+settled it directly (§8's opening), and "Way 2" — loosen the two contract rows and describe Windows
+truthfully — was rejected, not deferred.
 
-| # | Choice | Options | Recommendation |
-|---|---|---|---|
-| **DC-K** | Where the Windows-emulation gate lives. §8e adds a capability the adapter reads to decide whether to enforce the kind rules itself | **1.** A fourth `PathPolicy` flag, `honoursRenameKinds` — `true` on `posixPolicy`, `false` on `windowsPolicy`. **2.** Reuse `honoursNoFollow`, which is `false` on the same policy today. **3.** A separate adapter-internal capability record injected alongside `PathPolicy`, keeping that interface purely about paths | **Option 1.** ADR-046's own doctrine is that each flag "says exactly what it gates"; option 2 encodes a coincidence — `open(2)`'s symlink behaviour standing in for `rename(2)`'s kind behaviour — that the abstraction exists to prevent, and would silently falsify `isSymlinkLeaf`'s carried equivalence prose by adding a second, unrelated caller under the same condition. Option 3 buys purity for a second platform seam and a fourth constructor parameter; `honoursNoFollow` is already syscall semantics living in `PathPolicy`, so the precedent is in the file. **Refines ADR-046** |
-| **DC-L** | How the emulated replace arm tells an **empty** destination directory from a non-empty one (§8d, point 8) | **1.** `readdir(dst)`, then `rmdir(dst)` — the adapter raises `DIRECTORY_NOT_EMPTY(src)` itself. **2.** `rmdir(dst)` first and let `mapErrno` translate its failure — literally `mingw_rename`'s shape (`mingw.c:2638`), one syscall cheaper. **3.** Option 2 plus a `readdir` re-classification when the `rmdir` errno is not the non-empty one | **Option 1.** It depends on **no unmeasured Windows errno**: gap G2 (node's own Windows `rmdir` code for a non-empty directory) is exactly what options 2 and 3 rest on, and this design does not guess. It also refuses without removing anything. The cost is one extra syscall on the one arm no tsgit command reaches (§7). If the session would rather close G2 with a probe re-run, option 2 becomes the git-faithful choice and this recommendation flips. **New ADR; sits beside ADR-052's code-choice family** |
-| **DC-M** | The N15 row in `test/integration/posix-only/node-fs-write-rename-refusals.test.ts:287`, which pins `PERMISSION_DENIED` strictly and is **latently red** on the ubuntu cell (§8g) | **1.** Enumerated pair — accept `PERMISSION_DENIED` or `DIRECTORY_NOT_EMPTY`, plus the non-destructiveness observation and an in-file comment naming the axis. **2.** A per-platform expectation branching on `process.platform`. **3.** Swap the arrangement for the sibling non-empty directory (N2), on which both platforms agree, and keep the root variant memory-side only | **Option 1.** It is the file family's own precedent (`file-system.contract.ts:567` accepts either of two codes for `mkdir` over a file, with a comment saying why). Option 2 asserts strictly more but puts a conditional oracle inside a test and needs a new arm for every future POSIX platform. Option 3 loses the `rootDir` arrangement, which is the §2b sharp edge this work exists to close. The **memory** adapter's N15 target does not change under any option — §8g says why. **Refines ADR-819** |
-| **DC-N** | The two Windows `data.path` oddities: N19 anchors `src` where POSIX anchors `dst`, and N20 reports `FILE_NOT_FOUND` where POSIX reports `NOT_A_DIRECTORY` | **1.** Document and pin them in their Windows shapes (win-only rows), and correct the port JSDoc, which today asserts `node: dst` flatly. **2.** Normalise them to the POSIX shape inside the adapter. **3.** Leave them undocumented | **Option 1.** These are ancestor-fault rows, the ADR-811 family, where the design already ratified "each side keeps its own report"; and the POSIX shape is itself an accident of which `resolveWrite` fails first, not a considered contract. Option 2 adds a second Windows emulation to an arrangement no command reaches, for an aesthetic gain. Option 3 leaves a false sentence on a public port. **Refines ADR-811 and ADR-813; carries R47** |
-| **DC-O** | What the port says about `atomicRename` once the emulated replace arm is two syscalls (§8d, point 9) | **1.** Scope the atomicity claim in the JSDoc: atomic for every arrangement where the platform's own rename honours the kind rules, and for every non-replace arrangement everywhere; the emulated empty-directory replacement is two steps, as git's own is. **2.** Make `atomicRename` refuse the replace arm outright so the word stays literally true. **3.** Say nothing and leave the current sentence | **Option 1.** git accepts the identical window in the identical place (`mingw.c:2638–2639`), no `atomicRename` caller renames a directory at all (§7), and the race degrades into the correct refusal rather than a wrong success (§8d). Option 2 introduces a behavioural split between `rename` and `atomicRename` that no adapter has today, on an arrangement nothing calls. Option 3 is the one this design refuses on principle — the port text is the oracle. **Refines ADR-813; touches R23, R42** |
-| **DC-P** | Whether the tolerant contract rows become **strict**, now that the Windows column is measured and the emulation makes all three OS agree | **1.** Keep every row tolerant — ADR-819 exactly as written. **2.** Make the three `rename` refusal rows strict and keep the `write` rows tolerant. **3.** Make every `write` and `rename` refusal row strict; `assertRefusedWithoutCode` then has no callers and is deleted (no dead code) | ⚠️ **Read the constraint first.** The settled decision says the two red rows pass *unchanged*, so **option 1 is its literal reading** and needs no argument. Options 2 and 3 go beyond it — by **tightening**, never by loosening, so R45 holds either way — and the user should decide whether that belongs in this PR. **The design recommends option 3.** ADR-819's tolerance was explicitly provisional — every cell of its risk column read *"unverified on Windows"* — and all of them are now measured, agreeing on all three OS both before this change (`write`: W1 / W2 / W3, and N1 / N2 / N3 for the leaf-onto-directory row) and after it (`rename`: N4, N8 / N9). The contract rows use a **sibling** directory, never an ancestor, so N15's divergence cannot reach them. The cost, stated: a Windows regression in the emulation then turns a *shared* row red rather than only the `win-integration` job — which is the signal wanted, and the reason ADR-819 kept the positive rows strict in the first place. **Refines, and partly supersedes, ADR-819 and ADR-812** |
+| # | Choice | Outcome |
+|---|---|---|
+| **DC-K** | Where the Windows-emulation gate lives | **→ ADR-820, adopted as recommended (option 1).** A fourth `PathPolicy` capability flag, `honoursRenameKinds` — `true` on `posixPolicy`, `false` on `windowsPolicy`, set through `PathPolicyCapabilities`. `honoursNoFollow` is not overloaded and `isSymlinkLeaf`'s equivalence note stands; the interface stays `@internal`. Refines ADR-046. §8e, **R48** |
+| **DC-L** | How the emulated replace arm tells an empty destination directory from a non-empty one | **→ ADR-825, ratified by the user through the rule "the measurement decides": option 2.** The measurement was taken — node v24.19 on `windows-latest` rejects `rmdir` of a non-empty directory with `ENOTEMPTY`, as linux and darwin do — so the arm removes the destination with `rmdir` inside the same errno-mapped operation and lets `mapErrno` translate any failure; `readdir` is never called. It is `mingw_rename`'s own sequence. §8d points 8–9, **R50** |
+| **DC-M** | The posix-only N15 row, which pinned `PERMISSION_DENIED` strictly and was red on the ubuntu cell | **→ ADR-821, adopted as recommended (option 1).** The row accepts `PERMISSION_DENIED` **or** `DIRECTORY_NOT_EMPTY`, keeps its non-destructiveness assertion, and names the axis in a comment — the contract suite's own `mkdir`-over-a-file precedent. The memory adapter's target does not change. Refines ADR-819. §8g, **R46** |
+| **DC-N** | The two Windows `data.path` oddities — N19 anchoring `src` where POSIX anchors `dst`, N20 reporting `FILE_NOT_FOUND` where POSIX reports `NOT_A_DIRECTORY` | **→ ADR-822, adopted as recommended (option 1).** Both are documented in their Windows shape, pinned in the win-only file with `node:path`-built expectations, and the `rename` JSDoc calls the ancestor-fault report adapter- **and** platform-chosen. No adapter behaviour changes. Refines ADR-811 and ADR-813. §6, §8h(b), **R47**, **R49** |
+| **DC-O** | What the port says about `atomicRename` once the emulated replace arm is two syscalls | **→ ADR-823, adopted as recommended (option 1).** The JSDoc scopes the atomicity claim — one step wherever the platform's rename honours the kind rules and for every non-replacing arrangement everywhere, two steps for the emulated empty-directory replacement, as git's own is — and states that the race degrades into `DIRECTORY_NOT_EMPTY`. `atomicRename` keeps delegating. Refines ADR-813. §6, §8d point 9, **R42** |
+| **DC-P** | Whether the tolerant contract rows become strict, now that the Windows column is measured | **→ ADR-824, ratified by the user: option 3, as recommended.** Every `write` / `rename` refusal row in the shared contract suite asserts its exact code — `PERMISSION_DENIED`, `NOT_A_DIRECTORY`, `DIRECTORY_NOT_EMPTY` — and `assertRefusedWithoutCode`, left with no callers, is deleted. Supersedes ADR-819's tolerant-row clause and refines ADR-812. §5, **R25** |
+
+### New — raised by this fold
+
+**None.**
+
+Every choice this fold makes is dictated by ADRs 820–825 or by a measurement those records already
+weigh. Three places a reader might expect a fresh candidate, and why none is:
+
+- **The plan value's name and the disappearance of the emptiness probe.** With `readdir` gone the
+  arm no longer proves emptiness before acting, so `'replace-empty-directory'` would name something
+  the code does not know; it becomes `'replace-directory'`. That is a naming consequence of ADR-825,
+  not a choice with alternatives worth weighing.
+- **Where the `DIRECTORY_NOT_EMPTY` assertion helper lives.** ADR-824 requires the code to be
+  asserted and the file already has four helpers in one shape at `:78–95`; a fifth in the same shape
+  is the only form that does not invent a second convention in the same file.
+- **Whether `assertRefusedWithoutCode` is kept for future use.** It is not: after the four rows go
+  strict nothing calls it, and an uncalled helper is dead code the repo's own rules refuse. Deleting
+  it is the ADR's own wording, not a judgement this fold adds.
 
 ---
 
@@ -2107,28 +2340,33 @@ driver cannot reasonably occupy, so they have no contract counterpart.
 
 `test/unit/ports/file-system.contract.ts`, in that file's existing 1-level
 `it('Given …, When …, Then …')` style, run by **both** drivers. Strictness per §5, settled by
-ADR-819: `writeExclusive` rows keep a strict code; every `write` / `rename` **refusal** row asserts a
-structured `TsgitError` plus a non-destructiveness observation and no code; the two **positive** rows
-assert the outcome.
+ADR-824: `writeExclusive` rows keep a strict code, every `write` / `rename` **refusal** row asserts
+its exact code **plus** a non-destructiveness observation, and the two **positive** rows assert the
+outcome.
 
-🔴 **These rows have shipped, and two of them are red on Windows.** The Windows revision changes
-**no arrangement and no assertion here** — §8 makes the node adapter satisfy them (**R45**). The
-only open question is whether the refusal rows should now be *tightened* to strict codes, which is
-**DC-P**; the table below records the ADR-819 placement either way.
+🔴 **These rows have shipped; two of them are red on Windows and four of them are tolerant.** The
+Windows revision changes **no arrangement** here — §8 makes the node adapter satisfy the two red rows
+as written (**R45**) — and ADR-824 changes the assertions of the four tolerant ones, in the
+tightening direction only (**R25**).
 
-The refusal rows need one new local helper beside the four existing assertion helpers (`:78–95`) —
-call it `assertRefusedWithoutCode`, matching the `:676` precedent's body: `expect(caught).toBeInstanceOf(TsgitError)`
-and nothing about `data`. Each row then adds its own non-destructiveness assertions inline, because
-what "intact" means differs per arrangement.
+**The helper edit, exactly.** The four rows that call `assertRefusedWithoutCode` (`:277`, `:441`,
+`:465`, `:487`) call code-checking helpers instead: `assertPermissionDenied` (`:83`) for the `write`
+row and for the file-onto-directory `rename` row, `assertNotADirectory` (`:93`) for the
+directory-onto-file row, and a **new** `assertDirectoryNotEmpty` for the directory-onto-non-empty-directory
+row — the file has no `DIRECTORY_NOT_EMPTY` helper today, and the new one is written in the same
+three-line shape as its four siblings, next to them. `assertRefusedWithoutCode` and its explanatory
+comment (`:97–107`) are then deleted: nothing calls it, and an uncalled helper is dead code. Each row
+keeps its own non-destructiveness assertions inline, because what "intact" means differs per
+arrangement.
 
 | Req | Row | Strictness |
 |---|---|---|
 | R9 | `Given an existing directory, When writeExclusive, Then throws FILE_EXISTS` | **strict**, via `assertFileExists` (`:88`) |
 | — | `Given a file at a grandparent path segment, When writeExclusive, Then throws NOT_A_DIRECTORY` | **strict on the code**, via `assertNotADirectory` (`:93`), which asserts no `data.path`. Depth ≥ 2 only; an in-file comment records that depth 1 is adapter-dependent |
-| R25 | `Given a directory at the target path, When write, Then it refuses and the directory is intact` | instance + `readdir(dir)` still lists the child, and the child reads back byte-identical |
-| R25 | `Given a directory at the destination, When rename, Then it refuses and neither side moves` | instance + `read(src)` unchanged, `readdir(dst)` unchanged |
-| R25 | `Given a directory source and a file destination, When rename, Then it refuses and neither side moves` | instance + the destination file's bytes unchanged, the source's children still under the source |
-| R25 | `Given a directory source and a non-empty directory destination, When rename, Then it refuses and neither tree merges` | instance + each tree still holds exactly its own child |
+| R25 | `Given a directory at the target path, When write, Then it refuses and the directory is intact` | **strict** `PERMISSION_DENIED` (`assertPermissionDenied`) + `readdir(dir)` still lists the child, and the child reads back byte-identical |
+| R25 | `Given a directory at the destination, When rename, Then it refuses and neither side moves` | **strict** `PERMISSION_DENIED` + `read(src)` unchanged, `readdir(dst)` unchanged |
+| R25 | `Given a directory source and a file destination, When rename, Then it refuses and neither side moves` | **strict** `NOT_A_DIRECTORY` (`assertNotADirectory`) + the destination file's bytes unchanged, the source's children still under the source |
+| R25 | `Given a directory source and a non-empty directory destination, When rename, Then it refuses and neither tree merges` | **strict** `DIRECTORY_NOT_EMPTY` (the new `assertDirectoryNotEmpty`) + each tree still holds exactly its own child |
 | R20 | `Given a directory source and an empty directory destination, When rename, Then the subtree lands at the destination` | **positive row, outcome asserted** — kept because a positive row has no tolerant form (§5). It **is** the row that went red on Windows, and it is why §8 exists; the arrangement and the assertion do not change (**R45**) |
 | R21 | `Given src === dst, When rename, Then it resolves and the entry is unchanged` — one file case, one non-empty-directory case | **positive rows**, outcome asserted, no code |
 
@@ -2177,6 +2415,13 @@ binding is `const sut = new NodeFileSystem(rootDir)` — the shape
 satisfied without touching its factory allowlist. Tier share is unaffected — the audit counts
 **files**, and integration sits at 146/17.2 % with a 25 % warn-above, so one more file is 147/17.3 %.
 
+**What ADR-824 leaves for this file to do.** Four of its codes are now asserted cross-adapter in the
+contract suite, and the rows below keep them anyway — because the contract helpers check `data.code`
+and nothing else (§5), while these rows check `data.path`, the `rootDir` arrangements the contract
+driver cannot plant, the symlink occupants ADR-812 keeps out of the shared file, the three delegating
+write surfaces, and the `reason` strings. The overlap is four codes; the rest of the file has no
+counterpart anywhere.
+
 **Rows** — every §1d / §1e arrangement on which darwin and linux agree, asserting `data.code` and,
 where the variant carries one, `data.path`:
 
@@ -2187,7 +2432,7 @@ where the variant carries one, `data.path`:
 | W9 | `write` over a symlink leaf, live and dangling | `PERMISSION_DENIED`, `path` = requested |
 | W4 / W5 | file at the immediate parent / at the grandparent | `FILE_EXISTS` / `NOT_A_DIRECTORY`, `path` = requested — the ADR-811 depth split, pinned so it cannot move silently |
 | N1 / N2 / N3 | leaf → directory destination (empty, with children, from a symlink source) | `PERMISSION_DENIED`, `path` = **src** |
-| **N15** | file → the containment **root** | 🔴 **not one code.** darwin `PERMISSION_DENIED`, ubuntu `DIRECTORY_NOT_EMPTY` — measured in §8a, latently red on the ubuntu cell today (§8g). Fixed per **DC-M**; the recommended form asserts the enumerated pair plus non-destructiveness, with a comment naming the axis (a **non-directory** source whose destination is one of its own **ancestors**) |
+| **N15** | file → the containment **root** | 🔴 **not one code.** darwin `PERMISSION_DENIED`, ubuntu `DIRECTORY_NOT_EMPTY` — measured in §8a, and measured **red** by a direct ubuntu run of this file (§8g). Fixed per **ADR-821**: the row asserts the enumerated pair, `PERMISSION_DENIED` **or** `DIRECTORY_NOT_EMPTY`, plus non-destructiveness, with a comment naming the axis (a **non-directory** source whose destination is one of its own **ancestors**), the same shape the contract suite's `mkdir` row already uses (**R46**) |
 | N4 / N5 / N6 | directory → regular file / → symlink destination | `NOT_A_DIRECTORY`, `path` = **src** |
 | N8 / N9 / N10 / N16 | directory → non-empty directory, → its own parent, → the root | `DIRECTORY_NOT_EMPTY`, `path` = **src** |
 | N7 / N20 / N21 / N22 / N23 / N24 | the positive rows: replace an empty directory, `src === dst` for a file and for a non-empty directory, fresh-name moves | they resolve, and the tree is where it should be |
@@ -2196,7 +2441,7 @@ where the variant carries one, `data.path`:
 
 **N11b is excluded** — it is the one row where darwin and linux disagree (§1e), and this job runs on
 both. It is pinned memory-side only. **N15 is now a second such row and is not excluded**: it is
-already in the file, it is the arrangement §2b is about, and DC-M settles how it is written.
+already in the file, it is the arrangement §2b is about, and ADR-821 settles how it is written.
 
 ### Windows-side rows — the DI seam and the new win-only file
 
@@ -2204,13 +2449,13 @@ Two tiers, both specified row by row in **§8h**; only the tier facts are repeat
 
 | Where | File | Runs on | Why it exists |
 |---|---|---|---|
-| **DI unit** | `test/unit/adapters/node/node-file-system-injected.test.ts` (existing, 3 618 lines) | **every** OS, in the `unit` project | 18 rows, one per branch of the new arm, built with `windowsPolicy` + `fakeFsOps` (ADR-046 / ADR-047). This is the **mutation gate** for the Windows code: Stryker's runner is linux, so without the injected policy every mutant in `planRename` would be an unreachable-code survivor. Several rows assert *which* `fsOps` methods were **not** called, which is what pins the syscall budget of **R41** |
+| **DI unit** | `test/unit/adapters/node/node-file-system-injected.test.ts` (existing, 3 618 lines) | **every** OS, in the `unit` project | 20 rows, one per branch of the new arm, built with `windowsPolicy` + `fakeFsOps` (ADR-046 / ADR-047 / ADR-820). This is the **mutation gate** for the Windows code: Stryker's runner is linux, so without the injected policy every mutant in `planRename` would be an unreachable-code survivor. Several rows assert *which* `fsOps` methods were **not** called, which is what pins the syscall budget of **R41** |
 | **Real NTFS** | **new** `test/integration/win-only/node-fs-windows-rename-refusals.test.ts` | `windows-latest` only, `win-integration` project (`vitest.config.ts:64–65`, `ci.yml:417`) | the strict codes through the *composed* adapter against a real filesystem — the mirror of what the posix-only file does for POSIX, and the only place the emulation meets NTFS. Tier rules apply: `@proves` header, GWT split, AAA, `sut`, and **no `vi.*` at all** (`overMockedIntegration` threshold 0). Symlink rows are guarded by the directory's existing `canCreateSymlinks()` probe with an honest `skip()` |
 
 **One trap, stated where the tests are written as well as in §8h:** on Windows the adapter reports
 **joined** paths, which carry `\` (N10's `p\s`, N20's `p\f`). Every path expectation in the win-only
 file is built with `node:path`, never with a `/`-spelled literal, and any predicate on `readlink`
-output normalises separators before matching.
+output normalises separators before matching (**R49**).
 
 **Tier share.** The win-only file is one more file in the `integration` tier the audit counts by
 file; that tier sits far below its warn-above threshold with or without it, and this adds one.
@@ -2329,8 +2574,8 @@ recorded reason.** Lenses 1 (round-trip) and 3 (total function over a grammar) d
 | `docs/use/errors.md:46` `PERMISSION_DENIED` | add: a non-exclusive write whose leaf is a directory, and a `rename` that would replace a directory with a non-directory | docs phase |
 | `docs/use/errors.md:41` `DIRECTORY_NOT_EMPTY` | *"A directory delete on a non-empty target"* → also a `rename` whose destination is a non-empty directory | docs phase |
 | `docs/use/errors.md:44` `NOT_A_DIRECTORY` | *"Directory operation against a non-directory"* → also a `rename` of a directory onto a non-directory | docs phase |
-| `src/ports/file-system.ts` `rename` / `atomicRename` JSDoc — **Windows** | the kind matrix holds on node and memory on **every** platform; the empty-directory replacement is emulated in two steps where the platform's own rename refuses it, so the atomicity sentence is scoped (DC-O); the ancestor-chain path is platform-chosen on node — `dst` on POSIX, **`src`** on Windows — where the text says `dst` flatly today (DC-N). **R47** | implementation |
-| `src/ports/file-system.ts` `writeExclusive` JSDoc — **Windows** | a symlink leaf is an occupant on **every** platform, including one whose `open(2)` ignores `O_NOFOLLOW`; today the sentence is true only on POSIX (W13). **R44**, **R47** | implementation |
+| `src/ports/file-system.ts` `rename` / `atomicRename` JSDoc — **Windows** | the kind matrix holds on node and memory on **every** platform, emulated on Windows in two steps for the empty-directory replacement, so the atomicity sentence is scoped (ADR-823); the ancestor-chain path is adapter- **and** platform-chosen on node — `dst` on POSIX, **`src`** on Windows — where the text says `dst` flatly today (ADR-822). **The three sentences are written out verbatim in §6**; the implementation copies them rather than re-phrasing. **R47** | implementation |
+| `src/ports/file-system.ts` `writeExclusive` JSDoc — **Windows** | no edit needed: ADR-813's occupancy sentence already names *"a symbolic link, including a dangling one"*, and §8f makes it true on Windows for the first time. Re-read at implementation time to confirm it still says so. **R44**, **R47** | implementation |
 | `reports/api.json` | regenerated in the commit that changes the port JSDoc — the `docs:json` pre-push gate refuses a stale report | implementation |
 | `docs/design/ports-and-adapters.md:45` | *"`rename` atomically replaces target … Node adapter on Windows uses `fs.rename` (which does replace on modern Windows + NTFS)"* — **measured false in both halves**: Windows replaces a *file* destination with a *directory* source (N4 / N5 / N6) and refuses **every** directory destination (N7 / N8), and after this change the adapter refuses the first and emulates the second | docs phase |
 | `docs/design/ports-and-adapters.md` §7.1 node bullet list | has no `rename` bullet at all; add one naming the POSIX kind rules, the platforms on which they are the syscall's and the platform on which they are emulated, and the two-step replacement | docs phase |
@@ -2368,6 +2613,17 @@ Coverage stays at 100 % on `src/adapters/memory/**` **and on `src/adapters/node/
 exclusive-create assert needs a row in the DI suite (§8h(a)) or the gate goes red on a host that
 never takes the Windows arm. The mutation gate covers both too (`stryker.config.mjs` mutates all of
 `src` except `index.ts`, `*.d.ts` and `src/adapters/browser/**`).
+
+**What a green `npm run validate` on darwin now proves, and what it still cannot.** ADR-824 moves
+four codes into the shared contract suite, which the `unit` project runs locally with both drivers —
+so a local green run proves the **memory** adapter's codes strictly *and* the node adapter's **POSIX**
+codes strictly, for `PERMISSION_DENIED`, `NOT_A_DIRECTORY` and `DIRECTORY_NOT_EMPTY`, on the same
+arrangements CI will re-run on ubuntu and Windows. What it still cannot prove is any **Windows**
+code: those reach the local host only through the DI rows of §8h(a), which assert the arm's decisions
+against a fake `FsOperations` rather than against NTFS. The real-filesystem Windows proof stays
+CI-only — the `windows-latest` unit cell for the contract rows, the `win-integration` job for the
+win-only file — and the ubuntu proof of the N15 pair stays CI-only for the same reason. Nothing about
+the strictness change makes a local run stand in for either.
 
 **Four gates `npm run validate` does not run, each of which this change needs.** Verified against
 `package.json`'s `wireit.validate.dependencies`, which lists none of `test:e2e`,
@@ -2423,18 +2679,18 @@ stand-in spelling for consistency with the rows already written against it.
   §1d or §1e changes on the node side."* §8 changes the node adapter on **one platform**: `rename`
   gains the POSIX kind rules on a policy whose own rename does not enforce them (N4 / N5 / N6 refuse,
   N7 replaces, N8 / N9 / N10 / N16 re-code), and `writeExclusive` reports `FILE_EXISTS` rather than
-  `PERMISSION_DENIED` for a symlink leaf there (W13). What **is** still out of scope on the node side:
+  `PERMISSION_DENIED` for a symlink leaf there (W13 / W13b). What **is** still out of scope on the node side:
   every POSIX outcome in §1b / §1d / §1e is byte-for-byte unchanged and pays no syscall for the new
   arm (**R41**); ADR-721 (read containment) and ADR-782 (`readSlice` as the pass-2 seam) are
   untouched; and the two `data.path` anchoring oddities stay as measured, on both platform families —
   N18's `FILE_EXISTS` carrying `src`, and N19's `NOT_A_DIRECTORY` carrying `dst` on POSIX and `src` on
-  Windows (DC-N).
+  Windows (ADR-822, **R49**).
 - **Normalising the Windows `data.path` oddities.** N19's anchor and N20's code differ from POSIX's
   because a different call fails first inside the adapter, not because of a considered contract. They
-  are documented and pinned, not emulated — DC-N, option 1.
+  are documented and pinned, not emulated — ADR-822, option 1.
 - **N15 on the memory adapter.** ubuntu and darwin disagree about a non-directory renamed onto one of
   its own ancestors (§8g), so there is no single node behaviour to match, exactly the ADR-811 /
-  ADR-817 shape. Memory keeps `PERMISSION_DENIED`; only the posix-only node row is fixed (DC-M).
+  ADR-817 shape. Memory keeps `PERMISSION_DENIED`; only the posix-only node row is fixed (ADR-821).
 - **Replicating git-on-Windows's `EISDIR` for a directory at an exclusive-create leaf** (probe L3).
   The adapter reports `FILE_EXISTS` there on all three OS, matching git-on-POSIX, the port contract
   and ADR-813; git's own Windows compat layer produces `EISDIR` as an artefact of mapping `EACCES`
