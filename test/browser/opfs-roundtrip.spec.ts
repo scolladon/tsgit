@@ -239,6 +239,8 @@ test.describe('OPFS directory-occupant refusals', () => {
       await sut.write('same.txt', new Uint8Array([7, 8, 9]));
 
       await sut.rename('same.txt', 'same.txt');
+      // The same entry spelled two ways: the guard must compare normalized segments, not strings.
+      await sut.rename('/same.txt', 'same.txt');
       const survivor = await sut.exists('same.txt');
       const bytes = survivor ? Array.from(await sut.read('same.txt')) : [];
 
