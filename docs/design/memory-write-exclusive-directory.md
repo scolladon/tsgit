@@ -14,7 +14,7 @@
 > table below raises none.
 > Status: draft → self-reviewed ×3 → accepted (ADRs 810–815) → revised (write + rename folded in)
 > → self-reviewed ×3 → accepted (ADRs 816–819) → revised (browser write/rename folded in)
-> → self-reviewed ×3 → review round folded in
+> → self-reviewed ×3 → two review cycles folded in
 
 ## Context
 
@@ -112,7 +112,7 @@ pointing at the same statements.
 - **R5** — Unchanged: a **symlink** at `p` refuses with `FILE_EXISTS` regardless of its target.
 - **R6** — Unchanged: an absent `p` writes the bytes and auto-creates missing parents.
 - **R7** — A refused `writeExclusive` mutates nothing *observably*: `lstat(p)` still reports
-  `isDirectory: true` with unchanged timestamps, and every child under `p/` reads back
+  `isDirectory: true` (memory directories carry no timestamps, so none are asserted), and every child under `p/` reads back
   byte-identical. (Stated on the port surface, not on the private `files`/`times` maps.)
 
 **Non-exclusive write — settled by ADR-815, extended by ADR-818**
@@ -210,11 +210,18 @@ operation in `runFs(op, src)`.
   row that both drivers pass.
 - **R34** — `BrowserFileSystem.rename(p, p)` is a no-op: the file survives with its bytes, and an
   absent `p` still reports `FILE_NOT_FOUND`. Asserted against real OPFS.
-- **R35** — The port's `rename` contract is scoped per adapter: the kind matrix and the
-  `data.path === src` anchoring hold on node and memory; the browser's emulation reports
-  `FILE_NOT_FOUND` for a directory source and `PERMISSION_DENIED` carrying `dst` for a directory
-  destination, and replaces no directory. The `writeStream` contract records that a refused write
-  may already have consumed its source on either adapter.
+- **R35** — The port's `rename` contract is scoped per adapter: `src === dst` is a no-op once
+  `src` exists (an absent `src` still reports `FILE_NOT_FOUND`); the kind matrix and the
+  `data.path === src` anchoring hold on node and memory; a regular file or symlink on the
+  destination's ancestor chain refuses with `NOT_A_DIRECTORY` carrying an adapter-chosen path
+  (node `dst`, memory the blocking ancestor) and changes nothing; the browser's emulation
+  reports `FILE_NOT_FOUND` for a directory source and `PERMISSION_DENIED` carrying `dst` for a
+  directory destination, and replaces no directory. The `writeStream` contract records that a
+  refused write may already have consumed its source on either adapter.
+- **R36** — Constructing a `MemoryFileSystem` with a `files` map that seeds a file where an
+  earlier key already made a directory (the root included) throws `NOT_A_DIRECTORY` carrying
+  the offending key, so `files`, `directories` and `symlinks` are pairwise disjoint on **every**
+  state, seeding included — R8a without a footnote.
 
 **Browser — settled by ADR-816**
 
@@ -1030,6 +1037,36 @@ Smaller: `assertRenamable`'s parameters are named `normalizedSrc` / `normalizedD
 as its `rename` siblings; the `appendUtf8` test title no longer claims nothing was read (the read
 happens and yields the empty string); the R7 row asserts the directory's timestamps unchanged.
 
+**The second review cycle** verified all sixteen cycle-one findings resolved (the two measured
+`rename` survivors re-measured killed) and found four more things worth changing:
+
+7. **The two-phase walk cost +14 % on every memory write (perf, MEDIUM, measured 702 → 807 ns).**
+   `addDirectoryRecursive` now returns immediately when its head is already a recorded
+   directory: `directories` is prefix-closed and disjoint from the other namespaces, so a
+   recorded head proves the whole chain recorded and occupant-free. Measured −31 % against the
+   pre-fix baseline. Its mutant is the one provable equivalent this work suppresses, and it is
+   provable only because of the next item.
+8. **The constructor could seed a file where an earlier key had made a directory (R8's last
+   hole).** A one-line guard refuses it with `NOT_A_DIRECTORY` carrying the key. R36.
+9. **The `>=` loop bounds were not equivalent after all (tests, HIGH ×2).** After
+   `rmRecursive(rootDir)` a write can occupy the root path with a file, and a later child write
+   must refuse; and the add loop's root iteration is what records the root again. The
+   carried-forward equivalence prose was wrong for both loops; both mutants now have kill rows
+   and the comments say why the bound is load-bearing. Only the dropped-`break`/`return` halves
+   remain equivalent (`parentOf(rootDir)` is `''`).
+10. **The `mkdir` leaf-guard directive covered a non-equivalent mutant (three dimensions
+    converged).** The guard reports the caller's string, the chain check the normalized key, so
+    a relative path tells them apart. The directive is gone and a relative-path row kills it.
+
+Also from this cycle: the browser's `rejectionName` branches have fake-handle unit rows (a plain
+object named `TypeMismatchError` → `PERMISSION_DENIED`; a bare string or a non-string `name` →
+`FILE_NOT_FOUND`); the Playwright self-rename case also renames `/same.txt` onto `same.txt`,
+pinning that the guard compares normalized segments; the port's `rename` clause is qualified
+for an absent source and names the ancestor-chain refusal (R35); the contract grandparent probe
+asserts the enumerated pair `NOT_A_DIRECTORY` / `FILE_NOT_FOUND`; R7 no longer claims
+timestamps the adapter never records; and the tarball paragraph states the attribution as
+measured on a clean build (1 144 B for all the new port prose, not additive).
+
 ### §4 The test-side patches this retires
 
 `writeOrKeepArtifact`'s directory arm is currently proven on the memory adapter by patching
@@ -1554,10 +1591,14 @@ recorded reason.** Lenses 1 (round-trip) and 3 (total function over a grammar) d
 | Req | Where | Case |
 |---|---|---|
 | R33 | `memory-file-system.test.ts` → `describe('ancestor refusals leave no directory behind')` | `write` and `mkdir` under a file-blocked grandparent: `NOT_A_DIRECTORY`, the intermediate directory absent, the root listing unchanged |
-| R33 | `file-system.contract.ts` grandparent row | after the strict `NOT_A_DIRECTORY`, `lstat` of the intermediate rejects on both drivers (`NOT_A_DIRECTORY` on node, `FILE_NOT_FOUND` on memory) |
+| R33 | `file-system.contract.ts` grandparent row | after the strict `NOT_A_DIRECTORY`, `lstat` of the intermediate rejects on both drivers with one of the enumerated pair `NOT_A_DIRECTORY` / `FILE_NOT_FOUND` |
 | R24 | `describe('rename kind guard')` | file over symlink (link replaced, target untouched — kills the dispatcher's forced-`true` mutant); symlink over file (link keeps its target, the replaced file entry is gone) |
 | R21 | `describe('rename kind guard')` | two files, `rename(a, a)`: listing order unchanged — a re-inserted entry would move to the end (kills the forced-`false` early-return mutant) |
-| R7 | `describe('writeExclusive contract')` | the directory's `mtimeMs`/`ctimeMs` before and after the refusal are equal |
+| R7 | `describe('writeExclusive contract')` | the directory kind and the child's bytes are unchanged (memory directories carry no timestamps) |
+| R36 | `describe('root and seeding invariants')` | a `files` map seeding a file over an earlier directory key, and one seeding a file at the root, both throw `NOT_A_DIRECTORY` carrying the key |
+| bound kills | `describe('root and seeding invariants')` | after `rmRecursive(rootDir)`: a file written at the root path makes a child write refuse `NOT_A_DIRECTORY` (check-loop `>=`); a plain child write records the root again and lists the child (add-loop `>=`) |
+| mkdir guard | `describe('mkdir leaf guard')` | `mkdir('blocker')` over a file reports `NOT_A_DIRECTORY` carrying `blocker`, the caller's string (kills the former directive's mutants) |
+| browser classifier | `test/unit/adapters/browser/browser-file-system.test.ts` | a fake root handle rejecting with `{ name: 'TypeMismatchError' }` → `PERMISSION_DENIED`; a bare string or `{ name: 42 }` → `FILE_NOT_FOUND` |
 | R34 | `test/browser/opfs-roundtrip.spec.ts` | `rename('same.txt', 'same.txt')` leaves the file with its bytes; `rename('missing.txt', 'missing.txt')` reports `FILE_NOT_FOUND` |
 
 ### Gates
