@@ -5,7 +5,7 @@ import * as nodePath from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
 import {
-  interpretCreationLstat,
+  isCreationLeafSymlink,
   isErrnoException,
   isWindowsSymlinkRefusal,
   mapConcurrent,
@@ -1127,57 +1127,42 @@ describe('NodeFileSystem', () => {
       });
     });
 
-    describe('interpretCreationLstat', () => {
+    describe('isCreationLeafSymlink', () => {
       describe('Given ok=true with isSymlink=false', () => {
         describe('When interpreting', () => {
-          it('Then returns without throwing', () => {
-            // Arrange + Act — try/catch + `toBeUndefined` is mutation-tighter
-            // than `not.toThrow()`: a mutant that throws a different-coded
-            // error would slip past `not.toThrow()` only if it doesn't throw
-            // at all.
-            let caught: unknown;
-            try {
-              interpretCreationLstat({ ok: true, isSymlink: false }, '/x');
-            } catch (err) {
-              caught = err;
-            }
+          it('Then reports no symlink leaf', () => {
+            // Act
+            const result = isCreationLeafSymlink({ ok: true, isSymlink: false }, '/x');
 
             // Assert
-            expect(caught).toBeUndefined();
+            expect(result).toBe(false);
           });
         });
       });
 
       describe('Given ok=true with isSymlink=true', () => {
         describe('When interpreting', () => {
-          it('Then throws PERMISSION_DENIED', () => {
-            // Arrange
-            let caught: unknown;
-            try {
-              interpretCreationLstat({ ok: true, isSymlink: true }, '/symlinked-leaf');
-            } catch (err) {
-              caught = err;
-            }
+          it('Then reports a symlink leaf', () => {
+            // Act
+            const result = isCreationLeafSymlink({ ok: true, isSymlink: true }, '/symlinked-leaf');
+
             // Assert
-            expect(caught).toBeInstanceOf(TsgitError);
-            expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+            expect(result).toBe(true);
           });
         });
       });
 
       describe('Given ok=false with ENOENT error', () => {
         describe('When interpreting', () => {
-          it('Then returns without throwing (leaf absent is expected)', () => {
-            // Arrange
-            let caught: unknown;
-            try {
-              interpretCreationLstat({ ok: false, err: makeErrnoError('ENOENT') }, '/to-create');
-            } catch (err) {
-              caught = err;
-            }
+          it('Then reports no symlink leaf (leaf absent is expected)', () => {
+            // Act
+            const result = isCreationLeafSymlink(
+              { ok: false, err: makeErrnoError('ENOENT') },
+              '/to-create',
+            );
 
             // Assert
-            expect(caught).toBeUndefined();
+            expect(result).toBe(false);
           });
         });
       });
@@ -1188,7 +1173,7 @@ describe('NodeFileSystem', () => {
             // Arrange
             let caught: unknown;
             try {
-              interpretCreationLstat({ ok: false, err: makeErrnoError('EACCES') }, '/guarded');
+              isCreationLeafSymlink({ ok: false, err: makeErrnoError('EACCES') }, '/guarded');
             } catch (err) {
               caught = err;
             }
@@ -1206,7 +1191,7 @@ describe('NodeFileSystem', () => {
             const original = new RangeError('weird');
             let caught: unknown;
             try {
-              interpretCreationLstat({ ok: false, err: original }, '/weird');
+              isCreationLeafSymlink({ ok: false, err: original }, '/weird');
             } catch (err) {
               caught = err;
             }

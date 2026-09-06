@@ -294,29 +294,26 @@ export async function realpathNearestExisting(
 }
 
 /**
- * Interpret the result of an lstat on the leaf of a creation target.
+ * Classify the result of an lstat on the leaf of a creation target.
  *
- * - Success + symlink → reject with PERMISSION_DENIED (don't write through a pre-existing symlink)
- * - Success + non-symlink → no-op (overwrite is fine)
- * - ENOENT → no-op (the leaf doesn't exist yet, which is the expected creation case)
+ * - Success + symlink → reports `true` (caller decides the refusal)
+ * - Success + non-symlink → reports `false` (overwrite is fine)
+ * - ENOENT → reports `false` (the leaf doesn't exist yet, the expected creation case)
  * - Any other errno → surface via mapErrno (must NOT be silently swallowed)
  *
  * Non-Error, non-errno throwables re-bubble as-is.
  * @internal
  */
-export function interpretCreationLstat(
+export function isCreationLeafSymlink(
   result:
     | { readonly ok: true; readonly isSymlink: boolean }
     | { readonly ok: false; readonly err: unknown },
   path: string,
-): void {
-  if (result.ok) {
-    if (result.isSymlink) throw permissionDenied(path);
-    return;
-  }
+): boolean {
+  if (result.ok) return result.isSymlink;
   const { err } = result;
   if (isErrnoException(err)) {
-    if (err.code === 'ENOENT') return;
+    if (err.code === 'ENOENT') return false;
     throw mapErrno(err, path);
   }
   throw err;
@@ -658,7 +655,7 @@ export class NodeFileSystem implements FileSystem {
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.resolveWrite(path);
-    await this.assertWritableLeaf(real, path);
+    await this.assertExclusiveCreateLeaf(real, path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await this.fsOps.writeFile(real, data, { flag: WRITE_EXCLUSIVE_FLAGS });
@@ -945,6 +942,18 @@ export class NodeFileSystem implements FileSystem {
     await runFs(() => this.fsOps.rmdir(real), originalPath);
   }
 
+  /** lstat the creation leaf and classify it. Unconditional; callers gate on the policy. */
+  private async creationLeafIsSymlink(real: string, path: string): Promise<boolean> {
+    let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
+    try {
+      const leafStat = await this.fsOps.lstat(real);
+      lstatResult = { ok: true, isSymlink: leafStat.isSymbolicLink() };
+    } catch (err) {
+      lstatResult = { ok: false, err };
+    }
+    return isCreationLeafSymlink(lstatResult, path);
+  }
+
   /**
    * Explicit leaf check for the two situations that cannot rely on
    * `O_NOFOLLOW`: `chmod` (no portable no-follow chmod exists, on any
@@ -955,14 +964,13 @@ export class NodeFileSystem implements FileSystem {
    * exist (`chmod`) surface that via their own op's own ENOENT.
    */
   private async assertLeafSafeToWrite(real: string, path: string): Promise<void> {
-    let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
-    try {
-      const leafStat = await this.fsOps.lstat(real);
-      lstatResult = { ok: true, isSymlink: leafStat.isSymbolicLink() };
-    } catch (err) {
-      lstatResult = { ok: false, err };
-    }
-    interpretCreationLstat(lstatResult, path);
+    if (await this.creationLeafIsSymlink(real, path)) throw permissionDenied(path);
+  }
+
+  /** `writeExclusive` only: a symlink leaf refuses with FILE_EXISTS, live or dangling. */
+  private async assertExclusiveCreateLeaf(real: string, path: string): Promise<void> {
+    if (this.pathPolicy.honoursNoFollow) return; // O_EXCL already answers EEXIST
+    if (await this.creationLeafIsSymlink(real, path)) throw fileExists(path);
   }
 
   /**
