@@ -14,7 +14,7 @@
 > table below raises none.
 > Status: draft → self-reviewed ×3 → accepted (ADRs 810–815) → revised (write + rename folded in)
 > → self-reviewed ×3 → accepted (ADRs 816–819) → revised (browser write/rename folded in)
-> → self-reviewed ×3 → two review cycles folded in
+> → self-reviewed ×3 → three review cycles folded in
 
 ## Context
 
@@ -220,8 +220,9 @@ operation in `runFs(op, src)`.
   refused write may already have consumed its source on either adapter.
 - **R36** — Constructing a `MemoryFileSystem` with a `files` map that seeds a file where an
   earlier key already made a directory (the root included) throws `NOT_A_DIRECTORY` carrying
-  the offending key, so `files`, `directories` and `symlinks` are pairwise disjoint on **every**
-  state, seeding included — R8a without a footnote.
+  the offending key. With the stale-handle write guard below, `files`, `directories` and
+  `symlinks` are pairwise disjoint on **every** reachable state — seeding and handles included —
+  so R8a holds without a footnote.
 
 **Browser — settled by ADR-816**
 
@@ -639,7 +640,7 @@ one line per writer. The list is exhaustive by construction: it is every `files.
 | `mkdir` | `directories` | `addDirectoryRecursive` re-tests `files`/`symlinks` at **every** segment (§3d) | **no** — pre-existing |
 | `rename`, leaf arm | `files` or `symlinks` at `dst` | `assertRenamable` refuses a `directories` `dst`; the body still `delete`s `files[dst]` / `symlinks[dst]` before setting (§3c) | **no** |
 | `rename`, directory arm | `directories` + re-keyed `files`/`symlinks` under `dst` | `assertRenamable` leaves `dst` provably **absent everywhere or an empty directory**, and refuses `dst` inside `src` (§3c) | **no** |
-| the `FileHandle` from `openWithNoFollow` (`:399`) | `files` | `openWithNoFollow` (`:375–385`) refuses a symlink leaf and requires `files.has(normalized)` before handing the handle out | **no** — the key it writes already exists in `files`, so it creates none |
+| the `FileHandle` from `openWithNoFollow` (`:399`) | `files` | `openWithNoFollow` (`:375–385`) refuses a symlink leaf and requires `files.has(normalized)` before handing the handle out | **closed in the review round** — the handle re-filed a removed path (`open → rm → mkdir → handle.write` put one key in `files` and `directories`); a write through a handle whose path no longer holds that file now resolves without effect, the POSIX unlinked-inode outcome |
 | `rm`, `rmRecursive` | — (delete only) | n/a | **no** |
 | constructor `rootDir` seed (`:46`) | `directories` | runs first, on an empty adapter | **no** |
 | **constructor `files` option** (`:49`) | `files` | **none** | **yes — the one surviving route** |
@@ -1066,6 +1067,32 @@ for an absent source and names the ancestor-chain refusal (R35); the contract gr
 asserts the enumerated pair `NOT_A_DIRECTORY` / `FILE_NOT_FOUND`; R7 no longer claims
 timestamps the adapter never records; and the tarball paragraph states the attribution as
 measured on a clean build (1 144 B for all the new port prose, not additive).
+
+**The third review cycle** verified every second-cycle fix (the two `>=` bound mutants and the
+`mkdir` guard's three mutator classes re-measured killed by exactly their rows; the early exit
+measured 39 % faster than cycle 2 and 28 % faster than pre-fix, −18 % end to end on 20 000
+loose-object writes) and found one more thing, from two dimensions at once:
+
+11. **A stale `FileHandle` could re-file a removed path (code MEDIUM, tests MEDIUM).** The
+    handle's `write` did `files.set` with no occupancy check, so `open → rm → mkdir →
+    handle.write` put one key in `files` and `directories` through public port calls alone,
+    and in that state the early exit's mutant was distinguishable. The write now lands on the
+    unlinked file as it does on POSIX — the path is never re-filed — pinned by two rows
+    (path stays absent; a directory created there is untouched and a child write beneath it
+    works). The disjointness premise every equivalence proof in the file rests on is now
+    true on every reachable state, handles included.
+12. **The two `current === rootDir` terminators are documented equivalents with directives.**
+    Forcing either false only steps the loop to `parentOf(rootDir)`, which is strictly
+    shorter than `rootDir` and fails the `>=` bound; the tests reviewer measured both as
+    survivors and proved the equivalence. The early exit's directive lost an inert
+    `BlockStatement` mutator name and gained the clause that its forced-true variant is
+    killable and suppressed only because the mutator cannot be narrowed. The `>=`→`<`
+    mutants on both loops hang (`parentOf('')` is `''`) and count as detected timeouts.
+
+Also from this cycle: a `null` rejection row for the browser classifier (the `||`'s second
+term); the tarball paragraph keeps only the measured total (about 1.3 KB for all the new port
+prose — two measurers agreed on the total and not on any split), 927 329 B against the
+906 KiB cap.
 
 ### §4 The test-side patches this retires
 
@@ -1599,6 +1626,8 @@ recorded reason.** Lenses 1 (round-trip) and 3 (total function over a grammar) d
 | bound kills | `describe('root and seeding invariants')` | after `rmRecursive(rootDir)`: a file written at the root path makes a child write refuse `NOT_A_DIRECTORY` (check-loop `>=`); a plain child write records the root again and lists the child (add-loop `>=`) |
 | mkdir guard | `describe('mkdir leaf guard')` | `mkdir('blocker')` over a file reports `NOT_A_DIRECTORY` carrying `blocker`, the caller's string (kills the former directive's mutants) |
 | browser classifier | `test/unit/adapters/browser/browser-file-system.test.ts` | a fake root handle rejecting with `{ name: 'TypeMismatchError' }` → `PERMISSION_DENIED`; a bare string or `{ name: 42 }` → `FILE_NOT_FOUND` |
+| stale handle | `describe('stale handle writes')` | a handle write after `rm` leaves the path absent; a handle write after `rm` + `mkdir` at the same name leaves the directory intact and a child write beneath it works |
+| browser classifier | (same file) | a fake root handle rejecting with `null` → `FILE_NOT_FOUND` |
 | R34 | `test/browser/opfs-roundtrip.spec.ts` | `rename('same.txt', 'same.txt')` leaves the file with its bytes; `rename('missing.txt', 'missing.txt')` reports `FILE_NOT_FOUND` |
 
 ### Gates
