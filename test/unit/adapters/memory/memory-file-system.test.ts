@@ -2095,6 +2095,51 @@ describe('MemoryFileSystem', () => {
     });
   });
 
+  describe('stale handle writes', () => {
+    describe('Given a handle opened on a file that was then removed', () => {
+      describe('When writing through the handle', () => {
+        it('Then the write resolves and the path stays absent — the bytes land on the unlinked file', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/gone.bin', new Uint8Array([1]));
+          const handle = await sut.openWithNoFollow('/repo/gone.bin', 'write');
+          await sut.rm('/repo/gone.bin');
+
+          // Act
+          await handle.write(new Uint8Array([2]));
+
+          // Assert
+          expect(await sut.exists('/repo/gone.bin')).toBe(false);
+          expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a handle opened on a file whose path has since become a directory', () => {
+      describe('When writing through the handle', () => {
+        it('Then the directory is untouched and no file entry appears at its name', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/x', new Uint8Array([1]));
+          const handle = await sut.openWithNoFollow('/repo/x', 'write');
+          await sut.rm('/repo/x');
+          await sut.mkdir('/repo/x');
+
+          // Act
+          await handle.write(new Uint8Array([2]));
+
+          // Assert — one name, one kind: the directory still lists, and a child write beneath it works
+          const stat = await sut.lstat('/repo/x');
+          expect(stat.isDirectory).toBe(true);
+          expect(stat.isFile).toBe(false);
+          expect(await sut.readdir('/repo/x')).toEqual([]);
+          await sut.write('/repo/x/child.bin', new Uint8Array([3]));
+          expect((await sut.readdir('/repo/x')).map((entry) => entry.name)).toEqual(['child.bin']);
+        });
+      });
+    });
+  });
+
   describe('mkdir leaf guard', () => {
     describe('Given a relative path to an existing file', () => {
       describe('When mkdir is called', () => {

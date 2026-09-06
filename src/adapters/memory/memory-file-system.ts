@@ -442,6 +442,10 @@ export class MemoryFileSystem implements FileSystem {
         return chunk.length;
       },
       write: async (data) => {
+        // A handle outlives its path. Once the file it opened has been removed, a write
+        // lands on the unlinked file as it does on POSIX — the path is never re-filed, so
+        // it cannot collide with a directory or symlink created there since.
+        if (!this.files.has(normalized)) return;
         this.files.set(normalized, data.slice());
         this.touch(normalized);
       },
@@ -468,7 +472,7 @@ export class MemoryFileSystem implements FileSystem {
     // A recorded directory proves its whole ancestor chain recorded and free of files and
     // symlinks — `directories` is prefix-closed and disjoint from the other two namespaces
     // on every reachable state — so there is nothing to refuse and nothing to add.
-    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — without this early return the walk below runs over a chain that is already recorded and holds no file or symlink at any level (prefix closure and disjointness, sealed at the constructor), so the check refuses nothing and the add loop re-adds keys that are already present.
+    // Stryker disable next-line ConditionalExpression: equivalent — without this early return the walk below runs over a chain that is already recorded and holds no file or symlink at any level (prefix closure and disjointness hold on every reachable state: the constructor refuses a seeded collision and a stale handle never re-files a removed path), so the check refuses nothing and the add loop re-adds keys that are already present; the forced-true variant is killable (every parent auto-create test) and is suppressed only because the mutator cannot be narrowed.
     if (this.directories.has(normalizedPath)) return;
     // Refuse before recording anything: a file or symlink anywhere on the ancestor chain
     // must leave the tree untouched — the all-or-nothing shape of `mkdir -p`.
@@ -479,6 +483,7 @@ export class MemoryFileSystem implements FileSystem {
     // harmless — `parentOf(rootDir)` is '' and fails the bound on the next test.
     while (current.length >= this.rootDir.length) {
       this.directories.add(current);
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing this false only lets the loop step to parentOf(rootDir), which is strictly shorter than rootDir and fails the `>=` bound before anything is added; the forced-true variant is killable (it records the leaf alone) and rides along only because the mutator cannot be narrowed.
       if (current === this.rootDir) break;
       current = parentOf(current);
     }
@@ -494,6 +499,7 @@ export class MemoryFileSystem implements FileSystem {
       if (this.files.has(current) || this.symlinks.has(current)) {
         throw notADirectory(current);
       }
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing this false only lets the loop step to parentOf(rootDir), which is strictly shorter than rootDir and fails the `>=` bound before anything is checked; the forced-true variant is killable (it stops after the first segment) and rides along only because the mutator cannot be narrowed.
       if (current === this.rootDir) return;
       current = parentOf(current);
     }
