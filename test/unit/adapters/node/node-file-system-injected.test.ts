@@ -2995,6 +2995,38 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
       });
     });
   });
+
+  describe('Given two spellings on a filesystem that reports no inode, a file replacing the destination before its realpath', () => {
+    describe('When rename fires and the destination realpath rejects ENOTDIR', () => {
+      it('Then the fallback reads it as another entry and the platform rename decides', async () => {
+        // Arrange
+        const rootDir = 'C:\\Root';
+        const src = 'C:\\Root\\swapped';
+        const dst = 'C:\\Root\\SWAPPED.';
+        const renameSpy = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => {
+            if (input === dst) throw enotdir();
+            return input;
+          }),
+          lstat: vi
+            .fn()
+            .mockResolvedValueOnce(entry('directory', 0))
+            .mockResolvedValueOnce(entry('directory', 0)),
+          rmdir: vi.fn().mockRejectedValue(enoent()),
+          rename: renameSpy,
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        await sut.rename(src, dst);
+
+        // Assert
+        expect(renameSpy).toHaveBeenCalledTimes(1);
+        expect(renameSpy).toHaveBeenCalledWith(src, dst);
+      });
+    });
+  });
 });
 
 describe('NodeFileSystem — write guard per-call containment post-check (DI)', () => {
