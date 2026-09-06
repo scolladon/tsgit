@@ -1280,7 +1280,7 @@ linux; Windows was not probed at the time, and the mapping from `ERROR_*` to err
 that revision could assert from memory. The file already carries **two** tolerance precedents built
 for exactly this situation:
 
-- `:567` `Given mkdir on existing file path, When mkdir, Then throws FILE_EXISTS or NOT_A_DIRECTORY`
+- `:762` `Given mkdir on existing file path, When mkdir, Then throws FILE_EXISTS or NOT_A_DIRECTORY`
   — an enumerated pair, with an in-file comment saying the exact code is platform-dependent.
 - `Given non-empty directory, When rm, Then throws a TsgitError` — instance only, no code, with its
   own in-body comment saying the code is platform-dependent. It was at `:676` when the previous
@@ -1672,11 +1672,7 @@ rename = async (src: string, dst: string): Promise<void> => {
  */
 private async planRename(realSrc: string, realDst: string, reported: string): Promise<RenamePlan> {
   if (this.pathPolicy.honoursRenameKinds) return 'rename-only';                   // POSIX — 0 syscalls
-  const policy = this.pathPolicy;                          // call through the object, never unbound
-  if (policy.normalizeForCompare(realSrc) === policy.normalizeForCompare(realDst)) {
-    return 'rename-only';                                                         // N21 / N22
-  }
-  if (pathContains(realSrc, realDst, this.pathPolicy)) return 'rename-only';      // N11 … N12
+  if (pathContains(realSrc, realDst, this.pathPolicy)) return 'rename-only';      // N21 / N22, N11 … N12
   const source = await this.lstatOrMissing(realSrc);                              // syscall 1
   if (source === undefined || !source.isDirectory() || source.isSymbolicLink()) {
     return 'rename-only';                        // N1 / N2 / N3 / N13 / N14 / N15 / N17 / N25
@@ -1712,7 +1708,7 @@ that holds nothing, which is what makes remove-first safe here in a way it would
 
 | Rows | Source | Destination | Arm | `fsOps` calls the arm makes |
 |---|---|---|---|---|
-| N21 / N22 | anything | itself | delegate | none — a normalised string compare |
+| N21 / N22 | anything | itself | delegate | none — `pathContains` answers `true` on equality |
 | N11 / N11b / N11c / N11d / N12 | directory | inside itself | delegate | none — `pathContains` |
 | N1 / N2 / N3 / N15 | file or symlink | any directory | delegate | `lstat(src)` |
 | N13 / N14 / N25 | file or symlink | file or symlink | delegate | `lstat(src)` |
@@ -1741,16 +1737,20 @@ replace arm — and the syscall budget in §8i counts only what the emulation ad
    `src` anchoring every other error in this operation already has.
 2. **The gate is the first line and short-circuits to nothing.** On a `honoursRenameKinds: true`
    policy — every POSIX host — `planRename` issues zero syscalls and allocates nothing (**R41**).
-3. **`src === dst` is compared through `pathPolicy.normalizeForCompare`, not with `===` on the raw
-   strings.** On Windows that case-folds and normalises separators, so `C:\r\A.BIN` and
-   `c:\r\a.bin` are the same entry. Without it, a case-differing self-rename of a **non-empty
-   directory** would fall through to the emptiness check and newly refuse `DIRECTORY_NOT_EMPTY` —
-   the same regression §3c calls the sharpest one this work can introduce, one adapter over. Both
-   calls go **through the policy object**; the method is never lifted into a local binding. A
-   `PathPolicy` is an interface, and only the shipped factory happens to build it from arrow
-   properties — a hand-written policy in a test can implement it with ordinary methods, where an
-   unbound reference loses `this`. That failure mode is invisible to every suite that injects the
-   shipped policies and shows up only where a different implementation is supplied.
+3. **`src === dst` is decided by `pathContains`'s equality arm, which compares both sides through
+   `pathPolicy.normalizeForCompare` — never with `===` on the raw strings.** On Windows that
+   case-folds and normalises separators, so `C:\r\A.BIN` and `c:\r\a.bin` are the same entry.
+   Without it, a case-differing self-rename of a **non-empty directory** would fall through to the
+   `rmdir` and newly refuse `DIRECTORY_NOT_EMPTY` — the same regression §3c calls the sharpest one
+   this work can introduce, one adapter over. A separate self-rename escape above `pathContains`
+   would be dead code: `pathContainsNormalized` (`:191`) returns `true` on equality before its
+   prefix test, with the same verdict, so N21 / N22 are delegated by the same line as N11 … N12.
+   `pathContains` receives the policy **object** and calls `normalizeForCompare` through it; the
+   method is never lifted into a local binding. A `PathPolicy` is an interface, and only the shipped
+   factory happens to build it from arrow properties — a hand-written policy in a test can implement
+   it with ordinary methods, where an unbound reference loses `this`. That failure mode is invisible
+   to every suite that injects the shipped policies and shows up only where a different
+   implementation is supplied.
 4. **The inside-source test comes before every kind test, and *delegates* rather than refusing.**
    Windows already reports the invalid-argument errno for N11 / N11b / N11c / N11d / N12 (§8a), so
    the platform's own answer is already the one ADR-817 chose for memory. Refusing here instead
@@ -1758,8 +1758,8 @@ replace arm — and the syscall budget in §8i counts only what the emulation ad
    disagree with linux on a row where they currently agree, and (b) — the destructive one — take the
    replace arm on N11d, removing an existing empty directory *inside* the source before a rename
    that then fails anyway. `pathContains` is reused rather than re-spelled: it is the adapter's own
-   normalised prefix test (`:175`), already case- and separator-correct, and it returns `true` for
-   equality, which is why the self-rename escape must sit above it.
+   normalised prefix test (`:175`), already case- and separator-correct, and because it returns
+   `true` for equality it is also the self-rename delegation (point 3).
 5. **Symlinks are never followed, on either side.** Both probes are `lstat`, and both arms test
    `isSymbolicLink()` explicitly *before* `isDirectory()` matters — a symlink to a directory is a
    non-directory for `rename(2)`, which is the property §1e's closing paragraph already pins on
@@ -1973,7 +1973,7 @@ Then throws `PERMISSION_DENIED`"*, with `AssertionError: expected 'DIRECTORY_NOT
 else in the file moves.
 
 **ADR-821 settles it as the enumerated pair**, following the contract suite's own precedent at
-`:567` (`mkdir` over a file accepts `FILE_EXISTS` **or** `NOT_A_DIRECTORY`, with an in-file comment
+`:762` (`mkdir` over a file accepts `FILE_EXISTS` **or** `NOT_A_DIRECTORY`, with an in-file comment
 saying the code is platform-dependent): the row asserts `PERMISSION_DENIED` or
 `DIRECTORY_NOT_EMPTY`, plus the non-destructiveness observation, plus a comment naming the axis
 above so the next reader does not "fix" it back to one code. The rejected alternatives were a
@@ -2002,7 +2002,7 @@ row that trips two of them proves neither (§3e):
 | # | Given (all under `windowsPolicy` unless stated) | Then |
 |---|---|---|
 | 1 | `posixPolicy` and a directory source over a regular-file destination | delegates: `rename` called once, `lstat` and `rmdir` **never** called — kills the forced-false gate |
-| 2 | `src` and `dst` differing only in case | delegates, `lstat` never called — pins the `normalizeForCompare` compare |
+| 2 | `src` and `dst` differing only in case | delegates, `lstat` never called — pins `pathContains`'s equality arm through `normalizeForCompare` |
 | 3 | `dst` inside `src`, `dst` an existing empty directory, `fsOps.rename` rejecting the invalid-argument errno | `UNSUPPORTED_OPERATION` / that errno, with `lstat` and `rmdir` **never** called — the row that proves the inside-source test delegates instead of taking the replace arm and destroying `dst` |
 | 4 | a regular-file source, any destination | exactly **one** `lstat`; `rmdir` never called |
 | 5 | a symlink source over a directory destination | delegates after one `lstat` — the symlink test, not the directory test, decides it |
@@ -2375,7 +2375,7 @@ New rows go beside the existing `Given existing file, When writeExclusive, Then 
 rename rows at `:357` / `:373`. None needs an addition to the `pathCalls` security table (`:34–76`) —
 `writeExclusive` (`:39`), `write`, `rename-src` and `rename-dst` are all already rows there.
 
-**The tolerant `mkdir` row at `:567` stays tolerant**, and does not conflict. It asserts `mkdir` over
+**The tolerant `mkdir` row at `:762` stays tolerant**, and does not conflict. It asserts `mkdir` over
 a *regular file*, where node gives `FILE_EXISTS` (its `mkdir -p` sees `EEXIST` — verified on darwin
 and linux) and memory gives `NOT_A_DIRECTORY` from `addDirectoryRecursive`. That is ADR-811's depth-1
 reasoning at depth 0: the two adapters genuinely disagree, the tolerance is load-bearing, and it is a
@@ -2717,7 +2717,7 @@ stand-in spelling for consistency with the rows already written against it.
   surfaces that funnel through `addDirectoryRecursive`; `rename`'s *source* lookup does not, so this
   is a neighbouring divergence the ADR does not cover and this change does not open.
 - **`mkdir` over a symlink or a regular file.** Node `FILE_EXISTS`, memory `NOT_A_DIRECTORY` — the
-  same ADR-811 family, a different method. The contract suite's tolerant row (`:567`) already absorbs
+  same ADR-811 family, a different method. The contract suite's tolerant row (`:762`) already absorbs
   the file case; the symlink case has no row and gains none.
 - **Constructor-seeded namespace collisions** (§2d, the one surviving route). A `files ∩ directories`
   collision reachable only from test fixtures, not from the port surface; the sweep found zero
