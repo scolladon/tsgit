@@ -78,17 +78,19 @@ done
 # real clone of this repository's own history from 799.5 MB of peak residency
 # down to 207.4 MB, measured locally.
 # Raised 904 -> 906 KiB by the adapter occupant-refusal work: the measured tarball
-# landed at 926 548 B after the five implementation parts (852 B over the old cap) and
-# at 927 105 B after the review round. Measured attribution, not assumed: with only the
-# port's expanded write-surface JSDoc reverted inside the two emitted type chunks, the
-# gzip -9 archive shrinks by 898 B — the prose alone exceeds the original overage,
-# because every `.d.ts` AND `.d.cts` carries it verbatim 3.7 MB apart, beyond gzip's
-# window. The adapter guards themselves (a shared occupancy predicate, a leaf guard on
-# non-exclusive write, a rename precondition with its dispatch split, the browser's
-# rejection classifiers and self-rename guard) are the remainder. The prose is
-# removable without behaviour loss but not without dropping the port contract from
-# consumers' editors, which is why it stays; the guards close paths where the adapter
-# silently overwrote or merged what the node adapter and canonical git refuse.
+# landed at 926 548 B after the five implementation parts (852 B over the old cap) and at
+# 927 327 B after two review rounds. Attribution measured on a clean build, not assumed
+# (revert only the port JSDoc this work added inside the two emitted type chunks and
+# repack): all of the new port prose together is worth 1 144 B — 571 B for the write-surface
+# members, 560 B for `rename`/`atomicRename`, gzip not being additive — because every
+# `.d.ts` AND `.d.cts` carries it verbatim 3.7 MB apart, beyond gzip's window. The adapter
+# guards themselves (a shared occupancy predicate, a leaf guard on non-exclusive write, a
+# rename precondition with its dispatch split, the two-phase ancestor walk with its
+# recorded-chain short-circuit, the browser's rejection classifiers and self-rename guard)
+# are the remainder. The prose is removable without behaviour loss but not without
+# dropping the port contract from consumers' editors, which is why it stays; the guards
+# close paths where the adapter silently overwrote or merged what the node adapter and
+# canonical git refuse.
 SIZE_CAP=$((906 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
