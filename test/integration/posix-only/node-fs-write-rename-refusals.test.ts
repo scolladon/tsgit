@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeFileSystem } from '../../../src/adapters/node/node-file-system.js';
 import { TsgitError } from '../../../src/domain/index.js';
+import { captureError, dataFor } from '../../fixtures/tsgit-error-data.js';
 
 const makeFs = async (): Promise<{
   fs: NodeFileSystem;
@@ -37,27 +38,6 @@ const makeFs = async (): Promise<{
     cleanup: async () => fsPromises.rm(rootDir, { recursive: true, force: true }),
   };
 };
-
-/** Runs `op`, returning the thrown value (or `undefined` if it didn't throw). */
-async function captureError(op: () => Promise<unknown>): Promise<unknown> {
-  try {
-    await op();
-    return undefined;
-  } catch (err) {
-    return err;
-  }
-}
-
-/** Asserts `err` is a `TsgitError` carrying `code`, and returns its data narrowed to that variant. */
-function dataFor<Code extends TsgitError['data']['code']>(
-  err: unknown,
-  code: Code,
-): Extract<TsgitError['data'], { code: Code }> {
-  expect(err).toBeInstanceOf(TsgitError);
-  const { data } = err as TsgitError;
-  expect(data.code).toBe(code);
-  return data as Extract<TsgitError['data'], { code: Code }>;
-}
 
 describe('NodeFileSystem — write and rename refusal codes (POSIX)', () => {
   let env: Awaited<ReturnType<typeof makeFs>>;

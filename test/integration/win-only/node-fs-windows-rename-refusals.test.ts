@@ -18,7 +18,7 @@ import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeFileSystem } from '../../../src/adapters/node/node-file-system.js';
-import { TsgitError } from '../../../src/domain/index.js';
+import { captureError, dataFor } from '../../fixtures/tsgit-error-data.js';
 
 const makeFs = async (): Promise<{
   fs: NodeFileSystem;
@@ -34,27 +34,6 @@ const makeFs = async (): Promise<{
     cleanup: async () => fsPromises.rm(rootDir, { recursive: true, force: true }),
   };
 };
-
-/** Runs `op`, returning the thrown value (or `undefined` if it didn't throw). */
-async function captureError(op: () => Promise<unknown>): Promise<unknown> {
-  try {
-    await op();
-    return undefined;
-  } catch (err) {
-    return err;
-  }
-}
-
-/** Asserts `err` is a `TsgitError` carrying `code`, and returns its data narrowed to that variant. */
-function dataFor<Code extends TsgitError['data']['code']>(
-  err: unknown,
-  code: Code,
-): Extract<TsgitError['data'], { code: Code }> {
-  expect(err).toBeInstanceOf(TsgitError);
-  const { data } = err as TsgitError;
-  expect(data.code).toBe(code);
-  return data as Extract<TsgitError['data'], { code: Code }>;
-}
 
 /**
  * Probes whether the runner can create symlinks. `fs.symlink` requires
@@ -127,6 +106,7 @@ describe('NodeFileSystem — rename refusal codes (Windows)', () => {
       // Assert
       expect(dataFor(caught, 'NOT_A_DIRECTORY').path).toBe(src);
       expect(await fsPromises.readFile(child, 'utf8')).toBe('wr2-child');
+      expect(await fsPromises.readFile(dst, 'utf8')).toBe('wr2-bytes');
     });
   });
 
@@ -363,6 +343,52 @@ describe('NodeFileSystem — rename refusal codes (Windows)', () => {
       expect(data.operation).toBe('filesystem');
       expect(data.reason).toBe('EINVAL');
       expect(await fsPromises.readFile(dst, 'utf8')).toBe('wr14-bytes');
+    });
+  });
+
+  describe('Given a directory renamed onto an existing symlink inside itself, When rename', () => {
+    it('Then throws UNSUPPORTED_OPERATION with no path, the link intact', async ({ skip }) => {
+      if (!(await canCreateSymlinks())) {
+        skip();
+        return;
+      }
+      // Arrange
+      const sut = env.fs;
+      const src = nodePath.join(env.rootDir, 'wr14b-dir');
+      const target = nodePath.join(env.rootDir, 'wr14b-target');
+      const dst = nodePath.join(src, 'nested-link');
+      await fsPromises.mkdir(src);
+      await fsPromises.writeFile(target, 'wr14b-bytes');
+      await fsPromises.symlink(target, dst);
+
+      // Act
+      const caught = await captureError(() => sut.rename(src, dst));
+
+      // Assert
+      const data = dataFor(caught, 'UNSUPPORTED_OPERATION');
+      expect(data.operation).toBe('filesystem');
+      expect(data.reason).toBe('EINVAL');
+      expect((await fsPromises.lstat(dst)).isSymbolicLink()).toBe(true);
+      expect(await fsPromises.readFile(target, 'utf8')).toBe('wr14b-bytes');
+    });
+  });
+
+  describe('Given a directory renamed onto its own name spelled with a trailing dot, When rename', () => {
+    it('Then it resolves as a no-op and the directory keeps its child', async () => {
+      // Arrange — Win32 strips a trailing dot, so both spellings are one entry;
+      // the adapter must see the identity before it removes anything.
+      const sut = env.fs;
+      const src = nodePath.join(env.rootDir, 'wr18-dir');
+      const child = nodePath.join(src, 'child.txt');
+      await fsPromises.mkdir(src);
+      await fsPromises.writeFile(child, 'wr18-child');
+
+      // Act
+      await sut.rename(src, `${src}.`);
+
+      // Assert
+      expect((await fsPromises.lstat(src)).isDirectory()).toBe(true);
+      expect(await fsPromises.readFile(child, 'utf8')).toBe('wr18-child');
     });
   });
 

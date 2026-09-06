@@ -132,18 +132,23 @@ export interface FileSystem {
    * failure between steps). Both paths must be on the same logical root.
    * `src === dst` is a no-op on every adapter once `src` exists — an absent `src` is still
    * refused with FILE_NOT_FOUND. On the node and memory adapters, on every platform: a
-   * non-directory source refuses a directory destination with PERMISSION_DENIED; a directory
+   * non-directory source refuses a directory destination with PERMISSION_DENIED — except on
+   * linux when that destination is one of the source's own ancestors, which reports
+   * DIRECTORY_NOT_EMPTY instead, because POSIX does not order the two checks; a directory
    * source refuses a non-directory destination with NOT_A_DIRECTORY and a non-empty directory
    * destination with DIRECTORY_NOT_EMPTY; an empty directory destination is replaced — in one
    * step where the platform's own rename honours these rules, and on Windows in two, where the
-   * node adapter removes the empty destination and then renames. Every refusal above carries
-   * `data.path === src`; renaming a directory onto a destination inside itself is refused with
-   * UNSUPPORTED_OPERATION, a variant that carries no `path`; and a regular file or symlink on
-   * the destination's ancestor chain refuses with NOT_A_DIRECTORY carrying an adapter- and
-   * platform-chosen path (node: `dst` on POSIX and `src` on Windows; memory: the blocking
-   * ancestor), changing nothing. On Windows a regular file on the source's ancestor chain
-   * reports FILE_NOT_FOUND rather than NOT_A_DIRECTORY, because a different resolution step
-   * fails first. The browser adapter's emulation moves files only: a directory source reports
+   * node adapter removes the empty destination and then renames, recreating it on a best-effort
+   * basis if that rename then fails. Every refusal above carries `data.path === src`; renaming
+   * a directory onto a destination inside itself is refused with UNSUPPORTED_OPERATION, a
+   * variant that carries no `path`; a regular file or symlink at the destination's immediate
+   * parent refuses with FILE_EXISTS carrying `src` on the node adapter (memory: NOT_A_DIRECTORY
+   * carrying that parent); higher up the destination's ancestor chain it refuses with
+   * NOT_A_DIRECTORY carrying an adapter- and platform-chosen path (node: `dst` on POSIX and
+   * `src` on Windows; memory: the blocking ancestor) — changing nothing in either case. On
+   * Windows a regular file on the source's ancestor chain reports FILE_NOT_FOUND rather than
+   * NOT_A_DIRECTORY, because a different resolution step fails first. The browser adapter's
+   * emulation moves files only: a directory source reports
    * FILE_NOT_FOUND (a directory `src === dst` included), a directory destination reports
    * PERMISSION_DENIED carrying `dst`, and no directory is replaced.
    */
@@ -159,10 +164,12 @@ export interface FileSystem {
    * rather than assuming `rename` is safe to commit through.
    * Inherits every `rename` refusal above by delegation. Atomic for every arrangement on a
    * platform whose own rename honours the kind rules, and for every non-replacing arrangement
-   * everywhere: the guard is pure inspection with no `await` between it and the mutation. The
-   * one exception is the emulated empty-directory replacement on Windows, which is a removal
-   * followed by a rename; if the destination is filled in between, the removal fails and the
-   * caller sees DIRECTORY_NOT_EMPTY — the refusal the arrangement would have produced anyway.
+   * everywhere: the guard only inspects, and the mutation is the single `rename`. The one
+   * exception is the emulated empty-directory replacement on Windows, which is a removal
+   * followed by a rename; a destination filled before the removal runs makes the removal fail
+   * and the caller sees DIRECTORY_NOT_EMPTY — the refusal the arrangement would have produced
+   * anyway — and a rename that fails after the removal has the empty destination recreated on
+   * a best-effort basis.
    */
   readonly atomicRename?: (src: string, dst: string) => Promise<void>;
 
