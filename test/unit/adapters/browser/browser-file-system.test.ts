@@ -76,6 +76,27 @@ describe('BrowserFileSystem rejection classification', () => {
     });
   });
 
+  describe('Given a root handle whose file lookup rejects with null', () => {
+    describe('When writing a root-level file', () => {
+      it('Then throws FILE_NOT_FOUND — a null rejection carries no name to classify', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(rootRejectingWith(null));
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.write('occupied', new Uint8Array([1]));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+      });
+    });
+  });
+
   describe('Given a root handle whose file lookup rejects with an object whose name is not a string', () => {
     describe('When writing a root-level file', () => {
       it('Then throws FILE_NOT_FOUND', async () => {
