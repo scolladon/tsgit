@@ -1294,18 +1294,1038 @@ fix(browser-fs): map a directory occupant to a refusal on write, rename and excl
 
 ---
 
+## The Windows leg — parts 6 to 9
+
+> Source: design `docs/design/memory-write-exclusive-directory.md` §5, §6, §8a–§8i, R41–R50 ·
+> ADRs 820, 821, 822, 823, 824, 825.
+> Parts 1–5 above are **implemented and merged into this branch**. Nothing above is renumbered,
+> re-scoped or re-run. *Sizing rules*, *Notation*, *Docs this plan does NOT touch*, *Repo-wide
+> facts every part needs* and PC-1…PC-3 all still bind. The five entries below are **additions**
+> to those preamble sections, verified against the worktree at `ef3f985b`.
+
+| Preamble section | What the Windows leg adds or corrects |
+|---|---|
+| *Notation — the errno this plan may not spell* | The real six-letter errno name **is now in `cspell.json`** (`:288`, between `"effectful"` and `"EISDIR"`) — Part 1 put it there. So **no dictionary chore exists in this leg**: the design confirms the Windows arm introduces no new literal (it delegates the inside-source arrangement to the platform, which reports the same errno). This document keeps writing `INVALID-ARGUMENT`; test and source code spell the real name, and `check:spelling` is already clean on it |
+| *Docs this plan does NOT touch* | Three more **docs-phase** surfaces, off-limits to every part below: `docs/design/ports-and-adapters.md:45` (the false "Windows `fs.rename` does replace" claim), its §7.1 node bullet list (no `rename` bullet), and `docs/understand/architecture.md:134`. `src/ports/file-system.ts` and `tooling/verify-tarball.sh` are **not** docs — they are source and tooling, and they belong to Part 6 |
+| *`reports/api.json`* | **Measured, not assumed.** `typedoc.json` sets `excludeInternal: true`, so neither the fourth `PathPolicy` flag nor the renamed creation-leaf classifier moves the report: `honoursNoFollow` and `interpretCreationLstat` appear **0 times** in `reports/api.json` today, and `PathPolicy` appears exactly **twice**, both as a bare `{"name":"PathPolicy"}` type reference on `NodeFileSystem`'s constructor parameter, which adding a field does not change. The **only** api.json mover in this leg is the port JSDoc (**R47**) — Part 6 |
+| *Two size gates, not one* | `validate` depends on **both** `check:size` (`size-limit` over `dist/**`, gzipped JS, so JSDoc prose is invisible to it) **and** `check:tarball` (`bash tooling/verify-tarball.sh --quick`, the 906 KiB packed cap with **415 B** of headroom, where `.d.ts` + `.d.cts` prose counts **twice**). Only Parts 6 and 7 change `src/`, so only they can move either number |
+| *Audits that are **not** tripped* | `check:write-surfaces` reads `@writes` JSDoc tags and there are **none** in `src/adapters/node/**` or `src/ports/**` — measured, zero hits. `check:duplicates` is `jscpd src/` and never scans `test/`, so a helper copied from one test file into another is not gated. No new public export, no new error code, no new Tier-1 command: none of `check:doc-coverage`, `check:browser-surface`, the `Repository` facade or `src/domain/error.ts` moves |
+| *Phase gate* | *"`npm run validate` … run once by the orchestrator after Part 5"* now reads **after Part 9**. No part below runs it — Part 9 included, even though it is the part with the least local signal |
+
+### The cut — four more parts, and why
+
+**Part 6** is the emulation itself: the gate flag, `planRename`, and the port JSDoc that describes
+them. It is one behaviour, one ADR cluster (820 / 822 / 823 / 825) and one commit; splitting the
+flag from its only reader would ship a dead capability.
+
+**Part 7** is a different method (`writeExclusive`), a different ADR (R44 / §8f), a different
+shared helper (`interpretCreationLstat` and its two callers) and a different failure mode — the
+raw platform call *creates a file through a dangling link* rather than reporting the wrong code.
+It rewrites five already-committed unit rows in a third file, two of which flip verdict. Folding it
+into Part 6 would make one commit that changes two unrelated syscall families.
+
+**Part 8** is the legitimate standalone the sizing rules allow: **zero `src/` delta**. It tightens
+assertions on already-landed behaviour and spans two files owned by two *different* earlier parts
+(Part 3's contract helper, Part 1's posix-only file), so it cannot fold into either — and its own
+effect is invisible on this host (§Gate).
+
+**Part 9** is a new file in a tier that **cannot execute on darwin** and has its own CI job. It has
+no local pass/fail signal at all, which is exactly why it is not merged into a part whose gate is
+supposed to mean something.
+
+Order is forced by two edges only: Part 8's strict codes and Part 9's rows both describe behaviour
+Part 6 and Part 7 create, so both follow them. Parts 6 and 7 are mutually independent; 6 goes first
+because it is the larger surface and carries the port JSDoc the whole leg is described by.
+
+**The six shared files `plan-lint` will warn about, and why each stays split.**
+`src/adapters/node/node-file-system.ts` and `test/unit/adapters/node/node-file-system-injected.test.ts`
+are in Parts 6 and 7 — same file, two unrelated syscall families (`rename`'s kind rules,
+`writeExclusive`'s leaf verdict) that share nothing but a class. `src/ports/file-system.ts` and
+`reports/api.json` are in Parts 4, 6 and 7 by PC-1's standing rule that the contract moves with the
+behaviour it describes (Part 7 only *asserts* a clean report — see its Gate).
+`test/unit/ports/file-system.contract.ts` is in Parts 4 and 8, and
+`test/integration/posix-only/node-fs-write-rename-refusals.test.ts` in Parts 1 and 8, because Part 8
+is a strictness pass **over** what those parts wrote — merging it into either would put half of one
+ADR in each.
+
+### Public-vs-internal for the Windows leg, decided up front
+
+| New symbol | Verdict | Gates tripped (pre-paid in the owning part) |
+|---|---|---|
+| `PathPolicy.honoursRenameKinds`, `PathPolicyCapabilities.honoursRenameKinds` (Part 6) | **internal.** `PathPolicy` is `@internal` and not re-exported from `src/adapters/node/index.ts`; `PathPolicyCapabilities` and `makePolicy` are module-private with **zero** import sites | none — `reports/api.json` does not move (measured above) |
+| `NodeFileSystem.planRename`, `NodeFileSystem.lstatOrMissing` (Part 6) | **internal** — `private` methods | none |
+| `type RenamePlan` (Part 6) | **internal** — module-private type alias in `node-file-system.ts`, **not exported** (an unused export is a `check:dead-code` / knip finding) | none |
+| `isCreationLeafSymlink` (Part 7) | **internal** — replaces the equally `@internal` `interpretCreationLstat`, exported only so its unit rows can call it, never barrelled | none — `excludeInternal` keeps both out of api.json |
+| `NodeFileSystem.creationLeafIsSymlink`, `NodeFileSystem.assertExclusiveCreateLeaf` (Part 7) | **internal** — `private` methods | none |
+| `assertDirectoryNotEmpty` (Part 8) | **test-internal** — module-private in `file-system.contract.ts`, beside `assertNotADirectory` (`:93`) | none |
+| `dataFor` helper in `node-file-system-injected.test.ts` (Part 6) and in the new win-only file (Part 9) | **test-internal** — a copy of the posix-only file's `:52–60` helper | none; `jscpd` never scans `test/` |
+| `test/integration/win-only/node-fs-windows-rename-refusals.test.ts` (Part 9) | **test file** | `@proves` header (report-only), tier heuristics (gated) |
+
+**The one public surface that moves is the port JSDoc** on the already-public `FileSystem`
+interface — comment text only, no signature, no new member. It regenerates `reports/api.json` in
+Part 6, per PC-1's rule.
+
+### Decision candidates — the Windows leg
+
+Every design-level choice is pre-decided by ADRs 820–825 and the design's own candidate section.
+The five below are **plan-mechanics** choices this extension had to make, plus one **design
+correction** the pre-chewing turned up. Each carries a recommendation; the recommendation is what
+Parts 6–9 implement.
+
+| # | Choice | Options | Recommendation |
+|---|---|---|---|
+| **DC-W1** 🔴 | §8d's `planRename` opens with `normalizeForCompare(realSrc) === normalizeForCompare(realDst) → 'rename-only'` and *then* `pathContains(realSrc, realDst) → 'rename-only'`. **The first line is dead code:** `pathContains` (`node-file-system.ts:175–183`) → `pathContainsNormalized` (`:191–199`) normalises **both** sides with the same `policy.normalizeForCompare` and returns `true` on equality (`if (c === normalizedParent) return true;`) before its `+ sep` prefix test. Every input the first line catches, the second catches too, with the same verdict | (1) **drop** the explicit self-rename compare; keep `pathContains` and carry §8d point 3's reasoning into a comment on it; (2) keep both lines as written and accept a branch no input can isolate — two mutants (`ConditionalExpression`, `EqualityOperator`) that only a `Stryker disable … equivalent` directive could answer, which this plan otherwise adds none of; (3) keep the explicit compare and narrow `pathContains`'s use to a strict-inside test, making the two genuinely disjoint — a behaviour change to a shared predicate `resolveWrite` already depends on | **(1)**. The repo's own rule is *"watch for dead code in guards … remove them rather than writing impossible tests"*. The behaviour is identical, the syscall budget is identical (0 either way), and DI row 2 keeps its meaning — it now pins `pathContains`'s equality arm instead of a redundant line above it |
+| **DC-W2** | Where the R47 port JSDoc and its `reports/api.json` regeneration land | (1) **Part 6**, in the commit that creates the behaviour the sentences describe; (2) a sixth, docs-of-source part after Part 9 — one more agent lifecycle for a comment edit; (3) Part 9, next to the rows that prove it | **(1)**, which is PC-1 applied unchanged: *"an atomic commit that changes behaviour without changing the contract that describes it is exactly the shape that let this bug exist"* |
+| **DC-W3** | Where `tooling/verify-tarball.sh`'s cap raise lands, given 415 B of headroom | (1) a **second, separate `chore(tarball):` commit inside the first part whose clean-build measurement exceeds the cap** — Part 6 measures first, Part 7 re-measures if Part 6 stayed under; (2) a standalone part; (3) raise it pre-emptively in Part 6 without measuring | **(1)**. The design calls it an implementation-phase chore of one commit; a whole part for a one-line constant plus a paragraph does not earn an agent lifecycle, and (3) breaks the script's own convention, which is that every raise records a **measured** figure and its attribution |
+| **DC-W4** | How the DI rows isolate the two `isSymbolicLink()` disjuncts. For a **real** `Stats`, `isDirectory()` and `isSymbolicLink()` are never both true, so `source.isSymbolicLink()` and `destination.isSymbolicLink()` never change a verdict on a real filesystem and their mutants survive every realistic input | (1) fabricate a stat reporting **both** true in DI rows 5 and 11 — the only input that isolates each disjunct, and the arrangement §8d point 5 is defending against (a platform whose `lstat` reports a directory reparse point as a directory); (2) drop the two `isSymbolicLink()` tests and rely on `!isDirectory()` — loses the defence §8d point 5 exists for; (3) keep them and accept two survivors | **(1)**, which is what §8h(a)'s own wording already asks for: row 5 says *"the symlink test, not the directory test, decides it"* and row 11 says *"the second disjunct, alone"*. Neither sentence is satisfiable with a realistic stat, so the fabrication is the design's intent made explicit |
+| **DC-W5** | Whether Part 8 (strict contract rows + the N15 pair) is its own part | (1) **its own part** — zero `src/` delta, two files owned by two different earlier parts, and a gate that is honest about proving nothing on this host; (2) fold into Part 6 — makes one commit carry an emulation, a port contract and a suite-wide strictness change; (3) split it — contract rows into Part 6, the N15 pair into Part 9 | **(1)**. Option 3 is rejected outright: the N15 pair is a **POSIX** row about a linux/darwin split and has nothing to do with the win-only tier |
+| **DC-W6** | The ordering assertion for `rmdir` before `rename` (§8h(a) row 14) has **no precedent in this repo** — `mock.invocationCallOrder`, `toHaveBeenNthCalledWith` and every order-log idiom return zero hits across `test/` | (1) `expect(rmdirSpy.mock.invocationCallOrder[0]).toBeLessThan(renameSpy.mock.invocationCallOrder[0])` — vitest's own shared monotonic counter, no new machinery; (2) a hand-rolled `const order: string[] = []` pushed from each fake — explicit but re-implements what vitest already records; (3) assert only *that both were called* and let the win-only replace row prove the order end-to-end — leaves the order unpinned on the mutation runner | **(1)**. It is the mechanism §8h(a) names, and the row must capture named spies rather than reading `fakeFsOps`'s defaults, because the builder hands back no handles |
+
+---
+
+## Part 6 — The node adapter enforces POSIX rename kind rules where the platform does not
+
+### Context
+
+**What this part is.** The node adapter's `rename` gains an explicit pre-rename kind check on any
+platform whose own `rename` does not enforce POSIX `rename(2)`'s kind rules, gated on a **fourth**
+`PathPolicy` capability flag. It implements design **§8d**, **§8e** and **§6**, requirements
+**R37–R43**, **R47**, **R48**, **R49**, **R50**, and ADRs **820**, **822**, **823**, **825**.
+It is the part that makes the two red shared-contract rows pass on Windows (**R45**).
+
+**Why the emulation, in one line, for the agent that starts cold.** On `windows-latest` the
+composed `NodeFileSystem.rename` today **replaces a regular file with a directory source** (a
+silent data loss) and **refuses every directory destination** with `PERMISSION_DENIED`, including
+the empty one POSIX replaces. Real `git` behaves like POSIX on Windows because its own compat
+layer emulates exactly these rules in user space. Do not re-derive any of this: the matrices are
+probed and the ADRs are accepted.
+
+**Files.**
+
+| Action | Path | What |
+|---|---|---|
+| edit | `src/adapters/node/path-policy.ts` | the fourth flag on `PathPolicy` (`:57–85`) and on `PathPolicyCapabilities` (`:173–177`); `posixPolicy: true` (`:222–226`), `windowsPolicy: false` (`:227–231`); the two "three flags" sentences in the prose (`:12`, `:169`) become "four" |
+| edit | `src/repository/portable-posix-policy.ts` | `honoursRenameKinds: true` in the hand-written literal (after `:29`) — the **only** enumerating `PathPolicy` literal outside `path-policy.ts` in the whole repo |
+| edit | `src/adapters/node/node-file-system.ts` | `type RenamePlan`, `planRename`, `lstatOrMissing`, and `rename`'s `try/finally` (`:745–759`) |
+| edit | `src/ports/file-system.ts` | the three **R47** sentences, verbatim from design §6 — `rename` (`:129–145`) and `atomicRename` (`:148–158`) |
+| regenerate | `reports/api.json` | `npm run docs:json`, committed **in this commit** |
+| edit | `test/unit/adapters/node/node-file-system-injected.test.ts` | DI rows 1–16 plus the two additions below |
+| edit | `test/unit/adapters/node/path-policy.test.ts` | the two capability-triple pins (`:366–382`, `:386–402`) become quadruples, titles included |
+| maybe edit | `tooling/verify-tarball.sh` | the cap raise — **a second commit**, only if the measurement says so (DC-W3) |
+
+**`tsc` blast radius of the fourth flag — measured, and it is small.** Exactly **three** object
+literals in the repo enumerate the fields and will fail to compile: the two capability arguments in
+`path-policy.ts` and `portablePosixPolicy`. **Zero** in `test/`, `tooling/` or the benches. The four
+test spreads — `node-file-system-injected.test.ts:301`, `:1039`, `:1859`, `:2406`
+(`{ ...windowsPolicy, … }` / `{ ...posixPolicy, … }`) — carry the new field automatically and need
+no edit. `makePolicy` needs no edit either: it already does `...capabilities` (`:212`).
+
+Two near-misses that compile but must still be touched:
+
+- `path-policy.test.ts:366–382` and `:386–402` build a plain three-key `result` object from
+  property reads and `toStrictEqual` it against a three-key literal; their `describe` titles name
+  the three flags. They keep compiling and **silently stop covering the new flag** — extend both to
+  four keys and rename both titles. This is where `posixPolicy: true` / `windowsPolicy: false`
+  (**R48**) is pinned.
+- `path-policy.test.ts:413`'s `hypotheticalCapabilities` is un-annotated and only ever feeds
+  `normalizeForCompareWithCapabilities`, whose parameter is a two-key `Pick`. Safe — **do not**
+  widen that `Pick`.
+
+**The current `rename` (`node-file-system.ts:745–759`), verbatim, is what you are editing:**
+
+```ts
+rename = async (src: string, dst: string): Promise<void> => {
+  const realSrc = await this.resolveWrite(src);
+  const realDst = await this.resolveWrite(dst);
+  await runFs(async () => {
+    await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
+    await this.fsOps.rename(realSrc, realDst);
+  }, src);
+  this.parentRealpathCache.clear();
+};
+```
+
+**The target shape** — design §8d, with DC-W1's dead first line removed:
+
+```ts
+rename = async (src: string, dst: string): Promise<void> => {
+  const realSrc = await this.resolveWrite(src);
+  const realDst = await this.resolveWrite(dst);
+  try {
+    await runFs(async () => {
+      const plan = await this.planRename(realSrc, realDst, src);
+      await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
+      if (plan === 'replace-directory') await this.fsOps.rmdir(realDst);
+      await this.fsOps.rename(realSrc, realDst);
+    }, src);
+  } finally {
+    this.parentRealpathCache.clear();
+  }
+};
+
+private async planRename(realSrc: string, realDst: string, reported: string): Promise<RenamePlan> {
+  if (this.pathPolicy.honoursRenameKinds) return 'rename-only';
+  // Returns true on normalised equality as well as strict containment, so a
+  // case-differing self-rename delegates here rather than falling through to
+  // the kind checks and newly refusing a non-empty directory.
+  if (pathContains(realSrc, realDst, this.pathPolicy)) return 'rename-only';
+  const source = await this.lstatOrMissing(realSrc);
+  if (source === undefined || !source.isDirectory() || source.isSymbolicLink()) {
+    return 'rename-only';
+  }
+  const destination = await this.lstatOrMissing(realDst);
+  if (destination === undefined) return 'rename-only';
+  if (!destination.isDirectory() || destination.isSymbolicLink()) {
+    throw notADirectory(reported);
+  }
+  return 'replace-directory';
+}
+
+/** "Is there an entry here" — never "what is it". Swallows nothing but absence. */
+private async lstatOrMissing(real: string): Promise<fs.Stats | undefined> {
+  try {
+    return await this.fsOps.lstat(real);
+  } catch (err) {
+    if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+      return undefined;
+    }
+    throw err;
+  }
+}
+```
+
+`fs.Stats` is already in scope — the file imports `* as fs from 'node:fs'` (`:1`) — and
+`fsOps.lstat` with no options resolves to it. `RenamePlan` is a module-private
+`type RenamePlan = 'rename-only' | 'replace-directory';` beside the file's other module-level
+types; do **not** export it.
+
+**Nine points from §8d that the code must keep true, condensed — each has a DI row below.**
+
+1. **The refusals are raised inside `runFs` and pass through it untouched.** `runFs` (`:254`)
+   rethrows anything `isErrnoException` (`:140`, `err instanceof Error && 'code' in err`) rejects.
+   `TsgitError` (`domain/error.ts:84–90`) carries its code at `data.code` and has **no** own
+   `code`, so a `notADirectory(reported)` thrown inside the callback reaches the caller verbatim.
+   Being inside `runFs` is also what gives the probes' own stray errnos the `src` anchoring every
+   other error in this operation already has.
+2. **The gate is the first line and short-circuits to nothing** — zero syscalls, zero allocations
+   on every POSIX host (**R41**).
+3. **Containment is tested through `pathContains(realSrc, realDst, this.pathPolicy)`** — the
+   adapter's own normalised prefix test (`:175`), already case- and separator-correct. Call it
+   **through the policy object**; never lift `normalizeForCompare` into a local binding. No
+   hand-written policy in the repo uses ordinary methods today (all are arrow properties), so this
+   is a forward-looking rule, not a live bug — keep it anyway.
+4. **The containment test comes before every kind test and *delegates*.** Windows already reports
+   the invalid-argument errno for the inside-source family, which is the answer ADR-817 chose for
+   memory. Refusing here would re-code that family and — the destructive one — take the replace arm
+   on a destination *inside* the source, removing an existing empty directory before a rename that
+   fails anyway.
+5. **Symlinks are never followed on either side.** Both probes are `lstat`, and both arms test
+   `isSymbolicLink()` explicitly. See DC-W4 for how the two disjuncts get isolated.
+6. **`lstatOrMissing` answers "is there an entry here" and swallows nothing.** `ENOENT` **and**
+   `ENOTDIR` mean *no entry at this path* → `undefined`; every other errno propagates through
+   `runFs`; a non-errno throwable re-bubbles untouched. `ENOTDIR` is deliberate: it is the
+   ancestor-blocked case, where "missing" delegates to the `mkdir -p` and the `rename` that already
+   produce today's measured codes, so the emulation cannot move an ancestor-fault row (**R49**).
+   Mirror `isSymlinkLeaf`'s existing ENOENT-only swallow (`:856–875`) in shape; whether the two
+   share one helper is a **refactor-phase** call, not this part's.
+7. **The plan runs before the `mkdir -p`, and the ordering is provably immaterial** — the one
+   refusal the plan raises requires the destination to exist, which requires its parent to exist,
+   which makes the `mkdir -p` a no-op on exactly that arm.
+8. **The replace arm is `rmdir` then `rename`, and the emptiness verdict is the platform's**
+   (ADR-825, **R50**). The `rmdir` runs inside the operation's existing `runFs(…, src)`, so
+   `mapErrno`'s `ENOTEMPTY` arm (`:225–229`) returns `directoryNotEmpty(src)` and an `EACCES`
+   returns `permissionDenied(src)`. **`readdir` is never called, on any branch.**
+9. **Atomicity is scoped, not dropped** (ADR-823) — which is what the third R47 sentence says.
+
+**The three R47 sentences are fixed text; copy them, do not re-phrase.** They are written out
+verbatim in design §6 ("The three sentences the Windows leg adds — R47, verbatim"). Sentence 1
+replaces the clause beginning *"On the node and memory adapters:"* which starts mid-line at
+`src/ports/file-system.ts:134`; sentence 2 replaces the ancestor-chain parenthesis at `:140–141`
+(*"(node: `dst`; memory: the blocking ancestor)"*); sentence 3 replaces `atomicRename`'s
+`:156–157` (*"Inherits every `rename` refusal above by delegation, and stays atomic because the
+guard is pure inspection with no `await` between it and the mutation."*). `writeExclusive`'s JSDoc
+(`:75–94`) needs **no edit** — re-read `:76–78` to confirm it still names *"a symbolic link,
+including a dangling one"*; §8f is what makes that true on Windows, in Part 7.
+
+**`reports/api.json` regenerates in this commit.** `check:doc-typedoc` is
+`git diff --exit-code -- reports/api.json` and runs at **prepush**, not in `validate` — a green
+cached `validate` followed by a rejected push is the exact failure this pre-pays.
+
+**The DI suite — where the rows go and how they are built.**
+`test/unit/adapters/node/node-file-system-injected.test.ts` (3 618 lines) is the **mutation gate**
+for everything above: Stryker's runner is linux, so without an injected `windowsPolicy` every
+mutant in `planRename` is an unreachable-code survivor. Coverage is the same story —
+`src/adapters/node/**` is at 100 % line/branch/function/statement (`vitest.config.ts:80–95`), and
+these rows are the only thing that reaches the emulating arm on this host.
+
+- Builder, `:33–57`: `fakeFsOps(overrides)` — every method is a `vi.fn()`; `realpath`, `open`,
+  `lstat`, `stat`, `readdir`, `readFile`, `readlink` **reject `ENOENT` by default**, while
+  `writeFile`, `mkdir`, `rm`, `rmdir`, `rename`, `symlink`, `chmod` **resolve `undefined`**. So
+  "source `lstat` rejects `ENOENT`" is the *default*, and any row that wants a handle on `rmdir` or
+  `rename` must pass its own named spy through `overrides`.
+- Errno factories at `:22–31`: `enoent()`, `eacces()`, `enotdir()`, `eloop()`, all
+  `Object.assign(new Error(msg), { code: 'XXX' })`. One-off codes are declared inside the `it`
+  (`:1029` does this for `EIO`) — follow that for the invalid-argument errno and for `ENOTEMPTY`.
+- The single most common arrange line, and required in **every** row here:
+  `realpath: vi.fn().mockImplementation(async (input: string) => input)`.
+- Construction: `const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);` (`:2431`) with
+  `rootDir = 'C:\\Root'`; the POSIX rows use `'/root'` and `posixPolicy` (`:1546`).
+- Stat fabrication has **no shared factory** — rows inline the predicates they read, e.g.
+  `lstat: vi.fn().mockResolvedValue({ isDirectory: () => false, isSymbolicLink: () => false })`
+  (`:1595–1597`). Use the minimal two-predicate literal; the full bigint literal at `:60–72` is
+  only needed where `mapStat` runs.
+- Nesting: `describe('<subject> (DI)')` > `describe('Given …')` > `describe('When …')` >
+  `it('Then …')`, AAA section comments in every body, `sut` bound to the `NodeFileSystem`.
+- **Home for the new rows:** the rename-semantics rows go beside
+  `describe('NodeFileSystem.rename — parent-realpath cache invalidation soundness (DI)')` (`:1759`,
+  rows at `:1770` and `:1802`); the `atomicRename` row's only existing sibling is `:1635–1654`.
+- ⚠️ **`data.path` is asserted nowhere in this file today** (`data.code` appears 32 times, `.path`
+  zero) and `TsgitError['data']` is a discriminated union, so `(caught as TsgitError).data.path`
+  does **not** type-check. Add the posix-only file's narrowing helper
+  (`node-fs-write-rename-refusals.test.ts:51–60`) verbatim beside the errno factories:
+
+```ts
+/** Asserts `err` is a `TsgitError` carrying `code`, and returns its data narrowed to that variant. */
+function dataFor<Code extends TsgitError['data']['code']>(
+  err: unknown,
+  code: Code,
+): Extract<TsgitError['data'], { code: Code }> {
+  expect(err).toBeInstanceOf(TsgitError);
+  const { data } = err as TsgitError;
+  expect(data.code).toBe(code);
+  return data as Extract<TsgitError['data'], { code: Code }>;
+}
+```
+
+**The rows — design §8h(a) 1–16, plus two this plan adds.** Every path expectation is `src` as the
+**caller supplied it**, never `realSrc`. Where the design names the mutant a row kills, it is
+repeated here; that naming is the point of one row per branch.
+
+| # | Given (`windowsPolicy` unless stated) | Then | Kills |
+|---|---|---|---|
+| 1 | `posixPolicy`, a directory source over a regular-file destination | `rename` called once; `lstat` and `rmdir` **never** called | the forced-**false** `honoursRenameKinds` gate |
+| **1b** *(added, cheap)* | `posixPolicy`, a directory source, a directory destination, `fsOps.rmdir` resolving | `rmdir` **never** called and `rename` called once | the gate on the **replace** arm specifically — row 1 only proves the gate on the refuse arm, and a mutant that returns `'replace-directory'` for a POSIX host destroys an empty destination before delegating |
+| 2 | `src` and `dst` differing only in case | delegates; `lstat` **never** called | the forced-**false** containment escape (without it a case-differing self-rename of a non-empty directory would newly refuse `DIRECTORY_NOT_EMPTY`) |
+| 3 | `dst` inside `src`, `dst` an existing empty directory, `fsOps.rename` rejecting the `INVALID-ARGUMENT` errno | `UNSUPPORTED_OPERATION`, `operation: 'filesystem'`, `reason` = that errno; `lstat` and `rmdir` **never** called | the "refuse instead of delegate" mutation of the containment arm — the row that proves the arm does not destroy an existing `dst` inside `src` |
+| 4 | a regular-file source (`isDirectory:false`, `isSymbolicLink:false`), any destination | exactly **one** `lstat`; `rmdir` never called | `!source.isDirectory()` **alone** |
+| 5 | a source stat reporting **both** `isDirectory: () => true` and `isSymbolicLink: () => true`, over a directory destination | delegates after **one** `lstat`; `rmdir` and the destination probe never fire | `source.isSymbolicLink()` **alone** (DC-W4 — the only input that isolates it) |
+| 6 | source `lstat` rejecting `ENOENT` | delegates; the platform's own `rename` reports it | `source === undefined` **alone** |
+| 7 | a directory source, destination `lstat` rejecting `ENOENT` | delegates; `rmdir` never called | the `destination === undefined` early return |
+| 8 | a directory source, destination `lstat` rejecting `ENOTDIR` | delegates — the ancestor-blocked case keeps today's code | the `ENOTDIR` disjunct of `lstatOrMissing`, **alone** |
+| **8b** *(added)* | a directory source, destination `lstat` rejecting a **non-errno** throwable (`new RangeError('weird')`) | that exact object propagates (`expect(caught).toBe(original)`); `rmdir` and `rename` never called | the `isErrnoException(err) &&` term of `lstatOrMissing` — otherwise an unreached false branch under the 100 % branch gate |
+| 9 | a directory source, destination `lstat` rejecting `EACCES` | `PERMISSION_DENIED` carrying **src**; `rename` never called | "the probe swallows nothing" |
+| 10 | a directory source, a **regular-file** destination | `NOT_A_DIRECTORY` carrying **src**; `rmdir` and `rename` never called | `!destination.isDirectory()` **alone** |
+| 11 | a directory source, a destination stat reporting **both** `isDirectory: () => true` and `isSymbolicLink: () => true` | idem | `destination.isSymbolicLink()` **alone** (DC-W4) |
+| 12 | a directory source, a directory destination, `fsOps.rmdir` rejecting `ENOTEMPTY` | `DIRECTORY_NOT_EMPTY` carrying **src**; `rename` never called | that the refusal comes from `mapErrno`, not from a hand-written verdict |
+| 13 | the same, `fsOps.rmdir` rejecting `EACCES` | `PERMISSION_DENIED` carrying **src**; `rename` never called | **R50**'s *"every other `rmdir` errno passes through the same map"* — one code path, not two |
+| 14 | a directory source, a directory destination, `fsOps.rmdir` resolving | `rmdir(realDst)` **then** `rename(realSrc, realDst)`, in that order, and `readdir` **never called on any arm** | ADR-825's removal of the emptiness probe; a future re-introduction of a `readdir` fails a row instead of passing silently |
+| 15 | row 14's arrangement with `fsOps.rename` rejecting | the error surfaces **and** a following call re-issues `realpath` for the same parent | **R43** — the `finally`, which a mutant that deletes the cache clear or restores the old post-`runFs` placement would otherwise survive |
+| 16 | `atomicRename` on row 10's arrangement | the same `NOT_A_DIRECTORY` | delegation, not a second guard |
+
+Row 14's order assertion, verbatim (DC-W6; no precedent exists in this repo — this is the form):
+
+```ts
+expect(rmdirSpy.mock.invocationCallOrder[0]).toBeLessThan(renameSpy.mock.invocationCallOrder[0]);
+```
+
+Row 15's cache proof follows the existing shape at `:1635–1654` (*"realpath(dirname) is invoked
+twice total"*): with an identity `realpath` spy, `rename` resolves `src` and `dst` whose parents are
+both `rootDir`, so `realpath(rootDir)` is issued **once**; a follow-up write-surface call on the
+same parent issues it **again** only if the cache was cleared. Count with the file's own idiom
+(`realpathSpy.mock.calls.filter(([arg]) => arg === rootDir).length`, `:1553–1556`).
+
+**What must NOT change on Windows** (**R49**, ADR-822): the file-onto-directory rows keep
+`PERMISSION_DENIED`, the inside-source family keeps the invalid-argument errno, and the two
+ancestor-fault oddities keep their Windows shapes — `NOT_A_DIRECTORY` carrying **src** where POSIX
+carries `dst`, and `FILE_NOT_FOUND` where POSIX says `NOT_A_DIRECTORY`. `lstatOrMissing`'s
+`ENOTDIR` arm is the whole reason those stay put. Part 9 pins them.
+
+**Escalate, do not improvise**, `{ part, reason, ≤3 options }`, if: a row in the table disagrees
+with the adapter after the change; the fourth flag's addition breaks a file this context does not
+name; or the port JSDoc edit produces an `api.json` diff that is not comment text.
+
+### TDD steps
+
+- **RED 1 — the destructive row.** Write DI row 10 first (`windowsPolicy`, directory source,
+  regular-file destination → `NOT_A_DIRECTORY` carrying src, `rename` never called). It compiles
+  today (`windowsPolicy` already exists) and **fails on behaviour**: nothing is thrown, `caught` is
+  `undefined`, and `rename` *was* called. That failure is the bug this part exists for.
+- **RED 2 — the over-refusal row.** Add row 12 (`rmdir` rejecting `ENOTEMPTY` →
+  `DIRECTORY_NOT_EMPTY` carrying src). Fails today: no `rmdir` is ever issued, so the fake's
+  rejection is never reached and the rename resolves.
+- **RED 3 — the replace arm.** Add row 14. Fails today: `rmdir` is never called, so
+  `invocationCallOrder[0]` is `undefined` and the ordering assertion throws.
+- **RED 4 — the cache.** Add row 15. Fails today: the clear sits **after** `runFs`, so a rejected
+  rename skips it and the follow-up call reads the cached parent — `realpath` is issued once, not
+  twice.
+- **GREEN.** In one pass, because the flag and its reader are one change: add
+  `honoursRenameKinds` to `PathPolicy` and `PathPolicyCapabilities`; set it on `posixPolicy`,
+  `windowsPolicy` and `portablePosixPolicy`; add `type RenamePlan`, `lstatOrMissing` and
+  `planRename`; rewrite `rename` with the `try/finally` and the `plan === 'replace-directory'`
+  line. `npx tsc --noEmit -p tsconfig.json` names every literal that needs the field — that
+  compiler error **is** the migration, and there are exactly three.
+- **Branch and mutation rows, after green.** Add rows 1, 1b, 2, 3, 4, 5, 6, 7, 8, 8b, 9, 11, 13 and
+  16. These are not RED-able against the old code in any meaningful sense — a call-count
+  assertion fails on the old code by counting zero, which is not the defect — so write them
+  deliberately as branch and mutant coverage and say so in no code comment (no provenance refs).
+  Run the file after each small group; never write fourteen rows and run once.
+- **The capability pins.** Extend `path-policy.test.ts:366–402`'s two triples to quadruples and
+  their titles with them. These are the rows that pin **R48**'s `true`/`false` split.
+- **The port JSDoc.** Copy design §6's three sentences verbatim into `src/ports/file-system.ts`,
+  then `npm run docs:json` and stage `reports/api.json` **in this commit**. Confirm the diff is
+  comment text only — if a signature moved, stop and escalate.
+- **REFACTOR.** `lstatOrMissing` and `isSymlinkLeaf` (`:856`) now share a shape. Do **not** merge
+  them here: the design defers it to the refactor phase, and `isSymlinkLeaf` carries an
+  equivalent-mutant proof that would have to be re-proved against the merged structure.
+- **Measure the size gates last** (DC-W3): `rm -rf dist .wireit`, then `npm run check:tarball`, and
+  read the `OK: tarball … verified at N bytes.` or `FAIL: … is N bytes (cap …)` line. If it FAILs,
+  raise `SIZE_CAP` at `tooling/verify-tarball.sh:94` to the smallest whole KiB **strictly above**
+  the measured pack and append a new paragraph to the header block that ends at `:93`, in the same
+  grammar as the eight raises above it: the old and new KiB, the measured byte count, the bytes
+  over, and the attribution (the rename kind check and its two probes, the fourth capability flag,
+  and the port JSDoc — which every `.d.ts` **and** `.d.cts` carries verbatim, which is why prose
+  costs about 1.3 KB per edit here). That is a **separate second commit**,
+  `chore(tarball): raise the published size cap for the rename kind emulation`. If it passes, ship
+  nothing and let Part 7 re-measure. Also run `npm run check:size` — a second, independent budget
+  (`size-limit` over gzipped `dist/**`), which JSDoc does not move but new adapter code does.
+
+### Gate
+
+```
+npx vitest run test/unit/adapters/node/node-file-system-injected.test.ts test/unit/adapters/node/path-policy.test.ts test/unit/adapters/node/node-file-system.test.ts
+npx vitest run --project unit
+npm run check:types
+npx tsc --noEmit -p tsconfig.json
+./node_modules/.bin/biome check src/adapters/node/path-policy.ts src/adapters/node/node-file-system.ts src/repository/portable-posix-policy.ts src/ports/file-system.ts test/unit/adapters/node/node-file-system-injected.test.ts test/unit/adapters/node/path-policy.test.ts
+npm run check:spelling
+npx cspell --no-progress src/adapters/node/path-policy.ts src/adapters/node/node-file-system.ts src/ports/file-system.ts test/unit/adapters/node/node-file-system-injected.test.ts
+npm run docs:json && git diff --stat -- reports/api.json
+npm run test:posix-integration
+rm -rf dist .wireit && npm run check:tarball && npm run check:size
+```
+
+`npx vitest run --project unit` is the one that matters — the fourth flag and the port JSDoc reach
+files this part does not name, and the whole-project run is what proves nothing else moved. Run
+every command bare, never through a pipe, and read `echo $?`; `npm run check:types` and
+`npm run check:spelling` are wireit-cached and `Ran 0 scripts and skipped 1` reads exactly like a
+pass. `npm run test:posix-integration` re-runs Part 1's file, which characterises the **POSIX**
+arm this part must leave untouched — a change there is a regression, not a new truth.
+`npm run docs:json` **must** show a diff here; a *clean* report means the JSDoc edit did not land.
+⚠️ `test/unit/ports/file-system.contract.ts` is **not** a `*.test.ts` file and must never be passed
+to `vitest run` as a filter — it collects zero tests and exits non-zero. Its drivers are
+`node-file-system.test.ts` and `memory-file-system.test.ts`, and `--project unit` runs both.
+`rm -rf dist .wireit` before the two size commands is not optional: a stale chunk has produced a
+false reading in this repo before.
+
+### Commit
+
+```
+fix(node-fs): enforce POSIX rename kind rules where the platform does not
+```
+
+---
+
+## Part 7 — Exclusive create refuses a symlink leaf with FILE_EXISTS on every platform
+
+### Context
+
+**What this part is.** `writeExclusive` over a symlink leaf — live **or** dangling — refuses with
+`FILE_EXISTS` on every platform, including one whose `open(2)` ignores `O_NOFOLLOW`. The four
+non-exclusive write surfaces and `chmod` keep `PERMISSION_DENIED`. It implements design **§8f**,
+requirement **R44**, and the second half of **R47** (which needs no JSDoc edit — see below). No
+port signature and no `reports/api.json` movement.
+
+**Why it is a correctness fix, not a code-rename.** Measured on `windows-latest`: the raw syscall
+underneath the adapter, `fs.open(path, 'wx')`, **succeeds over a dangling symlink and creates the
+link's target** — anywhere the link points, including outside the containment root. On ubuntu and
+darwin the same call reports `EEXIST`. So the adapter's pre-open `lstat` on the
+`honoursNoFollow: false` arm is what *stops the write*, not merely what names the error; it must
+keep firing for a dangling link, and *"drop the guard and let the platform's `EEXIST` answer"* is
+not available. Real `git` forces `EEXIST` for a reparse point under `O_CREAT|O_EXCL` in its own
+compat layer for exactly this reason, and refuses a live **or** dangling symlink at `index.lock`
+with *"File exists."* on all three operating systems.
+
+**Files.**
+
+| Action | Path | What |
+|---|---|---|
+| edit | `src/adapters/node/node-file-system.ts` | `interpretCreationLstat` (`:304–324`) → `isCreationLeafSymlink`; `assertLeafSafeToWrite` (`:906–915`) and the new `creationLeafIsSymlink` / `assertExclusiveCreateLeaf`; `writeExclusive` (`:656–663`) swaps its one call |
+| edit | `test/unit/adapters/node/node-file-system.test.ts` | the import at `:8` and the five rows at `:1130–1215` |
+| edit | `test/unit/adapters/node/node-file-system-injected.test.ts` | DI rows 17–20 |
+
+**The current call graph, verbatim where it matters.** `writeExclusive` (`:656`) is
+`resolveWrite(path)` → `assertWritableLeaf(real, path)` → `runFs(mkdir -p; writeFile(real, data,
+{ flag: WRITE_EXCLUSIVE_FLAGS }))`. `assertWritableLeaf` (`:924–928`) runs
+`assertLeafSafeToWrite` **only** when `!this.pathPolicy.honoursNoFollow`. `assertLeafSafeToWrite`
+(`:906–915`) `lstat`s the leaf into a `{ ok, isSymlink } | { ok: false, err }` record and hands it
+to the exported `interpretCreationLstat` (`:304–324`), whose symlink arm throws
+`permissionDenied(path)` **before any syscall touches the leaf**. `chmod` (`:787`) calls
+`assertLeafSafeToWrite` directly, on every platform.
+
+**The target shape** — design §8f, names included:
+
+```ts
+/** @internal — a classifier: same three cases, same errno handling, same non-errno re-bubble. */
+export function isCreationLeafSymlink(
+  result:
+    | { readonly ok: true; readonly isSymlink: boolean }
+    | { readonly ok: false; readonly err: unknown },
+  path: string,
+): boolean;
+
+/** lstat the creation leaf and classify it. Unconditional; callers gate on the policy. */
+// today's `assertLeafSafeToWrite` body, with only its last line changed
+private async creationLeafIsSymlink(real: string, path: string): Promise<boolean> {
+  let result: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
+  try {
+    const leafStat = await this.fsOps.lstat(real);
+    result = { ok: true, isSymlink: leafStat.isSymbolicLink() };
+  } catch (err) {
+    result = { ok: false, err };
+  }
+  return isCreationLeafSymlink(result, path);
+}
+
+// unchanged meaning — chmod's caller, on every platform
+private async assertLeafSafeToWrite(real: string, path: string): Promise<void> {
+  if (await this.creationLeafIsSymlink(real, path)) throw permissionDenied(path);
+}
+
+// unchanged — write / writeUtf8 / writeStream / appendUtf8
+private async assertWritableLeaf(real: string, path: string): Promise<void> {
+  if (!this.pathPolicy.honoursNoFollow) await this.assertLeafSafeToWrite(real, path);
+}
+
+// new — writeExclusive only
+private async assertExclusiveCreateLeaf(real: string, path: string): Promise<void> {
+  if (this.pathPolicy.honoursNoFollow) return;          // O_EXCL already answers EEXIST
+  if (await this.creationLeafIsSymlink(real, path)) throw fileExists(path);
+}
+```
+
+**"Pure classifier" is precise, not loose.** `isCreationLeafSymlink` still **throws** on a
+non-`ENOENT` errno (through `mapErrno`) and still re-bubbles a non-errno throwable untouched. What
+changes is only the symlink verdict: it *reports* instead of *deciding*, and each caller names its
+own refusal. Three properties make this the right shape rather than threading a verdict parameter
+through two layers: the error is named at the call site that knows its surface, the exported helper
+becomes a value-returning function its unit rows can assert on directly, and **the one caller that
+runs on every platform — `assertLeafSafeToWrite` — does not change meaning.**
+
+⚠️ **Do not confuse `creationLeafIsSymlink` with `isSymlinkLeaf` (`:856–875`).** Both `lstat` a
+leaf; the second belongs to `openWithNoFollow`, carries its own equivalent-mutant proof in a
+comment, and is **not touched by this part**. Adding a second private method with a similar name is
+deliberate — merging them is a refactor-phase question, and merging would falsify that proof.
+
+**The five existing rows at `node-file-system.test.ts:1130–1215`, and exactly what moves.** They
+sit under `describe('interpretCreationLstat')` (`:1130`) in the 3-level Given/When/Then shape, each
+body a `try/catch` into `let caught: unknown`. Rename the describe, the import at `:8`, and the
+five call sites; then:
+
+| Row | Today | After |
+|---|---|---|
+| `Given ok=true with isSymlink=false` (`:1131`) | `expect(caught).toBeUndefined()` | binds the result and asserts `expect(result).toBe(false)` |
+| `Given ok=true with isSymlink=true` (`:1151`) | *"Then throws PERMISSION_DENIED"* | *"Then reports a symlink leaf"* — `expect(result).toBe(true)` |
+| `Given ok=false with ENOENT error` (`:1167`) | `expect(caught).toBeUndefined()` | `expect(result).toBe(false)` |
+| `Given ok=false with EACCES` (`:1185`) | throws `PERMISSION_DENIED` | **unchanged** — the errno arm is untouched |
+| `Given ok=false with non-errno throwable` (`:1201`) | `expect(caught).toBe(original)` | **unchanged** |
+
+The first three lose their `try/catch` scaffolding; the last two keep theirs. Keep the AAA section
+comments and the existing `Given` wording where the arrangement did not move — the file's comment
+at `:1136–1139` explaining why `try/catch` beats `not.toThrow()` applies only to the rows that
+still catch, so it moves with them.
+
+⚠️ **One stale reference outside those rows:** an explanatory comment at
+`node-file-system-injected.test.ts:2224` names `interpretCreationLstat` in prose. Update the name;
+`command grep -n interpretCreationLstat src test` finds every site (there are exactly nine today,
+across three files).
+
+**The four DI rows — design §8h(a) 17–20**, in
+`test/unit/adapters/node/node-file-system-injected.test.ts`. Their natural home is
+`describe('NodeFileSystem — W2 leaf no-follow composition (DI)')` (`:2250`), whose `Given a
+contained target` (`:2258`) already holds `When write is called` (`:2259`), `When writeUtf8`
+(`:2280`), `When writeExclusive is called` (`:2302`, the single existing row) and `When appendUtf8`
+(`:2323`); the suite-local flag constants `WRITE_CREATE_FLAGS` / `WRITE_EXCLUSIVE_FLAGS` /
+`APPEND_FLAGS` are at `:2251–2256`. The Windows symlink pair at `:2419–2469` is the shape to copy
+for the lstat fake: `const lstat = vi.fn().mockResolvedValue({ isSymbolicLink: () => true });`.
+
+| # | Given | Then | Kills |
+|---|---|---|---|
+| 17 | `windowsPolicy`, `writeExclusive`, a symlink leaf | `FILE_EXISTS` carrying the **requested** path; `writeFile` **never** called | the verdict swap itself |
+| 18 | `windowsPolicy`, `writeExclusive`, a non-symlink leaf | `writeFile` called with `{ flag: WRITE_EXCLUSIVE_FLAGS }` | the "always refuse" mutant |
+| 19 | `windowsPolicy`, `write`, a symlink leaf | still `PERMISSION_DENIED` | the pair that must not collapse — this is the row that fails if `assertLeafSafeToWrite` is given the new verdict by mistake |
+| 20 | `posixPolicy`, `writeExclusive` over a symlink leaf, with the fake `writeFile` rejecting `EEXIST` | `FILE_EXISTS` **and `lstat` never called at all** | the forced-**false** `honoursNoFollow` gate in the new assert, which is outcome-equivalent on POSIX and observable only by call count |
+
+Row 19 already has a near-twin at `:2419–2447` (`write` + Windows symlink leaf →
+`PERMISSION_DENIED`, `writeFile` not called). Extend or neighbour it rather than duplicating it
+wholesale, and keep its assertion that the refusal happens **before** any write.
+
+**Coverage note.** `assertExclusiveCreateLeaf` has two branches (`honoursNoFollow` true → return;
+false → classify) and `creationLeafIsSymlink` inherits `assertLeafSafeToWrite`'s existing coverage.
+Rows 17/18 take the false arm, row 20 the true arm — both are needed for the 100 % branch gate on
+`src/adapters/node/**`.
+
+**Escalate, do not improvise**, if `chmod`'s or the four non-exclusive surfaces' behaviour moves in
+any row, or if a POSIX row's error code changes: this part must be a no-op on POSIX for every
+surface except the error *name* on the exclusive path, which POSIX already produced.
+
+### TDD steps
+
+- **RED 1.** DI row 17: `windowsPolicy`, `writeExclusive`, `lstat` reporting a symlink leaf.
+  Compiles today, fails on the code — `caught.data.code` is `PERMISSION_DENIED`, not `FILE_EXISTS`.
+- **RED 2.** DI row 20: `posixPolicy`, `writeExclusive` over a symlink leaf with `writeFile`
+  rejecting `EEXIST`, asserting `FILE_EXISTS` **and `lstat` never called**. Passes on the code and
+  the call count today (POSIX already skips the guard) — it is the mutant killer for the new gate,
+  so write it, watch it pass, and keep it. State this honestly rather than pretending a RED.
+- **RED 3.** Flip the existing `Given ok=true with isSymlink=true` row (`:1151`) to expect a
+  returned `true`. Fails today: the function returns `void` and throws.
+- **GREEN.** Rename `interpretCreationLstat` → `isCreationLeafSymlink` and change its symlink arm
+  from `throw permissionDenied(path)` to `return true` (and its two no-op arms to `return false`);
+  add `creationLeafIsSymlink`; rewrite `assertLeafSafeToWrite` as the one-line `if (…) throw
+  permissionDenied(path)`; add `assertExclusiveCreateLeaf`; swap `writeExclusive`'s call. Update
+  the import at `node-file-system.test.ts:8` and the prose at `injected:2224`.
+- **Then** rows 18 and 19, and the two remaining flipped rows (`:1131`, `:1167`).
+- **REFACTOR.** Nothing merges into anything: `assertWritableLeaf` and `assertExclusiveCreateLeaf`
+  read the same flag with opposite polarity on purpose, and collapsing them into one
+  verdict-parameterised helper is precisely the shape §8f rejects.
+- **Re-measure the two size gates** if Part 6 did not already raise the cap (DC-W3): `rm -rf dist
+  .wireit`, `npm run check:tarball`, `npm run check:size`. This part adds roughly two small methods
+  and no JSDoc, so it is the less likely of the two to trip it — but 415 B is 415 B, and the
+  measurement is cheap next to a red push.
+
+### Gate
+
+```
+npx vitest run test/unit/adapters/node/node-file-system.test.ts test/unit/adapters/node/node-file-system-injected.test.ts
+npx vitest run --project unit
+npm run check:types
+npx tsc --noEmit -p tsconfig.json
+./node_modules/.bin/biome check src/adapters/node/node-file-system.ts test/unit/adapters/node/node-file-system.test.ts test/unit/adapters/node/node-file-system-injected.test.ts
+npm run check:spelling
+npx cspell --no-progress src/adapters/node/node-file-system.ts test/unit/adapters/node/node-file-system.test.ts test/unit/adapters/node/node-file-system-injected.test.ts
+npm run test:posix-integration
+npm run docs:json && git diff --stat -- reports/api.json
+rm -rf dist .wireit && npm run check:tarball && npm run check:size
+```
+
+`npm run docs:json` must show **no** diff here: this part changes no doc comment on a published
+symbol, and `interpretCreationLstat` is `@internal` (typedoc's `excludeInternal` is on, and the
+name appears zero times in `reports/api.json` today). A diff means the rename escaped into the
+public surface — investigate before committing. `npm run test:posix-integration` re-runs the
+symlink write rows Part 1 pinned; `write` over a live or dangling symlink must still be
+`PERMISSION_DENIED` on POSIX.
+
+### Commit
+
+```
+fix(node-fs): refuse a symlink leaf on exclusive create with FILE_EXISTS
+```
+
+---
+
+## Part 8 — The shared contract asserts exact refusal codes, and the root-rename row names its axis
+
+### Context
+
+**This part changes no production code.** It converts four tolerant cross-adapter rows into strict
+ones and fixes one latently-red POSIX row. It implements design **§8h(c)**, **§8h(d)**, **§5**,
+requirements **R25** and **R46**, and ADRs **824** and **821**. It must run **after** Parts 6 and 7,
+because two of the four codes only became true on Windows there.
+
+🔴 **Be honest about what this part proves locally: almost nothing.** On darwin every one of these
+rows already passes with the exact code, on **both** drivers — that is precisely why the tolerance
+was hiding a wrong code rather than a missing one. The strictness has two real effects and both are
+**CI-only**: a Windows regression in Part 6's emulation now turns a *shared* row red on every push
+instead of staying confined to the `win-integration` job, and the root-rename pair stops the
+`posix-integration` **ubuntu** cell from going red the moment Part 6 turns the unit job green.
+Do not manufacture a local RED; do run the deliberate assertion-bite probe below.
+
+**Files.**
+
+| Action | Path | What |
+|---|---|---|
+| edit | `test/unit/ports/file-system.contract.ts` | add `assertDirectoryNotEmpty`; re-point four call sites; delete `assertRefusedWithoutCode` with its comment |
+| edit | `test/integration/posix-only/node-fs-write-rename-refusals.test.ts` | the root-rename row at `:287–300` becomes an enumerated pair with non-destructiveness and an axis comment |
+
+**The helper edit, exactly.** `file-system.contract.ts` is 1 101 lines; all five assertion helpers
+are **module-private** (`:78`, `:83`, `:88`, `:93`, `:105`) and nothing outside the file references
+them. Add the new sibling in the same three-line shape, after `assertNotADirectory` closes at
+`:96`:
+
+```ts
+function assertDirectoryNotEmpty(err: unknown): void {
+  expect(err).toBeInstanceOf(TsgitError);
+  expect((err as TsgitError).data.code).toBe('DIRECTORY_NOT_EMPTY');
+}
+```
+
+Then re-point the four call sites and delete `assertRefusedWithoutCode` — **lines 97–107
+inclusive**, the blank separator, the six-line JSDoc (`:98–104`) and the three-line body
+(`:105–107`). An uncalled helper is dead code, and `tsconfig.json`'s `noUnusedLocals` will say so
+anyway.
+
+| Row (1-level `it`) | Assertion line | Today | After | Why that code |
+|---|---|---|---|---|
+| *Given a directory at the target path, When write, Then it refuses and the directory is intact* (`:260–281`) | `:277` | `assertRefusedWithoutCode` | **`assertPermissionDenied`** | node agrees on all three OS; memory produces it from Part 3's leaf guard |
+| *Given a directory at the destination, When rename, Then it refuses and neither side moves* (`:423–444`) | `:441` | idem | **`assertPermissionDenied`** | a non-directory source onto a directory destination — node agrees on all three OS |
+| *Given a directory source and a file destination, When rename, Then it refuses and neither side moves* (`:446–468`) | `:465` | idem | **`assertNotADirectory`** | the row Windows used to **replace**; Part 6 refuses it |
+| *Given a directory source and a non-empty directory destination, When rename, Then it refuses and neither tree merges* (`:470–492`) | `:487` | idem | **`assertDirectoryNotEmpty`** | the row Windows used to refuse with the *wrong* code; Part 6 re-codes it |
+
+**Nothing else in those four rows moves** — not the arrangement, not the non-destructiveness
+assertions each already carries inline (`:278–280`, `:442–443`, `:466–467`, `:488–491`), not the
+titles. And **no row is added, moved or removed**: the two rows the design calls `:446` and `:494`
+keep their arrangements and assertions verbatim (**R45**); `:494` is the positive
+empty-directory-replacement row and is not touched at all.
+
+**The tolerant `mkdir` row stays tolerant** — it is now at **`:762–781`**, not `:567` as the design
+says, and it is a genuine adapter disagreement (node `FILE_EXISTS` from its own `mkdir -p`'s
+`EEXIST`, memory `NOT_A_DIRECTORY` from `addDirectoryRecursive`). Leave it. Its `:775–780` is the
+**enumerated-pair shape** the posix-only fix copies:
+
+```ts
+      // Assert — exact code is platform-dependent (…)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const code = (caught as TsgitError).data.code;
+      expect(['FILE_EXISTS', 'NOT_A_DIRECTORY']).toContain(code);
+```
+
+The second tolerant precedent (*Given non-empty directory, When rm, Then throws a TsgitError*,
+`:871–887`) is instance-only and also stays: different method, genuinely disagreeing adapters.
+
+**The posix-only row, exactly.** `test/integration/posix-only/node-fs-write-rename-refusals.test.ts`
+is 636 lines, 2-level Given/When → Then, with `env` from a `beforeEach`-built `mkdtemp` +
+`realpath` root (`:26–39`, `:65–71`) and two local helpers: `captureError` (`:42–49`) and
+`dataFor<Code>` (`:52–60`). The target block is `:287–300`:
+
+```ts
+  describe('Given a file renamed onto the containment root, When rename', () => {
+    it('Then throws PERMISSION_DENIED', async () => {
+      // Arrange
+      const sut = env.fs;
+      const src = nodePath.join(env.rootDir, 'r4-file');
+      await fsPromises.writeFile(src, 'r4');
+
+      // Act
+      const caught = await captureError(() => sut.rename(src, env.rootDir));
+
+      // Assert
+      expect(dataFor(caught, 'PERMISSION_DENIED').path).toBe(src);
+    });
+  });
+```
+
+**Why it is red on ubuntu and not here:** darwin answers `EISDIR` → `PERMISSION_DENIED`, ubuntu
+answers `ENOTEMPTY` → `DIRECTORY_NOT_EMPTY`. Both are legal `rename(2)` outcomes; POSIX does not
+order the two checks. The axis is **not** emptiness — a file onto a *sibling* non-empty directory is
+`PERMISSION_DENIED` on both, and a *directory* onto an ancestor is `DIRECTORY_NOT_EMPTY` on both.
+The only splitting arrangement is a **non-directory source whose destination is one of its own
+ancestors**. This was measured red by a direct ubuntu run of the file: 32 rows pass, this one fails
+with `expected 'DIRECTORY_NOT_EMPTY' to be 'PERMISSION_DENIED'`, and nothing else moves. The row has
+never executed on that cell because `posix-integration` `needs: [changes, unit-tests]` and
+`unit-tests` has been red on the three Windows cells.
+
+**The rewrite** (ADR-821, **R46**): retitle to name both codes, assert the enumerated pair plus
+non-destructiveness, and carry a comment naming the axis so the next reader does not "fix" it back
+to one code. ⚠️ **`dataFor` cannot be reused** — it hard-pins one code (`expect(data.code).toBe(code)`)
+— so this row uses the contract file's manual shape instead, and it will be the **first**
+`toContain`-style enumerated assertion in this file. Non-destructiveness: the source still reads
+back its bytes, and the root still lists it. Two in-file precedents for an explanatory `// Arrange —`
+comment sit at `:494–497` and `:515–518`; the sibling row that already expects
+`DIRECTORY_NOT_EMPTY` for a *directory* source onto the root is at `:410–424`, and the three
+`PERMISSION_DENIED` sibling rows are at `:233–248`, `:250–266`, `:268–285` — none of them changes.
+
+**Do not** add a `process.platform` branch (a conditional oracle inside a test, with a new arm for
+every future POSIX platform) and **do not** swap the arrangement for a sibling non-empty directory
+— that loses the containment-root arrangement this whole design exists to close. Both alternatives
+were weighed and rejected in ADR-821.
+
+**Escalate** if any of the four contract rows fails on either driver on darwin after the swap. That
+would mean Part 6 or an earlier part produced a different code than the design's table, and the fix
+is in the adapter, not in the assertion.
+
+### TDD steps
+
+- **RED (proof-of-bite, not committed).** Before swapping a call site, temporarily change the new
+  `assertDirectoryNotEmpty`'s expected code to `'FILE_EXISTS'` and run the contract suite: the
+  directory-onto-non-empty-directory row must fail on **both** drivers. Revert immediately. This is
+  how a strictness change earns a red — the row itself cannot produce one on this host.
+- **GREEN, one call site at a time.** Add the helper, swap `:277`, run; swap `:441`, run; swap
+  `:465`, run; swap `:487`, run. Four separate runs, because a wrong expectation on one row is
+  invisible under three greens.
+- **Delete `assertRefusedWithoutCode`** only after the last call site is gone, then re-run:
+  `noUnusedLocals` and the suite must both be clean. Its `:97–107` is a *today* number — inserting
+  the new sibling above it shifts every line below by the size of that block, so match on the
+  helper's name and its JSDoc text, not on the line range.
+- **The posix-only row.** Rewrite `:287–300`, run `npm run test:posix-integration` on darwin, and
+  confirm it still passes — on this host it takes the `PERMISSION_DENIED` half of the pair, so a
+  local green proves the row compiles and the arrangement is unchanged, and **nothing about the
+  ubuntu half**. Say so; do not claim the fix is verified until the CI cell reports.
+- **REFACTOR.** None available and none wanted: the four assertion helpers are three lines each by
+  design and a shared parameterised asserter would make each row's expectation harder to read at
+  the call site, which is the only place it matters.
+
+### Gate
+
+```
+npx vitest run test/unit/adapters/memory/memory-file-system.test.ts test/unit/adapters/node/node-file-system.test.ts
+npx vitest run --project unit
+npm run test:posix-integration
+npm run check:types
+npx tsc --noEmit -p tsconfig.json
+./node_modules/.bin/biome check test/unit/ports/file-system.contract.ts test/integration/posix-only/node-fs-write-rename-refusals.test.ts
+npm run check:spelling
+npx cspell --no-progress test/unit/ports/file-system.contract.ts test/integration/posix-only/node-fs-write-rename-refusals.test.ts
+node --experimental-strip-types tooling/audit-test-pyramid.ts
+```
+
+The contract file is **not** a `*.test.ts` and must never be passed to `vitest run` as a filter —
+it collects zero tests and exits non-zero. It is driven by **both** adapters, and those two driver
+files are what the first line runs: `memory-file-system.test.ts:7–24` and
+`node-file-system.test.ts:63–96` — running either alone proves half the change. The
+`--project unit` run covers both. `reports/api.json` cannot move here (no `src/` delta) and no size
+gate is affected.
+
+### Commit
+
+```
+test(fs-contract): assert exact codes on write and rename refusals
+```
+
+---
+
+## Part 9 — Pin the emulated rename rules against real NTFS in a win-only suite
+
+### Context
+
+**This part changes no production code and cannot be executed on this host.** It creates the
+real-filesystem Windows mirror of Part 1's posix-only file: the strict codes through the *composed*
+adapter against a real NTFS volume, which is the only place Part 6's and Part 7's emulation meets
+the platform it was written for. It implements design **§8h(b)**, requirements **R44**, **R49**,
+**R50**, and ADR **822**.
+
+**Files.**
+
+| Action | Path | What |
+|---|---|---|
+| create | `test/integration/win-only/node-fs-windows-rename-refusals.test.ts` | the whole part |
+
+**Where the file lives and who runs it.** `vitest.config.ts:61–66` defines the `win-integration`
+project as `include: ['test/integration/win-only/**/*.test.ts']`; the `integration` project
+**explicitly excludes** that directory (`:47`). `package.json`'s `test:win-integration` is
+`vitest run --project win-integration` (depends on `check:types`). CI runs it in its own
+single-runner `win-integration` job on `windows-latest` (`ci.yml:417–433`, `needs: [changes,
+unit-tests]`). `npm run validate` does **not** depend on it. The directory holds exactly two files
+today — `node-fs-windows-real.test.ts` (103 lines, the pattern) and
+`openrepository-windows-paths.test.ts`.
+
+🔴 **The honest local gate: type-check, lint and spelling only.** Running
+`npx vitest run --project win-integration <file>` on darwin does **not** skip it — the tier has no
+platform guard; placement plus the CI job *is* the guard, exactly as the sibling file's own header
+says. On darwin the file will **execute and fail**, at minimum on the two ancestor-fault rows that
+are deliberately pinned in their **Windows** shapes (`NOT_A_DIRECTORY` carrying **src** where POSIX
+carries `dst`; `FILE_NOT_FOUND` where POSIX says `NOT_A_DIRECTORY`). That failure is the file being
+correct, not broken. **A local run reporting "0 tests" or "skipped" would be the real problem** — it
+would mean the file is not in the project's include glob. The executing gate is CI's
+`win-integration` job: push early, read that job, and do not merge on a run where it has not
+executed.
+
+**Header — the directory's convention, from `node-fs-windows-real.test.ts:1–11`:** a block comment
+saying *why the case is platform-bound*, then a `@proves` block:
+
+```
+ * @proves
+ *   surface: nodeFs.windowsRenameRefusals
+ *   bucket:  platform-only
+ *   unique:  <one sentence, 12–200 chars — e.g. the POSIX rename kind rules the node adapter emulates on NTFS>
+```
+
+`surface` must match `^[a-z][a-zA-Z0-9.-]{1,40}$`; `bucket: platform-only` is one of the seven
+allowed buckets and its `directoryRules` admit `win-only/`. The `integrationProof` heuristic is
+**report-only** — write it correctly anyway.
+
+**Tier constraints that *are* gated:** `gwtTitle`, `aaaBody`, `sutNaming`, `sutBindsResult`,
+`bareClassToThrow`, `emptyAaaSection` and `underAssertedUnit`. `overMockedIntegration` has a
+threshold of **0** — **no `vi.mock` / `vi.fn` / `vi.spyOn` / `vi.stubGlobal` / `vi.stubEnv`
+anywhere in the file**, and `vitest`'s import is `{ describe, expect, it }` only.
+
+**Fixture.** The sibling win-only file builds its root **inline per `it`** with a `try/finally`
+cleanup and no `realpath`. This file does **not** copy that: it uses the `beforeEach`/`afterEach`
+`makeFs()` shape of its posix-only mirror (`node-fs-write-rename-refusals.test.ts:26–39`,
+`:62–71`), with `mkdtemp` **followed by `realpath`**, because these rows plant multi-entry
+arrangements and assert `data.path` against paths built from the root — and 8.3 short-name
+reconciliation is already pinned by the neighbouring file, so it is not what these rows are about.
+Copy `captureError` (`:42–49`) and `dataFor<Code>` (`:52–60`) from that same file verbatim;
+`check:duplicates` is `jscpd src/` and never scans `test/`.
+
+**Symlink rows are guarded by the directory's own probe.** Copy `canCreateSymlinks()` from
+`node-fs-windows-real.test.ts:20–40` verbatim (it makes its own `mkdtemp` probe root, tries one
+`fsPromises.symlink`, and cleans up), and guard every symlink row with the honest skip at
+`:69–76` — `it('Then …', async ({ skip }) => { if (!(await canCreateSymlinks())) { skip(); return; } … })`,
+with `skip` destructured from the test context, never imported. Symlink creation **did** succeed on
+the hosted `windows-latest` runner when the matrices were probed, so the skip should not fire — it
+exists so a runner image change shows as *skipped*, not as silently green.
+
+⚠️ **Every path expectation in this file is built with `node:path`.** The adapter reports **joined**
+paths and `pathPolicy.join` is `path.win32.join` there, so a `/`-spelled literal fails against a
+correct implementation. Any predicate on `readlink` output normalises separators before matching
+(**R49**).
+
+**The rows. Copy these expected codes — do not re-derive them.** Every refusal asserts
+`caught instanceof TsgitError` **and** `data.code`, and `data.path` where the variant carries one;
+`UNSUPPORTED_OPERATION` carries `operation` and `reason` and **no `path`**.
+
+*Refusals (`data.path` = **`src`** unless the row says otherwise):*
+
+| `src` | `dst` | Code | Also assert |
+|---|---|---|---|
+| empty directory | regular file | `NOT_A_DIRECTORY` | the destination file's bytes are byte-identical |
+| directory with a child | regular file | `NOT_A_DIRECTORY` | the child is still under `src` |
+| directory | symlink | `NOT_A_DIRECTORY` | the link's target is intact |
+| empty directory | non-empty directory | `DIRECTORY_NOT_EMPTY` | neither tree merged |
+| directory with a child | non-empty directory | `DIRECTORY_NOT_EMPTY` | each tree holds exactly its own child |
+| directory | its own **parent** | `DIRECTORY_NOT_EMPTY` | nothing moved |
+| directory with a child | the containment **root** | `DIRECTORY_NOT_EMPTY` | nothing moved |
+| file | empty directory | `PERMISSION_DENIED` | unchanged behaviour, pinned so a regression shows |
+| file | directory with children | `PERMISSION_DENIED` | idem |
+| symlink | empty directory | `PERMISSION_DENIED` | idem |
+| file | the containment **root** | `PERMISSION_DENIED` | **the Windows shape — a single code here**, unlike the POSIX file's enumerated pair (Part 8): Windows and darwin agree, ubuntu is the outlier |
+| directory | a path **inside itself** that is absent | `UNSUPPORTED_OPERATION`, `operation: 'filesystem'`, `reason` = `INVALID-ARGUMENT`, **no `path`** | — |
+| directory | a path inside itself that is an existing **directory** | same | and the inner directory still exists — the row that proves the containment arm delegated instead of taking the replace arm |
+| directory | a path inside itself that is an existing **file** | same | the file's bytes intact |
+| the containment **root** | a fresh name inside it | same | — |
+| file | dst whose **grandparent** is a regular file | `NOT_A_DIRECTORY`, `data.path` = **`src`** 🔴 | the first Windows-shaped oddity — the POSIX sibling carries `dst` on this arrangement |
+| src whose **immediate parent** is a regular file | fresh name | **`FILE_NOT_FOUND`** 🔴 | the second Windows-shaped oddity — POSIX refuses `NOT_A_DIRECTORY`; **only the code differs**, the path is the same one the POSIX sibling carries |
+
+⚠️ **For those last two rows, take the `data.path` expectation from the committed POSIX row, not
+from a table.** Part 1's file already pins all three ancestor-fault arrangements, and their titles
+say what they anchor on: *"Given a file renamed onto a destination whose **immediate parent** is a
+regular file … Then throws `FILE_EXISTS` anchored on `src`"* (unchanged on Windows — do **not** add
+a win-only row for it, §8d says it keeps its shape), *"… whose **grandparent** is a regular file …
+Then throws `NOT_A_DIRECTORY` anchored on `dst`"* (the code stays, the anchor flips to **`src`** on
+Windows), and *"Given a **source** whose immediate parent is a regular file renamed onto a fresh
+name … Then throws `NOT_A_DIRECTORY` anchored on `src`"* (the anchor is what §8a leaves alone, the
+**code** becomes `FILE_NOT_FOUND`). §8a's probe table writes that last row's path in the harness's
+own notation, which does not line up with the committed row's — so mirror the **committed** row's
+path expression through `node:path`, change only the one field §8a says changes, and **escalate**
+`{ part, reason, ≤3 options }` if the `win-integration` job reports a third shape. Do not guess
+between two disagreeing tables.
+
+*Positives (assert the outcome, no code):*
+
+| `src` | `dst` | Outcome |
+|---|---|---|
+| directory with a child | **empty** directory | succeeds — the child is reachable under `dst`, `src` is gone. **This is the row the whole leg exists for** |
+| regular file | itself | succeeds, bytes unchanged |
+| directory with children | itself | succeeds, every child still reachable |
+| directory | a fresh name | succeeds, the whole subtree moves |
+| empty directory | a fresh name | succeeds |
+
+*Exclusive create and the non-exclusive pair — the two verdicts pinned apart on the platform where
+they used to differ (**R44**):*
+
+| Arrangement | Code | Also assert |
+|---|---|---|
+| `writeExclusive` over a **live** symlink | `FILE_EXISTS`, `path` = requested | the link still points where it did |
+| `writeExclusive` over a **dangling** symlink | `FILE_EXISTS`, `path` = requested | 🔴 **the link's target is still absent** — the half the platform's own exclusive open gets wrong (it would follow the link and create the target) |
+| `write` over a **live** symlink | `PERMISSION_DENIED`, `path` = requested | — |
+| `write` over a **dangling** symlink | `PERMISSION_DENIED`, `path` = requested | the target is still absent |
+
+Plant a dangling link exactly as the posix-only file does:
+`fsPromises.symlink(nodePath.join(rootDir, 'missing-target'), link)`.
+
+**If a row disagrees with this table on the `win-integration` job**, that is a matrix disagreement
+or an emulation defect, not a test bug. Escalate `{ part, reason, ≤3 options }`. Do **not** weaken
+an assertion, do **not** delete a row, and do **not** "fix" the two Windows-shaped oddities into
+their POSIX shapes — pinning them as they are is the whole of **R49**.
+
+### TDD steps
+
+This part characterises behaviour created two parts earlier on a platform this host is not, so its
+RED/GREEN cycle lives on CI. Locally the loop is compile-and-read.
+
+- **RED (CI, and it is the point of the part).** The refusal rows for a directory source onto a
+  file, a symlink and a non-empty directory, and the empty-directory positive, are **exactly** the
+  arrangements that were red or wrongly-coded on `windows-latest` before Part 6. If the
+  `win-integration` job is green on the first push, re-read the job log and confirm the file
+  actually ran (row count, not just exit code) before believing it.
+- **Write the file in blocks and type-check after each** — refusals first, then positives, then the
+  exclusive-create and write pair. `npx tsc --noEmit -p tsconfig.json` is the only mechanical
+  feedback available on darwin, and it does catch the two real local failure modes: a `data.path`
+  read without narrowing (use `dataFor`) and a wrong helper import path (`../../../src/...`).
+- **Prove the header parses:** `node --experimental-strip-types tooling/audit-test-pyramid.ts` and
+  read the `integrationProof` line in its report — it is report-only, so the exit code says
+  nothing.
+- **Do not run the file locally to "check it works."** It will fail on the two Windows-shaped
+  ancestor rows by construction (§Context). If you run it anyway to inspect, expect exactly those
+  failures and treat any *other* failure as information worth escalating.
+- **REFACTOR.** Group by occupant with a `describe('Given …')` per arrangement family and a shared
+  `beforeEach`-built root, as the posix-only file does. Do not collapse rows whose oracle shape
+  differs — the `UNSUPPORTED_OPERATION` rows assert different fields from the path-carrying ones and
+  stay separate.
+
+### Gate
+
+```
+npm run check:types
+npx tsc --noEmit -p tsconfig.json
+./node_modules/.bin/biome check test/integration/win-only/node-fs-windows-rename-refusals.test.ts
+npm run check:spelling
+npx cspell --no-progress test/integration/win-only/node-fs-windows-rename-refusals.test.ts
+node --experimental-strip-types tooling/audit-test-pyramid.ts
+npm run check:filesystem
+```
+
+**That is the whole local gate, and it is a compile gate.** There is no `npx vitest run` line here
+on purpose: on darwin the only outcomes are "fails as designed" or "0 tests collected", and neither
+is a pass. `check:filesystem` is `ls-lint` — the new file name must be kebab-case, which is the one
+mechanical thing a *new file* can get wrong here. `npm run validate` is **not** part of any part's
+gate; it is the orchestrator's phase gate after this part, and it does not run this file either.
+The executing gate is CI's `win-integration` job on `windows-latest`.
+
+### Commit
+
+```
+test(node-fs): pin the emulated rename kind rules against real NTFS
+```
+
+---
+
 ## After the last part — the orchestrator's checks
 
-1. `npm run validate`, run **bare** into a file, exit code read from that file. It gates
-   `test:coverage` (100 % on `src/adapters/memory/**`), `check:test-pyramid`, `check:duplicates`,
-   `check:dead-code`, `check:architecture`, `check:spelling` and the rest.
-2. `npm run test:posix-integration` — **not** in `validate`.
-3. `npm run test:e2e` — **not** in `validate`.
-4. `npm run docs:json && git diff --exit-code -- reports/api.json` — the prepush gate that local
-   `validate` does not run.
-5. `npm outdated` is re-measured before the full gate (eight excepted packages,
+These cover the **whole** PR: Parts 1–5 (the memory and browser adapters) and Parts 6–9 (the
+Windows leg).
+
+1. **`npm run validate`**, run **bare** into a file, exit code read from that file — never through
+   a pipe. It gates `test:coverage` (100 % on `src/domain/**`, `src/ports/**`,
+   `src/adapters/node/**`, `src/adapters/memory/**`, `src/operators/**`), `check:test-pyramid`,
+   `check:duplicates`, `check:dead-code`, `check:architecture`, `check:spelling`, `check:size`,
+   `check:tarball` and the rest. Note the coverage set now includes `src/adapters/node/**`: every
+   branch of `planRename`, `lstatOrMissing` and `assertExclusiveCreateLeaf` is reached **only**
+   through the DI rows of Parts 6 and 7.
+2. **`npm run test:posix-integration`** — not in `validate`. It runs Part 1's file with Part 8's
+   root-rename fix. A green run on darwin proves the file compiles and the darwin half of the
+   enumerated pair; the **ubuntu** half is CI-only and is the half that was actually broken.
+3. **`npm run test:e2e`** — not in `validate`; the browser tier's only proof (Part 5). Requires
+   `npm run build` first and `npx playwright install` as a prerequisite.
+4. **`npm run docs:json && git diff --exit-code -- reports/api.json`** — the prepush gate local
+   `validate` does not run. Parts 2, 3, 4 and 6 each regenerated it; this is the check that the
+   committed report matches the final tree.
+5. **Both size budgets, from a clean build.** `rm -rf dist .wireit`, then `npm run build`, then
+   `npm run check:tarball` and `npm run check:size`. A stale chunk has produced a false failure
+   here before. If the cap was raised, confirm the paragraph in `tooling/verify-tarball.sh`'s
+   header records the **measured** figure, not an estimate.
+6. **`npm outdated`** is re-measured before the full gate (eight excepted packages,
    `.claude/workflow.md`).
-6. The **Windows leg** is CI-only. Under the tolerant-row design the refusal rows are Windows-safe
-   by construction; the exposure is the two **positive** rows named in Part 4 — the
-   empty-directory-destination replace and `src === dst` for a non-empty directory. A red there is
-   a decision to escalate, never a licence to loosen a memory-side assertion.
+7. **Read the CI matrix before merging — three jobs carry proof this host cannot produce.**
+   - the **three `windows-latest` unit cells**: the two shared contract rows that were red are the
+     reason the Windows leg exists, and Part 8's four newly-strict rows now run there too. A red
+     row here is a defect in Part 6 or Part 7, never a licence to loosen an assertion.
+   - the **`posix-integration` ubuntu cell**: it has *never executed* Part 1's file, because the job
+     `needs: unit-tests` and that job has been red. Part 8's enumerated pair is what makes it pass.
+      Confirm the job ran, not merely that it is not red.
+   - the **`win-integration` job**: Part 9's file exists only for this job. Confirm it collected
+     rows, not zero.
+8. **The mutation gate is unit-only and runs on linux**, so every mutant in the Windows arm is
+   killable only through Parts 6 and 7's DI rows. A survivor there is a real survivor and gets a
+   kill test — this plan sanctions **no** `Stryker disable` directive anywhere in the leg, and the
+   two equivalences it did find (DC-W1's dead line, DC-W4's unisolatable disjuncts) are answered by
+   deleting the line and by fabricating the stat, not by suppressing the mutant.
