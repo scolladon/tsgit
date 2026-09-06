@@ -91,7 +91,15 @@ done
 # The prose is removable without behaviour loss but not without dropping the port
 # contract from consumers' editors, which is why it stays; the guards close paths where
 # the adapter silently overwrote or merged what the node adapter and canonical git refuse.
-SIZE_CAP=$((906 * 1024))
+# Raised 906 -> 908 KiB by the Windows rename-kind emulation: the measured tarball landed
+# at 928 803 B, 1 059 B over the old cap. Attribution: the rename precondition's explicit
+# pre-rename kind check and its two lstat probes, the fourth PathPolicy capability flag
+# (paid in every hand-built policy literal, including the browser bundle's dependency-free
+# stand-in), and the port JSDoc extension to `rename`/`atomicRename` — which every `.d.ts`
+# AND `.d.cts` carries verbatim, costing about 1.3 KB per edit here, as the prior raise's
+# measurement established. None of it is removable without dropping POSIX rename-kind
+# parity on a platform whose own rename does not enforce it.
+SIZE_CAP=$((908 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
