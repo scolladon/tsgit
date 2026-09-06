@@ -50,6 +50,9 @@ export class MemoryFileSystem implements FileSystem {
     this.directories.add(this.rootDir);
     for (const [key, value] of Object.entries(options.files ?? {})) {
       const normalized = this.resolve(key);
+      // A seeded file may not land where an earlier key already made a directory — the one
+      // route by which `files` and `directories` could otherwise share a key.
+      if (this.directories.has(normalized)) throw notADirectory(key);
       this.files.set(normalized, value.slice());
       this.touch(normalized);
       this.ensureParentDirs(normalized);
@@ -219,7 +222,8 @@ export class MemoryFileSystem implements FileSystem {
 
   mkdir = async (path: string): Promise<void> => {
     const normalized = this.resolve(path);
-    // Stryker disable next-line ConditionalExpression,BlockStatement,LogicalOperator: equivalent — addDirectoryRecursive validates the chain first, and that check's first segment re-tests `files.has(normalized) || symlinks.has(normalized)` and throws the identical NOT_A_DIRECTORY, so weakening or removing this guard cannot change behavior.
+    // The chain check below would refuse a file leaf too, but with the normalized key as
+    // its path; this guard keeps the caller's string, as every other leaf refusal does.
     if (this.files.has(normalized) || this.symlinks.has(normalized)) {
       throw notADirectory(path);
     }
@@ -461,12 +465,18 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   private addDirectoryRecursive(normalizedPath: string): void {
+    // A recorded directory proves its whole ancestor chain recorded and free of files and
+    // symlinks — `directories` is prefix-closed and disjoint from the other two namespaces
+    // on every reachable state — so there is nothing to refuse and nothing to add.
+    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — without this early return the walk below runs over a chain that is already recorded and holds no file or symlink at any level (prefix closure and disjointness, sealed at the constructor), so the check refuses nothing and the add loop re-adds keys that are already present.
+    if (this.directories.has(normalizedPath)) return;
     // Refuse before recording anything: a file or symlink anywhere on the ancestor chain
-    // must leave the tree untouched — the all-or-nothing shape of `mkdir -p`, and the only
-    // way a refused write can promise it left no directory behind.
+    // must leave the tree untouched — the all-or-nothing shape of `mkdir -p`.
     this.assertAncestorChainFree(normalizedPath);
     let current = normalizedPath;
-    // Same bound as the check below; rootDir is already recorded, so its iteration re-adds.
+    // The `>=` bound reaches rootDir on purpose: after `rmRecursive(rootDir)` the root is
+    // absent and this iteration is what records it again. Dropping the `break` alone is
+    // harmless — `parentOf(rootDir)` is '' and fails the bound on the next test.
     while (current.length >= this.rootDir.length) {
       this.directories.add(current);
       if (current === this.rootDir) break;
@@ -476,10 +486,10 @@ export class MemoryFileSystem implements FileSystem {
 
   private assertAncestorChainFree(normalizedPath: string): void {
     let current = normalizedPath;
-    // equivalent-mutant: changing `>=` to `>` (or dropping the `return` when current === rootDir)
-    // has no observable effect — rootDir is seeded into `this.directories` in the constructor
-    // and no write surface can store a file/symlink at that exact path, so the extra
-    // iteration (or the skipped one) is a no-op for every reachable state.
+    // The `>=` bound tests rootDir itself on purpose: once `rmRecursive(rootDir)` has removed
+    // the root, a later write can occupy that exact path with a file, and a child written
+    // beneath it must refuse. Dropping the `return` alone is harmless — `parentOf(rootDir)`
+    // is '' and fails the bound on the next test.
     while (current.length >= this.rootDir.length) {
       if (this.files.has(current) || this.symlinks.has(current)) {
         throw notADirectory(current);

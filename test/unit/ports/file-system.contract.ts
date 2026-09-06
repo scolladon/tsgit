@@ -604,6 +604,7 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
         probe = err;
       }
       expect(probe).toBeInstanceOf(TsgitError);
+      expect(['NOT_A_DIRECTORY', 'FILE_NOT_FOUND']).toContain((probe as TsgitError).data.code);
     });
 
     it('Given file with known content, When readSlice(0, 3), Then returns first 3 bytes', async () => {

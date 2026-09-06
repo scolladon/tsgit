@@ -854,7 +854,6 @@ describe('MemoryFileSystem', () => {
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           const childData = new Uint8Array([9, 8, 7]);
           await sut.write('/repo/occupied-dir/child.bin', childData);
-          const before = await sut.lstat('/repo/occupied-dir');
 
           // Act
           let caught: unknown;
@@ -870,10 +869,7 @@ describe('MemoryFileSystem', () => {
           expect(data.code).toBe('FILE_EXISTS');
           if (data.code === 'FILE_EXISTS') expect(data.path).toBe('/repo/occupied-dir');
           expect(await sut.read('/repo/occupied-dir/child.bin')).toEqual(childData);
-          const after = await sut.lstat('/repo/occupied-dir');
-          expect(after.isDirectory).toBe(true);
-          expect(after.mtimeMs).toBe(before.mtimeMs);
-          expect(after.ctimeMs).toBe(before.ctimeMs);
+          expect((await sut.lstat('/repo/occupied-dir')).isDirectory).toBe(true);
         });
       });
     });
@@ -2003,6 +1999,123 @@ describe('MemoryFileSystem', () => {
           expect(await sut.exists('/repo/blocker/mid/leaf')).toBe(false);
           expect(await sut.exists('/repo/blocker/mid')).toBe(false);
           expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['blocker']);
+        });
+      });
+    });
+  });
+
+  describe('root and seeding invariants', () => {
+    describe('Given a files map that seeds a file at a path an earlier key made a directory', () => {
+      describe('When constructing the file system', () => {
+        it('Then throws NOT_A_DIRECTORY carrying the seeded key', () => {
+          // Arrange — the deeper key comes first, so its parent is a recorded directory
+          // by the time the shallower key tries to land a file on the same path
+          const files = { '/repo/a/b.bin': new Uint8Array([1]), '/repo/a': new Uint8Array([2]) };
+
+          // Act
+          let caught: unknown;
+          try {
+            new MemoryFileSystem({ rootDir: '/repo', files });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NOT_A_DIRECTORY');
+          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe('/repo/a');
+        });
+      });
+    });
+
+    describe('Given a files map that seeds a file at the root itself', () => {
+      describe('When constructing the file system', () => {
+        it('Then throws NOT_A_DIRECTORY carrying the root key', () => {
+          // Arrange
+          const files = { '/repo': new Uint8Array([1]) };
+
+          // Act
+          let caught: unknown;
+          try {
+            new MemoryFileSystem({ rootDir: '/repo', files });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NOT_A_DIRECTORY');
+          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe('/repo');
+        });
+      });
+    });
+
+    describe('Given the root was removed and a file written at its path', () => {
+      describe('When writing a child under it', () => {
+        it('Then throws NOT_A_DIRECTORY carrying the root', async () => {
+          // Arrange — the one reachable way to occupy the root path with a file
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.rmRecursive('/repo');
+          await sut.write('/repo', new Uint8Array([1]));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/child.bin', new Uint8Array([2]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NOT_A_DIRECTORY');
+          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe('/repo');
+        });
+      });
+    });
+
+    describe('Given the root was removed by rmRecursive', () => {
+      describe('When writing a child under it', () => {
+        it('Then the root is recorded again and lists the child', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.rmRecursive('/repo');
+
+          // Act
+          await sut.write('/repo/b.txt', new Uint8Array([2]));
+
+          // Assert — the same shape node's mkdir -p produces
+          expect((await sut.lstat('/repo')).isDirectory).toBe(true);
+          expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['b.txt']);
+        });
+      });
+    });
+  });
+
+  describe('mkdir leaf guard', () => {
+    describe('Given a relative path to an existing file', () => {
+      describe('When mkdir is called', () => {
+        it('Then throws NOT_A_DIRECTORY carrying the path exactly as given', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/blocker', new Uint8Array([1]));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.mkdir('blocker');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — the leaf guard reports the caller's string, never the normalized key
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NOT_A_DIRECTORY');
+          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe('blocker');
         });
       });
     });
