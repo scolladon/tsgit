@@ -1743,7 +1743,8 @@ that holds nothing, which is what makes remove-first safe here in a way it would
 | Rows | Source | Destination | Arm | `fsOps` calls the arm makes |
 |---|---|---|---|---|
 | N21 | a file or symlink | itself | delegate | `lstat(src)` — a non-directory source never reaches the identity test |
-| N22 | a directory | itself, under any spelling | delegate | `lstat(src)`, `lstat(dst)` — the same device and inode (R51) |
+| N22 | a directory | itself, byte-identical spelling | delegate | none — decided before any syscall |
+| N22 | a directory | itself, under an alias spelling | delegate | `lstat(src)`, `lstat(dst)`, `realpath(src)` — the same device and inode (R51); a volume with no inodes adds `realpath(dst)` and compares the canonical paths exactly |
 | N11 / N11b / N11c / N11d / N12 | directory | inside itself | delegate | none when the spelling shows it (strict containment); a source leaf spelled by an alias adds `lstat(src)`, `lstat(dst)`, `realpath(src)` |
 | N1 / N2 / N3 / N15 | file or symlink | any directory | delegate | `lstat(src)` |
 | N13 / N14 / N25 | file or symlink | file or symlink | delegate | `lstat(src)` |
@@ -1791,9 +1792,12 @@ replace arm — and the syscall budget in §8i counts only what the emulation ad
    shares) does not leave identity undecided either — the second review cycle found that it must
    not: with equality masked off the string test, an undecided identity would have sent
    `rename(dir, dir)` into the replace arm. When either side reports no inode, identity is decided
-   by canonical path instead — `realpath` of both sides, compared through the policy — at the cost
-   of one more syscall on that arm alone. The inode compare itself runs on bigint stats, because an
-   NTFS file reference exceeds a double's precision.
+   by canonical path instead — `realpath` of both sides, compared exactly, since `realpath` already
+   returns the platform's own spelling — at the cost of one more syscall on that arm alone; a mixed
+   report (one side with an inode, the other without) takes the same fallback, and a destination
+   that vanished before its `realpath` reads as another entry, whose removal then finds nothing. The
+   inode compare itself runs on bigint stats, because an NTFS file reference exceeds a double's
+   precision.
 4. **Containment is asked twice, strictly, and delegates rather than refusing.** Windows already
    reports the invalid-argument errno for N11 / N11b / N11c / N11d / N12 (§8a), so the platform's
    own answer is the one ADR-817 chose for memory; refusing here would re-code N11b and — the
@@ -1860,8 +1864,8 @@ replace arm — and the syscall budget in §8i counts only what the emulation ad
    antivirus holding a handle inside the source makes the `rename` fail with a sharing violation
    after the destination is gone. So a failed rename on that arm is followed by a best-effort
    `mkdir(dst)` (**R52**): the refusal keeps the contract's *changing nothing*, the rename failure
-   stays the one reported, and a failure of the restoration itself is subordinate to it and is not
-   surfaced. One check-then-act window remains and is documented rather than closed: a directory
+   stays the one reported, and an errno failure of the restoration itself is subordinate to it and is
+   not surfaced — a non-errno failure there is a programming error and surfaces in its place. One check-then-act window remains and is documented rather than closed: a directory
    source over an *absent* destination delegates after `lstat(dst)`, and a regular file planted
    there before the `rename` still meets the platform's own replace — `mingw_rename` has the same
    window, and no native primitive closes it.
@@ -2180,10 +2184,11 @@ the file (32 passing rows, one failure, §8g) demonstrates end to end.
 | Policy / arrangement | Extra syscalls |
 |---|---|
 | `honoursRenameKinds: true` (every POSIX host) | **0** |
-| Windows, self-rename or destination inside source | **0** |
+| Windows, byte-identical self-rename or destination spelled inside the source | **0** |
+| Windows, self-rename under an alias spelling | 2 `lstat` + 1 `realpath` (+ 1 `realpath` without inodes) |
 | Windows, non-directory source — *every* production caller | **1** `lstat` |
 | Windows, directory source onto a fresh name (`worktreeMove` after `assertTargetFree`) | 2 `lstat` |
-| Windows, directory source onto an existing directory | 2 `lstat` + 1 `rmdir`, and nothing else — the `rmdir` is both the removal and the emptiness verdict (ADR-825) |
+| Windows, directory source onto an existing directory | 2 `lstat` + `realpath(src)` + 1 `rmdir` (+ `realpath(dst)` on a volume reporting no inode) |
 
 The hot callers are all in the third row: `atomic-write.ts:36` (every ref update),
 `index-lock.ts:137`, `ref-store.ts:712`, `reftable-transaction.ts:712,749,1015`,
@@ -2720,6 +2725,21 @@ recorded reason.** Lenses 1 (round-trip) and 3 (total function over a grammar) d
 | stale handle | `describe('stale handle writes')` | a handle write after `rm` leaves the path absent; a handle write after `rm` + `mkdir` at the same name leaves the directory intact and a child write beneath it works |
 | browser classifier | (same file) | a fake root handle rejecting with `null` → `FILE_NOT_FOUND` |
 | R34 | `test/browser/opfs-roundtrip.spec.ts` | `rename('same.txt', 'same.txt')` leaves the file with its bytes; `rename('missing.txt', 'missing.txt')` reports `FILE_NOT_FOUND` |
+
+**Windows round, cycle 3 (fix delta, final — max cycles).** Every cycle-2 finding verified resolved.
+Security: HIGH ×1 (the narrowed restoration catch's rethrow arm was executed by no row — the one
+uncovered branch of the unit project, coverage gate red), LOW ×2 applied (a non-errno restoration
+failure surfaces in place of the rename failure, now stated; the fallback's `realpath(dst)` reads a
+vanished destination as another entry instead of naming `src`), PROBE ×1 recorded (one directory
+under two namespaces on a no-inode volume). Code: HIGH ×1 (the same coverage gap), LOW ×6 applied
+(the byte-identical row pins that no probe runs; a stale row title; the N22 cost row split; the §8i
+budget cells; the fallback compares canonical paths exactly, not case-folded; the tolerant
+`realpath`). Tests: HIGH ×2 and MEDIUM ×2 — four hand-verified survivors on the two identity guards
+and the restoration arm (`realSrc === realDst` forced false; inode-first forced false; `&&` → `||`
+on the inode reports; the rethrow arm forced off) — each killed by a row that fails on its mutant
+(the case-differing two-directory row with inodes, the mixed-report row, the never-probed pin, the
+non-errno restoration row); LOW ×2 applied (two row titles). No fourth reviewer pass ran: the fixes
+are session-verified with rows that fail on the pre-fix code, and the phase gate is the arbiter.
 
 **Windows round, cycle 2 (fix delta).** All fifteen cycle-1 findings verified resolved. Security:
 MEDIUM ×1 (the equality mask plus an undecided identity sent `rename(dir, dir)` into the replace arm
