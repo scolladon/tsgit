@@ -30,7 +30,11 @@ import type {
   Tag,
 } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
-import { lookupPackIndex, parsePackIndex } from '../../../../../src/domain/storage/index.js';
+import {
+  lookupPackIndex,
+  packNameHash,
+  parsePackIndex,
+} from '../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import {
   type BitmapSpec,
@@ -241,6 +245,43 @@ describe('computeClosure', () => {
         expect(byId.get(chain.b1)?.type).toBe('blob');
         expect(byId.get(chain.t1)?.path).toBe('');
         expect(byId.get(chain.b1)?.path).toBe('file.txt');
+        expect(byId.get(chain.t1)?.nameHash).toBe(0);
+        expect(byId.get(chain.b1)?.nameHash).toBe(
+          packNameHash(new TextEncoder().encode('file.txt')),
+        );
+      });
+    });
+  });
+
+  describe('Given two commits whose trees place the same blob under two different names', () => {
+    describe('When computeClosure walks from the tip commit', () => {
+      it("Then the blob keeps the tip commit's naming — the first the walk emits it under", async () => {
+        // Arrange — the walk visits the tip commit (and its tree) before the
+        // root commit's, so tryEmit's first-seen rule keeps the tip's name,
+        // not the chronologically earlier root's.
+        const ctx = await buildSeededContext();
+        const sharedBlobId = await writeBlob(ctx, 'shared-across-generations');
+        const rootTreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'root-name.txt', sharedBlobId),
+        ]);
+        const rootCommitId = await writeCommit(ctx, rootTreeId, [], 'root generation');
+        const tipTreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'tip-name.txt', sharedBlobId),
+        ]);
+        const tipCommitId = await writeCommit(ctx, tipTreeId, [rootCommitId], 'tip generation');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tipCommitId],
+          not: [],
+          objects: true,
+        });
+
+        // Assert
+        const blobObject = result.objects.find((o) => o.id === sharedBlobId);
+        expect(blobObject?.nameHash).toBe(packNameHash(new TextEncoder().encode('tip-name.txt')));
       });
     });
   });
@@ -259,10 +300,14 @@ describe('computeClosure', () => {
         // Act
         const result = await sut(ctx, { tier: 'walk', wants: [tagId], not: [], objects: false });
 
-        // Assert
+        // Assert — a tag has no path, so it carries nameHash 0, like a commit.
         const ids = new Set(result.objects.map((o) => o.id));
         expect(ids).toEqual(new Set([tagId, commitId]));
-        expect(result.objects.find((o) => o.id === tagId)?.type).toBe('tag');
+        expect(result.objects.find((o) => o.id === tagId)).toStrictEqual({
+          id: tagId,
+          type: 'tag',
+          nameHash: 0,
+        });
       });
     });
   });
@@ -324,6 +369,10 @@ describe('computeClosure', () => {
         expect(ids).toEqual(new Set([rootTreeId, subTreeId, nestedBlobId, topBlobId]));
         expect(result.objects.find((o) => o.id === rootTreeId)?.path).toBe('');
         expect(result.objects.find((o) => o.id === nestedBlobId)?.path).toBe('sub/deep.txt');
+        expect(result.objects.find((o) => o.id === rootTreeId)?.nameHash).toBe(0);
+        expect(result.objects.find((o) => o.id === nestedBlobId)?.nameHash).toBe(
+          packNameHash(new TextEncoder().encode('sub/deep.txt')),
+        );
       });
     });
   });
@@ -339,8 +388,9 @@ describe('computeClosure', () => {
         // Act
         const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: false });
 
-        // Assert
-        expect(result.objects).toEqual([{ id: blobId, type: 'blob', path: undefined }]);
+        // Assert — no path, and the directly-wanted-blob divergence: git
+        // would use the pending object's own name, tsgit names it 0.
+        expect(result.objects).toStrictEqual([{ id: blobId, type: 'blob', nameHash: 0 }]);
       });
     });
   });
@@ -397,8 +447,9 @@ describe('computeClosure', () => {
         });
 
         // Assert — only the commit remains; every object under the marked
-        // tree (including the nested one) is excluded.
-        expect(result.objects).toEqual([{ id: commitId, type: 'commit', path: undefined }]);
+        // tree (including the nested one) is excluded. A commit has no
+        // path, so its nameHash is 0.
+        expect(result.objects).toStrictEqual([{ id: commitId, type: 'commit', nameHash: 0 }]);
       });
     });
   });
@@ -460,8 +511,8 @@ describe('computeClosure', () => {
         });
 
         // Assert — only the commit remains; the shared subtree and its blob
-        // are excluded.
-        expect(result.objects).toEqual([{ id: commitId, type: 'commit', path: undefined }]);
+        // are excluded. A commit has no path, so its nameHash is 0.
+        expect(result.objects).toStrictEqual([{ id: commitId, type: 'commit', nameHash: 0 }]);
       });
     });
   });
@@ -1421,10 +1472,11 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
           objects: true,
         });
 
-        // Assert
+        // Assert — a reachability artefact encodes types and bits, never
+        // names, so the bitmap tier leaves nameHash absent, not 0.
         expect(result.tier).toBe('bitmap');
         expect(bitmapBytesSpy).not.toHaveBeenCalled();
-        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+        expect(result.objects).toStrictEqual([{ id: fixture.blobId, type: 'blob' }]);
       });
     });
   });
@@ -1473,9 +1525,10 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
           objects: true,
         });
 
-        // Assert
+        // Assert — the walk tier answered this one, so unlike the bitmap
+        // tier it carries the directly-wanted-blob nameHash of 0.
         expect(result.tier).toBe('walk');
-        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob', nameHash: 0 }]);
       });
     });
   });
@@ -1497,10 +1550,11 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
           maxCount: 1,
         });
 
-        // Assert
+        // Assert — the walk tier answered this one, so unlike the bitmap
+        // tier it carries the directly-wanted-blob nameHash of 0.
         expect(result.tier).toBe('walk');
         expect(bitmapBytesSpy).not.toHaveBeenCalled();
-        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob', nameHash: 0 }]);
       });
     });
   });
