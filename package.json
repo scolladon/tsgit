@@ -719,6 +719,7 @@
     "bench:fixture": "node --experimental-strip-types tooling/gen-bench-fixture.ts",
     "profile": "npm run build:profile && node --experimental-strip-types tooling/profile.ts",
     "bench:memory": "npm run build && node --expose-gc --experimental-strip-types tooling/bench-memory.ts",
+    "pack:size-compare": "npm run build && node --experimental-strip-types tooling/pack-size-compare.ts",
     "docs": "wireit",
     "docs:check": "wireit",
     "docs:json": "wireit",
