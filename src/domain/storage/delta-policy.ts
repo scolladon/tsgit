@@ -19,21 +19,35 @@ export const MAX_OFS_OVERHEAD_BYTES = 5;
 export const DEFAULT_PACK_WINDOW = 10;
 export const DEFAULT_PACK_DEPTH = 50;
 
+/** A recency-absent object: every such object ties on this term and falls
+ *  to `id`. */
+export const NO_RECENCY = 0;
+
 export interface PackEmissionKey {
   readonly id: string;
   /** typeRank IS the pack entry type numbering (1..4) */
   readonly type: BasePackEntryType;
+  /** uint32; 0 for a path-less object. */
+  readonly nameHash: number;
   readonly uncompressedSize: number;
+  /** Caller-supplied first-seen ordinal, or `NO_RECENCY` when the caller
+   *  passed none. */
+  readonly recency: number;
 }
 
 /**
- * Total order: (type ASC, uncompressedSize DESC, id ASC). No two distinct
- * objects compare equal, because oids are unique — which is what makes the
- * sort stable regardless of the input array's order.
+ * Total order: (type ASC, nameHash DESC, uncompressedSize DESC, recency ASC,
+ * id ASC). No two distinct objects compare equal, because oids are unique.
+ * In the recency-absent mode — every key at `NO_RECENCY` — the order is a
+ * pure function of each object's own values, which is what makes the sort
+ * stable regardless of the input array's order; a caller-supplied recency
+ * adds first-seen order as a further, still deterministic, input.
  */
 export function comparePackEmissionOrder(a: PackEmissionKey, b: PackEmissionKey): number {
   if (a.type !== b.type) return a.type - b.type;
+  if (a.nameHash !== b.nameHash) return b.nameHash - a.nameHash;
   if (a.uncompressedSize !== b.uncompressedSize) return b.uncompressedSize - a.uncompressedSize;
+  if (a.recency !== b.recency) return a.recency - b.recency;
   if (a.id < b.id) return -1;
   if (a.id > b.id) return 1;
   return 0;

@@ -9,6 +9,8 @@ export { CRUFT_MTIMES_MAGIC, parseCruftMtimes, serializeCruftMtimes } from './cr
 export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction } from './delta.js';
 export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
 export { encodeDelta, serializeDelta } from './delta-encode.js';
+// Delta policy
+export { NO_RECENCY } from './delta-policy.js';
 // Errors
 export type {
   BitmapCheck,

@@ -5,6 +5,7 @@ import {
   DEFAULT_PACK_DEPTH,
   DEFAULT_PACK_WINDOW,
   MAX_OFS_OVERHEAD_BYTES,
+  NO_RECENCY,
   type PackEmissionKey,
   resolveDeltaPolicy,
 } from '../../../../src/domain/storage/delta-policy.js';
@@ -14,7 +15,9 @@ const key = (
   id: string,
   type: PackEmissionKey['type'],
   uncompressedSize: number,
-): PackEmissionKey => ({ id, type, uncompressedSize });
+  nameHash = 0,
+  recency: number = NO_RECENCY,
+): PackEmissionKey => ({ id, type, uncompressedSize, nameHash, recency });
 
 describe('comparePackEmissionOrder', () => {
   describe('Given two keys of different types', () => {
@@ -53,6 +56,40 @@ describe('comparePackEmissionOrder', () => {
     });
   });
 
+  describe('Given two keys of the same type whose nameHash order disagrees with their size order', () => {
+    describe('When compared', () => {
+      it('Then the nameHash order decides, not size', () => {
+        // Arrange
+        const sut = comparePackEmissionOrder;
+        const higherHashSmallerSize = key('a', PACK_ENTRY_TYPE.BLOB, 10, 20);
+        const lowerHashBiggerSize = key('b', PACK_ENTRY_TYPE.BLOB, 100, 5);
+
+        // Act
+        const result = sut(higherHashSmallerSize, lowerHashBiggerSize);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
+  describe('Given two keys of the same type and size, differing only in nameHash', () => {
+    describe('When compared', () => {
+      it('Then the larger nameHash sorts first (DESC)', () => {
+        // Arrange
+        const sut = comparePackEmissionOrder;
+        const higherHash = key('z', PACK_ENTRY_TYPE.BLOB, 10, 20);
+        const lowerHash = key('a', PACK_ENTRY_TYPE.BLOB, 10, 5);
+
+        // Act
+        const result = sut(higherHash, lowerHash);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
   describe('Given two keys of the same type and different sizes', () => {
     describe('When compared', () => {
       it('Then the larger size sorts first (DESC)', () => {
@@ -63,6 +100,57 @@ describe('comparePackEmissionOrder', () => {
 
         // Act
         const result = sut(bigger, smaller);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
+  describe('Given two keys of the same type and nameHash whose size order disagrees with their recency order', () => {
+    describe('When compared', () => {
+      it('Then the size order decides, not recency', () => {
+        // Arrange
+        const sut = comparePackEmissionOrder;
+        const biggerLaterRecency = key('a', PACK_ENTRY_TYPE.BLOB, 100, 0, 5);
+        const smallerEarlierRecency = key('b', PACK_ENTRY_TYPE.BLOB, 10, 0, 1);
+
+        // Act
+        const result = sut(biggerLaterRecency, smallerEarlierRecency);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
+  describe('Given two keys of the same type, nameHash and size, differing only in recency', () => {
+    describe('When compared', () => {
+      it('Then the smaller recency sorts first (ASC)', () => {
+        // Arrange
+        const sut = comparePackEmissionOrder;
+        const earlier = key('z', PACK_ENTRY_TYPE.BLOB, 10, 0, 1);
+        const later = key('a', PACK_ENTRY_TYPE.BLOB, 10, 0, 5);
+
+        // Act
+        const result = sut(earlier, later);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
+  describe('Given two keys of the same type, nameHash and size, whose recency order disagrees with their id order', () => {
+    describe('When compared', () => {
+      it('Then the recency order decides, not id', () => {
+        // Arrange
+        const sut = comparePackEmissionOrder;
+        const earlierRecencyHigherId = key('z', PACK_ENTRY_TYPE.BLOB, 10, 0, 1);
+        const laterRecencyLowerId = key('a', PACK_ENTRY_TYPE.BLOB, 10, 0, 5);
+
+        // Act
+        const result = sut(earlierRecencyHigherId, laterRecencyLowerId);
 
         // Assert
         expect(result).toBeLessThan(0);
@@ -83,6 +171,42 @@ describe('comparePackEmissionOrder', () => {
 
         // Assert
         expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
+  describe('Given two keys both at NO_RECENCY, differing only in id', () => {
+    describe('When compared', () => {
+      it('Then id decides, exactly as when recency is never supplied', () => {
+        // Arrange
+        const sut = comparePackEmissionOrder;
+        const first = key('ccc', PACK_ENTRY_TYPE.BLOB, 10, 0, NO_RECENCY);
+        const second = key('ddd', PACK_ENTRY_TYPE.BLOB, 10, 0, NO_RECENCY);
+
+        // Act
+        const result = sut(first, second);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
+  describe('Given two distinct keys with distinct recencies', () => {
+    describe('When compared in both directions', () => {
+      it('Then the order is a strict total order — never zero for distinct recencies', () => {
+        // Arrange
+        const sut = comparePackEmissionOrder;
+        const a = key('aaa', PACK_ENTRY_TYPE.TREE, 5, 0, 1);
+        const b = key('bbb', PACK_ENTRY_TYPE.TREE, 5, 0, 2);
+
+        // Act
+        const forward = sut(a, b);
+        const backward = sut(b, a);
+
+        // Assert
+        expect(forward).not.toBe(0);
+        expect(Math.sign(forward)).toBe(-Math.sign(backward));
       });
     });
   });

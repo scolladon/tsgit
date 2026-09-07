@@ -20,6 +20,7 @@ import {
   comparePackEmissionOrder,
   DELTA_ACCEPT_RATIO,
   type DeltaPolicy,
+  NO_RECENCY,
   type PackEmissionKey,
 } from '../../../domain/storage/delta-policy.js';
 import {
@@ -103,7 +104,9 @@ function boundCarriedContent(
       id,
       sourceIndex: i,
       type: objectTypeToPackEntryType(meta.type),
+      nameHash: 0,
       uncompressedSize: meta.uncompressedSize,
+      recency: NO_RECENCY,
     };
     const content = meta.content;
     if (content === undefined || carriedBytes + content.length > budget) {
