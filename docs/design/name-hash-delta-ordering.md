@@ -1209,7 +1209,15 @@ cheap ones:
 - `fold(fold(seed, a), b) ≡ packNameHash(a ++ b)` over arbitrary byte arrays;
 - inserting any of the four space bytes anywhere leaves the hash unchanged;
 - the result is always an integer in `[0, 2³²)`; the function never throws (total);
-- `packNameHash(p ++ s) ≡ packNameHash(q ++ s)` whenever `s` has ≥ 16 non-space bytes.
+
+There is **no** "a ≥ 16-byte suffix determines the hash" property, though an earlier draft of this
+document asserted one. It is false: `>>> 2` truncates, so the bits a step discards depend on the
+whole prefix, and the following `+ (c << 24)` can carry that difference back into the high bits.
+Git's own comment says the fold works "effectively", not exactly, and that word is load-bearing.
+Disproved during implementation three ways — a fast-check counterexample, an independent
+re-derivation, and git's C fold compiled verbatim, which showed a ~54 % mismatch rate at exactly
+16 shared trailing bytes while still matching every pinned vector. The 16-byte and 15-byte window
+cases remain as **example vectors**, which is all they ever were.
 
 ### Unit — `test/unit/domain/storage/delta-policy.test.ts` (extended)
 

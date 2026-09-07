@@ -266,7 +266,7 @@ Requirements **R1**, **R2**.
 | create | `src/domain/storage/pack-name-hash.ts` | the whole module |
 | edit | `src/domain/storage/index.ts` | one new export block; the barrel is grouped by concern with a `// <Concern>` comment per group (see `// Delta` at `:8`, `:9-11`) |
 | create | `test/unit/domain/storage/pack-name-hash.test.ts` | vectors + isolated byte cases |
-| create | `test/unit/domain/storage/pack-name-hash.properties.test.ts` | four properties |
+| create | `test/unit/domain/storage/pack-name-hash.properties.test.ts` | three properties |
 | edit | `test/unit/domain/storage/arbitraries.ts` | one exported byte-array arbitrary |
 | regenerate | `reports/api.json` | `npm run docs:json`, commit the result |
 
@@ -334,15 +334,24 @@ Two rows are load-bearing beyond their value. `\xc3\xa9.txt` is the **only** row
 state whose bit 31 is already set (after `0xc3`, `hash === 0xc3000000`), so it is what kills the
 `>>> 2` → `>> 2` mutant. `\xff` is what kills a dropped final `>>> 0`.
 
-**The 16-byte window, both sides.** `0123456789abcdef` and `X0123456789abcdef` are equal because
-`'X'`'s contribution has been shifted right by `2 × 16 = 32` bits and left the word. The
-**negative** case must also ship: with a **15**-byte tail the prefix survives — `'X' << 24`
-shifted right by 30 bits is exactly `1` — so `packNameHash('X123456789abcdef')` differs from
-`packNameHash('123456789abcdef')` by precisely `1`. Assert that difference numerically, not just
-`not.toBe`.
+**The 16-byte window, both sides.** `0123456789abcdef` and `X0123456789abcdef` are equal for
+*these* byte values: `'X'`'s own term has been shifted right by `2 × 16 = 32` bits and left the
+word. The **negative** case must also ship: with a **15**-byte tail the prefix survives —
+`'X' << 24` shifted right by 30 bits is exactly `1` — so `packNameHash('X123456789abcdef')`
+differs from `packNameHash('123456789abcdef')` by precisely `1`. Assert that difference
+numerically, not just `not.toBe`.
+
+⚠️ **These are vectors, not a universal law — do not generalise them into a property.** A first
+draft of this plan did, and it is false. `>>> 2` truncates, so the two low bits a step discards
+depend on the whole prefix, and the following `+ (c << 24)` can **carry** that difference back up
+into the high bits. A prefix therefore never provably leaves the word; it only *usually* does,
+which is why git's own comment says "effectively". Disproved three independent ways during Part 1:
+a fast-check counterexample inside 15 trials, an from-scratch re-derivation, and git's C fold
+compiled verbatim with `cc`, which reproduced a ~54 % mismatch rate over 200 000 random trials at
+exactly 16 shared trailing bytes while still agreeing with every pinned vector above.
 
 **Property file** (design §Test strategy; lenses 1 and 4 fit — a compositional fold and a
-whitespace-drop invariant). Four properties, matching the seven existing
+whitespace-drop invariant). Three properties, matching the seven existing
 `test/unit/domain/storage/*.properties.test.ts` files' shape (`import fc from 'fast-check';`
 line 1, `import { describe, expect, it } from 'vitest';` line 2, blank, then SUT then
 `./arbitraries.js` last):
@@ -350,17 +359,14 @@ line 1, `import { describe, expect, it } from 'vitest';` line 2, blank, then SUT
 1. `foldPackNameHash(foldPackNameHash(seed, a), b) === packNameHash(concat(a, b))` — `numRuns: 200`
 2. inserting any of the four space bytes at any index leaves the hash unchanged — `numRuns: 200`
 3. the result is always an integer in `[0, 2**32)` and the function never throws — `numRuns: 200`
-4. `packNameHash(concat(p, s)) === packNameHash(concat(q, s))` whenever `s` holds at least 16
-   non-space bytes — `numRuns: 50` (filter-heavy: the suffix must be **generated** space-free
-   rather than filtered, or the run starves)
 
 **Never commit a seed.** A failing property shrinks to a counterexample locally.
 
 **The arbitrary.** `test/unit/domain/storage/arbitraries.ts` exists (600+ lines) and already
 re-exports `arbObjectId` and exports `arbDeltaBaseTarget`, `arbBitSet`, `arbMidxSpec`, … It has
 **no** byte-array generator for this family. Add one in the file's existing style
-(`export function arbNameBytes(): fc.Arbitrary<Uint8Array>` over `fc.uint8Array({ maxLength: 64 })`,
-plus a space-free variant for property 4). Do **not** inline `fc.uint8Array` in the property file —
+(`export function arbNameBytes(): fc.Arbitrary<Uint8Array>` over
+`fc.uint8Array({ maxLength: 64 })`). Do **not** inline `fc.uint8Array` in the property file —
 the house rule puts per-family generators in the directory's shared `arbitraries.ts`.
 
 **v2 vectors** are recorded as **data** in `pack-name-hash.test.ts`, in their own `describe` that
