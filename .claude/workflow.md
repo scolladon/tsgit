@@ -2,7 +2,7 @@
 backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/code-navigation.md
-models: { designer: fable, reviewer: fable }
+models: { designer: fable, reviewer: fable, fallback: opus }
 gates:
   part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling"
   phase: "npm run validate"
@@ -86,6 +86,11 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   over a whole feature diff. Both are read-and-reason work with a small write surface, so
   a stronger tier buys accuracy where it is cheapest to spend. Every other role stays on
   its descriptor default.
+- **`models.fallback: opus`** — the engine default fallback is `sonnet`, which is a tier
+  *down* from both roles pinned above. A fallback only fires on model-availability
+  degradation, so it fires precisely when a judgment-dense phase is already having a bad
+  day; dropping design or review two tiers at that moment is the wrong direction. Opus is
+  the nearest tier that keeps the phase's reasoning budget intact.
 
 - **`check:spelling` is in BOTH `gates.part` and `review-batch`** — it was review-batch-only,
   and an unknown word once rode two commits before anything noticed, because the part gate
