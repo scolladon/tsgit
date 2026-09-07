@@ -285,6 +285,7 @@
     "editmsg",
     "EEXIST",
     "effectful",
+    "EINVAL",
     "EISDIR",
     "elementwise",
     "elif",

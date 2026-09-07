@@ -42,7 +42,7 @@ Changes from Round 2 reviews:
 - **Temp file naming** — application-layer concern using `writeExclusive` with generated names. No port-level `mktemp`.
 - **Dependency-cruiser rule added** — `ports-cannot-import-application` enforces `ports/ ✗→ application/`.
 - **`TransformStream`/`ReadableStream` type availability** — `@types/node` >= 18 provides globals. Emitted `.d.ts` files use these. Consumers need either `@types/node` or `DOM` types. Documented in §18.
-- **`rename` atomically replaces target** — contract specifies POSIX behavior. Node adapter on Windows uses `fs.rename` (which does replace on modern Windows + NTFS).
+- **`rename` enforces POSIX kind rules on every platform** — Windows' own `fs.rename` does not: it replaces a non-directory destination with a directory source (destroying it) and refuses to replace an *empty* directory destination at all, the opposite of POSIX on both counts. The Node adapter now enforces the rules itself there: a directory source onto a regular file or symlink destination refuses `NOT_A_DIRECTORY`; onto a non-empty directory it refuses `DIRECTORY_NOT_EMPTY`; onto an empty directory it replaces, but in two steps (remove the empty destination, then rename) rather than the single step POSIX hosts take. Every other arrangement delegates to Windows' own `rename` unchanged.
 - **`writeExclusive` is bytes-only** — application layer uses `TextEncoder` for text-based lock files. No `writeExclusiveUtf8`.
 - **Browser `writeExclusive` multi-tab limitation** — documented. True locking requires `createSyncAccessHandle()` in Worker context.
 - **`readSlice` file handle leak prevention** — Node adapter must use `try/finally` to close handle regardless of abort signal state.
@@ -512,7 +512,8 @@ function createMemoryContext(options?: MemoryAdapterOptions): Context;
 **Node adapter specifics:**
 - **Path containment:** Factory resolves `workDir` to absolute via `path.resolve()`. Every method resolves its path argument to absolute, calls `fs.realpath()` to resolve symlinks, then checks `resolved === rootDir || resolved.startsWith(rootDir + '/')`. Throws `PERMISSION_DENIED` on violation.
 - **`readSlice`:** Opens file with `fs.open`, reads at offset via `fileHandle.read(buffer, 0, length, offset)`, closes handle in `finally` block. Validates `offset >= 0` and `length >= 0`.
-- **`writeExclusive`:** Creates parent directories first (like `write`), then uses `fs.writeFile(path, data, { flag: 'wx' })`. `EEXIST` → `FILE_EXISTS`. If initial `writeFile` fails with `ENOENT` (parent missing), calls `mkdir -p` on parent then retries `writeFile`.
+- **`writeExclusive`:** Creates parent directories first (like `write`), then uses `fs.writeFile(path, data, { flag: 'wx' })`. `EEXIST` → `FILE_EXISTS`. If initial `writeFile` fails with `ENOENT` (parent missing), calls `mkdir -p` on parent then retries `writeFile`. Over a symlink leaf (live or dangling) it refuses `FILE_EXISTS` on every platform, including Windows, where the leaf's own `lstat` decides it ahead of the open — Windows' exclusive open would otherwise follow a dangling link and create its target.
+- **`rename` on Windows:** gated by the `PathPolicy` capability flag `honoursRenameKinds` (`true` on POSIX, costing nothing; `false` on Windows). When `false`, the adapter probes both sides with `lstat` before delegating: a directory source onto a file or symlink destination refuses `NOT_A_DIRECTORY` carrying `src` before any rename runs; onto a non-empty directory it refuses `DIRECTORY_NOT_EMPTY` carrying `src`, produced by the replace arm's own `rmdir` failing `ENOTEMPTY`; onto an empty directory it replaces via `rmdir` then `rename`, recreating the destination on a best-effort basis if that `rename` then fails. Identity (a self-rename under an aliased spelling) is decided by device and inode, not by string comparison.
 - **`chmod`:** Uses `fs.chmod(path, mode)`.
 - **`stat`/`lstat`:** Uses `{ bigint: true }` to populate `ctimeNs`/`mtimeNs` fields. Maps `fs.Stats` to `FileStat`.
 - **`mkdir`:** Uses `{ recursive: true }`.
@@ -558,11 +559,12 @@ function createMemoryContext(options?: MemoryAdapterOptions): Context;
 - **First-class, not afterthought:** The memory adapter is the primary test adapter. All domain and application tests use it.
 - **Path containment:** Normalizes paths (resolve `.`/`..`, strip trailing slashes). Checks paths don't escape root after normalization.
 - **`readSlice`:** Retrieves `Uint8Array` from map, returns `data.slice(offset, offset + length)` (defensive copy).
-- **`writeExclusive`:** Checks `Map.has(path)` — throws `FILE_EXISTS` if present. Single-threaded JS means no TOCTOU race.
+- **`write`:** Overwrites a regular file; refuses a directory or a symbolic link at the leaf with `PERMISSION_DENIED`. `writeUtf8`, `writeStream` and `appendUtf8` delegate to it and inherit the refusal. A `FileHandle` write against a file removed after `open` lands nowhere — it never re-files the path, matching the POSIX unlinked-inode outcome.
+- **`writeExclusive`:** One occupancy predicate checks all three namespaces — `files`, `symlinks`, `directories` — and throws `FILE_EXISTS` if any occupies `path`, a directory occupant included, same as node and git. Single-threaded JS means no TOCTOU race.
 - **`FileStat`:** Synthetic values — `ctimeMs`/`mtimeMs` from write timestamp, `size` from data length, `mode` = `0o100644`, `dev`/`ino`/`uid`/`gid` = 0. `ctimeNs`/`mtimeNs` = undefined.
 - **`readdir`:** Derives entries from Map key prefixes matching `${dirPath}/` (one level deep).
-- **`mkdir`:** Adds path and all parents to directories Set.
-- **`rename`:** Delete old key + insert new key (not atomic, but single-threaded JS is safe).
+- **`mkdir`:** Validates the whole ancestor chain — no file or symlink blocking any segment — before recording any of it, so a refused call leaves nothing behind; a segment already recorded as a directory short-circuits the walk.
+- **`rename`:** A precondition mirrors POSIX `rename(2)`'s refusals (the source/destination kind matrix, a non-empty destination, a destination inside the source) and runs before any mutation; only then does a leaf move (delete old key, insert new) or a subtree re-key happen. `atomicRename` delegates to it.
 - **`chmod`:** No-op (mode metadata not tracked in memory adapter).
 - **Symlinks:** Stored in a separate `Map<string, string>` (path → target). `readlink` looks up the map. `symlink` writes to it.
 - **Pre-seeded files:** `createMemoryContext({ files: { 'path': bytes } })` populates the map at construction.

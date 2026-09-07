@@ -68,8 +68,11 @@ const REMOVE_TREE_CONCURRENCY = 8;
  * Numeric `open`/`writeFile` flags for the write guard's W2 leaf no-follow:
  * `O_NOFOLLOW` refuses a symlink leaf atomically at the syscall, closing the
  * TOCTOU window between a pre-write `lstat` and the write and costing one
- * fewer syscall per write. Ignored by Windows (the pre-write `lstat` fallback
- * in `assertLeafSafeToWrite` covers that platform instead).
+ * fewer syscall per write. Ignored by Windows, where the pre-write `lstat`
+ * fallback covers that platform instead: `assertLeafSafeToWrite` for the
+ * create and append flags (a symlink leaf refuses `PERMISSION_DENIED`) and
+ * `assertExclusiveCreateLeaf` for the exclusive flags (`FILE_EXISTS`, the
+ * verdict `O_EXCL` itself gives everywhere else).
  */
 const WRITE_CREATE_FLAGS =
   fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
@@ -86,6 +89,25 @@ const APPEND_FLAGS =
  * `writeStream`'s open; no string flag alias expresses it.
  */
 type WriteStreamNumericFlags = Omit<fs.WriteStreamOptions, 'flags'> & { readonly flags: number };
+
+/** What `lstat` reports for `ino` on a volume that has no inodes (FAT, some network shares). */
+const NO_INODE = 0n;
+
+function reportsInode(stat: fs.BigIntStats): boolean {
+  return stat.ino !== NO_INODE;
+}
+
+/**
+ * Same directory entry, decided by device and inode rather than by name:
+ * Win32 accepts several spellings of one entry (a trailing dot or space the
+ * kernel strips, an 8.3 short name), and a case-fold can equate two DISTINCT
+ * entries on a case-sensitive directory. Asked only when both sides report
+ * an inode; compared as bigints because an NTFS file reference exceeds the
+ * precision of a double.
+ */
+function sameEntry(a: fs.BigIntStats, b: fs.BigIntStats): boolean {
+  return a.ino === b.ino && a.dev === b.dev;
+}
 
 /**
  * Bounded-concurrency map. Issues up to `limit` `fn(item)` calls in
@@ -139,6 +161,18 @@ export function toAbsolute(
 /** @internal */
 export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && 'code' in err;
+}
+
+/** Absence is the only thing swallowed: `ENOENT`/`ENOTDIR` become `undefined`, anything else rethrows. */
+async function orMissing<T>(probe: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await probe();
+  } catch (err) {
+    if (isErrnoException(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
+      return undefined;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -291,29 +325,26 @@ export async function realpathNearestExisting(
 }
 
 /**
- * Interpret the result of an lstat on the leaf of a creation target.
+ * Classify the result of an lstat on the leaf of a creation target.
  *
- * - Success + symlink → reject with PERMISSION_DENIED (don't write through a pre-existing symlink)
- * - Success + non-symlink → no-op (overwrite is fine)
- * - ENOENT → no-op (the leaf doesn't exist yet, which is the expected creation case)
+ * - Success + symlink → reports `true` (caller decides the refusal)
+ * - Success + non-symlink → reports `false` (overwrite is fine)
+ * - ENOENT → reports `false` (the leaf doesn't exist yet, the expected creation case)
  * - Any other errno → surface via mapErrno (must NOT be silently swallowed)
  *
  * Non-Error, non-errno throwables re-bubble as-is.
  * @internal
  */
-export function interpretCreationLstat(
+export function isCreationLeafSymlink(
   result:
     | { readonly ok: true; readonly isSymlink: boolean }
     | { readonly ok: false; readonly err: unknown },
   path: string,
-): void {
-  if (result.ok) {
-    if (result.isSymlink) throw permissionDenied(path);
-    return;
-  }
+): boolean {
+  if (result.ok) return result.isSymlink;
   const { err } = result;
   if (isErrnoException(err)) {
-    if (err.code === 'ENOENT') return;
+    if (err.code === 'ENOENT') return false;
     throw mapErrno(err, path);
   }
   throw err;
@@ -655,7 +686,7 @@ export class NodeFileSystem implements FileSystem {
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.resolveWrite(path);
-    await this.assertWritableLeaf(real, path);
+    await this.assertExclusiveCreateLeaf(real, path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await this.fsOps.writeFile(real, data, { flag: WRITE_EXCLUSIVE_FLAGS });
@@ -748,15 +779,144 @@ export class NodeFileSystem implements FileSystem {
     // symlink moves the link and leaves whatever it points at untouched.
     const realSrc = await this.resolveWrite(src);
     const realDst = await this.resolveWrite(dst);
-    await runFs(async () => {
-      await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
-      await this.fsOps.rename(realSrc, realDst);
-    }, src);
-    // Deliberately a full clear, not a `dirname(src)`/`dirname(dst)`-scoped
-    // delete — see `parentRealpathCache`'s field doc for why a directory
-    // rename makes that narrowing unsound.
-    this.parentRealpathCache.clear();
+    try {
+      await runFs(async () => {
+        const replace = await this.mustReplaceDirectory(realSrc, realDst, src);
+        await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
+        if (replace) {
+          await this.replaceDirectory(realSrc, realDst);
+        } else {
+          await this.fsOps.rename(realSrc, realDst);
+        }
+      }, src);
+    } finally {
+      // Deliberately a full clear, not a `dirname(src)`/`dirname(dst)`-scoped
+      // delete — see `parentRealpathCache`'s field doc for why a directory
+      // rename makes that narrowing unsound. Cleared on the failure path too:
+      // the replace arm may have removed the destination and may or may not
+      // have recreated it, so no cached parent realpath for either side is
+      // known to be current.
+      this.parentRealpathCache.clear();
+    }
   };
+
+  /**
+   * POSIX `rename(2)`'s kind rules, enforced here only on a platform whose
+   * own rename does not enforce them. Refuses on positive evidence and
+   * delegates on everything else, so no arrangement the platform already
+   * decides correctly changes shape. `true` means the destination is a
+   * directory other than the source that must be removed before the rename;
+   * whether it is empty is the removal's own verdict.
+   */
+  private async mustReplaceDirectory(
+    realSrc: string,
+    realDst: string,
+    reported: string,
+  ): Promise<boolean> {
+    if (this.pathPolicy.honoursRenameKinds) return false;
+    // Byte-identical spellings are one entry with no case-fold involved: the
+    // platform's own no-op, decided before any syscall and any removal.
+    if (realSrc === realDst) return false;
+    // A destination strictly inside the source is the platform's own
+    // invalid-argument refusal; deciding it here, before any syscall, also
+    // keeps the removal below away from a directory nested in the source.
+    if (this.strictlyContains(realSrc, realDst)) return false;
+    const source = await this.lstatOrMissing(realSrc);
+    // `lstat` never reports a symlink as a directory (a junction is a
+    // symlink to it too), so the directory test alone decides the kind.
+    if (source === undefined || !source.isDirectory()) return false;
+    const destination = await this.lstatOrMissing(realDst);
+    if (destination === undefined) return false;
+    if (!destination.isDirectory()) throw notADirectory(reported);
+    // The source leaf was never canonicalised (an alias of the directory may
+    // spell it), while the destination's parent chain was: only the
+    // canonical source can say whether the destination sits inside it.
+    const canonicalSrc = await this.fsOps.realpath(realSrc);
+    // One directory under two spellings is the platform's own no-op; the
+    // string compares above cannot see through Win32 name aliases.
+    if (await this.sameDirectory(source, destination, canonicalSrc, realDst)) return false;
+    return !this.strictlyContains(canonicalSrc, realDst);
+  }
+
+  /**
+   * One directory under two spellings: by device and inode when the
+   * filesystem reports them, else by canonical path — a volume with no
+   * inodes still has one final path per entry, and `realpath` already
+   * returns the platform's own spelling of it, so the compare is exact.
+   */
+  private async sameDirectory(
+    source: fs.BigIntStats,
+    destination: fs.BigIntStats,
+    canonicalSrc: string,
+    realDst: string,
+  ): Promise<boolean> {
+    if (reportsInode(source) && reportsInode(destination)) return sameEntry(source, destination);
+    return (await this.realpathOrMissing(realDst)) === canonicalSrc;
+  }
+
+  /** The canonical path, or `undefined` for a destination that vanished since its probe. */
+  private async realpathOrMissing(real: string): Promise<string | undefined> {
+    return orMissing(() => this.fsOps.realpath(real));
+  }
+
+  /** `child` is strictly below `parent` — equality is NOT containment here. */
+  private strictlyContains(parent: string, child: string): boolean {
+    const policy = this.pathPolicy;
+    const normalizedParent = policy.normalizeForCompare(parent);
+    return (
+      policy.normalizeForCompare(child) !== normalizedParent &&
+      pathContainsNormalized(normalizedParent, child, policy)
+    );
+  }
+
+  /**
+   * The emulated replacement: remove the destination, then rename. A
+   * destination that is not empty fails the removal with ENOTEMPTY, which the
+   * enclosing operation maps to DIRECTORY_NOT_EMPTY; one that vanished since
+   * the probe has already reached the state the removal wanted, and is not
+   * recreated. When the rename then fails, a directory this arm removed is
+   * recreated on a best-effort basis so the refusal still changes nothing; an
+   * errno failure of that restoration is subordinate to the rename failure
+   * being reported and is not surfaced.
+   */
+  private async replaceDirectory(realSrc: string, realDst: string): Promise<void> {
+    const removed = await this.removeEmptyDirectory(realDst);
+    try {
+      await this.fsOps.rename(realSrc, realDst);
+    } catch (err) {
+      if (removed) await this.restoreEmptyDirectory(realDst);
+      throw err;
+    }
+  }
+
+  /** `false` when nothing was there to remove. */
+  private async removeEmptyDirectory(real: string): Promise<boolean> {
+    try {
+      await this.fsOps.rmdir(real);
+      return true;
+    } catch (err) {
+      if (isErrnoException(err) && err.code === 'ENOENT') return false;
+      throw err;
+    }
+  }
+
+  /**
+   * Best effort: an errno here means the restoration itself failed, and the
+   * rename failure being reported is the one that matters. Anything else is
+   * a programming error and surfaces in its place.
+   */
+  private async restoreEmptyDirectory(real: string): Promise<void> {
+    try {
+      await this.fsOps.mkdir(real);
+    } catch (err) {
+      if (!isErrnoException(err)) throw err;
+    }
+  }
+
+  /** "Is there an entry here" — never "what is it". Swallows nothing but absence. */
+  private async lstatOrMissing(real: string): Promise<fs.BigIntStats | undefined> {
+    return orMissing(() => this.fsOps.lstat(real, { bigint: true }));
+  }
 
   // `rename` above is already atomic on POSIX (`rename(2)`) and clears the
   // parent-realpath cache; the capability is just that guarantee exposed
@@ -894,16 +1054,8 @@ export class NodeFileSystem implements FileSystem {
     await runFs(() => this.fsOps.rmdir(real), originalPath);
   }
 
-  /**
-   * Explicit leaf check for the two situations that cannot rely on
-   * `O_NOFOLLOW`: `chmod` (no portable no-follow chmod exists, on any
-   * platform) and the Windows arm of every other W2 write surface
-   * (`O_NOFOLLOW` is silently ignored there). A symlink leaf throws
-   * `PERMISSION_DENIED`; a leaf that doesn't exist yet (ENOENT) is a no-op
-   * — the ordinary creation case — and callers whose leaf must already
-   * exist (`chmod`) surface that via their own op's own ENOENT.
-   */
-  private async assertLeafSafeToWrite(real: string, path: string): Promise<void> {
+  /** lstat the creation leaf and classify it. Unconditional; callers gate on the policy. */
+  private async creationLeafIsSymlink(real: string, path: string): Promise<boolean> {
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
       const leafStat = await this.fsOps.lstat(real);
@@ -911,12 +1063,32 @@ export class NodeFileSystem implements FileSystem {
     } catch (err) {
       lstatResult = { ok: false, err };
     }
-    interpretCreationLstat(lstatResult, path);
+    return isCreationLeafSymlink(lstatResult, path);
   }
 
   /**
-   * Fallback for every W2 write surface on a platform whose `open(2)` does
-   * not honour `O_NOFOLLOW` (`honoursNoFollow: false` — currently Windows
+   * Explicit leaf check for the two situations that cannot rely on
+   * `O_NOFOLLOW`: `chmod` (no portable no-follow chmod exists, on any
+   * platform) and the Windows arm of every other W2 write surface except
+   * `writeExclusive`, which takes `assertExclusiveCreateLeaf` and refuses
+   * `FILE_EXISTS` instead (`O_NOFOLLOW` is silently ignored there). A symlink
+   * leaf throws `PERMISSION_DENIED`; a leaf that doesn't exist yet (ENOENT) is a no-op
+   * — the ordinary creation case — and callers whose leaf must already
+   * exist (`chmod`) surface that via their own op's own ENOENT.
+   */
+  private async assertLeafSafeToWrite(real: string, path: string): Promise<void> {
+    if (await this.creationLeafIsSymlink(real, path)) throw permissionDenied(path);
+  }
+
+  /** `writeExclusive` only: a symlink leaf refuses with FILE_EXISTS, live or dangling. */
+  private async assertExclusiveCreateLeaf(real: string, path: string): Promise<void> {
+    if (this.pathPolicy.honoursNoFollow) return; // O_EXCL already answers EEXIST
+    if (await this.creationLeafIsSymlink(real, path)) throw fileExists(path);
+  }
+
+  /**
+   * Fallback for every W2 write surface but `writeExclusive` on a platform
+   * whose `open(2)` does not honour `O_NOFOLLOW` (`honoursNoFollow: false` — currently Windows
    * only, where the Win32 API silently ignores the flag): the explicit
    * leaf lstat is the only defence there. A platform that DOES honour
    * `O_NOFOLLOW` relies on it at the `open` itself and skips this entirely.

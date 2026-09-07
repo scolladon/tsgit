@@ -95,6 +95,11 @@ function assertNotADirectory(err: unknown): void {
   expect((err as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
 }
 
+function assertDirectoryNotEmpty(err: unknown): void {
+  expect(err).toBeInstanceOf(TsgitError);
+  expect((err as TsgitError).data.code).toBe('DIRECTORY_NOT_EMPTY');
+}
+
 export function fileSystemContractTests(createSut: () => Promise<FileSystemContractEnv>): void {
   describe('FileSystem contract', () => {
     let env: FileSystemContractEnv;
@@ -246,6 +251,29 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(result).toEqual(new Uint8Array([9, 9]));
     });
 
+    it('Given a directory at the target path, When write, Then it refuses and the directory is intact', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/write-leaf-dir`;
+      const childData = new Uint8Array([1, 2, 3]);
+      await env.fs.mkdir(dir);
+      await env.fs.write(`${dir}/child.bin`, childData);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.write(dir, new Uint8Array([9]));
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertPermissionDenied(caught);
+      const names = (await env.fs.readdir(dir)).map((entry) => entry.name);
+      expect(names).toContain('child.bin');
+      expect(await env.fs.read(`${dir}/child.bin`)).toEqual(childData);
+    });
+
     it('Given empty Uint8Array, When write then read, Then returns empty array', async () => {
       // Arrange
       const path = `${env.rootDir}/empty.bin`;
@@ -386,6 +414,119 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(await env.fs.read(dst)).toEqual(srcData);
     });
 
+    it('Given a directory at the destination, When rename, Then it refuses and neither side moves', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src.bin`;
+      const dst = `${env.rootDir}/rename-kind-dst-dir`;
+      const data = new Uint8Array([1, 2, 3]);
+      await env.fs.write(src, data);
+      await env.fs.mkdir(dst);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.rename(src, dst);
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertPermissionDenied(caught);
+      expect(await env.fs.read(src)).toEqual(data);
+      expect(await env.fs.readdir(dst)).toEqual([]);
+    });
+
+    it('Given a directory source and a file destination, When rename, Then it refuses and neither side moves', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src-dir`;
+      const dst = `${env.rootDir}/rename-kind-dst.bin`;
+      const childData = new Uint8Array([4]);
+      await env.fs.write(`${src}/child.bin`, childData);
+      const dstData = new Uint8Array([9, 9]);
+      await env.fs.write(dst, dstData);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.rename(src, dst);
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertNotADirectory(caught);
+      expect(await env.fs.read(dst)).toEqual(dstData);
+      expect(await env.fs.read(`${src}/child.bin`)).toEqual(childData);
+    });
+
+    it('Given a directory source and a non-empty directory destination, When rename, Then it refuses and neither tree merges', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src-dir2`;
+      const dst = `${env.rootDir}/rename-kind-dst-dir2`;
+      await env.fs.write(`${src}/a.bin`, new Uint8Array([1]));
+      await env.fs.write(`${dst}/b.bin`, new Uint8Array([2]));
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.rename(src, dst);
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertDirectoryNotEmpty(caught);
+      const srcEntries = await env.fs.readdir(src);
+      const dstEntries = await env.fs.readdir(dst);
+      expect(srcEntries.map((entry) => entry.name)).toEqual(['a.bin']);
+      expect(dstEntries.map((entry) => entry.name)).toEqual(['b.bin']);
+    });
+
+    it('Given a directory source and an empty directory destination, When rename, Then the subtree lands at the destination', async () => {
+      // Arrange
+      const src = `${env.rootDir}/rename-kind-src-dir3`;
+      const dst = `${env.rootDir}/rename-kind-dst-dir3`;
+      const data = new Uint8Array([5, 6]);
+      await env.fs.write(`${src}/child.bin`, data);
+      await env.fs.mkdir(dst);
+
+      // Act
+      await env.fs.rename(src, dst);
+
+      // Assert
+      expect(await env.fs.read(`${dst}/child.bin`)).toEqual(data);
+      expect(await env.fs.exists(src)).toBe(false);
+    });
+
+    it('Given src === dst for a file, When rename, Then it resolves and the entry is unchanged', async () => {
+      // Arrange
+      const path = `${env.rootDir}/rename-kind-same.bin`;
+      const data = new Uint8Array([7, 8]);
+      await env.fs.write(path, data);
+
+      // Act
+      await env.fs.rename(path, path);
+
+      // Assert
+      expect(await env.fs.read(path)).toEqual(data);
+    });
+
+    it('Given src === dst for a non-empty directory, When rename, Then it resolves and every child is still reachable', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/rename-kind-same-dir`;
+      const data = new Uint8Array([9]);
+      await env.fs.write(`${dir}/child.bin`, data);
+
+      // Act
+      await env.fs.rename(dir, dir);
+
+      // Assert
+      expect(await env.fs.read(`${dir}/child.bin`)).toEqual(data);
+    });
+
     it('Given existing file, When writeExclusive, Then throws FILE_EXISTS', async () => {
       // Arrange
       const path = await env.getExistingInRoot();
@@ -410,6 +551,54 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
       // Assert
       expect(await env.fs.read(path)).toEqual(data);
+    });
+
+    it('Given an existing directory, When writeExclusive, Then throws FILE_EXISTS', async () => {
+      // Arrange
+      const path = `${env.rootDir}/existing-dir`;
+      await env.fs.mkdir(path);
+
+      // Act
+      try {
+        await env.fs.writeExclusive(path, new Uint8Array([1]));
+        expect.fail('expected FILE_EXISTS');
+      } catch (err) {
+        // Assert
+        assertFileExists(err);
+      }
+    });
+
+    // Depth-1 (a file at the immediate parent) is deliberately not a row here:
+    // it is adapter-dependent — Node reports FILE_EXISTS, memory reports
+    // NOT_A_DIRECTORY carrying the ancestor. Depth >= 2 agrees on the code
+    // across both drivers.
+    it('Given a file at a grandparent path segment, When writeExclusive, Then throws NOT_A_DIRECTORY and records no intermediate directory', async () => {
+      // Arrange
+      const grandparent = `${env.rootDir}/grandparent.bin`;
+      await env.fs.write(grandparent, new Uint8Array([1]));
+      const path = `${grandparent}/mid/leaf.bin`;
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.writeExclusive(path, new Uint8Array([2]));
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — refused, and neither driver recorded the intermediate directory on the
+      // way (Node's mkdir -p stops at the file; memory validates the whole chain before
+      // adding), so probing it fails on both: NOT_A_DIRECTORY on Node, FILE_NOT_FOUND on memory.
+      assertNotADirectory(caught);
+      let probe: unknown;
+      try {
+        await env.fs.lstat(`${grandparent}/mid`);
+      } catch (err) {
+        probe = err;
+      }
+      expect(probe).toBeInstanceOf(TsgitError);
+      expect(['NOT_A_DIRECTORY', 'FILE_NOT_FOUND']).toContain((probe as TsgitError).data.code);
     });
 
     it('Given file with known content, When readSlice(0, 3), Then returns first 3 bytes', async () => {

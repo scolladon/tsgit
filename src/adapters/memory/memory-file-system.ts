@@ -28,6 +28,10 @@ interface Timestamps {
 
 const MEMORY_FILE_MODE = 0o100644;
 
+// POSIX's invalid-argument errno name — the literal `mapErrno`'s `default` arm forwards for
+// "an attempt was made to make a directory a subdirectory of itself".
+const INVALID_ARGUMENT = 'EINVAL';
+
 export class MemoryFileSystem implements FileSystem {
   private readonly files = new Map<string, Uint8Array>();
   private readonly directories = new Set<string>();
@@ -46,6 +50,9 @@ export class MemoryFileSystem implements FileSystem {
     this.directories.add(this.rootDir);
     for (const [key, value] of Object.entries(options.files ?? {})) {
       const normalized = this.resolve(key);
+      // A seeded file may not land where an earlier key already made a directory — the one
+      // route by which `files` and `directories` could otherwise share a key.
+      if (this.directories.has(normalized)) throw notADirectory(key);
       this.files.set(normalized, value.slice());
       this.touch(normalized);
       this.ensureParentDirs(normalized);
@@ -85,6 +92,11 @@ export class MemoryFileSystem implements FileSystem {
 
   write = async (path: string, data: Uint8Array): Promise<void> => {
     const normalized = this.resolve(path);
+    // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
+    // mapErrno sends both to PERMISSION_DENIED.
+    if (this.directories.has(normalized) || this.symlinks.has(normalized)) {
+      throw permissionDenied(path);
+    }
     this.ensureParentDirs(normalized);
     this.files.set(normalized, data.slice());
     this.touch(normalized);
@@ -105,7 +117,7 @@ export class MemoryFileSystem implements FileSystem {
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const normalized = this.resolve(path);
-    if (this.files.has(normalized) || this.symlinks.has(normalized)) {
+    if (this.occupied(normalized)) {
       throw fileExists(path);
     }
     this.ensureParentDirs(normalized);
@@ -210,7 +222,8 @@ export class MemoryFileSystem implements FileSystem {
 
   mkdir = async (path: string): Promise<void> => {
     const normalized = this.resolve(path);
-    // Stryker disable next-line ConditionalExpression,BlockStatement,LogicalOperator: equivalent — addDirectoryRecursive's first iteration re-checks `files.has(normalized) || symlinks.has(normalized)` and throws the identical NOT_A_DIRECTORY, so weakening or removing this guard cannot change behavior.
+    // The chain check below would refuse a file leaf too, but with the normalized key as
+    // its path; this guard keeps the caller's string, as every other leaf refusal does.
     if (this.files.has(normalized) || this.symlinks.has(normalized)) {
       throw notADirectory(path);
     }
@@ -246,15 +259,51 @@ export class MemoryFileSystem implements FileSystem {
   rename = async (src: string, dst: string): Promise<void> => {
     const normalizedSrc = this.resolve(src);
     const normalizedDst = this.resolve(dst);
+    this.assertRenamable(normalizedSrc, normalizedDst, src);
+    if (normalizedSrc === normalizedDst) return;
+    if (this.directories.has(normalizedSrc)) {
+      this.renameDirectory(normalizedSrc, normalizedDst);
+      return;
+    }
+    this.renameLeaf(normalizedSrc, normalizedDst);
+  };
+
+  // `rename` above is synchronous `Map` surgery with no `await` between the
+  // deletes and the sets, so it is already atomic with respect to the event
+  // loop; the capability is that guarantee exposed under its own name.
+  atomicRename = async (src: string, dst: string): Promise<void> => {
+    await this.rename(src, dst);
+  };
+
+  private assertRenamable(
+    normalizedSrc: string,
+    normalizedDst: string,
+    reportedPath: string,
+  ): void {
+    const srcIsDirectory = this.directories.has(normalizedSrc);
+    if (!srcIsDirectory && !this.files.has(normalizedSrc) && !this.symlinks.has(normalizedSrc)) {
+      throw fileNotFound(reportedPath);
+    }
+    if (normalizedSrc === normalizedDst) return;
+    if (!srcIsDirectory) {
+      if (this.directories.has(normalizedDst)) throw permissionDenied(reportedPath);
+      return;
+    }
+    if (normalizedDst.startsWith(`${normalizedSrc}/`)) {
+      throw unsupportedOperation('filesystem', INVALID_ARGUMENT);
+    }
+    if (!this.directories.has(normalizedDst)) {
+      if (this.files.has(normalizedDst) || this.symlinks.has(normalizedDst)) {
+        throw notADirectory(reportedPath);
+      }
+      return;
+    }
+    if (this.hasChildren(normalizedDst)) throw directoryNotEmpty(reportedPath);
+  }
+
+  private renameLeaf(normalizedSrc: string, normalizedDst: string): void {
     const fileBytes = this.files.get(normalizedSrc);
     const linkTarget = this.symlinks.get(normalizedSrc);
-    if (fileBytes === undefined && linkTarget === undefined) {
-      if (this.directories.has(normalizedSrc)) {
-        this.renameDirectory(normalizedSrc, normalizedDst);
-        return;
-      }
-      throw fileNotFound(src);
-    }
     // Invariant: files.set / symlinks.set always touch(); rm always deletes the timestamp.
     // So when a file or symlink exists at src, times.get(src) is guaranteed to be defined.
     const timestamp = this.times.get(normalizedSrc) as Timestamps;
@@ -272,14 +321,7 @@ export class MemoryFileSystem implements FileSystem {
     }
     this.times.delete(normalizedSrc);
     this.times.set(normalizedDst, timestamp);
-  };
-
-  // `rename` above is synchronous `Map` surgery with no `await` between the
-  // deletes and the sets, so it is already atomic with respect to the event
-  // loop; the capability is that guarantee exposed under its own name.
-  atomicRename = async (src: string, dst: string): Promise<void> => {
-    await this.rename(src, dst);
-  };
+  }
 
   /**
    * Move a directory subtree by re-keying every files/symlinks/times/directories
@@ -320,17 +362,21 @@ export class MemoryFileSystem implements FileSystem {
 
   symlink = async (target: string, path: string): Promise<void> => {
     const normalized = this.resolve(path);
-    if (
-      this.files.has(normalized) ||
-      this.symlinks.has(normalized) ||
-      this.directories.has(normalized)
-    ) {
+    if (this.occupied(normalized)) {
       throw fileExists(path);
     }
     this.ensureParentDirs(normalized);
     this.symlinks.set(normalized, target);
     this.touch(normalized);
   };
+
+  private occupied(normalized: string): boolean {
+    return (
+      this.files.has(normalized) ||
+      this.symlinks.has(normalized) ||
+      this.directories.has(normalized)
+    );
+  }
 
   chmod = async (path: string, _mode: number): Promise<void> => {
     this.resolve(path);
@@ -396,6 +442,10 @@ export class MemoryFileSystem implements FileSystem {
         return chunk.length;
       },
       write: async (data) => {
+        // A handle outlives its path. Once the file it opened has been removed, a write
+        // lands on the unlinked file as it does on POSIX — the path is never re-filed, so
+        // it cannot collide with a directory or symlink created there since.
+        if (!this.files.has(normalized)) return;
         this.files.set(normalized, data.slice());
         this.touch(normalized);
       },
@@ -419,17 +469,38 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   private addDirectoryRecursive(normalizedPath: string): void {
+    // A recorded directory proves its whole ancestor chain recorded and free of files and
+    // symlinks — `directories` is prefix-closed and disjoint from the other two namespaces
+    // on every reachable state — so there is nothing to refuse and nothing to add.
+    // Stryker disable next-line ConditionalExpression: equivalent — without this early return the walk below runs over a chain that is already recorded and holds no file or symlink at any level (prefix closure and disjointness hold on every reachable state: the constructor refuses a seeded collision and a stale handle never re-files a removed path), so the check refuses nothing and the add loop re-adds keys that are already present; the forced-true variant is killable (every parent auto-create test) and is suppressed only because the mutator cannot be narrowed.
+    if (this.directories.has(normalizedPath)) return;
+    // Refuse before recording anything: a file or symlink anywhere on the ancestor chain
+    // must leave the tree untouched — the all-or-nothing shape of `mkdir -p`.
+    this.assertAncestorChainFree(normalizedPath);
     let current = normalizedPath;
-    // equivalent-mutant: changing `>=` to `>` (or dropping the `break` when current === rootDir)
-    // has no observable effect — rootDir is seeded into `this.directories` in the constructor
-    // and nothing else can store a file/symlink at that exact path, so the extra iteration
-    // (or the skipped one) is a no-op for every reachable state.
+    // The `>=` bound reaches rootDir on purpose: after `rmRecursive(rootDir)` the root is
+    // absent and this iteration is what records it again. Dropping the `break` alone is
+    // harmless — `parentOf(rootDir)` is '' and fails the bound on the next test.
+    while (current.length >= this.rootDir.length) {
+      this.directories.add(current);
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing this false only lets the loop step to parentOf(rootDir), which is strictly shorter than rootDir and fails the `>=` bound before anything is added; the forced-true variant is killable (it records the leaf alone) and rides along only because the mutator cannot be narrowed.
+      if (current === this.rootDir) break;
+      current = parentOf(current);
+    }
+  }
+
+  private assertAncestorChainFree(normalizedPath: string): void {
+    let current = normalizedPath;
+    // The `>=` bound tests rootDir itself on purpose: once `rmRecursive(rootDir)` has removed
+    // the root, a later write can occupy that exact path with a file, and a child written
+    // beneath it must refuse. Dropping the `return` alone is harmless — `parentOf(rootDir)`
+    // is '' and fails the bound on the next test.
     while (current.length >= this.rootDir.length) {
       if (this.files.has(current) || this.symlinks.has(current)) {
         throw notADirectory(current);
       }
-      this.directories.add(current);
-      if (current === this.rootDir) break;
+      // Stryker disable next-line ConditionalExpression: equivalent — forcing this false only lets the loop step to parentOf(rootDir), which is strictly shorter than rootDir and fails the `>=` bound before anything is checked; the forced-true variant is killable (it stops after the first segment) and rides along only because the mutator cannot be narrowed.
+      if (current === this.rootDir) return;
       current = parentOf(current);
     }
   }

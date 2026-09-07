@@ -157,6 +157,10 @@ export class BrowserFileSystem implements FileSystem {
     // exactly this reason — callers must branch on its absence rather than assume
     // `rename` is safe to commit through. See FileSystem port JSDoc.
     const data = await this.read(src);
+    // A self-rename is a no-op on every adapter (checked after the read so an absent
+    // source still reports FILE_NOT_FOUND); without it the emulation's `rm(src)` would
+    // unlink the file it had just rewritten.
+    if (this.splitPath(src).join('/') === this.splitPath(dst).join('/')) return;
     await this.write(dst, data);
     await this.rm(src);
   }
@@ -232,6 +236,10 @@ export class BrowserFileSystem implements FileSystem {
       return await dir.getFileHandle(leaf, { create });
     } catch (err) {
       if (err instanceof TsgitError) throw err;
+      // A directory at the leaf rejects with TypeMismatchError whether or not `create` is
+      // set. Only the writing arm may report it as a refusal: stat/exists read
+      // FILE_NOT_FOUND here as "not a file, try a directory handle" and fall back.
+      if (create && isTypeMismatch(err)) throw permissionDenied(path);
       throw fileNotFound(path);
     }
   }
@@ -279,8 +287,9 @@ export class BrowserFileSystem implements FileSystem {
       await dir.getFileHandle(leaf, { create: false });
     } catch (err) {
       if (err instanceof TsgitError) throw err;
-      // NotFoundError → safe to create.
-      return;
+      if (isTypeMismatch(err)) throw fileExists(path);
+      if (isNotFoundRejection(err)) return;
+      throw err;
     }
     throw fileExists(path);
   }
@@ -294,6 +303,23 @@ function leafSegment(segments: ReadonlyArray<string>, path: string): string {
 
 function isFileNotFound(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND';
+}
+
+// Reads a rejection's `name` structurally rather than through `instanceof Error`, so a
+// DOMException raised in another realm (a handle handed across a worker boundary) is
+// still classified — the same posture the application layer takes on `data.code`.
+function rejectionName(err: unknown): string | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const name = (err as { readonly name?: unknown }).name;
+  return typeof name === 'string' ? name : undefined;
+}
+
+function isTypeMismatch(err: unknown): boolean {
+  return rejectionName(err) === 'TypeMismatchError';
+}
+
+function isNotFoundRejection(err: unknown): boolean {
+  return rejectionName(err) === 'NotFoundError';
 }
 
 function buildFileStat(size: number, timeMs: number, isFile: boolean): FileStat {

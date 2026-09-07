@@ -360,15 +360,16 @@ describe('windowsPolicy.rootOf — parity with path.win32.parse(p).root', () => 
   });
 });
 
-describe('policy capability triples', () => {
+describe('policy capability quadruples', () => {
   describe('Given posixPolicy', () => {
     describe('When its capability flags are read', () => {
-      it('Then caseInsensitive/windowsSyntax are false and honoursNoFollow is true', () => {
+      it('Then caseInsensitive/windowsSyntax are false and honoursNoFollow/honoursRenameKinds are true', () => {
         // Arrange & Act
         const result = {
           caseInsensitive: posixPolicy.caseInsensitive,
           windowsSyntax: posixPolicy.windowsSyntax,
           honoursNoFollow: posixPolicy.honoursNoFollow,
+          honoursRenameKinds: posixPolicy.honoursRenameKinds,
         };
 
         // Assert
@@ -376,6 +377,7 @@ describe('policy capability triples', () => {
           caseInsensitive: false,
           windowsSyntax: false,
           honoursNoFollow: true,
+          honoursRenameKinds: true,
         });
       });
     });
@@ -383,12 +385,13 @@ describe('policy capability triples', () => {
 
   describe('Given windowsPolicy', () => {
     describe('When its capability flags are read', () => {
-      it('Then caseInsensitive/windowsSyntax are true and honoursNoFollow is false', () => {
+      it('Then caseInsensitive/windowsSyntax are true and honoursNoFollow/honoursRenameKinds are false', () => {
         // Arrange & Act
         const result = {
           caseInsensitive: windowsPolicy.caseInsensitive,
           windowsSyntax: windowsPolicy.windowsSyntax,
           honoursNoFollow: windowsPolicy.honoursNoFollow,
+          honoursRenameKinds: windowsPolicy.honoursRenameKinds,
         };
 
         // Assert
@@ -396,6 +399,7 @@ describe('policy capability triples', () => {
           caseInsensitive: true,
           windowsSyntax: true,
           honoursNoFollow: false,
+          honoursRenameKinds: false,
         });
       });
     });

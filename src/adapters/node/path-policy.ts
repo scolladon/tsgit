@@ -9,14 +9,14 @@
  *
  * Design notes:
  * - `sep` is the platform separator string, used for prefix containment.
- * - Three independent capability flags — `caseInsensitive`, `windowsSyntax`,
- *  `honoursNoFollow` — each say exactly what they gate, so a policy that
- *  mixes capabilities (e.g. a hypothetical case-insensitive POSIX
- *  filesystem) sets each on its own merits instead of one flag standing in
- *  for all three. `caseInsensitive` drives ONLY the case-fold in
- *  `normalizeForCompare`; tsgit treats macOS as case-sensitive per Git's
- *  `core.ignorecase` default and POSIX convention, so no shipped policy
- *  sets it without also being Windows today.
+ * - Four independent capability flags — `caseInsensitive`, `windowsSyntax`,
+ *  `honoursNoFollow`, `honoursRenameKinds` — each say exactly what they
+ *  gate, so a policy that mixes capabilities (e.g. a hypothetical
+ *  case-insensitive POSIX filesystem) sets each on its own merits instead
+ *  of one flag standing in for all four. `caseInsensitive` drives ONLY the
+ *  case-fold in `normalizeForCompare`; tsgit treats macOS as case-sensitive
+ *  per Git's `core.ignorecase` default and POSIX convention, so no shipped
+ *  policy sets it without also being Windows today.
  * - `windowsSyntax` drives the Windows-shaped parsing: `rootOf`'s
  *  UNC/drive-letter recognition and `normalizeForCompare`'s extended-prefix
  *  strip + `/`→`\` fold.
@@ -24,6 +24,9 @@
  *  symlink leaf when passed `O_NOFOLLOW`. `false` means the write guard
  *  must fall back to an explicit pre-write `lstat` (see
  *  `NodeFileSystem.assertWritableLeaf`).
+ * - `honoursRenameKinds` says whether the platform's own `rename` enforces
+ *  POSIX `rename(2)`'s kind rules. `false` forces `NodeFileSystem.rename`
+ *  onto an explicit pre-rename kind check.
  * - `rootOf` returns the volume/drive prefix produced by `path.parse`.
  *  Examples: `/` on POSIX, `'C:\\'` on Windows, `'\\\\server\\share\\'`
  *  for UNC paths.
@@ -69,6 +72,13 @@ export interface PathPolicy {
    * `lstat` fallback instead of relying on the syscall flag.
    */
   readonly honoursNoFollow: boolean;
+  /**
+   * Whether this platform's own `rename` enforces POSIX `rename(2)`'s kind
+   * rules: a directory source refuses a non-directory destination, and a
+   * directory destination is replaced only when it is empty. `false` forces
+   * `NodeFileSystem.rename` onto an explicit pre-rename kind check.
+   */
+  readonly honoursRenameKinds: boolean;
   isAbsolute(path: string): boolean;
   resolve(...parts: string[]): string;
   join(...parts: string[]): string;
@@ -166,7 +176,7 @@ const windowsRootOf = (path: string): string => {
 };
 
 /**
- * The three platform-capability flags a policy factory sets independently
+ * The four platform-capability flags a policy factory sets independently
  * of one another — see the module header's design notes for what each one
  * gates.
  */
@@ -174,6 +184,7 @@ interface PathPolicyCapabilities {
   readonly caseInsensitive: boolean;
   readonly windowsSyntax: boolean;
   readonly honoursNoFollow: boolean;
+  readonly honoursRenameKinds: boolean;
 }
 
 /**
@@ -223,11 +234,13 @@ export const posixPolicy: PathPolicy = makePolicy(nodePath.posix, {
   caseInsensitive: false,
   windowsSyntax: false,
   honoursNoFollow: true,
+  honoursRenameKinds: true,
 });
 export const windowsPolicy: PathPolicy = makePolicy(nodePath.win32, {
   caseInsensitive: true,
   windowsSyntax: true,
   honoursNoFollow: false,
+  honoursRenameKinds: false,
 });
 
 /**

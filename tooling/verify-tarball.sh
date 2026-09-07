@@ -77,7 +77,43 @@ done
 # giving up the bounded-memory indexer, which is the whole feature: it takes a
 # real clone of this repository's own history from 799.5 MB of peak residency
 # down to 207.4 MB, measured locally.
-SIZE_CAP=$((904 * 1024))
+# Raised 904 -> 906 KiB by the adapter occupant-refusal work: the measured tarball
+# landed at 926 548 B after the five implementation parts (852 B over the old cap) and at
+# 927 329 B after three review cycles. Attribution measured on a clean build, not
+# assumed: reverting only the port JSDoc this work added inside the two emitted type
+# chunks and repacking recovers about 1.3 KB (1 336 B on this tree) — every `.d.ts` AND
+# `.d.cts` carries that prose verbatim 3.7 MB apart, beyond gzip's window, and two
+# independent measurements agreed on the total while disagreeing on any per-member
+# split, so no split is recorded. The adapter guards (a shared occupancy predicate, a
+# leaf guard on non-exclusive write, a rename precondition with its dispatch split, the
+# two-phase ancestor walk with its recorded-chain short-circuit, a stale-handle write
+# guard, the browser's rejection classifiers and self-rename guard) are the remainder.
+# The prose is removable without behaviour loss but not without dropping the port
+# contract from consumers' editors, which is why it stays; the guards close paths where
+# the adapter silently overwrote or merged what the node adapter and canonical git refuse.
+# Raised 906 -> 908 KiB by the Windows rename-kind emulation: the measured tarball landed
+# at 928 803 B, 1 059 B over the old cap. Attribution: the rename precondition's explicit
+# pre-rename kind check and its two lstat probes, the fourth PathPolicy capability flag
+# (paid in every hand-built policy literal, including the browser bundle's dependency-free
+# stand-in), and the port JSDoc extension to `rename`/`atomicRename` — which every `.d.ts`
+# AND `.d.cts` carries verbatim, costing about 1.3 KB per edit here, as the prior raise's
+# measurement established. None of it is removable without dropping POSIX rename-kind
+# parity on a platform whose own rename does not enforce it.
+# Raised 908 -> 909 KiB by the review round of the Windows rename-kind emulation: the
+# measured tarball landed at 930 255 B, 463 B over the old cap. Attribution: the
+# entry-identity test (device and inode) that replaced the string self-rename escape, the
+# canonical-source containment re-check, the two-step replacement's own method with its
+# ENOENT fall-through and best-effort restoration of an emptied destination, and the port
+# JSDoc corrections to `rename`/`atomicRename` — carried verbatim by every `.d.ts` AND
+# `.d.cts`. Each closes a data-loss route the review measured on Windows; none is removable
+# without reopening one.
+# Raised 909 -> 910 KiB by the second and third review cycles of the rename-kind emulation:
+# the measured tarball landed at 931 069 B, 253 B over the old cap. Attribution: the
+# byte-identical self-rename short-circuit, the bigint entry-identity compare with its
+# canonical-path fallback and the absence-tolerant realpath it needs, and the restoration
+# that runs only for a directory the arm itself removed — each closes a self-rename or
+# residue route the second cycle measured; none is removable without reopening one.
+SIZE_CAP=$((910 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

@@ -1,17 +1,15 @@
 /**
  * Dependency-injection tests for `NodeFileSystem`.
  *
- * All tests here inject a fake `FsOperations` directly into the
- * `NodeFileSystem` constructor (third parameter). NO `vi.mock` — the
- * dependencies are explicit, the tests are cross-platform by construction,
- * and there's no module-system magic.
+ * All tests here inject a fake `FsOperations` into the `NodeFileSystem`
+ * constructor; `node-fs-fakes.ts` holds the fakes and the reason there is
+ * no `vi.mock` here.
  *
  * Compare with `node-file-system.test.ts` which runs the cross-adapter
  * `FileSystemContract` suite against the REAL filesystem.
  */
 import * as fs from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
 import {
   mapConcurrent,
   NodeFileSystem,
@@ -19,42 +17,8 @@ import {
 } from '../../../../src/adapters/node/node-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-
-const enoent = (msg = 'not found'): NodeJS.ErrnoException =>
-  Object.assign(new Error(msg), { code: 'ENOENT' });
-
-const eacces = (): NodeJS.ErrnoException => Object.assign(new Error('access'), { code: 'EACCES' });
-
-const enotdir = (): NodeJS.ErrnoException =>
-  Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
-
-const eloop = (): NodeJS.ErrnoException =>
-  Object.assign(new Error('symlink loop'), { code: 'ELOOP' });
-
-/**
- * Builds a fake `FsOperations` whose every method rejects with ENOENT by
- * default. Tests override only the methods they exercise — keeps each
- * test arrange-block tight and the unused surface unambiguously "not
- * called".
- */
-const fakeFsOps = (overrides: Partial<FsOperations> = {}): FsOperations =>
-  ({
-    realpath: vi.fn().mockRejectedValue(enoent()),
-    open: vi.fn().mockRejectedValue(enoent()),
-    lstat: vi.fn().mockRejectedValue(enoent()),
-    stat: vi.fn().mockRejectedValue(enoent()),
-    readdir: vi.fn().mockRejectedValue(enoent()),
-    readFile: vi.fn().mockRejectedValue(enoent()),
-    writeFile: vi.fn().mockResolvedValue(undefined),
-    mkdir: vi.fn().mockResolvedValue(undefined),
-    rm: vi.fn().mockResolvedValue(undefined),
-    rmdir: vi.fn().mockResolvedValue(undefined),
-    rename: vi.fn().mockResolvedValue(undefined),
-    readlink: vi.fn().mockRejectedValue(enoent()),
-    symlink: vi.fn().mockResolvedValue(undefined),
-    chmod: vi.fn().mockResolvedValue(undefined),
-    ...overrides,
-  }) as unknown as FsOperations;
+import { dataFor } from '../../../fixtures/tsgit-error-data.js';
+import { eacces, eexist, eloop, enoent, enotdir, fakeFsOps } from './node-fs-fakes.js';
 
 describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () => {
   const fileStat = {
@@ -2221,7 +2185,7 @@ describe('assertLeafSafeToWrite — non-ENOENT errno on leaf lstat (DI)', () => 
     describe('When chmod is called', () => {
       it('Then throws NOT_A_DIRECTORY', async () => {
         // Arrange — `chmod` always runs the explicit leaf check (no portable
-        // no-follow chmod exists), on every platform. `interpretCreationLstat`
+        // no-follow chmod exists), on every platform. `isCreationLeafSymlink`
         // must funnel a non-ENOENT leaf-lstat errno through `mapErrno`.
         const rootDir = '/root';
         const leaf = '/root/leaf.txt';
@@ -2415,6 +2379,40 @@ describe('NodeFileSystem — W2 leaf no-follow composition (DI)', () => {
     });
   });
 
+  describe('Given a POSIX policy and a symlink leaf', () => {
+    describe('When writeExclusive is called', () => {
+      it('Then FILE_EXISTS surfaces from O_EXCL alone — no lstat guard needed', async () => {
+        // Arrange — honoursNoFollow is true on POSIX, so O_EXCL itself
+        // reports EEXIST for a symlink leaf; the new exclusive-create
+        // guard must not add a redundant lstat on a platform whose own
+        // EEXIST already answers correctly. This is a RED-but-passing
+        // pin: it holds today (POSIX already skips the guard) and stays
+        // the mutant killer for the new `honoursNoFollow` early return.
+        const rootDir = '/root';
+        const writeFile = vi.fn().mockRejectedValue(eexist());
+        const lstat = vi.fn().mockResolvedValue({ isSymbolicLink: () => true });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat,
+          writeFile,
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.writeExclusive('/root/link.bin', new Uint8Array([1]));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'FILE_EXISTS');
+        expect(lstat).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a Windows policy and a symlink leaf', () => {
     describe('When write is called', () => {
       it('Then the pre-write lstat refuses it with PERMISSION_DENIED before any write', async () => {
@@ -2465,6 +2463,61 @@ describe('NodeFileSystem — W2 leaf no-follow composition (DI)', () => {
         // Assert
         expect(lstat).toHaveBeenCalledWith('C:\\Root\\leaf.bin');
         expect(writeFile).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('When writeExclusive is called', () => {
+      it('Then it refuses with FILE_EXISTS before any write', async () => {
+        // Arrange — O_NOFOLLOW is ignored by Win32, so the pre-open lstat
+        // is the only guard; on a dangling link the raw O_CREAT|O_EXCL
+        // open would follow it and create the target, so the verdict
+        // must be FILE_EXISTS rather than the platform's own answer.
+        const rootDir = 'C:\\Root';
+        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const lstat = vi.fn().mockResolvedValue({ isSymbolicLink: () => true });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat,
+          writeFile,
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.writeExclusive('C:\\Root\\link.bin', new Uint8Array([1]));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = dataFor(caught, 'FILE_EXISTS');
+        expect(data.path).toBe('C:\\Root\\link.bin');
+        expect(writeFile).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When writeExclusive is called on a non-symlink leaf', () => {
+      it('Then the pre-write lstat runs and the exclusive write proceeds', async () => {
+        // Arrange
+        const rootDir = 'C:\\Root';
+        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const lstat = vi.fn().mockResolvedValue({ isSymbolicLink: () => false });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat,
+          writeFile,
+        });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+
+        // Act
+        await sut.writeExclusive('C:\\Root\\lock.bin', new Uint8Array([2]));
+
+        // Assert
+        expect(lstat).toHaveBeenCalledWith('C:\\Root\\lock.bin');
+        expect(writeFile).toHaveBeenCalledWith('C:\\Root\\lock.bin', new Uint8Array([2]), {
+          flag: WRITE_EXCLUSIVE_FLAGS,
+        });
       });
     });
   });
