@@ -2,6 +2,7 @@
 backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/code-navigation.md
+models: { designer: fable, reviewer: fable }
 gates:
   part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling"
   phase: "npm run validate"
@@ -78,6 +79,13 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   space for implementers and refactor executors, and is not worth it for reviewers, planners or
   docs writers, whose natural instrument is Bash over a diff. Evidence and the full split:
   `.claude/workflow/code-navigation.md`.
+
+- **`models.designer` / `models.reviewer` on `fable`** — design and review are the two
+  judgment-dense phases here: the designer has to hold git's on-disk contracts and the
+  faithfulness mandate in one head, and the reviewer runs four dimensions to convergence
+  over a whole feature diff. Both are read-and-reason work with a small write surface, so
+  a stronger tier buys accuracy where it is cheapest to spend. Every other role stays on
+  its descriptor default.
 
 - **`check:spelling` is in BOTH `gates.part` and `review-batch`** — it was review-batch-only,
   and an unknown word once rode two commits before anything noticed, because the part gate
