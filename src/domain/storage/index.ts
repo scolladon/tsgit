@@ -78,6 +78,14 @@ export {
   offsetAtPackPosition,
   parsePackIndex,
 } from './pack-index.js';
+// Pack name hash
+export type { PathHasher } from './pack-name-hash.js';
+export {
+  foldPackNameHash,
+  PACK_NAME_HASH_SEED,
+  PACK_NAME_HASH_V1,
+  packNameHash,
+} from './pack-name-hash.js';
 export {
   type PackIndexEntries,
   type SortedPackIndex,
