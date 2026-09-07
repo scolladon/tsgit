@@ -8,7 +8,7 @@ export { applyChangeset, isWorkingTreeDirty } from './apply-changeset.js';
 export { bisectMidpoint } from './bisect-midpoint.js';
 export type { BuildIndexFromTreeOpts } from './build-index-from-tree.js';
 export { buildIndexFromTree } from './build-index-from-tree.js';
-export type { BuildPackInput, BuildPackResult } from './build-pack.js';
+export type { BuildPackInput, BuildPackResult, PackObjectInput } from './build-pack.js';
 export { buildPack } from './build-pack.js';
 export { catFileBatch } from './cat-file-batch.js';
 export type { WorkingTreeComparison, WorkingTreeDelta } from './compare-working-tree-entry.js';

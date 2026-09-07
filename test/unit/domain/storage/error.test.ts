@@ -8,6 +8,7 @@ import {
   invalidPackEntry,
   invalidPackHeader,
   invalidPackIndex,
+  invalidPackInput,
   invalidPackRevIndex,
 } from '../../../../src/domain/storage/error.js';
 import { assertExhaustiveSwitch } from '../exhaustiveness.js';
@@ -121,6 +122,23 @@ describe('storage error', () => {
             code: 'INVALID_PACK_BITMAP',
             check: 'stream',
             reason: 'declares more words than the buffer holds',
+          });
+        });
+      });
+    });
+
+    describe("Given invalidPackInput('mixed-recency', 2, 1)", () => {
+      describe('When checking error.data', () => {
+        it("Then code, reason, present and absent are set to 'INVALID_PACK_INPUT', 'mixed-recency', 2 and 1", () => {
+          // Arrange & Act
+          const result = invalidPackInput('mixed-recency', 2, 1);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_PACK_INPUT',
+            reason: 'mixed-recency',
+            present: 2,
+            absent: 1,
           });
         });
       });

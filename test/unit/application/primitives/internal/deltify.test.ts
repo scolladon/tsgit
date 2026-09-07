@@ -62,7 +62,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idA, idB], DEFAULT_POLICY);
+        const result = await sut(
+          ctx,
+          [idA, idB].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert
         const deltas = result.filter((r) => r.entry.type === PACK_ENTRY_TYPE.OFS_DELTA);
@@ -85,7 +89,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idA, idB, idC], DEFAULT_POLICY);
+        const result = await sut(
+          ctx,
+          [idA, idB, idC].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert
         const deltas = result.filter((r) => r.entry.type === PACK_ENTRY_TYPE.OFS_DELTA);
@@ -118,7 +126,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        await sut(ctx, ids, policy);
+        await sut(
+          ctx,
+          ids.map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — first object has an empty window (0 calls); each of the
         // remaining three sees exactly one window member (1 call each).
@@ -149,7 +161,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, ids, policy);
+        const result = await sut(
+          ctx,
+          ids.map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         for (let i = 0; i < result.length; i += 1) {
@@ -198,7 +214,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idBase, idLoser, idFollower], policy);
+        const result = await sut(
+          ctx,
+          [idBase, idLoser, idFollower].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idLoser).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -243,7 +263,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idMember1, idMember2, idTarget], policy);
+        const result = await sut(
+          ctx,
+          [idMember1, idMember2, idTarget].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — chainDepth 2 only holds if idTarget based off idMember2
         // (itself based off idMember1); a wrongly-accepted tie would base
@@ -278,7 +302,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idMember1, idMember2, idTarget], policy);
+        const result = await sut(
+          ctx,
+          [idMember1, idMember2, idTarget].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idTarget).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -306,7 +334,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idBig, idSmall], policy);
+        const result = await sut(
+          ctx,
+          [idBig, idSmall].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — objBig is processed first (larger), window starts empty so
         // it is a base regardless; objSmall, processed second, would have
@@ -347,7 +379,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idBig, idSmall], policy);
+        const result = await sut(
+          ctx,
+          [idBig, idSmall].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — idBig itself is still emitted as a base (its own window
         // was empty when it was processed); idSmall's failure to delta
@@ -390,7 +426,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [id1, id2, id3, idProbe2, idProbe1], policy);
+        const result = await sut(
+          ctx,
+          [id1, id2, id3, idProbe2, idProbe1].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idProbe1).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -424,7 +464,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [id], DEFAULT_POLICY);
+        const result = await sut(
+          ctx,
+          [id].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert
         expect(result).toHaveLength(1);
@@ -449,7 +493,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        await sut(wrappedCtx, [id1, id2, id3], DEFAULT_POLICY);
+        await sut(
+          wrappedCtx,
+          [id1, id2, id3].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert
         expect(deflateSpy).toHaveBeenCalledTimes(4);
@@ -470,7 +518,11 @@ describe('deltifyEntries', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [treeId, twinBlobId], DEFAULT_POLICY);
+        const result = await sut(
+          ctx,
+          [treeId, twinBlobId].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert
         expect(findEntry(result, treeId).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);

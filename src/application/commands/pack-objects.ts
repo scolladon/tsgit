@@ -83,8 +83,10 @@ export const packObjects = async (
     tier: closureTierFor(opts),
   });
 
-  const oids = closure.objects.map((object) => object.id);
-  const pack = await buildPack(ctx, { oids, delta: true });
+  const pack = await buildPack(ctx, {
+    objects: closure.objects.map((o) => ({ id: o.id })),
+    delta: true,
+  });
   const outputDirectory = opts.outputDirectory ?? packsDir(commonGitDir(ctx));
   const written = await writePackArtifacts(ctx, {
     packDir: outputDirectory,

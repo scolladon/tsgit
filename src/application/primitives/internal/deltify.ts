@@ -32,6 +32,7 @@ import {
   type PackWriterEntry,
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { PackObjectInput } from '../build-pack.js';
 import {
   type ObjectMetadataWithContent,
   readObjectMetadataWithContent,
@@ -43,9 +44,10 @@ export interface DeltifiedEntry {
   readonly id: ObjectId;
   readonly entry: PackWriterEntry;
   /** Where this object sat in `deltifyEntries`' input list. Emission order is
-   *  the packer's own (type, size, oid), so a caller holding per-object data
-   *  keyed by its input order needs this to line the two up — without it the
-   *  only bridge back is the oid, which costs a hex decode per object. */
+   *  the packer's own (type, nameHash, size, recency, oid), so a caller
+   *  holding per-object data keyed by its input order needs this to line the
+   *  two up — without it the only bridge back is the oid, which costs a hex
+   *  decode per object. */
   readonly sourceIndex: number;
 }
 
@@ -92,21 +94,21 @@ interface Candidate {
  * regression, only a bounded improvement.
  */
 function boundCarriedContent(
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
   metas: ReadonlyArray<ObjectMetadataWithContent>,
   budget: number,
 ): EmissionEntry[] {
   const entries: EmissionEntry[] = [];
   let carriedBytes = 0;
-  for (const [i, id] of oids.entries()) {
+  for (const [i, object] of objects.entries()) {
     const meta = metas[i]!;
     const key = {
-      id,
+      id: object.id,
       sourceIndex: i,
       type: objectTypeToPackEntryType(meta.type),
-      nameHash: 0,
+      nameHash: object.nameHash ?? 0,
       uncompressedSize: meta.uncompressedSize,
-      recency: NO_RECENCY,
+      recency: object.recency ?? NO_RECENCY,
     };
     const content = meta.content;
     if (content === undefined || carriedBytes + content.length > budget) {
@@ -121,12 +123,12 @@ function boundCarriedContent(
 
 async function buildEmissionOrder(
   ctx: Context,
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
 ): Promise<ReadonlyArray<EmissionEntry>> {
-  const metas = await boundedMapFor(ctx, 'ioBound', oids, (id) =>
-    readObjectMetadataWithContent(ctx, id),
+  const metas = await boundedMapFor(ctx, 'ioBound', objects, (object) =>
+    readObjectMetadataWithContent(ctx, object.id),
   );
-  const keys = boundCarriedContent(oids, metas, ctx.deltaCache.maxSize);
+  const keys = boundCarriedContent(objects, metas, ctx.deltaCache.maxSize);
   return [...keys].sort(comparePackEmissionOrder);
 }
 
@@ -288,10 +290,10 @@ function admitToWindow(
 
 export async function deltifyEntries(
   ctx: Context,
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
   policy: DeltaPolicy,
 ): Promise<ReadonlyArray<DeltifiedEntry>> {
-  const order = await buildEmissionOrder(ctx, oids);
+  const order = await buildEmissionOrder(ctx, objects);
   let state: WindowState = { window: [], residentBytes: 0 };
   const results: DeltifiedEntry[] = [];
   for (const [emissionIndex, key] of order.entries()) {

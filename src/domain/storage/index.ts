@@ -27,6 +27,7 @@ export {
   invalidPackEntry,
   invalidPackHeader,
   invalidPackIndex,
+  invalidPackInput,
   invalidPackRevIndex,
 } from './error.js';
 // Pack bitmap

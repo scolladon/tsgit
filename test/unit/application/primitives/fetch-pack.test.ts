@@ -3434,7 +3434,10 @@ describe('index pass equivalence — anti-producer-fork oracle', () => {
         content: ENCODER.encode('anti-producer-fork base content, extended a little'),
         id: '' as ObjectId,
       });
-      const built = await buildPack(ctx, { oids: [idA, idB], delta: true });
+      const built = await buildPack(ctx, {
+        objects: [idA, idB].map((id) => ({ id })),
+        delta: true,
+      });
       const tmpPath = `${ctx.layout.gitDir}/objects/pack/tmp_pack_s3_oracle`;
       await ctx.fs.write(tmpPath, built.bytes);
 

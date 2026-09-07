@@ -7,12 +7,15 @@
  *  - mixed types → entries round-trip through parsePackEntryHeader
  *  - trailer → SHA over the body bytes, byte-equal
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildPack } from '../../../../src/application/primitives/build-pack.js';
+import * as configReadModule from '../../../../src/application/primitives/config-read.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as readObjectModule from '../../../../src/application/primitives/read-object.js';
 import { readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -84,7 +87,7 @@ describe('buildPack', () => {
         const ctx = await buildSeededContext();
 
         // Act
-        const result = await buildPack(ctx, { oids: [] });
+        const result = await buildPack(ctx, { objects: [] });
 
         // Assert — header + trailer only, no entries.
         expect(result.bytes.length).toBe(PACK_HEADER_BYTES + TRAILER_BYTES);
@@ -113,7 +116,7 @@ describe('buildPack', () => {
         const blobId = await writeObject(ctx, blob);
 
         // Act
-        const result = await buildPack(ctx, { oids: [blobId] });
+        const result = await buildPack(ctx, { objects: [blobId].map((id) => ({ id })) });
 
         // Assert
         expect(result.objectCount).toBe(1);
@@ -136,7 +139,7 @@ describe('buildPack', () => {
         const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a.bin', blobId)]);
 
         // Act
-        const result = await buildPack(ctx, { oids: [blobId, treeId] });
+        const result = await buildPack(ctx, { objects: [blobId, treeId].map((id) => ({ id })) });
 
         // Assert — two entries; the first is the BLOB, the second is the TREE.
         expect(result.objectCount).toBe(2);
@@ -209,7 +212,7 @@ describe('buildPack', () => {
         const oid = await buildOid(ctx, blobId);
 
         // Act
-        const result = await buildPack(ctx, { oids: [oid] });
+        const result = await buildPack(ctx, { objects: [oid].map((id) => ({ id })) });
 
         // Assert
         const header = parsePackEntryHeader(result.bytes, PACK_HEADER_BYTES, ctx.hashConfig);
@@ -228,7 +231,7 @@ describe('buildPack', () => {
         const blobId = await writeObject(ctx, blob);
 
         // Act
-        const result = await buildPack(ctx, { oids: [blobId] });
+        const result = await buildPack(ctx, { objects: [blobId].map((id) => ({ id })) });
 
         // Assert — kills the swap-the-trailer mutant: bytes must end in
         // hash(body), not hash(anything-else).
@@ -250,7 +253,7 @@ describe('buildPack', () => {
         const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a.bin', blobId)]);
 
         // Act
-        const result = await buildPack(ctx, { oids: [blobId, treeId] });
+        const result = await buildPack(ctx, { objects: [blobId, treeId].map((id) => ({ id })) });
 
         // Assert — one identified triple per oid, in emission order, each
         // offset strictly increasing from the header.
@@ -278,7 +281,7 @@ describe('buildPack', () => {
         const oids = [treeId, blobId];
 
         // Act
-        const result = await buildPack(ctx, { oids });
+        const result = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
 
         // Assert
         const resultIds = new Set(
@@ -302,10 +305,143 @@ describe('buildPack', () => {
         const oids = [blobId, treeId];
 
         // Act
-        const result = await buildPack(ctx, { oids });
+        const result = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
 
         // Assert
         expect([...result.emissionOrder]).toEqual(oids.map((_, i) => i));
+      });
+    });
+  });
+
+  describe('Given an objects array where most carry recency and one does not', () => {
+    describe('When buildPack runs', () => {
+      it('Then it refuses with INVALID_PACK_INPUT counting present and absent correctly', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(201, 16));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(202, 16));
+        const idC = await writeBlob(ctx, pseudoRandomBytes(203, 16));
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildPack(ctx, {
+            objects: [{ id: idA, recency: 0 }, { id: idB, recency: 1 }, { id: idC }],
+            delta: true,
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_PACK_INPUT',
+          reason: 'mixed-recency',
+          present: 2,
+          absent: 1,
+        });
+      });
+    });
+  });
+
+  describe('Given an objects array where most are bare and one carries recency', () => {
+    describe('When buildPack runs', () => {
+      it('Then it refuses with INVALID_PACK_INPUT counting present and absent correctly', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(211, 16));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(212, 16));
+        const idC = await writeBlob(ctx, pseudoRandomBytes(213, 16));
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildPack(ctx, {
+            objects: [{ id: idA }, { id: idB }, { id: idC, recency: 0 }],
+            delta: true,
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_PACK_INPUT',
+          reason: 'mixed-recency',
+          present: 1,
+          absent: 2,
+        });
+      });
+    });
+  });
+
+  describe('Given a mixed-recency objects array', () => {
+    describe('When buildPack runs', () => {
+      it('Then it refuses before reading config or any object', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(221, 16));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(222, 16));
+        const readConfigSpy = vi.spyOn(configReadModule, 'readConfig');
+        const readObjectSpy = vi.spyOn(readObjectModule, 'readObject');
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildPack(ctx, {
+            objects: [{ id: idA, recency: 0 }, { id: idB }],
+            delta: true,
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(readConfigSpy).not.toHaveBeenCalled();
+        expect(readObjectSpy).not.toHaveBeenCalled();
+        readConfigSpy.mockRestore();
+        readObjectSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a mixed-recency objects array and delta absent', () => {
+    describe('When buildPack runs', () => {
+      it('Then it refuses identically to the delta:true case', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(231, 16));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(232, 16));
+        const idC = await writeBlob(ctx, pseudoRandomBytes(233, 16));
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildPack(ctx, {
+            objects: [{ id: idA, recency: 5 }, { id: idB }, { id: idC }],
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_PACK_INPUT',
+          reason: 'mixed-recency',
+          present: 1,
+          absent: 2,
+        });
       });
     });
   });
@@ -335,7 +471,7 @@ describe('buildPack', () => {
         deflateLevels.length = 0;
 
         // Act
-        await buildPack(wrappedCtx, { oids: [blobId] });
+        await buildPack(wrappedCtx, { objects: [blobId].map((id) => ({ id })) });
 
         // Assert — build-pack calls deflate without a level (pack.compression key governs pack)
         expect(deflateLevels.every((l) => l === undefined)).toBe(true);
@@ -353,7 +489,10 @@ describe('buildPack', () => {
         const idB = await writeBlob(ctx, shared.slice(0, 150));
 
         // Act
-        const result = await buildPack(ctx, { oids: [idA, idB], delta: true });
+        const result = await buildPack(ctx, {
+          objects: [idA, idB].map((id) => ({ id })),
+          delta: true,
+        });
 
         // Assert
         const types = Array.from(
@@ -389,7 +528,10 @@ describe('buildPack', () => {
           const bigId = await writeBlob(ctx, bigContent);
 
           // Act
-          const result = await buildPack(ctx, { oids: [smallId, bigId], delta: true });
+          const result = await buildPack(ctx, {
+            objects: [smallId, bigId].map((id) => ({ id })),
+            delta: true,
+          });
 
           // Assert — for every i < count, the slab-decoded oid at position i
           // pairs with crcValues[i]/offsets[i] describing THAT SAME object,
@@ -428,8 +570,8 @@ describe('buildPack', () => {
         ];
 
         // Act
-        const first = await buildPack(ctx, { oids: ids, delta: true });
-        const second = await buildPack(ctx, { oids: ids, delta: true });
+        const first = await buildPack(ctx, { objects: ids.map((id) => ({ id })), delta: true });
+        const second = await buildPack(ctx, { objects: ids.map((id) => ({ id })), delta: true });
 
         // Assert
         expect(second.bytes).toEqual(first.bytes);
@@ -449,8 +591,14 @@ describe('buildPack', () => {
         const idC = await writeBlob(ctx, shared.slice(0, 100));
 
         // Act
-        const inOrder = await buildPack(ctx, { oids: [idA, idB, idC], delta: true });
-        const shuffled = await buildPack(ctx, { oids: [idC, idA, idB], delta: true });
+        const inOrder = await buildPack(ctx, {
+          objects: [idA, idB, idC].map((id) => ({ id })),
+          delta: true,
+        });
+        const shuffled = await buildPack(ctx, {
+          objects: [idC, idA, idB].map((id) => ({ id })),
+          delta: true,
+        });
 
         // Assert — emission order is sort-derived, not input-derived.
         expect(shuffled.bytes).toEqual(inOrder.bytes);
@@ -471,11 +619,117 @@ describe('buildPack', () => {
         const idC = await writeBlob(ctx, pseudoRandomBytes(113, 64));
 
         // Act
-        const forward = await buildPack(ctx, { oids: [idA, idB, idC], delta: true });
-        const reversed = await buildPack(ctx, { oids: [idC, idB, idA], delta: true });
+        const forward = await buildPack(ctx, {
+          objects: [idA, idB, idC].map((id) => ({ id })),
+          delta: true,
+        });
+        const reversed = await buildPack(ctx, {
+          objects: [idC, idB, idA].map((id) => ({ id })),
+          delta: true,
+        });
 
         // Assert
         expect(reversed.bytes).toEqual(forward.bytes);
+      });
+    });
+  });
+
+  describe('Given two same-type, same-size blobs', () => {
+    describe('When buildPack runs with and without nameHash on the objects', () => {
+      it('Then a distinct nameHash reorders emission while its absence keeps the id tiebreak', async () => {
+        // Arrange — same size defeats the size term, so nameHash (when
+        // present) or id (when absent) is what decides emission order.
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(241, 64));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(242, 64));
+        const [idLo, idHi] = idA < idB ? [idA, idB] : [idB, idA];
+
+        // Act — absence: order follows today's id ASC tiebreak.
+        const withoutHash = await buildPack(ctx, {
+          objects: [{ id: idA }, { id: idB }],
+          delta: true,
+        });
+        // Act — presence: the id tiebreak LOSER gets the higher nameHash, so
+        // nameHash DESC must now emit it first — the opposite order.
+        const withHash = await buildPack(ctx, {
+          objects: [
+            { id: idLo, nameHash: 1 },
+            { id: idHi, nameHash: 2 },
+          ],
+          delta: true,
+        });
+
+        // Assert
+        const inputOrderWithoutHash = [idA, idB];
+        expect([...withoutHash.emissionOrder].map((i) => inputOrderWithoutHash[i])).toEqual([
+          idLo,
+          idHi,
+        ]);
+        const inputOrderWithHash = [idLo, idHi];
+        expect([...withHash.emissionOrder].map((i) => inputOrderWithHash[i])).toEqual([idHi, idLo]);
+      });
+    });
+  });
+
+  describe('Given delta:true and a recency-tagged oid set, called twice with the same ordinals', () => {
+    describe('When buildPack runs both times', () => {
+      it('Then the two packs are byte-identical', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(261, 300);
+        const ids = [
+          await writeBlob(ctx, shared),
+          await writeBlob(ctx, shared.slice(0, 200)),
+          await writeBlob(ctx, shared.slice(0, 100)),
+        ];
+        const objects = ids.map((id, recency) => ({ id, recency }));
+
+        // Act
+        const first = await buildPack(ctx, { objects, delta: true });
+        const second = await buildPack(ctx, { objects, delta: true });
+
+        // Assert
+        expect(second.bytes).toEqual(first.bytes);
+        expect(second.sha).toBe(first.sha);
+      });
+    });
+  });
+
+  describe('Given a tie-dense trio (same type, same size, same nameHash) tagged with two different ordinal assignments', () => {
+    describe('When buildPack runs over each assignment', () => {
+      it('Then the pack bytes differ while the emitted object set is unchanged', async () => {
+        // Arrange — identical size defeats the size term; nameHash absent on
+        // all three ties that term too, so recency alone decides order.
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, pseudoRandomBytes(271, 64));
+        const idB = await writeBlob(ctx, pseudoRandomBytes(272, 64));
+        const idC = await writeBlob(ctx, pseudoRandomBytes(273, 64));
+
+        // Act — two ordinal assignments over the SAME object set.
+        const firstAssignment = await buildPack(ctx, {
+          objects: [
+            { id: idA, recency: 0 },
+            { id: idB, recency: 1 },
+            { id: idC, recency: 2 },
+          ],
+          delta: true,
+        });
+        const secondAssignment = await buildPack(ctx, {
+          objects: [
+            { id: idA, recency: 2 },
+            { id: idB, recency: 1 },
+            { id: idC, recency: 0 },
+          ],
+          delta: true,
+        });
+        const idsOf = (entries: PackIndexEntries): Set<ObjectId> =>
+          new Set(Array.from({ length: entries.count }, (_, i) => entryIdAt(entries, i)));
+
+        // Assert — different ordinal assignment, different bytes...
+        expect(secondAssignment.bytes).not.toEqual(firstAssignment.bytes);
+        // ...but the same three objects are read back from each.
+        expect(idsOf(secondAssignment.entries)).toEqual(idsOf(firstAssignment.entries));
+        expect(idsOf(firstAssignment.entries)).toEqual(new Set([idA, idB, idC]));
       });
     });
   });
@@ -491,8 +745,11 @@ describe('buildPack', () => {
         await seedPackConfig(ctx, '\twindow = 0\n');
 
         // Act
-        const withDelta = await buildPack(ctx, { oids: [idA, idB], delta: true });
-        const withoutDelta = await buildPack(ctx, { oids: [idA, idB] });
+        const withDelta = await buildPack(ctx, {
+          objects: [idA, idB].map((id) => ({ id })),
+          delta: true,
+        });
+        const withoutDelta = await buildPack(ctx, { objects: [idA, idB].map((id) => ({ id })) });
 
         // Assert
         expect(withDelta.bytes).toEqual(withoutDelta.bytes);
@@ -511,8 +768,11 @@ describe('buildPack', () => {
         await seedPackConfig(ctx, '\tdepth = 0\n');
 
         // Act
-        const withDelta = await buildPack(ctx, { oids: [idA, idB], delta: true });
-        const withoutDelta = await buildPack(ctx, { oids: [idA, idB] });
+        const withDelta = await buildPack(ctx, {
+          objects: [idA, idB].map((id) => ({ id })),
+          delta: true,
+        });
+        const withoutDelta = await buildPack(ctx, { objects: [idA, idB].map((id) => ({ id })) });
 
         // Assert
         expect(withDelta.bytes).toEqual(withoutDelta.bytes);
@@ -534,7 +794,7 @@ describe('buildPack', () => {
         }
 
         // Act
-        const result = await buildPack(ctx, { oids: ids, delta: true });
+        const result = await buildPack(ctx, { objects: ids.map((id) => ({ id })), delta: true });
 
         // Assert
         const headers = Array.from({ length: result.entries.count }, (_, i) => ({
@@ -570,8 +830,11 @@ describe('buildPack', () => {
         const idC = await writeBlob(ctx, pseudoRandomBytes(103, 64));
 
         // Act
-        const withDelta = await buildPack(ctx, { oids: [idA, idB, idC], delta: true });
-        const baseOnly = await buildPack(ctx, { oids: [idA, idB, idC] });
+        const withDelta = await buildPack(ctx, {
+          objects: [idA, idB, idC].map((id) => ({ id })),
+          delta: true,
+        });
+        const baseOnly = await buildPack(ctx, { objects: [idA, idB, idC].map((id) => ({ id })) });
 
         // Assert
         const types = Array.from(
@@ -606,7 +869,7 @@ describe('buildPack', () => {
           }
 
           // Act
-          const pack = await buildPack(ctx, { oids, delta: true });
+          const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })), delta: true });
 
           // Assert — a genuine permutation of [0, count)...
           expect(pack.emissionOrder).toHaveLength(pack.entries.count);

@@ -593,7 +593,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
         });
         oids.push(id);
       }
-      const pack = await buildPack(writeCtx, { oids });
+      const pack = await buildPack(writeCtx, { objects: oids.map((id) => ({ id })) });
       const written = await writePackArtifacts(writeCtx, {
         packDir: packsDir(commonGitDir(writeCtx)),
         packBytes: pack.bytes,

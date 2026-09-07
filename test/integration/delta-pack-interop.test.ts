@@ -869,8 +869,11 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
 
           // Act — tsgit: the base-only writer vs the opt-in writer under a
           // disabling config must produce byte-identical bytes.
-          const baseline = await buildPack(ctx, { oids });
-          const optedIn = await buildPack(ctx, { oids, delta: true });
+          const baseline = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
+          const optedIn = await buildPack(ctx, {
+            objects: oids.map((id) => ({ id })),
+            delta: true,
+          });
           await disposePackRegistry(ctx);
 
           // Assert — tsgit

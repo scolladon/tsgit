@@ -481,7 +481,7 @@ async function buildAndWriteNormalPack(
   existingNormalNames: ReadonlySet<string>,
 ): Promise<NormalPackOutcome> {
   if (oids.length === 0) return { packId: undefined, reuse: 'none' };
-  const pack = await buildPack(ctx, { oids, delta: true });
+  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })), delta: true });
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
@@ -524,7 +524,7 @@ async function buildAndWritePromisorPack(
   existingPromisorNames: ReadonlySet<string>,
 ): Promise<PromisorPackOutcome> {
   if (oids.length === 0) return { packId: undefined, reusedExistingName: undefined };
-  const pack = await buildPack(ctx, { oids, delta: true });
+  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })), delta: true });
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
@@ -557,7 +557,7 @@ async function buildAndWriteCruftPack(
   mtimes: ReadonlyMap<ObjectId, number>,
   existingCruftShas: ReadonlySet<string>,
 ): Promise<ObjectId> {
-  const pack = await buildPack(ctx, { oids: survivors, delta: true });
+  const pack = await buildPack(ctx, { objects: survivors.map((id) => ({ id })), delta: true });
   if (existingCruftShas.has(pack.sha)) return pack.sha as ObjectId;
   const written = await writeCruftPack(ctx, {
     packDir,

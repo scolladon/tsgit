@@ -60,9 +60,10 @@ benchScenario(
       oids.push(await writeObject(ctx, blob));
     }
     const policy = resolveDeltaPolicy({});
+    const objects = oids.map((id) => ({ id }));
 
     const sut = async (): Promise<void> => {
-      await deltifyEntries(ctx, oids, policy);
+      await deltifyEntries(ctx, objects, policy);
     };
     return { sut };
   },

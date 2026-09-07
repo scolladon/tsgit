@@ -73,7 +73,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObj1, idObj2, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObj1, idObj2, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idProbe).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -102,7 +106,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObj1, idObj2, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObj1, idObj2, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idProbe).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -132,7 +140,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObj1, idObj2, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObj1, idObj2, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — obj1 gone, and obj2 shares nothing with probe, so no
         // candidate survives for probe to match.
@@ -164,7 +176,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idBig, idSmall], policy);
+        const result = await sut(
+          ctx,
+          [idBig, idSmall].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idBig).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -193,7 +209,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idBig, idSmall], policy);
+        const result = await sut(
+          ctx,
+          [idBig, idSmall].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idSmall).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -218,7 +238,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [id], policy);
+        const result = await sut(
+          ctx,
+          [id].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(result).toHaveLength(1);
@@ -254,7 +278,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObjA, idObjB, idObjC, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObjA, idObjB, idObjC, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — objB must still be resident for probe to delta against it.
         expect(findEntry(result, idProbe).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);

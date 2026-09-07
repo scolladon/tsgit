@@ -309,7 +309,10 @@ export const bundleCreate = async (
   const closure = await enumerateBundleObjects(ctx, { wants: acc.wants, haves: acc.haves });
   if (closure.objects.length === 0) throw bundleEmpty('no-objects');
   const prerequisites = await makePrerequisites(ctx, closure.boundary);
-  const pack = await buildPack(ctx, { oids: closure.objects, delta: true });
+  const pack = await buildPack(ctx, {
+    objects: closure.objects.map((id) => ({ id })),
+    delta: true,
+  });
   const header = serializeBundleHeader({
     version,
     hashAlgorithm: ctx.hashConfig.algorithm,
