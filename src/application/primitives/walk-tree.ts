@@ -14,17 +14,24 @@ import {
   type Tree,
   type TreeEntry,
 } from '../../domain/objects/index.js';
+import type { PathHasher } from '../../domain/storage/pack-name-hash.js';
 import type { Context } from '../../ports/context.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { readObject } from './read-object.js';
 import type { WalkTreeEntry, WalkTreeOptions } from './types.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
+/** git's own rule (`if (base->len) strbuf_addch(base, '/')`): a non-root
+ *  frame folds this separator between its inherited state and the entry's
+ *  own name bytes. Allocated once, never per entry. */
+const SLASH = Uint8Array.of(0x2f);
+
 interface WalkConfig {
   readonly ctx: Context;
   readonly recursive: boolean;
   readonly maxDepth: number;
   readonly maxEntries: number;
+  readonly pathHasher?: PathHasher;
 }
 
 interface Counter {
@@ -43,6 +50,9 @@ interface WalkFrame {
   readonly prefix: string;
   readonly depth: number;
   readonly id: ObjectId;
+  /** Fold state of this frame's own `prefix`, in the caller's `pathHasher`
+   *  (0 when none was supplied — never read in that case). */
+  readonly hashState: number;
 }
 
 /**
@@ -62,11 +72,12 @@ function enterTree(
   prefix: string,
   depth: number,
   ancestry: Set<ObjectId>,
+  hashState: number,
 ): WalkFrame {
   if (ancestry.has(tree.id)) throw treeCycleDetected(tree.id);
   if (exceedsMaxTreeDepth(depth, maxDepth)) throw treeDepthExceeded(depth);
   ancestry.add(tree.id);
-  return { entries: tree.entries, index: 0, prefix, depth, id: tree.id };
+  return { entries: tree.entries, index: 0, prefix, depth, id: tree.id, hashState };
 }
 
 /** Build the once-per-operation {@link WalkConfig}, resolving `maxDepth` from
@@ -80,12 +91,27 @@ async function resolveWalkConfig(
     recursive: options?.recursive ?? true,
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
+    ...(options?.pathHasher !== undefined ? { pathHasher: options.pathHasher } : {}),
   };
 }
 
 interface FrameStep {
   readonly path: FilePath;
   readonly entry: TreeEntry;
+  /** The child frame's inherited fold state — only when a `pathHasher` was
+   *  supplied; this IS the entry's own `nameHash`. */
+  readonly nameHash?: number;
+}
+
+/**
+ * Fold `entry`'s own name bytes onto `frame`'s inherited state: git's
+ * empty-prefix rule (a root entry hashes its name, never `/name`) then the
+ * entry's `nameBytes` — the authoritative on-disk value, never the derived,
+ * lossy `name` string.
+ */
+function foldEntryNameHash(hasher: PathHasher, frame: WalkFrame, entry: TreeEntry): number {
+  const state = frame.prefix === '' ? frame.hashState : hasher.fold(frame.hashState, SLASH);
+  return hasher.fold(state, entry.nameBytes);
 }
 
 /**
@@ -102,7 +128,11 @@ function nextFrameEntry(config: WalkConfig, counter: Counter, frame: WalkFrame):
   if (exceedsMaxTreeEntries(counter.value, config.maxEntries)) {
     throw treeEntryLimitExceeded(counter.value, config.maxEntries);
   }
-  return { path, entry };
+  return {
+    path,
+    entry,
+    ...(config.pathHasher ? { nameHash: foldEntryNameHash(config.pathHasher, frame, entry) } : {}),
+  };
 }
 
 /**
@@ -128,7 +158,8 @@ export async function* walkTree(
       : treeIdOrObject;
 
   const ancestry = new Set<ObjectId>();
-  const stack: WalkFrame[] = [enterTree(config.maxDepth, rootTree, '', 0, ancestry)];
+  const rootHashState = config.pathHasher?.seed ?? 0;
+  const stack: WalkFrame[] = [enterTree(config.maxDepth, rootTree, '', 0, ancestry, rootHashState)];
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
     if (frame.index >= frame.entries.length) {
@@ -136,12 +167,19 @@ export async function* walkTree(
       ancestry.delete(frame.id);
       continue;
     }
-    const { path, entry } = nextFrameEntry(config, counter, frame);
-    yield { path, id: entry.id, mode: entry.mode as FileMode };
+    const { path, entry, nameHash } = nextFrameEntry(config, counter, frame);
+    yield {
+      path,
+      id: entry.id,
+      mode: entry.mode as FileMode,
+      ...(nameHash !== undefined ? { nameHash } : {}),
+    };
     if (!shouldRecurse(config.recursive, entry.mode)) continue;
     const subtreeObj = await readObject(config.ctx, entry.id);
     if (subtreeObj.type === 'tree') {
-      stack.push(enterTree(config.maxDepth, subtreeObj, path, frame.depth + 1, ancestry));
+      stack.push(
+        enterTree(config.maxDepth, subtreeObj, path, frame.depth + 1, ancestry, nameHash ?? 0),
+      );
     }
   }
 }

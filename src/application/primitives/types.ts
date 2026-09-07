@@ -14,6 +14,7 @@ import type {
   RefName,
   Tree,
 } from '../../domain/objects/index.js';
+import type { PathHasher } from '../../domain/storage/pack-name-hash.js';
 import type { FileStat } from '../../ports/file-system.js';
 
 /** Max symbolic-ref dereferences resolveRef will follow. */
@@ -172,6 +173,8 @@ export interface WalkTreeEntry {
   readonly path: FilePath;
   readonly id: ObjectId;
   readonly mode: FileMode;
+  /** Present exactly when `WalkTreeOptions.pathHasher` was supplied. */
+  readonly nameHash?: number;
 }
 
 export interface WalkTreeOptions {
@@ -183,6 +186,12 @@ export interface WalkTreeOptions {
    */
   readonly maxDepth?: number;
   readonly maxEntries?: number;
+  /**
+   * When supplied, each yielded entry carries a `nameHash` folded over its
+   * own name bytes and the frame's inherited path state — no full path is
+   * ever materialised for the fold. Omitted ⇒ no `nameHash` field, no cost.
+   */
+  readonly pathHasher?: PathHasher;
 }
 
 export interface WalkWorkingTreeEntry {
