@@ -348,377 +348,369 @@ describe('walkTree', () => {
     });
   });
 
-  describe('Given a walkTree call with a path hasher', () => {
-    describe('Given no pathHasher option is supplied', () => {
-      describe('When walkTree is iterated', () => {
-        it('Then the yielded entry carries exactly path, id and mode — no nameHash key', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const b1 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
-          // Act
-          const out = await collect(walkTree(ctx, id));
-          // Assert
-          expect(out[0]).toStrictEqual({ path: 'a', id: b1, mode: '100644' });
-        });
+  describe('Given no pathHasher option is supplied', () => {
+    describe('When walkTree is iterated', () => {
+      it('Then the yielded entry carries exactly path, id and mode — no nameHash key', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
+        // Act
+        const out = await collect(walkTree(ctx, id));
+        // Assert
+        expect(out[0]).toStrictEqual({ path: 'a', id: b1, mode: '100644' });
+      });
+    });
+  });
+
+  describe('Given a root-level entry', () => {
+    describe('When walkTree is iterated with a pathHasher', () => {
+      it('Then nameHash folds the bare name, not a leading slash', async () => {
+        // Arrange — git's own rule: `if (base->len) strbuf_addch(base, '/')`.
+        // A root-level entry hashes 'a', never '/a'.
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
+        // Act
+        const out = await collect(walkTree(ctx, id, { pathHasher: PACK_NAME_HASH_V1 }));
+        // Assert
+        const withLeadingSlash = packNameHash(concatBytes([encode('/'), encode('a')]));
+        expect(out[0]?.nameHash).toBe(packNameHash(encode('a')));
+        expect(out[0]?.nameHash).not.toBe(withLeadingSlash);
+      });
+    });
+  });
+
+  describe('Given a tree nested three levels deep', () => {
+    describe('When walkTree is iterated with a pathHasher', () => {
+      it("Then each entry's nameHash equals packNameHash of its own joined path", async () => {
+        // Arrange — deep/er/churn.txt reuses Part 1's own pinned vector row
+        // (0x9a8be7c7) as a cross-layer oracle: the walker's per-frame fold
+        // must agree with the module it delegates to, not just with itself.
+        const ctx = await buildSeededContext();
+        const leaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const erId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'churn.txt', leaf)]);
+        const deepId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'er', erId)]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'deep', deepId)]);
+        // Act
+        const out = await collect(walkTree(ctx, rootId, { pathHasher: PACK_NAME_HASH_V1 }));
+        // Assert
+        const byPath = new Map(out.map((e) => [e.path, e.nameHash]));
+        expect(byPath.get('deep' as FilePath)).toBe(packNameHash(encode('deep')));
+        expect(byPath.get('deep/er' as FilePath)).toBe(packNameHash(encode('deep/er')));
+        expect(byPath.get('deep/er/churn.txt' as FilePath)).toBe(0x9a8be7c7);
+        expect(byPath.get('deep/er/churn.txt' as FilePath)).toBe(
+          packNameHash(encode('deep/er/churn.txt')),
+        );
+      });
+    });
+  });
+
+  describe('Given a tree entry whose name is invalid UTF-8', () => {
+    describe('When walkTree is iterated with a pathHasher', () => {
+      it('Then nameHash folds the raw name bytes, not the decoded U+FFFD view', async () => {
+        // Arrange — 0xFF is not a valid standalone UTF-8 sequence; TreeEntry.name
+        // decodes it to U+FFFD (ef bf bd), which hashes to a different value.
+        // nameBytes is authoritative and must be what the fold consumes.
+        const ctx = await buildSeededContext();
+        const leaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const id = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, Uint8Array.of(0xff), leaf),
+        ]);
+        // Act
+        const out = await collect(walkTree(ctx, id, { pathHasher: PACK_NAME_HASH_V1 }));
+        // Assert
+        expect(out[0]?.nameHash).toBe(packNameHash(Uint8Array.of(0xff)));
+        expect(out[0]?.nameHash).toBe(0xff000000);
+        expect(out[0]?.nameHash).not.toBe(packNameHash(encode('�')));
+      });
+    });
+  });
+
+  describe('Given the same blob reachable under two different directory paths', () => {
+    describe('When walkTree is iterated with a pathHasher', () => {
+      it('Then each occurrence carries its own path-specific nameHash', async () => {
+        // Arrange — first-seen dedup is the caller's job (Part 6), not the
+        // walker's: it yields per entry, so the same object under two
+        // paths is yielded twice, each with its own hash.
+        const ctx = await buildSeededContext();
+        const shared = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const dir1Id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'file.txt', shared)]);
+        const dir2Id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'file.txt', shared)]);
+        const rootId = await writeTree(ctx, [
+          treeEntry('040000' as FileMode, 'dir1', dir1Id),
+          treeEntry('040000' as FileMode, 'dir2', dir2Id),
+        ]);
+        // Act
+        const out = await collect(walkTree(ctx, rootId, { pathHasher: PACK_NAME_HASH_V1 }));
+        // Assert
+        const blobEntries = out.filter((e) => e.id === shared);
+        expect(blobEntries).toHaveLength(2);
+        expect(blobEntries[0]?.path).toBe('dir1/file.txt');
+        expect(blobEntries[1]?.path).toBe('dir2/file.txt');
+        expect(blobEntries[0]?.nameHash).toBe(packNameHash(encode('dir1/file.txt')));
+        expect(blobEntries[1]?.nameHash).toBe(packNameHash(encode('dir2/file.txt')));
+        expect(blobEntries[0]?.nameHash).not.toBe(blobEntries[1]?.nameHash);
+      });
+    });
+  });
+
+  describe('Given the pathBytes option is not supplied', () => {
+    describe('When walkTree is iterated', () => {
+      it('Then the yielded entry carries exactly path, id and mode — no pathBytes key', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
+        // Act
+        const out = await collect(walkTree(ctx, id));
+        // Assert
+        expect(out[0]).toStrictEqual({ path: 'a', id: b1, mode: '100644' });
       });
     });
 
-    describe('Given a root-level entry', () => {
-      describe('When walkTree is iterated with a pathHasher', () => {
-        it('Then nameHash folds the bare name, not a leading slash', async () => {
-          // Arrange — git's own rule: `if (base->len) strbuf_addch(base, '/')`.
-          // A root-level entry hashes 'a', never '/a'.
-          const ctx = await buildSeededContext();
-          const b1 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
-          // Act
-          const out = await collect(walkTree(ctx, id, { pathHasher: PACK_NAME_HASH_V1 }));
-          // Assert
-          const withLeadingSlash = packNameHash(concatBytes([encode('/'), encode('a')]));
-          expect(out[0]?.nameHash).toBe(packNameHash(encode('a')));
-          expect(out[0]?.nameHash).not.toBe(withLeadingSlash);
-        });
-      });
-    });
-
-    describe('Given a tree nested three levels deep', () => {
-      describe('When walkTree is iterated with a pathHasher', () => {
-        it("Then each entry's nameHash equals packNameHash of its own joined path", async () => {
-          // Arrange — deep/er/churn.txt reuses Part 1's own pinned vector row
-          // (0x9a8be7c7) as a cross-layer oracle: the walker's per-frame fold
-          // must agree with the module it delegates to, not just with itself.
-          const ctx = await buildSeededContext();
-          const leaf = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const erId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'churn.txt', leaf)]);
-          const deepId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'er', erId)]);
-          const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'deep', deepId)]);
-          // Act
-          const out = await collect(walkTree(ctx, rootId, { pathHasher: PACK_NAME_HASH_V1 }));
-          // Assert
-          const byPath = new Map(out.map((e) => [e.path, e.nameHash]));
-          expect(byPath.get('deep' as FilePath)).toBe(packNameHash(encode('deep')));
-          expect(byPath.get('deep/er' as FilePath)).toBe(packNameHash(encode('deep/er')));
-          expect(byPath.get('deep/er/churn.txt' as FilePath)).toBe(0x9a8be7c7);
-          expect(byPath.get('deep/er/churn.txt' as FilePath)).toBe(
-            packNameHash(encode('deep/er/churn.txt')),
-          );
-        });
-      });
-    });
-
-    describe('Given a tree entry whose name is invalid UTF-8', () => {
-      describe('When walkTree is iterated with a pathHasher', () => {
-        it('Then nameHash folds the raw name bytes, not the decoded U+FFFD view', async () => {
-          // Arrange — 0xFF is not a valid standalone UTF-8 sequence; TreeEntry.name
-          // decodes it to U+FFFD (ef bf bd), which hashes to a different value.
-          // nameBytes is authoritative and must be what the fold consumes.
-          const ctx = await buildSeededContext();
-          const leaf = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const id = await writeTree(ctx, [
-            treeEntry('100644' as FileMode, Uint8Array.of(0xff), leaf),
-          ]);
-          // Act
-          const out = await collect(walkTree(ctx, id, { pathHasher: PACK_NAME_HASH_V1 }));
-          // Assert
-          expect(out[0]?.nameHash).toBe(packNameHash(Uint8Array.of(0xff)));
-          expect(out[0]?.nameHash).toBe(0xff000000);
-          expect(out[0]?.nameHash).not.toBe(packNameHash(encode('�')));
-        });
-      });
-    });
-
-    describe('Given the same blob reachable under two different directory paths', () => {
-      describe('When walkTree is iterated with a pathHasher', () => {
-        it('Then each occurrence carries its own path-specific nameHash', async () => {
-          // Arrange — first-seen dedup is the caller's job (Part 6), not the
-          // walker's: it yields per entry, so the same object under two
-          // paths is yielded twice, each with its own hash.
-          const ctx = await buildSeededContext();
-          const shared = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const dir1Id = await writeTree(ctx, [
-            treeEntry('100644' as FileMode, 'file.txt', shared),
-          ]);
-          const dir2Id = await writeTree(ctx, [
-            treeEntry('100644' as FileMode, 'file.txt', shared),
-          ]);
-          const rootId = await writeTree(ctx, [
-            treeEntry('040000' as FileMode, 'dir1', dir1Id),
-            treeEntry('040000' as FileMode, 'dir2', dir2Id),
-          ]);
-          // Act
-          const out = await collect(walkTree(ctx, rootId, { pathHasher: PACK_NAME_HASH_V1 }));
-          // Assert
-          const blobEntries = out.filter((e) => e.id === shared);
-          expect(blobEntries).toHaveLength(2);
-          expect(blobEntries[0]?.path).toBe('dir1/file.txt');
-          expect(blobEntries[1]?.path).toBe('dir2/file.txt');
-          expect(blobEntries[0]?.nameHash).toBe(packNameHash(encode('dir1/file.txt')));
-          expect(blobEntries[1]?.nameHash).toBe(packNameHash(encode('dir2/file.txt')));
-          expect(blobEntries[0]?.nameHash).not.toBe(blobEntries[1]?.nameHash);
+    describe('When walkTree is iterated with a pathHasher', () => {
+      it('Then the fold alone adds nameHash but no pathBytes key', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
+        // Act
+        const out = await collect(walkTree(ctx, id, { pathHasher: PACK_NAME_HASH_V1 }));
+        // Assert
+        expect(out[0]).toStrictEqual({
+          path: 'a',
+          id: b1,
+          mode: '100644',
+          nameHash: packNameHash(encode('a')),
         });
       });
     });
   });
 
-  describe('Given a walkTree call with pathBytes enabled', () => {
-    describe('Given the pathBytes option is not supplied', () => {
-      describe('When walkTree is iterated', () => {
-        it('Then the yielded entry carries exactly path, id and mode — no pathBytes key', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const b1 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
-          // Act
-          const out = await collect(walkTree(ctx, id));
-          // Assert
-          expect(out[0]).toStrictEqual({ path: 'a', id: b1, mode: '100644' });
-        });
-      });
-
-      describe('When walkTree is iterated with a pathHasher', () => {
-        it('Then the fold alone adds nameHash but no pathBytes key', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const b1 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const id = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a', b1)]);
-          // Act
-          const out = await collect(walkTree(ctx, id, { pathHasher: PACK_NAME_HASH_V1 }));
-          // Assert
-          expect(out[0]).toStrictEqual({
-            path: 'a',
-            id: b1,
-            mode: '100644',
-            nameHash: packNameHash(encode('a')),
-          });
-        });
+  describe('Given a root-level entry', () => {
+    describe('When walkTree is iterated with pathBytes enabled', () => {
+      it('Then pathBytes equals nameBytes and is not the same object', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const entry = treeEntry('100644' as FileMode, 'a', b1);
+        const id = await writeTree(ctx, [entry]);
+        // Act
+        const out = await collect(walkTree(ctx, id, { pathBytes: true }));
+        // Assert
+        expect(out[0]?.pathBytes).toEqual(entry.nameBytes);
+        expect(out[0]?.pathBytes).not.toBe(entry.nameBytes);
       });
     });
+  });
 
-    describe('Given a root-level entry', () => {
-      describe('When walkTree is iterated with pathBytes enabled', () => {
-        it('Then pathBytes equals nameBytes and is not the same object', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const b1 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const entry = treeEntry('100644' as FileMode, 'a', b1);
-          const id = await writeTree(ctx, [entry]);
-          // Act
-          const out = await collect(walkTree(ctx, id, { pathBytes: true }));
-          // Assert
-          expect(out[0]?.pathBytes).toEqual(entry.nameBytes);
-          expect(out[0]?.pathBytes).not.toBe(entry.nameBytes);
-        });
+  describe('Given a tree nested two levels deep', () => {
+    describe('When walkTree is iterated with pathBytes enabled', () => {
+      it('Then pathBytes joins ancestor name bytes with 0x2f, no trailing separator, and decodes to path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const subId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', leaf)]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'sub', subId)]);
+        // Act
+        const out = await collect(walkTree(ctx, rootId, { pathBytes: true }));
+        const leafEntry = out.find((e) => e.path === 'sub/inner');
+        // Assert
+        expect(leafEntry?.pathBytes).toEqual(
+          concatBytes([encode('sub'), Uint8Array.of(0x2f), encode('inner')]),
+        );
+        expect(decodePreservingBom(leafEntry!.pathBytes!)).toBe('sub/inner');
       });
     });
+  });
 
-    describe('Given a tree nested two levels deep', () => {
-      describe('When walkTree is iterated with pathBytes enabled', () => {
-        it('Then pathBytes joins ancestor name bytes with 0x2f, no trailing separator, and decodes to path', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const leaf = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const subId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', leaf)]);
-          const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'sub', subId)]);
-          // Act
-          const out = await collect(walkTree(ctx, rootId, { pathBytes: true }));
-          const leafEntry = out.find((e) => e.path === 'sub/inner');
-          // Assert
-          expect(leafEntry?.pathBytes).toEqual(
-            concatBytes([encode('sub'), Uint8Array.of(0x2f), encode('inner')]),
-          );
-          expect(decodePreservingBom(leafEntry!.pathBytes!)).toBe('sub/inner');
-        });
+  describe('Given two sibling entries whose raw names both decode to the Unicode replacement character', () => {
+    describe('When walkTree is iterated with pathBytes enabled', () => {
+      it('Then path is equal for both entries but pathBytes differs', async () => {
+        // Arrange — 0xFF is not a valid standalone UTF-8 sequence and
+        // decodes to U+FFFD; EF BF BD is the exact 3-byte UTF-8 encoding
+        // of U+FFFD. Both names display identically through `path`, but
+        // only pathBytes — the gap this part closes — tells them apart.
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const b2 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([2]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const id = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, Uint8Array.of(0xff), b1),
+          treeEntry('100644' as FileMode, Uint8Array.of(0xef, 0xbf, 0xbd), b2),
+        ]);
+        // Act
+        const out = await collect(walkTree(ctx, id, { pathBytes: true }));
+        // Assert
+        expect(out).toHaveLength(2);
+        expect(out[0]?.path).toBe(out[1]?.path);
+        expect(out[0]?.pathBytes).not.toEqual(out[1]?.pathBytes);
       });
     });
+  });
 
-    describe('Given two sibling entries whose raw names both decode to the Unicode replacement character', () => {
-      describe('When walkTree is iterated with pathBytes enabled', () => {
-        it('Then path is equal for both entries but pathBytes differs', async () => {
-          // Arrange — 0xFF is not a valid standalone UTF-8 sequence and
-          // decodes to U+FFFD; EF BF BD is the exact 3-byte UTF-8 encoding
-          // of U+FFFD. Both names display identically through `path`, but
-          // only pathBytes — the gap this part closes — tells them apart.
-          const ctx = await buildSeededContext();
-          const b1 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const b2 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([2]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const id = await writeTree(ctx, [
-            treeEntry('100644' as FileMode, Uint8Array.of(0xff), b1),
-            treeEntry('100644' as FileMode, Uint8Array.of(0xef, 0xbf, 0xbd), b2),
-          ]);
-          // Act
-          const out = await collect(walkTree(ctx, id, { pathBytes: true }));
-          // Assert
-          expect(out).toHaveLength(2);
-          expect(out[0]?.path).toBe(out[1]?.path);
-          expect(out[0]?.pathBytes).not.toEqual(out[1]?.pathBytes);
-        });
+  describe('Given recursive: false', () => {
+    describe('When walkTree is iterated over a nested tree with pathBytes enabled', () => {
+      it('Then only the root-level entry is yielded, its pathBytes equal to its own nameBytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const subId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', leaf)]);
+        const entry = treeEntry('040000' as FileMode, 'sub', subId);
+        const rootId = await writeTree(ctx, [entry]);
+        // Act
+        const out = await collect(walkTree(ctx, rootId, { recursive: false, pathBytes: true }));
+        // Assert
+        expect(out).toHaveLength(1);
+        expect(out[0]?.pathBytes).toEqual(entry.nameBytes);
       });
     });
+  });
 
-    describe('Given recursive: false', () => {
-      describe('When walkTree is iterated over a nested tree with pathBytes enabled', () => {
-        it('Then only the root-level entry is yielded, its pathBytes equal to its own nameBytes', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const leaf = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const subId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', leaf)]);
-          const entry = treeEntry('040000' as FileMode, 'sub', subId);
-          const rootId = await writeTree(ctx, [entry]);
-          // Act
-          const out = await collect(walkTree(ctx, rootId, { recursive: false, pathBytes: true }));
-          // Assert
-          expect(out).toHaveLength(1);
-          expect(out[0]?.pathBytes).toEqual(entry.nameBytes);
-        });
-      });
-    });
-
-    describe('Given maxDepth=1 and a 2-level nested tree with pathBytes enabled', () => {
-      describe('When walkTree is iterated', () => {
-        it('Then throws TREE_DEPTH_EXCEEDED and no entry past the refusal is yielded', async () => {
-          // Arrange — mirrors the existing maxDepth guard fixture; pathBytes
-          // is built in nextFrameEntry, so if the depth guard fired after
-          // instead of before, this would build bytes for an entry that
-          // must never exist.
-          const ctx = await buildSeededContext();
-          const b1 = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const leafId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'leaf', b1)]);
-          const midId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'mid', leafId)]);
-          const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'root', midId)]);
-          const yielded: WTE[] = [];
-          // Act + Assert
-          try {
-            for await (const e of walkTree(ctx, rootId, { maxDepth: 1, pathBytes: true })) {
-              yielded.push(e);
-            }
-            expect.unreachable();
-          } catch (error) {
-            const data = (error as { data: { code: string; depth: number } }).data;
-            expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
-            expect(data.depth).toBe(2);
-            expect(yielded.map((e) => e.path)).toEqual(['root', 'root/mid']);
+  describe('Given maxDepth=1 and a 2-level nested tree with pathBytes enabled', () => {
+    describe('When walkTree is iterated', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED and no entry past the refusal is yielded', async () => {
+        // Arrange — mirrors the existing maxDepth guard fixture; pathBytes
+        // is built in nextFrameEntry, so if the depth guard fired after
+        // instead of before, this would build bytes for an entry that
+        // must never exist.
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const leafId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'leaf', b1)]);
+        const midId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'mid', leafId)]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'root', midId)]);
+        const yielded: WTE[] = [];
+        // Act + Assert
+        try {
+          for await (const e of walkTree(ctx, rootId, { maxDepth: 1, pathBytes: true })) {
+            yielded.push(e);
           }
-        });
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as { data: { code: string; depth: number } }).data;
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(2);
+          expect(yielded.map((e) => e.path)).toEqual(['root', 'root/mid']);
+        }
       });
     });
+  });
 
-    describe('Given both pathHasher and pathBytes are supplied over a nested tree', () => {
-      describe('When walkTree is iterated', () => {
-        it("Then every entry's nameHash equals packNameHash of its own pathBytes", async () => {
-          // Arrange — the cheapest cross-check of the two mechanisms against
-          // each other; catches a fold that silently drifted from the byte
-          // path.
-          const ctx = await buildSeededContext();
-          const leaf = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const erId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'churn.txt', leaf)]);
-          const deepId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'er', erId)]);
-          const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'deep', deepId)]);
-          // Act
-          const out = await collect(
-            walkTree(ctx, rootId, { pathHasher: PACK_NAME_HASH_V1, pathBytes: true }),
-          );
-          // Assert
-          expect(out.length).toBeGreaterThan(0);
-          for (const entry of out) {
-            expect(entry.nameHash).toBe(packNameHash(entry.pathBytes!));
-          }
-        });
+  describe('Given both pathHasher and pathBytes are supplied over a nested tree', () => {
+    describe('When walkTree is iterated', () => {
+      it("Then every entry's nameHash equals packNameHash of its own pathBytes", async () => {
+        // Arrange — the cheapest cross-check of the two mechanisms against
+        // each other; catches a fold that silently drifted from the byte
+        // path.
+        const ctx = await buildSeededContext();
+        const leaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const erId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'churn.txt', leaf)]);
+        const deepId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'er', erId)]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'deep', deepId)]);
+        // Act
+        const out = await collect(
+          walkTree(ctx, rootId, { pathHasher: PACK_NAME_HASH_V1, pathBytes: true }),
+        );
+        // Assert
+        expect(out.length).toBeGreaterThan(0);
+        for (const entry of out) {
+          expect(entry.nameHash).toBe(packNameHash(entry.pathBytes!));
+        }
       });
     });
+  });
 
-    describe('Given a yielded pathBytes entry is mutated in place immediately after being received', () => {
-      describe('When the walk continues past it', () => {
-        it("Then a later sibling's and a child's pathBytes are unaffected", async () => {
-          // Arrange — 'a' is mutated the instant it is received; its own
-          // inner entry and its sibling 'b' are built afterward and must
-          // not observe the mutation, proving the walker never hands out
-          // the same array it keeps for itself.
-          const ctx = await buildSeededContext();
-          const leaf = await writeObject(ctx, {
-            type: 'blob',
-            content: new Uint8Array([1]),
-            id: '' as ObjectId,
-          } satisfies Blob);
-          const innerId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', leaf)]);
-          const rootId = await writeTree(ctx, [
-            treeEntry('040000' as FileMode, 'a', innerId),
-            treeEntry('100644' as FileMode, 'b', leaf),
-          ]);
-          const out: WTE[] = [];
-          let mutated = false;
-          // Act
-          for await (const entry of walkTree(ctx, rootId, { pathBytes: true })) {
-            out.push(entry);
-            if (!mutated) {
-              entry.pathBytes?.fill(0);
-              mutated = true;
-            }
+  describe('Given a yielded pathBytes entry is mutated in place immediately after being received', () => {
+    describe('When the walk continues past it', () => {
+      it("Then a later sibling's and a child's pathBytes are unaffected", async () => {
+        // Arrange — 'a' is mutated the instant it is received; its own
+        // inner entry and its sibling 'b' are built afterward and must
+        // not observe the mutation, proving the walker never hands out
+        // the same array it keeps for itself.
+        const ctx = await buildSeededContext();
+        const leaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const innerId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'inner', leaf)]);
+        const rootId = await writeTree(ctx, [
+          treeEntry('040000' as FileMode, 'a', innerId),
+          treeEntry('100644' as FileMode, 'b', leaf),
+        ]);
+        const out: WTE[] = [];
+        let mutated = false;
+        // Act
+        for await (const entry of walkTree(ctx, rootId, { pathBytes: true })) {
+          out.push(entry);
+          if (!mutated) {
+            entry.pathBytes?.fill(0);
+            mutated = true;
           }
-          // Assert
-          const child = out.find((e) => e.path === 'a/inner');
-          const sibling = out.find((e) => e.path === 'b');
-          expect(child?.pathBytes).toEqual(
-            concatBytes([encode('a'), Uint8Array.of(0x2f), encode('inner')]),
-          );
-          expect(sibling?.pathBytes).toEqual(encode('b'));
-        });
+        }
+        // Assert
+        const child = out.find((e) => e.path === 'a/inner');
+        const sibling = out.find((e) => e.path === 'b');
+        expect(child?.pathBytes).toEqual(
+          concatBytes([encode('a'), Uint8Array.of(0x2f), encode('inner')]),
+        );
+        expect(sibling?.pathBytes).toEqual(encode('b'));
       });
     });
   });
