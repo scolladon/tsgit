@@ -394,7 +394,7 @@ async function collectNormalPackData(
 
 /**
  * The normal-pack half of step 4's partition: `reachable ∩ (owned ∪
- * ownedPromisor) \ kept`, collected in one pass over `objects` — the
+ * ownedPromisor) \ kept`, collected in one pass over `reachable` — the
  * reachable set itself, already in the closure's own traversal order —
  * instead of iterating `owned` and `ownedPromisor` separately the way
  * `cruftCandidatesOf` still does. Every reachable object is a member by
@@ -408,8 +408,9 @@ async function collectNormalPackData(
  * function of `computeReachable`'s sorted roots and the graph alone, so
  * Pin W's no-op boundary now holds by construction rather than by an
  * explicit `.sort()`. Every member's `recency` is its own traversal
- * ordinal, looked up from `ordinalOf` — the same map `computeReachable`
- * returned it in.
+ * ordinal, carried on the entry `reachable` maps it to — iterating the map
+ * IS iterating the traversal, so the ordinal arrives with the entry rather
+ * than costing a second lookup.
  */
 function toNormalPackInputs(
   reachable: ReadonlyMap<ObjectId, ReachableEntry>,
@@ -938,9 +939,9 @@ export async function runGcTask(
   // order, so this array order governs only the delta-disabled path.
   const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor].sort();
   // Mapped to inputs by hash lookup, not by iterating the closure again: a
-  // REACHABLE member is a `reachableObjects` member by construction and
-  // gets its walk hash and its traversal ordinal (`ordinalOf`, the same
-  // map the normal pack reads); an UNREACHABLE member never entered the
+  // REACHABLE member is a `reachable` member by construction and gets its
+  // walk hash and its traversal ordinal from the same map the normal pack
+  // reads; an UNREACHABLE member never entered the
   // closure at all and gets `PACK_NAME_HASH_PATHLESS` plus a recency of its own —
   // "first seen after everything reachable, in oid order": the reachable
   // count plus its own index in this sorted array. That keeps every

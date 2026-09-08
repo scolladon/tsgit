@@ -85,8 +85,13 @@ describe('packNameHash', () => {
           // discards any excess at the next iteration whether or not the
           // previous step normalised. Per-step and truncate-once-at-the-end
           // agree on every input — checked over 200k random byte strings
-          // against a BigInt model of the C fold, zero mismatches. The
-          // per-step `>>> 0` is therefore redundant, kept for legibility.
+          // against a BigInt model of the C fold, zero mismatches.
+          //
+          // The per-step `>>> 0` is redundant only against an equivalent
+          // `>>> 0` on the return. The truncation ITSELF is load-bearing and
+          // must not simply be deleted: the final step's `c << 24` is a
+          // signed int32 for any byte >= 0x80, so a fold with no truncation at all
+          // returns -16777216 rather than 0xff000000 for the `\xff` row.
           label: '\\x10\\xff\\x41 (mid-fold uint32 overflow)',
           bytes: Uint8Array.of(0x10, 0xff, 0x41),
           expected: 0x41c00000,

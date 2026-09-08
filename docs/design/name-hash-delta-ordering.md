@@ -623,10 +623,12 @@ normal-pack input by iterating **the closure**, not `owned`: every reachable obj
 kept and is either owned or a promisor-pack member goes to `toNormalPack` as
 `{ id, nameHash, recency: ordinal }`, in traversal order. That is the same set the two existing
 loops produce — `reachable ∩ (owned ∪ ownedPromisor) \ kept` — collected in one pass. The
-wrapper is built by one small helper, `toPackInput(object, recency)`, whose `nameHash ??
-PATHLESS_HASH` arm is reachable only through the bitmap tier gc never uses; the helper is
-unit-tested directly with a hash-less object so that arm is a tested branch, not an
-equivalent mutant carried forward. The `toNormalPack.sort()` at `:419` and its Pin W comment
+the wrapper is built inline from the projected `reachable` entry. **Amended in review:** an
+earlier shape put this behind a `toPackInput(object, recency)` helper, exported from an
+`internal/` module purely so a unit test could reach its `?? PATHLESS_HASH` arm — dead
+production code kept alive by a test-only export. The projection in `computeReachable` now
+applies that default once, where the tier default belongs, and the helper and its test file
+are gone. The `toNormalPack.sort()` at `:419` and its Pin W comment
 go: the sort existed because the base-only path emits in input order and `owned`'s iteration
 order depends on where objects live; traversal order is a function of the graph and the sorted
 roots alone, so Pin W holds by construction on both the delta and the base-only path.
@@ -1367,8 +1369,7 @@ for a 4 096-byte target).
   `nameHash` equal to `packNameHash` of its path and `recency` equal to its ordinal; the
   cruft call receives `{ id }` objects with **no** `nameHash` and **no** `recency`
   (`toStrictEqual`); the promisor call receives oid-sorted objects with `nameHash: 0` and a
-  post-traversal ordinal for an unreachable member. `toPackInput` is tested directly with a
-  hash-less object so its `?? 0` arm is a covered branch. The existing "second gc with nothing
+  post-traversal ordinal for an unreachable member. The existing "second gc with nothing
   changed does not call buildPack for cruft" (`:1915-1929`) must stay green — it is the
   set-keyed cruft identity's test. The single-blob resurrection pin (`:2098-2150`) stays green
   untouched; a **new multi-object resurrection** case (a commit, its tree and two blobs
@@ -1442,7 +1443,10 @@ Target 0 survivors. Hazards, each with a named kill:
 - promotion: the order of `[…, n, base]` (scan-order test); `without` removing the right
   member (`emissionIndex` equality, not identity); `readmit` not rebuilding the index;
   `chainDepth >= maxDepth` in the non-admission guard (49 admits, 50 does not);
-- gc: `toPackInput`'s `?? 0` (the direct helper test); the root sort (a fixture whose refs
+- gc: the pathless tier default `object.nameHash ?? PACK_NAME_HASH_PATHLESS` in
+  `computeReachable` — killed by `maintenance.test.ts`'s captured-`objects` assertion, which
+  pins non-zero hashes for `a.txt` / `dir` / `dir/f.txt` (the `toPackInput` helper this row
+  used to name was removed in review as dead production code); the root sort (a fixture whose refs
   enumerate in non-sorted order twice, asserting equal packs — kills "sort removed"); the
   promisor ordinal `reachable.size + i` (an unreachable member's recency asserted numerically).
 
