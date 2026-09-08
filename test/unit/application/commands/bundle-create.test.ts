@@ -14,14 +14,16 @@ import * as readObjectMod from '../../../../src/application/primitives/read-obje
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type {
-  AuthorIdentity,
-  FileMode,
-  GitObject,
-  ObjectId,
-  Tag,
+import {
+  type AuthorIdentity,
+  FILE_MODE,
+  type FileMode,
+  type GitObject,
+  type ObjectId,
+  type Tag,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { packNameHash } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -337,6 +339,37 @@ describe('bundleCreate', () => {
 
         // Assert
         expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: commit1 }]);
+      });
+    });
+  });
+
+  // ── Name hash: buildPack receives { id, nameHash } straight from the closure ──
+
+  describe('Given a repository with one commit whose tree has a nested blob', () => {
+    describe('When bundleCreate is called with tip refs/heads/main', () => {
+      it('Then calls buildPack with the commit at nameHash 0 and the nested blob at its folded path hash, no recency', async () => {
+        // Arrange
+        const ctx = await initRepo();
+        const blob = await makeBlob(ctx, 'nested content');
+        const subTree = await writeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blob)]);
+        const rootTree = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'dir', subTree)]);
+        const commit1 = await makeCommitObj(ctx, rootTree, [], 'nested commit', 1);
+        await setRef(ctx, 'refs/heads/main', commit1);
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await bundleCreate(ctx, { revs: [{ tip: 'refs/heads/main' }] });
+
+        // Assert
+        const captured = buildPackSpy.mock.calls[0]![1].objects;
+        const commitInput = captured.find((object) => object.id === commit1);
+        const blobInput = captured.find((object) => object.id === blob);
+        expect(commitInput).toStrictEqual({ id: commit1, nameHash: 0 });
+        expect(blobInput).toStrictEqual({
+          id: blob,
+          nameHash: packNameHash(new TextEncoder().encode('dir/f.txt')),
+        });
+        buildPackSpy.mockRestore();
       });
     });
   });

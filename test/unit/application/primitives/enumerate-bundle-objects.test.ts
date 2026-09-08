@@ -17,6 +17,7 @@ import {
   type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { packNameHash } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, seedMaxTreeDepth } from './fixtures.js';
 
@@ -69,6 +70,14 @@ const makeCommit = async (
   });
 
 const sorted = (oids: ReadonlyArray<ObjectId>): ObjectId[] => [...oids].sort();
+
+/** Every existing id-based assertion in this file predates the name hash —
+ *  it wants the bare oid, not the `{ id, nameHash }` pack-input wrapper. */
+const idsOf = (objects: BundleObjectClosure['objects']): ObjectId[] =>
+  objects.map((object) => object.id);
+
+const nameHashOf = (objects: BundleObjectClosure['objects'], id: ObjectId): number | undefined =>
+  objects.find((object) => object.id === id)?.nameHash;
 
 interface LinearFixture {
   readonly ctx: Context;
@@ -135,7 +144,7 @@ describe('enumerateBundleObjects', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [commit3], haves: [commit1] });
 
         // Assert
-        expect(sorted(result.objects)).toEqual(
+        expect(sorted(idsOf(result.objects))).toEqual(
           sorted([commit2, commit3, tree2, tree3, blobB, blobC]),
         );
       });
@@ -148,9 +157,9 @@ describe('enumerateBundleObjects', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [commit3], haves: [commit1] });
 
         // Assert
-        expect(result.objects).not.toContain(blobA);
-        expect(result.objects).not.toContain(tree1);
-        expect(result.objects).not.toContain(commit1);
+        expect(idsOf(result.objects)).not.toContain(blobA);
+        expect(idsOf(result.objects)).not.toContain(tree1);
+        expect(idsOf(result.objects)).not.toContain(commit1);
       });
 
       it('Then boundary is exactly [commit1]', async () => {
@@ -175,7 +184,7 @@ describe('enumerateBundleObjects', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [commit3], haves: [] });
 
         // Assert
-        expect(sorted(result.objects)).toEqual(
+        expect(sorted(idsOf(result.objects))).toEqual(
           sorted([commit1, commit2, commit3, tree1, tree2, tree3, blobA, blobB, blobC]),
         );
         expect(result.boundary).toEqual([]);
@@ -212,11 +221,11 @@ describe('enumerateBundleObjects', () => {
 
         // Assert
         expect(sorted(result.boundary)).toEqual([commit1]);
-        expect(sorted(result.objects)).toEqual(
+        expect(sorted(idsOf(result.objects))).toEqual(
           sorted([commitMain, commitFeature, treeMain, treeFeature, blobA, blobB]),
         );
-        expect(result.objects).not.toContain(blobX);
-        expect(result.objects).not.toContain(commit1);
+        expect(idsOf(result.objects)).not.toContain(blobX);
+        expect(idsOf(result.objects)).not.toContain(commit1);
       });
     });
   });
@@ -286,9 +295,9 @@ describe('enumerateBundleObjects', () => {
         });
 
         // Assert
-        expect(sorted(result.objects)).toEqual(sorted([commitM1, treeM1, blobX]));
-        expect(result.objects).not.toContain(blobA);
-        expect(result.objects).not.toContain(blobB);
+        expect(sorted(idsOf(result.objects))).toEqual(sorted([commitM1, treeM1, blobX]));
+        expect(idsOf(result.objects)).not.toContain(blobA);
+        expect(idsOf(result.objects)).not.toContain(blobB);
       });
     });
   });
@@ -318,7 +327,7 @@ describe('enumerateBundleObjects', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [tagId], haves: [] });
 
         // Assert
-        expect(sorted(result.objects)).toEqual(sorted([tagId, commit1, tree1, blobA]));
+        expect(sorted(idsOf(result.objects))).toEqual(sorted([tagId, commit1, tree1, blobA]));
         expect(result.boundary).toEqual([]);
       });
     });
@@ -380,7 +389,7 @@ describe('enumerateBundleObjects', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [commitB], haves: [] });
 
         // Assert — object set is correct
-        expect(result.objects).toContain(sharedTree);
+        expect(idsOf(result.objects)).toContain(sharedTree);
         // Assert — shared subtree was read from disk exactly once (not once per commit)
         const sharedPath = `${ctx.layout.gitDir}/objects/${sharedTree.slice(0, 2)}/${sharedTree.slice(2)}`;
         const sharedReadCount = calls().filter(
@@ -423,8 +432,8 @@ describe('enumerateBundleObjects — haves-side isDirectory guard', () => {
         });
 
         // Assert
-        expect(result.objects).not.toContain(blobX);
-        expect(result.objects).toContain(blobY);
+        expect(idsOf(result.objects)).not.toContain(blobX);
+        expect(idsOf(result.objects)).toContain(blobY);
       });
     });
   });
@@ -455,8 +464,8 @@ describe('enumerateBundleObjects — wants-side gitlink guard', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
 
         // Assert
-        expect(result.objects).not.toContain(GITLINK_OID);
-        expect(result.objects).toContain(blobA);
+        expect(idsOf(result.objects)).not.toContain(GITLINK_OID);
+        expect(idsOf(result.objects)).toContain(blobA);
       });
     });
   });
@@ -497,8 +506,8 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
         // Assert — no error; haveCommit excluded as boundary
         expect(thrown).toBeUndefined();
         expect(result).not.toBeNull();
-        expect(result!.objects).not.toContain(haveCommit);
-        expect(result!.objects).toContain(blobB);
+        expect(idsOf(result!.objects)).not.toContain(haveCommit);
+        expect(idsOf(result!.objects)).toContain(blobB);
       });
     });
   });
@@ -527,7 +536,7 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
         // Assert — no error; wantCommit and its objects are emitted
         expect(thrown).toBeUndefined();
         expect(result).not.toBeNull();
-        expect(result!.objects).toContain(wantCommit);
+        expect(idsOf(result!.objects)).toContain(wantCommit);
       });
     });
   });
@@ -551,7 +560,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
 
         // Assert
-        expect(result.objects).toContain(commit);
+        expect(idsOf(result.objects)).toContain(commit);
       });
     });
 
@@ -619,7 +628,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
 
         // Assert
-        expect(result.objects).toContain(commit);
+        expect(idsOf(result.objects)).toContain(commit);
       });
     });
 
@@ -667,7 +676,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         });
 
         // Assert
-        expect(result.objects).toContain(wantBlob);
+        expect(idsOf(result.objects)).toContain(wantBlob);
       });
     });
   });
@@ -749,7 +758,7 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
         });
 
         // Assert
-        expect(result.objects).toContain(wantBlob);
+        expect(idsOf(result.objects)).toContain(wantBlob);
       });
     });
 
@@ -864,13 +873,82 @@ describe('enumerateBundleObjects — haves-side shared-subtree dedup', () => {
 
         // Assert — the shared subtree (in the uninteresting closure) is excluded,
         // the new blob is emitted, and the subtree was read from disk once only.
-        expect(result.objects).not.toContain(blobX);
-        expect(result.objects).toContain(blobC);
+        expect(idsOf(result.objects)).not.toContain(blobX);
+        expect(idsOf(result.objects)).toContain(blobC);
         const sharedPath = `${ctx.layout.gitDir}/objects/${sharedTree.slice(0, 2)}/${sharedTree.slice(2)}`;
         const sharedReadCount = calls().filter(
           (c) => c.method === 'read' && c.path === sharedPath,
         ).length;
         expect(sharedReadCount).toBe(1);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Name hash folding: emitTreeObjects folds git's pack_name_hash itself
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — name hash folding', () => {
+  describe('Given a commit whose tree has a root-level blob and a two-level nested blob', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then the commit and root tree carry no hash, the root blob hashes its bare name, and the nested blob and its parent tree hash their joined path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rootBlob = await makeBlob(ctx, 'root');
+        const nestedBlob = await makeBlob(ctx, 'nested');
+        const subTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', nestedBlob)]);
+        const rootTree = await makeTree(ctx, [
+          treeEntry(BLOB_MODE, 'a.txt', rootBlob),
+          treeEntry(FILE_MODE.DIRECTORY, 'dir', subTree),
+        ]);
+        const commit = await makeCommit(ctx, rootTree, [], 'hashed', 1);
+
+        // Act
+        const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
+
+        // Assert
+        expect(nameHashOf(result.objects, commit)).toBe(0);
+        expect(nameHashOf(result.objects, rootTree)).toBe(0);
+        expect(nameHashOf(result.objects, rootBlob)).toBe(
+          packNameHash(new TextEncoder().encode('a.txt')),
+        );
+        expect(nameHashOf(result.objects, subTree)).toBe(
+          packNameHash(new TextEncoder().encode('dir')),
+        );
+        expect(nameHashOf(result.objects, nestedBlob)).toBe(
+          packNameHash(new TextEncoder().encode('dir/f.txt')),
+        );
+      });
+    });
+  });
+
+  describe('Given an annotated tag pointing to a commit', () => {
+    describe('When enumerateBundleObjects is called with wants=[tagOid]', () => {
+      it('Then the tag carries no hash', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobA = await makeBlob(ctx, 'A');
+        const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blobA)]);
+        const commit1 = await makeCommit(ctx, tree1, [], 'tagged commit', 1);
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: commit1,
+            objectType: 'commit',
+            tagName: 'v1.0',
+            message: 'release 1.0',
+            extraHeaders: [],
+          },
+        };
+        const tagId = await writeObject(ctx, tag);
+
+        // Act
+        const result = await enumerateBundleObjects(ctx, { wants: [tagId], haves: [] });
+
+        // Assert
+        expect(nameHashOf(result.objects, tagId)).toBe(0);
       });
     });
   });

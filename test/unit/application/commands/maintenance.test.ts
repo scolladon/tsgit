@@ -30,6 +30,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as retentionRootsMod from '../../../../src/application/commands/internal/fsck/roots.js';
 import {
   type MaintenanceTask,
   maintenance,
@@ -60,7 +61,7 @@ import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import { parseCruftMtimes } from '../../../../src/domain/storage/index.js';
+import { packNameHash, parseCruftMtimes } from '../../../../src/domain/storage/index.js';
 import { allObjectIds } from '../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx } from '../../domain/storage/arbitraries.js';
@@ -1999,16 +2000,164 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a repository with one reachable commit whose tree has a root blob and a nested blob', () => {
+    describe('When gc runs', () => {
+      it('Then the normal-pack build receives objects in the closure traversal order, each nameHash equal to packNameHash of its own path', async () => {
+        // Arrange — objects are written directly, bypassing `add`/the
+        // index: `add` would also stage each blob as its own
+        // index-protection retention root, pre-claiming its hash (a root
+        // want's own divergence rule, "no name to give it, hashes to 0")
+        // before the tree walk ever reaches it — a real invariant, just
+        // not the one this test is pinning.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const rootBlobId = await writeLooseBlob(ctx, 'root');
+        const nestedBlobId = await writeLooseBlob(ctx, 'nested');
+        const dirTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, 'f.txt', nestedBlobId)],
+        });
+        const rootTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [
+            treeEntry(FILE_MODE.REGULAR, 'a.txt', rootBlobId),
+            treeEntry(FILE_MODE.DIRECTORY, 'dir', dirTreeId),
+          ],
+        });
+        const commitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: rootTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'nested',
+            extraHeaders: [],
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+        const captured = buildPackSpy.mock.calls[0]![1].objects;
+        expect(captured.map((object) => object.id)).toEqual([
+          commitId,
+          rootTreeId,
+          rootBlobId,
+          dirTreeId,
+          nestedBlobId,
+        ]);
+        expect(captured.find((object) => object.id === commitId)).toStrictEqual({
+          id: commitId,
+          nameHash: 0,
+        });
+        expect(captured.find((object) => object.id === rootTreeId)).toStrictEqual({
+          id: rootTreeId,
+          nameHash: 0,
+        });
+        expect(captured.find((object) => object.id === rootBlobId)).toStrictEqual({
+          id: rootBlobId,
+          nameHash: packNameHash(new TextEncoder().encode('a.txt')),
+        });
+        expect(captured.find((object) => object.id === dirTreeId)).toStrictEqual({
+          id: dirTreeId,
+          nameHash: packNameHash(new TextEncoder().encode('dir')),
+        });
+        expect(captured.find((object) => object.id === nestedBlobId)).toStrictEqual({
+          id: nestedBlobId,
+          nameHash: packNameHash(new TextEncoder().encode('dir/f.txt')),
+        });
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given two repositories with an identical graph whose retention roots resolve in reversed order', () => {
+    describe('When gc runs on each', () => {
+      it('Then the normal-pack build receives objects in the same sequence on both', async () => {
+        // Arrange — two unrelated root commits, EACH referencing the SAME
+        // blob at a different path. The blob's hash is claimed by whichever
+        // root's walk reaches it first (a dedup, not a second fold), so
+        // this fixture is sensitive to root PROCESSING order in a way a
+        // plain object-set comparison would miss. `collectRetentionRoots`
+        // itself always answers in the same order here (its own ref
+        // enumeration already sorts by name) — reversed order is forced
+        // directly at that boundary, the one `computeReachable` promises to
+        // normalise regardless of what it is handed.
+        const buildRepo = async (): Promise<{
+          readonly ctx: Context;
+          readonly commitA: ObjectId;
+          readonly commitB: ObjectId;
+        }> => {
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const sharedBlobId = await writeLooseBlob(ctx, 'root-sort-shared');
+          const makeRootCommit = async (path: string, message: string): Promise<ObjectId> => {
+            const treeId = await writeObject(ctx, {
+              type: 'tree' as const,
+              id: '' as ObjectId,
+              entries: [treeEntry(FILE_MODE.REGULAR, path, sharedBlobId)],
+            });
+            return writeObject(ctx, {
+              type: 'commit' as const,
+              id: '' as ObjectId,
+              data: {
+                tree: treeId,
+                parents: [],
+                author: AUTHOR,
+                committer: AUTHOR,
+                message,
+                extraHeaders: [],
+              },
+            });
+          };
+          const commitA = await makeRootCommit('a.txt', 'root-sort-a');
+          const commitB = await makeRootCommit('b.txt', 'root-sort-b');
+          return { ctx, commitA, commitB };
+        };
+        const repoAB = await buildRepo();
+        const repoBA = await buildRepo();
+        const rootsSpy = vi.spyOn(retentionRootsMod, 'collectRetentionRoots');
+        rootsSpy.mockResolvedValueOnce(new Set([repoAB.commitA, repoAB.commitB]));
+        rootsSpy.mockResolvedValueOnce(new Set([repoBA.commitB, repoBA.commitA]));
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        await sut(repoAB.ctx, { tasks: ['gc'] });
+        await sut(repoBA.ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(buildPackSpy).toHaveBeenCalledTimes(2);
+        const capturedAB = buildPackSpy.mock.calls[0]![1].objects;
+        const capturedBA = buildPackSpy.mock.calls[1]![1].objects;
+        expect(capturedBA).toEqual(capturedAB);
+        rootsSpy.mockRestore();
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given a repository with no reachable commit and an unreachable object living only inside a .promisor-marked pack', () => {
     describe('When gc runs', () => {
-      it('Then the promisor-pack build calls buildPack with delta: true', async () => {
+      it('Then the promisor-pack build calls buildPack with delta: true and its one unreachable member at nameHash 0', async () => {
         // Arrange — no commit (normal path has zero oids), and the only
         // unreachable object lives inside the promisor pack (excluded from
         // cruft candidates), so exactly one buildPack call can be
         // observed here, from the promisor path.
         const ctx = createMemoryContext();
         await init(ctx);
-        await writePromisorPack(ctx, 'delta-flag-promisor', ['delta-flag-promisor-seed']);
+        const [seedId] = await writePromisorPack(ctx, 'delta-flag-promisor', [
+          'delta-flag-promisor-seed',
+        ]);
         const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
         const sut = maintenance;
 
@@ -2021,6 +2170,7 @@ describe('maintenance', () => {
         expect(result.cruftPackId).toBeUndefined();
         expect(buildPackSpy).toHaveBeenCalledTimes(1);
         expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        expect(buildPackSpy.mock.calls[0]![1].objects).toStrictEqual([{ id: seedId, nameHash: 0 }]);
         buildPackSpy.mockRestore();
       });
     });
@@ -2028,13 +2178,13 @@ describe('maintenance', () => {
 
   describe('Given a repository with no reachable commit and one unreferenced loose blob that never expires', () => {
     describe('When gc runs', () => {
-      it('Then the cruft-pack build calls buildPack with delta: true', async () => {
+      it('Then the cruft-pack build calls buildPack with delta: true and its one object as exactly { id }, no nameHash', async () => {
         // Arrange — no commit (normal path has zero oids), no .promisor
         // pack (promisor path has zero oids), so exactly one buildPack
         // call can be observed here, from the cruft path.
         const ctx = createMemoryContext();
         await init(ctx);
-        await writeLooseBlob(ctx, 'delta-flag-cruft-seed');
+        const blobId = await writeLooseBlob(ctx, 'delta-flag-cruft-seed');
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
         const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
         const sut = maintenance;
@@ -2048,6 +2198,7 @@ describe('maintenance', () => {
         expect(result.promisorPackId).toBeUndefined();
         expect(buildPackSpy).toHaveBeenCalledTimes(1);
         expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        expect(buildPackSpy.mock.calls[0]![1].objects).toStrictEqual([{ id: blobId }]);
         buildPackSpy.mockRestore();
       });
     });

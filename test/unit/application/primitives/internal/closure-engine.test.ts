@@ -1078,7 +1078,7 @@ describe('computeClosure', () => {
 
         // Assert — the walk's answer is a superset of the exact difference.
         const actualIds = new Set(actual.objects.map((o) => o.id));
-        const exactIds = new Set(exact.objects);
+        const exactIds = new Set(exact.objects.map((o) => o.id));
         for (const id of exactIds) {
           expect(actualIds.has(id)).toBe(true);
         }
@@ -1106,7 +1106,7 @@ describe('computeClosure', () => {
 
         // Assert
         const actualIds = new Set(actual.objects.map((o) => o.id));
-        const exactIds = new Set(exact.objects);
+        const exactIds = new Set(exact.objects.map((o) => o.id));
         const extra = [...actualIds].filter((id) => !exactIds.has(id));
         expect(extra.length).toBeGreaterThan(0);
       });

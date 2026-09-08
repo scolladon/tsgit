@@ -100216,7 +100216,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "'s own emission order), not\nof the closure's own traversal order."
+										"text": "'s own emission order), not\nof the closure's own traversal order — and, now, of the name hashes the\ntier supplied: the walk tier hands every object its own, the bitmap\ntier hands none, so the SAME object set orders its deltas differently\nacross tiers even when both closures happen to agree on membership."
 									}
 								]
 							},

@@ -11,7 +11,7 @@ import { parseMultiPackIndex } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { DirEntry, FileStat } from '../../../ports/file-system.js';
-import { buildPack } from '../../primitives/build-pack.js';
+import { buildPack, type PackObjectInput } from '../../primitives/build-pack.js';
 import {
   assertValidGcAutoConfig,
   assertValidPackIntConfig,
@@ -20,7 +20,11 @@ import {
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
 import { expiryCutoff } from '../../primitives/expiry-cutoff.js';
 import { assertValidBooleanConfig } from '../../primitives/internal/boolean-config-guard.js';
-import { type ClosureTier, computeClosure } from '../../primitives/internal/closure-engine.js';
+import {
+  type ClosureObject,
+  type ClosureTier,
+  computeClosure,
+} from '../../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../../primitives/internal/concurrency.js';
 import {
   computeCruftMtimes,
@@ -57,6 +61,12 @@ import { collectRetentionRoots } from './fsck/roots.js';
 const DEFAULT_GC_AUTO_THRESHOLD = 6700;
 const DEFAULT_PRUNE_EXPIRE = '2.weeks.ago';
 const CLOSURE_TIER: ClosureTier = 'walk';
+/** git's own convention for an object with no path — a reachability
+ *  artefact encodes types and bits, never names, so the bitmap tier never
+ *  fills `ClosureObject.nameHash`. `CLOSURE_TIER` is always `'walk'` here,
+ *  which always fills it, so this constant is exercised only by a direct
+ *  call to `toPackInput` — see its own doc. */
+const PATHLESS_HASH = 0;
 
 export type GcResult = Omit<
   MaintenanceResult,
@@ -281,15 +291,47 @@ async function removeStaleTempFiles(ctx: Context, packDir: string, cutoff: numbe
   );
 }
 
-async function computeReachableSet(ctx: Context): Promise<ReadonlySet<ObjectId>> {
-  const roots = await collectRetentionRoots(ctx);
+interface ReachableClosure {
+  /** The closure's own traversal order — carried through with no re-sort so
+   *  a later pack build over these objects reproduces run 2 from run 1. */
+  readonly objects: ReadonlyArray<ClosureObject>;
+  readonly reachable: ReadonlySet<ObjectId>;
+}
+
+/**
+ * `collectRetentionRoots` returns a `Set` whose insertion order follows
+ * ref, reflog, index and worktree enumeration — nothing before this change
+ * depended on that order. Sorting it here makes the walk a pure function of
+ * `(sorted roots, graph)`, independent of where objects happen to live —
+ * the invariant `toNormalPackInputs`'s traversal order (and, later, gc's
+ * own recency) relies on to reproduce run 2 from run 1 across the
+ * loose→packed transition.
+ */
+async function computeReachable(ctx: Context): Promise<ReachableClosure> {
+  const roots = [...(await collectRetentionRoots(ctx))].sort();
   const closure = await computeClosure(ctx, {
-    wants: [...roots],
+    wants: roots,
     not: [],
     objects: true,
     tier: CLOSURE_TIER,
   });
-  return new Set(closure.objects.map((object) => object.id));
+  return {
+    objects: closure.objects,
+    reachable: new Set(closure.objects.map((object) => object.id)),
+  };
+}
+
+/**
+ * Wraps a walk-tier closure object as a `buildPack` input. `nameHash` is
+ * always populated on the walk tier — the tier `CLOSURE_TIER` fixes gc to —
+ * so the `?? PATHLESS_HASH` arm below is reachable only through the OTHER
+ * tier the same closure engine also serves. gc never takes that tier, so
+ * the arm is exercised by calling this helper directly instead of leaving
+ * it an untested branch.
+ * @internal — exported only for that coverage.
+ */
+export function toPackInput(object: ClosureObject): PackObjectInput {
+  return { id: object.id, nameHash: object.nameHash ?? PATHLESS_HASH };
 }
 
 /**
@@ -350,74 +392,94 @@ async function collectNormalPackData(
 }
 
 /**
+ * The normal-pack half of step 4's partition: `reachable ∩ (owned ∪
+ * ownedPromisor) \ kept`, collected in one pass over `objects` — the
+ * reachable set itself, already in the closure's own traversal order —
+ * instead of iterating `owned` and `ownedPromisor` separately the way
+ * `cruftCandidatesOf` still does. Every reachable object is a member by
+ * construction, so the only tests left are exclusion (`keptOids`, Pin V's
+ * total exclusion — never repacked and never crufted even when ALSO loose
+ * or in a normal pack) and ownership (`owned` OR `ownedPromisor` — a
+ * REACHABLE promisor-pack object duplicates into the normal pack the same
+ * way git's own does not treat promisor membership as a `.keep`-style
+ * exclusion; see `partitionOwned`'s own doc for the full reachable/
+ * unreachable promisor distinction). No sort: traversal order is a pure
+ * function of `computeReachable`'s sorted roots and the graph alone, so
+ * Pin W's no-op boundary now holds by construction rather than by an
+ * explicit `.sort()`.
+ */
+function toNormalPackInputs(
+  objects: ReadonlyArray<ClosureObject>,
+  owned: ReadonlySet<ObjectId>,
+  keptOids: ReadonlySet<ObjectId>,
+  ownedPromisor: ReadonlySet<ObjectId>,
+): ReadonlyArray<PackObjectInput> {
+  const toNormalPack: PackObjectInput[] = [];
+  for (const object of objects) {
+    if (keptOids.has(object.id)) continue;
+    if (owned.has(object.id) || ownedPromisor.has(object.id)) {
+      toNormalPack.push(toPackInput(object));
+    }
+  }
+  return toNormalPack;
+}
+
+/**
+ * The cruft-candidate half: `owned`'s own iteration order, unchanged since
+ * before this change — cruft passes neither hash nor recency, so its bytes
+ * depend only on the survivor SET, never this array's order. `keptOids` is
+ * excluded (Pin V, as above); every `ownedPromisor` member is excluded
+ * outright, reachable or not — a reachable one already went to the normal
+ * pack via `toNormalPackInputs`, and an unreachable one must never reach
+ * cruft, because a cruft pack cannot carry the `.promisor` marker and
+ * moving it there would announce a lazily-fetchable object as fully
+ * present locally.
+ */
+function cruftCandidatesOf(
+  owned: ReadonlySet<ObjectId>,
+  reachable: ReadonlySet<ObjectId>,
+  keptOids: ReadonlySet<ObjectId>,
+  ownedPromisor: ReadonlySet<ObjectId>,
+): ReadonlyArray<ObjectId> {
+  const cruftCandidates: ObjectId[] = [];
+  for (const id of owned) {
+    if (keptOids.has(id)) continue;
+    if (ownedPromisor.has(id)) continue;
+    if (!reachable.has(id)) cruftCandidates.push(id);
+  }
+  return cruftCandidates;
+}
+
+/**
  * Step 4's widened partition: `owned` gains every NORMAL pack's oids
- * (consolidation's whole contribution); `keptOids` is subtracted from BOTH
- * output sets — Pin V's total exclusion, an oid inside a kept pack is never
- * repacked and never crufted, even when it is ALSO loose or in a normal
- * pack.
- *
- * `ownedPromisor` is a DIFFERENT kind of overlap. Pinned against git 2.55.0
- * (mktemp probe, `.promisor`-marked pack containing already-packed reachable
+ * (consolidation's whole contribution). `ownedPromisor` is a DIFFERENT
+ * kind of overlap from `keptOids`'s. Pinned against git 2.55.0 (mktemp
+ * probe, `.promisor`-marked pack containing already-packed reachable
  * content, a further reachable commit added, `git gc` run): a REACHABLE
- * promisor-pack object is packed into BOTH the rebuilt promisor pack AND the
- * ordinary "all reachable" pack — git does not treat promisor membership as
- * an exclusion from the normal pack the way it treats `.keep`. So a
- * reachable promisor oid is pushed into `toNormalPack` here (whether it
- * reaches this function via `owned`'s loose/normal-pack route, or via
- * `ownedPromisor` alone for an object that lives ONLY in a promisor pack —
- * the second loop below, since `owned` never gains a promisor pack's own
- * oids). An UNREACHABLE promisor oid is the one case `ownedPromisor` still
- * excludes: it must never reach `cruftCandidates`, because a cruft pack
- * cannot carry the `.promisor` marker and moving it there would announce a
- * lazily-fetchable object as fully present locally — the same correctness
- * break merging the two packs would be. `toPromisorPack` (computed
- * separately) is unconditionally the WHOLE promisor set regardless of
- * reachability, so a reachable promisor oid is the one class this partition
- * deliberately does NOT keep disjoint across its outputs — `toNormalPack`
- * and `toPromisorPack` intersect exactly on it, by design.
+ * promisor-pack object is packed into BOTH the rebuilt promisor pack AND
+ * the ordinary "all reachable" pack — git does not treat promisor
+ * membership as an exclusion from the normal pack the way it treats
+ * `.keep`. An UNREACHABLE promisor oid is the one case `ownedPromisor`
+ * still excludes from cruft. `toPromisorPack` (computed separately) is
+ * unconditionally the WHOLE promisor set regardless of reachability, so a
+ * reachable promisor oid is the one class this partition deliberately does
+ * NOT keep disjoint across its outputs — `toNormalPack` and
+ * `toPromisorPack` intersect exactly on it, by design.
  */
 function partitionOwned(
+  objects: ReadonlyArray<ClosureObject>,
   owned: ReadonlySet<ObjectId>,
   reachable: ReadonlySet<ObjectId>,
   keptOids: ReadonlySet<ObjectId>,
   ownedPromisor: ReadonlySet<ObjectId>,
 ): {
-  readonly toNormalPack: ReadonlyArray<ObjectId>;
+  readonly toNormalPack: ReadonlyArray<PackObjectInput>;
   readonly cruftCandidates: ReadonlyArray<ObjectId>;
 } {
-  const toNormalPack: ObjectId[] = [];
-  const cruftCandidates: ObjectId[] = [];
-  for (const id of owned) {
-    if (keptOids.has(id)) continue;
-    if (ownedPromisor.has(id)) {
-      // Overlap: also loose or in a normal pack. Reachable duplicates into
-      // the normal pack too (git does); unreachable stays out of cruft —
-      // the promisor pack is its only home either way.
-      if (reachable.has(id)) toNormalPack.push(id);
-      continue;
-    }
-    (reachable.has(id) ? toNormalPack : cruftCandidates).push(id);
-  }
-  // A reachable object living ONLY in a promisor pack (never loose, never
-  // in a normal pack) never visits the loop above — `owned` carries no
-  // promisor-pack oids of its own. `!owned.has(id)` is what stops this from
-  // double-pushing an id the loop already handled via the overlap branch.
-  for (const id of ownedPromisor) {
-    if (!keptOids.has(id) && reachable.has(id) && !owned.has(id)) toNormalPack.push(id);
-  }
-  // `buildPack` writes entries in ARRAY order and does not sort them itself
-  // (only the `.idx`/`.rev` writers do) — so an oid duplicating in via the
-  // second loop above lands at the END on the run that first discovers it,
-  // but at its sorted position on every LATER run once it is also a member
-  // of `owned` (via the normal pack `collectNormalPackData` just read,
-  // itself oid-sorted). Left unsorted, that shift alone would change the
-  // normal pack's sha on the very next run, breaking Pin W's no-op
-  // boundary for no reason a caller could observe as a real content change.
-  // With delta emission on, `buildPack` sorts internally into its own
-  // emission order, so this array order governs only the delta-disabled
-  // path — which is exactly why this sort stays even now.
-  toNormalPack.sort();
-  return { toNormalPack, cruftCandidates };
+  return {
+    toNormalPack: toNormalPackInputs(objects, owned, keptOids, ownedPromisor),
+    cruftCandidates: cruftCandidatesOf(owned, reachable, keptOids, ownedPromisor),
+  };
 }
 
 /**
@@ -466,22 +528,23 @@ interface NormalPackOutcome {
 }
 
 /**
- * Skipped entirely (`packId: undefined`) when `oids` is empty — git writes
- * no pack rather than a zero-object one (Pin V). Otherwise ALWAYS writes
- * fresh, via `writePackArtifactsViaQuarantine`: Pin W shows git rewrites
- * even an unchanged single pack on every run (a skipped rewrite would leave
- * the pack's mtime stale, silently ageing objects that later migrate out of
- * it — Pin Y), so there is no "already consolidated ⇒ skip" branch here.
+ * Skipped entirely (`packId: undefined`) when `objects` is empty — git
+ * writes no pack rather than a zero-object one (Pin V). Otherwise ALWAYS
+ * writes fresh, via `writePackArtifactsViaQuarantine`: Pin W shows git
+ * rewrites even an unchanged single pack on every run (a skipped rewrite
+ * would leave the pack's mtime stale, silently ageing objects that later
+ * migrate out of it — Pin Y), so there is no "already consolidated ⇒ skip"
+ * branch here.
  */
 async function buildAndWriteNormalPack(
   ctx: Context,
   packDir: string,
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
   existingCruftShas: ReadonlySet<string>,
   existingNormalNames: ReadonlySet<string>,
 ): Promise<NormalPackOutcome> {
-  if (oids.length === 0) return { packId: undefined, reuse: 'none' };
-  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })), delta: true });
+  if (objects.length === 0) return { packId: undefined, reuse: 'none' };
+  const pack = await buildPack(ctx, { objects, delta: true });
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
@@ -509,7 +572,7 @@ interface PromisorPackOutcome {
 /**
  * Step 6b: builds and writes the promisor pack from `toPromisorPack` — the
  * WHOLE union of every promisor pack's own oids, reachability irrelevant.
- * Skipped entirely (`packId: undefined`) when `oids` is empty — every
+ * Skipped entirely (`packId: undefined`) when `objects` is empty — every
  * repository that is not a partial clone. Otherwise ALWAYS writes fresh, via
  * `writePackArtifactsViaQuarantine`, for the same no-skip reason step 6's
  * normal pack never short-circuits: a repeat run over an unchanged promisor
@@ -520,11 +583,11 @@ interface PromisorPackOutcome {
 async function buildAndWritePromisorPack(
   ctx: Context,
   packDir: string,
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
   existingPromisorNames: ReadonlySet<string>,
 ): Promise<PromisorPackOutcome> {
-  if (oids.length === 0) return { packId: undefined, reusedExistingName: undefined };
-  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })), delta: true });
+  if (objects.length === 0) return { packId: undefined, reusedExistingName: undefined };
+  const pack = await buildPack(ctx, { objects, delta: true });
   const written = await writePackArtifactsViaQuarantine(ctx, {
     packDir,
     packBytes: pack.bytes,
@@ -826,8 +889,9 @@ export async function runGcTask(
 
   // --- step 3/4: retention roots, reachability, the widened partition ---
   const owned = new Set<ObjectId>([...looseSet, ...existingCruft.mtimes.keys(), ...normalOids]);
-  const reachable = await computeReachableSet(ctx);
+  const { objects: reachableObjects, reachable } = await computeReachable(ctx);
   const { toNormalPack, cruftCandidates } = partitionOwned(
+    reachableObjects,
     owned,
     reachable,
     keptOids,
@@ -848,8 +912,8 @@ export async function runGcTask(
   // pack the way it excludes `.keep`, so `toNormalPack` and this set
   // deliberately intersect on every reachable promisor oid.
   //
-  // Sorted for the SAME reason `partitionOwned` sorts `toNormalPack` (Pin
-  // W): `unionOids` appends each promisor pack's own oid list in
+  // Sorted for the SAME reason `toNormalPackInputs` needed sorting before
+  // this change: `unionOids` appends each promisor pack's own oid list in
   // CLASSIFICATION order, not merged-sorted, so consolidating more than one
   // promisor pack would otherwise churn `buildPack`'s array-order entries —
   // and with it the promisor pack's sha — on every run whose pack-discovery
@@ -857,6 +921,16 @@ export async function runGcTask(
   // delta emission on, `buildPack` sorts internally into its own emission
   // order, so this array order governs only the delta-disabled path.
   const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor].sort();
+  // Mapped to inputs by hash lookup, not by iterating the closure again: a
+  // REACHABLE member is a `reachableObjects` member by construction and
+  // gets its walk hash; an UNREACHABLE member never entered the closure at
+  // all and gets `PATHLESS_HASH` explicitly — this pack's own recency is
+  // still absent, unlike the normal pack's traversal order above.
+  const reachableById = new Map(reachableObjects.map((object) => [object.id, object] as const));
+  const toPromisorPackInputs: ReadonlyArray<PackObjectInput> = toPromisorPack.map((id) => {
+    const object = reachableById.get(id);
+    return object === undefined ? { id, nameHash: PATHLESS_HASH } : toPackInput(object);
+  });
 
   const mtimes = await computeCruftMtimes(
     ctx,
@@ -879,7 +953,7 @@ export async function runGcTask(
   const promisorPack = await buildAndWritePromisorPack(
     ctx,
     packDir,
-    toPromisorPack,
+    toPromisorPackInputs,
     existingPromisorNames,
   );
   const cruftOutcome = await applyCruftOutcome(
@@ -894,7 +968,11 @@ export async function runGcTask(
 
   // --- step 8: refresh, then verify every object just packed ---
   refreshPackRegistry(ctx);
-  const verifyTargets = [...toNormalPack, ...toPromisorPack, ...survivors];
+  const verifyTargets = [
+    ...toNormalPack.map((object) => object.id),
+    ...toPromisorPack,
+    ...survivors,
+  ];
   await boundedMapFor(ctx, 'ioBound', verifyTargets, (id) =>
     readObject(ctx, id, { verifyHash: true }),
   );
