@@ -783,14 +783,27 @@ describe('buildPack', () => {
   describe('Given a chain-forcing corpus and pack.depth configured below the reader cap', () => {
     describe('When buildPack runs with delta:true', () => {
       it('Then no emitted chain is longer than the configured depth', async () => {
-        // Arrange — each object is a strict prefix of the previous, and
-        // pack.window=1 forces a straight chain off the sole predecessor.
+        // Arrange — a sliding 30-byte window over one backbone: obj[k] and
+        // obj[k-1] overlap in all but a ~30-byte edge (tiny insert, cheap
+        // delta), while obj[k] and obj[k-2] overlap in all but ~60 bytes —
+        // strictly worse, never a tie — so the search always strictly
+        // prefers the immediate predecessor and a straight chain grows.
+        // pack.window=1 cannot build this: after a promoted base and the
+        // object that just used it both compete for the window's one slot,
+        // the base — being shallower — always keeps it, so every
+        // window=1 chain caps at depth 1 regardless of content; window=2
+        // leaves room for both, so the chain can keep deepening until the
+        // cap excludes the deepest member, at which point the chain resets
+        // and grows again (sawtooth).
         const ctx = await buildSeededContext();
-        await seedPackConfig(ctx, '\twindow = 1\n\tdepth = 3\n');
-        const shared = pseudoRandomBytes(91, 500);
+        await seedPackConfig(ctx, '\twindow = 2\n\tdepth = 3\n');
+        const backbone = pseudoRandomBytes(91, 5000);
+        const slide = 30;
+        const windowLength = 3000;
         const ids: ObjectId[] = [];
         for (let k = 0; k < 8; k += 1) {
-          ids.push(await writeBlob(ctx, shared.slice(0, 500 - k)));
+          const length = windowLength - k * 5;
+          ids.push(await writeBlob(ctx, backbone.slice(k * slide, k * slide + length)));
         }
 
         // Act

@@ -286,7 +286,14 @@ function memberWeight(member: Pick<WindowMember, 'content' | 'index'>): number {
  *  so the two can never drift apart the way two hand-kept variables can.
  *  `window` stays a plain array walked back to front — never a hash-keyed
  *  container — `evictToFit`/`admitToWindow` just stop mutating it in place
- *  and return a new one instead (CQS: query in, new value out). */
+ *  and return a new one instead (CQS: query in, new value out).
+ *
+ *  Three operations move a `WindowState` forward, all pure: `admitToWindow`
+ *  builds a fresh member and appends it; `without` removes an existing
+ *  member (by `emissionIndex`, not identity) when it has just been chosen as
+ *  a delta base, so the base can never be evicted to make room for the
+ *  object that just used it; `readmit` puts that same member — its
+ *  `DeltaIndex` untouched — back in as the most-recently-used slot. */
 interface WindowState {
   readonly window: ReadonlyArray<WindowMember>;
   readonly residentBytes: number;
@@ -338,6 +345,61 @@ function admitToWindow(
   };
 }
 
+/** Removes a chosen delta base from the window ahead of promoting it back
+ *  in as the most-recent member — identified by `emissionIndex` equality,
+ *  never object identity, since the member the search visited and the
+ *  member this call receives are the same logical entry either way. */
+function without(state: WindowState, base: WindowMember): WindowState {
+  return {
+    window: state.window.filter((member) => member.emissionIndex !== base.emissionIndex),
+    residentBytes: state.residentBytes - memberWeight(base),
+  };
+}
+
+/** Puts an **existing** `WindowMember` back into the window as its newest
+ *  slot, running the same eviction accounting a fresh admission would. The
+ *  member's `DeltaIndex` is reused, never rebuilt — rebuilding it would
+ *  silently redo work already paid for and would give the readmitted member
+ *  a new object identity for no reason. */
+function readmit(state: WindowState, policy: DeltaPolicy, member: WindowMember): WindowState {
+  const memberBytes = memberWeight(member);
+  const afterEviction = evictToFit(state.window, state.residentBytes, policy, memberBytes);
+  return {
+    window: [...afterEviction.window, member],
+    residentBytes: afterEviction.residentBytes + memberBytes,
+  };
+}
+
+/**
+ * The admission step's three-way choice: no hit admits `pending` exactly as
+ * `admitToWindow` always has; a hit below `maxDepth` moves its base to the
+ * most-recent slot and admits `pending` behind it — matching git's own
+ * post-hit window order — so the base is offered first to the next target
+ * and can never be the member `evictToFit` drops to make room; a hit that
+ * lands AT `maxDepth` leaves the window untouched, so a base that can never
+ * be used again does not occupy a slot, and the object that just used it
+ * never sits in a window it could never be re-picked from. A "hit" is an
+ * emitted delta, not merely a found candidate — a candidate
+ * `buildDeltifiedEntry` rejected on deflated size takes the same no-hit row
+ * as a target that found nothing at all.
+ */
+function nextWindowState(
+  state: WindowState,
+  policy: DeltaPolicy,
+  pending: PendingMember,
+  outcome: { readonly entry: PackWriterEntry; readonly chainDepth: number },
+): WindowState {
+  const { entry } = outcome;
+  if (entry.type !== PACK_ENTRY_TYPE.OFS_DELTA) {
+    return admitToWindow(state.window, state.residentBytes, policy, pending);
+  }
+  if (outcome.chainDepth >= policy.maxDepth) return state;
+  const base = state.window.find((member) => member.emissionIndex === entry.baseIndex)!;
+  const withoutBase = without(state, base);
+  const admitted = admitToWindow(withoutBase.window, withoutBase.residentBytes, policy, pending);
+  return readmit(admitted, policy, base);
+}
+
 export async function deltifyEntries(
   ctx: Context,
   objects: ReadonlyArray<PackObjectInput>,
@@ -357,13 +419,14 @@ export async function deltifyEntries(
     );
     const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
     results.push({ id: key.id, entry: outcome.entry, sourceIndex: key.sourceIndex });
-    state = admitToWindow(state.window, state.residentBytes, policy, {
+    const pending: PendingMember = {
       id: key.id,
       type: key.type,
       chainDepth: outcome.chainDepth,
       content,
       emissionIndex,
-    });
+    };
+    state = nextWindowState(state, policy, pending, outcome);
   }
   return results;
 }

@@ -144,18 +144,30 @@ describe('deltifyEntries', () => {
   describe('Given a chain-forcing corpus and a policy capping depth at 3', () => {
     describe('When deltifyEntries runs', () => {
       it('Then no emitted chain is longer than policy.maxDepth', async () => {
-        // Arrange — window=1 forces a straight chain off the sole predecessor;
-        // once a candidate's own chainDepth reaches the cap it is excluded, so
-        // the chain resets to a fresh base and grows again (sawtooth).
+        // Arrange — a sliding 30-byte window over one backbone: obj[k] and
+        // obj[k-1] overlap in all but a ~30-byte edge (tiny insert, cheap
+        // delta), while obj[k] and obj[k-2] overlap in all but ~60 bytes —
+        // strictly worse, never a tie — so the search always strictly
+        // prefers the immediate predecessor and a straight chain grows.
+        // window=1 cannot build this: after a promoted base and the object
+        // that just used it both compete for the window's one slot, the
+        // base — being shallower — always keeps it, so every window=1
+        // chain caps at depth 1 regardless of content; window=2 leaves room
+        // for both, so the chain can keep deepening until the cap excludes
+        // the deepest member, at which point the chain resets and grows
+        // again (sawtooth).
         const ctx = await buildSeededContext();
-        const shared = pseudoRandomBytes(3, 500);
+        const backbone = pseudoRandomBytes(3, 5000);
+        const slide = 30;
+        const windowLength = 3000;
         const ids: ObjectId[] = [];
         for (let k = 0; k < 8; k += 1) {
-          ids.push(await writeBlob(ctx, shared.slice(0, 500 - k)));
+          const length = windowLength - k * 5;
+          ids.push(await writeBlob(ctx, backbone.slice(k * slide, k * slide + length)));
         }
         const policy: DeltaPolicy = {
           enabled: true,
-          window: 1,
+          window: 2,
           maxDepth: 3,
           windowMemoryBudget: 0,
         };
@@ -808,6 +820,298 @@ describe('deltifyEntries', () => {
         // Assert
         expect(findEntry(sha1Result, idTargetSha1).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
         expect(findEntry(sha256Result, idTargetSha256).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a window of three residents where a target picks the middle one, and a following target that ties equally against the promoted member and the untouched oldest one', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the following target bases off the just-promoted member, not the oldest resident', async () => {
+        // Arrange — idA, idB and idC are admitted as unrelated bases (idA
+        // largest, idB, idC newest); idTarget1 uniquely matches idB (shares
+        // runP, nothing else does), so idB is promoted to most-recent.
+        // idTarget2 shares runQ with both idB and idC at the same offset —
+        // a byte-identical raw delta either way — so only scan order (most
+        // recent tried first) decides: promoted, idB is tried before idC.
+        const ctx = await buildSeededContext();
+        const runQ = pseudoRandomBytes(910, 200);
+        const runP = pseudoRandomBytes(911, 900);
+        const uniqueA = pseudoRandomBytes(900, 3000);
+        const uniqueB = pseudoRandomBytes(912, 1000);
+        const uniqueC = pseudoRandomBytes(913, 1800);
+        const tail1 = pseudoRandomBytes(914, 300);
+        const tail2 = pseudoRandomBytes(915, 50);
+        const idA = await writeBlob(ctx, uniqueA);
+        const idB = await writeBlob(ctx, Uint8Array.from([...runQ, ...runP, ...uniqueB]));
+        const idC = await writeBlob(ctx, Uint8Array.from([...runQ, ...uniqueC]));
+        const idTarget1 = await writeBlob(ctx, Uint8Array.from([...runP, ...tail1]));
+        const idTarget2 = await writeBlob(ctx, Uint8Array.from([...runQ, ...tail2]));
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 4,
+          maxDepth: 50,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idA, idB, idC, idTarget1, idTarget2].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert
+        const target2Entry = findEntry(result, idTarget2).entry;
+        expect(target2Entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect((target2Entry as { baseIndex: number }).baseIndex).toBe(
+          result.findIndex((r) => r.id === idB),
+        );
+      });
+    });
+  });
+
+  describe('Given a promotion round whose emitted object and promoted base both compete for one eviction slot', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the emitted object — not the promoted base — is the one evicted first', async () => {
+        // Arrange — idB is admitted alone, idN hits it (promoting idB,
+        // window becomes […, idN, idB] with idB most recent). idProbe is
+        // unrelated (no hit), and admitting it at window capacity 2 evicts
+        // whichever of idN/idB is oldest. idFollow shares content with idB
+        // only (not idN, not idProbe): it deltas cleanly only if idB
+        // survived the eviction — proving idB, not idN, sits last.
+        const ctx = await buildSeededContext();
+        const runR = pseudoRandomBytes(2010, 1800);
+        const runF = pseudoRandomBytes(2011, 900);
+        const tailB = pseudoRandomBytes(2012, 300);
+        const tailN = pseudoRandomBytes(2013, 100);
+        const tailFollow = pseudoRandomBytes(2014, 50);
+        const probeContent = pseudoRandomBytes(2015, 1200);
+        const idB = await writeBlob(ctx, Uint8Array.from([...runR, ...runF, ...tailB]));
+        const idN = await writeBlob(ctx, Uint8Array.from([...runR, ...tailN]));
+        const idProbe = await writeBlob(ctx, probeContent);
+        const idFollow = await writeBlob(ctx, Uint8Array.from([...runF, ...tailFollow]));
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 2,
+          maxDepth: 50,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idB, idN, idProbe, idFollow].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert
+        expect(findEntry(result, idFollow).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a delta that lands exactly at policy.maxDepth', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then it is still emitted at the cap, but neither it nor its base changes the window for the next target', async () => {
+        // Arrange — a sliding 100-byte window over one backbone builds a
+        // straight chain: ids[0] <- ids[1] <- ids[2] <- ids[3], each
+        // strictly preferring its immediate predecessor. ids[4] hits
+        // ids[3] at chainDepth 3 (== maxDepth): still emitted as a valid
+        // delta, but excluded from promotion. idProbeEvict (unrelated)
+        // then admits at window capacity 2, evicting whichever of
+        // ids[3]/ids[1] is oldest. idFollowUp matches a byte range present
+        // in BOTH ids[1] and ids[3]; which one it bases off reveals which
+        // one survived — ids[1] survives only if ids[3] was never promoted
+        // (stayed oldest) and ids[4] never took a window slot.
+        const ctx = await buildSeededContext();
+        const backbone = pseudoRandomBytes(3020, 5000);
+        const slide = 100;
+        const windowLength = 3000;
+        const lens: number[] = [];
+        const ids: ObjectId[] = [];
+        for (let k = 0; k < 5; k += 1) {
+          const length = windowLength - k * 5;
+          lens.push(length);
+          ids.push(await writeBlob(ctx, backbone.slice(k * slide, k * slide + length)));
+        }
+        const probeEvictContent = pseudoRandomBytes(3021, windowLength - 30);
+        const idProbeEvict = await writeBlob(ctx, probeEvictContent);
+        const idx0End = lens[0]!;
+        const idx1End = 1 * slide + lens[1]!;
+        const followUpContent = Uint8Array.from([
+          ...backbone.slice(idx0End, idx1End),
+          ...pseudoRandomBytes(3022, 10),
+        ]);
+        const idFollowUp = await writeBlob(ctx, followUpContent);
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 2,
+          maxDepth: 3,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [...ids, idProbeEvict, idFollowUp].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert — the at-cap delta still emits correctly, at the cap
+        const cappedIndex = result.findIndex((r) => r.id === ids[4]);
+        expect(chainDepthOf(result, cappedIndex)).toBe(policy.maxDepth);
+        expect(findEntry(result, ids[4]!).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        // Assert — the window is unaffected: ids[1] (not ids[3]) survives
+        const followUpEntry = findEntry(result, idFollowUp).entry;
+        expect(followUpEntry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect((followUpEntry as { baseIndex: number }).baseIndex).toBe(
+          result.findIndex((r) => r.id === ids[1]),
+        );
+      });
+    });
+  });
+
+  describe('Given a candidate that is found and would otherwise promote its base, but is rejected on deflated size', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the base is never promoted — it is evicted in its normal, untouched order', async () => {
+        // Arrange — idBase and idLoser share the same 1800-byte repeat run
+        // that produces a deflate-size tie (see the sibling fixture above):
+        // idLoser's candidacy against idBase is found but rejected, so
+        // idLoser is admitted as a plain base, never promoting idBase.
+        // idProbeEvict (unrelated) then admits at window capacity 2,
+        // evicting whichever of idBase/idLoser is oldest. idCheck matches
+        // only idBase's own distinguishing tail: it deltas cleanly only if
+        // a bug wrongly promoted idBase (kept it resident past its normal,
+        // oldest-first turn).
+        const ctx = await buildSeededContext();
+        const sharedRun = new Uint8Array(1800).fill(0x41);
+        const entropyTail = pseudoRandomBytes(42, 200);
+        const baseTail = new Uint8Array(201).fill(0x42);
+        const baseContent = Uint8Array.from([...sharedRun, ...baseTail]);
+        const loserContent = Uint8Array.from([...sharedRun, ...entropyTail]);
+        const probeEvictContent = pseudoRandomBytes(4001, 500);
+        const checkContent = Uint8Array.from([...baseTail, ...pseudoRandomBytes(4002, 20)]);
+        const idBase = await writeBlob(ctx, baseContent);
+        const idLoser = await writeBlob(ctx, loserContent);
+        const idProbeEvict = await writeBlob(ctx, probeEvictContent);
+        const idCheck = await writeBlob(ctx, checkContent);
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 2,
+          maxDepth: 5,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idBase, idLoser, idProbeEvict, idCheck].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert
+        expect(findEntry(result, idLoser).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(findEntry(result, idCheck).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a promotion round that removes a member, re-admits a pending one, then re-appends the removed member', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then residentBytes still equals the sum of memberWeight over the window — no operation drifts the count', async () => {
+        // Arrange — idObj0 is admitted alone, idObj1 hits it and promotes
+        // it (window becomes [idObj1, idObj0], residentBytes exactly the
+        // sum of both members' weight). windowMemoryBudget is pinned to
+        // that exact sum, so idObj2's admission (any nonzero weight) must
+        // evict exactly the oldest member (idObj1) and no more — a drift
+        // in `without`, `admitToWindow` or `readmit` either evicts too
+        // little (idProbe1 would still find idObj1) or too much (idProbe0
+        // would no longer find idObj0).
+        const ctx = await buildSeededContext();
+        const runR = pseudoRandomBytes(5010, 1800);
+        const tail0 = pseudoRandomBytes(5011, 300);
+        const tail1 = pseudoRandomBytes(5012, 100);
+        const obj0Content = Uint8Array.from([...runR, ...tail0]);
+        const obj1Content = Uint8Array.from([...runR, ...tail1]);
+        const obj0Index = deltaEncodeModule.createDeltaIndex(obj0Content);
+        const obj1Index = deltaEncodeModule.createDeltaIndex(obj1Content);
+        const obj0Weight =
+          obj0Content.length + obj0Index.heads.byteLength + obj0Index.next.byteLength;
+        const obj1Weight =
+          obj1Content.length + obj1Index.heads.byteLength + obj1Index.next.byteLength;
+        const idObj0 = await writeBlob(ctx, obj0Content);
+        const idObj1 = await writeBlob(ctx, obj1Content);
+        const idObj2 = await writeBlob(ctx, pseudoRandomBytes(5013, 400));
+        const idProbe1 = await writeBlob(
+          ctx,
+          Uint8Array.from([...tail1.slice(0, 250), ...pseudoRandomBytes(5014, 20)]),
+        );
+        const idProbe0 = await writeBlob(
+          ctx,
+          Uint8Array.from([...tail0.slice(0, 250), ...pseudoRandomBytes(5015, 20)]),
+        );
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 10,
+          maxDepth: 50,
+          windowMemoryBudget: obj0Weight + obj1Weight,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idObj0, idObj1, idObj2, idProbe1, idProbe0].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert
+        expect(findEntry(result, idProbe1).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        const probe0Entry = findEntry(result, idProbe0).entry;
+        expect(probe0Entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect((probe0Entry as { baseIndex: number }).baseIndex).toBe(
+          result.findIndex((r) => r.id === idObj0),
+        );
+      });
+    });
+  });
+
+  describe('Given a promotion that readmits an already-indexed window member', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the DeltaIndex is reused, not rebuilt — createDeltaIndex is called once per object, never again on promotion', async () => {
+        // Arrange — idObj0 is admitted alone (one createDeltaIndex call),
+        // idObj1 hits it and promotes it back into the window (a second
+        // call, for idObj1's own admission). A rebuild on promotion would
+        // add a third call for idObj0.
+        const ctx = await buildSeededContext();
+        const runR = pseudoRandomBytes(6010, 1800);
+        const tail0 = pseudoRandomBytes(6011, 300);
+        const tail1 = pseudoRandomBytes(6012, 100);
+        const idObj0 = await writeBlob(ctx, Uint8Array.from([...runR, ...tail0]));
+        const idObj1 = await writeBlob(ctx, Uint8Array.from([...runR, ...tail1]));
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 10,
+          maxDepth: 50,
+          windowMemoryBudget: 0,
+        };
+        const spy = vi.spyOn(deltaEncodeModule, 'createDeltaIndex');
+        const sut = deltifyEntries;
+
+        // Act
+        await sut(
+          ctx,
+          [idObj0, idObj1].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(2);
+        spy.mockRestore();
       });
     });
   });
