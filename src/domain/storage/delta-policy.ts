@@ -8,10 +8,6 @@
 import { MAX_DELTA_CHAIN_DEPTH } from './delta.js';
 import type { BasePackEntryType } from './pack-entry.js';
 
-/** A delta is accepted only when it beats the base entry by more than this
- *  many bytes of `OFS_DELTA` back-pointer overhead the base entry never
- *  pays — see `acceptsDeltaEntry`. */
-export const DELTA_ACCEPT_RATIO = 0.5;
 /** The widest `encodeOfsDistance` output the reader will accept:
  *  `decodeOfsDistance` refuses more than 4 continuation bytes, so 5 bytes
  *  total. */

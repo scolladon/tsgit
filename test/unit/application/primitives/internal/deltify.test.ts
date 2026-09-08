@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   type DeltifiedEntry,
   deltifyEntries,
+  searchBound,
 } from '../../../../../src/application/primitives/internal/deltify.js';
 import { readRawObject } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -229,20 +230,22 @@ describe('deltifyEntries', () => {
     });
   });
 
-  describe('Given two window members whose raw (pre-deflate) deltas against a later object tie exactly in length', () => {
+  describe('Given two window members whose raw (pre-deflate) deltas against a later object tie exactly in length, one strictly shallower than the other', () => {
     describe('When deltifyEntries runs', () => {
-      it('Then the strictly-smaller-only bound rejects the tie — the most recently admitted member keeps the win', async () => {
+      it('Then the same-size rule lets the strictly shallower member displace the incumbent despite the tie', async () => {
         // Arrange — idMember1(2000B) and idMember2(1999B) share the same
         // 1800B high-entropy run; idMember1 is admitted first (older),
-        // idMember2 second (newer, and itself a delta off idMember1). Both
-        // produce a byte-length-identical raw delta against idTarget: same
-        // COPY match (offset 0, length 1800) and the same INSERT tail
-        // (idTarget's own bytes — a base's own tail, present or absent from
-        // the match, is irrelevant; only the shared prefix is ever
-        // matched). maxSize = best.delta.length - 1 makes visit order
-        // (most-recent-first) the sole tie-break: idMember2 is tried first
-        // and wins outright; idMember1's equal-length raw delta must beat
-        // maxSize to unseat it, and an equal length never does.
+        // idMember2 second (newer, and itself a delta off idMember1, so its
+        // own chainDepth is 1). Both produce a byte-length-identical raw
+        // delta against idTarget: same COPY match (offset 0, length 1800)
+        // and the same INSERT tail (idTarget's own bytes — a base's own
+        // tail, present or absent from the match, is irrelevant; only the
+        // shared prefix is ever matched). Visit order tries idMember2
+        // (more recent) first, setting the incumbent; idMember1, tried
+        // second, ties it on length but is strictly shallower (chainDepth 0
+        // vs 1) — git's same-size rule lets a strictly shallower base win a
+        // tie, so idMember1 displaces idMember2 as the base idTarget deltas
+        // against.
         const ctx = await buildSeededContext();
         const sharedRun = pseudoRandomBytes(600, 1800);
         const tailMember1 = pseudoRandomBytes(601, 200);
@@ -269,11 +272,11 @@ describe('deltifyEntries', () => {
           policy,
         );
 
-        // Assert — chainDepth 2 only holds if idTarget based off idMember2
-        // (itself based off idMember1); a wrongly-accepted tie would base
-        // idTarget directly off idMember1, giving chainDepth 1.
+        // Assert — chainDepth 1 only holds if idTarget based directly off
+        // idMember1 (chainDepth 0); a tie wrongly kept on the incumbent
+        // would base idTarget off idMember2 instead, giving chainDepth 2.
         const targetIndex = result.findIndex((r) => r.id === idTarget);
-        expect(chainDepthOf(result, targetIndex)).toBe(2);
+        expect(chainDepthOf(result, targetIndex)).toBe(1);
       });
     });
   });
@@ -482,12 +485,17 @@ describe('deltifyEntries', () => {
       it('Then the two-deflate acceptance rule runs only for the object that won a search', async () => {
         // Arrange — obj1 (base, empty window: 1 deflate call). obj2 shares
         // obj1's prefix (candidate found: 2 deflate calls). obj3 is unrelated
-        // (no candidate found: 1 deflate call). Total: 4.
+        // (no candidate found: 1 deflate call). Total: 4. obj3 is sized at 50
+        // bytes, not fewer — below 40 bytes sha1's own search-bound budget
+        // (floor(size / 2) - 20) goes negative and wraps to unbounded, which
+        // would let a full-literal delta through the search regardless of
+        // how unrelated the content is, and this test is specifically about
+        // a search that finds nothing.
         const ctx = await buildSeededContext();
         const shared = pseudoRandomBytes(7, 60);
         const id1 = await writeBlob(ctx, shared);
         const id2 = await writeBlob(ctx, shared.slice(0, 59));
-        const id3 = await writeBlob(ctx, pseudoRandomBytes(8, 20));
+        const id3 = await writeBlob(ctx, pseudoRandomBytes(8, 50));
         const deflateSpy = vi.fn(ctx.compressor.deflate);
         const wrappedCtx = { ...ctx, compressor: { ...ctx.compressor, deflate: deflateSpy } };
         const sut = deltifyEntries;
@@ -527,6 +535,362 @@ describe('deltifyEntries', () => {
         // Assert
         expect(findEntry(result, treeId).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
         expect(findEntry(result, twinBlobId).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a 51-byte tail-flip pair and a 52-byte tail-flip pair, each producing the same 6-byte raw delta', () => {
+    describe('When deltifyEntries runs under sha1', () => {
+      it('Then the 51-byte target is refused (bound 5) and the 52-byte target is accepted (bound 6, inclusive)', async () => {
+        // Arrange — floor(size / 2) - 20 (sha1's digest length) gives bound 5
+        // at 51 bytes and 6 at 52; a base sharing every byte but the last with
+        // its target always encodes to the same 6-byte COPY+INSERT delta
+        // regardless of the base's own (larger) size, so 51 exercises the `<`
+        // refusal and 52 the `<=` acceptance — the inclusive-bound killer.
+        // Bases are padded past their target's own size so DESC-size
+        // emission order admits them to the window first, independent of
+        // content-addressed id ordering.
+        const ctx = await buildSeededContext();
+        const prefix51 = pseudoRandomBytes(910, 50);
+        const base51 = Uint8Array.from([...prefix51, 0x11, ...pseudoRandomBytes(911, 9)]);
+        const target51 = Uint8Array.from([...prefix51, 0x22]);
+        const prefix52 = pseudoRandomBytes(920, 51);
+        const base52 = Uint8Array.from([...prefix52, 0x11, ...pseudoRandomBytes(921, 9)]);
+        const target52 = Uint8Array.from([...prefix52, 0x22]);
+        const idBase51 = await writeBlob(ctx, base51);
+        const idTarget51 = await writeBlob(ctx, target51);
+        const idBase52 = await writeBlob(ctx, base52);
+        const idTarget52 = await writeBlob(ctx, target52);
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idBase52, idBase51, idTarget52, idTarget51].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
+
+        // Assert
+        expect(findEntry(result, idTarget51).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(findEntry(result, idTarget52).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a 64-byte sha256 target whose no-incumbent budget lands at exactly zero', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the candidate is refused before encodeDeltaFromIndex ever runs', async () => {
+        // Arrange — floor(64 / 2) - 32 (sha256's digest length) is exactly 0:
+        // the `=== 0` guard's own killer, distinct from the `< 0` underflow
+        // that instead reports unbounded. base/target share every byte but
+        // the last, so a 6-byte delta would exist if anything ever asked
+        // encodeDeltaFromIndex to look — the refusal must land before that.
+        const ctx = await buildSeededContext({ algorithm: 'sha256' });
+        const base = pseudoRandomBytes(950, 64);
+        const target = Uint8Array.from(base);
+        target[63] = (target[63]! + 1) & 0xff;
+        const idBase = await writeBlob(ctx, base);
+        const idTarget = await writeBlob(ctx, target);
+        const spy = vi.spyOn(deltaEncodeModule, 'encodeDeltaFromIndex');
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idBase, idTarget].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
+
+        // Assert
+        expect(findEntry(result, idTarget).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a maxDepth of 0 and a sha256 target whose size sits in the unsigned-underflow band', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the depth guard refuses the only candidate even though the bound alone would be unbounded — it is not subsumed by it', async () => {
+        // Arrange — 60 bytes sits in sha256's underflow band, where
+        // floor(size / 2) - 32 is negative: were the depth guard absent,
+        // searchBound would report unbounded (no cap at all), not zero, so
+        // this is the case that actually distinguishes "the guard fires"
+        // from "the bound coincidentally refuses". idBase and idTarget share
+        // a 20-byte run, so a real match exists — encodeDeltaFromIndex would
+        // succeed if it ever ran.
+        const ctx = await buildSeededContext({ algorithm: 'sha256' });
+        const shared = pseudoRandomBytes(960, 20);
+        const idBase = await writeBlob(
+          ctx,
+          Uint8Array.from([...shared, ...pseudoRandomBytes(961, 50)]),
+        );
+        const idTarget = await writeBlob(
+          ctx,
+          Uint8Array.from([...shared, ...pseudoRandomBytes(962, 40)]),
+        );
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 10,
+          maxDepth: 0,
+          windowMemoryBudget: 0,
+        };
+        const spy = vi.spyOn(deltaEncodeModule, 'encodeDeltaFromIndex');
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idBase, idTarget].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert
+        expect(findEntry(result, idTarget).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given an incumbent set by a chainDepth-1 candidate, and a strictly shallower chainDepth-0 candidate whose own delta is larger', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the shallower candidate still wins — a shallower base may beat the incumbent with a larger delta', async () => {
+        // Arrange — target opens with a large shared run (runC) so its own
+        // no-incumbent search budget is generous, decoupling "room to admit
+        // the first candidate" from "how large that candidate's own delta
+        // is" — memberX's and memberY's own sizes carry unrelated padding
+        // that does not affect the delta actually found. memberY is
+        // processed first (largest, empty window: a plain chainDepth-0
+        // base). memberX, processed second, shares runC with memberY, so it
+        // deltas off memberY too (chainDepth 1) before target is even
+        // reached — a real, structural depth difference, not a synthetic
+        // one. At target's turn, memberX (more recent, chainDepth 1) is
+        // tried first and sets the incumbent; memberY (chainDepth 0,
+        // strictly shallower) is tried second and, even though its own
+        // delta against target is larger, the incumbent-aware bound scales
+        // up enough at depth 0 to admit it anyway — sizes were measured,
+        // not guessed, to make this land.
+        const ctx = await buildSeededContext();
+        const runC = pseudoRandomBytes(10, 2000);
+        const runA = pseudoRandomBytes(11, 90);
+        const runB = pseudoRandomBytes(12, 60);
+        const target = Uint8Array.from([...runC, ...runA, ...runB]); // 2150 bytes
+        const memberX = Uint8Array.from([...runC, ...runA, ...pseudoRandomBytes(13, 200)]); // 2290 bytes
+        const memberY = Uint8Array.from([...runC, ...runB, ...pseudoRandomBytes(14, 233)]); // 2293 bytes, largest
+        const idMemberY = await writeBlob(ctx, memberY);
+        const idMemberX = await writeBlob(ctx, memberX);
+        const idTarget = await writeBlob(ctx, target);
+        const policy: DeltaPolicy = {
+          enabled: true,
+          window: 10,
+          maxDepth: 2,
+          windowMemoryBudget: 0,
+        };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idMemberY, idMemberX, idTarget].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert — memberX really did delta off memberY first (sanity, not
+        // the headline), and the target based directly off memberY, not
+        // memberX.
+        const memberXIndex = result.findIndex((r) => r.id === idMemberX);
+        expect(chainDepthOf(result, memberXIndex)).toBe(1);
+        const targetIndex = result.findIndex((r) => r.id === idTarget);
+        expect((result[targetIndex]!.entry as { baseIndex: number }).baseIndex).toBe(
+          result.findIndex((r) => r.id === idMemberY),
+        );
+      });
+    });
+  });
+
+  describe('Given two chainDepth-1 candidates, both chained off a common ancestor, producing byte-identical raw deltas against the same target', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the same-size rule keeps the more-recently-admitted candidate — equal depth never displaces a tie', async () => {
+        // Arrange — memberZ, memberOlder and memberNewer all open with a
+        // large shared run (P) so every no-incumbent search along the way
+        // has a generous budget (see the shallower-wins case above for why
+        // this decoupling matters). memberOlder matches P immediately
+        // followed by runA, so the two merge into one COPY against
+        // whichever base offers P; memberNewer matches P then (after
+        // unmatched runA) a separate, later runB — runB is 4 bytes longer
+        // than runA to pay for that extra COPY instruction, so raw deltas
+        // against a P-only base tie exactly, and both memberOlder and
+        // memberNewer end up chaining off memberZ rather than off each
+        // other: whichever is tried first (memberOlder, tried right after
+        // it is admitted) sets the incumbent, and memberZ then displaces it
+        // on the same tie-goes-to-the-shallower rule this test is about —
+        // giving both memberOlder and memberNewer chainDepth 1, genuinely
+        // equal, not asserted. Their own deltas against target then tie at
+        // 72 bytes (measured). Sizes are strictly decreasing
+        // (memberZ > memberOlder > memberNewer > target) so DESC-size
+        // emission order is deterministic and target is processed last.
+        // memberNewer, admitted after memberOlder (more recent), is tried
+        // first by `selectBestCandidate` and sets the incumbent — the `>=`
+        // mutant's killer is memberOlder then failing to displace it
+        // despite an equal-length delta at equal depth.
+        const ctx = await buildSeededContext();
+        const runP = pseudoRandomBytes(70, 2000);
+        const runA = pseudoRandomBytes(71, 60);
+        const runB = pseudoRandomBytes(72, 64);
+        const target = Uint8Array.from([...runP, ...runA, ...runB]); // 2124 bytes
+        const memberZ = Uint8Array.from([...runP, ...pseudoRandomBytes(73, 300)]); // 2300 bytes
+        const memberOlder = Uint8Array.from([...runP, ...runA, ...pseudoRandomBytes(74, 140)]); // 2200 bytes
+        const memberNewer = Uint8Array.from([...runP, ...runB, ...pseudoRandomBytes(75, 86)]); // 2150 bytes
+        const idMemberZ = await writeBlob(ctx, memberZ);
+        const idMemberOlder = await writeBlob(ctx, memberOlder);
+        const idMemberNewer = await writeBlob(ctx, memberNewer);
+        const idTarget = await writeBlob(ctx, target);
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idMemberZ, idMemberOlder, idMemberNewer, idTarget].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
+
+        // Assert — both members really did land at chainDepth 1 (sanity,
+        // not the headline), and the target based on memberNewer, not
+        // memberOlder.
+        const olderIndex = result.findIndex((r) => r.id === idMemberOlder);
+        const newerIndex = result.findIndex((r) => r.id === idMemberNewer);
+        expect(chainDepthOf(result, olderIndex)).toBe(1);
+        expect(chainDepthOf(result, newerIndex)).toBe(1);
+        const targetIndex = result.findIndex((r) => r.id === idTarget);
+        expect((result[targetIndex]!.entry as { baseIndex: number }).baseIndex).toBe(newerIndex);
+      });
+    });
+  });
+
+  describe('Given a base/target pair whose 45-byte raw delta exceeds sha1’s bound but fits sha256’s unbounded search', () => {
+    describe('When deltifyEntries runs under each hash algorithm', () => {
+      it('Then hashSize tracks ctx.hash.digestLength — sha1 refuses the candidate and sha256 accepts it', async () => {
+        // Arrange — a 20-byte shared run plus disjoint 40-byte tails gives a
+        // 45-byte raw delta (measured): floor(60/2) - 20 = 10 (sha1, refuses
+        // 45) versus floor(60/2) - 32 < 0 (sha256, unbounded). base carries 9
+        // extra padding bytes past its own match so it is strictly larger
+        // than target, making DESC-size emission order deterministic —
+        // without it, base and target tie in size and content-addressed id
+        // ordering could pick either one as the window's first member.
+        const shared = pseudoRandomBytes(41, 20);
+        const base = Uint8Array.from([
+          ...shared,
+          ...pseudoRandomBytes(42, 40),
+          ...pseudoRandomBytes(919, 9),
+        ]);
+        const target = Uint8Array.from([...shared, ...pseudoRandomBytes(43, 40)]);
+        const sut = deltifyEntries;
+
+        // Act
+        const sha1Ctx = await buildSeededContext({ algorithm: 'sha1' });
+        const idBaseSha1 = await writeBlob(sha1Ctx, base);
+        const idTargetSha1 = await writeBlob(sha1Ctx, target);
+        const sha1Result = await sut(
+          sha1Ctx,
+          [idBaseSha1, idTargetSha1].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
+        const sha256Ctx = await buildSeededContext({ algorithm: 'sha256' });
+        const idBaseSha256 = await writeBlob(sha256Ctx, base);
+        const idTargetSha256 = await writeBlob(sha256Ctx, target);
+        const sha256Result = await sut(
+          sha256Ctx,
+          [idBaseSha256, idTargetSha256].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
+
+        // Assert
+        expect(findEntry(sha1Result, idTargetSha1).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(findEntry(sha256Result, idTargetSha256).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+});
+
+describe('searchBound', () => {
+  describe('Given no incumbent and sha1’s digest length, at target sizes straddling twice the bound floor', () => {
+    describe('When searchBound computes the byte budget', () => {
+      it('Then the budget is floor(targetSize / 2) minus the digest length, unscaled at depth 0', () => {
+        // Arrange
+        const sut = searchBound;
+
+        // Act
+        const at50 = sut(50, 20, undefined, 0, 50);
+        const at51 = sut(51, 20, undefined, 0, 50);
+        const at52 = sut(52, 20, undefined, 0, 50);
+
+        // Assert
+        expect(at50).toBe(5);
+        expect(at51).toBe(5);
+        expect(at52).toBe(6);
+      });
+    });
+  });
+
+  describe('Given no incumbent and sha256’s digest length, spanning the unsigned-underflow boundary', () => {
+    describe('When searchBound computes the byte budget', () => {
+      it('Then sizes below 64 bytes wrap to unbounded, 64 refuses at exactly zero, and larger sizes scale normally', () => {
+        // Arrange
+        const sut = searchBound;
+
+        // Act
+        const at50 = sut(50, 32, undefined, 0, 50);
+        const at63 = sut(63, 32, undefined, 0, 50);
+        const at64 = sut(64, 32, undefined, 0, 50);
+        const at66 = sut(66, 32, undefined, 0, 50);
+        const at76 = sut(76, 32, undefined, 0, 50);
+
+        // Assert
+        expect(at50).toBeUndefined();
+        expect(at63).toBeUndefined();
+        expect(at64).toBe(0);
+        expect(at66).toBe(1);
+        expect(at76).toBe(6);
+      });
+    });
+  });
+
+  describe('Given no incumbent and a target sized so the unscaled budget is 2 028 bytes', () => {
+    describe('When searchBound computes the byte budget at increasing candidate depth', () => {
+      it('Then the budget shrinks toward zero as candidate depth approaches the cap', () => {
+        // Arrange
+        const sut = searchBound;
+
+        // Act
+        const atDepth0 = sut(4096, 20, undefined, 0, 50);
+        const atDepth25 = sut(4096, 20, undefined, 25, 50);
+        const atDepth49 = sut(4096, 20, undefined, 49, 50);
+
+        // Assert
+        expect(atDepth0).toBe(2028);
+        expect(atDepth25).toBe(1014);
+        expect(atDepth49).toBe(40);
+      });
+    });
+  });
+
+  describe('Given an incumbent delta of 100 bytes at chain depth 3', () => {
+    describe('When searchBound computes the byte budget for candidates at other depths', () => {
+      it("Then a candidate at the incumbent's own depth keeps the full budget, a deeper one is squeezed, and a shallower one is given more room", () => {
+        // Arrange
+        const sut = searchBound;
+        const incumbent = { delta: new Uint8Array(100), chainDepth: 3, emissionIndex: 0 };
+
+        // Act — targetSize/hashSize are unused once an incumbent is present
+        const sameDepth = sut(0, 0, incumbent, 3, 50);
+        const deeper = sut(0, 0, incumbent, 10, 50);
+        const shallower = sut(0, 0, incumbent, 1, 50);
+
+        // Assert
+        expect(sameDepth).toBe(100);
+        expect(deeper).toBe(85);
+        expect(shallower).toBe(104);
       });
     });
   });

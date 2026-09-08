@@ -559,9 +559,13 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
         // Act
         const result = tryRunGitWithExit(['index-pack', '--strict', '-v', scratchPack]);
 
-        // Assert
+        // Assert — the depth-scaled search bound (this stage) changes which
+        // delta this shared corpus emits first, so the flipped byte now
+        // lands on a back-reference distance rather than the trailing
+        // checksum; either is a legitimate zlib inflate failure (-3), so
+        // the oracle asserts the class, not one specific sub-message.
         expect(result.exitCode).toBe(128);
-        expect(result.stderr).toContain('inflate: data stream error (incorrect data check)');
+        expect(result.stderr).toContain('inflate: data stream error');
         expect(result.stderr).toMatch(
           /fatal: pack has bad object at offset \d+: inflate returned -3/,
         );
@@ -598,7 +602,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     });
 
     describe('When the pack is installed in a repo and git fsck --strict runs', () => {
-      it('Then it exits 6 with pack-checksum / CRC / unpack findings on stderr', async () => {
+      it('Then it exits 4 with pack-checksum / CRC / unpack findings on stderr', async () => {
         // Arrange
         const deltaRow = verifyPackRows(tsgitGcDir, tsgitIdxPath).find((row) => row.isDelta);
         if (deltaRow === undefined) throw new Error('expected at least one delta row');
@@ -615,8 +619,11 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
         // Act
         const result = tryRunGitWithExit(['-C', corruptRepo, 'fsck', '--strict', '--no-progress']);
 
-        // Assert
-        expect(result.exitCode).toBe(6);
+        // Assert — the depth-scaled search bound (this stage) changes which
+        // delta this shared corpus emits first, so the flipped byte trips a
+        // different combination of fsck's internal error bits (4, not 6);
+        // every finding string below still fires unchanged.
+        expect(result.exitCode).toBe(4);
         expect(result.stderr).toContain('pack checksum mismatch');
         expect(result.stderr).toContain('index CRC mismatch');
         expect(result.stderr).toContain('failed to unpack compressed delta');
@@ -1055,10 +1062,12 @@ describe.skipIf(!GIT_AVAILABLE)(
         const result = parseBlobPackShape(verifyOut);
 
         // Assert — `git -c pack.threads=1 -c pack.window=10 -c pack.depth=50
-        // repack -a -d -f -q` over the same repository: max blob chain 44,
-        // 1 blob base (recorded for the structural comparison, not
-        // asserted equal — the two codecs accept deltas by different
-        // rules and a chain ends where each stops fitting).
+        // repack -a -d -f -q` over the same repository: 1 blob base, 44 blob
+        // deltas, max blob chain 16 (recorded for the structural
+        // comparison, not asserted equal — the two codecs accept deltas by
+        // different rules; git's own best-base promotion and per-candidate
+        // scoring branch this tie-dense corpus into a shallower, wider
+        // shape rather than one straight chain).
         expect(result.baseCount).toBe(1);
         expect(result.deltaCount).toBe(BELOW_CAP_VERSIONS - 1);
         expect(result.maxDepth).toBe(BELOW_CAP_VERSIONS - 1);
@@ -1066,16 +1075,25 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe("Given 60 same-size versions of one file, gc'd by tsgit, When git verify-pack -v reads the blob lines", () => {
-      it('Then the depth cap binds: max blob chain exactly 50, a handful of blob bases', () => {
+      it('Then the depth-scaled search bound keeps the chain off the cap: max blob chain below 50, a handful of blob bases', () => {
         // Arrange — past the depth cap, so the FIFO window is forced to
-        // start a fresh base once a chain reaches 50.
+        // start a fresh base once a chain stops fitting the search bound.
         const verifyOut = git(atCapDir, 'verify-pack', '-v', atCapIdxPath);
 
         // Act
         const result = parseBlobPackShape(verifyOut);
 
-        // Assert
-        expect(result.maxDepth).toBe(50);
+        // Assert — measured at this stage: max blob chain 49, 1 blob base.
+        // `git -c pack.threads=1 -c pack.window=10 -c pack.depth=50 repack
+        // -a -d -f -q` over the same repository: 1 blob base, 59 blob
+        // deltas, max blob chain 22 (recorded for the structural
+        // comparison, not asserted equal — see the 45-version row above for
+        // why git's own shape differs). The band below is this stage's own
+        // readout with headroom, not a guess: before this stage the chain
+        // saturated the flat cap at exactly 50 every time, which is
+        // precisely the regression this upper bound now excludes.
+        expect(result.maxDepth).toBeGreaterThanOrEqual(40);
+        expect(result.maxDepth).toBeLessThan(50);
         expect(result.baseCount).toBeGreaterThanOrEqual(1);
         expect(result.baseCount).toBeLessThanOrEqual(4);
         expect(result.deltaCount).toBe(AT_CAP_VERSIONS - result.baseCount);
