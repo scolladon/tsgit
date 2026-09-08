@@ -1784,9 +1784,18 @@ feat(gc): pass the reachability walk's ordinal as the pack emission tiebreak
 Design §4h (`sed -n '786,836p'`), §1f (`sed -n '417,462p'`), ADR-831, ADR-835.
 Requirement **R16**, and **R13**'s second half.
 
-**This stage is a deliberate size regression on the deep-chain corpus** — faithfulness over size,
-ratified by ADR-831. tsgit's flat bound runs chains to the cap of 50 and packs *smaller* than git;
-git's depth-scaled bound ends them near 43. Replicating git is the point.
+**This stage replicates git's bound; its size direction is an open measurement.** ADR-831 ratified
+it as faithfulness-over-size, on the premise that tsgit's flat bound packs *smaller* than git and
+stage 2 gives that surplus back. **S1b measured that premise and it is FALSE**: tsgit reaches
+maxDepth 50 with 6 blob bases against git's 43 with 7 — the chain topology already matches — and
+tsgit is still **7.3 % larger** (200,701 B vs 187,097 B). With structure equal, the residual is
+per-delta encoding quality, not chain depth, so there is no surplus to give back and the ratio may
+move either way. Replicating git is still the point; predicting a regression is no longer part of it.
+
+⚠️ **The structural check is this stage's gate, not the ratio.** Max blob chain must drop from 50
+into git's band (~43-44). Record whichever direction the ratio moves. The stop condition was
+restated after S1b for exactly this reason — the old "S2 lowering the ratio" condition would now
+fire on an improvement, since tsgit enters at ×1.07, above parity, not below.
 
 **Files.**
 
