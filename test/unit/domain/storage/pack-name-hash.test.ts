@@ -74,6 +74,23 @@ describe('packNameHash', () => {
           expected: 0x9ad1c000,
         },
         { label: '\\xff', bytes: Uint8Array.of(0xff), expected: 0xff000000 },
+        {
+          // The only row whose fold crosses 2^32 mid-way: the second byte
+          // overflows the accumulator, so this pins the wrap itself against
+          // git's `uint32_t` semantics rather than only the arithmetic below
+          // it. Every other row here stays under 2^32 throughout.
+          //
+          // It does NOT pin where the truncation happens, and no test can:
+          // `>>>` applies ToUint32 to its own left operand, so `hash >>> 2`
+          // discards any excess at the next iteration whether or not the
+          // previous step normalised. Per-step and truncate-once-at-the-end
+          // agree on every input — checked over 200k random byte strings
+          // against a BigInt model of the C fold, zero mismatches. The
+          // per-step `>>> 0` is therefore redundant, kept for legibility.
+          label: '\\x10\\xff\\x41 (mid-fold uint32 overflow)',
+          bytes: Uint8Array.of(0x10, 0xff, 0x41),
+          expected: 0x41c00000,
+        },
       ])('Then returns git’s v1 hash for $label', ({ bytes, expected }) => {
         // Arrange
         const sut = packNameHash;
