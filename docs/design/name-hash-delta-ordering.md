@@ -450,8 +450,15 @@ incumbent, a base at depth `d` is allowed `(2 048 − 20) × (50 − d) / 50` by
 adjacent versions costs roughly 200–250 delta bytes, which the bound stops admitting around
 `d ≈ 44`; the chain restarts from a fresh base and git's `verify-pack` shows the ~43 the
 brief measured. tsgit's flat bound admits the same step at every depth up to the cap of 50,
-so stage 1 alone runs chains to 50 and packs **smaller** than git on this corpus; stage 2
-gives that back deliberately (ADR-831: faithfulness over size). Promotion (stage 3) changes
+so stage 1 alone runs chains to 50.
+
+⚠️ **The second half of that sentence — that running to 50 therefore packs *smaller* than git —
+was measured and is FALSE.** S1b reaches maxDepth 50 with 6 blob bases against git's 43 with 7,
+so the chain topology now essentially matches git's, and tsgit is still **7.3 % larger**
+(200,701 B vs 187,097 B). Depth is not the residual: with structure equal, what remains is the
+*quality* of each encoded delta, not the shape of the chain. ADR-831's "faithfulness over size"
+framing assumed stage 2 would give back a surplus that measurement says was never there, so
+stage 2's size direction on this corpus is **unknown**, not a deliberate regression. Promotion (stage 3) changes
 nothing on a chain — the predecessor is already the most recent member — and nothing on
 `MEDIUM_FIXTURE`'s short chains either; its stage exists to record that zero.
 
@@ -1087,7 +1094,7 @@ row is measured on all three corpora.
 | **B0** | `main` (30.4 packer) | — | **measured, git 2.55.0**: ×5.43 (ours 1,015,599 B vs peer 187,097 B; 900/900 objects, comparability gate passed) — matches the predicted class. The gap is entirely in blobs: ours base=209 delta=91 maxDepth=**5**; peer base=7 delta=293 maxDepth=**43**. Trees are identical on both sides (base=300 delta=0). Non-delta objects incl. the 300 commit objects: 809, matching the backlog's ~808 figure — but blob+tree bases alone are 509 of 900; the backlog figure only holds once commits are counted. §1f predicted tsgit would run chains to the depth-50 cap here; measured max depth is 5, not 50 — tsgit cannot find a delta base at all for most versions at this stage, which is a different mechanism than a cap | **measured, git 2.55.0**: ×1.57 (ours 83,221,741 B vs peer 53,025,451 B; 35,003/35,003 objects). Blobs are shape-identical on both sides (base=19,999 delta=1 maxDepth=1) — the gap is entirely in trees: ours base=5,182 delta=4,818 maxDepth=**50** (638 chains saturate the cap) vs peer base=423 delta=9,577 maxDepth=**15**. The "runs to the cap of 50" behaviour §1f predicted for `DELTA_CHAIN` actually shows up here instead | **measured, git 2.55.0**: ×1.57 (ours 44,096,785 B vs peer 28,080,225 B; 15,624/15,624 objects; fresh `git clone --no-local`, zero unreachable objects on either side) — the ×1.42 figure was against `gc`, an inherited-delta peer, and is retired, not carried. Both blob and tree chains saturate maxDepth=**50** on both tools here; ours carries more bases than peer's selection (blob 8,306 vs 3,376; tree 1,871 vs 1,289), consistent with the pre-ordering baseline |
 | **S1a** | hashes supplied, recency absent everywhere | hash term live | **measured, git 2.55.0 — confirms the prediction: no movement.** ×5.43 (ours 1,015,599 B vs peer 187,097 B; 900/900 objects) — byte-identical to B0 in every field: blob base=209 delta=91 maxDepth=5, tree base=300 delta=0. All 300 versions share one hash and one size, and the 300 root trees likewise, so the hash term has nothing to separate on this fixture | **measured, git 2.55.0 — gain.** ×1.01 (ours 53,608,298 B vs peer 53,025,451 B; 35,003/35,003 objects), down from B0's ×1.57. Blobs stay shape-identical (ours base=20,000 delta=0 vs peer base=19,999 delta=1). The gain is entirely in trees, exactly where B0 located the gap: ours base falls from 5,182 to **337** — below git's own 423 — as delta count rises to 9,663 | **measured, git 2.55.0 — gain.** ×1.03 (ours 28,809,547 B vs peer 28,093,793 B; 15,647/15,647 objects — the branch's own history grew since B0's 15,624/15,624), down from B0's ×1.57. Blob base falls from 8,306 toward peer's 3,378 (measured 3,416); tree base falls from 1,871 toward peer's 1,290 (measured 1,062) |
 | **S1b** | gc supplies recency | tiebreak live for gc | **measured, git 2.55.0 — the large gain, confirming the cap-oracle prediction; the size-direction prediction refuted.** ×1.07 (ours 200,701 B vs peer 187,097 B; 900/900 objects), down from S1a's ×5.43. Blob base falls from 209 to **6**, delta rises to 294, maxDepth saturates the cap at **50** (histogram: 6 objects at every depth 1–21, 5 at every depth 22–49, 28 at depth 50) — exactly `min(versions − 1, 50)` and "a handful of bases" as predicted, pinned independently by the R13 interop cap oracle (45/60-version corpus, exact numbers). The refuted half: tsgit's size lands **7 % above** git's, not below — peer blob base=7 delta=293 maxDepth=**43**, smaller than predicted despite tsgit's structurally longer chains | **measured, git 2.55.0 — no movement, as predicted.** ×1.01 (ours 53,576,907 B vs peer 53,025,451 B; 35,003/35,003 objects), essentially flat against S1a's ×1.01 (53,608,298 B) — trees stay at base=337, blobs at base=20,000 delta=0; recency has nothing to separate once the hash term already fully orders this fixture | **measured, git 2.55.0 — regression, not the predicted small gain.** ×1.09 (ours 30,594,616 B vs peer 28,105,576 B; 15,677/15,677 objects — the branch's own history grew again since S1a's 15,647/15,647), up from S1a's ×1.03. Blob base rises to 3,740 (from S1a's ~3,416), tree base to 969 (from ~1,062) — real, branchy history is not tie-dense the way the synthetic corpora are, so recency competes with hash rather than only filling in where hash has nothing to separate; root cause not further isolated here |
-| **S2** | depth-scaled bound (§4h) | which base wins at depth | **regression, deliberate** — chains end near 44; more bases; the ratio rises toward ×1.0 from below. Max blob chain drops from 50 to git's band; the R13 oracle becomes the band | small movement either way — shallower bases can now win with larger deltas | small |
+| **S2** | depth-scaled bound (§4h) | which base wins at depth | **size direction unknown — the prior "deliberate regression" prediction rested on a premise S1b falsified** (see §1f). tsgit enters stage 2 at ×1.07, *above* ×1.0, not below, with chain topology already matching git's; whether git's bound moves the ratio up or down is an open measurement. The **structural** prediction stands and is what this stage is checked on: max blob chain drops from 50 into git's band (~43-44), with more bases. Record the ratio in whichever direction it moves | small movement either way — shallower bases can now win with larger deltas | small |
 | **S3** | promotion + max-depth non-admission (§4i, DC-8) | window residency | **exactly zero** — on a chain the predecessor is already the most recent member and no chain reaches 50 after S2 | **exactly zero** expected; a non-zero here means a base served two targets out of scan order, which the readout will show as a changed histogram | small, possibly non-zero: branchy history is where one base serves several targets |
 | **S4** | 50-byte floor — **ratified (ADR-834)** | which objects are offered | growth of roughly 300 × (deflated 40-byte tree − deflated tree delta) — a few KiB; the tree readout flips from 300 deltas to 300 bases and matches git's | small growth; small-object bases match git's count | small growth |
 
@@ -1098,9 +1105,16 @@ records; promotion is S3 − S2 and was measured to be zero.* Any later comparis
 numbers must name the row it compares.
 
 Predictions are refutable, and a refuted one stops the run: S1a moving `DELTA_CHAIN`, S1b
-failing the cap oracle, S2 *lowering* the ratio on `DELTA_CHAIN`, or S3 reading non-zero on
-either fixture each mean the model in §1f is wrong somewhere, and the stage's commit does not
-land until the design says where.
+failing the cap oracle, S2 leaving `DELTA_CHAIN`'s **max blob chain at 50** rather than dropping
+it into git's band, or S3 reading non-zero on either fixture each mean the model in §1f is wrong
+somewhere, and the stage's commit does not land until the design says where.
+
+**S2's stop condition was restated after S1b.** It used to be "S2 *lowering* the ratio on
+`DELTA_CHAIN`", which only made sense while §1f's now-falsified premise held — that stage 1 would
+leave tsgit *below* ×1.0 and the bound would raise it. S1b landed at ×1.07, above ×1.0, so a
+lowering would now mean moving *toward* parity and the old condition would have stopped the run on
+a good outcome. The structural check replaces it, because it is the part of the model that
+survived measurement.
 
 #### 11c. Where the numbers go
 
