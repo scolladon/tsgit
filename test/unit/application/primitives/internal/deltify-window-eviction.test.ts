@@ -227,8 +227,12 @@ describe('deltifyEntries — window eviction accounting', () => {
         // Arrange — the very first admission always starts from an empty
         // window; a count-eviction guard that ignored emptiness would try
         // to evict a member that was never there.
+        // Sized past the fifty-byte delta floor: under it, the object never
+        // reaches admission at all and this test asserts nothing. It is the
+        // only empty-window case in the suite, so its emptiness guard has no
+        // other cover.
         const ctx = await buildSeededContext();
-        const id = await writeBlob(ctx, pseudoRandomBytes(811, 40));
+        const id = await writeBlob(ctx, pseudoRandomBytes(811, 60));
         const policy: DeltaPolicy = {
           enabled: true,
           window: 0,

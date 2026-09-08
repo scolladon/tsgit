@@ -532,9 +532,16 @@ describe('deltifyEntries', () => {
       it('Then no delta is emitted across the type boundary despite byte-identical content', async () => {
         // Arrange — proves the type guard alone blocks the match: were it
         // absent, byte-identical content would trivially win a search.
+        // The entry name is long enough to carry the serialised tree past the
+        // fifty-byte delta floor (`100644 ` + name + NUL + a 20-byte digest =
+        // 54 bytes here). A shorter name puts both objects under the floor,
+        // which skips the window before the type is ever compared — the test
+        // would still pass, having exercised nothing.
         const ctx = await buildSeededContext();
         const leafBlobId = await writeBlob(ctx, new Uint8Array([9]));
-        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'a.bin', leafBlobId)]);
+        const treeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'a-long-enough-filename.bin', leafBlobId),
+        ]);
         const treeRaw = await readRawObject(ctx, treeId);
         const twinBlobId = await writeBlob(ctx, treeRaw.content);
         const sut = deltifyEntries;

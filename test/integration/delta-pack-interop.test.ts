@@ -557,13 +557,18 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
       // deltified pack must land in the same rough band as git's forced
       // single-threaded re-selection (never an equality — git's own
       // packer is not deterministic across runs). The upper bound is this
-      // stage's own shipped readout (×0.99 measured here) plus 15%
-      // headroom for that non-determinism — nowhere near the multi-times
-      // inflation the pre-change base-only writer measured; the lower
-      // bound stays generous, since a smaller pack is never the regression
-      // this band exists to catch.
+      // stage's own shipped readout (×0.99 measured here) plus a little
+      // headroom for that non-determinism; the lower bound stays generous,
+      // since a smaller pack is never the regression this band exists to
+      // catch.
+      //
+      // The bound is deliberately tight. Measured on the pre-change writer,
+      // this same corpus lands at ×1.05 — so a laxer ceiling (×1.15 was the
+      // first attempt) passes on the unfixed code and tests nothing at all.
+      // It must exclude the value this change exists to remove, not merely
+      // admit the value it produces.
       expect(tsgitObjectCount).toBe(gitRepackObjectCount);
-      expect(tsgitBytes).toBeLessThan(gitBytes * 1.15);
+      expect(tsgitBytes).toBeLessThan(gitBytes * 1.03);
       expect(tsgitBytes).toBeGreaterThan(gitBytes * 0.5);
     });
   });
