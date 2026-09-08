@@ -130,6 +130,51 @@ async function buildTextChurnRepo(slug: string): Promise<string> {
   return dir;
 }
 
+const SAME_SIZE_LINES = 500;
+const SAME_SIZE_STAMP_WIDTH = 3;
+
+/** A fixed-width per-line stamp, overwritten in place on every edit, so the
+ *  file's total byte length never changes across versions. */
+const sameSizeLine = (index: number, version: number): string =>
+  `line ${String(index).padStart(3, '0')} v${String(version).padStart(SAME_SIZE_STAMP_WIDTH, '0')}`;
+
+/**
+ * One path, exactly `versions` TOTAL revisions of a FIXED-LENGTH file —
+ * the seed is version 1, and each subsequent edit overwrites one line's
+ * version stamp in place, never appending or shortening, so every commit's
+ * blob is the exact same byte length. The R13 cap oracle's tie-dense
+ * corpus: every pair ties on size (and, being the one path, on nameHash
+ * too), so only gc's recency tiebreak can order them — the shape the
+ * whole entry exists to close the gap on.
+ *
+ * The reflog is expired before return: `git commit` writes a fresh
+ * `refs/heads/main` reflog entry on every call, and gc's own retention
+ * roots protect EVERY reflog entry, not just the tip — left in place, each
+ * of the `versions` commits becomes its own SORTED root (oid order, not
+ * chronological), scrambling the closure walk into oid order and breaking
+ * the "each version deltas on its predecessor" shape this corpus exists to
+ * produce. A repository whose reflog has aged out (the ordinary state
+ * `gc.reflogExpire`'s default eventually reaches) leaves only the tip as a
+ * root, which is what this fixture models.
+ */
+async function buildSameSizeVersionsRepo(slug: string, versions: number): Promise<string> {
+  const dir = await freshRepo(slug);
+  const filePath = path.join(dir, 'tie.txt');
+  let lines = Array.from({ length: SAME_SIZE_LINES }, (_, i) => sameSizeLine(i, 1));
+  await writeFile(filePath, `${lines.join('\n')}\n`);
+  git(dir, 'add', '-A');
+  commitAt(dir, 0, 'seed');
+  for (let version = 2; version <= versions; version += 1) {
+    const target = mix32(version) % lines.length;
+    lines = lines.map((line, i) => (i === target ? sameSizeLine(i, version) : line));
+    await writeFile(filePath, `${lines.join('\n')}\n`);
+    git(dir, 'add', '-A');
+    commitAt(dir, version, `edit ${version}`);
+  }
+  git(dir, 'reflog', 'expire', '--expire=now', '--expire-unreachable=now', '--all');
+  return dir;
+}
+
 function trackedNodeContext(workDir: string): Context {
   return createNodeContext({ workDir, hooks: false, command: false, ssh: false });
 }
@@ -204,6 +249,36 @@ function parseChainDepths(verifyOutput: string): {
   return { histogram, perObject };
 }
 
+interface BlobPackShape {
+  readonly baseCount: number;
+  readonly deltaCount: number;
+  readonly maxDepth: number;
+}
+
+/** Reads `git verify-pack -v`'s BLOB lines only — trees and commits are
+ *  excluded because their deltas are decided by the deflate-size
+ *  acceptance rule, not by ordering, so they carry no signal for the R13
+ *  cap oracle. Mirrors `maxChainDepthOid`'s own filter (`fixture-generator
+ *  .ts`): a deltified blob line has `tokens[1] === 'blob'` and 6+ tokens,
+ *  with the chain depth at `tokens[5]`; a base blob line has 5. */
+function parseBlobPackShape(verifyOutput: string): BlobPackShape {
+  let baseCount = 0;
+  let deltaCount = 0;
+  let maxDepth = 0;
+  for (const line of verifyOutput.split('\n')) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens[1] !== 'blob') continue;
+    if (tokens.length < 6) {
+      baseCount += 1;
+      continue;
+    }
+    deltaCount += 1;
+    const depth = Number(tokens[5]);
+    if (depth > maxDepth) maxDepth = depth;
+  }
+  return { baseCount, deltaCount, maxDepth };
+}
+
 async function appendConfigLines(dir: string, lines: string): Promise<void> {
   const configPath = path.join(dir, '.git', 'config');
   const existing = await readFile(configPath, 'utf8');
@@ -235,6 +310,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
   let tsgitPackPath: string;
   let tsgitIdxPath: string;
   let gitRepackBytes: number;
+  let gitRepackObjectCount: number;
 
   beforeAll(async () => {
     churnRepo = await buildTextChurnRepo('churn-source');
@@ -250,11 +326,32 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     tsgitPackBytes = await readFile(tsgitPackPath);
     tsgitIdxBytes = await readFile(tsgitIdxPath);
 
+    // `-f` forces a full re-selection instead of reusing inherited deltas
+    // (plain `repack -a -d` would compare tsgit's SELECTION against git's
+    // own INHERITANCE — a validity band, not a selection measure); the
+    // window/depth pin matches tsgit's own defaults so neither side's
+    // search is throttled relative to the other's.
     const gitRepackDir = await tmp('churn-git-repack');
     await cp(churnRepo, gitRepackDir, { recursive: true });
-    runGit(['-C', gitRepackDir, '-c', 'pack.threads=1', 'repack', '-a', '-d', '-q']);
+    runGit([
+      '-C',
+      gitRepackDir,
+      '-c',
+      'pack.threads=1',
+      '-c',
+      'pack.window=10',
+      '-c',
+      'pack.depth=50',
+      'repack',
+      '-a',
+      '-d',
+      '-f',
+      '-q',
+    ]);
     const gitPaths = await solePackIdx(gitRepackDir);
     gitRepackBytes = (await readFile(gitPaths.packPath)).length;
+    const gitIdxBytes = await readFile(gitPaths.idxPath);
+    gitRepackObjectCount = allObjectIds(parsePackIndex(gitIdxBytes, IDX_DIGEST_LENGTH)).length;
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -417,17 +514,23 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
   // X7 — size class vs git's own single-threaded repack
   // -------------------------------------------------------------------------
 
-  describe("Given the text-churn shape, gc'd by tsgit and repacked by git -c pack.threads=1, When the two pack sizes are compared", () => {
-    it("Then tsgit's pack size lands in the recorded size class, with generous headroom", () => {
-      // Arrange — both sizes were already measured in the shared beforeAll.
+  describe("Given the text-churn shape, gc'd by tsgit and repacked by git -c pack.threads=1 -f (a forced re-selection, not an inherited-delta comparison), When the two pack sizes are compared", () => {
+    it("Then the two packs carry the same object count, and tsgit's pack size lands in the recorded size class, with generous headroom", () => {
+      // Arrange — both packs were already built in the shared beforeAll.
       const tsgitBytes = tsgitPackBytes.length;
       const gitBytes = gitRepackBytes;
+      const tsgitObjectCount = allObjectIds(
+        parsePackIndex(tsgitIdxBytes, IDX_DIGEST_LENGTH),
+      ).length;
 
-      // Assert — a class, not a ratio or a byte count: tsgit's deltified
-      // pack must land in the same rough band as git's single-threaded
-      // repack (never an equality — git's own packer is not deterministic
-      // across runs), and nowhere near the multi-times inflation the
-      // pre-change base-only writer measured.
+      // Assert — object counts equal FIRST: a comparability gate, so a
+      // ratio computed over mismatched sets can never read as a passing
+      // size class. Then a class, not a ratio or a byte count: tsgit's
+      // deltified pack must land in the same rough band as git's forced
+      // single-threaded re-selection (never an equality — git's own
+      // packer is not deterministic across runs), and nowhere near the
+      // multi-times inflation the pre-change base-only writer measured.
+      expect(tsgitObjectCount).toBe(gitRepackObjectCount);
       expect(tsgitBytes).toBeLessThan(gitBytes * 2);
       expect(tsgitBytes).toBeGreaterThan(gitBytes * 0.5);
     });
@@ -898,3 +1001,85 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// R13 cap oracle — a tie-dense, same-size-versions corpus (one path, every
+// revision the same byte length), gc'd by tsgit, read back through
+// `git verify-pack -v`'s blob lines only
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'delta-writing packer over a same-size-versions corpus, against real git',
+  () => {
+    const BELOW_CAP_VERSIONS = 45;
+    const AT_CAP_VERSIONS = 60;
+
+    let belowCapDir: string;
+    let belowCapIdxPath: string;
+    let atCapDir: string;
+    let atCapIdxPath: string;
+
+    async function tsgitGc(
+      slug: string,
+      versions: number,
+    ): Promise<{ dir: string; idxPath: string }> {
+      const repo = await buildSameSizeVersionsRepo(slug, versions);
+      const gcDir = await tmp(`${slug}-tsgit-gc`);
+      await cp(repo, gcDir, { recursive: true });
+      const gcCtx = trackedNodeContext(gcDir);
+      await maintenance(gcCtx, { tasks: ['gc'] });
+      await disposePackRegistry(gcCtx);
+      const paths = await solePackIdx(gcDir);
+      return { dir: gcDir, idxPath: paths.idxPath };
+    }
+
+    beforeAll(async () => {
+      const below = await tsgitGc('same-size-below-cap', BELOW_CAP_VERSIONS);
+      belowCapDir = below.dir;
+      belowCapIdxPath = below.idxPath;
+      const atCap = await tsgitGc('same-size-at-cap', AT_CAP_VERSIONS);
+      atCapDir = atCap.dir;
+      atCapIdxPath = atCap.idxPath;
+    }, 120_000);
+
+    afterAll(async () => {
+      await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    describe("Given 45 same-size versions of one file, gc'd by tsgit, When git verify-pack -v reads the blob lines", () => {
+      it('Then every version deltas on its predecessor: 1 blob base, 44 blob deltas, max chain 44', () => {
+        // Arrange — below the depth cap, so the cap never interferes.
+        const verifyOut = git(belowCapDir, 'verify-pack', '-v', belowCapIdxPath);
+
+        // Act
+        const result = parseBlobPackShape(verifyOut);
+
+        // Assert — `git -c pack.threads=1 -c pack.window=10 -c pack.depth=50
+        // repack -a -d -f -q` over the same repository: max blob chain 44,
+        // 1 blob base (recorded for the structural comparison, not
+        // asserted equal — the two codecs accept deltas by different
+        // rules and a chain ends where each stops fitting).
+        expect(result.baseCount).toBe(1);
+        expect(result.deltaCount).toBe(BELOW_CAP_VERSIONS - 1);
+        expect(result.maxDepth).toBe(BELOW_CAP_VERSIONS - 1);
+      });
+    });
+
+    describe("Given 60 same-size versions of one file, gc'd by tsgit, When git verify-pack -v reads the blob lines", () => {
+      it('Then the depth cap binds: max blob chain exactly 50, a handful of blob bases', () => {
+        // Arrange — past the depth cap, so the FIFO window is forced to
+        // start a fresh base once a chain reaches 50.
+        const verifyOut = git(atCapDir, 'verify-pack', '-v', atCapIdxPath);
+
+        // Act
+        const result = parseBlobPackShape(verifyOut);
+
+        // Assert
+        expect(result.maxDepth).toBe(50);
+        expect(result.baseCount).toBeGreaterThanOrEqual(1);
+        expect(result.baseCount).toBeLessThanOrEqual(4);
+        expect(result.deltaCount).toBe(AT_CAP_VERSIONS - result.baseCount);
+      });
+    });
+  },
+);

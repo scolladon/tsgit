@@ -295,7 +295,10 @@ interface ReachableClosure {
   /** The closure's own traversal order — carried through with no re-sort so
    *  a later pack build over these objects reproduces run 2 from run 1. */
   readonly objects: ReadonlyArray<ClosureObject>;
-  readonly reachable: ReadonlySet<ObjectId>;
+  /** id -> traversal ordinal — gc's own recency, the pack emission
+   *  comparator's `recency ASC` term. Insertion order follows `objects`,
+   *  so membership (`ordinalOf.has(id)`) and the ordinal are one lookup. */
+  readonly ordinalOf: ReadonlyMap<ObjectId, number>;
 }
 
 /**
@@ -303,9 +306,9 @@ interface ReachableClosure {
  * ref, reflog, index and worktree enumeration — nothing before this change
  * depended on that order. Sorting it here makes the walk a pure function of
  * `(sorted roots, graph)`, independent of where objects happen to live —
- * the invariant `toNormalPackInputs`'s traversal order (and, later, gc's
- * own recency) relies on to reproduce run 2 from run 1 across the
- * loose→packed transition.
+ * the invariant `toNormalPackInputs`'s traversal order and gc's own
+ * recency rely on to reproduce run 2 from run 1 across the loose→packed
+ * transition.
  */
 async function computeReachable(ctx: Context): Promise<ReachableClosure> {
   const roots = [...(await collectRetentionRoots(ctx))].sort();
@@ -317,21 +320,22 @@ async function computeReachable(ctx: Context): Promise<ReachableClosure> {
   });
   return {
     objects: closure.objects,
-    reachable: new Set(closure.objects.map((object) => object.id)),
+    ordinalOf: new Map(closure.objects.map((object, ordinal) => [object.id, ordinal] as const)),
   };
 }
 
 /**
- * Wraps a walk-tier closure object as a `buildPack` input. `nameHash` is
- * always populated on the walk tier — the tier `CLOSURE_TIER` fixes gc to —
- * so the `?? PATHLESS_HASH` arm below is reachable only through the OTHER
+ * Wraps a walk-tier closure object as a `buildPack` input, carrying the
+ * caller's recency (gc's traversal ordinal). `nameHash` is always
+ * populated on the walk tier — the tier `CLOSURE_TIER` fixes gc to — so
+ * the `?? PATHLESS_HASH` arm below is reachable only through the OTHER
  * tier the same closure engine also serves. gc never takes that tier, so
  * the arm is exercised by calling this helper directly instead of leaving
  * it an untested branch.
  * @internal — exported only for that coverage.
  */
-export function toPackInput(object: ClosureObject): PackObjectInput {
-  return { id: object.id, nameHash: object.nameHash ?? PATHLESS_HASH };
+export function toPackInput(object: ClosureObject, recency: number): PackObjectInput {
+  return { id: object.id, nameHash: object.nameHash ?? PATHLESS_HASH, recency };
 }
 
 /**
@@ -406,19 +410,24 @@ async function collectNormalPackData(
  * unreachable promisor distinction). No sort: traversal order is a pure
  * function of `computeReachable`'s sorted roots and the graph alone, so
  * Pin W's no-op boundary now holds by construction rather than by an
- * explicit `.sort()`.
+ * explicit `.sort()`. Every member's `recency` is its own traversal
+ * ordinal, looked up from `ordinalOf` — the same map `computeReachable`
+ * returned it in.
  */
 function toNormalPackInputs(
   objects: ReadonlyArray<ClosureObject>,
   owned: ReadonlySet<ObjectId>,
   keptOids: ReadonlySet<ObjectId>,
   ownedPromisor: ReadonlySet<ObjectId>,
+  ordinalOf: ReadonlyMap<ObjectId, number>,
 ): ReadonlyArray<PackObjectInput> {
   const toNormalPack: PackObjectInput[] = [];
   for (const object of objects) {
     if (keptOids.has(object.id)) continue;
     if (owned.has(object.id) || ownedPromisor.has(object.id)) {
-      toNormalPack.push(toPackInput(object));
+      // `objects` is `ordinalOf`'s own key domain (built from the same
+      // traversal by `computeReachable`), so the lookup always hits.
+      toNormalPack.push(toPackInput(object, ordinalOf.get(object.id)!));
     }
   }
   return toNormalPack;
@@ -437,7 +446,7 @@ function toNormalPackInputs(
  */
 function cruftCandidatesOf(
   owned: ReadonlySet<ObjectId>,
-  reachable: ReadonlySet<ObjectId>,
+  ordinalOf: ReadonlyMap<ObjectId, number>,
   keptOids: ReadonlySet<ObjectId>,
   ownedPromisor: ReadonlySet<ObjectId>,
 ): ReadonlyArray<ObjectId> {
@@ -445,7 +454,7 @@ function cruftCandidatesOf(
   for (const id of owned) {
     if (keptOids.has(id)) continue;
     if (ownedPromisor.has(id)) continue;
-    if (!reachable.has(id)) cruftCandidates.push(id);
+    if (!ordinalOf.has(id)) cruftCandidates.push(id);
   }
   return cruftCandidates;
 }
@@ -469,7 +478,7 @@ function cruftCandidatesOf(
 function partitionOwned(
   objects: ReadonlyArray<ClosureObject>,
   owned: ReadonlySet<ObjectId>,
-  reachable: ReadonlySet<ObjectId>,
+  ordinalOf: ReadonlyMap<ObjectId, number>,
   keptOids: ReadonlySet<ObjectId>,
   ownedPromisor: ReadonlySet<ObjectId>,
 ): {
@@ -477,8 +486,8 @@ function partitionOwned(
   readonly cruftCandidates: ReadonlyArray<ObjectId>;
 } {
   return {
-    toNormalPack: toNormalPackInputs(objects, owned, keptOids, ownedPromisor),
-    cruftCandidates: cruftCandidatesOf(owned, reachable, keptOids, ownedPromisor),
+    toNormalPack: toNormalPackInputs(objects, owned, keptOids, ownedPromisor, ordinalOf),
+    cruftCandidates: cruftCandidatesOf(owned, ordinalOf, keptOids, ownedPromisor),
   };
 }
 
@@ -522,7 +531,11 @@ interface NormalPackOutcome {
    * must be DECLASSIFIED, its `.mtimes` dropped, never retired as garbage);
    * `'normal'` when it matches an existing normal pack (Pin W's no-op
    * boundary — that exact pack must NOT appear in the retirement list,
-   * since it now IS the fresh normal pack); `'none'` otherwise.
+   * since it now IS the fresh normal pack); `'none'` otherwise. The normal
+   * pack now carries hashes and recency where the cruft pack carries
+   * neither, so `'cruft'` needs the same SEQUENCE, not just the same set —
+   * a resurrected set of more than one object generally takes the
+   * `'none'` route instead, the ordinary one.
    */
   readonly reuse: 'none' | 'cruft' | 'normal';
 }
@@ -889,11 +902,11 @@ export async function runGcTask(
 
   // --- step 3/4: retention roots, reachability, the widened partition ---
   const owned = new Set<ObjectId>([...looseSet, ...existingCruft.mtimes.keys(), ...normalOids]);
-  const { objects: reachableObjects, reachable } = await computeReachable(ctx);
+  const { objects: reachableObjects, ordinalOf } = await computeReachable(ctx);
   const { toNormalPack, cruftCandidates } = partitionOwned(
     reachableObjects,
     owned,
-    reachable,
+    ordinalOf,
     keptOids,
     ownedPromisor,
   );
@@ -923,13 +936,18 @@ export async function runGcTask(
   const toPromisorPack: ReadonlyArray<ObjectId> = [...ownedPromisor].sort();
   // Mapped to inputs by hash lookup, not by iterating the closure again: a
   // REACHABLE member is a `reachableObjects` member by construction and
-  // gets its walk hash; an UNREACHABLE member never entered the closure at
-  // all and gets `PATHLESS_HASH` explicitly — this pack's own recency is
-  // still absent, unlike the normal pack's traversal order above.
+  // gets its walk hash and its traversal ordinal (`ordinalOf`, the same
+  // map the normal pack reads); an UNREACHABLE member never entered the
+  // closure at all and gets `PATHLESS_HASH` plus a recency of its own —
+  // "first seen after everything reachable, in oid order": the reachable
+  // count plus its own index in this sorted array. That keeps every
+  // object in the recency-present mode without mixing one that has no
+  // ordinal to give, which `buildPack`'s uniform-recency guard refuses.
   const reachableById = new Map(reachableObjects.map((object) => [object.id, object] as const));
-  const toPromisorPackInputs: ReadonlyArray<PackObjectInput> = toPromisorPack.map((id) => {
+  const toPromisorPackInputs: ReadonlyArray<PackObjectInput> = toPromisorPack.map((id, index) => {
     const object = reachableById.get(id);
-    return object === undefined ? { id, nameHash: PATHLESS_HASH } : toPackInput(object);
+    if (object !== undefined) return toPackInput(object, ordinalOf.get(id)!);
+    return { id, nameHash: PATHLESS_HASH, recency: ordinalOf.size + index };
   });
 
   const mtimes = await computeCruftMtimes(
