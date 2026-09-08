@@ -85,6 +85,8 @@ export {
 export type { PathHasher } from './pack-name-hash.js';
 export {
   foldPackNameHash,
+  foldPathSegment,
+  PACK_NAME_HASH_PATHLESS,
   PACK_NAME_HASH_SEED,
   PACK_NAME_HASH_V1,
   packNameHash,

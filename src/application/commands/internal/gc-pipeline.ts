@@ -7,7 +7,7 @@
  * doc for the task's observable contract.
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
-import { parseMultiPackIndex } from '../../../domain/storage/index.js';
+import { PACK_NAME_HASH_PATHLESS, parseMultiPackIndex } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { DirEntry, FileStat } from '../../../ports/file-system.js';
@@ -20,11 +20,7 @@ import {
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
 import { expiryCutoff } from '../../primitives/expiry-cutoff.js';
 import { assertValidBooleanConfig } from '../../primitives/internal/boolean-config-guard.js';
-import {
-  type ClosureObject,
-  type ClosureTier,
-  computeClosure,
-} from '../../primitives/internal/closure-engine.js';
+import { type ClosureTier, computeClosure } from '../../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../../primitives/internal/concurrency.js';
 import {
   computeCruftMtimes,
@@ -61,12 +57,6 @@ import { collectRetentionRoots } from './fsck/roots.js';
 const DEFAULT_GC_AUTO_THRESHOLD = 6700;
 const DEFAULT_PRUNE_EXPIRE = '2.weeks.ago';
 const CLOSURE_TIER: ClosureTier = 'walk';
-/** git's own convention for an object with no path — a reachability
- *  artefact encodes types and bits, never names, so the bitmap tier never
- *  fills `ClosureObject.nameHash`. `CLOSURE_TIER` is always `'walk'` here,
- *  which always fills it, so this constant is exercised only by a direct
- *  call to `toPackInput` — see its own doc. */
-const PATHLESS_HASH = 0;
 
 export type GcResult = Omit<
   MaintenanceResult,
@@ -291,14 +281,25 @@ async function removeStaleTempFiles(ctx: Context, packDir: string, cutoff: numbe
   );
 }
 
+/** What gc keeps per reachable object once the closure itself is released:
+ *  the traversal ordinal that becomes the pack emission comparator's
+ *  `recency ASC` term, and the walk's name hash. Deliberately NOT the
+ *  `ClosureObject` — that carries a `path` string per tree and blob, and
+ *  holding the closure array alive would pin every one of them across the
+ *  pack build, gc's peak-memory phase. Projecting here lets the whole
+ *  path-bearing array die at `computeReachable`'s return, as it did before
+ *  gc carried hashes at all. */
+interface ReachableEntry {
+  readonly ordinal: number;
+  readonly nameHash: number;
+}
+
 interface ReachableClosure {
-  /** The closure's own traversal order — carried through with no re-sort so
-   *  a later pack build over these objects reproduces run 2 from run 1. */
-  readonly objects: ReadonlyArray<ClosureObject>;
-  /** id -> traversal ordinal — gc's own recency, the pack emission
-   *  comparator's `recency ASC` term. Insertion order follows `objects`,
-   *  so membership (`ordinalOf.has(id)`) and the ordinal are one lookup. */
-  readonly ordinalOf: ReadonlyMap<ObjectId, number>;
+  /** id -> its ordinal and hash. **Insertion order is the closure's own
+   *  traversal order**, carried through with no re-sort, so iterating this
+   *  map reproduces run 2 from run 1 — and membership, ordinal and hash are
+   *  all one lookup. */
+  readonly reachable: ReadonlyMap<ObjectId, ReachableEntry>;
 }
 
 /**
@@ -318,24 +319,20 @@ async function computeReachable(ctx: Context): Promise<ReachableClosure> {
     objects: true,
     tier: CLOSURE_TIER,
   });
-  return {
-    objects: closure.objects,
-    ordinalOf: new Map(closure.objects.map((object, ordinal) => [object.id, ordinal] as const)),
-  };
-}
-
-/**
- * Wraps a walk-tier closure object as a `buildPack` input, carrying the
- * caller's recency (gc's traversal ordinal). `nameHash` is always
- * populated on the walk tier — the tier `CLOSURE_TIER` fixes gc to — so
- * the `?? PATHLESS_HASH` arm below is reachable only through the OTHER
- * tier the same closure engine also serves. gc never takes that tier, so
- * the arm is exercised by calling this helper directly instead of leaving
- * it an untested branch.
- * @internal — exported only for that coverage.
- */
-export function toPackInput(object: ClosureObject, recency: number): PackObjectInput {
-  return { id: object.id, nameHash: object.nameHash ?? PATHLESS_HASH, recency };
+  // One pass, projecting as it goes: a `new Map(objects.map(...))` would
+  // materialise the whole tuple array before the Map consumed an entry, and
+  // returning `closure.objects` alongside would keep every path string
+  // alive for the rest of the run.
+  const reachable = new Map<ObjectId, ReachableEntry>();
+  for (let ordinal = 0; ordinal < closure.objects.length; ordinal += 1) {
+    const object = closure.objects[ordinal]!;
+    // `?? PACK_NAME_HASH_PATHLESS` is the tier default, not a guard:
+    // `CLOSURE_TIER` pins gc to the walk tier, which always fills the hash,
+    // but a reachability artefact encodes types and bits and never names —
+    // so the day this tier changes, pathless is already the right answer.
+    reachable.set(object.id, { ordinal, nameHash: object.nameHash ?? PACK_NAME_HASH_PATHLESS });
+  }
+  return { reachable };
 }
 
 /**
@@ -415,19 +412,24 @@ async function collectNormalPackData(
  * returned it in.
  */
 function toNormalPackInputs(
-  objects: ReadonlyArray<ClosureObject>,
+  reachable: ReadonlyMap<ObjectId, ReachableEntry>,
   owned: ReadonlySet<ObjectId>,
   keptOids: ReadonlySet<ObjectId>,
   ownedPromisor: ReadonlySet<ObjectId>,
-  ordinalOf: ReadonlyMap<ObjectId, number>,
 ): ReadonlyArray<PackObjectInput> {
   const toNormalPack: PackObjectInput[] = [];
-  for (const object of objects) {
-    if (keptOids.has(object.id)) continue;
-    if (owned.has(object.id) || ownedPromisor.has(object.id)) {
-      // `objects` is `ordinalOf`'s own key domain (built from the same
-      // traversal by `computeReachable`), so the lookup always hits.
-      toNormalPack.push(toPackInput(object, ordinalOf.get(object.id)!));
+  // Iterating the map IS iterating the traversal, so the ordinal comes with
+  // the entry rather than costing a second hash lookup per object.
+  for (const [id, entry] of reachable) {
+    if (keptOids.has(id)) continue;
+    // Every remaining reachable object is owned or promisor-owned: an object
+    // is reachable only because the walk read it, and the walk reads only
+    // what is stored locally — loose, a normal pack, a carried cruft entry
+    // (all three are `owned`), a kept pack (excluded above), or a promisor
+    // pack. There is no fifth home, so the false arm is unreachable by
+    // construction rather than merely untested.
+    if (owned.has(id) || ownedPromisor.has(id)) {
+      toNormalPack.push({ id, nameHash: entry.nameHash, recency: entry.ordinal });
     }
   }
   return toNormalPack;
@@ -445,8 +447,8 @@ function toNormalPackInputs(
  * present locally.
  */
 function cruftCandidatesOf(
+  reachable: ReadonlyMap<ObjectId, ReachableEntry>,
   owned: ReadonlySet<ObjectId>,
-  ordinalOf: ReadonlyMap<ObjectId, number>,
   keptOids: ReadonlySet<ObjectId>,
   ownedPromisor: ReadonlySet<ObjectId>,
 ): ReadonlyArray<ObjectId> {
@@ -454,7 +456,7 @@ function cruftCandidatesOf(
   for (const id of owned) {
     if (keptOids.has(id)) continue;
     if (ownedPromisor.has(id)) continue;
-    if (!ordinalOf.has(id)) cruftCandidates.push(id);
+    if (!reachable.has(id)) cruftCandidates.push(id);
   }
   return cruftCandidates;
 }
@@ -476,18 +478,20 @@ function cruftCandidatesOf(
  * `toPromisorPack` intersect exactly on it, by design.
  */
 function partitionOwned(
-  objects: ReadonlyArray<ClosureObject>,
+  reachable: ReadonlyMap<ObjectId, ReachableEntry>,
   owned: ReadonlySet<ObjectId>,
-  ordinalOf: ReadonlyMap<ObjectId, number>,
   keptOids: ReadonlySet<ObjectId>,
   ownedPromisor: ReadonlySet<ObjectId>,
 ): {
   readonly toNormalPack: ReadonlyArray<PackObjectInput>;
   readonly cruftCandidates: ReadonlyArray<ObjectId>;
 } {
+  // Both helpers take the same four collaborators in the same order. Three
+  // of them are `ReadonlySet<ObjectId>`, so a transposed pair would
+  // type-check silently and invert the partition.
   return {
-    toNormalPack: toNormalPackInputs(objects, owned, keptOids, ownedPromisor, ordinalOf),
-    cruftCandidates: cruftCandidatesOf(owned, ordinalOf, keptOids, ownedPromisor),
+    toNormalPack: toNormalPackInputs(reachable, owned, keptOids, ownedPromisor),
+    cruftCandidates: cruftCandidatesOf(reachable, owned, keptOids, ownedPromisor),
   };
 }
 
@@ -902,11 +906,10 @@ export async function runGcTask(
 
   // --- step 3/4: retention roots, reachability, the widened partition ---
   const owned = new Set<ObjectId>([...looseSet, ...existingCruft.mtimes.keys(), ...normalOids]);
-  const { objects: reachableObjects, ordinalOf } = await computeReachable(ctx);
+  const { reachable } = await computeReachable(ctx);
   const { toNormalPack, cruftCandidates } = partitionOwned(
-    reachableObjects,
+    reachable,
     owned,
-    ordinalOf,
     keptOids,
     ownedPromisor,
   );
@@ -938,16 +941,17 @@ export async function runGcTask(
   // REACHABLE member is a `reachableObjects` member by construction and
   // gets its walk hash and its traversal ordinal (`ordinalOf`, the same
   // map the normal pack reads); an UNREACHABLE member never entered the
-  // closure at all and gets `PATHLESS_HASH` plus a recency of its own —
+  // closure at all and gets `PACK_NAME_HASH_PATHLESS` plus a recency of its own —
   // "first seen after everything reachable, in oid order": the reachable
   // count plus its own index in this sorted array. That keeps every
   // object in the recency-present mode without mixing one that has no
   // ordinal to give, which `buildPack`'s uniform-recency guard refuses.
-  const reachableById = new Map(reachableObjects.map((object) => [object.id, object] as const));
+  // No second index: `reachable` already keys id -> { ordinal, nameHash },
+  // so the reachable arm is one lookup and the unreachable arm needs none.
   const toPromisorPackInputs: ReadonlyArray<PackObjectInput> = toPromisorPack.map((id, index) => {
-    const object = reachableById.get(id);
-    if (object !== undefined) return toPackInput(object, ordinalOf.get(id)!);
-    return { id, nameHash: PATHLESS_HASH, recency: ordinalOf.size + index };
+    const entry = reachable.get(id);
+    if (entry !== undefined) return { id, nameHash: entry.nameHash, recency: entry.ordinal };
+    return { id, nameHash: PACK_NAME_HASH_PATHLESS, recency: reachable.size + index };
   });
 
   const mtimes = await computeCruftMtimes(

@@ -32,7 +32,7 @@
 import { operationAborted } from '../../domain/error.js';
 import { treeDepthExceeded } from '../../domain/objects/error.js';
 import { type FileMode, isDirectory, type ObjectId } from '../../domain/objects/index.js';
-import { foldPackNameHash, PACK_NAME_HASH_SEED } from '../../domain/storage/index.js';
+import { foldPathSegment, PACK_NAME_HASH_V1, type PathHasher } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { type EmitState, resolveTagChain, tryEmit } from './internal/object-emit.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
@@ -41,12 +41,9 @@ import { MAX_PUSH_OBJECTS } from './types.js';
 import { isGitlink } from './validators.js';
 import { walkCommits } from './walk-commits.js';
 
-/** git's own rule (`if (base->len) strbuf_addch(base, '/')`): every
- *  non-root entry folds this separator between its parent's hash state and
- *  its own name bytes. Allocated once, never per entry — mirrors
- *  `walk-tree.ts`'s identical constant, kept local since neither module
- *  imports the other. */
-const SLASH = Uint8Array.of(0x2f);
+/** Taken through the seam rather than the concrete fold, so adopting a
+ *  second hash version stays the one-module port it is meant to be. */
+const HASHER: PathHasher = PACK_NAME_HASH_V1;
 
 export interface EnumerateBundleObjectsInput {
   /** Positive endpoint oids — commits or annotated tags. */
@@ -93,8 +90,7 @@ interface BundleEmitState extends EmitState {
  *  whose `treeId` is a commit's own tree, never a subtree reached by
  *  recursion. */
 function foldEntryHash(hashState: number, nameBytes: Uint8Array, depth: number): number {
-  const base = depth === 0 ? hashState : foldPackNameHash(hashState, SLASH);
-  return foldPackNameHash(base, nameBytes);
+  return foldPathSegment(HASHER, hashState, nameBytes, depth === 0);
 }
 
 /** `tryEmit` guards the cap and the dedup set; a successful emit also
@@ -233,7 +229,7 @@ const walkInteresting = async (
       state,
       seenTrees,
       maxDepth,
-      PACK_NAME_HASH_SEED,
+      HASHER.seed,
     );
     for (const parent of commit.data.parents) {
       if (uninteresting.commits.has(parent)) state.boundary.add(parent);

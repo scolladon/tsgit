@@ -24,6 +24,34 @@ GIT_SPACE[SPACE] = 1;
 
 export const PACK_NAME_HASH_SEED = 0;
 
+/** The hash git gives an object it has no path for — commits, tags, a root
+ *  tree, and every object enumerated from a reachability bitmap, which
+ *  encodes types and bits but never names. Numerically equal to
+ *  `PACK_NAME_HASH_SEED` and semantically unrelated to it: the seed is where
+ *  a fold starts, this is the answer when there is nothing to fold. Naming
+ *  them apart keeps a call site honest about which one it means. */
+export const PACK_NAME_HASH_PATHLESS = 0;
+
+/** The path separator, folded between segments so an incremental
+ *  per-segment fold agrees byte-for-byte with folding the whole joined
+ *  path at once. */
+const SLASH = Uint8Array.of(0x2f);
+
+/** Fold one path segment onto a running state, inserting the separator for
+ *  every segment after the first. Shared by the tree walker and the bundle
+ *  enumerator so the two cannot drift — and taken through the `PathHasher`
+ *  seam rather than the concrete fold, so a second hash version stays the
+ *  one-module port it is meant to be. */
+export function foldPathSegment(
+  hasher: PathHasher,
+  state: number,
+  nameBytes: Uint8Array,
+  isRoot: boolean,
+): number {
+  const base = isRoot ? state : hasher.fold(state, SLASH);
+  return hasher.fold(base, nameBytes);
+}
+
 /** The one-method seam a byte-folding path hasher implements — the domain
  *  owns the pack-specific constant, so a walker can fold through it without
  *  importing outward. */
@@ -34,7 +62,12 @@ export interface PathHasher {
 
 export function foldPackNameHash(state: number, bytes: Uint8Array): number {
   let hash = state;
-  for (const c of bytes) {
+  // Indexed rather than `for...of`: iterating a Uint8Array goes through the
+  // TypedArray iterator protocol, allocating an iterator and a result object
+  // per byte until the function tiers up. This is the innermost loop of the
+  // whole packer.
+  for (let i = 0; i < bytes.length; i += 1) {
+    const c = bytes[i]!;
     if (GIT_SPACE[c] === 1) continue;
     hash = ((hash >>> 2) + (c << 24)) >>> 0;
   }

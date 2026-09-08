@@ -15,16 +15,15 @@ import {
   type Tree,
   type TreeEntry,
 } from '../../domain/objects/index.js';
-import type { PathHasher } from '../../domain/storage/pack-name-hash.js';
+import { foldPathSegment, type PathHasher } from '../../domain/storage/pack-name-hash.js';
 import type { Context } from '../../ports/context.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { readObject } from './read-object.js';
 import type { WalkTreeEntry, WalkTreeOptions } from './types.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
-/** git's own rule (`if (base->len) strbuf_addch(base, '/')`): a non-root
- *  frame folds this separator between its inherited state and the entry's
- *  own name bytes. Allocated once, never per entry. */
+/** The separator as bytes, for joining a full path in {@link joinPrefixBytes}.
+ *  The hashing counterpart lives with the fold in the domain. */
 const SLASH = Uint8Array.of(0x2f);
 
 interface WalkConfig {
@@ -69,8 +68,7 @@ function joinPrefixPath(prefix: FramePrefix, name: string): string {
  * — the authoritative on-disk value, never the derived, lossy `name` string.
  */
 function foldPrefixHash(hasher: PathHasher, prefix: FramePrefix, nameBytes: Uint8Array): number {
-  const state = prefix.text === '' ? prefix.hashState : hasher.fold(prefix.hashState, SLASH);
-  return hasher.fold(state, nameBytes);
+  return foldPathSegment(hasher, prefix.hashState, nameBytes, prefix.text === '');
 }
 
 /**
