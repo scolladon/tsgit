@@ -7,10 +7,11 @@
  * model — a gc mutates the store, so it cannot loop in place any more than
  * `commit` can); a REPEAT run over unreachable loose objects already folded
  * into a cruft pack (the carry-forward cost a first-run number would hide);
- * and a REPEAT run over the deep-delta-chain fixture — the design's cost
- * ceiling now that `buildPack` deltifies, since there is no "already
- * consolidated, skip it" branch (Pin W), so every run re-walks the window
- * and re-selects delta bases from scratch.
+ * and a REPEAT run over the deep-delta-chain fixture — there is still no
+ * "already consolidated, skip it" branch (Pin W), so every run re-walks the
+ * window and re-selects delta bases from scratch, but that search now
+ * FINDS deltas under git's own depth-scaled bound rather than mostly
+ * failing to find a base, as it did before ordering and the bound landed.
  *
  * The OPPOSITE cost ceiling — the window search's wasted-encode overhead
  * when every candidate loses (unrelated blob content, none of them beats

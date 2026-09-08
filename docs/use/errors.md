@@ -64,6 +64,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_PACK_ENTRY` | `reason` | Packfile entry malformed. |
 | `INVALID_PACK_HEADER` | `reason` | Packfile header malformed. |
 | `INVALID_PACK_INDEX` | `reason` | Pack index (`.idx`) malformed. |
+| `INVALID_PACK_INPUT` | `reason, present, absent` | `buildPack` given objects that mix `recency` presence — some carrying it, some not — which would make the emission comparator non-transitive; refused before any I/O. |
 | `INVALID_TREE_ENTRY` | `reason` | Tree object entry malformed. |
 | `OBJECT_TOO_LARGE` | `id, actualSize, limit` | Object exceeds `maxBytes` cap. |
 | `OBJECT_NOT_FOUND` | `id` | Id missing locally and (if applicable) the promisor remote did not deliver it. |
