@@ -1965,9 +1965,12 @@ thing that can exclude the row. This exact class has bitten this repo before on 
   keep the destructured `[budget, refDepth]` tuple rather than two mutable locals. Rewrite
   `tryCandidate`'s docblock.
 - **Measure.** Run the Part 7 driver; record the **S2** row.
-  ⚠️ **Prediction: a regression on `DELTA_CHAIN`** — chains end near 44, more bases, the ratio rises
-  toward ×1.0 **from below**. **If S2 *lowers* the ratio on `DELTA_CHAIN`, the §1f model is wrong:
-  stop and escalate.** `MEDIUM`: small movement either way.
+  ⚠️ **Structural prediction (this is the gate): `DELTA_CHAIN`'s max blob chain drops from 50 into
+  git's band (~43-44), with more bases. If it stays at 50, the §1f model is wrong: stop and
+  escalate.** The **ratio** direction is an open measurement — record whichever way it moves and do
+  not treat either direction as a refutation. tsgit enters this stage at ×1.07, *above* parity;
+  the older "a lowering refutes the model" condition assumed it would enter below parity and has
+  been retired. `MEDIUM`: small movement either way.
 
 ### Gate
 
