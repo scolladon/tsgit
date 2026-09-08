@@ -139,12 +139,15 @@ async function resolveWalkConfig(
 interface FrameStep {
   readonly path: FilePath;
   readonly entry: TreeEntry;
-  /** The child frame's inherited fold state — only when a `pathHasher` was
-   *  supplied; this IS the entry's own `nameHash`. */
-  readonly nameHash?: number;
-  /** The entry's own full path as bytes — only when `pathBytes` was
+  /** The child frame's inherited fold state, `undefined` when no `pathHasher`
+   *  was supplied; this IS the entry's own `nameHash`. Declared present-but-
+   *  undefined rather than optional: this type is private and destructured at
+   *  its only call site, so nothing observes key presence, and a fixed shape
+   *  keeps the hot per-entry path off a conditional spread. */
+  readonly nameHash: number | undefined;
+  /** The entry's own full path as bytes, `undefined` when `pathBytes` was not
    *  supplied; a fresh array, never a view onto `frame.framePrefix.bytes`. */
-  readonly pathBytes?: Uint8Array;
+  readonly pathBytes: Uint8Array | undefined;
 }
 
 /**
@@ -164,10 +167,10 @@ function nextFrameEntry(config: WalkConfig, counter: Counter, frame: WalkFrame):
   return {
     path,
     entry,
-    ...(config.pathHasher
-      ? { nameHash: foldPrefixHash(config.pathHasher, frame.framePrefix, entry.nameBytes) }
-      : {}),
-    ...(config.pathBytes ? { pathBytes: joinPrefixBytes(frame.framePrefix, entry.nameBytes) } : {}),
+    nameHash: config.pathHasher
+      ? foldPrefixHash(config.pathHasher, frame.framePrefix, entry.nameBytes)
+      : undefined,
+    pathBytes: config.pathBytes ? joinPrefixBytes(frame.framePrefix, entry.nameBytes) : undefined,
   };
 }
 
@@ -208,13 +211,19 @@ function buildYieldedEntry(
   nameHash: number | undefined,
   pathBytes: Uint8Array | undefined,
 ): WalkTreeEntry {
-  return {
-    path,
-    id: entry.id,
-    mode: entry.mode as FileMode,
-    ...(nameHash !== undefined ? { nameHash } : {}),
-    ...(pathBytes !== undefined ? { pathBytes } : {}),
-  };
+  // `WalkTreeEntry`'s optional keys ARE observed by consumers, so absence has
+  // to mean an absent key rather than an undefined value — but that is no
+  // reason to make the common path pay for it. Eleven of the twelve callers
+  // supply neither option, and this early return gives them the same object
+  // shape, and the same cost, they had before either existed.
+  const id = entry.id;
+  const mode = entry.mode as FileMode;
+  if (nameHash === undefined) {
+    if (pathBytes === undefined) return { path, id, mode };
+    return { path, id, mode, pathBytes };
+  }
+  if (pathBytes === undefined) return { path, id, mode, nameHash };
+  return { path, id, mode, nameHash, pathBytes };
 }
 
 /**
