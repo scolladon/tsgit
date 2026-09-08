@@ -8,6 +8,13 @@ export default defineConfig({
     // instrumentation amplifies tight-loop cost far past the 5s default — so
     // the suite uses a generous ceiling rather than spuriously timing out.
     testTimeout: 120_000,
+    // Restore every spy after each test, rather than trusting each test to do
+    // it in its own Assert block. A `mockRestore()` written as the last
+    // statement of a test never runs when an earlier assertion in that test
+    // fails, so one real failure leaks its spy into every later test in the
+    // file and reports as several — which turns a one-line diagnosis into a
+    // hunt through cascading noise.
+    restoreMocks: true,
     // Pin the timezone so calendar-component date arithmetic (approxidate's
     // ISO-form parsing) is deterministic across hosts and CI runners.
     //

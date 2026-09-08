@@ -659,7 +659,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     });
 
     describe('When the pack is installed in a repo and git fsck --strict runs', () => {
-      it('Then it exits 4 with pack-checksum / CRC / unpack findings on stderr', async () => {
+      it('Then it exits 6 with pack-checksum / CRC / unpack findings on stderr', async () => {
         // Arrange
         const deltaRow = verifyPackRows(tsgitGcDir, tsgitIdxPath).find((row) => row.isDelta);
         if (deltaRow === undefined) throw new Error('expected at least one delta row');
@@ -1146,9 +1146,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         // deltas, max blob chain 22 (recorded for the structural
         // comparison, not asserted equal — see the 45-version row above for
         // why git's own shape differs). The band below is this stage's own
-        // readout with headroom, not a guess: before this stage the chain
-        // saturated the flat cap at exactly 50 every time, which is
-        // precisely the regression this upper bound now excludes.
+        // readout with headroom, not a guess. Both bounds carry weight, and
+        // not the ones the shape suggests: on the pre-ordering writer this
+        // corpus measures a max chain of 15, so it is the LOWER bound that
+        // excludes the shape this change exists to remove. The upper bound
+        // excludes the opposite failure — the stage-1 state, where the flat
+        // cap saturated at exactly 50. Relaxing the lower bound would quietly
+        // re-admit the regression.
         expect(result.maxDepth).toBeGreaterThanOrEqual(40);
         expect(result.maxDepth).toBeLessThan(50);
         expect(result.baseCount).toBeGreaterThanOrEqual(1);

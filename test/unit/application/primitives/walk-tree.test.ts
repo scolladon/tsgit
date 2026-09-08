@@ -532,7 +532,13 @@ describe('walkTree', () => {
         const out = await collect(walkTree(ctx, id, { pathBytes: true }));
         // Assert
         expect(out[0]?.pathBytes).toEqual(entry.nameBytes);
-        expect(out[0]?.pathBytes).not.toBe(entry.nameBytes);
+        // `not.toBe` against the test-local entry can never fail: walkTree
+        // re-parses the tree from storage and mints its own TreeEntry, so the
+        // two are different objects whatever the implementation does. Assert
+        // the shape of a real copy instead — a view onto the parsed tree body
+        // would carry that body's offset and buffer length.
+        expect(out[0]?.pathBytes?.byteOffset).toBe(0);
+        expect(out[0]?.pathBytes?.buffer.byteLength).toBe(out[0]?.pathBytes?.byteLength);
       });
     });
   });

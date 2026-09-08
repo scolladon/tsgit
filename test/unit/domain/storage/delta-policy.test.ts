@@ -56,6 +56,27 @@ describe('comparePackEmissionOrder', () => {
     });
   });
 
+  describe('Given two keys of different types whose nameHash ordering disagrees with their type ordering', () => {
+    describe('When compared', () => {
+      it('Then the lower type rank still sorts first — type outranks nameHash', () => {
+        // Arrange — the two type rows above leave both keys at nameHash 0, so
+        // type never competes with a hash there and a comparator that ranked
+        // nameHash ABOVE type would pass them both. Here the blob carries the
+        // higher hash, which under `nameHash DESC` would sort it first if the
+        // hash outranked type; type says the commit leads.
+        const sut = comparePackEmissionOrder;
+        const commit = key('a', PACK_ENTRY_TYPE.COMMIT, 10, 5);
+        const blob = key('b', PACK_ENTRY_TYPE.BLOB, 10, 20);
+
+        // Act
+        const result = sut(commit, blob);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
   describe('Given two keys of the same type whose nameHash order disagrees with their size order', () => {
     describe('When compared', () => {
       it('Then the nameHash order decides, not size', () => {

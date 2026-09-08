@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildPack } from '../../../../src/application/primitives/build-pack.js';
 import * as configReadModule from '../../../../src/application/primitives/config-read.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as deltifyModule from '../../../../src/application/primitives/internal/deltify.js';
 import * as readObjectModule from '../../../../src/application/primitives/read-object.js';
 import { readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -576,6 +577,31 @@ describe('buildPack', () => {
         // Assert
         expect(second.bytes).toEqual(first.bytes);
         expect(second.sha).toBe(first.sha);
+      });
+    });
+  });
+
+  describe('Given delta:true', () => {
+    describe('When buildPack hands the input on to delta selection', () => {
+      it('Then deltifyEntries receives that same objects array by identity, not a copy', async () => {
+        // Arrange — a copy would be invisible to every value assertion in
+        // this file: the emitted pack is byte-identical either way. Only
+        // identity distinguishes them, and a per-object wrapper array on
+        // this path is exactly the allocation the input shape exists to
+        // avoid.
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(71, 300);
+        const idA = await writeBlob(ctx, shared);
+        const idB = await writeBlob(ctx, shared.slice(0, 200));
+        const objects = [{ id: idA }, { id: idB }];
+        const deltifySpy = vi.spyOn(deltifyModule, 'deltifyEntries');
+        const sut = buildPack;
+
+        // Act
+        await sut(ctx, { objects, delta: true });
+
+        // Assert
+        expect(deltifySpy.mock.calls[0]![1]).toBe(objects);
       });
     });
   });
