@@ -264,11 +264,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const ctx = await buildSeededContext();
         const contentA = pseudoRandomBytes(812, 90);
         const contentB = pseudoRandomBytes(813, 70);
-        const contentC = pseudoRandomBytes(814, 50);
+        const contentC = pseudoRandomBytes(814, 60);
         const idObjA = await writeBlob(ctx, contentA);
         const idObjB = await writeBlob(ctx, contentB);
         const idObjC = await writeBlob(ctx, contentC);
-        const idProbe = await writeBlob(ctx, contentB.slice(0, 32));
+        const idProbe = await writeBlob(ctx, contentB.slice(0, 50));
         const policy: DeltaPolicy = {
           enabled: true,
           window: 2,

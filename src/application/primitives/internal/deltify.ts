@@ -136,6 +136,13 @@ async function buildEmissionOrder(
  *  no-delta-yet case. */
 const NO_INCUMBENT_REF_DEPTH = 1;
 
+/** git's own `should_attempt_deltas`: an object this small is neither
+ *  offered as a delta target nor admitted to the window as a prospective
+ *  base — a delta's own header and instruction overhead can never pay for
+ *  itself against something this small, so the search is not worth
+ *  attempting either way. */
+const DELTA_FLOOR_BYTES = 50;
+
 /**
  * git's own `try_delta` byte budget: the size a candidate base at
  * `baseDepth` must fit its delta into, so that a deeper base has to earn its
@@ -400,6 +407,46 @@ function nextWindowState(
   return readmit(admitted, policy, base);
 }
 
+interface EmissionOutcome {
+  readonly result: DeltifiedEntry;
+  readonly state: WindowState;
+}
+
+/**
+ * One object's turn in the emission loop: search for a base (unless it is
+ * under the floor, in which case the search is skipped and it is emitted as
+ * a plain base), then fold it into the window — again skipped when under
+ * the floor, so it can never be offered to a later object either.
+ */
+async function processEmissionEntry(
+  ctx: Context,
+  key: EmissionEntry,
+  emissionIndex: number,
+  state: WindowState,
+  policy: DeltaPolicy,
+): Promise<EmissionOutcome> {
+  const content = key.content ?? (await readRawObject(ctx, key.id)).content;
+  const belowFloor = content.length < DELTA_FLOOR_BYTES;
+  const candidate = belowFloor
+    ? undefined
+    : selectBestCandidate(content, state.window, key.type, policy, ctx.hash.digestLength);
+  const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
+  const result: DeltifiedEntry = {
+    id: key.id,
+    entry: outcome.entry,
+    sourceIndex: key.sourceIndex,
+  };
+  if (belowFloor) return { result, state };
+  const pending: PendingMember = {
+    id: key.id,
+    type: key.type,
+    chainDepth: outcome.chainDepth,
+    content,
+    emissionIndex,
+  };
+  return { result, state: nextWindowState(state, policy, pending, outcome) };
+}
+
 export async function deltifyEntries(
   ctx: Context,
   objects: ReadonlyArray<PackObjectInput>,
@@ -409,24 +456,9 @@ export async function deltifyEntries(
   let state: WindowState = { window: [], residentBytes: 0 };
   const results: DeltifiedEntry[] = [];
   for (const [emissionIndex, key] of order.entries()) {
-    const content = key.content ?? (await readRawObject(ctx, key.id)).content;
-    const candidate = selectBestCandidate(
-      content,
-      state.window,
-      key.type,
-      policy,
-      ctx.hash.digestLength,
-    );
-    const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
-    results.push({ id: key.id, entry: outcome.entry, sourceIndex: key.sourceIndex });
-    const pending: PendingMember = {
-      id: key.id,
-      type: key.type,
-      chainDepth: outcome.chainDepth,
-      content,
-      emissionIndex,
-    };
-    state = nextWindowState(state, policy, pending, outcome);
+    const outcome = await processEmissionEntry(ctx, key, emissionIndex, state, policy);
+    results.push(outcome.result);
+    state = outcome.state;
   }
   return results;
 }

@@ -412,22 +412,24 @@ describe('deltifyEntries', () => {
   describe('Given a budget that fits two of three objects, once each one is charged for its content AND its built DeltaIndex', () => {
     describe('When deltifyEntries runs', () => {
       it('Then the oldest resident is evicted first', async () => {
-        // Arrange — obj1(60B) and obj2(50B) together fit the budget, charging
-        // each one's content length PLUS its DeltaIndex (heads + next) —
-        // the same total admitToWindow now applies. Admitting obj3(42B)
-        // forces eviction, and obj1 (oldest) goes first. probe1 shares
-        // obj1's pattern and must fail to find a candidate (its base was
-        // evicted); probe2 shares obj2's pattern and must succeed (its base
-        // survives).
+        // Arrange — obj1(110B) and obj2(100B) together fit the budget,
+        // charging each one's content length PLUS its DeltaIndex (heads +
+        // next) — the same total admitToWindow now applies. Admitting
+        // obj3(90B) forces eviction, and obj1 (oldest) goes first. probe1
+        // and probe2 are both above the 50-byte floor (unlike obj3, which
+        // stays above it too) and both strictly smaller than obj3, so they
+        // are the last two processed: probe1 shares obj1's pattern and must
+        // fail to find a candidate (its base was evicted); probe2 shares
+        // obj2's pattern and must succeed (its base survives).
         const ctx = await buildSeededContext();
-        const r1 = pseudoRandomBytes(101, 60);
-        const r2 = pseudoRandomBytes(202, 50);
-        const r3 = pseudoRandomBytes(303, 42);
+        const r1 = pseudoRandomBytes(101, 110);
+        const r2 = pseudoRandomBytes(202, 100);
+        const r3 = pseudoRandomBytes(303, 90);
         const id1 = await writeBlob(ctx, r1);
         const id2 = await writeBlob(ctx, r2);
         const id3 = await writeBlob(ctx, r3);
-        const idProbe2 = await writeBlob(ctx, r2.slice(0, 32));
-        const idProbe1 = await writeBlob(ctx, r1.slice(0, 30));
+        const idProbe2 = await writeBlob(ctx, r2.slice(0, 60));
+        const idProbe1 = await writeBlob(ctx, r1.slice(0, 50));
         const chargedWeight = (content: Uint8Array): number => {
           const index = deltaEncodeModule.createDeltaIndex(content);
           return content.length + index.heads.byteLength + index.next.byteLength;
@@ -1111,6 +1113,117 @@ describe('deltifyEntries', () => {
 
         // Assert
         expect(spy).toHaveBeenCalledTimes(2);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given two near-identical 49-byte objects and two near-identical 50-byte objects, each target an exact prefix of its own base', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the 49-byte target stays a base — the floor excludes it even though the bound alone would admit it — and the 50-byte target deltas', async () => {
+        // Arrange — targetN is an exact N-byte prefix of baseN (baseN
+        // padded past targetN's own length so DESC-size emission order
+        // admits the base first). A prefix match encodes as a single
+        // COPY(offset 0, size N) with no INSERT — header(2) + copy(2) = 4
+        // bytes for N < 256 — comfortably inside both no-incumbent bounds
+        // (sha1: floor(49/2)-20=4, floor(50/2)-20=5), so only the floor —
+        // never the bound — can be what excludes the 49-byte pair. This is
+        // the `<` vs `<=` killer on the floor comparison: an off-by-one
+        // (`<=`) would wrongly exclude the 50-byte pair too.
+        const ctx = await buildSeededContext();
+        const prefix49 = pseudoRandomBytes(930, 49);
+        const base49 = Uint8Array.from([...prefix49, ...pseudoRandomBytes(931, 10)]);
+        const prefix50 = pseudoRandomBytes(932, 50);
+        const base50 = Uint8Array.from([...prefix50, ...pseudoRandomBytes(933, 10)]);
+        const idBase49 = await writeBlob(ctx, base49);
+        const idTarget49 = await writeBlob(ctx, prefix49);
+        const idBase50 = await writeBlob(ctx, base50);
+        const idTarget50 = await writeBlob(ctx, prefix50);
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idBase49, idBase50, idTarget49, idTarget50].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
+
+        // Assert
+        expect(findEntry(result, idTarget49).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(findEntry(result, idTarget50).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a 49-byte object placed first via a nameHash tiebreak, and a 4,096-byte target built by tiling its exact content', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the target never deltas against it — an under-floor object is never admitted as a base, even for a target the search bound would legally allow', async () => {
+        // Arrange — nameHash sorts DESC ahead of size, so idUnder (49B,
+        // nameHash 1) is emitted BEFORE idTarget (4096B, nameHash 0)
+        // despite being far smaller — the only way to place a floor-
+        // excluded object ahead of a target it could otherwise base
+        // against. Were idUnder actually admitted, tiling its content
+        // across idTarget would resolve to a handful of cheap COPY
+        // instructions well inside the no-incumbent bound
+        // (floor(4096/2)-20=2028) — a candidate the bound itself would
+        // accept, not one it would refuse.
+        const ctx = await buildSeededContext();
+        const underContent = pseudoRandomBytes(940, 49);
+        const targetContent = Uint8Array.from(
+          { length: 4096 },
+          (_unused, i) => underContent[i % underContent.length]!,
+        );
+        const idUnder = await writeBlob(ctx, underContent);
+        const idTarget = await writeBlob(ctx, targetContent);
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [
+            { id: idUnder, nameHash: 1 },
+            { id: idTarget, nameHash: 0 },
+          ],
+          DEFAULT_POLICY,
+        );
+
+        // Assert
+        expect(findEntry(result, idTarget).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
+      });
+    });
+  });
+
+  describe('Given a 49-byte object placed first via a nameHash tiebreak, and a larger object that opens with its exact content', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then createDeltaIndex is never called for the under-floor object — its own admission is skipped, not merely its search', async () => {
+        // Arrange — idFollow (300B) opens with idUnder's own 49 bytes, so a
+        // delta would be available if idUnder had been admitted; instead,
+        // with idUnder excluded from admission entirely, createDeltaIndex
+        // is called exactly once — for idFollow's own, ordinary admission —
+        // never a second time for idUnder. This is the guard's second,
+        // independent effect: the prior case already proves the search is
+        // skipped for an under-floor object as a TARGET; this proves
+        // admission is skipped for it as a prospective BASE.
+        const ctx = await buildSeededContext();
+        const underContent = pseudoRandomBytes(941, 49);
+        const followContent = Uint8Array.from([...underContent, ...pseudoRandomBytes(942, 251)]);
+        const idUnder = await writeBlob(ctx, underContent);
+        const idFollow = await writeBlob(ctx, followContent);
+        const spy = vi.spyOn(deltaEncodeModule, 'createDeltaIndex');
+        const sut = deltifyEntries;
+
+        // Act
+        await sut(
+          ctx,
+          [
+            { id: idUnder, nameHash: 1 },
+            { id: idFollow, nameHash: 0 },
+          ],
+          DEFAULT_POLICY,
+        );
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(1);
         spy.mockRestore();
       });
     });
