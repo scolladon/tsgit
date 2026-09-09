@@ -730,6 +730,64 @@ describe('deltifyEntries', () => {
     });
   });
 
+  describe('Given a chainDepth-1 incumbent tried BEFORE a strictly shallower chainDepth-0 candidate, tying it exactly in raw delta length', () => {
+    describe('When deltifyEntries runs', () => {
+      it('Then the shallower candidate displaces the incumbent despite being tried second', async () => {
+        // Arrange — nameHash forces D, mid, deep, target processing in that
+        // exact order (sidestepping size-based emission-order interaction).
+        // `mid` deltas off `d` (chainDepth 1), promoting `d` to the window's
+        // most-recently-used slot. `deep` then deltas off `mid` (chainDepth
+        // 2), promoting `mid` in turn — so at target's turn the window tries
+        // `mid` (chainDepth 1) FIRST, setting the incumbent, `deep`
+        // (chainDepth 2, bound-squeezed, no match) SECOND, and `d`
+        // (chainDepth 0, strictly shallower) LAST. `d` and `mid` both open
+        // with the byte-identical `sharedRun` at offset 0, so their raw
+        // deltas against `target` are the same COPY(0,1800)+INSERT(target's
+        // own tail) shape — an exact length tie — with `d` strictly
+        // shallower. Per the same-size rule, `d` must displace `mid`.
+        const ctx = await buildSeededContext();
+        const sharedRun = pseudoRandomBytes(910, 1800);
+        const runM = pseudoRandomBytes(911, 600);
+        const tailD = pseudoRandomBytes(912, 100);
+        const tailMid = pseudoRandomBytes(913, 40);
+        const tailDeep = pseudoRandomBytes(914, 40);
+        const tailTarget = pseudoRandomBytes(915, 50);
+        const dContent = Uint8Array.from([...sharedRun, ...tailD]);
+        const midContent = Uint8Array.from([...sharedRun, ...runM, ...tailMid]);
+        const deepContent = Uint8Array.from([...runM, ...tailDeep]);
+        const targetContent = Uint8Array.from([...sharedRun, ...tailTarget]);
+        const idD = await writeBlob(ctx, dContent);
+        const idMid = await writeBlob(ctx, midContent);
+        const idDeep = await writeBlob(ctx, deepContent);
+        const idTarget = await writeBlob(ctx, targetContent);
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [
+            { id: idD, nameHash: 4 },
+            { id: idMid, nameHash: 3 },
+            { id: idDeep, nameHash: 2 },
+            { id: idTarget, nameHash: 1 },
+          ],
+          DEFAULT_POLICY,
+        );
+
+        // Assert — sanity: mid and deep landed at the depths the arrangement
+        // depends on, then the headline: target based on `d`, not `mid`.
+        const midIndex = result.findIndex((r) => r.id === idMid);
+        const deepIndex = result.findIndex((r) => r.id === idDeep);
+        expect(chainDepthOf(result, midIndex)).toBe(1);
+        expect(chainDepthOf(result, deepIndex)).toBe(2);
+        const targetIndex = result.findIndex((r) => r.id === idTarget);
+        expect((result[targetIndex]!.entry as { baseIndex: number }).baseIndex).toBe(
+          result.findIndex((r) => r.id === idD),
+        );
+      });
+    });
+  });
+
   describe('Given two chainDepth-1 candidates, both chained off a common ancestor, producing byte-identical raw deltas against the same target', () => {
     describe('When deltifyEntries runs', () => {
       it('Then the same-size rule keeps the more-recently-admitted candidate — equal depth never displaces a tie', async () => {
