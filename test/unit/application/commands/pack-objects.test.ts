@@ -233,6 +233,20 @@ describe('packObjects', () => {
         buildPackSpy.mockRestore();
         closureSpy.mockRestore();
       });
+
+      it('Then buildPack receives delta: true — pack-objects always deltifies', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = packObjects;
+
+        // Act
+        await sut(ctx, { wants: ['HEAD'] });
+
+        // Assert
+        expect(buildPackSpy.mock.calls[0]![1].delta).toBe(true);
+        buildPackSpy.mockRestore();
+      });
     });
   });
 
