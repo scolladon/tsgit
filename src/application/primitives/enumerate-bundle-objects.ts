@@ -145,6 +145,7 @@ const collectTreeObjects = async (
   if (depth > maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — resolveObject calls checkAborted at the start of every read, so the unconditional readObject two lines below throws the identical OPERATION_ABORTED
   if (ctx.signal?.aborted) throw operationAborted();
+  // Stryker disable next-line CallExpression: equivalent — objects.add(treeId) only feeds the wants-side `!config.uninteresting.has(treeId)` check (line 184 below), which is unreachable for any treeId also in seenTrees; seenTrees.add(treeId) two lines above always runs first for the same id, so uninteresting's tree-id membership never changes what emitTreeObjects decides
   objects.add(treeId);
   const treeObj = await readObject(ctx, treeId);
   if (treeObj.type !== 'tree') return;
@@ -207,6 +208,7 @@ const collectUninteresting = async (
   if (haves.length === 0) return { commits, objects };
   for await (const commit of walkCommits(ctx, { from: haves, ignoreMissing: true })) {
     commits.add(commit.id);
+    // Stryker disable next-line CallExpression: equivalent — uninteresting.objects is read back only for TREE ids (line 185) and per-entry BLOB ids inside a tree (line 196); commit ids are never looked up in it — walkInteresting bounds the wants-side commit walk on uninteresting.commits alone (its `until: [...uninteresting.commits]`), so a commit id missing from `objects` changes nothing observable
     objects.add(commit.id);
     await collectTreeObjects(ctx, commit.data.tree, objects, seenTrees, maxDepth);
   }

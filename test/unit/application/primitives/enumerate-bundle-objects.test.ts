@@ -886,6 +886,102 @@ describe('enumerateBundleObjects — haves-side shared-subtree dedup', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Haves-side tree walk: the seenTrees guard must fire on a DEEPER re-encounter
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — haves-side dedup on a deeper re-encounter of the same tree', () => {
+  describe('Given a haves tree where a shared subtree is reached shallowly first, then again past the depth cap through a deeper path', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then it completes — the deeper re-encounter is skipped by the seenTrees guard before the depth check ever runs', async () => {
+        // Arrange — 'a' sorts before 'z', so collectTreeObjects walks the
+        // shallow occurrence (depth 1) first and marks sharedLeaf seen. The
+        // 'z' chain reaches the SAME tree id again at depth 5, past
+        // maxTreeDepth=4. Without the seenTrees guard returning first, that
+        // second visit falls through to the depth check and throws.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const blob = await makeBlob(ctx, 'shared-leaf');
+        const sharedLeaf = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blob)]);
+        let deepChain: ObjectId = sharedLeaf;
+        for (let i = 0; i < 4; i++) {
+          deepChain = await makeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'z', deepChain)]);
+        }
+        const rootTree = await makeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'a', sharedLeaf),
+          treeEntry(FILE_MODE.DIRECTORY, 'z', deepChain),
+        ]);
+        const haveCommit = await makeCommit(ctx, rootTree, [], 'have', 1);
+        const wantBlob = await makeBlob(ctx, 'want');
+        const wantTree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'w.txt', wantBlob)]);
+        const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
+
+        // Act
+        let thrown: unknown;
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [haveCommit],
+        }).catch((err) => {
+          thrown = err;
+          return null;
+        });
+
+        // Assert
+        expect(thrown).toBeUndefined();
+        expect(result).not.toBeNull();
+        expect(idsOf(result!.objects)).toContain(wantBlob);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wants-side tree walk: the seenTrees guard must fire on a DEEPER re-encounter
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('enumerateBundleObjects — wants-side dedup on a deeper re-encounter of the same tree', () => {
+  describe('Given a wants tree where a shared subtree is reached shallowly first, then again past the depth cap through a deeper path', () => {
+    describe('When enumerateBundleObjects is called with haves=[]', () => {
+      it('Then it completes — the deeper re-encounter is skipped by the seenTrees guard before the depth check ever runs', async () => {
+        // Arrange — mirrors the haves-side dedup-on-deeper-re-encounter test
+        // above, but for emitTreeObjects (wants side): 'a' sorts before 'z',
+        // so the shallow occurrence (depth 1) is walked first and marks
+        // sharedLeaf seen; the 'z' chain reaches the SAME tree id again at
+        // depth 5, past maxTreeDepth=4. Without the seenTrees guard returning
+        // first, that second visit falls through to the depth check and throws.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const blob = await makeBlob(ctx, 'shared-leaf');
+        const sharedLeaf = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blob)]);
+        let deepChain: ObjectId = sharedLeaf;
+        for (let i = 0; i < 4; i++) {
+          deepChain = await makeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'z', deepChain)]);
+        }
+        const rootTree = await makeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'a', sharedLeaf),
+          treeEntry(FILE_MODE.DIRECTORY, 'z', deepChain),
+        ]);
+        const wantCommit = await makeCommit(ctx, rootTree, [], 'want', 1);
+
+        // Act
+        let thrown: unknown;
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [],
+        }).catch((err) => {
+          thrown = err;
+          return null;
+        });
+
+        // Assert
+        expect(thrown).toBeUndefined();
+        expect(result).not.toBeNull();
+        expect(idsOf(result!.objects)).toContain(wantCommit);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Name hash folding: emitTreeObjects folds git's pack_name_hash itself
 // ─────────────────────────────────────────────────────────────────────────────
 
