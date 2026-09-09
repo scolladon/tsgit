@@ -22,7 +22,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { AuthorIdentity, ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../src/domain/objects/index.js';
 import { treeEntry } from '../../src/domain/objects/tree.js';
-import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   disableAutoMaintenance,
@@ -32,6 +31,9 @@ import {
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 /**
  * Minimal `git-http-backend` CGI bridge — a condensed version of the pattern
@@ -200,7 +202,7 @@ const isBareAccordingToGit = (cwd: string): boolean =>
 /** Opens `cwd` and returns the rejection — fails the test if it resolves. */
 const openAndCatch = async (cwd: string): Promise<unknown> => {
   try {
-    await openRepository({ cwd });
+    await openTrackedRepository({ cwd });
   } catch (err) {
     return err;
   }
@@ -232,7 +234,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       bare = path.join(root, 'bare.git');
       runGit(['clone', '-q', '--bare', source, bare]);
       disableAutoMaintenance(bare);
-      repo = await openRepository({ cwd: bare });
+      repo = await openTrackedRepository({ cwd: bare });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -269,7 +271,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expectedHead = git(bare, 'rev-parse', 'HEAD').trim();
         // A fresh handle AFTER the git-side writes — the file's own discipline:
         // per-Context caches are only invalidated by tsgit's own writeObject.
-        const fresh = await openRepository({ cwd: bare });
+        const fresh = await openTrackedRepository({ cwd: bare });
 
         try {
           // Act
@@ -298,7 +300,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const [expectedGitDir, expectedCommonDir] = gitDirPair(cwd);
 
         // Act
-        const nested = await openRepository({ cwd });
+        const nested = await openTrackedRepository({ cwd });
         try {
           // Assert
           expect(nested.ctx.layout.gitDir).toBe(expectedGitDir);
@@ -327,7 +329,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       git(normal, 'add', 'a.txt');
       commit(normal, 'c1');
       dotGit = path.join(normal, '.git');
-      repo = await openRepository({ cwd: dotGit });
+      repo = await openTrackedRepository({ cwd: dotGit });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -424,7 +426,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expected = git(normal, 'rev-parse', '--show-toplevel').trim();
 
         // Act
-        const repo = await openRepository({ cwd: normal });
+        const repo = await openTrackedRepository({ cwd: normal });
         try {
           // Assert
           expect(repo.ctx.layout.workDir).toBe(await realpath(abs));
@@ -445,7 +447,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expected = git(normal, 'rev-parse', '--show-toplevel').trim();
 
         // Act
-        const repo = await openRepository({ cwd: normal });
+        const repo = await openTrackedRepository({ cwd: normal });
         try {
           // Assert
           expect(repo.ctx.layout.workDir).toBe(await realpath(rel));
@@ -467,7 +469,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expected = git(normal, 'rev-parse', '--show-toplevel').trim();
 
         // Act
-        const repo = await openRepository({ cwd: normal });
+        const repo = await openTrackedRepository({ cwd: normal });
         try {
           // Assert
           expect(repo.ctx.layout.workDir).toBe(await realpath(real));
@@ -491,7 +493,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         // Act
         let caught: unknown;
         try {
-          await openRepository({ cwd: normal });
+          await openTrackedRepository({ cwd: normal });
         } catch (err) {
           caught = err;
         }
@@ -526,7 +528,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         // Act
         let caught: unknown;
         try {
-          await openRepository({ cwd: normal });
+          await openTrackedRepository({ cwd: normal });
         } catch (err) {
           caught = err;
         }
@@ -569,7 +571,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const g = tryRunGitWithExit(['-C', normal, 'status'], { env: runGitEnv() });
 
         // Act
-        const repo = await openRepository({ cwd: normal });
+        const repo = await openTrackedRepository({ cwd: normal });
         let caught: unknown;
         try {
           await repo.status();
@@ -592,7 +594,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
     describe('When --is-bare-repository is queried', () => {
       it('Then both tools answer true', async () => {
         // Arrange & Act
-        const repo = await openRepository({ cwd: normal });
+        const repo = await openTrackedRepository({ cwd: normal });
 
         try {
           // Assert
@@ -621,7 +623,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       bare = path.join(root, 'bare.git');
       runGit(['clone', '-q', '--bare', source, bare]);
       disableAutoMaintenance(bare);
-      repo = await openRepository({ cwd: bare });
+      repo = await openTrackedRepository({ cwd: bare });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -951,7 +953,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       await writeFile(path.join(normal, 'a.txt'), 'needle\n');
       git(normal, 'add', 'a.txt');
       commit(normal, 'c1');
-      repo = await openRepository({ cwd: path.join(normal, '.git') });
+      repo = await openTrackedRepository({ cwd: path.join(normal, '.git') });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -1004,7 +1006,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const g = tryRunGitWithExit(['-C', bare, 'reset', '--mixed', 'HEAD'], {
           env: runGitEnv(),
         });
-        const repo = await openRepository({ cwd: bare });
+        const repo = await openTrackedRepository({ cwd: bare });
 
         // Act
         let caught: unknown;
@@ -1060,7 +1062,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         server = await serveProjectRoot(serverRoot);
         const source = path.join(root, 'source');
         await mkdir(source, { recursive: true });
-        const pusher = await openRepository({ cwd: source, ...httpOpenOptions });
+        const pusher = await openTrackedRepository({ cwd: source, ...httpOpenOptions });
         try {
           await pusher.init();
           await writeFile(path.join(source, 'a.txt'), 'pushed\n');
@@ -1095,7 +1097,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       describe('When a fresh tsgit open reads the now genuinely bare target', () => {
         it('Then the layout is bare with no work tree and the commit resolves', async () => {
           // Arrange
-          const reopened = await openRepository({ cwd: bare });
+          const reopened = await openTrackedRepository({ cwd: bare });
 
           try {
             // Act / Assert
@@ -1113,7 +1115,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
           // Arrange
           const fetchTarget = path.join(root, 'fetcher');
           await mkdir(fetchTarget, { recursive: true });
-          const fetcher = await openRepository({ cwd: fetchTarget, ...httpOpenOptions });
+          const fetcher = await openTrackedRepository({ cwd: fetchTarget, ...httpOpenOptions });
 
           try {
             // Act
@@ -1134,7 +1136,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
           // Arrange
           const bareClone = path.join(root, 'tsgit-bare-clone.git');
           await mkdir(bareClone, { recursive: true });
-          const cloner = await openRepository({
+          const cloner = await openTrackedRepository({
             cwd: bareClone,
             gitDir: bareClone,
             bare: true,
@@ -1193,7 +1195,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
 
         // Act
-        const repo = await openRepository({ cwd: wt });
+        const repo = await openTrackedRepository({ cwd: wt });
 
         try {
           // Assert
@@ -1211,7 +1213,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       it('Then it marks the main entry bare:true, matching git worktree list --porcelain', async () => {
         // Arrange
         const expectedPorcelain = git(wt, 'worktree', 'list', '--porcelain');
-        const repo = await openRepository({ cwd: wt });
+        const repo = await openTrackedRepository({ cwd: wt });
 
         try {
           // Act
@@ -1261,7 +1263,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expected = git(normal, 'rev-parse', '--show-toplevel').trim();
 
         // Act
-        const repo = await openRepository({ cwd: normal });
+        const repo = await openTrackedRepository({ cwd: normal });
 
         try {
           // Assert
@@ -1281,7 +1283,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expectedBare = isBareAccordingToGit(normal);
 
         // Act
-        const repo = await openRepository({ cwd: normal });
+        const repo = await openTrackedRepository({ cwd: normal });
 
         try {
           // Assert
@@ -1381,7 +1383,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expectedPorcelain = git(elsewhere, '--git-dir', gitDir, 'status', '--porcelain');
 
         // Act
-        const repo = await openRepository({ cwd: elsewhere, gitDir });
+        const repo = await openTrackedRepository({ cwd: elsewhere, gitDir });
 
         try {
           const status = await repo.status();
@@ -1453,7 +1455,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         ]).trim();
 
         // Act
-        const repo = await openRepository({
+        const repo = await openTrackedRepository({
           cwd: root,
           gitDir: bareForOurs,
           workDir: wtForOurs,
@@ -1477,7 +1479,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
     });
   });
 
-  describe('Given openRepository({cwd, gitDir, bare:true}) bootstrapping into an empty target (scenario J)', () => {
+  describe('Given openTrackedRepository({cwd, gitDir, bare:true}) bootstrapping into an empty target (scenario J)', () => {
     let root: string;
     let d: string;
 
@@ -1493,7 +1495,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
     describe('When repo.init({bare:true}) bootstraps and real git reads the result back', () => {
       it('Then git reports a bare repo whose config matches the pinned init --bare shape', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: d, gitDir: d, bare: true });
+        const repo = await openTrackedRepository({ cwd: d, gitDir: d, bare: true });
 
         try {
           // Act — bootstrap, then seed one commit through primitives; there
@@ -1544,7 +1546,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         // Arrange + Act — `d` was already bootstrapped as a bare repo above;
         // BARE_DIR discovery finds the same gitDir with no explicit gitDir
         // argument this time.
-        const reopened = await openRepository({ cwd: d });
+        const reopened = await openTrackedRepository({ cwd: d });
 
         try {
           // Assert
@@ -1605,7 +1607,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         });
 
         // Act
-        const repo = await openRepository({ cwd, ceilingDirs: ceilingList });
+        const repo = await openTrackedRepository({ cwd, ceilingDirs: ceilingList });
 
         try {
           // Assert
@@ -1625,7 +1627,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         });
 
         // Act
-        const repo = await openRepository({ cwd: repoRoot, ceilingDirs: [repoRoot] });
+        const repo = await openTrackedRepository({ cwd: repoRoot, ceilingDirs: [repoRoot] });
 
         try {
           // Assert
@@ -1665,7 +1667,10 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
             });
 
             // Act
-            const repo = await openRepository({ cwd: linkedCwd, ceilingDirs: [ceilingValue] });
+            const repo = await openTrackedRepository({
+              cwd: linkedCwd,
+              ceilingDirs: [ceilingValue],
+            });
 
             try {
               // Assert — both refuse: the ceiling resolves to the SAME
@@ -1730,7 +1735,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
 
     /** Reconstructs every rev-parse layout query from `repo.layout` + `repo.ctx.cwd` and asserts each against real git. */
     const assertReconstructedQueriesMatchGit = async (c: ReconstructionCase): Promise<void> => {
-      const repo = await openRepository(c.open);
+      const repo = await openTrackedRepository(c.open);
       try {
         const layout = repo.layout;
         const cwd = repo.ctx.cwd;
@@ -1929,7 +1934,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         // Act
         let caught: unknown;
         try {
-          await openRepository({ cwd: dir });
+          await openTrackedRepository({ cwd: dir });
         } catch (err) {
           caught = err;
         }
@@ -1950,7 +1955,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expectedGitDir = git(dir, 'rev-parse', '--path-format=absolute', '--git-dir').trim();
 
         // Act
-        const repo = await openRepository({ cwd: dir });
+        const repo = await openTrackedRepository({ cwd: dir });
 
         try {
           // Assert
@@ -1973,7 +1978,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const expectedGitDir = git(bait, 'rev-parse', '--path-format=absolute', '--git-dir').trim();
 
         // Act
-        const repo = await openRepository({ cwd: bait });
+        const repo = await openTrackedRepository({ cwd: bait });
 
         try {
           // Assert — both resolve the OUTER repo.
@@ -2000,7 +2005,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         ).trim();
 
         // Act
-        const repo = await openRepository({ cwd: inner });
+        const repo = await openTrackedRepository({ cwd: inner });
 
         try {
           // Assert
@@ -2022,7 +2027,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir'], { env: runGitEnv() });
 
         // Act
-        const repo = await openRepository({ cwd: dir });
+        const repo = await openTrackedRepository({ cwd: dir });
 
         try {
           // Assert — discovery AND the command-tier gate agree: the same
@@ -2055,7 +2060,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         ).trim();
 
         // Act
-        const repo = await openRepository({ cwd: inner });
+        const repo = await openTrackedRepository({ cwd: inner });
 
         try {
           // Assert — both climb to the enclosing repo.
@@ -2080,7 +2085,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         // Act
         let caught: unknown;
         try {
-          await openRepository({ cwd: inner });
+          await openTrackedRepository({ cwd: inner });
         } catch (err) {
           caught = err;
         }
@@ -2107,7 +2112,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         ).trim();
 
         // Act
-        const repo = await openRepository({ cwd: inner });
+        const repo = await openTrackedRepository({ cwd: inner });
 
         try {
           // Assert
@@ -2145,7 +2150,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         await mkdir(elsewhere, { recursive: true });
 
         // Act
-        const repo = await openRepository({ cwd: elsewhere, gitDir: malformed });
+        const repo = await openTrackedRepository({ cwd: elsewhere, gitDir: malformed });
         let caught: unknown;
         try {
           await repo.log();
@@ -2169,7 +2174,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const gitLog = tryRunGitWithExit(['--git-dir', missing, 'log'], { env: runGitEnv() });
 
         // Act
-        const repo = await openRepository({ cwd: root, gitDir: missing });
+        const repo = await openTrackedRepository({ cwd: root, gitDir: missing });
         let logErr: unknown;
         try {
           await repo.log();
@@ -2204,7 +2209,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         await mkdir(emptyDir, { recursive: true });
 
         // Act
-        const repo = await openRepository({ cwd: root, gitDir: emptyDir });
+        const repo = await openTrackedRepository({ cwd: root, gitDir: emptyDir });
         let logErr: unknown;
         try {
           await repo.log();
@@ -2236,7 +2241,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         // Act
         let caught: unknown;
         try {
-          await openRepository({ cwd: root, gitDir: plainFile });
+          await openTrackedRepository({ cwd: root, gitDir: plainFile });
         } catch (err) {
           caught = err;
         }
@@ -2261,7 +2266,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         });
 
         // Act
-        const repo = await openRepository({
+        const repo = await openTrackedRepository({
           cwd: lonelyRoot,
           workDir: wt,
           ceilingDirs: [lonelyRoot],

@@ -22,8 +22,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readShallow } from '../../src/application/primitives/shallow-file.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { isPerWorktreeRef } from '../../src/domain/refs/index.js';
-import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -106,7 +108,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         // non-discriminating: every assertion would pass with the option
         // dropped. The discriminating pins are scenarios B–H.
         const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
-        const repo = await openRepository({ cwd: wt, commonDir: path.join(main, '.git') });
+        const repo = await openTrackedRepository({ cwd: wt, commonDir: path.join(main, '.git') });
 
         try {
           // Act
@@ -134,7 +136,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       it('Then new refs, reflogs and packed-refs land under the override, the real common dir is left untouched, and per-worktree state stays in the admin dir', async () => {
         // Arrange
         const featureBefore = git(main, 'rev-parse', 'feature').trim();
-        const repo = await openRepository({
+        const repo = await openTrackedRepository({
           cwd: wt,
           gitDir: adminDir,
           workDir: wt,
@@ -221,7 +223,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         const jWt = path.join(root, 'j-isolated', 'wt');
         runGit(['-C', jMain, 'worktree', 'add', '-q', '-b', 'feature', jWt]);
         const jAdmin = path.join(jMain, '.git', 'worktrees', 'wt');
-        const repo = await openRepository({
+        const repo = await openTrackedRepository({
           cwd: jWt,
           gitDir: jAdmin,
           workDir: jWt,
@@ -283,7 +285,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       it('Then the object lands under the override, not the gitdir, and git reads it back', async () => {
         // Arrange
         const content = new TextEncoder().encode('scenario-b-blob\n');
-        const repo = await openRepository({ cwd: plainDir, commonDir: altDir });
+        const repo = await openTrackedRepository({ cwd: plainDir, commonDir: altDir });
 
         try {
           // Act
@@ -308,7 +310,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
     describe('When config.set runs through the override (scenario D)', () => {
       it('Then tsgit writes the override config, and git reports the key with the override as its origin', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: plainDir, commonDir: altDir });
+        const repo = await openTrackedRepository({ cwd: plainDir, commonDir: altDir });
 
         try {
           // Act
@@ -347,7 +349,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         const peerLog = tryRunGitWithExit(['-C', localPlain, 'log', '--format=%H'], {
           env: { ...runGitEnv(), GIT_COMMON_DIR: localAlt },
         });
-        const repo = await openRepository({ cwd: localPlain, commonDir: localAlt });
+        const repo = await openTrackedRepository({ cwd: localPlain, commonDir: localAlt });
         try {
           const shallowSet = await readShallow(repo.ctx);
           const log = await repo.log();
@@ -381,7 +383,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         const peerStatus = tryRunGitWithExit(['-C', localPlain, 'status', '--porcelain'], {
           env: { ...runGitEnv(), GIT_COMMON_DIR: localAlt },
         });
-        const repo = await openRepository({ cwd: localPlain, commonDir: localAlt });
+        const repo = await openTrackedRepository({ cwd: localPlain, commonDir: localAlt });
         try {
           const status = await repo.status();
 
@@ -434,7 +436,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         });
         await writeFile(path.join(localPlain, 'f.txt'), 'hello\n');
 
-        const repo = await openRepository({ cwd: localPlain, commonDir: localAlt });
+        const repo = await openTrackedRepository({ cwd: localPlain, commonDir: localAlt });
         try {
           await repo.add(['f.txt']);
           const staged = tryRunGitWithExit(['show', ':f.txt'], {
@@ -476,7 +478,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         await chmod(path.join(localPlain, '.git', 'hooks', 'pre-commit'), 0o755);
 
         // Act — tsgit
-        const repo = await openRepository({ cwd: localPlain, commonDir: localAlt });
+        const repo = await openTrackedRepository({ cwd: localPlain, commonDir: localAlt });
         try {
           await repo.primitives.runHook('pre-commit');
         } finally {
@@ -647,7 +649,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         const peer = tryRunGitWithExit(['-C', dir, 'status', '--porcelain'], {
           env: { ...runGitEnv(), GIT_COMMON_DIR: alt },
         });
-        const repo = await openRepository({ cwd: dir, commonDir: alt });
+        const repo = await openTrackedRepository({ cwd: dir, commonDir: alt });
 
         try {
           // Assert — git
@@ -675,7 +677,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         const peer = tryRunGitWithExit(['-C', dir, 'status', '--porcelain'], {
           env: { ...runGitEnv(), GIT_COMMON_DIR: alt },
         });
-        const repo = await openRepository({ cwd: dir, commonDir: alt });
+        const repo = await openTrackedRepository({ cwd: dir, commonDir: alt });
 
         try {
           // Assert
@@ -698,7 +700,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         const peer = tryRunGitWithExit(['-C', dir, 'rev-parse', '--show-object-format'], {
           env: { ...runGitEnv(), GIT_COMMON_DIR: alt },
         });
-        const repo = await openRepository({ cwd: dir, commonDir: alt });
+        const repo = await openTrackedRepository({ cwd: dir, commonDir: alt });
 
         try {
           // Assert
@@ -731,7 +733,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           ],
           { env: { ...runGitEnv(), GIT_COMMON_DIR: alt } },
         );
-        const repo = await openRepository({ cwd: dir, commonDir: alt });
+        const repo = await openTrackedRepository({ cwd: dir, commonDir: alt });
 
         try {
           // Assert
@@ -773,7 +775,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
             },
           },
         );
-        const repo = await openRepository({
+        const repo = await openTrackedRepository({
           cwd: elsewhere,
           gitDir: path.join(dir, '.git'),
           commonDir: alt,
@@ -804,7 +806,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           ['-C', dir, 'rev-parse', '--is-bare-repository', '--is-inside-work-tree'],
           { env: { ...runGitEnv(), GIT_COMMON_DIR: alt } },
         );
-        const repo = await openRepository({ cwd: dir, commonDir: alt });
+        const repo = await openTrackedRepository({ cwd: dir, commonDir: alt });
 
         try {
           // Assert
@@ -846,7 +848,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           const explicitPeer = tryRunGitWithExit(['rev-parse', 'HEAD'], {
             env: { ...runGitEnv(), GIT_DIR: gitDir, GIT_COMMON_DIR: badExplicit },
           });
-          const explicitRepo = await openRepository({
+          const explicitRepo = await openTrackedRepository({
             cwd: dir,
             gitDir,
             commonDir: badExplicit,
@@ -886,7 +888,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           });
           let discoveryCaught: unknown;
           try {
-            await openRepository({ cwd: discDir, commonDir: badDiscovery });
+            await openTrackedRepository({ cwd: discDir, commonDir: badDiscovery });
           } catch (err) {
             discoveryCaught = err;
           }

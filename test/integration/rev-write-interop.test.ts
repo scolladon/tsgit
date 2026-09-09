@@ -40,7 +40,6 @@ import { writeObject } from '../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { parsePackIndex, REV_HEADER_SIZE } from '../../src/domain/storage/index.js';
-import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import { startGitHttpBackend } from '../bench/support/http-backend-server.js';
 import {
@@ -51,7 +50,10 @@ import {
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
 import { DIGEST_LENGTH, packArtefactPaths } from './rev-bitmap-fixture-helpers.js';
+
+const openTrackedRepository = trackedRepositories();
 
 // Mirrors the fsck command's internal pack-rev-index exit bit — not
 // re-exported from its public surface, so pinned locally rather than
@@ -419,7 +421,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
       // repository pre-flight would fail here while X7 stayed green.
       const gitStatus = tryRunGitWithExit(['-C', dir, 'status', '--short']);
       expect(gitStatus.exitCode).toBe(0);
-      const repo = await openRepository({ cwd: dir });
+      const repo = await openTrackedRepository({ cwd: dir });
       const statusResult = await repo.status();
       expect(statusResult.clean).toBe(true);
       const logResult = await repo.log({ limit: 1 });
@@ -486,7 +488,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
       try {
         const workDir = await newRoot('x8-clone');
         const url = `http://127.0.0.1:${server.port}/origin.git`;
-        const sut = await openRepository({
+        const sut = await openTrackedRepository({
           cwd: workDir,
           allowInsecureHttp: true,
           config: {

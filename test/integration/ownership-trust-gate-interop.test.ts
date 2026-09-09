@@ -33,7 +33,6 @@ import type { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity, FilePath } from '../../src/domain/objects/index.js';
 import { isAllowlisted } from '../../src/domain/repository/allowlist.js';
 import { dubiousOwnership } from '../../src/domain/repository/error.js';
-import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   disableAutoMaintenance,
@@ -43,6 +42,9 @@ import {
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -341,7 +343,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // via the acceptance tier (assertAcceptedRepository).
         const dir = dirOf();
         const gitRefuses = bareRepositoryRefusesUnderGit(dir);
-        const repo = await openRepository({ cwd: dir, bareRepositories: 'explicit' });
+        const repo = await openTrackedRepository({ cwd: dir, bareRepositories: 'explicit' });
 
         // Act
         let caught: unknown;
@@ -382,8 +384,14 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Act
         const gitDotGitRefuses = bareRepositoryRefusesUnderGit(flipGit);
         const gitOtherRefuses = bareRepositoryRefusesUnderGit(flipGitOther);
-        const dotGitRepo = await openRepository({ cwd: flipGit, bareRepositories: 'explicit' });
-        const otherRepo = await openRepository({ cwd: flipGitOther, bareRepositories: 'explicit' });
+        const dotGitRepo = await openTrackedRepository({
+          cwd: flipGit,
+          bareRepositories: 'explicit',
+        });
+        const otherRepo = await openTrackedRepository({
+          cwd: flipGitOther,
+          bareRepositories: 'explicit',
+        });
         const otherCaught = await catchThrow(() => otherRepo.log());
 
         // Assert
@@ -408,7 +416,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
 
         // Act
-        const repo = await openRepository({ cwd: bare, bareRepositories: 'explicit' });
+        const repo = await openTrackedRepository({ cwd: bare, bareRepositories: 'explicit' });
         const caught = await catchThrow(() => repo.log());
         await repo.dispose();
 
@@ -426,7 +434,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       let configPath: string;
 
       beforeAll(async () => {
-        repo = await openRepository({ cwd: bare, bareRepositories: 'explicit' });
+        repo = await openTrackedRepository({ cwd: bare, bareRepositories: 'explicit' });
         configPath = path.join(bare, 'config');
       });
 
@@ -626,7 +634,7 @@ describe.skipIf(!GIT_ASSUME_DIFFERENT_OWNER)(
         // Arrange — the path tsgit's own layout resolution names, learned
         // from a TRUSTED open (path resolution needs no ownership at all).
         const cwd = cwdOf();
-        const trusted = await openRepository({ cwd });
+        const trusted = await openTrackedRepository({ cwd });
         const tsgitPath = trusted.layout.workDir ?? trusted.layout.gitDir;
         await trusted.dispose();
 
@@ -646,7 +654,7 @@ describe.skipIf(!GIT_ASSUME_DIFFERENT_OWNER)(
         const g = tryRunGitWithExit(['--git-dir', gitDir, 'log', '--oneline'], { env: ADO_ENV });
 
         // Act
-        const repo = await openRepository({ cwd: elsewhere, gitDir });
+        const repo = await openTrackedRepository({ cwd: elsewhere, gitDir });
 
         // Assert
         try {
@@ -799,11 +807,11 @@ describe.skipIf(!ALIEN_OWNER_AVAILABLE)(
       await rm(root, { recursive: true, force: true });
     });
 
-    describe('Given a real alien-owned repository, When unmodified git and unmodified openRepository(...).log() run', () => {
+    describe('Given a real alien-owned repository, When unmodified git and unmodified openTrackedRepository(...).log() run', () => {
       it('Then both refuse, naming the same path', async () => {
         // Arrange
         const g = tryRunGitWithExit(['-C', repoDir, 'log'], { env: runGitEnv() });
-        const repo = await openRepository({ cwd: repoDir });
+        const repo = await openTrackedRepository({ cwd: repoDir });
 
         // Act
         const caught = await catchThrow(() => repo.log());
@@ -827,7 +835,7 @@ describe.skipIf(!ALIEN_OWNER_AVAILABLE)(
         });
 
         // Act
-        const repo = await openRepository({ cwd: repoDir, trustedDirectories: [repoDir] });
+        const repo = await openTrackedRepository({ cwd: repoDir, trustedDirectories: [repoDir] });
 
         // Assert
         try {
@@ -845,7 +853,7 @@ describe.skipIf(!ALIEN_OWNER_AVAILABLE)(
         const g = tryRunGitWithExit(['-C', repoDir, 'init', '-q'], { env: runGitEnv() });
 
         // Act
-        const repo = await openRepository({ cwd: repoDir });
+        const repo = await openTrackedRepository({ cwd: repoDir });
 
         // Assert
         try {
@@ -869,7 +877,7 @@ describe.skipIf(!ALIEN_OWNER_AVAILABLE)(
           await writeFile(path.join(supersetDir, 'a.txt'), 'x\n');
           commit(supersetDir, 'c1');
           await chown(path.join(supersetDir, '.git'), alienUid, -1);
-          const repo = await openRepository({ cwd: supersetDir });
+          const repo = await openTrackedRepository({ cwd: supersetDir });
 
           // Act
           const caught = await catchThrow(() => repo.log());
@@ -929,7 +937,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange — executes the shim's '*' skip. Whether the skip is
           // CORRECT is proven in the canonicalisation unit test; this row only
           // proves the path runs and the option is accepted.
-          const sut = openRepository;
+          const sut = openTrackedRepository;
 
           // Act
           const result = await sut({ cwd: repoDir, trustedDirectories: ['*'] });
@@ -945,7 +953,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe('When it is opened', () => {
         it('Then the open succeeds with the option accepted — executing coverage, not a proof', async () => {
           // Arrange
-          const sut = openRepository;
+          const sut = openTrackedRepository;
 
           // Act
           const result = await sut({ cwd: repoDir, trust: 'always' });
@@ -963,7 +971,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange — executes the shim's `/*` prefix branch. Its correctness
           // is proven in the canonicalisation unit test, which can fail; this
           // row cannot.
-          const sut = openRepository;
+          const sut = openTrackedRepository;
 
           // Act
           const result = await sut({

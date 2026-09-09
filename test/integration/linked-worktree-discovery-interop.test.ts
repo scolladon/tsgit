@@ -20,9 +20,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
-import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -128,7 +130,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       wt = path.join(root, 'wt');
       git(main, 'worktree', 'add', '-q', wt, 'HEAD~1');
       await mkdir(path.join(wt, 'sub', 'dir'), { recursive: true });
-      repo = await openRepository({ cwd: wt });
+      repo = await openTrackedRepository({ cwd: wt });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -204,7 +206,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
 
         // Act
-        const nested = await openRepository({ cwd: sub });
+        const nested = await openTrackedRepository({ cwd: sub });
         try {
           // Assert
           expect(nested.ctx.layout.gitDir).toBe(expectedGitDir);
@@ -283,7 +285,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         // Arrange
         const expectedSubHead = git(submodulePath, 'rev-parse', 'HEAD').trim();
         const superprojectHead = git(mainDir, 'rev-parse', 'HEAD').trim();
-        const repo = await openRepository({ cwd: submodulePath });
+        const repo = await openTrackedRepository({ cwd: submodulePath });
 
         try {
           // Act
@@ -321,7 +323,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       it('Then commonDir is absent and gitDir matches git --git-dir', async () => {
         // Arrange
         const [expectedGitDir] = gitDirPair(workDir);
-        const repo = await openRepository({ cwd: workDir });
+        const repo = await openTrackedRepository({ cwd: workDir });
 
         try {
           // Act
@@ -338,7 +340,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       it('Then revParse(HEAD) matches git rev-parse HEAD', async () => {
         // Arrange
         const expected = git(workDir, 'rev-parse', 'HEAD').trim();
-        const repo = await openRepository({ cwd: workDir });
+        const repo = await openTrackedRepository({ cwd: workDir });
 
         try {
           // Act
@@ -357,7 +359,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         // Arrange — the divergence fix: a separate-git-dir main worktree has
         // no `/.git` suffix to strip, so git reports the gitdir itself.
         const expected = parseWorktreePorcelain(git(workDir, 'worktree', 'list', '--porcelain'));
-        const repo = await openRepository({ cwd: workDir });
+        const repo = await openTrackedRepository({ cwd: workDir });
 
         try {
           // Act
@@ -407,7 +409,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
     /** Opens `dir` and returns the rejection — fails the test if it resolves. */
     const openAndCatch = async (dir: string): Promise<unknown> => {
       try {
-        await openRepository({ cwd: dir });
+        await openTrackedRepository({ cwd: dir });
       } catch (err) {
         return err;
       }
@@ -478,7 +480,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         const root = await mkRoot('h');
         const mainDir = path.join(root, 'main');
         await mkdir(mainDir, { recursive: true });
-        const repo = await openRepository({ cwd: mainDir });
+        const repo = await openTrackedRepository({ cwd: mainDir });
         try {
           await repo.init();
           await writeFile(path.join(mainDir, 'a.txt'), 'x\n');
@@ -488,7 +490,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
 
           // Act
           await repo.worktree.add({ path: wt, branch: 'wt' });
-          const opened = await openRepository({ cwd: wt });
+          const opened = await openTrackedRepository({ cwd: wt });
           try {
             const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
 
@@ -540,7 +542,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       git(wt, 'tag', 'extra-tag');
       extraTagId = git(wt, 'rev-parse', 'extra-tag').trim();
 
-      repo = await openRepository({ cwd: wt });
+      repo = await openTrackedRepository({ cwd: wt });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -595,7 +597,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       root = await mkRoot('c');
       main = path.join(root, 'main');
       await mkdir(main, { recursive: true });
-      const repo = await openRepository({ cwd: main });
+      const repo = await openTrackedRepository({ cwd: main });
       try {
         await repo.init();
         await writeFile(path.join(main, 'a.txt'), 'one\n');
@@ -616,7 +618,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       it('Then new objects/config/stash/refs land in the common dir, HEAD/index stay in the admin dir, and git reads the moved branch tip', async () => {
         // Arrange
         const [gitDir, commonDir] = gitDirPair(wt);
-        const repo = await openRepository({ cwd: wt });
+        const repo = await openTrackedRepository({ cwd: wt });
 
         try {
           // Act

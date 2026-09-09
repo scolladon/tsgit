@@ -19,8 +19,10 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { configGet, configGetRegexp, configList } from '../../src/application/commands/config.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
-import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -121,7 +123,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
         initRepo(ours);
         await stageFile(ours);
         await writeFile(path.join(ours, '.git', 'config'), ABSENT_USER_FIXTURE);
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
 
         // Act
         let caught: unknown;
@@ -197,7 +199,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
           // Act
           const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.push({ remote: 'origin' });
@@ -226,7 +228,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
         // Arrange
         initRepo(ours);
         await writeFile(path.join(ours, '.git', 'config'), ABSENT_REMOTE_URL_FIXTURE);
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
 
         // Act
         let caught: unknown;
@@ -249,7 +251,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
         // Arrange
         initRepo(ours);
         await writeFile(path.join(ours, '.git', 'config'), ABSENT_REMOTE_URL_FIXTURE);
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
 
         // Act
         let caught: unknown;
@@ -314,7 +316,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
           // Act
           const g = tryRunGit(['-C', ours, 'pull'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.pull({});
@@ -343,7 +345,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
         // Arrange
         initRepo(ours);
         await writeFile(path.join(ours, '.git', 'config'), ABSENT_BRANCH_UPSTREAM_FIXTURE);
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
 
         // Act
         let caught: unknown;
@@ -367,7 +369,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
     fixture: string;
     line: number;
     gitArgs: string[];
-    run: (repo: Awaited<ReturnType<typeof openRepository>>) => Promise<unknown>;
+    run: (repo: Awaited<ReturnType<typeof openTrackedRepository>>) => Promise<unknown>;
     stage?: boolean;
     label: string;
   };
@@ -456,7 +458,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
             await stageFile(ours);
           }
           await writeFile(path.join(ours, '.git', 'config'), fixture);
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -495,7 +497,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
           // Act — run both git and tsgit against the same repo
           const g = tryRunGit(['-C', ours, ...gitArgs], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await run(repo);
@@ -688,7 +690,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
       it('Then tsgit throws CONFIG_MISSING_VALUE with key merge.mydriver.name and line 5', async () => {
         // Arrange
         await writeBothConfig(VALUELESS_MERGE_NAME_VALUED_DRIVER_FIXTURE);
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
 
         // Act
         let caught: unknown;
@@ -736,7 +738,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
         const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
           env: MERGE_AUTHOR_ENV,
         });
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
         let caught: unknown;
         try {
           await repo.merge.run({ rev: 'theirs', message: 'm' });
@@ -817,7 +819,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
         async ({ fixture, key, line }) => {
           // Arrange
           await writeBothConfig(fixture);
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -854,7 +856,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
         const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
           env: MERGE_AUTHOR_ENV,
         });
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
         const result = await repo.merge.run({ rev: 'theirs', message: 'm' });
 
         // Assert — no missing-value death on git; tsgit reaches the built-in text conflict
@@ -887,7 +889,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
           const g = tryRunGit(['-C', peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
             env: MERGE_AUTHOR_ENV,
           });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.merge.run({ rev: 'theirs', message: 'm' });
@@ -916,7 +918,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — merge driver'
         // Arrange — no driver config: mydriver falls back to the built-in text
         // driver, which conflicts on the whole-file divergence (no death).
         await writeBothConfig(ABSENT_MERGE_DRIVER_FIXTURE);
-        const repo = await openRepository({ cwd: ours });
+        const repo = await openTrackedRepository({ cwd: ours });
 
         // Act
         let caught: unknown;
@@ -1030,7 +1032,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe('When tsgit merge engages the driver', () => {
         it('Then tsgit throws CONFIG_MISSING_VALUE with key merge.custom.driver and the same line', async () => {
           // Arrange
-          const repo = await openRepository({ cwd: m4Ours });
+          const repo = await openTrackedRepository({ cwd: m4Ours });
 
           // Act
           let caught: unknown;
@@ -1061,7 +1063,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           const g = tryRunGit(['-C', m4Peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
             env: MERGE_AUTHOR_ENV,
           });
-          const repo = await openRepository({ cwd: m4Ours });
+          const repo = await openTrackedRepository({ cwd: m4Ours });
           let caught: unknown;
           try {
             await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
@@ -1102,7 +1104,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         it('Then tsgit merge succeeds and does not raise CONFIG_MISSING_VALUE', async () => {
           // Arrange
-          const repo = await openRepository({ cwd: ffOurs });
+          const repo = await openTrackedRepository({ cwd: ffOurs });
 
           // Act
           let caught: unknown;
@@ -1249,7 +1251,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule url
         // Arrange
         const clone = fixture.freshClone();
         await writeFile(path.join(clone, '.git', 'config'), VALUELESS_SUBMODULE_URL_FIXTURE);
-        const repo = await openRepository({ cwd: clone });
+        const repo = await openTrackedRepository({ cwd: clone });
 
         // Act
         let caught: unknown;
@@ -1285,7 +1287,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule url
           ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
           { env: SUBMODULE_AUTHOR_ENV },
         );
-        const repo = await openRepository({ cwd: clone });
+        const repo = await openTrackedRepository({ cwd: clone });
         let caught: unknown;
         try {
           await repo.submodule.update({});
@@ -1336,7 +1338,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule url
         // Arrange
         const clone = fixture.freshClone();
         await writeFile(path.join(clone, '.git', 'config'), ABSENT_SUBMODULE_URL_FIXTURE);
-        const repo = await openRepository({ cwd: clone });
+        const repo = await openTrackedRepository({ cwd: clone });
 
         // Act
         let caught: unknown;
@@ -1510,7 +1512,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule upd
 
           // Act
           subGit(gitClone, 'submodule', 'update');
-          const repo = await openRepository({ cwd: tsgitClone });
+          const repo = await openTrackedRepository({ cwd: tsgitClone });
           await repo.submodule.update({});
 
           // Assert — same submodule HEAD, and it is the precedence-decided one
@@ -1548,7 +1550,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule upd
         // Arrange
         const clone = fixture.driftedClone();
         await writeFile(path.join(clone, '.git', 'config'), fixtureText());
-        const repo = await openRepository({ cwd: clone });
+        const repo = await openTrackedRepository({ cwd: clone });
 
         // Act
         let caught: unknown;
@@ -1584,7 +1586,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule upd
           ['-c', 'protocol.file.allow=always', '-C', clone, 'submodule', 'update'],
           { env: SUBMODULE_AUTHOR_ENV },
         );
-        const repo = await openRepository({ cwd: clone });
+        const repo = await openTrackedRepository({ cwd: clone });
         let caught: unknown;
         try {
           await repo.submodule.update({});
@@ -1630,7 +1632,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule upd
         // Arrange — .gitmodules update=none, config has a valued url and no update
         const clone = fixture.driftedClone();
         await setUpdateLine(path.join(clone, '.gitmodules'), gitmodulesBase, 'none');
-        const repo = await openRepository({ cwd: clone });
+        const repo = await openTrackedRepository({ cwd: clone });
 
         // Act
         const result = await repo.submodule.update({});
@@ -1678,7 +1680,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop — submodule upd
             { env: SUBMODULE_AUTHOR_ENV },
           );
           // Act — tsgit
-          const repo = await openRepository({ cwd: clone });
+          const repo = await openTrackedRepository({ cwd: clone });
           let caught: unknown;
           try {
             await repo.submodule.update({});
@@ -1796,7 +1798,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           it('Then tsgit status refuses with CONFIG_MISSING_VALUE', async () => {
             // Arrange
             await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
-            const repo = await openRepository({ cwd: ours });
+            const repo = await openTrackedRepository({ cwd: ours });
 
             // Act
             let caught: unknown;
@@ -1813,7 +1815,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           it('Then tsgit log refuses with CONFIG_MISSING_VALUE', async () => {
             // Arrange
             await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
-            const repo = await openRepository({ cwd: ours });
+            const repo = await openTrackedRepository({ cwd: ours });
 
             // Act
             let caught: unknown;
@@ -1832,7 +1834,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             await writeFile(path.join(ours, 'r.txt'), 'changed\n');
             runGit(['-C', ours, 'add', 'r.txt']);
             await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
-            const repo = await openRepository({ cwd: ours });
+            const repo = await openTrackedRepository({ cwd: ours });
 
             // Act
             let caught: unknown;
@@ -1849,7 +1851,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           it('Then tsgit branch.list refuses with CONFIG_MISSING_VALUE (ref-listing breadth)', async () => {
             // Arrange
             await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
-            const repo = await openRepository({ cwd: ours });
+            const repo = await openTrackedRepository({ cwd: ours });
 
             // Act
             let caught: unknown;
@@ -1866,7 +1868,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           it('Then tsgit tag.list refuses with CONFIG_MISSING_VALUE (ref-listing breadth)', async () => {
             // Arrange
             await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture(key));
-            const repo = await openRepository({ cwd: ours });
+            const repo = await openTrackedRepository({ cwd: ours });
 
             // Act
             let caught: unknown;
@@ -1888,7 +1890,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
             // Act — run both git and tsgit on the same fixture
             const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-            const repo = await openRepository({ cwd: ours });
+            const repo = await openTrackedRepository({ cwd: ours });
             let caught: unknown;
             try {
               await repo.status();
@@ -1978,7 +1980,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2010,7 +2012,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2036,7 +2038,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         it('Then it does not throw CONFIG_MISSING_VALUE (the gate no-ops on valued)', async () => {
           // Arrange
           await writeFile(path.join(ours, '.git', 'config'), '[core]\n\texcludesfile = /tmp/x\n');
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2104,7 +2106,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             path.join(ours, '.git', 'config'),
             valuelessIntFixture('loosecompression'),
           );
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2130,7 +2132,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             path.join(ours, '.git', 'config'),
             valuelessIntFixture('loosecompression'),
           );
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2151,7 +2153,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             path.join(ours, '.git', 'config'),
             valuelessIntFixture('loosecompression'),
           );
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2177,7 +2179,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act — run both tools on the same fixture
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2208,7 +2210,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         it('Then the string key alone refuses CONFIG_MISSING_VALUE (two-line, with at line)', async () => {
           // Arrange — string key only, valued int
           await writeFile(path.join(ours, '.git', 'config'), valuelessCoreFixture('excludesfile'));
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2261,7 +2263,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         it('Then neither git nor tsgit refuses (absent is distinct from valueless)', async () => {
           // Arrange — standard init config has no loosecompression
           // (config is as git init wrote it)
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2290,7 +2292,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2322,7 +2324,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2372,7 +2374,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2405,7 +2407,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2439,7 +2441,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2468,7 +2470,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.status();
@@ -2497,7 +2499,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             path.join(ours, '.git', 'config'),
             '[core]\n\tloosecompression = 1\n\tcompression = 99\n',
           );
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2524,7 +2526,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             path.join(ours, '.git', 'config'),
             '[core]\n\texcludesfile\n\tloosecompression = abc\n',
           );
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2552,7 +2554,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             path.join(ours, '.git', 'config'),
             '[core]\n\tloosecompression = abc\n\texcludesfile\n',
           );
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2631,7 +2633,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           await writeFile(path.join(ours, 'r.txt'), 'changed\n');
           runGit(['-C', ours, 'add', 'r.txt']);
           await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2660,7 +2662,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act — run both git and tsgit on the same fixture
           const g = tryRunGit(['-C', ours, 'commit', '-m', 'x'], { env: CORE_AUTHOR_ENV });
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
           let caught: unknown;
           try {
             await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
@@ -2694,7 +2696,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // branch.list resolves no hook, so tsgit does NOT refuse. Agreement with
           // git is deliberately NOT asserted here.
           await writeFile(path.join(ours, '.git', 'config'), VALUELESS_HOOKSPATH_FIXTURE);
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2744,7 +2746,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             path.join(ours, '.git', 'config'),
             '[core]\n\trepositoryformatversion = 0\n',
           );
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2815,7 +2817,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange
           await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('excludesFile'));
           await writeFile(path.join(ours, 'ignoreme.log'), 'noise\n');
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           const result = await repo.status();
@@ -2834,7 +2836,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act — empty: git exits 0, tsgit does not raise
           const gEmpty = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
-          const emptyRepo = await openRepository({ cwd: ours });
+          const emptyRepo = await openTrackedRepository({ cwd: ours });
           let emptyCaught: unknown;
           try {
             await emptyRepo.status();
@@ -2854,7 +2856,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act — valueless: git dies 128, tsgit refuses
           const gValueless = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
-          const valuelessRepo = await openRepository({ cwd: ours });
+          const valuelessRepo = await openTrackedRepository({ cwd: ours });
           let valuelessCaught: unknown;
           try {
             await valuelessRepo.status();
@@ -2909,7 +2911,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         it('Then tsgit status succeeds (does not raise)', async () => {
           // Arrange
           await writeFile(path.join(ours, '.git', 'config'), emptyCoreFixture('attributesFile'));
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;
@@ -2976,7 +2978,7 @@ describe.skipIf(process.platform === 'win32' || !GIT_AVAILABLE)(
           await writeFile(path.join(ours, 'r.txt'), 'changed\n');
           runGit(['-C', ours, 'add', 'r.txt']);
           await writeFile(path.join(ours, '.git', 'config'), EMPTY_HOOKSPATH_FIXTURE);
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act — the node hook runner is wired, so a real hook would fire if found
           const result = await repo.commit({ message: 'x', author: CORE_COMMIT_AUTHOR });
@@ -3004,7 +3006,7 @@ describe.skipIf(process.platform === 'win32' || !GIT_AVAILABLE)(
           // Arrange — no hooksPath written: absent fires the default .git/hooks dir
           await writeFile(path.join(ours, 'r.txt'), 'changed\n');
           runGit(['-C', ours, 'add', 'r.txt']);
-          const repo = await openRepository({ cwd: ours });
+          const repo = await openTrackedRepository({ cwd: ours });
 
           // Act
           let caught: unknown;

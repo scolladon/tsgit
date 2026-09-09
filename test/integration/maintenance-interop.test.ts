@@ -34,7 +34,6 @@ import {
   parsePackIndex,
 } from '../../src/domain/storage/index.js';
 import { allObjectIds, entryOffsets } from '../../src/domain/storage/pack-index.js';
-import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -43,6 +42,9 @@ import {
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -1309,13 +1311,13 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       git(twin.oursDir, 'worktree', 'repair', 'wt1');
 
       // Act — git gc from the peer's linked worktree; tsgit's maintenance
-      // via `openRepository({ cwd })`, the ONLY entry point that discovers a
+      // via `openTrackedRepository({ cwd })`, the ONLY entry point that discovers a
       // linked worktree's `gitdir:` pointer and commondir — `createNodeContext`
       // (every other row's `runOursGc`) assumes `workDir/.git` is a plain
       // directory and cannot open a worktree path at all.
       runPeerGc(path.join(twin.peerDir, 'wt1'), extraConfig);
       await setOursGcConfig(twin.oursDir, extraConfig);
-      const repo = await openRepository({ cwd: path.join(twin.oursDir, 'wt1') });
+      const repo = await openTrackedRepository({ cwd: path.join(twin.oursDir, 'wt1') });
       await repo.maintenance({ tasks: ['gc'] });
       await repo.dispose();
 
