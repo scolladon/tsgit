@@ -64,6 +64,15 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   transient reason`, so the whole `e2e (webkit)` job goes red (reproduced twice on PR #295;
   green on the previous build; Chromium and Firefox unaffected). Unpin once a later release
   passes the WebKit e2e job.
+  **`@types/node` is skipped**: DefinitelyTyped publishes one stream per Node major and
+  points the `latest` dist-tag at the LTS line, which is `22.20.2`, while this repo tracks
+  the TypeScript-aligned `ts6.0` tag at `26.5.1` — correct for TypeScript 6.x and Node 26.
+  `npm outdated` compares the installed version against `latest`, so a repo on the 26.x
+  stream prints a row permanently: no bump can clear it, and matching `latest` would mean
+  downgrading four majors below the runtime. Same class as `@cloudflare/workers-types` — a
+  publisher's tag choice, not a freshness signal. The row appeared between 2026-09-07 (CI
+  `deps` green at 26.4.1) and 2026-09-09 with no change on our side. Remove the skip if `latest` ever
+  tracks the newest major again.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,

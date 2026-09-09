@@ -840,7 +840,7 @@
       "output": []
     },
     "check:deps": {
-      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^jscpd \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -v \"^@cloudflare/workers-types \" | grep -v \"^@playwright/test \" | grep -q .'",
+      "command": "sh -c 'npm outdated || ! npm outdated 2>/dev/null | tail -n +2 | grep -v \"^@ls-lint/ls-lint \" | grep -v \"^typescript \" | grep -v \"^knip \" | grep -v \"^jscpd \" | grep -v \"^vitest \" | grep -v \"^@vitest/coverage-v8 \" | grep -v \"^@cloudflare/workers-types \" | grep -v \"^@playwright/test \" | grep -v \"^@types/node \" | grep -q .'",
       "files": [
         "package.json",
         "package-lock.json"
@@ -1372,7 +1372,7 @@
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/typescript-checker": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
-    "@types/node": "26.5.0",
+    "@types/node": "26.5.1",
     "@vitest/coverage-v8": "4.1.11",
     "cspell": "10.3.0",
     "dependency-cruiser": "18.2.0",
