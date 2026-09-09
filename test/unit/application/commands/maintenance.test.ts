@@ -3696,6 +3696,40 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given an unreachable object living BOTH loose AND inside a *.keep-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then no cruft pack is written for it — the *.keep total exclusion wins even for the loose duplicate', async () => {
+        // Arrange — same *.keep-from-cruft conversion as the single-homed
+        // case above, but the object is ALSO re-materialised loose before
+        // the second gc run. That loose copy is the ONLY route by which
+        // this object enters cruftCandidatesOf's `owned` iteration at all —
+        // an object living purely inside a kept pack never becomes a
+        // cruftCandidates member in the first place (see the test above),
+        // so a kept-but-never-otherwise-owned object can't exercise this
+        // guard. With the guard defeated, the loose duplicate would be
+        // pushed onto cruftCandidates and a fresh cruft pack written for it.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await writeLooseBlob(ctx, 'kept-unreachable-dual');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        await ctx.fs.rm(`${packDir}/pack-${first.cruftPackId}.mtimes`);
+        await ctx.fs.write(`${packDir}/pack-${first.cruftPackId}.keep`, new Uint8Array(0));
+        const blobObj = await readObject(ctx, blobId, { verifyHash: true });
+        await writeObject(ctx, blobObj);
+        expect(await isLoose(ctx, blobId)).toBe(true);
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a pack carrying both .keep and .mtimes markers', () => {
     describe('When gc runs again', () => {
       it('Then every one of its files survives — never treated as existing cruft, never retired', async () => {
