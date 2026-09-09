@@ -242,8 +242,8 @@ const writeSiblingsGiven = async (
  * sentinel, then — unless `pack.writeReverseIndex` refuses it — `.rev` last.
  * The `.pack` file itself is assumed already in place under `packFilePath`;
  * a caller that quarantines and renames its own pack bytes (fetch-pack)
- * reuses this instead of `writePackArtifacts`, which would re-write a
- * `.pack` that already exists and fail with `FILE_EXISTS`.
+ * reuses this instead of `writePackArtifacts`, which would otherwise
+ * re-write a `.pack` the caller has already put in place.
  */
 export const writePackSiblingArtifacts = async (
   ctx: Context,
@@ -268,7 +268,13 @@ export const writePackArtifacts = async (
 ): Promise<WrittenPackArtifacts> => {
   const wantRev = await writeReverseIndex(ctx);
   const packPath = packFilePath(input.packDir, input.packSha);
-  await ctx.fs.writeExclusive(packPath, input.packBytes);
+  // Same rule as the siblings below, and git's own: a byte-identical
+  // occupant is kept, anything else is a mismatch. A pack name IS its
+  // content hash, so an occupant of that name is either the very bytes
+  // being written — which happens whenever tsgit reproduces a pack git
+  // already wrote, and is a success, not a collision — or corruption worth
+  // refusing loudly. A bare `writeExclusive` here refused both alike.
+  await writeOrKeepArtifact(ctx, packPath, input.packBytes);
   return await writeSiblingsGiven(ctx, input, wantRev);
 };
 
