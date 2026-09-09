@@ -54,13 +54,20 @@ export interface EnumerateBundleObjectsInput {
   readonly maxObjects?: number;
 }
 
+/** An object id paired with git's `pack_name_hash` of its own path — `0`
+ *  for a tag or a commit, neither of which has a path. */
+export interface BundleObjectEntry {
+  readonly id: ObjectId;
+  readonly nameHash: number;
+}
+
 export interface BundleObjectClosure {
   /**
    * Deduped object set for pack building: tags + commits + trees + blobs,
    * each paired with git's `pack_name_hash` of its own path. A tag or a
    * commit — neither has a path — carries `0`.
    */
-  readonly objects: ReadonlyArray<{ readonly id: ObjectId; readonly nameHash: number }>;
+  readonly objects: ReadonlyArray<BundleObjectEntry>;
   /**
    * Boundary commit oids — commits in the uninteresting closure that are
    * direct parents of interesting commits. UNSORTED: the caller sorts by
@@ -81,7 +88,19 @@ interface UninterestingClosure {
 // live in their own array, pushed to only alongside a successful `tryEmit`.
 interface BundleEmitState extends EmitState {
   readonly boundary: Set<ObjectId>;
-  readonly packInputs: Array<{ readonly id: ObjectId; readonly nameHash: number }>;
+  readonly packInputs: Array<BundleObjectEntry>;
+}
+
+/** The wants-side tree walk's collaborators that stay fixed across every
+ *  call — one bound per `walkInteresting` invocation, mirroring
+ *  `walk-tree.ts`'s `WalkConfig`. Only `treeId`, `hashState` and `depth`
+ *  vary per `emitTreeObjects` call. */
+interface BundleWalkConfig {
+  readonly ctx: Context;
+  readonly uninteresting: Set<ObjectId>;
+  readonly state: BundleEmitState;
+  readonly seenTrees: Set<ObjectId>;
+  readonly maxDepth: number;
 }
 
 /** Folds `nameBytes` onto `hashState` — git's empty-prefix rule (the root
@@ -149,42 +168,29 @@ const collectTreeObjects = async (
 // with `TREE_DEPTH_EXCEEDED` at depth 100001. Deeper than that is
 // unmeasured — no raw stack overflow was observed at any depth tried.
 const emitTreeObjects = async (
-  ctx: Context,
+  config: BundleWalkConfig,
   treeId: ObjectId,
-  uninteresting: Set<ObjectId>,
-  state: BundleEmitState,
-  seenTrees: Set<ObjectId>,
-  maxDepth: number,
   hashState: number,
   depth = 0,
 ): Promise<void> => {
-  if (seenTrees.has(treeId)) return;
-  seenTrees.add(treeId);
-  if (depth > maxDepth) throw treeDepthExceeded(depth);
+  if (config.seenTrees.has(treeId)) return;
+  config.seenTrees.add(treeId);
+  if (depth > config.maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — resolveObject calls checkAborted at the start of every read, so the unconditional readObject two lines below throws the identical OPERATION_ABORTED
-  if (ctx.signal?.aborted) throw operationAborted();
+  if (config.ctx.signal?.aborted) throw operationAborted();
   // Stryker disable next-line ConditionalExpression: equivalent — every uninteresting tree was collected into seenTrees during the haves phase, so the seenTrees guard at the top returns first; !uninteresting.has(treeId) is always true when this line is reached
-  if (!uninteresting.has(treeId)) emitWithHash(state, treeId, hashState);
-  const treeObj = await readObject(ctx, treeId);
+  if (!config.uninteresting.has(treeId)) emitWithHash(config.state, treeId, hashState);
+  const treeObj = await readObject(config.ctx, treeId);
   if (treeObj.type !== 'tree') return;
   for (const entry of treeObj.entries) {
     if (isGitlink(entry.mode)) continue;
     const entryHash = foldEntryHash(hashState, entry.nameBytes, depth);
     // equivalent-mutant: ConditionalExpression→true — all entries recurse into emitTreeObjects; blobs are emitted via the emitWithHash call at the top of the recursive invocation, with the SAME entryHash the blob branch below would have used, before the type-check return; final emitted set AND every nameHash are identical
     if (isDirectory(entry.mode as FileMode)) {
-      await emitTreeObjects(
-        ctx,
-        entry.id,
-        uninteresting,
-        state,
-        seenTrees,
-        maxDepth,
-        entryHash,
-        depth + 1,
-      );
+      await emitTreeObjects(config, entry.id, entryHash, depth + 1);
       continue;
     }
-    if (!uninteresting.has(entry.id)) emitWithHash(state, entry.id, entryHash);
+    if (!config.uninteresting.has(entry.id)) emitWithHash(config.state, entry.id, entryHash);
   }
 };
 
@@ -213,6 +219,13 @@ const walkInteresting = async (
   seenTrees: Set<ObjectId>,
   maxDepth: number,
 ): Promise<void> => {
+  const walkConfig: BundleWalkConfig = {
+    ctx,
+    uninteresting: uninteresting.objects,
+    state,
+    seenTrees,
+    maxDepth,
+  };
   for await (const commit of walkCommits(ctx, {
     from: seeds,
     until: [...uninteresting.commits],
@@ -222,15 +235,7 @@ const walkInteresting = async (
     // and returns 0; its own tree is the one object here that starts the
     // fold fresh, from the seed.
     emitWithHash(state, commit.id, 0);
-    await emitTreeObjects(
-      ctx,
-      commit.data.tree,
-      uninteresting.objects,
-      state,
-      seenTrees,
-      maxDepth,
-      HASHER.seed,
-    );
+    await emitTreeObjects(walkConfig, commit.data.tree, HASHER.seed);
     for (const parent of commit.data.parents) {
       if (uninteresting.commits.has(parent)) state.boundary.add(parent);
     }
