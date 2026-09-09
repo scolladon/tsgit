@@ -97,7 +97,9 @@ interface BundleEmitState extends EmitState {
  *  vary per `emitTreeObjects` call. */
 interface BundleWalkConfig {
   readonly ctx: Context;
-  readonly uninteresting: Set<ObjectId>;
+  /** Read-only here: the haves phase already filled it, and this walk only
+   *  tests membership — unlike `state` and `seenTrees`, which it mutates. */
+  readonly uninteresting: ReadonlySet<ObjectId>;
   readonly state: BundleEmitState;
   readonly seenTrees: Set<ObjectId>;
   readonly maxDepth: number;
@@ -178,7 +180,7 @@ const emitTreeObjects = async (
   if (depth > config.maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — resolveObject calls checkAborted at the start of every read, so the unconditional readObject two lines below throws the identical OPERATION_ABORTED
   if (config.ctx.signal?.aborted) throw operationAborted();
-  // Stryker disable next-line ConditionalExpression: equivalent — every uninteresting tree was collected into seenTrees during the haves phase, so the seenTrees guard at the top returns first; !uninteresting.has(treeId) is always true when this line is reached
+  // Stryker disable next-line ConditionalExpression: equivalent — every uninteresting tree was collected into seenTrees during the haves phase, so the seenTrees guard at the top returns first; !config.uninteresting.has(treeId) is always true when this line is reached
   if (!config.uninteresting.has(treeId)) emitWithHash(config.state, treeId, hashState);
   const treeObj = await readObject(config.ctx, treeId);
   if (treeObj.type !== 'tree') return;
