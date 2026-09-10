@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import {
+  readObject,
   resolveRef,
   walkCommits,
   writeObject,
@@ -43,6 +44,14 @@ import { git, gitAsync, runGit, runGitEnv, tryRunGit } from '../interop-helpers.
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
 const HEAD_OID_FILE = path.join(FIXTURE_DIR, 'HEAD-oid.txt');
+
+/** Every object oid real `git` can walk from every ref of the bare repo. */
+const listBareObjects = (bareRepoPath: string): string[] =>
+  runGit(['-C', bareRepoPath, 'rev-list', '--objects', '--all'])
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => line.split(' ')[0] as string);
 
 const findGitExecPath = (): string | undefined => {
   try {
@@ -303,6 +312,97 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
       expect(cache).toBe(newHead);
 
       await repo.dispose();
+    }, 60_000);
+  });
+
+  describe('Given a clone and one commit adding a single new file on top of shared history', () => {
+    it("Then the bare repo's object set grows by exactly git's minimal pack", async () => {
+      // Arrange — clone into an isolated workdir.
+      const localDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-push-minimal-it-'));
+      const url = `http://127.0.0.1:${port}/source.git`;
+      const repo = await openRepository({
+        cwd: localDir,
+        allowInsecureHttp: true,
+        config: {
+          allowInsecure: true,
+          allowPrivateNetworks: true,
+          dnsResolver: async () => ['127.0.0.1'],
+        },
+      });
+      await repo.clone({ url });
+      const configPath = path.join(repo.ctx.layout.gitDir, 'config');
+      const existingConfig = await readFile(configPath, 'utf8').catch(() => '');
+      if (!existingConfig.includes('[remote "origin"]')) {
+        await writeFile(
+          configPath,
+          `${existingConfig}\n[remote "origin"]\n  url = ${url}\n  fetch = +refs/heads/*:refs/remotes/origin/*\n`,
+        );
+      }
+      __resetConfigCacheForTests();
+
+      // Snapshot the bare repo's full object set BEFORE the push.
+      const objectsBefore = new Set(listBareObjects(bareRepoPath));
+
+      // One new commit that keeps every existing tree entry untouched and
+      // adds exactly one new file — the minimal-pack scenario the closure
+      // fix exists for: the new blob/tree/commit are the only unknowns, the
+      // rest of the tree's entries are already on the remote.
+      const head = await resolveRef(repo.ctx, 'refs/heads/main' as RefName);
+      const headCommit = await readObject(repo.ctx, head);
+      if (headCommit.type !== 'commit') throw new Error('fixture HEAD is not a commit');
+      const headTree = await readObject(repo.ctx, headCommit.data.tree);
+      if (headTree.type !== 'tree') throw new Error('fixture root is not a tree');
+      const addedBlob: Blob = {
+        type: 'blob',
+        content: new TextEncoder().encode('minimal push content\n'),
+        id: '' as ObjectId,
+      };
+      const addedBlobId = await writeObject(repo.ctx, addedBlob);
+      const newEntries = [
+        ...headTree.entries,
+        treeEntry('100644' as FileMode, 'minimal.txt', addedBlobId),
+      ];
+      const newTreeId = await writeTree(repo.ctx, newEntries);
+      const author = {
+        name: 'Push',
+        email: 'push@test',
+        timestamp: 1_700_000_200,
+        timezoneOffset: '+0000',
+      };
+      const commit: Commit = {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree: newTreeId,
+          parents: [head],
+          author,
+          committer: author,
+          message: 'minimal push commit',
+          extraHeaders: [],
+        },
+      };
+      const newHead = await writeObject(repo.ctx, commit);
+      await writeFile(path.join(repo.ctx.layout.gitDir, 'refs/heads/main'), `${newHead}\n`);
+
+      // Act
+      const result = await repo.push({
+        remote: 'origin',
+        refspecs: ['refs/heads/main:refs/heads/main'],
+      });
+
+      // Assert — push succeeded.
+      expect(result.pushedRefs[0]).toMatchObject({ name: 'refs/heads/main', status: 'ok' });
+
+      // Assert — the bare repo's object set grew by EXACTLY the new commit,
+      // its root tree (new because it gained an entry), and the added blob —
+      // git's own minimal pack for a one-file addition. Every pre-existing
+      // tree entry's blob is untouched and was never resent.
+      const objectsAfter = listBareObjects(bareRepoPath);
+      const grown = objectsAfter.filter((oid) => !objectsBefore.has(oid));
+      expect(new Set(grown)).toEqual(new Set([newHead, newTreeId, addedBlobId]));
+
+      await repo.dispose();
+      await rm(localDir, { recursive: true, force: true });
     }, 60_000);
   });
 
