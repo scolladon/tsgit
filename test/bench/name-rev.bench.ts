@@ -7,9 +7,23 @@
  * name-rev. Date-cutoff pruning keeps cost O(distance) at every tier.
  */
 import { execFile } from 'node:child_process';
+import { mkdtemp, realpath } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { promisify } from 'node:util';
 
+import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { createCommit } from '../../src/application/primitives/create-commit.js';
+import { updateRef } from '../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../src/application/primitives/write-object.js';
+import { writeTree } from '../../src/application/primitives/write-tree.js';
+import type { Blob, ObjectId, RefName } from '../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import { openRepository } from '../../src/index.node.js';
+import type { Context } from '../../src/ports/context.js';
+import { benchScenario } from './support/bench-dsl.js';
+import { removeSync } from './support/fixture-scratch.js';
 import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 
 const execFileAsync = promisify(execFile);
@@ -72,6 +86,95 @@ await tieredScenario(
       teardown: () => repo.dispose(),
       sut: async (): Promise<void> => {
         await repo.nameRev(target);
+      },
+    };
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Many-tag arm: an in-process scratch repository, never the shared tiered
+// cache (which is read-only for benches) and never `git`.
+// ---------------------------------------------------------------------------
+
+const MANY_TAGS_COMMITS = 200;
+
+const MANY_TAGS_AUTHOR = {
+  name: 'Bench',
+  email: 'bench@tsgit.dev',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+} as const;
+
+const manyTagsEnc = new TextEncoder();
+
+interface ManyTagsFixture {
+  readonly cwd: string;
+  readonly headCommitId: ObjectId;
+}
+
+/**
+ * A `MANY_TAGS_COMMITS`-generation linear history, one lightweight tag per
+ * commit (`refs/tags/bench-tag-<n>`, written directly through the `Context`
+ * — never `git`) spread over the whole history. Every object is written
+ * loose. Returns the tip commit id.
+ */
+async function buildManyTagsHistory(ctx: Context): Promise<ObjectId> {
+  let parent: ObjectId | undefined;
+  let headCommitId: ObjectId | undefined;
+  for (let index = 0; index < MANY_TAGS_COMMITS; index += 1) {
+    const blob: Blob = {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: manyTagsEnc.encode(`many-tags-blob-${index}`),
+    };
+    const blobId = await writeObject(ctx, blob);
+    const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', blobId)]);
+    const commitId = await createCommit(ctx, {
+      tree: treeId,
+      parents: parent === undefined ? [] : [parent],
+      author: MANY_TAGS_AUTHOR,
+      committer: MANY_TAGS_AUTHOR,
+      message: `many-tags-bench-${index}`,
+    });
+    await updateRef(ctx, `refs/tags/bench-tag-${index}` as RefName, commitId, {
+      reflogMessage: `bench tag ${index}`,
+    });
+    parent = commitId;
+    headCommitId = commitId;
+  }
+
+  if (headCommitId === undefined) {
+    throw new Error('many-tags fixture: chain produced no commits');
+  }
+
+  return headCommitId;
+}
+
+const setupManyTagsFixture = async (): Promise<ManyTagsFixture> => {
+  const cwd = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-many-tags-')));
+  const bootstrap = await openRepository({ cwd });
+  await bootstrap.init();
+  await bootstrap.dispose();
+
+  const ctx = createNodeContext({ workDir: cwd, hooks: false, command: false, ssh: false });
+  const headCommitId = await buildManyTagsHistory(ctx);
+
+  return { cwd, headCommitId };
+};
+
+benchScenario(
+  `Given an in-process repository with ${MANY_TAGS_COMMITS} commits and ${MANY_TAGS_COMMITS} lightweight tags spread over the history`,
+  'When name-rev() names a commit under 200 tags, Then measure tsgit',
+  async () => {
+    const fixture = await setupManyTagsFixture();
+    const repo = await openRepository({ cwd: fixture.cwd });
+    return {
+      teardown: async (): Promise<void> => {
+        removeSync(fixture.cwd);
+        await repo.dispose();
+      },
+      sut: async (): Promise<void> => {
+        await repo.nameRev(fixture.headCommitId);
       },
     };
   },

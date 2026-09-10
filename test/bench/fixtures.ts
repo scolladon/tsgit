@@ -12,9 +12,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { createCommit } from '../../src/application/primitives/create-commit.js';
 import { packPositionMap } from '../../src/application/primitives/internal/pack-positions.js';
+import { writeObject } from '../../src/application/primitives/write-object.js';
+import { writeTree } from '../../src/application/primitives/write-tree.js';
 import type { Blob, Commit, FileMode, ObjectId, Tree } from '../../src/domain/objects/index.js';
-import { serializeObject } from '../../src/domain/objects/index.js';
+import { FILE_MODE, serializeObject } from '../../src/domain/objects/index.js';
 import { treeEntry } from '../../src/domain/objects/tree.js';
 import { parsePackIndex } from '../../src/domain/storage/index.js';
 import { openRepository } from '../../src/index.node.js';
@@ -414,6 +417,160 @@ export const setupBitmapClosureFixture = async (commits: number): Promise<Bitmap
   if (headCommitId === undefined) {
     throw new Error('bitmap-closure fixture: chain produced no commits');
   }
+
+  return { cwd, headCommitId };
+};
+
+const WIDE_TREE_DIRECTORIES = 40;
+const WIDE_TREE_FILES_PER_DIRECTORY = 50;
+
+export interface WideTreeClosureFixture {
+  readonly cwd: string;
+  readonly headCommitId: string;
+}
+
+function initialBlobContent(dir: number, file: number): Uint8Array {
+  return enc.encode(`wide-tree-blob-${dir}-${file}-0`);
+}
+
+async function writeInitialBlobs(ctx: Context): Promise<ObjectId[][]> {
+  const blobIds: ObjectId[][] = [];
+  for (let dir = 0; dir < WIDE_TREE_DIRECTORIES; dir += 1) {
+    const files: ObjectId[] = [];
+    for (let file = 0; file < WIDE_TREE_FILES_PER_DIRECTORY; file += 1) {
+      const blob: Blob = {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: initialBlobContent(dir, file),
+      };
+      files.push(await writeObject(ctx, blob));
+    }
+    blobIds.push(files);
+  }
+  return blobIds;
+}
+
+async function writeDirectoryTree(
+  ctx: Context,
+  blobIds: ReadonlyArray<ObjectId>,
+): Promise<ObjectId> {
+  const entries = blobIds.map((blobId, file) =>
+    treeEntry(FILE_MODE.REGULAR, `f${file}.txt`, blobId),
+  );
+  return writeTree(ctx, entries);
+}
+
+async function writeDirectoryTrees(
+  ctx: Context,
+  blobIds: ReadonlyArray<ReadonlyArray<ObjectId>>,
+): Promise<ObjectId[]> {
+  const dirTreeIds: ObjectId[] = [];
+  for (const files of blobIds) {
+    dirTreeIds.push(await writeDirectoryTree(ctx, files));
+  }
+  return dirTreeIds;
+}
+
+async function writeRootTree(ctx: Context, dirTreeIds: ReadonlyArray<ObjectId>): Promise<ObjectId> {
+  const entries = dirTreeIds.map((treeId, dir) =>
+    treeEntry(FILE_MODE.DIRECTORY, `d${dir}`, treeId),
+  );
+  return writeTree(ctx, entries);
+}
+
+async function commitRootTree(
+  ctx: Context,
+  rootTreeId: ObjectId,
+  parent: ObjectId | undefined,
+  index: number,
+): Promise<ObjectId> {
+  return createCommit(ctx, {
+    tree: rootTreeId,
+    parents: parent === undefined ? [] : [parent],
+    author: AUTHOR,
+    committer: AUTHOR,
+    message: `wide-tree-bench-${index}`,
+  });
+}
+
+/** Round-robin rewrite target for step `step` (0-based, one per commit after
+ *  the first): cycles every directory once before advancing to the next file
+ *  within each — so every commit changes exactly one file in one directory. */
+function rewriteTarget(step: number): { readonly dir: number; readonly file: number } {
+  return {
+    dir: step % WIDE_TREE_DIRECTORIES,
+    file: Math.floor(step / WIDE_TREE_DIRECTORIES) % WIDE_TREE_FILES_PER_DIRECTORY,
+  };
+}
+
+async function rewriteFile(
+  ctx: Context,
+  blobIds: ObjectId[][],
+  dirTreeIds: ObjectId[],
+  dir: number,
+  file: number,
+  content: Uint8Array,
+): Promise<void> {
+  const files = blobIds[dir];
+  if (files === undefined) {
+    throw new Error(`wide-tree fixture: no directory at index ${dir}`);
+  }
+  const blob: Blob = { type: 'blob', id: '' as ObjectId, content };
+  files[file] = await writeObject(ctx, blob);
+  dirTreeIds[dir] = await writeDirectoryTree(ctx, files);
+}
+
+/**
+ * Builds the `commits`-generation wide-tree history: commit 0 establishes
+ * the full 2 000-blob tree, and every later commit rewrites exactly one file
+ * in one directory (round-robin), leaving the other 39 subtrees
+ * byte-identical to the parent's. Returns the tip commit id.
+ */
+async function buildWideTreeHistory(ctx: Context, commits: number): Promise<string> {
+  const blobIds = await writeInitialBlobs(ctx);
+  const dirTreeIds = await writeDirectoryTrees(ctx, blobIds);
+
+  let headCommitId = await commitRootTree(ctx, await writeRootTree(ctx, dirTreeIds), undefined, 0);
+
+  for (let index = 1; index < commits; index += 1) {
+    const { dir, file } = rewriteTarget(index - 1);
+    await rewriteFile(
+      ctx,
+      blobIds,
+      dirTreeIds,
+      dir,
+      file,
+      enc.encode(`wide-tree-blob-${dir}-${file}-${index}`),
+    );
+    headCommitId = await commitRootTree(
+      ctx,
+      await writeRootTree(ctx, dirTreeIds),
+      headCommitId,
+      index,
+    );
+  }
+
+  return headCommitId;
+}
+
+/**
+ * A wide, shallow tree — 40 directories × 50 files — committed `commits`
+ * times, each commit rewriting exactly one file in one directory
+ * round-robin: the shape a closure walk's per-directory prune pays off on.
+ * `.git` is initialised through `openRepository` first; every blob/tree/
+ * commit is then written loose, directly through a raw `Context` — never
+ * through a real working-tree commit, and never through `git`.
+ */
+export const setupWideTreeClosureFixture = async (
+  commits: number,
+): Promise<WideTreeClosureFixture> => {
+  const cwd = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-wide-tree-')));
+  const bootstrap = await openRepository({ cwd });
+  await bootstrap.init();
+  await bootstrap.dispose();
+
+  const ctx = createNodeContext({ workDir: cwd, hooks: false, command: false, ssh: false });
+  const headCommitId = await buildWideTreeHistory(ctx, commits);
 
   return { cwd, headCommitId };
 };
