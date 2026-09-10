@@ -1,8 +1,16 @@
 # ADR-191: Single-base merge-base routes through the unified core
 
+> Superseded by [ADR-845](845-the-single-merge-base-is-the-newest-as-git-prints-it.md) for the
+> single-base selection rule: git prints the newest reduced base, not the lexicographically
+> smallest. The unification through the paint-down-to-common core, the deletion of the legacy
+> bidirectional BFS and of the `a === b` shortcut, and `merge`'s array-API consumption are
+> carried forward.
+
 ## Status
 
-Accepted (at `c232f238a1b7b45c9513b09b4c11c78aa6da430b`)
+- **Status:** superseded by ADR-845
+
+Accepted at `c232f238a1b7b45c9513b09b4c11c78aa6da430b`; the selection rule is superseded, the unification is carried forward.
 
 ## Context
 
