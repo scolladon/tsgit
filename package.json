@@ -876,7 +876,8 @@
     "test:integration": {
       "command": "vitest run --project integration",
       "dependencies": [
-        "check:types"
+        "check:types",
+        "build"
       ],
       "files": [
         "src/**/*.ts",
