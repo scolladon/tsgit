@@ -234,6 +234,15 @@ export function arbSerializableInstructions(): fc.Arbitrary<SerializableDelta> {
   );
 }
 
+// --- Pack name hash --------------------------------------------------
+
+/** Arbitrary path bytes for the pack name hash — any byte value, including
+ *  the four skipped whitespace bytes, so the fold's whitespace handling is
+ *  exercised by the same generator that exercises composition. */
+export function arbNameBytes(): fc.Arbitrary<Uint8Array> {
+  return fc.uint8Array({ maxLength: 64 });
+}
+
 // --- Multi-pack index --------------------------------------------------
 
 const MIDX_HEADER_SIZE = 12;

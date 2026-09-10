@@ -22,8 +22,10 @@ import { describe as describeCommit } from '../../src/application/commands/descr
 import { enumeratePushObjects } from '../../src/application/primitives/enumerate-push-objects.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
-import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const BASE_TS = 1_700_000_000;
@@ -211,7 +213,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When log runs with maxParents:0', () => {
       it('Then only the boundary is returned, matching rev-list --max-parents=0', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
 
         // Act
         const result = await repo.log({ maxParents: 0 });
@@ -226,7 +228,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits and walkCommitsByDate both walk from the tip', () => {
       it('Then both yield exactly [C5, C4]', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const gitCount = Number(runGit(['-C', f1, 'rev-list', '--count', 'HEAD']).trim());
 
         // Act
@@ -249,7 +251,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When log runs with default options', () => {
       it('Then it reconstructs the same id/parents pairs as git log --format=%H %P', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const gitLines = runGit(['-C', f1, 'log', '--format=%H %P', 'HEAD']).trim().split('\n');
 
         // Act
@@ -265,7 +267,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When log runs with minParents:1', () => {
       it('Then only the non-boundary commit is kept', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
 
         // Act
         const result = await repo.log({ minParents: 1 });
@@ -278,7 +280,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When log runs with order:first-parent and maxParents:0', () => {
       it('Then it also returns only the boundary', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
 
         // Act
         const result = await repo.log({ order: 'first-parent', maxParents: 0 });
@@ -291,7 +293,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits(until:[C4]) and log(excluding:[C4]) both run', () => {
       it('Then both stop before the boundary, matching git ranges', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const c5 = ids[4] as ObjectId;
         const gitRange = runGit(['-C', f1, 'rev-list', `${c4}..${c5}`]).trim();
@@ -317,7 +319,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits is seeded with a commit that is itself absent', () => {
       it('Then it still rejects OBJECT_NOT_FOUND, matching git merge-base', async () => {
         // Arrange — C3 is a seed, not a boundary's parent: grafting never invents a commit.
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c3 = ids[2] as ObjectId;
         const gitResult = tryRunGitWithExit(['-C', f1, 'merge-base', 'HEAD', c3]);
 
@@ -342,7 +344,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // reads the object to confirm its type, so an absent oid surfaces here
         // as OBJECT_NOT_FOUND, matching git's own `fatal:` (exit 128) refusal
         // for the equivalent range.
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c3 = ids[2] as ObjectId;
         const gitResult = tryRunGitWithExit(['-C', f1, 'rev-list', `${c3}..HEAD`]);
 
@@ -362,7 +364,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When catFile reads the boundary commit directly', () => {
       it("Then it still reports the commit's true, unmasked parent (negative control)", async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const gitParentLine = runGit(['-C', f1, 'cat-file', '-p', c4])
           .split('\n')
@@ -385,7 +387,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When whatchanged walks the history', () => {
       it('Then it diffs the boundary against the empty tree, matching git diff against the empty-tree sentinel', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         // git's own rendering of the boundary entry — the faithfulness peer —
         // with the empty-tree diff kept as a secondary structural check.
@@ -418,7 +420,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When describe runs on HEAD and on the boundary', () => {
       it('Then it finds the tag planted on the boundary, matching git describe', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const gitHead = runGit(['-C', f1, 'describe', 'HEAD']).trim();
         const gitBoundary = runGit(['-C', f1, 'describe', ids[3] as string]).trim();
 
@@ -442,7 +444,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When shortlog runs', () => {
       it('Then it counts both reachable commits for the single author', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
 
         const gitShortlog = runGit(['-C', f1, 'shortlog', '-s', '-n', 'HEAD']).trim();
 
@@ -459,7 +461,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When a bundle is created', () => {
       it('Then it succeeds without over-enumerating past the boundary', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
 
         const bundleOut = path.join(await tmp('a33'), 'a33.bundle');
         const gitBundle = tryRunGitWithExit([
@@ -487,7 +489,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When enumeratePushObjects walks from the tip', () => {
       it('Then it terminates at the boundary instead of over-enumerating', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
 
         // Act — A34 (client half only; the server-side refusal is git's own)
         const objects: ObjectId[] = [];
@@ -515,7 +517,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
       it('Then the new boundary is C3, matching git', async () => {
         // Arrange — A38
         runGit(['-C', f7a, 'fetch', '-q', '--deepen', '1'], { env: identityEnv(20) });
-        const repo = await openRepository({ cwd: f7a });
+        const repo = await openTrackedRepository({ cwd: f7a });
         const gitCount = Number(runGit(['-C', f7a, 'rev-list', '--count', 'HEAD']).trim());
 
         // Act
@@ -538,7 +540,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
       it('Then the repository walks full history, matching git', async () => {
         // Arrange — A39
         runGit(['-C', f7b, 'fetch', '-q', '--unshallow'], { env: identityEnv(21) });
-        const repo = await openRepository({ cwd: f7b });
+        const repo = await openTrackedRepository({ cwd: f7b });
         const gitCount = Number(runGit(['-C', f7b, 'rev-list', '--count', 'HEAD']).trim());
 
         // Act
@@ -560,7 +562,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When log runs with default options', () => {
       it('Then it yields one entry whose parents are empty', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f2 });
+        const repo = await openTrackedRepository({ cwd: f2 });
 
         // Act — B1
         const result = await repo.log({});
@@ -574,7 +576,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When log runs with maxParents:0', () => {
       it('Then it also returns the single commit', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f2 });
+        const repo = await openTrackedRepository({ cwd: f2 });
 
         // Act — B2
         const result = await repo.log({ maxParents: 0 });
@@ -589,7 +591,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits walks from the merge', () => {
       it('Then it yields exactly the merge and both boundary parents', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f3 });
+        const repo = await openTrackedRepository({ cwd: f3 });
 
         // Act — B3/B4
         const walked: ObjectId[] = [];
@@ -603,7 +605,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
 
       it('Then both boundaries report empty parents', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f3 });
+        const repo = await openTrackedRepository({ cwd: f3 });
 
         // Act — B5
         const commits: Record<string, readonly ObjectId[]> = {};
@@ -620,7 +622,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When log runs with maxParents:0', () => {
       it('Then it returns both boundaries', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f3 });
+        const repo = await openTrackedRepository({ cwd: f3 });
 
         // Act — B6
         const result = await repo.log({ maxParents: 0 });
@@ -633,7 +635,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When mergeBase compares the merge against the main-side boundary', () => {
       it('Then resolves to the boundary itself', async () => {
         // Arrange — B7
-        const repo = await openRepository({ cwd: f3 });
+        const repo = await openTrackedRepository({ cwd: f3 });
 
         // Act
         const result = await repo.primitives.mergeBase([merge3, main1]);
@@ -648,7 +650,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits and log both run through the worktree Context', () => {
       it('Then the shared shallow set resolves through the common dir, identical masking to F1', async () => {
         // Arrange — E1/E3 (E2, `--is-shallow-repository`, has no tsgit surface)
-        const repo = await openRepository({ cwd: f6worktree });
+        const repo = await openTrackedRepository({ cwd: f6worktree });
         const adminDir = path.join(f1, '.git', 'worktrees', path.basename(f6worktree));
 
         // Act
@@ -673,7 +675,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits and log both run', () => {
       it('Then the full history is reachable, matching git', async () => {
         // Arrange — C1
-        const repo = await openRepository({ cwd: f4 });
+        const repo = await openTrackedRepository({ cwd: f4 });
         const gitCount = Number(runGit(['-C', f4, 'rev-list', '--count', 'HEAD']).trim());
         const gitRoot = runGit(['-C', f4, 'rev-list', '--max-parents=0', 'HEAD']).trim();
 
@@ -700,7 +702,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // every ancestor object IS present, so `ignoreMissing` cannot silently
         // absorb an unmasked walk — only the graft stops the closure, and git's
         // own `rev-list --objects` co-stops.
-        const repo = await openRepository({ cwd: f4c2 });
+        const repo = await openTrackedRepository({ cwd: f4c2 });
         const gitObjects = runGit(['-C', f4c2, 'rev-list', '--objects', f4Ids[4] as string])
           .trim()
           .split('\n')
@@ -725,7 +727,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When a bundle is created', () => {
       it('Then the object count matches git: only the graft bounds it, not missing objects', async () => {
         // Arrange
-        const repo = await openRepository({ cwd: f4c2 });
+        const repo = await openTrackedRepository({ cwd: f4c2 });
         const bundleOut = path.join(await tmp('a33-c2'), 'a33.bundle');
         const gitBundle = tryRunGitWithExit([
           '-C',
@@ -758,7 +760,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // it. The unit suite in read-commit-graph.test.ts is what actually
         // proves the graph is disabled by shallow-file presence; this row
         // only proves the graph gate does not regress walk-level masking.
-        const repo = await openRepository({ cwd: f4c2 });
+        const repo = await openTrackedRepository({ cwd: f4c2 });
 
         // Act
         const walked: ObjectId[] = [];
@@ -780,7 +782,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
       it('Then masking is applied by oid, independent of object availability', async () => {
         // Arrange — C3, likewise a regression row (see F4c2 above): every
         // masked parent here is still locally present.
-        const repo = await openRepository({ cwd: f4c3 });
+        const repo = await openTrackedRepository({ cwd: f4c3 });
 
         // Act
         const walked: ObjectId[] = [];
@@ -819,7 +821,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits and git rev-list both run', () => {
       it('Then both refuse to traverse the missing object', async () => {
         // Arrange — C5
-        const repo = await openRepository({ cwd: f5 });
+        const repo = await openTrackedRepository({ cwd: f5 });
         const gitResult = tryRunGitWithExit(['-C', f5, 'rev-list', 'HEAD']);
 
         // Act & Assert
@@ -842,7 +844,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits and git rev-list both run', () => {
       it('Then both refuse identically — the decisive presence-not-content pin', async () => {
         // Arrange — C6
-        const repo = await openRepository({ cwd: f5empty });
+        const repo = await openTrackedRepository({ cwd: f5empty });
         const gitResult = tryRunGitWithExit(['-C', f5empty, 'rev-list', 'HEAD']);
 
         // Act & Assert
@@ -865,7 +867,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When walkCommits and git rev-list both run', () => {
       it('Then both walk the full 5-commit history with the graph disabled', async () => {
         // Arrange — C7
-        const repo = await openRepository({ cwd: f5restored });
+        const repo = await openTrackedRepository({ cwd: f5restored });
         const gitCount = Number(runGit(['-C', f5restored, 'rev-list', '--count', 'HEAD']).trim());
 
         // Act
@@ -885,7 +887,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When show() runs on it', () => {
       it('Then parents are empty and the patch adds every locally-visible file, matching git show', async () => {
         // Arrange — A24
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const gitShow = runGit([
           '-C',
@@ -922,7 +924,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When blame() runs', () => {
       it('Then the line is a boundary attributed to C4, matching git blame --line-porcelain', async () => {
         // Arrange — A27
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const gitPorcelain = runGit(['-C', f1, 'blame', '--line-porcelain', 'f3.txt']);
 
@@ -956,7 +958,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
           runGit(['-C', dir, 'add', 'f3.txt']);
           runGit(['-C', dir, 'commit', '-q', '-m', 'modify f3 locally'], { env: identityEnv(40) });
         }
-        const repo = await openRepository({ cwd: oursDir });
+        const repo = await openTrackedRepository({ cwd: oursDir });
         const gitResult = tryRunGitWithExit(
           ['-C', theirsDir, '-c', 'core.editor=true', 'revert', '--no-edit', c4],
           { env: identityEnv(41) },
@@ -993,7 +995,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
             env: identityEnv(42),
           });
         }
-        const repo = await openRepository({ cwd: oursDir });
+        const repo = await openTrackedRepository({ cwd: oursDir });
         const gitResult = tryRunGitWithExit(['-C', theirsDir, 'cherry-pick', c4], {
           env: identityEnv(43),
         });
@@ -1016,7 +1018,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When revParse walks the parent chain past it', () => {
       it('Then HEAD~1 resolves to the boundary, matching git', async () => {
         // Arrange — A12
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const gitHead1 = runGit(['-C', f1, 'rev-parse', 'HEAD~1']).trim();
 
@@ -1030,7 +1032,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
 
       it('Then HEAD~2 refuses past the boundary, co-refusing with git', async () => {
         // Arrange — A13
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const gitHead2 = tryRunGitWithExit(['-C', f1, 'rev-parse', 'HEAD~2']);
 
         // Act
@@ -1049,7 +1051,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
 
       it('Then the boundary caret form C4^ refuses like git', async () => {
         // Arrange — A13 (caret spelling)
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const gitCaret = tryRunGitWithExit(['-C', f1, 'rev-parse', `${c4}^`]);
 
@@ -1074,7 +1076,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
       it('Then the boundary is the merge base — proving it is also an ancestor of HEAD, matching git', async () => {
         // Arrange — A18/A20: a single mergeBase call discharges both pins;
         // [C5,C4] reduces to [C4] only when C4 is an ancestor of C5.
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const c5 = ids[4] as ObjectId;
         const gitBase = runGit(['-C', f1, 'merge-base', 'HEAD', c4]).trim();
@@ -1092,7 +1094,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
       it('Then it rejects OBJECT_NOT_FOUND rather than inventing a commit, matching git', async () => {
         // Arrange — A19: C3 is a genuinely absent input, not a masked parent —
         // grafting must not paper over a truly missing seed.
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c3 = ids[2] as ObjectId;
         const c5 = ids[4] as ObjectId;
         const gitResult = tryRunGitWithExit(['-C', f1, 'merge-base', 'HEAD', c3]);
@@ -1140,7 +1142,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When nameRev runs', () => {
       it('Then it resolves the same name git prints, matching git name-rev', async () => {
         // Arrange — A30
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const gitName = runGit(['-C', f1, 'name-rev', '--name-only', 'HEAD']).trim();
 
         // Act
@@ -1157,7 +1159,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When fsck runs strict', () => {
       it('Then it reports a clean exit bitmask, matching git fsck', async () => {
         // Arrange — A32
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const gitResult = tryRunGitWithExit(['-C', f1, 'fsck', '--strict', '--no-progress']);
 
         // Act
@@ -1185,7 +1187,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then it reports C5 as the sole candidate, consistent with a single-step git bisect', async () => {
         // Arrange — A37
-        const repo = await openRepository({ cwd: f1 });
+        const repo = await openTrackedRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const c5 = ids[4] as ObjectId;
 

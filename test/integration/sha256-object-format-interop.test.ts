@@ -46,7 +46,6 @@ import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { parseMultiPackIndex } from '../../src/domain/storage/midx.js';
 import { parsePackIndex } from '../../src/domain/storage/pack-index.js';
 import { parsePackRevIndex } from '../../src/domain/storage/rev-index.js';
-import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import type { HttpTransport } from '../../src/ports/http-transport.js';
 import { fileSystemLayoutProbe } from '../../src/repository/file-system-layout-probe.js';
@@ -61,6 +60,10 @@ import {
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedContexts, trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
+const createTrackedNodeContext = trackedContexts(createNodeContext);
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -101,7 +104,7 @@ async function collectBytes(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Arr
  * `openRepository` and compares the verdict against real git.
  */
 const sha256Context = (dir: string): Context =>
-  createNodeContext({ workDir: dir, algorithm: 'sha256' });
+  createTrackedNodeContext({ workDir: dir, algorithm: 'sha256' });
 
 describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', () => {
   let baseDir: string;
@@ -323,7 +326,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
         const theirs = tryRunGitWithExit(['-C', dir, 'rev-parse', '--verify', fake64], { env });
         let caught: TsgitError | undefined;
         try {
-          await revParse(createNodeContext({ workDir: dir }), fake64);
+          await revParse(createTrackedNodeContext({ workDir: dir }), fake64);
         } catch (err) {
           caught = err as TsgitError;
         }
@@ -441,7 +444,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
     it('Then openRepository refuses with OBJECT_FORMAT_CONFLICT instead of silently pairing ctx.hash=sha256 with ctx.hashConfig=SHA1_CONFIG', async () => {
       // Arrange — a plain (SHA-1) repository, built the same way the
       // adjacent 64-hex-refusal test above builds one; before this part,
-      // `openRepository({ hash: new NodeHashService('sha256') })` on the
+      // `openTrackedRepository({ hash: new NodeHashService('sha256') })` on the
       // Node entry silently paired ctx.hash.algorithm === 'sha256' with
       // ctx.hashConfig === SHA1_CONFIG and nothing refused it.
       const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-desync-'));
@@ -457,7 +460,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
 
         // Act
         try {
-          await openRepository({ cwd: dir, hash: new NodeHashService('sha256') });
+          await openTrackedRepository({ cwd: dir, hash: new NodeHashService('sha256') });
         } catch (err) {
           caught = err;
         }
@@ -864,7 +867,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const sut = log;
 
         // Act
-        const entries = await sut(createNodeContext({ workDir: dir }));
+        const entries = await sut(createTrackedNodeContext({ workDir: dir }));
 
         // Assert
         expect(entries.map((entry) => entry.id)).toEqual(expectedLog);
@@ -887,7 +890,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         try {
           // Act
-          await add(createNodeContext({ workDir: oursDir }), ['a.txt']);
+          await add(createTrackedNodeContext({ workDir: oursDir }), ['a.txt']);
           runGit(['-C', theirsDir, 'add', 'a.txt'], { env: runGitEnv() });
           const ours = lsStage(oursDir);
           const theirs = lsStage(theirsDir);
@@ -931,7 +934,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // config of its own.
           const shown = tryRunGitWithExit(['-C', wtDir, 'rev-parse', '--show-object-format']);
           await writeFile(path.join(wtDir, 'wt.txt'), 'wt\n');
-          const repo = await openRepository({ cwd: wtDir });
+          const repo = await openTrackedRepository({ cwd: wtDir });
           try {
             await repo.add(['wt.txt']);
           } finally {
@@ -988,7 +991,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           const theirs = tryRunGitWithExit(['-C', dir, 'log'], { env });
           let caught: unknown;
           try {
-            await openRepository({ cwd: dir });
+            await openTrackedRepository({ cwd: dir });
           } catch (err) {
             caught = err;
           }
@@ -1023,7 +1026,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — init', () => {
         // Arrange
         const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-init-'));
         try {
-          const ctx = createNodeContext({ workDir: dir, algorithm: 'sha256' });
+          const ctx = createTrackedNodeContext({ workDir: dir, algorithm: 'sha256' });
 
           // Act
           await init(ctx, { objectFormat: 'sha256' });
@@ -1054,7 +1057,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — init', () => {
         // Arrange
         const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-init-'));
         try {
-          const ctx = createNodeContext({ workDir: dir });
+          const ctx = createTrackedNodeContext({ workDir: dir });
 
           // Act
           await init(ctx);
@@ -1179,8 +1182,8 @@ const initLocalTransportRepo = async (
 
 const localTransportContext = (dir: string, algorithm: 'sha1' | 'sha256'): Context =>
   algorithm === 'sha256'
-    ? createNodeContext({ workDir: dir, algorithm: 'sha256', allowInsecureHttp: true })
-    : createNodeContext({ workDir: dir, allowInsecureHttp: true });
+    ? createTrackedNodeContext({ workDir: dir, algorithm: 'sha256', allowInsecureHttp: true })
+    : createTrackedNodeContext({ workDir: dir, allowInsecureHttp: true });
 
 /** Wraps `inner` to record every POSTed request body — the raw wire bytes tsgit sent. */
 const recordingTransport = (
@@ -1221,7 +1224,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
         const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clone-dst-'));
         try {
           const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
-          const baseCtx = createNodeContext({
+          const baseCtx = createTrackedNodeContext({
             workDir: cloneDir,
             algorithm: 'sha256',
             allowInsecureHttp: true,
@@ -1255,7 +1258,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
       const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clone-adopt-'));
       try {
         const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
-        const ctx = createNodeContext({ workDir: cloneDir, allowInsecureHttp: true });
+        const ctx = createTrackedNodeContext({ workDir: cloneDir, allowInsecureHttp: true });
 
         // Act
         const result = await clone(ctx, { url });
@@ -1286,7 +1289,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
       const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clone-shallow-'));
       try {
         const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
-        const ctx = createNodeContext({ workDir: cloneDir, allowInsecureHttp: true });
+        const ctx = createTrackedNodeContext({ workDir: cloneDir, allowInsecureHttp: true });
 
         // Act
         await clone(ctx, { url, depth: 1 });

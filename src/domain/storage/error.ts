@@ -69,6 +69,12 @@ export type StorageError =
       readonly code: 'INVALID_CRUFT_MTIMES';
       readonly reason: string;
       readonly check: CruftMtimesCheck;
+    }
+  | {
+      readonly code: 'INVALID_PACK_INPUT';
+      readonly reason: string;
+      readonly present: number;
+      readonly absent: number;
     };
 
 export const invalidPackHeader = (reason: string): TsgitError =>
@@ -97,3 +103,6 @@ export const invalidPackBitmap = (check: BitmapCheck, reason: string): TsgitErro
 
 export const invalidCruftMtimes = (check: CruftMtimesCheck, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_CRUFT_MTIMES', check, reason });
+
+export const invalidPackInput = (reason: string, present: number, absent: number): TsgitError =>
+  new TsgitError({ code: 'INVALID_PACK_INPUT', reason, present, absent });

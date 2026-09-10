@@ -18,11 +18,12 @@
  *  - Remote-tracking cache updated on accepted ref.
  *  - Progress reporting (push:enumerate-objects bracket).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { push } from '../../../../src/application/commands/push.js';
+import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -585,6 +586,37 @@ describe('push — happy path', () => {
         // Exactly one HTTP call — the discovery GET. No POST.
         expect(requests).toHaveLength(1);
         expect(requests[0]?.method).toBe('GET');
+      });
+    });
+  });
+
+  describe('Given an origin remote with one new commit to send', () => {
+    describe('When push builds its pack', () => {
+      it('Then buildPack receives plain { id } objects — no nameHash, no recency', async () => {
+        // Arrange — the regression guard: every OTHER walk-tier packing
+        // caller now supplies a name hash; push stays on the bare shape a
+        // caller with no closure of its own can produce.
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'gen-1');
+        const tip = await seedCommit(ctx, [parent.id], 'gen-2');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        const captured = buildPackSpy.mock.calls[0]![1].objects;
+        expect(captured.length).toBeGreaterThan(0);
+        expect(captured[0]).toStrictEqual({ id: tip.id });
+        buildPackSpy.mockRestore();
       });
     });
   });

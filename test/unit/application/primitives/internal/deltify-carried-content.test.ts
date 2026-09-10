@@ -66,7 +66,11 @@ describe('deltifyEntries — carried-content residency bound', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idA, idB], DEFAULT_POLICY);
+        const result = await sut(
+          ctx,
+          [idA, idB].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert
         expect(result).toHaveLength(2);
@@ -91,7 +95,11 @@ describe('deltifyEntries — carried-content residency bound', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [packedId as ObjectId, looseId], DEFAULT_POLICY);
+        const result = await sut(
+          ctx,
+          [packedId as ObjectId, looseId].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert
         expect(result).toHaveLength(2);
@@ -114,7 +122,11 @@ describe('deltifyEntries — carried-content residency bound', () => {
         const sut = deltifyEntries;
 
         // Act
-        await sut(ctx, [idFits, idExceeds], DEFAULT_POLICY);
+        await sut(
+          ctx,
+          [idFits, idExceeds].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert — idExceeds pays for one extra read (the emission loop's
         // fallback) that idFits, carried forward, never needs.
@@ -140,7 +152,11 @@ describe('deltifyEntries — carried-content residency bound', () => {
         const sut = deltifyEntries;
 
         // Act
-        await sut(ctx, [idBoundary, idNext], DEFAULT_POLICY);
+        await sut(
+          ctx,
+          [idBoundary, idNext].map((id) => ({ id })),
+          DEFAULT_POLICY,
+        );
 
         // Assert — idBoundary (carried) reads once fewer than idNext
         // (excluded, and only excluded because idBoundary's carry already

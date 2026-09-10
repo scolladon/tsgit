@@ -211,23 +211,43 @@ interface MaintenanceResult {
 
 tsgit's pack writer selects and writes delta chains (`OFS_DELTA`), the same
 format git uses, so consolidating a repository no longer inflates it the way
-a base-entries-only writer would. Two synthetic, effectively all-reachable
-corpora are measured against `git -c pack.threads=1 repack -a -d -f` (`repack`
-and `gc` agree there — nothing unreachable to drop or retain): **×1.58** on
-content that barely deltifies to begin with, up to **×5.43** for one shape
-specifically — a single file evolving through a long, same-size delta chain.
-tsgit's own real history (all branches) genuinely carries unreachable
-objects, so its peer is `git -c pack.threads=1 gc`, not `repack -a -d -f`:
-`repack -a -d` (no `-A`) drops unreachable objects, while tsgit's `gc` — like
-git's own default `gc` — retains the ones newer than the two-week expiry.
-`gc` against `gc` keeps both sides on a comparable object set (24 879 for
-git, 24 817 for tsgit, within 0.25%) instead of charging tsgit for objects
-git already deleted. Measured that way: **×1.42** — the class to plan
-against for an ordinary repository. tsgit's window
-orders candidate delta bases by size; git orders by path/name-hash first, so
-on a real repository's mix of differently-sized files the two orderings
-mostly agree, but a series of same-size versions of one file ties under
-tsgit's ordering and the window samples the wrong neighbours. The trade is
+a base-entries-only writer would. Candidate delta bases are ordered the way
+git orders them: git's own `pack_name_hash` of the object's path first, then
+gc's own visit order as a recency tiebreak, then size, then oid — never size
+alone, which is what let a long run of same-size versions of one file tie
+and send the window sampling the wrong neighbours. Layered on that ordering,
+the delta-search window is bounded the way git scales it by candidate depth,
+so tsgit now ends a chain where git does rather than running every candidate
+out to the depth-50 cap, and nothing under a 50-byte floor is ever offered
+as a delta base, matching git's own refusal to spend a delta header on an
+object too small to net a gain.
+
+With the ordering term alone — before the depth-scaled bound, promotion of
+the just-used base, or the floor — measured against
+`git -c pack.threads=1 -c pack.window=10 -c pack.depth=50 repack -a -d -f -q`
+(git 2.55.0): **×1.07** on a single file evolving through a long, same-size
+delta chain (down from ×5.43 unordered), **×1.01** on content that barely
+deltifies to begin with, and **×1.09** on a fresh clone of tsgit's own
+history — real, branchy history is not tie-dense the way the synthetic
+corpora are, so recency competes with hash rather than only filling in
+where hash has nothing to separate. (All three corpora are measured against
+the same `repack -a -d -f` peer, including a fresh clone of tsgit's own
+history rather than a working repository's cruft-carrying one, because
+`git gc` reuses whichever deltas it inherited instead of re-selecting and so
+is not a fair peer for comparing selection.) From there: the
+ordering gain is S1b − B0; the bound is S2 − S1b and improved the ratio
+rather than costing it, contrary to its original faithfulness-trade
+rationale; promotion is S3 − S2 and was measured to be zero on
+`DELTA_CHAIN`'s single chain but non-zero on `MEDIUM`'s tree forest, where
+the same base serves several targets and reordering which one is tried
+first moved 11 ties; the floor is S4 − S3, measured at zero on
+`DELTA_CHAIN` — the search bound already excluded its 40-byte trees on its
+own — and a 26-byte gain on `MEDIUM`. Shipped: **×0.97** on the same-size
+delta chain (3% under git's own pack there), **×1.01** on the
+barely-deltifies content, and **×1.05** on a fresh clone of tsgit's own
+history — that corpus is this project's own evolving history and its object
+count grows between runs, so its ratio is comparable within a run but its
+raw byte counts are not comparable across runs. The trade is
 accepted, not gated — `packBytesBefore`/`packBytesAfter` make it observable
 per call. `pack.depth` above 50 is honoured only up to 50: tsgit's readers
 refuse a chain deeper than that, so the writer never produces one they

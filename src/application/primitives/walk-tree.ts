@@ -1,5 +1,6 @@
 import { MAX_FLAT_TREE_ENTRIES } from '../../domain/diff/index.js';
 import { operationAborted } from '../../domain/error.js';
+import { concatBytes } from '../../domain/objects/encoding.js';
 import {
   treeCycleDetected,
   treeDepthExceeded,
@@ -14,21 +15,71 @@ import {
   type Tree,
   type TreeEntry,
 } from '../../domain/objects/index.js';
+import { foldPathSegment, type PathHasher } from '../../domain/storage/pack-name-hash.js';
 import type { Context } from '../../ports/context.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { readObject } from './read-object.js';
 import type { WalkTreeEntry, WalkTreeOptions } from './types.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
+/** The separator as bytes, for joining a full path in {@link joinPrefixBytes}.
+ *  The hashing counterpart lives with the fold in the domain. */
+const SLASH = Uint8Array.of(0x2f);
+
 interface WalkConfig {
   readonly ctx: Context;
   readonly recursive: boolean;
   readonly maxDepth: number;
   readonly maxEntries: number;
+  readonly pathBytes: boolean;
+  readonly pathHasher?: PathHasher;
 }
 
 interface Counter {
   value: number;
+}
+
+/**
+ * A frame's inherited path, in the three representations a growing
+ * `enterTree` parameter list used to carry separately: the display string,
+ * the caller's hash-fold state, and — when `pathBytes` is on — the raw byte
+ * prefix. One concept (a frame's own path, before its entries' names are
+ * added), one value object.
+ */
+interface FramePrefix {
+  readonly text: string;
+  /** Fold state of `text`, in the caller's `pathHasher` (0 when none was
+   *  supplied — never read in that case). */
+  readonly hashState: number;
+  /** This frame's own path bytes — a private copy, `undefined` when the
+   *  `pathBytes` option is off, an empty array at the root. */
+  readonly bytes: Uint8Array | undefined;
+}
+
+/** Full path of `name` appended to this prefix — git's own rule: a root
+ *  entry is its bare name, never a leading `/`. */
+function joinPrefixPath(prefix: FramePrefix, name: string): string {
+  return prefix.text === '' ? name : `${prefix.text}/${name}`;
+}
+
+/**
+ * Fold `nameBytes` onto this prefix's hash state: git's empty-prefix rule
+ * (a root entry hashes its name, never `/name`) then the entry's own bytes
+ * — the authoritative on-disk value, never the derived, lossy `name` string.
+ */
+function foldPrefixHash(hasher: PathHasher, prefix: FramePrefix, nameBytes: Uint8Array): number {
+  return foldPathSegment(hasher, prefix.hashState, nameBytes, prefix.text === '');
+}
+
+/**
+ * Full path of `nameBytes` appended to this prefix, as bytes. A root guard
+ * separate from {@link foldPrefixHash}'s — keyed on the byte prefix's own
+ * length, not on `text` — because `pathBytes` and `pathHasher` are
+ * independent options.
+ */
+function joinPrefixBytes(prefix: FramePrefix, nameBytes: Uint8Array): Uint8Array {
+  const bytes = prefix.bytes!;
+  return bytes.length === 0 ? nameBytes.slice() : concatBytes([bytes, SLASH, nameBytes]);
 }
 
 /**
@@ -40,7 +91,7 @@ interface Counter {
 interface WalkFrame {
   readonly entries: ReadonlyArray<TreeEntry>;
   index: number;
-  readonly prefix: string;
+  readonly framePrefix: FramePrefix;
   readonly depth: number;
   readonly id: ObjectId;
 }
@@ -59,14 +110,14 @@ interface WalkFrame {
 function enterTree(
   maxDepth: number,
   tree: Tree,
-  prefix: string,
+  framePrefix: FramePrefix,
   depth: number,
   ancestry: Set<ObjectId>,
 ): WalkFrame {
   if (ancestry.has(tree.id)) throw treeCycleDetected(tree.id);
   if (exceedsMaxTreeDepth(depth, maxDepth)) throw treeDepthExceeded(depth);
   ancestry.add(tree.id);
-  return { entries: tree.entries, index: 0, prefix, depth, id: tree.id };
+  return { entries: tree.entries, index: 0, framePrefix, depth, id: tree.id };
 }
 
 /** Build the once-per-operation {@link WalkConfig}, resolving `maxDepth` from
@@ -80,12 +131,23 @@ async function resolveWalkConfig(
     recursive: options?.recursive ?? true,
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
+    pathBytes: options?.pathBytes ?? false,
+    ...(options?.pathHasher !== undefined ? { pathHasher: options.pathHasher } : {}),
   };
 }
 
 interface FrameStep {
   readonly path: FilePath;
   readonly entry: TreeEntry;
+  /** The child frame's inherited fold state, `undefined` when no `pathHasher`
+   *  was supplied; this IS the entry's own `nameHash`. Declared present-but-
+   *  undefined rather than optional: this type is private and destructured at
+   *  its only call site, so nothing observes key presence, and a fixed shape
+   *  keeps the hot per-entry path off a conditional spread. */
+  readonly nameHash: number | undefined;
+  /** The entry's own full path as bytes, `undefined` when `pathBytes` was not
+   *  supplied; a fresh array, never a view onto `frame.framePrefix.bytes`. */
+  readonly pathBytes: Uint8Array | undefined;
 }
 
 /**
@@ -97,12 +159,71 @@ function nextFrameEntry(config: WalkConfig, counter: Counter, frame: WalkFrame):
   const entry = frame.entries[frame.index]!;
   frame.index += 1;
   if (config.ctx.signal?.aborted) throw operationAborted();
-  const path = (frame.prefix === '' ? entry.name : `${frame.prefix}/${entry.name}`) as FilePath;
+  const path = joinPrefixPath(frame.framePrefix, entry.name) as FilePath;
   counter.value += 1;
   if (exceedsMaxTreeEntries(counter.value, config.maxEntries)) {
     throw treeEntryLimitExceeded(counter.value, config.maxEntries);
   }
-  return { path, entry };
+  return {
+    path,
+    entry,
+    nameHash: config.pathHasher
+      ? foldPrefixHash(config.pathHasher, frame.framePrefix, entry.nameBytes)
+      : undefined,
+    pathBytes: config.pathBytes ? joinPrefixBytes(frame.framePrefix, entry.nameBytes) : undefined,
+  };
+}
+
+/** The walk's own starting prefix — empty text, the hasher's seed (0 when
+ *  none was supplied), and an empty byte array exactly when `pathBytes` is on. */
+function buildRootPrefix(config: WalkConfig): FramePrefix {
+  return {
+    text: '',
+    hashState: config.pathHasher?.seed ?? 0,
+    bytes: config.pathBytes ? new Uint8Array(0) : undefined,
+  };
+}
+
+/** The prefix a directory `entry`'s own subtree frame inherits: its full
+ *  path, its folded hash state, and — when `pathBytes` is on — its full
+ *  path as bytes, rebuilt from `frame`'s own prefix rather than reused from
+ *  the value already handed to the consumer. */
+function buildChildPrefix(
+  config: WalkConfig,
+  frame: WalkFrame,
+  path: FilePath,
+  entry: TreeEntry,
+  nameHash: number | undefined,
+): FramePrefix {
+  return {
+    text: path,
+    hashState: nameHash ?? 0,
+    bytes: config.pathBytes ? joinPrefixBytes(frame.framePrefix, entry.nameBytes) : undefined,
+  };
+}
+
+/** Assembles one yielded entry from a {@link FrameStep}'s fields, keeping
+ *  the optional `nameHash`/`pathBytes` keys entirely out of `walkTree`'s
+ *  own loop body. */
+function buildYieldedEntry(
+  path: FilePath,
+  entry: TreeEntry,
+  nameHash: number | undefined,
+  pathBytes: Uint8Array | undefined,
+): WalkTreeEntry {
+  // `WalkTreeEntry`'s optional keys ARE observed by consumers, so absence has
+  // to mean an absent key rather than an undefined value — but that is no
+  // reason to make the common path pay for it. Eleven of the twelve callers
+  // supply neither option, and this early return gives them the same object
+  // shape, and the same cost, they had before either existed.
+  const id = entry.id;
+  const mode = entry.mode as FileMode;
+  if (nameHash === undefined) {
+    if (pathBytes === undefined) return { path, id, mode };
+    return { path, id, mode, pathBytes };
+  }
+  if (pathBytes === undefined) return { path, id, mode, nameHash };
+  return { path, id, mode, nameHash, pathBytes };
 }
 
 /**
@@ -128,7 +249,9 @@ export async function* walkTree(
       : treeIdOrObject;
 
   const ancestry = new Set<ObjectId>();
-  const stack: WalkFrame[] = [enterTree(config.maxDepth, rootTree, '', 0, ancestry)];
+  const stack: WalkFrame[] = [
+    enterTree(config.maxDepth, rootTree, buildRootPrefix(config), 0, ancestry),
+  ];
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
     if (frame.index >= frame.entries.length) {
@@ -136,12 +259,13 @@ export async function* walkTree(
       ancestry.delete(frame.id);
       continue;
     }
-    const { path, entry } = nextFrameEntry(config, counter, frame);
-    yield { path, id: entry.id, mode: entry.mode as FileMode };
+    const { path, entry, nameHash, pathBytes } = nextFrameEntry(config, counter, frame);
+    yield buildYieldedEntry(path, entry, nameHash, pathBytes);
     if (!shouldRecurse(config.recursive, entry.mode)) continue;
     const subtreeObj = await readObject(config.ctx, entry.id);
     if (subtreeObj.type === 'tree') {
-      stack.push(enterTree(config.maxDepth, subtreeObj, path, frame.depth + 1, ancestry));
+      const childPrefix = buildChildPrefix(config, frame, path, entry, nameHash);
+      stack.push(enterTree(config.maxDepth, subtreeObj, childPrefix, frame.depth + 1, ancestry));
     }
   }
 }

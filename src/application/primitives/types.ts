@@ -14,6 +14,7 @@ import type {
   RefName,
   Tree,
 } from '../../domain/objects/index.js';
+import type { PathHasher } from '../../domain/storage/pack-name-hash.js';
 import type { FileStat } from '../../ports/file-system.js';
 
 /** Max symbolic-ref dereferences resolveRef will follow. */
@@ -172,6 +173,16 @@ export interface WalkTreeEntry {
   readonly path: FilePath;
   readonly id: ObjectId;
   readonly mode: FileMode;
+  /** Present exactly when `WalkTreeOptions.pathHasher` was supplied. */
+  readonly nameHash?: number;
+  /**
+   * The entry's full path as bytes: every ancestor's `nameBytes` and the
+   * entry's own, joined by `0x2f`, no leading or trailing separator. A
+   * fresh `Uint8Array` per entry, owned by the consumer — same ownership
+   * rule as `TreeEntry.nameBytes`. Present exactly when
+   * `WalkTreeOptions.pathBytes` was supplied.
+   */
+  readonly pathBytes?: Uint8Array;
 }
 
 export interface WalkTreeOptions {
@@ -183,6 +194,19 @@ export interface WalkTreeOptions {
    */
   readonly maxDepth?: number;
   readonly maxEntries?: number;
+  /**
+   * When supplied, each yielded entry carries a `nameHash` folded over its
+   * own name bytes and the frame's inherited path state — no full path is
+   * ever materialised for the fold. Omitted ⇒ no `nameHash` field, no cost.
+   */
+  readonly pathHasher?: PathHasher;
+  /**
+   * When true, each yielded entry carries `pathBytes` — its full path as
+   * raw bytes, joined from ancestors' `nameBytes`. `path` stays the decoded
+   * display view; the two agree only for names that decode losslessly.
+   * Default `false`, no cost.
+   */
+  readonly pathBytes?: boolean;
 }
 
 export interface WalkWorkingTreeEntry {

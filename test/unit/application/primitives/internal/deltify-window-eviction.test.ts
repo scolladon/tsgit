@@ -73,7 +73,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObj1, idObj2, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObj1, idObj2, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idProbe).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -102,7 +106,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObj1, idObj2, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObj1, idObj2, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idProbe).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -132,7 +140,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObj1, idObj2, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObj1, idObj2, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — obj1 gone, and obj2 shares nothing with probe, so no
         // candidate survives for probe to match.
@@ -164,7 +176,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idBig, idSmall], policy);
+        const result = await sut(
+          ctx,
+          [idBig, idSmall].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idBig).entry.type).not.toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -193,7 +209,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idBig, idSmall], policy);
+        const result = await sut(
+          ctx,
+          [idBig, idSmall].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(findEntry(result, idSmall).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);
@@ -207,8 +227,12 @@ describe('deltifyEntries — window eviction accounting', () => {
         // Arrange — the very first admission always starts from an empty
         // window; a count-eviction guard that ignored emptiness would try
         // to evict a member that was never there.
+        // Sized past the fifty-byte delta floor: under it, the object never
+        // reaches admission at all and this test asserts nothing. It is the
+        // only empty-window case in the suite, so its emptiness guard has no
+        // other cover.
         const ctx = await buildSeededContext();
-        const id = await writeBlob(ctx, pseudoRandomBytes(811, 40));
+        const id = await writeBlob(ctx, pseudoRandomBytes(811, 60));
         const policy: DeltaPolicy = {
           enabled: true,
           window: 0,
@@ -218,7 +242,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [id], policy);
+        const result = await sut(
+          ctx,
+          [id].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert
         expect(result).toHaveLength(1);
@@ -240,11 +268,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const ctx = await buildSeededContext();
         const contentA = pseudoRandomBytes(812, 90);
         const contentB = pseudoRandomBytes(813, 70);
-        const contentC = pseudoRandomBytes(814, 50);
+        const contentC = pseudoRandomBytes(814, 60);
         const idObjA = await writeBlob(ctx, contentA);
         const idObjB = await writeBlob(ctx, contentB);
         const idObjC = await writeBlob(ctx, contentC);
-        const idProbe = await writeBlob(ctx, contentB.slice(0, 32));
+        const idProbe = await writeBlob(ctx, contentB.slice(0, 50));
         const policy: DeltaPolicy = {
           enabled: true,
           window: 2,
@@ -254,7 +282,11 @@ describe('deltifyEntries — window eviction accounting', () => {
         const sut = deltifyEntries;
 
         // Act
-        const result = await sut(ctx, [idObjA, idObjB, idObjC, idProbe], policy);
+        const result = await sut(
+          ctx,
+          [idObjA, idObjB, idObjC, idProbe].map((id) => ({ id })),
+          policy,
+        );
 
         // Assert — objB must still be resident for probe to delta against it.
         expect(findEntry(result, idProbe).entry.type).toBe(PACK_ENTRY_TYPE.OFS_DELTA);

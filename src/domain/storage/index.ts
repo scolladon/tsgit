@@ -9,6 +9,8 @@ export { CRUFT_MTIMES_MAGIC, parseCruftMtimes, serializeCruftMtimes } from './cr
 export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction } from './delta.js';
 export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
 export { encodeDelta, serializeDelta } from './delta-encode.js';
+// Delta policy
+export { NO_RECENCY } from './delta-policy.js';
 // Errors
 export type {
   BitmapCheck,
@@ -25,6 +27,7 @@ export {
   invalidPackEntry,
   invalidPackHeader,
   invalidPackIndex,
+  invalidPackInput,
   invalidPackRevIndex,
 } from './error.js';
 // Pack bitmap
@@ -78,6 +81,16 @@ export {
   offsetAtPackPosition,
   parsePackIndex,
 } from './pack-index.js';
+// Pack name hash
+export type { PathHasher } from './pack-name-hash.js';
+export {
+  foldPackNameHash,
+  foldPathSegment,
+  PACK_NAME_HASH_PATHLESS,
+  PACK_NAME_HASH_SEED,
+  PACK_NAME_HASH_V1,
+  packNameHash,
+} from './pack-name-hash.js';
 export {
   type PackIndexEntries,
   type SortedPackIndex,

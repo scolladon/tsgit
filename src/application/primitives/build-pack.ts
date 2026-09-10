@@ -14,6 +14,7 @@ import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
 import { type GitObject, type ObjectId, serializeObject } from '../../domain/objects/index.js';
 import { resolveDeltaPolicy } from '../../domain/storage/delta-policy.js';
 import {
+  invalidPackInput,
   objectTypeToPackEntryType,
   type PackIndexEntries,
   type PackWriterBaseEntry,
@@ -25,8 +26,21 @@ import { readConfig } from './config-read.js';
 import { deltifyEntries } from './internal/deltify.js';
 import { readObject } from './read-object.js';
 
+export interface PackObjectInput {
+  readonly id: ObjectId;
+  /** git's `pack_name_hash` of the object's path. Absent, or `0`, for an object
+   *  the caller has no path for — what git itself does for an object it has no
+   *  name for. */
+  readonly nameHash?: number;
+  /** The caller's first-seen ordinal — git's pointer-order tiebreak in the one
+   *  form a caller can reproduce. Present on every object or on none: a mixed
+   *  input is refused. When present the pack's bytes are a function of the
+   *  sequence as well as the set, so pass a deterministic one. */
+  readonly recency?: number;
+}
+
 export interface BuildPackInput {
-  readonly oids: ReadonlyArray<ObjectId>;
+  readonly objects: ReadonlyArray<PackObjectInput>;
   /** Emit OFS_DELTA entries where a delta is strictly smaller on disk. Default false. */
   readonly delta?: boolean;
 }
@@ -40,22 +54,42 @@ export interface BuildPackResult {
    *  `PackIndexEntries` shape every `.idx`/`.rev`/cruft serializer consumes
    *  directly, with no intermediate hex-bearing array on the write path. */
   readonly entries: PackIndexEntries;
-  /** Emission ordinal -> index into the `oids` this build was given. The packer
-   *  emits in its own (type, size, oid) order, so a caller holding per-object
-   *  data keyed by ITS order — `gc`'s cruft mtimes are the case — maps across
-   *  with this instead of decoding an oid per object. Four bytes an entry
-   *  against the hex-bearing array this shape exists to avoid. */
+  /** Emission ordinal -> index into the `objects` this build was given. The
+   *  packer emits in its own (type, nameHash, size, recency, oid) order, so a
+   *  caller holding per-object data keyed by ITS order — `gc`'s cruft mtimes
+   *  are the case — maps across with this instead of decoding an oid per
+   *  object. Four bytes an entry against the hex-bearing array this shape
+   *  exists to avoid. */
   readonly emissionOrder: Uint32Array;
 }
 
 interface WriterPlan {
   readonly ids: ReadonlyArray<ObjectId>;
   readonly entries: ReadonlyArray<PackWriterEntry>;
-  /** Emission ordinal -> index into `input.oids`. */
+  /** Emission ordinal -> index into `input.objects`. */
   readonly emissionOrder: Uint32Array;
 }
 
+/**
+ * A mixed input — some objects carrying `recency`, others not — makes the
+ * emission comparator non-transitive (a recency-absent object ties every
+ * other recency-absent object on that term, but a recency-present object
+ * never does), so the sort order would be undefined. Refused unconditionally
+ * — before any read, regardless of `delta` — since it is a caller defect
+ * whatever path would otherwise follow.
+ */
+function assertUniformRecency(objects: ReadonlyArray<PackObjectInput>): void {
+  let present = 0;
+  let absent = 0;
+  for (const object of objects) {
+    if (object.recency === undefined) absent += 1;
+    else present += 1;
+  }
+  if (present > 0 && absent > 0) throw invalidPackInput('mixed-recency', present, absent);
+}
+
 export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<BuildPackResult> => {
+  assertUniformRecency(input.objects);
   const plan = await resolveWriterPlan(ctx, input);
   const packfile = serializePackfile(plan.entries);
   const trailerBytes = await ctx.hash.hash(packfile.data);
@@ -93,11 +127,11 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
  * pack build.
  */
 async function resolveWriterPlan(ctx: Context, input: BuildPackInput): Promise<WriterPlan> {
-  if (input.delta !== true) return buildBaseEntries(ctx, input.oids);
+  if (input.delta !== true) return buildBaseEntries(ctx, input.objects);
   const config = await readConfig(ctx);
   const policy = resolveDeltaPolicy(config.pack ?? {});
-  if (!policy.enabled) return buildBaseEntries(ctx, input.oids);
-  const deltified = await deltifyEntries(ctx, input.oids, policy);
+  if (!policy.enabled) return buildBaseEntries(ctx, input.objects);
+  const deltified = await deltifyEntries(ctx, input.objects, policy);
   const emissionOrder = new Uint32Array(deltified.length);
   for (let i = 0; i < deltified.length; i += 1) emissionOrder[i] = deltified[i]!.sourceIndex;
   return {
@@ -107,21 +141,24 @@ async function resolveWriterPlan(ctx: Context, input: BuildPackInput): Promise<W
   };
 }
 
-async function buildBaseEntries(ctx: Context, oids: ReadonlyArray<ObjectId>): Promise<WriterPlan> {
+async function buildBaseEntries(
+  ctx: Context,
+  objects: ReadonlyArray<PackObjectInput>,
+): Promise<WriterPlan> {
   const entries: PackWriterBaseEntry[] = [];
-  for (const oid of oids) {
-    const object = await readObject(ctx, oid);
+  for (const packObject of objects) {
+    const object = await readObject(ctx, packObject.id);
     entries.push(await encodeEntry(ctx, object));
   }
   // The base-only route emits in input order, so the permutation is identity.
-  const emissionOrder = new Uint32Array(oids.length);
+  const emissionOrder = new Uint32Array(objects.length);
   // Stryker disable next-line EqualityOperator: equivalent — `emissionOrder`
-  // is a fixed-length `Uint32Array(oids.length)`; an extra `i === oids.length`
-  // iteration writes `emissionOrder[oids.length]`, out of bounds, which typed
-  // arrays silently no-op rather than throw or grow, so `<= oids.length` is
-  // observationally identical to `< oids.length`.
-  for (let i = 0; i < oids.length; i += 1) emissionOrder[i] = i;
-  return { ids: oids, entries, emissionOrder };
+  // is a fixed-length `Uint32Array(objects.length)`; an extra `i === objects.length`
+  // iteration writes `emissionOrder[objects.length]`, out of bounds, which typed
+  // arrays silently no-op rather than throw or grow, so `<= objects.length` is
+  // observationally identical to `< objects.length`.
+  for (let i = 0; i < objects.length; i += 1) emissionOrder[i] = i;
+  return { ids: objects.map((o) => o.id), entries, emissionOrder };
 }
 
 const encodeEntry = async (ctx: Context, object: GitObject): Promise<PackWriterBaseEntry> => {

@@ -43,6 +43,10 @@ import {
   writePackOnly,
 } from './pack-fixture-helpers.js';
 
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
+
 // ---------------------------------------------------------------------------
 // git-invocation + output-parsing helpers
 // ---------------------------------------------------------------------------
@@ -166,7 +170,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const v3PackBytes = restampPackVersion(basePackBytes, 3);
         const dir = await freshRepo('v3-ingest');
         const { packPath, idxPath } = await writePackOnly(dir, 'v3', v3PackBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', dir, 'index-pack', '-o', idxPath, packPath]);
@@ -184,7 +188,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const v99PackBytes = restampPackVersion(basePackBytes, 99);
         const dir = await freshRepo('v99-ingest');
         const { packPath, idxPath } = await writePackOnly(dir, 'v99', v99PackBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', dir, 'index-pack', '-o', idxPath, packPath]);
@@ -213,7 +217,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const dir = await freshRepo('v3-local-read');
         const { packPath, idxPath } = await writePackOnly(dir, 'v3', v3PackBytes);
         git(dir, 'index-pack', '-o', idxPath, packPath);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitPayload = catFileRaw(dir, packedOid);
@@ -232,7 +236,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
         const dir = await freshRepo('v99-object-missing-elsewhere');
         await writePack(dir, 'v99', v99PackBytes, v99IdxBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = batchCheck(dir, packedOid);
@@ -260,7 +264,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         await writePack(dir, 'bad', v99PackBytes, v99IdxBytes);
         await writePack(dir, 'good', basePackBytes, baseIdxBytes);
         const warn = vi.fn();
-        const baseCtx = createNodeContext({ workDir: dir });
+        const baseCtx = createTrackedNodeContext({ workDir: dir });
         // Raw readdir order is filesystem-dependent; sorting pins the bad pack
         // first so the skip arm provably fires on every host.
         const sut: Context = {
@@ -307,7 +311,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const dir = await freshRepo('v99-unclaimed-with-sibling');
         await writePack(dir, 'bad', decoyBadPackBytes, decoyBadIdxBytes);
         await writePack(dir, 'good', basePackBytes, baseIdxBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', packedOid]);
@@ -332,7 +336,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const v3BundleBytes = restampPackVersion(bundleBytes, 3, packStart);
         const v3BundlePath = path.join(dir, 'v3.bundle');
         await writeFile(v3BundlePath, v3BundleBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', dir, 'bundle', 'verify', v3BundlePath]);
@@ -353,7 +357,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const dir = await freshRepo('v3-roundtrip');
         const { packPath, idxPath } = await writePackOnly(dir, 'v3', v3PackBytes);
         git(dir, 'index-pack', '-o', idxPath, packPath);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act — the same byte array drives ingest…
         const entries = await walkPackEntries(sut, v3PackBytes);
@@ -374,7 +378,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const corruptIdxBytes = corruptIdxSameLength(baseIdxBytes);
         const dir = await freshRepo('corrupt-idx-alone');
         await writePack(dir, 'corrupt', basePackBytes, corruptIdxBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitBatch = batchCheck(dir, packedOid);
@@ -405,7 +409,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const dir = await freshRepo('corrupt-idx-with-loose');
         await writePack(dir, 'corrupt', basePackBytes, corruptIdxBytes);
         await writeLooseObject(dir, looseOid, looseRawBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitPayload = catFileRaw(dir, looseOid);
@@ -426,7 +430,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const dir = await freshRepo('corrupt-idx-with-sibling');
         await writePack(dir, 'corrupt', basePackBytes, corruptIdxBytes);
         await writePack(dir, 'good', basePackBytes, baseIdxBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitPayload = catFileRaw(dir, packedOid);
@@ -446,7 +450,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const dir = await freshRepo('orphaned-idx');
         await writeIdxOnly(dir, 'orphan', baseIdxBytes);
         await writeLooseObject(dir, looseOid, looseRawBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitBatch = batchCheck(dir, packedOid);
@@ -478,7 +482,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const mismatchedPackBytes = setHeaderObjectCount(basePackBytes, objectCount + 1);
         const dir = await freshRepo('header-count-mismatch');
         await writePack(dir, 'mismatch', mismatchedPackBytes, baseIdxBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = createTrackedNodeContext({ workDir: dir });
 
         // Act
         const gitBatch = batchCheck(dir, packedOid);
@@ -512,12 +516,12 @@ describe.skipIf(!GIT_AVAILABLE)(
         const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
         const lookupFaultDir = await freshRepo('enum-lookup-fault');
         await writePack(lookupFaultDir, 'v99', v99PackBytes, v99IdxBytes);
-        const lookupFaultCtx = createNodeContext({ workDir: lookupFaultDir });
+        const lookupFaultCtx = createTrackedNodeContext({ workDir: lookupFaultDir });
 
         const corruptIdxBytes = corruptIdxSameLength(baseIdxBytes);
         const scanFaultDir = await freshRepo('enum-scan-fault');
         await writePack(scanFaultDir, 'corrupt', basePackBytes, corruptIdxBytes);
-        const scanFaultCtx = createNodeContext({ workDir: scanFaultDir });
+        const scanFaultCtx = createTrackedNodeContext({ workDir: scanFaultDir });
 
         // Act
         const lookupFaultCount = countObjects(lookupFaultDir);

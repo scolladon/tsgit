@@ -130,6 +130,51 @@ async function buildTextChurnRepo(slug: string): Promise<string> {
   return dir;
 }
 
+const SAME_SIZE_LINES = 500;
+const SAME_SIZE_STAMP_WIDTH = 3;
+
+/** A fixed-width per-line stamp, overwritten in place on every edit, so the
+ *  file's total byte length never changes across versions. */
+const sameSizeLine = (index: number, version: number): string =>
+  `line ${String(index).padStart(3, '0')} v${String(version).padStart(SAME_SIZE_STAMP_WIDTH, '0')}`;
+
+/**
+ * One path, exactly `versions` TOTAL revisions of a FIXED-LENGTH file —
+ * the seed is version 1, and each subsequent edit overwrites one line's
+ * version stamp in place, never appending or shortening, so every commit's
+ * blob is the exact same byte length. The R13 cap oracle's tie-dense
+ * corpus: every pair ties on size (and, being the one path, on nameHash
+ * too), so only gc's recency tiebreak can order them — the shape the
+ * whole entry exists to close the gap on.
+ *
+ * The reflog is expired before return: `git commit` writes a fresh
+ * `refs/heads/main` reflog entry on every call, and gc's own retention
+ * roots protect EVERY reflog entry, not just the tip — left in place, each
+ * of the `versions` commits becomes its own SORTED root (oid order, not
+ * chronological), scrambling the closure walk into oid order and breaking
+ * the "each version deltas on its predecessor" shape this corpus exists to
+ * produce. A repository whose reflog has aged out (the ordinary state
+ * `gc.reflogExpire`'s default eventually reaches) leaves only the tip as a
+ * root, which is what this fixture models.
+ */
+async function buildSameSizeVersionsRepo(slug: string, versions: number): Promise<string> {
+  const dir = await freshRepo(slug);
+  const filePath = path.join(dir, 'tie.txt');
+  let lines = Array.from({ length: SAME_SIZE_LINES }, (_, i) => sameSizeLine(i, 1));
+  await writeFile(filePath, `${lines.join('\n')}\n`);
+  git(dir, 'add', '-A');
+  commitAt(dir, 0, 'seed');
+  for (let version = 2; version <= versions; version += 1) {
+    const target = mix32(version) % lines.length;
+    lines = lines.map((line, i) => (i === target ? sameSizeLine(i, version) : line));
+    await writeFile(filePath, `${lines.join('\n')}\n`);
+    git(dir, 'add', '-A');
+    commitAt(dir, version, `edit ${version}`);
+  }
+  git(dir, 'reflog', 'expire', '--expire=now', '--expire-unreachable=now', '--all');
+  return dir;
+}
+
 function trackedNodeContext(workDir: string): Context {
   return createNodeContext({ workDir, hooks: false, command: false, ssh: false });
 }
@@ -204,6 +249,61 @@ function parseChainDepths(verifyOutput: string): {
   return { histogram, perObject };
 }
 
+interface BlobPackShape {
+  readonly baseCount: number;
+  readonly deltaCount: number;
+  readonly maxDepth: number;
+}
+
+/** Reads `git verify-pack -v`'s BLOB lines only — trees and commits are
+ *  excluded because their deltas are decided by the deflate-size
+ *  acceptance rule, not by ordering, so they carry no signal for the R13
+ *  cap oracle. Mirrors `maxChainDepthOid`'s own filter (`fixture-generator
+ *  .ts`): a deltified blob line has `tokens[1] === 'blob'` and 6+ tokens,
+ *  with the chain depth at `tokens[5]`; a base blob line has 5. */
+function parseBlobPackShape(verifyOutput: string): BlobPackShape {
+  let baseCount = 0;
+  let deltaCount = 0;
+  let maxDepth = 0;
+  for (const line of verifyOutput.split('\n')) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens[1] !== 'blob') continue;
+    if (tokens.length < 6) {
+      baseCount += 1;
+      continue;
+    }
+    deltaCount += 1;
+    const depth = Number(tokens[5]);
+    if (depth > maxDepth) maxDepth = depth;
+  }
+  return { baseCount, deltaCount, maxDepth };
+}
+
+interface TreePackShape {
+  readonly baseCount: number;
+  readonly deltaCount: number;
+}
+
+/** Reads `git verify-pack -v`'s TREE lines only, counting bases vs deltas —
+ *  the readout the 50-byte floor moves on the text-churn corpus: one path
+ *  means every commit's root tree is a ~37-byte object, so before this
+ *  guard some of them deltified against each other, and after it none can
+ *  — neither as target nor as a window member. */
+function parseTreePackShape(verifyOutput: string): TreePackShape {
+  let baseCount = 0;
+  let deltaCount = 0;
+  for (const line of verifyOutput.split('\n')) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens[1] !== 'tree') continue;
+    if (tokens.length < 6) {
+      baseCount += 1;
+      continue;
+    }
+    deltaCount += 1;
+  }
+  return { baseCount, deltaCount };
+}
+
 async function appendConfigLines(dir: string, lines: string): Promise<void> {
   const configPath = path.join(dir, '.git', 'config');
   const existing = await readFile(configPath, 'utf8');
@@ -235,6 +335,9 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
   let tsgitPackPath: string;
   let tsgitIdxPath: string;
   let gitRepackBytes: number;
+  let gitRepackObjectCount: number;
+  let gitRepackDir: string;
+  let gitRepackIdxPath: string;
 
   beforeAll(async () => {
     churnRepo = await buildTextChurnRepo('churn-source');
@@ -250,11 +353,33 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     tsgitPackBytes = await readFile(tsgitPackPath);
     tsgitIdxBytes = await readFile(tsgitIdxPath);
 
-    const gitRepackDir = await tmp('churn-git-repack');
+    // `-f` forces a full re-selection instead of reusing inherited deltas
+    // (plain `repack -a -d` would compare tsgit's SELECTION against git's
+    // own INHERITANCE — a validity band, not a selection measure); the
+    // window/depth pin matches tsgit's own defaults so neither side's
+    // search is throttled relative to the other's.
+    gitRepackDir = await tmp('churn-git-repack');
     await cp(churnRepo, gitRepackDir, { recursive: true });
-    runGit(['-C', gitRepackDir, '-c', 'pack.threads=1', 'repack', '-a', '-d', '-q']);
+    runGit([
+      '-C',
+      gitRepackDir,
+      '-c',
+      'pack.threads=1',
+      '-c',
+      'pack.window=10',
+      '-c',
+      'pack.depth=50',
+      'repack',
+      '-a',
+      '-d',
+      '-f',
+      '-q',
+    ]);
     const gitPaths = await solePackIdx(gitRepackDir);
+    gitRepackIdxPath = gitPaths.idxPath;
     gitRepackBytes = (await readFile(gitPaths.packPath)).length;
+    const gitIdxBytes = await readFile(gitPaths.idxPath);
+    gitRepackObjectCount = allObjectIds(parsePackIndex(gitIdxBytes, IDX_DIGEST_LENGTH)).length;
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -417,19 +542,54 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
   // X7 — size class vs git's own single-threaded repack
   // -------------------------------------------------------------------------
 
-  describe("Given the text-churn shape, gc'd by tsgit and repacked by git -c pack.threads=1, When the two pack sizes are compared", () => {
-    it("Then tsgit's pack size lands in the recorded size class, with generous headroom", () => {
-      // Arrange — both sizes were already measured in the shared beforeAll.
+  describe("Given the text-churn shape, gc'd by tsgit and repacked by git -c pack.threads=1 -f (a forced re-selection, not an inherited-delta comparison), When the two pack sizes are compared", () => {
+    it("Then the two packs carry the same object count, and tsgit's pack size lands in the recorded size class, with generous headroom", () => {
+      // Arrange — both packs were already built in the shared beforeAll.
       const tsgitBytes = tsgitPackBytes.length;
       const gitBytes = gitRepackBytes;
+      const tsgitObjectCount = allObjectIds(
+        parsePackIndex(tsgitIdxBytes, IDX_DIGEST_LENGTH),
+      ).length;
 
-      // Assert — a class, not a ratio or a byte count: tsgit's deltified
-      // pack must land in the same rough band as git's single-threaded
-      // repack (never an equality — git's own packer is not deterministic
-      // across runs), and nowhere near the multi-times inflation the
-      // pre-change base-only writer measured.
-      expect(tsgitBytes).toBeLessThan(gitBytes * 2);
+      // Assert — object counts equal FIRST: a comparability gate, so a
+      // ratio computed over mismatched sets can never read as a passing
+      // size class. Then a class, not a ratio or a byte count: tsgit's
+      // deltified pack must land in the same rough band as git's forced
+      // single-threaded re-selection (never an equality — git's own
+      // packer is not deterministic across runs). The upper bound is this
+      // stage's own shipped readout (×0.99 measured here) plus a little
+      // headroom for that non-determinism; the lower bound stays generous,
+      // since a smaller pack is never the regression this band exists to
+      // catch.
+      //
+      // The bound is deliberately tight. Measured on the pre-change writer,
+      // this same corpus lands at ×1.05 — so a laxer ceiling (×1.15 was the
+      // first attempt) passes on the unfixed code and tests nothing at all.
+      // It must exclude the value this change exists to remove, not merely
+      // admit the value it produces.
+      expect(tsgitObjectCount).toBe(gitRepackObjectCount);
+      expect(tsgitBytes).toBeLessThan(gitBytes * 1.03);
       expect(tsgitBytes).toBeGreaterThan(gitBytes * 0.5);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // X15 — the 50-byte floor moves the tree readout to bases, matching git
+  // -------------------------------------------------------------------------
+
+  describe("Given the text-churn shape's one-path root trees, each well under the 50-byte floor, When git verify-pack -v reads the tree lines of both tsgit's pack and git's own re-selection", () => {
+    it('Then every tree is a base on both sides, in equal count — the floor, not a coincidence of the search bound', () => {
+      // Arrange — both packs were already built in the shared beforeAll;
+      // the corpus's single tracked path means every commit's root tree is
+      // one ~37-byte entry, so the delta floor excludes all of them from
+      // delta candidacy and from window admission alike.
+      const tsgitShape = parseTreePackShape(git(tsgitGcDir, 'verify-pack', '-v', tsgitIdxPath));
+      const gitShape = parseTreePackShape(git(gitRepackDir, 'verify-pack', '-v', gitRepackIdxPath));
+
+      // Assert
+      expect(tsgitShape.deltaCount).toBe(0);
+      expect(gitShape.deltaCount).toBe(0);
+      expect(tsgitShape.baseCount).toBe(gitShape.baseCount);
     });
   });
 
@@ -456,9 +616,13 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
         // Act
         const result = tryRunGitWithExit(['index-pack', '--strict', '-v', scratchPack]);
 
-        // Assert
+        // Assert — the depth-scaled search bound (this stage) changes which
+        // delta this shared corpus emits first, so the flipped byte now
+        // lands on a back-reference distance rather than the trailing
+        // checksum; either is a legitimate zlib inflate failure (-3), so
+        // the oracle asserts the class, not one specific sub-message.
         expect(result.exitCode).toBe(128);
-        expect(result.stderr).toContain('inflate: data stream error (incorrect data check)');
+        expect(result.stderr).toContain('inflate: data stream error');
         expect(result.stderr).toMatch(
           /fatal: pack has bad object at offset \d+: inflate returned -3/,
         );
@@ -512,7 +676,10 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
         // Act
         const result = tryRunGitWithExit(['-C', corruptRepo, 'fsck', '--strict', '--no-progress']);
 
-        // Assert
+        // Assert — the 50-byte delta floor shifts which delta this shared
+        // corpus emits first yet again, so the flipped byte now trips a
+        // different combination of fsck's internal error bits (6, not 4);
+        // every finding string below still fires unchanged.
         expect(result.exitCode).toBe(6);
         expect(result.stderr).toContain('pack checksum mismatch');
         expect(result.stderr).toContain('index CRC mismatch');
@@ -869,8 +1036,11 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
 
           // Act — tsgit: the base-only writer vs the opt-in writer under a
           // disabling config must produce byte-identical bytes.
-          const baseline = await buildPack(ctx, { oids });
-          const optedIn = await buildPack(ctx, { oids, delta: true });
+          const baseline = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
+          const optedIn = await buildPack(ctx, {
+            objects: oids.map((id) => ({ id })),
+            delta: true,
+          });
           await disposePackRegistry(ctx);
 
           // Assert — tsgit
@@ -895,3 +1065,100 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// R13 cap oracle — a tie-dense, same-size-versions corpus (one path, every
+// revision the same byte length), gc'd by tsgit, read back through
+// `git verify-pack -v`'s blob lines only
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'delta-writing packer over a same-size-versions corpus, against real git',
+  () => {
+    const BELOW_CAP_VERSIONS = 45;
+    const AT_CAP_VERSIONS = 60;
+
+    let belowCapDir: string;
+    let belowCapIdxPath: string;
+    let atCapDir: string;
+    let atCapIdxPath: string;
+
+    async function tsgitGc(
+      slug: string,
+      versions: number,
+    ): Promise<{ dir: string; idxPath: string }> {
+      const repo = await buildSameSizeVersionsRepo(slug, versions);
+      const gcDir = await tmp(`${slug}-tsgit-gc`);
+      await cp(repo, gcDir, { recursive: true });
+      const gcCtx = trackedNodeContext(gcDir);
+      await maintenance(gcCtx, { tasks: ['gc'] });
+      await disposePackRegistry(gcCtx);
+      const paths = await solePackIdx(gcDir);
+      return { dir: gcDir, idxPath: paths.idxPath };
+    }
+
+    beforeAll(async () => {
+      const below = await tsgitGc('same-size-below-cap', BELOW_CAP_VERSIONS);
+      belowCapDir = below.dir;
+      belowCapIdxPath = below.idxPath;
+      const atCap = await tsgitGc('same-size-at-cap', AT_CAP_VERSIONS);
+      atCapDir = atCap.dir;
+      atCapIdxPath = atCap.idxPath;
+    }, 120_000);
+
+    afterAll(async () => {
+      await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    describe("Given 45 same-size versions of one file, gc'd by tsgit, When git verify-pack -v reads the blob lines", () => {
+      it('Then every version deltas on its predecessor: 1 blob base, 44 blob deltas, max chain 44', () => {
+        // Arrange — below the depth cap, so the cap never interferes.
+        const verifyOut = git(belowCapDir, 'verify-pack', '-v', belowCapIdxPath);
+
+        // Act
+        const result = parseBlobPackShape(verifyOut);
+
+        // Assert — `git -c pack.threads=1 -c pack.window=10 -c pack.depth=50
+        // repack -a -d -f -q` over the same repository: 1 blob base, 44 blob
+        // deltas, max blob chain 16 (recorded for the structural
+        // comparison, not asserted equal — the two codecs accept deltas by
+        // different rules; git's own best-base promotion and per-candidate
+        // scoring branch this tie-dense corpus into a shallower, wider
+        // shape rather than one straight chain).
+        expect(result.baseCount).toBe(1);
+        expect(result.deltaCount).toBe(BELOW_CAP_VERSIONS - 1);
+        expect(result.maxDepth).toBe(BELOW_CAP_VERSIONS - 1);
+      });
+    });
+
+    describe("Given 60 same-size versions of one file, gc'd by tsgit, When git verify-pack -v reads the blob lines", () => {
+      it('Then the depth-scaled search bound keeps the chain off the cap: max blob chain below 50, a handful of blob bases', () => {
+        // Arrange — past the depth cap, so the FIFO window is forced to
+        // start a fresh base once a chain stops fitting the search bound.
+        const verifyOut = git(atCapDir, 'verify-pack', '-v', atCapIdxPath);
+
+        // Act
+        const result = parseBlobPackShape(verifyOut);
+
+        // Assert — measured at this stage: max blob chain 49, 1 blob base.
+        // `git -c pack.threads=1 -c pack.window=10 -c pack.depth=50 repack
+        // -a -d -f -q` over the same repository: 1 blob base, 59 blob
+        // deltas, max blob chain 22 (recorded for the structural
+        // comparison, not asserted equal — see the 45-version row above for
+        // why git's own shape differs). The band below is this stage's own
+        // readout with headroom, not a guess. Both bounds carry weight, and
+        // not the ones the shape suggests: on the pre-ordering writer this
+        // corpus measures a max chain of 15, so it is the LOWER bound that
+        // excludes the shape this change exists to remove. The upper bound
+        // excludes the opposite failure — the stage-1 state, where the flat
+        // cap saturated at exactly 50. Relaxing the lower bound would quietly
+        // re-admit the regression.
+        expect(result.maxDepth).toBeGreaterThanOrEqual(40);
+        expect(result.maxDepth).toBeLessThan(50);
+        expect(result.baseCount).toBeGreaterThanOrEqual(1);
+        expect(result.baseCount).toBeLessThanOrEqual(4);
+        expect(result.deltaCount).toBe(AT_CAP_VERSIONS - result.baseCount);
+      });
+    });
+  },
+);

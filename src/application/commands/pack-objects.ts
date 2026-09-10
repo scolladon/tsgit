@@ -51,7 +51,10 @@ export interface PackObjectsResult {
    * tiers; compare the object set read back from the `.idx` instead. With
    * delta emission on, this is more true than ever: the pack's byte order
    * is a function of the object SET (`buildPack`'s own emission order), not
-   * of the closure's own traversal order.
+   * of the closure's own traversal order — and, now, of the name hashes the
+   * tier supplied: the walk tier hands every object its own, the bitmap
+   * tier hands none, so the SAME object set orders its deltas differently
+   * across tiers even when both closures happen to agree on membership.
    */
   readonly packId: ObjectId;
   readonly objectCount: number;
@@ -83,8 +86,7 @@ export const packObjects = async (
     tier: closureTierFor(opts),
   });
 
-  const oids = closure.objects.map((object) => object.id);
-  const pack = await buildPack(ctx, { oids, delta: true });
+  const pack = await buildPack(ctx, { objects: closure.objects, delta: true });
   const outputDirectory = opts.outputDirectory ?? packsDir(commonGitDir(ctx));
   const written = await writePackArtifacts(ctx, {
     packDir: outputDirectory,

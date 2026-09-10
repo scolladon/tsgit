@@ -32,9 +32,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
-import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -1629,7 +1631,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       it('Then reports the commit as bad and exits 1, as real git does', async () => {
         // Arrange
         const gitResult = gitFsck(widthSha1Dir, '--strict');
-        const sut = await openRepository({ cwd: widthSha1Dir });
+        const sut = await openTrackedRepository({ cwd: widthSha1Dir });
 
         // Act
         const result = await sut.fsck({ strict: true });
@@ -1657,7 +1659,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       it('Then reports the commit as bad and exits 1, as real git does', async () => {
         // Arrange
         const gitResult = gitFsck(widthSha256Dir, '--strict');
-        const sut = await openRepository({ cwd: widthSha256Dir });
+        const sut = await openTrackedRepository({ cwd: widthSha256Dir });
 
         // Act
         const result = await sut.fsck({ strict: true });

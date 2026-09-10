@@ -113,7 +113,19 @@ done
 # canonical-path fallback and the absence-tolerant realpath it needs, and the restoration
 # that runs only for a directory the arm itself removed — each closes a self-rename or
 # residue route the second cycle measured; none is removable without reopening one.
-SIZE_CAP=$((910 * 1024))
+# Raised 910 -> 918 KiB by the name-hash delta-ordering work: the measured tarball landed
+# at 935 975 B, 4 135 B over the old cap. Attribution: the pack name-hash module and its
+# `PathHasher` seam, the widened emission comparator carrying the name-hash and recency
+# terms, `buildPack`'s identified-object input with its mixed-recency refusal, `walkTree`'s
+# per-frame hash fold and byte-path option, and the three window mechanics git's packer
+# carries (the depth-scaled search bound, best-base promotion with max-depth non-admission,
+# and the fifty-byte delta floor) — all runtime code shipped in every distribution form,
+# none removable without dropping the behaviour this entry exists to add.
+# Raised by 8 KiB rather than the minimum 5 because the review round is still open: the
+# rename-kind work took four separate raises (906 -> 908 -> 909 -> 910) as each review cycle
+# overran the previous cap by a few hundred bytes, and each raise cost a full validate re-run.
+# Re-measure once at the end of review rather than bumping again per fix commit.
+SIZE_CAP=$((918 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

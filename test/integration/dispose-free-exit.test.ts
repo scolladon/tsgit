@@ -31,6 +31,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { requireBuiltArtefact } from './built-artefacts.js';
 import { GIT_AVAILABLE, runGitAsync, runGitEnv } from './interop-helpers.js';
 
 const execFileAsync = promisify(execFile);
@@ -39,7 +40,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const DIST_ENTRY = path.join(ROOT, 'dist', 'esm', 'index.node.js');
 const EXIT_TIMEOUT_MS = 5000;
 const BURST_TIMEOUT_MS = 30_000;
-const BUILD_TIMEOUT_MS = 600_000;
+const SETUP_TIMEOUT_MS = 60_000;
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Ada',
@@ -124,9 +125,7 @@ let scriptPath = '';
 
 describe.skipIf(!GIT_AVAILABLE)('dispose-free exit (A4/B8)', () => {
   beforeAll(async () => {
-    // Build the shipped Node entry point once — a plain `node` child process
-    // cannot resolve `src/`'s `.js`-specifier-for-`.ts`-file imports.
-    await execFileAsync('npm', ['run', 'build'], { cwd: ROOT, timeout: BUILD_TIMEOUT_MS });
+    await requireBuiltArtefact(DIST_ENTRY);
 
     repoDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-dispose-free-'));
     await runGitAsync(['init', '-q', '-b', 'main', repoDir]);
@@ -149,7 +148,7 @@ describe.skipIf(!GIT_AVAILABLE)('dispose-free exit (A4/B8)', () => {
     scriptDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-dispose-free-script-'));
     scriptPath = path.join(scriptDir, 'child.mjs');
     await writeFile(scriptPath, childScript(pathToFileURL(DIST_ENTRY).href));
-  }, BUILD_TIMEOUT_MS);
+  }, SETUP_TIMEOUT_MS);
 
   afterAll(async () => {
     await rm(repoDir, { recursive: true, force: true });

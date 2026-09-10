@@ -230,6 +230,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'INVALID_PACK_REV_INDEX':
     case 'INVALID_PACK_BITMAP':
     case 'INVALID_CRUFT_MTIMES':
+    case 'INVALID_PACK_INPUT':
     case 'INVALID_REF':
     case 'INVALID_PACKED_REFS':
     case 'INVALID_REFTABLE':

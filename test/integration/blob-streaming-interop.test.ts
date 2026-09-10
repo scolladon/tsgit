@@ -32,6 +32,10 @@ import {
   runGitEnv,
 } from './interop-helpers.js';
 
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
+
 // ---------------------------------------------------------------------------
 // File-local helpers
 // ---------------------------------------------------------------------------
@@ -106,7 +110,7 @@ describe.skipIf(!GIT_AVAILABLE)('blob-streaming interop', () => {
           git(pair.peer, 'gc', '--quiet');
           await copyPackFiles(pair.peer, pair.ours);
           const catFileBuf = catFileRaw(pair.peer, blobId);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act
           const stream = await streamBlob(sut, blobId);
@@ -136,7 +140,7 @@ describe.skipIf(!GIT_AVAILABLE)('blob-streaming interop', () => {
           const blobId = git(pair.peer, 'rev-parse', 'HEAD:large2.bin').trim() as ObjectId;
           git(pair.peer, 'gc', '--quiet');
           await copyPackFiles(pair.peer, pair.ours);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act / Assert — default verifyHash=true must not throw
           const stream = await streamBlob(sut, blobId);
@@ -166,7 +170,7 @@ describe.skipIf(!GIT_AVAILABLE)('blob-streaming interop', () => {
           const blobId = git(pair.ours, 'rev-parse', 'HEAD:loose.bin').trim() as ObjectId;
           // Intentionally no git gc — blob stays loose
           const catFileBuf = catFileRaw(pair.ours, blobId);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act
           const stream = await streamBlob(sut, blobId);
@@ -220,7 +224,7 @@ describe.skipIf(!GIT_AVAILABLE)('blob-streaming interop', () => {
           const deltaId =
             deltaLine !== undefined ? (deltaLine.trim().split(/\s+/)[0] as ObjectId) : targetId;
           const catFileBuf = catFileRaw(pair.peer, deltaId);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act
           const stream = await streamBlob(sut, deltaId);

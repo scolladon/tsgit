@@ -157,6 +157,75 @@ describe('writePackArtifacts', () => {
     });
   });
 
+  describe('Given an identical .pack already occupying its own name', () => {
+    describe('When writePackArtifacts runs', () => {
+      it('Then it keeps the existing pack untouched and still writes the siblings', async () => {
+        // Arrange — a pack's name IS its content hash, so an occupant of that
+        // name holds the very bytes about to be written. That happens whenever
+        // tsgit reproduces a pack git already wrote, and is a success rather
+        // than a collision — the same rule the .idx and .rev siblings follow.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const packPath = `${dir}/pack-${PACK_SHA}.pack`;
+        await ctx.fs.writeExclusive(packPath, PACK_BYTES);
+        const before = await ctx.fs.stat(packPath);
+        const sut = writePackArtifacts;
+
+        // Act
+        await sut(ctx, {
+          packDir: dir,
+          packBytes: PACK_BYTES,
+          entries,
+          packSha: PACK_SHA,
+          promisor: false,
+        });
+
+        // Assert
+        expect(await ctx.fs.read(packPath)).toEqual(PACK_BYTES);
+        expect((await ctx.fs.stat(packPath)).mtimeMs).toBe(before.mtimeMs);
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.idx`)).toBe(true);
+        expect(await ctx.fs.exists(`${dir}/pack-${PACK_SHA}.rev`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a .pack with different bytes already occupying its own name', () => {
+    describe('When writePackArtifacts runs', () => {
+      it('Then it refuses naming the pack and leaves those bytes untouched', async () => {
+        // Arrange — a differing occupant under a content-addressed name is
+        // corruption, and is refused loudly rather than overwritten.
+        const ctx = createMemoryContext();
+        const entries = buildEntries(3);
+        const dir = packDirOf(ctx);
+        const packPath = `${dir}/pack-${PACK_SHA}.pack`;
+        const foreign = new TextEncoder().encode('not a pack');
+        await ctx.fs.writeExclusive(packPath, foreign);
+        const sut = writePackArtifacts;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, {
+            packDir: dir,
+            packBytes: PACK_BYTES,
+            entries,
+            packSha: PACK_SHA,
+            promisor: false,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data as { code: string; path: string };
+        expect(data.code).toBe('PACK_ARTIFACT_MISMATCH');
+        expect(data.path).toBe(packPath);
+        expect(await ctx.fs.read(packPath)).toEqual(foreign);
+      });
+    });
+  });
+
   describe('Given pack.writeReverseIndex = false', () => {
     describe('When writePackArtifacts runs', () => {
       it('Then only .pack and .idx are written, with unchanged bytes', async () => {

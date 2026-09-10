@@ -350,7 +350,7 @@ const sendUpdates = async (
   // explicit `id !== zeroOid(ctx.hashConfig)` filter would be a provable no-op.
   const haves = adv.refs.map((r) => r.id);
   const oids = await collectObjects(ctx, wants, haves);
-  const pack = await buildPack(ctx, { oids });
+  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
   const capabilities = selectPushCapabilities(
     adv.capabilities,
     ctx.hashConfig.algorithm,

@@ -2,6 +2,7 @@
 backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/code-navigation.md
+models: { designer: fable, reviewer: fable, fallback: opus }
 gates:
   part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling"
   phase: "npm run validate"
@@ -63,6 +64,15 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   transient reason`, so the whole `e2e (webkit)` job goes red (reproduced twice on PR #295;
   green on the previous build; Chromium and Firefox unaffected). Unpin once a later release
   passes the WebKit e2e job.
+  **`@types/node` is skipped**: DefinitelyTyped publishes one stream per Node major and
+  points the `latest` dist-tag at the LTS line, which is `22.20.2`, while this repo tracks
+  the TypeScript-aligned `ts6.0` tag at `26.5.1` — correct for TypeScript 6.x and Node 26.
+  `npm outdated` compares the installed version against `latest`, so a repo on the 26.x
+  stream prints a row permanently: no bump can clear it, and matching `latest` would mean
+  downgrading four majors below the runtime. Same class as `@cloudflare/workers-types` — a
+  publisher's tag choice, not a freshness signal. The row appeared between 2026-09-07 (CI
+  `deps` green at 26.4.1) and 2026-09-09 with no change on our side. Remove the skip if `latest` ever
+  tracks the newest major again.
 - **`docs-drift.md` on BOTH `documentation` and `integrate`** — the `docs-pr-gate` bot
   comments only once the PR exists, so the documentation phase can preempt it but cannot
   see it. Integrate therefore treats that comment like any other red CI signal: read it,
@@ -78,6 +88,18 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   space for implementers and refactor executors, and is not worth it for reviewers, planners or
   docs writers, whose natural instrument is Bash over a diff. Evidence and the full split:
   `.claude/workflow/code-navigation.md`.
+
+- **`models.designer` / `models.reviewer` on `fable`** — design and review are the two
+  judgment-dense phases here: the designer has to hold git's on-disk contracts and the
+  faithfulness mandate in one head, and the reviewer runs four dimensions to convergence
+  over a whole feature diff. Both are read-and-reason work with a small write surface, so
+  a stronger tier buys accuracy where it is cheapest to spend. Every other role stays on
+  its descriptor default.
+- **`models.fallback: opus`** — the engine default fallback is `sonnet`, which is a tier
+  *down* from both roles pinned above. A fallback only fires on model-availability
+  degradation, so it fires precisely when a judgment-dense phase is already having a bad
+  day; dropping design or review two tiers at that moment is the wrong direction. Opus is
+  the nearest tier that keeps the phase's reasoning budget intact.
 
 - **`check:spelling` is in BOTH `gates.part` and `review-batch`** — it was review-batch-only,
   and an unknown word once rode two commits before anything noticed, because the part gate

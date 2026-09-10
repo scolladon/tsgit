@@ -18,8 +18,8 @@ import {
 import {
   acceptsDeltaEntry,
   comparePackEmissionOrder,
-  DELTA_ACCEPT_RATIO,
   type DeltaPolicy,
+  NO_RECENCY,
   type PackEmissionKey,
 } from '../../../domain/storage/delta-policy.js';
 import {
@@ -31,6 +31,7 @@ import {
   type PackWriterEntry,
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { PackObjectInput } from '../build-pack.js';
 import {
   type ObjectMetadataWithContent,
   readObjectMetadataWithContent,
@@ -42,9 +43,10 @@ export interface DeltifiedEntry {
   readonly id: ObjectId;
   readonly entry: PackWriterEntry;
   /** Where this object sat in `deltifyEntries`' input list. Emission order is
-   *  the packer's own (type, size, oid), so a caller holding per-object data
-   *  keyed by its input order needs this to line the two up — without it the
-   *  only bridge back is the oid, which costs a hex decode per object. */
+   *  the packer's own (type, nameHash, size, recency, oid), so a caller
+   *  holding per-object data keyed by its input order needs this to line the
+   *  two up — without it the only bridge back is the oid, which costs a hex
+   *  decode per object. */
   readonly sourceIndex: number;
 }
 
@@ -91,19 +93,21 @@ interface Candidate {
  * regression, only a bounded improvement.
  */
 function boundCarriedContent(
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
   metas: ReadonlyArray<ObjectMetadataWithContent>,
   budget: number,
 ): EmissionEntry[] {
   const entries: EmissionEntry[] = [];
   let carriedBytes = 0;
-  for (const [i, id] of oids.entries()) {
+  for (const [i, object] of objects.entries()) {
     const meta = metas[i]!;
     const key = {
-      id,
+      id: object.id,
       sourceIndex: i,
       type: objectTypeToPackEntryType(meta.type),
+      nameHash: object.nameHash ?? 0,
       uncompressedSize: meta.uncompressedSize,
+      recency: object.recency ?? NO_RECENCY,
     };
     const content = meta.content;
     if (content === undefined || carriedBytes + content.length > budget) {
@@ -118,37 +122,95 @@ function boundCarriedContent(
 
 async function buildEmissionOrder(
   ctx: Context,
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
 ): Promise<ReadonlyArray<EmissionEntry>> {
-  const metas = await boundedMapFor(ctx, 'ioBound', oids, (id) =>
-    readObjectMetadataWithContent(ctx, id),
+  const metas = await boundedMapFor(ctx, 'ioBound', objects, (object) =>
+    readObjectMetadataWithContent(ctx, object.id),
   );
-  const keys = boundCarriedContent(oids, metas, ctx.deltaCache.maxSize);
+  const keys = boundCarriedContent(objects, metas, ctx.deltaCache.maxSize);
   return [...keys].sort(comparePackEmissionOrder);
 }
 
+/** No incumbent yet scores exactly like a candidate one shallower than any
+ *  real chain position — git's own `try_delta` reference depth for the
+ *  no-delta-yet case. */
+const NO_INCUMBENT_REF_DEPTH = 1;
+
+/** git's own `should_attempt_deltas`: an object this small is neither
+ *  offered as a delta target nor admitted to the window as a prospective
+ *  base — a delta's own header and instruction overhead can never pay for
+ *  itself against something this small, so the search is not worth
+ *  attempting either way. */
+const DELTA_FLOOR_BYTES = 50;
+
 /**
- * `maxSize` bounds every accepted delta strictly under the incumbent
- * (`best.delta.length - 1`) — `encodeDeltaFromIndex` returns `undefined`
- * for anything that does not fit it — so a hit here is by construction
- * always strictly smaller than `best`. No further length/chain-depth
- * comparison is needed or reachable: the search bound itself forecloses
- * ties, so the policy is exactly "strictly smaller wins; the most
- * recently admitted member breaks anything left" — visit order alone
- * (most-recent-first in `selectBestCandidate`) decides the rest.
+ * git's own `try_delta` byte budget: the size a candidate base at
+ * `baseDepth` must fit its delta into, so that a deeper base has to earn its
+ * place with something smaller while a shallower one is allowed more room.
+ * With no incumbent the budget is half the target's size minus one digest
+ * (roughly "a delta only pays off if it beats storing the object outright,
+ * with a hash-sized margin"); with one, it is the incumbent's own delta
+ * length. Both are then scaled by how much of the remaining depth budget
+ * this candidate's position leaves.
+ *
+ * `budget` is computed the way C's `unsigned long` arithmetic computes it,
+ * underflow included: for a `targetSize` under twice `hashSize`, subtracting
+ * `hashSize` goes negative, which in git's real, unsigned type wraps to a
+ * huge positive number — effectively no limit at all. This is replicated
+ * deliberately, not clamped to zero: a sha256 repository hits this for every
+ * object under 64 bytes (sha1: 40), and clamping would quietly turn off a
+ * code path real git actually runs. `undefined` stands in for that wrapped,
+ * unbounded state.
+ * @internal — exported only for the vector coverage below.
+ */
+export function searchBound(
+  targetSize: number,
+  hashSize: number,
+  incumbent: Candidate | undefined,
+  baseDepth: number,
+  maxDepth: number,
+): number | undefined {
+  const [budget, refDepth] =
+    incumbent === undefined
+      ? [Math.floor(targetSize / 2) - hashSize, NO_INCUMBENT_REF_DEPTH]
+      : [incumbent.delta.length, incumbent.chainDepth + 1];
+  if (budget < 0) return undefined;
+  return Math.floor((budget * (maxDepth - baseDepth)) / (maxDepth - refDepth + 1));
+}
+
+/**
+ * git's own two guards run first: a cross-type candidate never matches, and
+ * one already at the depth cap can never become a base — this second guard
+ * is not something the bound computation subsumes, because the bound's
+ * unbounded arm (a budget that went negative and wrapped) skips the depth scaling entirely
+ * and would otherwise let a depth-saturated candidate through. The bound
+ * itself then governs fit: `0` refuses outright before any encoding is
+ * attempted, `undefined` hands `encodeDeltaFromIndex` no cap at all, and any
+ * other value is the delta's maximum length — inclusive, matching git's own
+ * `create_delta`, which only refuses an output position strictly past the
+ * limit. What comes back is judged by git's same-size rule: a delta tying
+ * the incumbent's own length keeps the incumbent unless the new candidate
+ * is strictly shallower; anything left over is decided purely by visit
+ * order (most-recent-first in `selectBestCandidate`).
  */
 function tryCandidate(
   member: WindowMember,
   content: Uint8Array,
   type: BasePackEntryType,
   policy: DeltaPolicy,
-  searchBound: number,
+  hashSize: number,
   best: Candidate | undefined,
 ): Candidate | undefined {
   if (member.type !== type || member.chainDepth >= policy.maxDepth) return undefined;
-  const maxSize = best === undefined ? searchBound : best.delta.length - 1;
-  const delta = encodeDeltaFromIndex(member.index, content, maxSize);
+  const bound = searchBound(content.length, hashSize, best, member.chainDepth, policy.maxDepth);
+  if (bound === 0) return undefined;
+  const delta = encodeDeltaFromIndex(member.index, content, bound);
   if (delta === undefined) return undefined;
+  const tiesIncumbent =
+    best !== undefined &&
+    delta.length === best.delta.length &&
+    member.chainDepth >= best.chainDepth;
+  if (tiesIncumbent) return undefined;
   return { delta, chainDepth: member.chainDepth, emissionIndex: member.emissionIndex };
 }
 
@@ -159,11 +221,11 @@ function selectBestCandidate(
   window: ReadonlyArray<WindowMember>,
   type: BasePackEntryType,
   policy: DeltaPolicy,
+  hashSize: number,
 ): Candidate | undefined {
-  const searchBound = Math.floor(content.length * DELTA_ACCEPT_RATIO);
   let best: Candidate | undefined;
   for (let i = window.length - 1; i >= 0; i -= 1) {
-    const found = tryCandidate(window[i]!, content, type, policy, searchBound, best);
+    const found = tryCandidate(window[i]!, content, type, policy, hashSize, best);
     if (found !== undefined) best = found;
   }
   return best;
@@ -231,7 +293,14 @@ function memberWeight(member: Pick<WindowMember, 'content' | 'index'>): number {
  *  so the two can never drift apart the way two hand-kept variables can.
  *  `window` stays a plain array walked back to front — never a hash-keyed
  *  container — `evictToFit`/`admitToWindow` just stop mutating it in place
- *  and return a new one instead (CQS: query in, new value out). */
+ *  and return a new one instead (CQS: query in, new value out).
+ *
+ *  Three operations move a `WindowState` forward, all pure: `admitToWindow`
+ *  builds a fresh member and appends it; `without` removes an existing
+ *  member (by `emissionIndex`, not identity) when it has just been chosen as
+ *  a delta base, so the base can never be evicted to make room for the
+ *  object that just used it; `readmit` puts that same member — its
+ *  `DeltaIndex` untouched — back in as the most-recently-used slot. */
 interface WindowState {
   readonly window: ReadonlyArray<WindowMember>;
   readonly residentBytes: number;
@@ -283,26 +352,113 @@ function admitToWindow(
   };
 }
 
+/** Removes a chosen delta base from the window ahead of promoting it back
+ *  in as the most-recent member — identified by `emissionIndex` equality,
+ *  never object identity, since the member the search visited and the
+ *  member this call receives are the same logical entry either way. */
+function without(state: WindowState, base: WindowMember): WindowState {
+  return {
+    window: state.window.filter((member) => member.emissionIndex !== base.emissionIndex),
+    residentBytes: state.residentBytes - memberWeight(base),
+  };
+}
+
+/** Puts an **existing** `WindowMember` back into the window as its newest
+ *  slot, running the same eviction accounting a fresh admission would. The
+ *  member's `DeltaIndex` is reused, never rebuilt — rebuilding it would
+ *  silently redo work already paid for and would give the readmitted member
+ *  a new object identity for no reason. */
+function readmit(state: WindowState, policy: DeltaPolicy, member: WindowMember): WindowState {
+  const memberBytes = memberWeight(member);
+  const afterEviction = evictToFit(state.window, state.residentBytes, policy, memberBytes);
+  return {
+    window: [...afterEviction.window, member],
+    residentBytes: afterEviction.residentBytes + memberBytes,
+  };
+}
+
+/**
+ * The admission step's three-way choice: no hit admits `pending` exactly as
+ * `admitToWindow` always has; a hit below `maxDepth` moves its base to the
+ * most-recent slot and admits `pending` behind it — matching git's own
+ * post-hit window order — so the base is offered first to the next target
+ * and can never be the member `evictToFit` drops to make room; a hit that
+ * lands AT `maxDepth` leaves the window untouched, so a base that can never
+ * be used again does not occupy a slot, and the object that just used it
+ * never sits in a window it could never be re-picked from. A "hit" is an
+ * emitted delta, not merely a found candidate — a candidate
+ * `buildDeltifiedEntry` rejected on deflated size takes the same no-hit row
+ * as a target that found nothing at all.
+ */
+function nextWindowState(
+  state: WindowState,
+  policy: DeltaPolicy,
+  pending: PendingMember,
+  outcome: { readonly entry: PackWriterEntry; readonly chainDepth: number },
+): WindowState {
+  const { entry } = outcome;
+  if (entry.type !== PACK_ENTRY_TYPE.OFS_DELTA) {
+    return admitToWindow(state.window, state.residentBytes, policy, pending);
+  }
+  if (outcome.chainDepth >= policy.maxDepth) return state;
+  const base = state.window.find((member) => member.emissionIndex === entry.baseIndex)!;
+  const withoutBase = without(state, base);
+  const admitted = admitToWindow(withoutBase.window, withoutBase.residentBytes, policy, pending);
+  return readmit(admitted, policy, base);
+}
+
+interface EmissionOutcome {
+  readonly result: DeltifiedEntry;
+  readonly state: WindowState;
+}
+
+/**
+ * One object's turn in the emission loop: search for a base (unless it is
+ * under the floor, in which case the search is skipped and it is emitted as
+ * a plain base), then fold it into the window — again skipped when under
+ * the floor, so it can never be offered to a later object either.
+ */
+async function processEmissionEntry(
+  ctx: Context,
+  key: EmissionEntry,
+  emissionIndex: number,
+  state: WindowState,
+  policy: DeltaPolicy,
+): Promise<EmissionOutcome> {
+  const content = key.content ?? (await readRawObject(ctx, key.id)).content;
+  const belowFloor = content.length < DELTA_FLOOR_BYTES;
+  const candidate = belowFloor
+    ? undefined
+    : selectBestCandidate(content, state.window, key.type, policy, ctx.hash.digestLength);
+  const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
+  const result: DeltifiedEntry = {
+    id: key.id,
+    entry: outcome.entry,
+    sourceIndex: key.sourceIndex,
+  };
+  if (belowFloor) return { result, state };
+  const pending: PendingMember = {
+    id: key.id,
+    type: key.type,
+    chainDepth: outcome.chainDepth,
+    content,
+    emissionIndex,
+  };
+  return { result, state: nextWindowState(state, policy, pending, outcome) };
+}
+
 export async function deltifyEntries(
   ctx: Context,
-  oids: ReadonlyArray<ObjectId>,
+  objects: ReadonlyArray<PackObjectInput>,
   policy: DeltaPolicy,
 ): Promise<ReadonlyArray<DeltifiedEntry>> {
-  const order = await buildEmissionOrder(ctx, oids);
+  const order = await buildEmissionOrder(ctx, objects);
   let state: WindowState = { window: [], residentBytes: 0 };
   const results: DeltifiedEntry[] = [];
   for (const [emissionIndex, key] of order.entries()) {
-    const content = key.content ?? (await readRawObject(ctx, key.id)).content;
-    const candidate = selectBestCandidate(content, state.window, key.type, policy);
-    const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
-    results.push({ id: key.id, entry: outcome.entry, sourceIndex: key.sourceIndex });
-    state = admitToWindow(state.window, state.residentBytes, policy, {
-      id: key.id,
-      type: key.type,
-      chainDepth: outcome.chainDepth,
-      content,
-      emissionIndex,
-    });
+    const outcome = await processEmissionEntry(ctx, key, emissionIndex, state, policy);
+    results.push(outcome.result);
+    state = outcome.state;
   }
   return results;
 }

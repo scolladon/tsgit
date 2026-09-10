@@ -34,11 +34,9 @@
  *   bucket:   coverage-gap
  *   unique:   every published entry's declared value export is defined in that entry's own built runtime module, not just typed
  */
-import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import * as diffDomainBarrel from '../../src/domain/diff/index.js';
@@ -49,12 +47,10 @@ import {
   findUndeclaredRuntimeExports,
   findUndefinedValueExports,
 } from '../../tooling/dts-value-exports.ts';
-
-const execFileAsync = promisify(execFile);
+import { requireBuiltArtefact } from './built-artefacts.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const DIST_ESM = path.join(ROOT, 'dist', 'esm', 'index.node.js');
-const BUILD_TIMEOUT_MS = 600_000;
 
 // `diffTrees` is excluded: public-types.ts deliberately keeps it type-only on
 // the main entry (the name clashes with application/primitives' diffTrees —
@@ -109,10 +105,8 @@ const collectUndefinedDeclaredValues = async (
 
 describe('Given the built public Node runtime entry', () => {
   beforeAll(async () => {
-    // Build the shipped artefacts once — the declared/runtime pairing this
-    // guard locks is a property of the rollup-bundled output, not of `src/`.
-    await execFileAsync('npm', ['run', 'build'], { cwd: ROOT, timeout: BUILD_TIMEOUT_MS });
-  }, BUILD_TIMEOUT_MS);
+    await requireBuiltArtefact(DIST_ESM);
+  });
 
   describe('When importing the two similarity-scoring symbols the built .d.ts declares as values', () => {
     it('Then MAX_SCORE and toSimilarityPercent are defined at runtime', async () => {
@@ -144,10 +138,8 @@ describe('Given the built public Node runtime entry', () => {
 
 describe('Given every published package entry', () => {
   beforeAll(async () => {
-    // Build the shipped artefacts once — the declared/runtime pairing this
-    // guard locks is a property of the rollup-bundled output, not of `src/`.
-    await execFileAsync('npm', ['run', 'build'], { cwd: ROOT, timeout: BUILD_TIMEOUT_MS });
-  }, BUILD_TIMEOUT_MS);
+    await requireBuiltArtefact(DIST_ESM);
+  });
 
   describe("When auditing each entry's declared value exports against its own runtime bundle", () => {
     it('Then none of them are undefined in the matching runtime module', async () => {

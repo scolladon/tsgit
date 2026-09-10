@@ -13,13 +13,15 @@
  *  - `outputDirectory` supplied vs omitted — registry refresh
  *  - refusal — an unresolvable want
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { packObjects } from '../../../../src/application/commands/pack-objects.js';
 import { revList } from '../../../../src/application/commands/rev-list.js';
+import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
+import * as closureEngineMod from '../../../../src/application/primitives/internal/closure-engine.js';
 import {
   getPackRegistry,
   readObject,
@@ -213,6 +215,38 @@ describe('packObjects', () => {
           new Set(expected.entries.map((entry) => entry.id)),
         );
       });
+
+      it('Then buildPack receives the closure objects array by identity, not a copy', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        const closureSpy = vi.spyOn(closureEngineMod, 'computeClosure');
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = packObjects;
+
+        // Act
+        await sut(ctx, { wants: ['HEAD'] });
+
+        // Assert — the `.map` this command used to build a fresh wrapper
+        // array is gone; the closure's own array is what buildPack sees.
+        const closureResult = await closureSpy.mock.results[0]!.value;
+        expect(buildPackSpy.mock.calls[0]![1].objects).toBe(closureResult.objects);
+        buildPackSpy.mockRestore();
+        closureSpy.mockRestore();
+      });
+
+      it('Then buildPack receives delta: true — pack-objects always deltifies', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = packObjects;
+
+        // Act
+        await sut(ctx, { wants: ['HEAD'] });
+
+        // Assert
+        expect(buildPackSpy.mock.calls[0]![1].delta).toBe(true);
+        buildPackSpy.mockRestore();
+      });
     });
   });
 
@@ -286,12 +320,13 @@ describe('packObjects', () => {
 
   describe('Given the same bitmap-bearing fixture with no haves', () => {
     describe('When packObjects runs at its default tier and again with useBitmapIndex: false, into separate directories', () => {
-      it('Then the two tiers write the same object set AND the same packId — delta emission keys the pack on the object SET, not the closure traversal order', async () => {
-        // Arrange — separate output directories: with delta emission on,
-        // `buildPack` sorts into its own emission order regardless of the
-        // closure's traversal order, so the SAME object set now produces a
-        // BYTE-IDENTICAL pack across tiers; writing both into the same
-        // directory would collide on the shared `pack-<sha>.pack` name.
+      it('Then the two tiers write the same object set but a DIFFERENT packId — the walk tier supplies name hashes the bitmap tier has none of', async () => {
+        // Arrange — separate output directories: this fixture's commits and
+        // trees are real, so the walk tier resolves a name hash per entry
+        // while the bitmap artifact (built by hand, no path information)
+        // carries none — the two tiers now order deltas differently even
+        // over the identical object set; writing both into the same
+        // directory would also collide on a shared `pack-<sha>.pack` name.
         const { ctx, wantCommitId } = await buildHaveBearingBitmapFixture();
         const sut = packObjects;
         const walkDir = `${packDirOf(ctx)}-walk`;
@@ -307,7 +342,7 @@ describe('packObjects', () => {
         // Assert
         expect(bitmapResult.objectCount).toBe(8);
         expect(walkResult.objectCount).toBe(8);
-        expect(walkResult.packId).toBe(bitmapResult.packId);
+        expect(walkResult.packId).not.toBe(bitmapResult.packId);
         const bitmapIds = await idxIdsOf(ctx, packDirOf(ctx), bitmapResult.packId);
         const walkIds = await idxIdsOf(ctx, walkDir, walkResult.packId);
         expect(bitmapIds).toEqual(walkIds);

@@ -38,6 +38,10 @@ import {
   runGitEnv,
 } from './interop-helpers.js';
 
+import { trackedContexts } from './repository-lifecycle.js';
+
+const createTrackedNodeContext = trackedContexts(createNodeContext);
+
 // ---------------------------------------------------------------------------
 // Shared helpers (file-local)
 // ---------------------------------------------------------------------------
@@ -106,7 +110,7 @@ describe.skipIf(!GIT_AVAILABLE)('large-object pack interop', () => {
           git(pair.peer, 'gc', '--quiet');
           await copyPackFiles(pair.peer, pair.ours);
           const catFileBuf = catFileRaw(pair.peer, blobId);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act
           const result = await readBlob(sut, blobId);
@@ -134,7 +138,7 @@ describe.skipIf(!GIT_AVAILABLE)('large-object pack interop', () => {
           const blobId = git(pair.peer, 'rev-parse', 'HEAD:big.bin').trim() as ObjectId;
           git(pair.peer, 'gc', '--quiet');
           await copyPackFiles(pair.peer, pair.ours);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act + Assert — must not throw OBJECT_HASH_MISMATCH
           const result = await readObject(sut, blobId, { verifyHash: true });
@@ -168,7 +172,7 @@ describe.skipIf(!GIT_AVAILABLE)('large-object pack interop', () => {
           await copyPackFiles(pair.peer, pair.ours);
           const catFile1 = catFileRaw(pair.peer, blobId1);
           const catFile2 = catFileRaw(pair.peer, blobId2);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act
           const result1 = await readBlob(sut, blobId1);
@@ -202,7 +206,7 @@ describe.skipIf(!GIT_AVAILABLE)('large-object pack interop', () => {
           const blobId = git(pair.ours, 'rev-parse', 'HEAD:big.bin').trim() as ObjectId;
           // Intentionally NO git gc — blob stays loose
           const catFileBuf = catFileRaw(pair.ours, blobId);
-          const sut = createNodeContext({ workDir: pair.ours });
+          const sut = createTrackedNodeContext({ workDir: pair.ours });
 
           // Act
           const result = await readBlob(sut, blobId);

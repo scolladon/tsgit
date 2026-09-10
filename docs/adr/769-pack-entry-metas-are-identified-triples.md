@@ -5,7 +5,7 @@ subjects:
 ---
 # 769 — Pack entry metas are identified triples in emission order
 
-- **Status:** accepted
+- **Status:** accepted (ordering half amended by ADR-826)
 - **Date:** 2026-08-31
 - **Design:** docs/design/delta-writing-packer.md (DC-3)
 

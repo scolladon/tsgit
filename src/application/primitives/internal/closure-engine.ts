@@ -22,6 +22,7 @@ import {
   isDirectory,
   type ObjectId,
 } from '../../../domain/objects/index.js';
+import { PACK_NAME_HASH_SEED, PACK_NAME_HASH_V1 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import { getPackRegistry, readObject } from '../read-object.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
@@ -72,6 +73,12 @@ export interface ClosureObject {
    * never names, so the bitmap tier never fills this.
    */
   readonly path?: FilePath;
+  /**
+   * git's `pack_name_hash` of `path`; `0` for a path-less object. Populated
+   * by the walk tier only — a reachability artefact encodes types and bits,
+   * never names, so the bitmap tier never fills this.
+   */
+  readonly nameHash?: number;
 }
 
 export interface ClosureResult {
@@ -83,7 +90,20 @@ export interface ClosureResult {
   readonly tier: ClosureTier;
 }
 
-type Emit = (id: ObjectId, type: ClosureObject['type'], path?: FilePath) => void;
+/** One record per `emit` call, rather than four positional arguments — a
+ *  pathless call site just omits `path`, instead of spelling out a
+ *  positional `undefined` that says nothing. `path` is a genuinely optional
+ *  key (omitted, never `path: undefined`); `walkClosure` pushes this record
+ *  straight onto its result, so key absence here IS key absence on the
+ *  returned `ClosureObject`. */
+interface ClosureEmission {
+  readonly id: ObjectId;
+  readonly type: ClosureObject['type'];
+  readonly path?: FilePath;
+  readonly nameHash: number;
+}
+
+type Emit = (entry: ClosureEmission) => void;
 
 /** Root tree entries carry the empty path — git's own convention for the
  *  tree named directly by a commit (or a tree-typed want), as opposed to
@@ -94,8 +114,9 @@ const NO_MARKS: ReadonlySet<ObjectId> = new Set();
 
 /**
  * Emit `treeId` and its non-gitlink contents, skipping anything marked
- * uninteresting. `path` comes from `walkTree`; the root tree itself carries
- * the empty path.
+ * uninteresting. `path` and `nameHash` come from `walkTree`'s own fold
+ * (`PACK_NAME_HASH_V1`); the root tree itself carries the empty path and
+ * the fold's seed.
  */
 async function emitTree(
   ctx: Context,
@@ -103,11 +124,18 @@ async function emitTree(
   marked: ReadonlySet<ObjectId>,
   emit: Emit,
 ): Promise<void> {
-  if (!marked.has(treeId)) emit(treeId, 'tree', ROOT_PATH);
-  for await (const entry of walkTree(ctx, treeId)) {
+  if (!marked.has(treeId)) {
+    emit({ id: treeId, type: 'tree', path: ROOT_PATH, nameHash: PACK_NAME_HASH_SEED });
+  }
+  for await (const entry of walkTree(ctx, treeId, { pathHasher: PACK_NAME_HASH_V1 })) {
     if (isGitlink(entry.mode)) continue;
     if (marked.has(entry.id)) continue;
-    emit(entry.id, isDirectory(entry.mode) ? 'tree' : 'blob', entry.path);
+    emit({
+      id: entry.id,
+      type: isDirectory(entry.mode) ? 'tree' : 'blob',
+      path: entry.path,
+      nameHash: entry.nameHash ?? 0,
+    });
   }
 }
 
@@ -125,7 +153,9 @@ async function resolveWants(
 ): Promise<Commit[]> {
   const commitSeeds: Commit[] = [];
   for (const wantId of wants) {
-    const peeled = await resolveTagChain(ctx, wantId, (tagId) => emit(tagId, 'tag'));
+    const peeled = await resolveTagChain(ctx, wantId, (tagId) =>
+      emit({ id: tagId, type: 'tag', nameHash: 0 }),
+    );
     const obj = await readObject(ctx, peeled);
     if (obj.type === 'commit') {
       commitSeeds.push(obj);
@@ -135,7 +165,9 @@ async function resolveWants(
       await emitTree(ctx, peeled, NO_MARKS, emit);
       continue;
     }
-    emit(peeled, 'blob');
+    // A recorded divergence: git names a direct want after the pending
+    // object's own name; tsgit has none to give it, so it hashes to 0.
+    emit({ id: peeled, type: 'blob', nameHash: 0 });
   }
   return commitSeeds;
 }
@@ -157,7 +189,7 @@ async function emitSeedsWithoutWalking(
   for (const seed of commitSeeds) {
     if (marks.commits.has(seed.id)) continue;
     if (request.maxCount !== undefined && emitted >= request.maxCount) return;
-    emit(seed.id, 'commit');
+    emit({ id: seed.id, type: 'commit', nameHash: 0 });
     emitted += 1;
     if (request.objects) await emitTree(ctx, seed.data.tree, marks.objects, emit);
   }
@@ -190,7 +222,7 @@ async function walkAndEmitCommits(
   if (request.objects) await markBoundaryTrees(ctx, walked, marks);
 
   for (const commit of walked) {
-    emit(commit.id, 'commit');
+    emit({ id: commit.id, type: 'commit', nameHash: 0 });
     if (request.objects) await emitTree(ctx, commit.data.tree, marks.objects, emit);
   }
 }
@@ -212,9 +244,9 @@ async function emitCommitSeeds(
 async function walkClosure(ctx: Context, request: ClosureRequest): Promise<ClosureObject[]> {
   const state: EmitState = { emitted: new Set<ObjectId>(), cap: MAX_PUSH_OBJECTS };
   const results: ClosureObject[] = [];
-  const emit: Emit = (id, type, path) => {
-    if (!tryEmit(state, id)) return;
-    results.push(path === undefined ? { id, type } : { id, type, path });
+  const emit: Emit = (entry) => {
+    if (!tryEmit(state, entry.id)) return;
+    results.push(entry);
   };
 
   const marks = await markNotSide(ctx, request.not);

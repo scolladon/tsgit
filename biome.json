@@ -20,6 +20,8 @@
       "tooling/test/unit/bench-check.test.ts",
       "tooling/bench-ab.ts",
       "tooling/test/unit/bench-ab.test.ts",
+      "tooling/pack-size-compare.ts",
+      "tooling/test/unit/pack-size-compare.test.ts",
       "tooling/bench-to-snapshot.ts",
       "tooling/test/unit/bench-to-snapshot.test.ts",
       "tooling/bench-summarize.ts",

@@ -29,8 +29,11 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import type { ObjectId, RefName } from '../../../src/domain/objects/object-id.js';
-import { openRepository, type Repository } from '../../../src/index.node.js';
+import type { Repository } from '../../../src/index.node.js';
 import { git, gitAsync, runGit, runGitEnv } from '../interop-helpers.js';
+import { trackedRepositories } from '../repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -188,7 +191,7 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
       const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-it-'));
       workDirs.push(workDir);
       const url = `http://127.0.0.1:${port}/source.git`;
-      const repo = await openRepository({
+      const repo = await openTrackedRepository({
         cwd: workDir,
         allowInsecureHttp: true,
         config: {
@@ -215,7 +218,7 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
       const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-ff-it-'));
       workDirs.push(workDir);
       const url = `http://127.0.0.1:${port}/source.git`;
-      const repo = await openRepository({
+      const repo = await openTrackedRepository({
         cwd: workDir,
         allowInsecureHttp: true,
         config: {
@@ -295,7 +298,7 @@ describe.skipIf(SKIP_REASON !== false)(
     const initTsgitRepo = async (): Promise<Repository> => {
       const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-remote-ts-'));
       workDirs.push(dir);
-      const repo = await openRepository({
+      const repo = await openTrackedRepository({
         cwd: dir,
         allowInsecureHttp: true,
         config: {

@@ -7,15 +7,23 @@
 ```ts
 repo.primitives.walkTree(
   treeIdOrObject: ObjectId | Tree,
-  options?: { recursive?: boolean; maxDepth?: number; maxEntries?: number },
-): AsyncIterable<TreeEntry>;
+  options?: {
+    recursive?: boolean;
+    maxDepth?: number;
+    maxEntries?: number;
+    pathHasher?: PathHasher;
+    pathBytes?: boolean;
+  },
+): AsyncIterable<WalkTreeEntry>;
 
-interface TreeEntry {
-  readonly name: string;
+interface WalkTreeEntry {
   readonly path: FilePath;
-  readonly mode: FileMode;
   readonly id: ObjectId;
-  readonly type: 'blob' | 'tree' | 'commit';
+  readonly mode: FileMode;
+  /** Present exactly when `pathHasher` was supplied. */
+  readonly nameHash?: number;
+  /** Present exactly when `pathBytes` was supplied. */
+  readonly pathBytes?: Uint8Array;
 }
 ```
 
@@ -24,6 +32,13 @@ interface TreeEntry {
 | `recursive` | `true` | Descend into sub-trees. When `false`, yields only the top-level entries. |
 | `maxDepth` | `core.maxTreeDepth` | Cap on recursion depth, read from the repository-local config (default 2048 when unset) and honoured unclamped at any configured value — never read from `~/.gitconfig` or any other scope. Descends with an explicit stack, not JS recursion, so `maxDepth` is the only ceiling on how deep a walk can go. Exceeding it throws `TREE_DEPTH_EXCEEDED`. |
 | `maxEntries` | `MAX_FLAT_TREE_ENTRIES` | Cap on the total entry count yielded. Exceeding it throws `TREE_ENTRY_LIMIT_EXCEEDED`. |
+| `pathHasher` | none | Folds each entry's full path through the supplied hasher as the walk descends, yielding the result as `nameHash`. The fold runs over the entry's raw name **bytes**, never the decoded `path`, and accumulates per frame — no path is ever materialised to hash it. Supply `PACK_NAME_HASH_V1` for git's own pack name hash. |
+| `pathBytes` | `false` | Yields each entry's full path as `pathBytes`: every ancestor's raw name bytes and the entry's own, joined by `0x2f`, with no leading or trailing separator. A fresh array per entry, owned by the caller — keeping or mutating it cannot affect the walk. |
+
+`path` is a **decoded** view and is lossy: a name that is not valid UTF-8 decodes
+through the replacement character, so two distinct entries can share one `path`.
+`pathBytes` is the authoritative value, and is what to compare or hash when a
+decision must be exact.
 
 ## Example
 

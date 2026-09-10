@@ -30,6 +30,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as retentionRootsMod from '../../../../src/application/commands/internal/fsck/roots.js';
 import {
   type MaintenanceTask,
   maintenance,
@@ -60,7 +61,7 @@ import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import { parseCruftMtimes } from '../../../../src/domain/storage/index.js';
+import { packNameHash, parseCruftMtimes } from '../../../../src/domain/storage/index.js';
 import { allObjectIds } from '../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx } from '../../domain/storage/arbitraries.js';
@@ -1999,16 +2000,171 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a repository with one reachable commit whose tree has a root blob and a nested blob', () => {
+    describe('When gc runs', () => {
+      it('Then the normal-pack build receives objects in the closure traversal order, each nameHash equal to packNameHash of its own path, and recency equal to its traversal ordinal', async () => {
+        // Arrange — objects are written directly, bypassing `add`/the
+        // index: `add` would also stage each blob as its own
+        // index-protection retention root, pre-claiming its hash (a root
+        // want's own divergence rule, "no name to give it, hashes to 0")
+        // before the tree walk ever reaches it — a real invariant, just
+        // not the one this test is pinning.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const rootBlobId = await writeLooseBlob(ctx, 'root');
+        const nestedBlobId = await writeLooseBlob(ctx, 'nested');
+        const dirTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, 'f.txt', nestedBlobId)],
+        });
+        const rootTreeId = await writeObject(ctx, {
+          type: 'tree' as const,
+          id: '' as ObjectId,
+          entries: [
+            treeEntry(FILE_MODE.REGULAR, 'a.txt', rootBlobId),
+            treeEntry(FILE_MODE.DIRECTORY, 'dir', dirTreeId),
+          ],
+        });
+        const commitId = await writeObject(ctx, {
+          type: 'commit' as const,
+          id: '' as ObjectId,
+          data: {
+            tree: rootTreeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'nested',
+            extraHeaders: [],
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packId).toBeDefined();
+        const captured = buildPackSpy.mock.calls[0]![1].objects;
+        expect(captured.map((object) => object.id)).toEqual([
+          commitId,
+          rootTreeId,
+          rootBlobId,
+          dirTreeId,
+          nestedBlobId,
+        ]);
+        expect(captured.find((object) => object.id === commitId)).toStrictEqual({
+          id: commitId,
+          nameHash: 0,
+          recency: 0,
+        });
+        expect(captured.find((object) => object.id === rootTreeId)).toStrictEqual({
+          id: rootTreeId,
+          nameHash: 0,
+          recency: 1,
+        });
+        expect(captured.find((object) => object.id === rootBlobId)).toStrictEqual({
+          id: rootBlobId,
+          nameHash: packNameHash(new TextEncoder().encode('a.txt')),
+          recency: 2,
+        });
+        expect(captured.find((object) => object.id === dirTreeId)).toStrictEqual({
+          id: dirTreeId,
+          nameHash: packNameHash(new TextEncoder().encode('dir')),
+          recency: 3,
+        });
+        expect(captured.find((object) => object.id === nestedBlobId)).toStrictEqual({
+          id: nestedBlobId,
+          nameHash: packNameHash(new TextEncoder().encode('dir/f.txt')),
+          recency: 4,
+        });
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given two repositories with an identical graph whose retention roots resolve in reversed order', () => {
+    describe('When gc runs on each', () => {
+      it('Then the normal-pack build receives objects in the same sequence on both', async () => {
+        // Arrange — two unrelated root commits, EACH referencing the SAME
+        // blob at a different path. The blob's hash is claimed by whichever
+        // root's walk reaches it first (a dedup, not a second fold), so
+        // this fixture is sensitive to root PROCESSING order in a way a
+        // plain object-set comparison would miss. `collectRetentionRoots`
+        // itself always answers in the same order here (its own ref
+        // enumeration already sorts by name) — reversed order is forced
+        // directly at that boundary, the one `computeReachable` promises to
+        // normalise regardless of what it is handed.
+        const buildRepo = async (): Promise<{
+          readonly ctx: Context;
+          readonly commitA: ObjectId;
+          readonly commitB: ObjectId;
+        }> => {
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const sharedBlobId = await writeLooseBlob(ctx, 'root-sort-shared');
+          const makeRootCommit = async (path: string, message: string): Promise<ObjectId> => {
+            const treeId = await writeObject(ctx, {
+              type: 'tree' as const,
+              id: '' as ObjectId,
+              entries: [treeEntry(FILE_MODE.REGULAR, path, sharedBlobId)],
+            });
+            return writeObject(ctx, {
+              type: 'commit' as const,
+              id: '' as ObjectId,
+              data: {
+                tree: treeId,
+                parents: [],
+                author: AUTHOR,
+                committer: AUTHOR,
+                message,
+                extraHeaders: [],
+              },
+            });
+          };
+          const commitA = await makeRootCommit('a.txt', 'root-sort-a');
+          const commitB = await makeRootCommit('b.txt', 'root-sort-b');
+          return { ctx, commitA, commitB };
+        };
+        const repoAB = await buildRepo();
+        const repoBA = await buildRepo();
+        const rootsSpy = vi.spyOn(retentionRootsMod, 'collectRetentionRoots');
+        rootsSpy.mockResolvedValueOnce(new Set([repoAB.commitA, repoAB.commitB]));
+        rootsSpy.mockResolvedValueOnce(new Set([repoBA.commitB, repoBA.commitA]));
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        await sut(repoAB.ctx, { tasks: ['gc'] });
+        await sut(repoBA.ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(buildPackSpy).toHaveBeenCalledTimes(2);
+        const capturedAB = buildPackSpy.mock.calls[0]![1].objects;
+        const capturedBA = buildPackSpy.mock.calls[1]![1].objects;
+        expect(capturedBA).toEqual(capturedAB);
+        rootsSpy.mockRestore();
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given a repository with no reachable commit and an unreachable object living only inside a .promisor-marked pack', () => {
     describe('When gc runs', () => {
-      it('Then the promisor-pack build calls buildPack with delta: true', async () => {
+      it('Then the promisor-pack build calls buildPack with delta: true and its one unreachable member at nameHash 0, recency 0', async () => {
         // Arrange — no commit (normal path has zero oids), and the only
         // unreachable object lives inside the promisor pack (excluded from
         // cruft candidates), so exactly one buildPack call can be
-        // observed here, from the promisor path.
+        // observed here, from the promisor path. Nothing is reachable, so
+        // this member's recency is the base case of `reachable.size + i`:
+        // 0 + 0.
         const ctx = createMemoryContext();
         await init(ctx);
-        await writePromisorPack(ctx, 'delta-flag-promisor', ['delta-flag-promisor-seed']);
+        const [seedId] = await writePromisorPack(ctx, 'delta-flag-promisor', [
+          'delta-flag-promisor-seed',
+        ]);
         const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
         const sut = maintenance;
 
@@ -2021,6 +2177,95 @@ describe('maintenance', () => {
         expect(result.cruftPackId).toBeUndefined();
         expect(buildPackSpy).toHaveBeenCalledTimes(1);
         expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        expect(buildPackSpy.mock.calls[0]![1].objects).toStrictEqual([
+          { id: seedId, nameHash: 0, recency: 0 },
+        ]);
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a .promisor pack holding one unreachable member alongside a reachable commit/tree/blob', () => {
+    describe('When gc runs', () => {
+      it('Then the unreachable member captured recency equals reachable.size + its sorted index', async () => {
+        // Arrange — seedOneCommit's own closure is exactly 3 reachable
+        // objects (commit, tree, blob — see the noop-shortcut fixtures
+        // above), and this promisor pack holds exactly one, unreachable
+        // member, so its sorted index is 0: recency = 3 + 0.
+        const ctx = await seedOneCommit();
+        const [unreachableId] = await writePromisorPack(ctx, 'ordinal-formula', [
+          'ordinal-formula-seed',
+        ]);
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const promisorCall = buildPackSpy.mock.calls.find((call) =>
+          call[1].objects.some((object) => object.id === unreachableId),
+        );
+        expect(promisorCall).toBeDefined();
+        expect(promisorCall![1].objects).toStrictEqual([
+          { id: unreachableId, nameHash: 0, recency: 3 },
+        ]);
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a .promisor pack holding both a reachable and an unreachable member', () => {
+    describe('When gc runs', () => {
+      it('Then neither captured object leaves recency undefined — the reachable one matches its normal-pack ordinal, the unreachable one is reachable.size + its sorted index', async () => {
+        // Arrange — dup.txt is staged but never committed, so it is
+        // reachable only via the index-protection root (nameHash 0, like
+        // every root want) and is ALSO owned by both the promisor pack
+        // and the loose store — duplicating into the normal pack per the
+        // "REACHABLE promisor object packed into BOTH" rule, the same
+        // object this mixed promisor input needs a recency for.
+        const ctx = await seedOneCommit();
+        const dupContent = 'mixed-recency-reachable';
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dup.txt`, dupContent);
+        await add(ctx, ['dup.txt']);
+        const [reachableId, unreachableId] = await writePromisorPack(ctx, 'mixed-recency', [
+          dupContent,
+          'mixed-recency-unreachable',
+        ]);
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+        const sut = maintenance;
+
+        // Act — a mixed input with one recency left `undefined` would
+        // make `buildPack`'s uniform-recency guard throw, failing this
+        // call already.
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const normalCall = buildPackSpy.mock.calls.find((call) =>
+          call[1].objects.some((object) => object.id === reachableId),
+        );
+        const promisorCall = buildPackSpy.mock.calls.find(
+          (call) =>
+            call !== normalCall && call[1].objects.some((object) => object.id === unreachableId),
+        );
+        expect(normalCall).toBeDefined();
+        expect(promisorCall).toBeDefined();
+        const normalCaptured = normalCall![1].objects;
+        const promisorCaptured = promisorCall![1].objects;
+
+        const reachableInPromisor = promisorCaptured.find((object) => object.id === reachableId);
+        const reachableInNormal = normalCaptured.find((object) => object.id === reachableId);
+        expect(reachableInPromisor).toStrictEqual(reachableInNormal);
+
+        const unreachableInPromisor = promisorCaptured.find(
+          (object) => object.id === unreachableId,
+        );
+        const sortedIndex = [reachableId, unreachableId].sort().indexOf(unreachableId);
+        expect(unreachableInPromisor).toStrictEqual({
+          id: unreachableId,
+          nameHash: 0,
+          recency: normalCaptured.length + sortedIndex,
+        });
         buildPackSpy.mockRestore();
       });
     });
@@ -2028,13 +2273,13 @@ describe('maintenance', () => {
 
   describe('Given a repository with no reachable commit and one unreferenced loose blob that never expires', () => {
     describe('When gc runs', () => {
-      it('Then the cruft-pack build calls buildPack with delta: true', async () => {
+      it('Then the cruft-pack build calls buildPack with delta: true and its one object as exactly { id }, no nameHash', async () => {
         // Arrange — no commit (normal path has zero oids), no .promisor
         // pack (promisor path has zero oids), so exactly one buildPack
         // call can be observed here, from the cruft path.
         const ctx = createMemoryContext();
         await init(ctx);
-        await writeLooseBlob(ctx, 'delta-flag-cruft-seed');
+        const blobId = await writeLooseBlob(ctx, 'delta-flag-cruft-seed');
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
         const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
         const sut = maintenance;
@@ -2048,6 +2293,7 @@ describe('maintenance', () => {
         expect(result.promisorPackId).toBeUndefined();
         expect(buildPackSpy).toHaveBeenCalledTimes(1);
         expect(buildPackSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ delta: true }));
+        expect(buildPackSpy.mock.calls[0]![1].objects).toStrictEqual([{ id: blobId }]);
         buildPackSpy.mockRestore();
       });
     });
@@ -2149,6 +2395,63 @@ describe('maintenance', () => {
         await expect(readObject(ctx, blobId, { verifyHash: true })).resolves.toMatchObject({
           type: 'blob',
         });
+      });
+    });
+  });
+
+  describe('Given two same-path-blob commits crufted together, then each referenced directly by its own ref', () => {
+    describe('When gc runs again', () => {
+      it('Then it takes the ordinary route — a new normal-pack sha, no declassifyCruftPack call, and the old cruft pack retired on its own fate', async () => {
+        // Arrange — mirrors the byte-identical single-blob pin above, but
+        // with TWO root commits, each with its own tree holding a blob at
+        // the SAME path: the two blobs tie on nameHash (a pure function
+        // of the path) and on size (same-length content), so only
+        // recency — the normal pack's traversal ordinal, never carried by
+        // the old cruft pack — can order them. A single-object pack has
+        // no such order to diverge on.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const buildRoot = async (content: string, message: string): Promise<ObjectId> => {
+          const blobId = await writeObject(ctx, makeBlob(content));
+          const treeId = await writeObject(ctx, {
+            type: 'tree' as const,
+            id: '' as ObjectId,
+            entries: [treeEntry(FILE_MODE.REGULAR, 'x.txt', blobId)],
+          });
+          return writeObject(ctx, {
+            type: 'commit' as const,
+            id: '' as ObjectId,
+            data: {
+              tree: treeId,
+              parents: [],
+              author: AUTHOR,
+              committer: AUTHOR,
+              message,
+              extraHeaders: [],
+            },
+          });
+        };
+        const commitA = await buildRoot('multi-resurrect-a', 'multi-resurrect-a');
+        const commitB = await buildRoot('multi-resurrect-b', 'multi-resurrect-b');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        expect(first.packId).toBeUndefined();
+        const cruftSha = first.cruftPackId as string;
+
+        // Act — the ONLY reachable content in the whole repo now.
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/keep-a`, `${commitA}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/keep-b`, `${commitB}\n`);
+        const declassifySpy = vi.spyOn(cruftPackLifecycleMod, 'declassifyCruftPack');
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.packId).toBeDefined();
+        expect(second.packId).not.toBe(cruftSha);
+        expect(second.cruftPackId).toBeUndefined();
+        expect(declassifySpy).not.toHaveBeenCalled();
+        declassifySpy.mockRestore();
       });
     });
   });
@@ -3389,6 +3692,40 @@ describe('maintenance', () => {
         // Assert
         expect(second.cruftPackId).toBeUndefined();
         await expect(readObject(ctx, blobId)).resolves.toMatchObject({ type: 'blob' });
+      });
+    });
+  });
+
+  describe('Given an unreachable object living BOTH loose AND inside a *.keep-marked pack', () => {
+    describe('When gc runs', () => {
+      it('Then no cruft pack is written for it — the *.keep total exclusion wins even for the loose duplicate', async () => {
+        // Arrange — same *.keep-from-cruft conversion as the single-homed
+        // case above, but the object is ALSO re-materialised loose before
+        // the second gc run. That loose copy is the ONLY route by which
+        // this object enters cruftCandidatesOf's `owned` iteration at all —
+        // an object living purely inside a kept pack never becomes a
+        // cruftCandidates member in the first place (see the test above),
+        // so a kept-but-never-otherwise-owned object can't exercise this
+        // guard. With the guard defeated, the loose duplicate would be
+        // pushed onto cruftCandidates and a fresh cruft pack written for it.
+        const ctx = await seedOneCommit();
+        const sut = maintenance;
+        const blobId = await writeLooseBlob(ctx, 'kept-unreachable-dual');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
+        const first = await sut(ctx, { tasks: ['gc'] });
+        expect(first.cruftPackId).toBeDefined();
+        const packDir = packDirOf(ctx);
+        await ctx.fs.rm(`${packDir}/pack-${first.cruftPackId}.mtimes`);
+        await ctx.fs.write(`${packDir}/pack-${first.cruftPackId}.keep`, new Uint8Array(0));
+        const blobObj = await readObject(ctx, blobId, { verifyHash: true });
+        await writeObject(ctx, blobObj);
+        expect(await isLoose(ctx, blobId)).toBe(true);
+
+        // Act
+        const second = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(second.cruftPackId).toBeUndefined();
       });
     });
   });

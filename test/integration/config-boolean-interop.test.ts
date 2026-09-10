@@ -18,7 +18,6 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TsgitError } from '../../src/domain/error.js';
 import { encodePktStream } from '../../src/domain/protocol/pkt-line.js';
-import { openRepository } from '../../src/index.node.js';
 import type { HttpRequest, HttpResponse, HttpTransport } from '../../src/ports/http-transport.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -28,6 +27,9 @@ import {
   tryRunGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const ENCODER = new TextEncoder();
 const ZERO_OID = '0'.repeat(40);
@@ -46,7 +48,7 @@ const asBadBoolean = (err: unknown): BadBooleanData => {
 
 /** Run `fn` against a fresh repo opened at `dir`, disposing it afterwards. */
 const withRepo = async <T>(dir: string, fn: (repo: Repository) => Promise<T>): Promise<T> => {
-  const repo = await openRepository({ cwd: dir });
+  const repo = await openTrackedRepository({ cwd: dir });
   try {
     return await fn(repo);
   } finally {
@@ -121,7 +123,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
         // `openRepository` (Stage 2 of layout resolution), before any
         // command runs — `withRepo` would never return.
         const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-        const caught = await captureThrow(() => openRepository({ cwd: ours }));
+        const caught = await captureThrow(() => openTrackedRepository({ cwd: ours }));
 
         // Assert — git
         expect(g.ok).toBe(false);
@@ -143,7 +145,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
         const gGet = tryRunGitWithExit(['-C', ours, 'config', '--get', 'core.bare'], {
           env: runGitEnv(),
         });
-        const caught = await captureThrow(() => openRepository({ cwd: ours }));
+        const caught = await captureThrow(() => openTrackedRepository({ cwd: ours }));
 
         // Assert — git, pinned to the exact refusal (any other failure —
         // ownership, a different config fault — must not satisfy this row)
@@ -169,7 +171,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
         // Arrange & Act — armed in beforeEach. Open time precedes the first
         // command either way, so the ordering guarantee survives the move.
         const g = tryRunGitWithExit(['-C', ours, 'status'], { env: runGitEnv() });
-        const caught = await captureThrow(() => openRepository({ cwd: ours }));
+        const caught = await captureThrow(() => openTrackedRepository({ cwd: ours }));
 
         // Assert — git
         expect(g.exitCode).toBe(128);
@@ -316,7 +318,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       it('Then both refuse — git with "invalid value for \'push.gpgsign\'", tsgit with CONFIG_BAD_BOOLEAN_LITERAL', async () => {
         // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], { env: runGitEnv() });
-        const repo = await openRepository({
+        const repo = await openTrackedRepository({
           cwd: ours,
           transport: receivePackDiscoveryOnlyTransport('refs/heads/main', ZERO_OID),
           config: { allowPrivateNetworks: true, dnsResolver: async () => ['127.0.0.1'] },

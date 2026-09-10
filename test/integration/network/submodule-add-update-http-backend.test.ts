@@ -26,13 +26,17 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { openRepository } from '../../../src/index.node.js';
+import type { openRepository } from '../../../src/index.node.js';
 import {
   findGitHttpBackend,
   type GitHttpBackend,
   startGitHttpBackend,
 } from '../../bench/support/http-backend-server.js';
 import { runGitEnv } from '../interop-helpers.js';
+
+import { trackedRepositories } from '../repository-lifecycle.js';
+
+const openTrackedRepository = trackedRepositories();
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, '../../fixtures/clone-source');
 const SOURCE_GIT = path.join(FIXTURE_DIR, 'source.git');
@@ -74,7 +78,7 @@ const SKIP =
   !FIXTURE_AVAILABLE;
 
 const openSuper = (cwd: string): ReturnType<typeof openRepository> =>
-  openRepository({
+  openTrackedRepository({
     cwd,
     allowInsecureHttp: true,
     config: {
