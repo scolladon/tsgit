@@ -757,6 +757,98 @@ describe('walkCommits', () => {
         });
       });
     });
+
+    describe('Given two pops already done and an octopus with MAX_WALK_QUEUE_SIZE-1 fresh parents', () => {
+      describe('When walking with ignoreMissing', () => {
+        it('Then completes yielding both commits without overflow', async () => {
+          // Arrange — root then octopus are popped first (head becomes 2), so
+          // the bound must be read against the PENDING count (queue.length -
+          // head), not the raw array length. A mutant that still compares the
+          // raw length would fire here even though pending never reaches
+          // MAX_WALK_QUEUE_SIZE.
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const root = await createCommit(ctx, {
+            tree: treeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'root',
+          });
+          const parents = Array.from(
+            { length: MAX_WALK_QUEUE_SIZE - 1 },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+          const octopus = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+            committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+            message: 'octopus',
+          });
+
+          // Act
+          const commits = await collect(
+            walkCommits(ctx, { from: [root, octopus], ignoreMissing: true }),
+          );
+
+          // Assert
+          const ids = commits.map((c) => c.id).sort();
+          expect(ids).toEqual([root, octopus].sort());
+        });
+      });
+    });
+
+    describe('Given two pops already done and an octopus with MAX_WALK_QUEUE_SIZE+1 fresh parents', () => {
+      describe('When walking with ignoreMissing', () => {
+        it('Then still throws INVALID_WALK_INPUT with the queue-overflow reason', async () => {
+          // Arrange — same shape as the MAX-1 case above, but with one more
+          // than MAX_WALK_QUEUE_SIZE parents: the bound must still fire once
+          // pending reaches MAX_WALK_QUEUE_SIZE, proving the cursor did not
+          // just widen the allowance by `head`.
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const root = await createCommit(ctx, {
+            tree: treeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'root',
+          });
+          const parents = Array.from(
+            { length: MAX_WALK_QUEUE_SIZE + 1 },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+          const octopus = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+            committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+            message: 'octopus',
+          });
+
+          // Act & Assert
+          let caught: unknown;
+          try {
+            for await (const _ of walkCommits(ctx, {
+              from: [root, octopus],
+              ignoreMissing: true,
+            }))
+              void _;
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
+          expect((caught as TsgitError).data).toEqual(
+            expect.objectContaining({ reason: expect.stringContaining('queue') }),
+          );
+        });
+      });
+    });
   });
 
   describe('abort guard inside the walk loop', () => {
