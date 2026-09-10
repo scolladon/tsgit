@@ -113,23 +113,46 @@ const ROOT_PATH = '' as FilePath;
 const NO_MARKS: ReadonlySet<ObjectId> = new Set();
 
 /**
+ * What `emitTree` needs to know beyond the tree it is walking: the not-side's
+ * marks, the closure-wide set of ids already emitted (by reference — this
+ * MUST be the live set the closure keeps growing, never a copy, since the
+ * prune below reads it as the walk proceeds), and `core.maxTreeDepth`
+ * resolved once for the whole closure rather than once per `emitTree` call.
+ */
+interface TreeEmitScope {
+  readonly marked: ReadonlySet<ObjectId>;
+  readonly emitted: ReadonlySet<ObjectId>;
+  readonly maxDepth: number;
+}
+
+/**
  * Emit `treeId` and its non-gitlink contents, skipping anything marked
- * uninteresting. `path` and `nameHash` come from `walkTree`'s own fold
- * (`PACK_NAME_HASH_V1`); the root tree itself carries the empty path and
- * the fold's seed.
+ * uninteresting or already emitted. `path` and `nameHash` come from
+ * `walkTree`'s own fold (`PACK_NAME_HASH_V1`); the root tree itself carries
+ * the empty path and the fold's seed.
+ *
+ * Mirrors git's `process_tree` (`list-objects.c`): a tree already
+ * UNINTERESTING or SEEN is never expanded, and never re-emitted, on the
+ * interesting side — the root short-circuit below returns before even the
+ * root emit, and `skipTree` prunes each already-known directory entry from
+ * the descent while still yielding the entry itself.
  */
 async function emitTree(
   ctx: Context,
   treeId: ObjectId,
-  marked: ReadonlySet<ObjectId>,
+  scope: TreeEmitScope,
   emit: Emit,
 ): Promise<void> {
-  if (!marked.has(treeId)) {
-    emit({ id: treeId, type: 'tree', path: ROOT_PATH, nameHash: PACK_NAME_HASH_SEED });
-  }
-  for await (const entry of walkTree(ctx, treeId, { pathHasher: PACK_NAME_HASH_V1 })) {
+  if (scope.marked.has(treeId) || scope.emitted.has(treeId)) return;
+  emit({ id: treeId, type: 'tree', path: ROOT_PATH, nameHash: PACK_NAME_HASH_SEED });
+  const skipTree = (id: ObjectId): boolean => scope.marked.has(id) || scope.emitted.has(id);
+  for await (const entry of walkTree(ctx, treeId, {
+    pathHasher: PACK_NAME_HASH_V1,
+    maxDepth: scope.maxDepth,
+    skipTree,
+  })) {
     if (isGitlink(entry.mode)) continue;
-    if (marked.has(entry.id)) continue;
+    if (scope.marked.has(entry.id)) continue;
     emit({
       id: entry.id,
       type: isDirectory(entry.mode) ? 'tree' : 'blob',
@@ -149,6 +172,7 @@ async function emitTree(
 async function resolveWants(
   ctx: Context,
   wants: ReadonlyArray<ObjectId>,
+  scope: TreeEmitScope,
   emit: Emit,
 ): Promise<Commit[]> {
   const commitSeeds: Commit[] = [];
@@ -162,7 +186,7 @@ async function resolveWants(
       continue;
     }
     if (obj.type === 'tree') {
-      await emitTree(ctx, peeled, NO_MARKS, emit);
+      await emitTree(ctx, peeled, { ...scope, marked: NO_MARKS }, emit);
       continue;
     }
     // A recorded divergence: git names a direct want after the pending
@@ -182,6 +206,7 @@ async function emitSeedsWithoutWalking(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
+  scope: TreeEmitScope,
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
@@ -191,7 +216,7 @@ async function emitSeedsWithoutWalking(
     if (request.maxCount !== undefined && emitted >= request.maxCount) return;
     emit({ id: seed.id, type: 'commit', nameHash: 0 });
     emitted += 1;
-    if (request.objects) await emitTree(ctx, seed.data.tree, marks.objects, emit);
+    if (request.objects) await emitTree(ctx, seed.data.tree, scope, emit);
   }
 }
 
@@ -205,6 +230,7 @@ async function walkAndEmitCommits(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
+  scope: TreeEmitScope,
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
@@ -223,7 +249,7 @@ async function walkAndEmitCommits(
 
   for (const commit of walked) {
     emit({ id: commit.id, type: 'commit', nameHash: 0 });
-    if (request.objects) await emitTree(ctx, commit.data.tree, marks.objects, emit);
+    if (request.objects) await emitTree(ctx, commit.data.tree, scope, emit);
   }
 }
 
@@ -232,13 +258,14 @@ async function emitCommitSeeds(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
+  scope: TreeEmitScope,
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
   if (commitSeeds.length === 0 || request.maxCount === 0) return;
   if (request.noWalk === true)
-    return emitSeedsWithoutWalking(ctx, commitSeeds, marks, request, emit);
-  return walkAndEmitCommits(ctx, commitSeeds, marks, request, emit);
+    return emitSeedsWithoutWalking(ctx, commitSeeds, marks, scope, request, emit);
+  return walkAndEmitCommits(ctx, commitSeeds, marks, scope, request, emit);
 }
 
 async function walkClosure(ctx: Context, request: ClosureRequest): Promise<ClosureObject[]> {
@@ -250,8 +277,13 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
   };
 
   const marks = await markNotSide(ctx, request.not);
-  const commitSeeds = await resolveWants(ctx, request.wants, emit);
-  await emitCommitSeeds(ctx, commitSeeds, marks, request, emit);
+  const scope: TreeEmitScope = {
+    marked: marks.objects,
+    emitted: state.emitted,
+    maxDepth: marks.maxDepth,
+  };
+  const commitSeeds = await resolveWants(ctx, request.wants, scope, emit);
+  await emitCommitSeeds(ctx, commitSeeds, marks, scope, request, emit);
 
   return results;
 }

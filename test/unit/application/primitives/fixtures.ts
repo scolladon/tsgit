@@ -14,6 +14,8 @@ import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type {
+  AuthorIdentity,
+  Blob,
   Commit,
   FileMode,
   FilePath,
@@ -81,6 +83,101 @@ export async function buildTreeChain(ctx: Context, depth: number): Promise<Objec
     childMode = FILE_MODE.DIRECTORY;
   }
   return childId;
+}
+
+const SHARED_SUBTREE_AUTHOR: AuthorIdentity = {
+  name: 'A U Thor',
+  email: 'author@example.com',
+  timestamp: 0,
+  timezoneOffset: '+0000',
+};
+
+async function writeSharedSubtreeBlob(ctx: Context, content: string): Promise<ObjectId> {
+  const blob: Blob = {
+    type: 'blob',
+    content: new TextEncoder().encode(content),
+    id: '' as ObjectId,
+  };
+  return writeObject(ctx, blob);
+}
+
+async function writeSharedSubtreeCommit(
+  ctx: Context,
+  tree: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+  message: string,
+): Promise<ObjectId> {
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents,
+      author: SHARED_SUBTREE_AUTHOR,
+      committer: SHARED_SUBTREE_AUTHOR,
+      message,
+      extraHeaders: [],
+    },
+  };
+  return writeObject(ctx, commit);
+}
+
+export interface SharedSubtreeChain {
+  readonly c0: ObjectId;
+  readonly c1: ObjectId;
+  readonly c2: ObjectId;
+  readonly c3: ObjectId;
+}
+
+/**
+ * A shared-subtree commit chain: `c0` adds `a/one`, `a/two`, `b/one`; `c1`
+ * edits `a/one` (tree `a` changes, tree `b` is reused wholesale from `c0`);
+ * `c2` adds `b/two` (tree `b` changes, tree `a` is reused wholesale from
+ * `c1`); `c3` is an empty commit reusing `c2`'s own root tree verbatim.
+ * Exercises both a first-encounter subtree (new emission) and a repeated
+ * one (skipped emission, and — once the closure prunes — skipped descent)
+ * in the same walk.
+ */
+export async function buildSharedSubtreeChain(ctx: Context): Promise<SharedSubtreeChain> {
+  const aOneV0 = await writeSharedSubtreeBlob(ctx, 'a/one v0');
+  const aTwo = await writeSharedSubtreeBlob(ctx, 'a/two');
+  const bOne = await writeSharedSubtreeBlob(ctx, 'b/one');
+  const treeA0 = await writeTree(ctx, [
+    treeEntry(FILE_MODE.REGULAR, 'one' as FilePath, aOneV0),
+    treeEntry(FILE_MODE.REGULAR, 'two' as FilePath, aTwo),
+  ]);
+  const treeB0 = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'one' as FilePath, bOne)]);
+  const tree0 = await writeTree(ctx, [
+    treeEntry(FILE_MODE.DIRECTORY, 'a' as FilePath, treeA0),
+    treeEntry(FILE_MODE.DIRECTORY, 'b' as FilePath, treeB0),
+  ]);
+  const c0 = await writeSharedSubtreeCommit(ctx, tree0, [], 'c0');
+
+  const aOneV1 = await writeSharedSubtreeBlob(ctx, 'a/one v1');
+  const treeA1 = await writeTree(ctx, [
+    treeEntry(FILE_MODE.REGULAR, 'one' as FilePath, aOneV1),
+    treeEntry(FILE_MODE.REGULAR, 'two' as FilePath, aTwo),
+  ]);
+  const tree1 = await writeTree(ctx, [
+    treeEntry(FILE_MODE.DIRECTORY, 'a' as FilePath, treeA1),
+    treeEntry(FILE_MODE.DIRECTORY, 'b' as FilePath, treeB0),
+  ]);
+  const c1 = await writeSharedSubtreeCommit(ctx, tree1, [c0], 'c1');
+
+  const bTwo = await writeSharedSubtreeBlob(ctx, 'b/two');
+  const treeB1 = await writeTree(ctx, [
+    treeEntry(FILE_MODE.REGULAR, 'one' as FilePath, bOne),
+    treeEntry(FILE_MODE.REGULAR, 'two' as FilePath, bTwo),
+  ]);
+  const tree2 = await writeTree(ctx, [
+    treeEntry(FILE_MODE.DIRECTORY, 'a' as FilePath, treeA1),
+    treeEntry(FILE_MODE.DIRECTORY, 'b' as FilePath, treeB1),
+  ]);
+  const c2 = await writeSharedSubtreeCommit(ctx, tree2, [c1], 'c2');
+
+  const c3 = await writeSharedSubtreeCommit(ctx, tree2, [c2], 'c3');
+
+  return { c0, c1, c2, c3 };
 }
 
 /**

@@ -33,6 +33,7 @@ interface WalkConfig {
   readonly maxEntries: number;
   readonly pathBytes: boolean;
   readonly pathHasher?: PathHasher;
+  readonly skipTree?: (id: ObjectId) => boolean;
 }
 
 interface Counter {
@@ -133,6 +134,7 @@ async function resolveWalkConfig(
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     pathBytes: options?.pathBytes ?? false,
     ...(options?.pathHasher !== undefined ? { pathHasher: options.pathHasher } : {}),
+    ...(options?.skipTree !== undefined ? { skipTree: options.skipTree } : {}),
   };
 }
 
@@ -148,6 +150,10 @@ interface FrameStep {
   /** The entry's own full path as bytes, `undefined` when `pathBytes` was not
    *  supplied; a fresh array, never a view onto `frame.framePrefix.bytes`. */
   readonly pathBytes: Uint8Array | undefined;
+  /** Whether `walkTree`'s own loop should enter this entry's subtree —
+   *  `shouldRecurse` ANDed with a negated `skipTree` verdict, decided here so
+   *  the verdict is fixed before the entry is yielded (see `WalkTreeOptions.skipTree`). */
+  readonly descend: boolean;
 }
 
 /**
@@ -171,6 +177,7 @@ function nextFrameEntry(config: WalkConfig, counter: Counter, frame: WalkFrame):
       ? foldPrefixHash(config.pathHasher, frame.framePrefix, entry.nameBytes)
       : undefined,
     pathBytes: config.pathBytes ? joinPrefixBytes(frame.framePrefix, entry.nameBytes) : undefined,
+    descend: shouldRecurse(config.recursive, entry.mode) && !(config.skipTree?.(entry.id) ?? false),
   };
 }
 
@@ -259,9 +266,9 @@ export async function* walkTree(
       ancestry.delete(frame.id);
       continue;
     }
-    const { path, entry, nameHash, pathBytes } = nextFrameEntry(config, counter, frame);
+    const { path, entry, nameHash, pathBytes, descend } = nextFrameEntry(config, counter, frame);
     yield buildYieldedEntry(path, entry, nameHash, pathBytes);
-    if (!shouldRecurse(config.recursive, entry.mode)) continue;
+    if (!descend) continue;
     const subtreeObj = await readObject(config.ctx, entry.id);
     if (subtreeObj.type === 'tree') {
       const childPrefix = buildChildPrefix(config, frame, path, entry, nameHash);

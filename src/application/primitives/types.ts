@@ -207,6 +207,14 @@ export interface WalkTreeOptions {
    * Default `false`, no cost.
    */
   readonly pathBytes?: boolean;
+  /**
+   * Prune: when it returns `true` for a directory entry's id, that entry is
+   * still yielded but its subtree is not entered. Evaluated once per directory
+   * entry, after the recursion check and BEFORE the entry is yielded — a
+   * consumer that reacts to the yield cannot influence the verdict. Never
+   * called for a blob or a gitlink entry. Absent, the walk is unchanged.
+   */
+  readonly skipTree?: (id: ObjectId) => boolean;
 }
 
 export interface WalkWorkingTreeEntry {

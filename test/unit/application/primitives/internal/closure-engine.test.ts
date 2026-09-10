@@ -17,6 +17,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
+import * as resolveMaxTreeDepthModule from '../../../../../src/application/primitives/internal/resolve-max-tree-depth.js';
+import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
@@ -42,7 +44,7 @@ import {
   buildMidx,
   type MidxSpec,
 } from '../../../domain/storage/arbitraries.js';
-import { buildSeededContext, seedMaxTreeDepth } from '../fixtures.js';
+import { buildSeededContext, buildSharedSubtreeChain, seedMaxTreeDepth } from '../fixtures.js';
 import { writeSyntheticBitmap, writeSyntheticPack } from '../pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -1285,6 +1287,67 @@ describe('computeClosure', () => {
     });
   });
 
+  describe('Given a not-marked subtree also reachable, unchanged, from the want side', () => {
+    describe('When computeClosure walks objects: true', () => {
+      it('Then the marking pass reads it (its own type check, then markTree) and the want-side walk attempts no further read of it', async () => {
+        // Arrange — a content-addressed byte cache already absorbs a repeat
+        // read of the identical id at the filesystem layer, so the
+        // observable this part changes is the WALK's own decision to
+        // attempt (`readObject`) a further read at all, not whether that
+        // attempt reaches disk. The not-side marking pass this part leaves
+        // untouched already costs two attempts for a `not` id that is a
+        // tree (`markUninteresting`'s own type check, then `markTree`'s);
+        // the third attempt, from the want-side walk redundantly descending
+        // an already-marked subtree, is what this part removes.
+        const ctx = await buildSeededContext();
+        const markedLeafBlob = await writeBlob(ctx, 'marked-leaf');
+        const markedSubtreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'leaf.txt', markedLeafBlob),
+        ]);
+        const otherBlobId = await writeBlob(ctx, 'kept');
+        const wantTreeId = await writeTree(ctx, [
+          treeEntry('40000' as FileMode, 'marked', markedSubtreeId),
+          treeEntry('100644' as FileMode, 'kept.txt', otherBlobId),
+        ]);
+        const commitId = await writeCommit(ctx, wantTreeId, [], 'reuses a not-marked subtree');
+        const sut = computeClosure;
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [commitId], not: [markedSubtreeId], objects: true });
+
+        // Assert
+        const attemptsOnMarkedSubtree = readSpy.mock.calls.filter(
+          ([, id]) => id === markedSubtreeId,
+        );
+        expect(attemptsOnMarkedSubtree).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a root tree already emitted while walking an earlier commit', () => {
+    describe('When computeClosure walks a later commit that reuses that exact tree', () => {
+      it('Then the later commit never attempts a second readObject of that tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'reused root');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
+        const parentId = await writeCommit(ctx, treeId, [], 'gen-1');
+        const childId = await writeCommit(ctx, treeId, [parentId], 'gen-2');
+        const sut = computeClosure;
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [childId], not: [], objects: true });
+
+        // Assert — one attempt as the tip commit's own root, none for the
+        // parent's identical root.
+        const attemptsOnTree = readSpy.mock.calls.filter(([, id]) => id === treeId);
+        expect(attemptsOnTree).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given MAX_PUSH_OBJECTS lowered to below the closure size', () => {
     describe('When computeClosure is called', () => {
       it('Then it throws PACK_TOO_LARGE with objectCount and limit', async () => {
@@ -1358,6 +1421,248 @@ describe('computeClosure', () => {
           expect(data.code).toBe('PACK_TOO_LARGE');
           expect(data.limit).toBe(2);
           expect(data.objectCount).toBeGreaterThan(data.limit);
+        } finally {
+          vi.doUnmock('../../../../../src/application/primitives/types.js');
+          vi.resetModules();
+        }
+      });
+    });
+  });
+
+  describe('Given a shared-subtree commit chain and an empty commit reusing its tip tree', () => {
+    describe('When computeClosure walks objects from the empty commit', () => {
+      it('Then the emitted entries are ordered and shaped exactly as recorded on the unpruned walk', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chain = await buildSharedSubtreeChain(ctx);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [chain.c3],
+          not: [],
+          objects: true,
+        });
+
+        // Assert — the exact ordered entry list captured on the unpruned
+        // walk; the closure prune this part introduces must reproduce it
+        // byte-for-byte (equivalence argument: a pruned subtree contributes
+        // nothing to this sequence today either).
+        expect(result.objects).toStrictEqual([
+          {
+            id: '00a4e3116c60e67c73ad2b29fbbbd9b5cb828617' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '7b68225667655b86be79e69007843bf429ce9067' as ObjectId,
+            type: 'tree',
+            path: '',
+            nameHash: 0,
+          },
+          {
+            id: '66f21de1c93afc3c24f8b668be9b0cc1762efa3a' as ObjectId,
+            type: 'tree',
+            path: 'a',
+            nameHash: 1627389952,
+          },
+          {
+            id: '304f2c24d9b50ed16781dfcda37f5da6140aa420' as ObjectId,
+            type: 'blob',
+            path: 'a/one',
+            nameHash: 2290941952,
+          },
+          {
+            id: '0b2f0396109eada52018c2ecc4d373abd52f09b1' as ObjectId,
+            type: 'blob',
+            path: 'a/two',
+            nameHash: 2501705728,
+          },
+          {
+            id: '77b7bffcc4087df500799be9b62b4145b367a9e7' as ObjectId,
+            type: 'tree',
+            path: 'b',
+            nameHash: 1644167168,
+          },
+          {
+            id: '847c83df585334723e9fbdd0f954d4c953ced4ac' as ObjectId,
+            type: 'blob',
+            path: 'b/one',
+            nameHash: 2291007488,
+          },
+          {
+            id: 'da9b11c7b65f351faffd81ab161c338e504a35d4' as ObjectId,
+            type: 'blob',
+            path: 'b/two',
+            nameHash: 2501771264,
+          },
+          {
+            id: 'f86601129a7fbbf8b94617d239aa6e93712ce2f5' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '0c390bf764a562d037f67f4c6ba65b769926f8fd' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: 'e6cdd70da23364b27db4b180bbce0d4ad9ce0e2f' as ObjectId,
+            type: 'tree',
+            path: '',
+            nameHash: 0,
+          },
+          {
+            id: 'c923bf899d649c44f4a42d4fb273170e5ac234df' as ObjectId,
+            type: 'tree',
+            path: 'b',
+            nameHash: 1644167168,
+          },
+          {
+            id: '1834ee9324eab6e6fa7d7df9a8c6915b81e86920' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '2b5396c9a8aa16db82ed23f17eebd290688e2f98' as ObjectId,
+            type: 'tree',
+            path: '',
+            nameHash: 0,
+          },
+          {
+            id: 'b408f90a2e66f6cb77f82740f1ccc1a4886d9536' as ObjectId,
+            type: 'tree',
+            path: 'a',
+            nameHash: 1627389952,
+          },
+          {
+            id: '125f069b69a1ec3e1b4c707d56998e13c238ce50' as ObjectId,
+            type: 'blob',
+            path: 'a/one',
+            nameHash: 2290941952,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a closure spanning several commits, each carrying its own tree, with objects: true', () => {
+    describe('When computeClosure walks the closure', () => {
+      it('Then core.maxTreeDepth is resolved exactly once for the whole closure, not once per commit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commitCount = 5;
+        let parentId: ObjectId | undefined;
+        let tipId: ObjectId = '' as ObjectId;
+        for (let generation = 0; generation < commitCount; generation += 1) {
+          const blobId = await writeBlob(ctx, `gen-${generation}`);
+          const treeId = await writeTree(ctx, [
+            treeEntry('100644' as FileMode, 'file.txt', blobId),
+          ]);
+          tipId = await writeCommit(ctx, treeId, parentId ? [parentId] : [], `gen-${generation}`);
+          parentId = tipId;
+        }
+        const resolveSpy = vi.spyOn(resolveMaxTreeDepthModule, 'resolveMaxTreeDepth');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [tipId], not: [], objects: true });
+
+        // Assert
+        expect(resolveSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a closure whose want side revisits an already-emitted shared subtree before a fresh object trips the cap', () => {
+    describe('When MAX_PUSH_OBJECTS is lowered to trip PACK_TOO_LARGE right after that revisit', () => {
+      it('Then the refusal data is the exact count the duplicate revisit could not move', async () => {
+        // Arrange — mock the shared cap down so a small closure trips it; see
+        // the identical pattern above for why the module graph is scoped.
+        vi.resetModules();
+        vi.doMock('../../../../../src/application/primitives/types.js', async (importOriginal) => {
+          const actual =
+            await importOriginal<
+              typeof import('../../../../../src/application/primitives/types.js')
+            >();
+          return { ...actual, MAX_PUSH_OBJECTS: 7 };
+        });
+
+        try {
+          const [
+            { computeClosure: sut },
+            { TsgitError: ScopedTsgitError },
+            { writeObject: scopedWriteObject },
+            { writeTree: scopedWriteTree },
+            { buildSeededContext: scopedBuildSeededContext },
+          ] = await Promise.all([
+            import('../../../../../src/application/primitives/internal/closure-engine.js'),
+            import('../../../../../src/domain/error.js'),
+            import('../../../../../src/application/primitives/write-object.js'),
+            import('../../../../../src/application/primitives/write-tree.js'),
+            import('../fixtures.js'),
+          ]);
+          const ctx = await scopedBuildSeededContext();
+          const writeScopedBlob = async (content: string): Promise<ObjectId> => {
+            const blob: Blob = {
+              type: 'blob',
+              content: new TextEncoder().encode(content),
+              id: '' as ObjectId,
+            };
+            return scopedWriteObject(ctx, blob);
+          };
+          const writeScopedCommit = async (
+            tree: ObjectId,
+            parents: ReadonlyArray<ObjectId>,
+            message: string,
+          ): Promise<ObjectId> => {
+            const commit: Commit = {
+              type: 'commit',
+              id: '' as ObjectId,
+              data: { tree, parents, author: AUTHOR, committer: AUTHOR, message, extraHeaders: [] },
+            };
+            return scopedWriteObject(ctx, commit);
+          };
+
+          const sharedLeafBlob = await writeScopedBlob('shared-leaf');
+          const sharedSubtreeId = await scopedWriteTree(ctx, [
+            treeEntry('100644' as FileMode, 'leaf.txt', sharedLeafBlob),
+          ]);
+          const uniqueBlobC1 = await writeScopedBlob('c1-own');
+          const tree1 = await scopedWriteTree(ctx, [
+            treeEntry('40000' as FileMode, 'a_shared', sharedSubtreeId),
+            treeEntry('100644' as FileMode, 'z_uniqueC1', uniqueBlobC1),
+          ]);
+          const commit1 = await writeScopedCommit(tree1, [], 'c1');
+          const uniqueBlobC2 = await writeScopedBlob('c2-own');
+          const tree2 = await scopedWriteTree(ctx, [
+            treeEntry('40000' as FileMode, 'a_shared', sharedSubtreeId),
+            treeEntry('100644' as FileMode, 'z_uniqueC2', uniqueBlobC2),
+          ]);
+          const commit2 = await writeScopedCommit(tree2, [commit1], 'c2');
+
+          // Act — unique emissions in order: commit2, tree2, sharedSubtreeId,
+          // sharedLeafBlob, uniqueBlobC2 (5), commit1 (6), tree1 (7), then
+          // `a_shared` revisits the already-emitted sharedSubtreeId/leaf (free,
+          // no cap effect either way) before `z_uniqueC1` (8th) trips the cap.
+          let caught: unknown;
+          try {
+            await sut(ctx, { tier: 'walk', wants: [commit2], not: [], objects: true });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(ScopedTsgitError);
+          const data = (caught as InstanceType<typeof ScopedTsgitError>).data as {
+            code: string;
+            limit: number;
+            objectCount: number;
+          };
+          expect(data.code).toBe('PACK_TOO_LARGE');
+          expect(data.limit).toBe(7);
+          expect(data.objectCount).toBe(8);
         } finally {
           vi.doUnmock('../../../../../src/application/primitives/types.js');
           vi.resetModules();

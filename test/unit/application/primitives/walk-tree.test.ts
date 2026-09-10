@@ -19,7 +19,12 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { PACK_NAME_HASH_V1, packNameHash } from '../../../../src/domain/storage/pack-name-hash.js';
-import { buildSeededContext, buildTreeChain, seedMaxTreeDepth } from './fixtures.js';
+import {
+  buildSeededContext,
+  buildTreeChain,
+  instrumentedContext,
+  seedMaxTreeDepth,
+} from './fixtures.js';
 
 async function collect(iter: AsyncIterable<WTE>): Promise<WTE[]> {
   const out: WTE[] = [];
@@ -717,6 +722,136 @@ describe('walkTree', () => {
           concatBytes([encode('a'), Uint8Array.of(0x2f), encode('inner')]),
         );
         expect(sibling?.pathBytes).toEqual(encode('b'));
+      });
+    });
+  });
+
+  describe('Given a skipTree predicate and a directory entry reachable twice via a shared subtree id', () => {
+    describe('When walkTree is iterated and the consumer mutates state on each yield', () => {
+      it('Then skipTree is called once per directory entry with its id, never for a blob, and a yield-time mutation cannot change that SAME entry’s own verdict', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const innerLeaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([9]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const sharedSubtreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'leaf', innerLeaf),
+        ]);
+        const blobEntryId = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([7]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const rootId = await writeTree(ctx, [
+          treeEntry('040000' as FileMode, 'd1', sharedSubtreeId),
+          treeEntry('040000' as FileMode, 'd2', sharedSubtreeId),
+          treeEntry('100644' as FileMode, 'z', blobEntryId),
+        ]);
+        const seenAtYield = new Set<ObjectId>();
+        const skipTreeCalls: ObjectId[] = [];
+        const skipTree = (id: ObjectId): boolean => {
+          skipTreeCalls.push(id);
+          return seenAtYield.has(id);
+        };
+
+        // Act
+        const out: WTE[] = [];
+        for await (const entry of walkTree(ctx, rootId, { skipTree })) {
+          out.push(entry);
+          seenAtYield.add(entry.id);
+        }
+
+        // Assert — called exactly once per directory entry, with that entry's id
+        expect(skipTreeCalls).toEqual([sharedSubtreeId, sharedSubtreeId]);
+        // Assert — never called for the blob entry
+        expect(skipTreeCalls).not.toContain(blobEntryId);
+        // Assert — d1's own subtree was still entered: the mutation performed
+        // while consuming d1's yield cannot retroactively change d1's verdict.
+        expect(out.map((e) => e.path)).toContain('d1/leaf');
+        // Assert — d2's verdict, evaluated fresh, DOES see d1's mutation.
+        expect(out.map((e) => e.path)).not.toContain('d2/leaf');
+      });
+    });
+  });
+
+  describe('Given a skipTree predicate that returns true for a directory entry', () => {
+    describe('When walkTree is iterated', () => {
+      it('Then the entry is yielded but its subtree object is never read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const innerLeaf = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([3]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const subtreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'leaf', innerLeaf),
+        ]);
+        const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'sub', subtreeId)]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        const out = await collect(walkTree(instrumented, rootId, { skipTree: () => true }));
+
+        // Assert
+        expect(out.map((e) => e.path)).toEqual(['sub']);
+        const subtreeSuffix = `${subtreeId.slice(0, 2)}/${subtreeId.slice(2)}`;
+        const subtreeReads = calls().filter(
+          (c) => c.method === 'read' && c.path.endsWith(subtreeSuffix),
+        );
+        expect(subtreeReads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a directory entry with many descendants pruned via skipTree, and maxEntries set to the pruned visited count', () => {
+    describe('When walkTree is iterated with skipTree pruning that entry', () => {
+      it('Then it completes, where the unpruned walk over the same tree would refuse TREE_ENTRY_LIMIT_EXCEEDED', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const innerBlobs = await Promise.all(
+          Array.from({ length: 5 }, (_unused, i) =>
+            writeObject(ctx, {
+              type: 'blob',
+              content: new Uint8Array([i]),
+              id: '' as ObjectId,
+            } satisfies Blob),
+          ),
+        );
+        const prunedSubtreeId = await writeTree(
+          ctx,
+          innerBlobs.map((id, i) => treeEntry('100644' as FileMode, `f${i}` as FilePath, id)),
+        );
+        const otherBlobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([99]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const rootId = await writeTree(ctx, [
+          treeEntry('040000' as FileMode, 'aSub', prunedSubtreeId),
+          treeEntry('100644' as FileMode, 'zOther', otherBlobId),
+        ]);
+
+        // Act
+        const pruned = await collect(
+          walkTree(ctx, rootId, { maxEntries: 2, skipTree: (id) => id === prunedSubtreeId }),
+        );
+
+        // Assert — the pruned walk visits only the two root-level entries
+        expect(pruned.map((e) => e.path)).toEqual(['aSub', 'zOther']);
+
+        // Assert — the SAME tree, unpruned, hits the cap inside the subtree
+        try {
+          await collect(walkTree(ctx, rootId, { maxEntries: 2 }));
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as { data: { code: string; count: number; limit: number } }).data;
+          expect(data.code).toBe('TREE_ENTRY_LIMIT_EXCEEDED');
+          expect(data.count).toBe(3);
+          expect(data.limit).toBe(2);
+        }
       });
     });
   });
