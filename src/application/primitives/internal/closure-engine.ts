@@ -30,7 +30,12 @@ import { isGitlink } from '../validators.js';
 import { walkCommits } from '../walk-commits.js';
 import { walkTree } from '../walk-tree.js';
 import { type BitmapClosureRequest, resolveBitmapClosure } from './bitmap-binding.js';
-import { markBoundaryTrees, markNotSide, type NotMarks } from './closure-not-marks.js';
+import {
+  markBoundaryTrees,
+  markNotSide,
+  type NotMarks,
+  type WalkedCommit,
+} from './closure-not-marks.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
 import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
@@ -234,14 +239,14 @@ async function walkAndEmitCommits(
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
-  const walked: Commit[] = [];
+  const walked: WalkedCommit[] = [];
   for await (const commit of walkCommits(ctx, {
     from: commitSeeds.map((seed) => seed.id),
-    until: [...marks.commits],
+    until: marks.commits,
     ignoreMissing: true,
     order: request.firstParent === true ? 'first-parent' : 'topo',
   })) {
-    walked.push(commit);
+    walked.push({ id: commit.id, tree: commit.data.tree, parents: commit.data.parents });
     if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
   }
 
@@ -249,7 +254,7 @@ async function walkAndEmitCommits(
 
   for (const commit of walked) {
     emit({ id: commit.id, type: 'commit', nameHash: 0 });
-    if (request.objects) await emitTree(ctx, commit.data.tree, scope, emit);
+    if (request.objects) await emitTree(ctx, commit.tree, scope, emit);
   }
 }
 

@@ -356,6 +356,55 @@ describe('walkCommitsByDate', () => {
     });
   });
 
+  describe('Given until as a Set with the same members as an equivalent array', () => {
+    describe('When walkCommitsByDate is called with each', () => {
+      it('Then yields the identical id sequence', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a, b, c, d } = await buildDiamond(ctx);
+
+        // Act
+        const viaArray = await collect(walkCommitsByDate(ctx, { from: [d], until: [a] }));
+        const viaSet = await collect(walkCommitsByDate(ctx, { from: [d], until: new Set([a]) }));
+
+        // Assert
+        expect(idsOf(viaSet)).toEqual(idsOf(viaArray));
+        expect(idsOf(viaArray)).toEqual([d, c, b]);
+      });
+    });
+  });
+
+  describe('Given a Set passed as until, empty at call time', () => {
+    describe('When an id is added to it after the first commit is yielded', () => {
+      it('Then that id is excluded from the rest of the walk', async () => {
+        // Arrange — the set must be held by REFERENCE: a copy taken during
+        // walk construction would never observe this later mutation.
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 3);
+        const [rootId, midId, headId] = ids;
+        const until = new Set<ObjectId>();
+        const iterator = walkCommitsByDate(ctx, {
+          from: [headId!],
+          until,
+        })[Symbol.asyncIterator]();
+
+        // Act
+        const first = await iterator.next();
+        until.add(rootId!);
+        const commits: Commit[] = [];
+        if (!first.done) commits.push(first.value);
+        let step = await iterator.next();
+        while (!step.done) {
+          commits.push(step.value);
+          step = await iterator.next();
+        }
+
+        // Assert
+        expect(idsOf(commits)).toEqual([headId, midId]);
+      });
+    });
+  });
+
   describe('Given a seed listed in until', () => {
     describe('When the seed oid is missing and ignoreMissing is false', () => {
       it('Then it is neither read nor yielded (no throw)', async () => {

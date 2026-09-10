@@ -1,6 +1,7 @@
 import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { asIdSet } from './internal/as-id-set.js';
 import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
 import { limitFor } from './internal/concurrency.js';
 import { readCommit } from './internal/read-commit.js';
@@ -24,7 +25,7 @@ interface WalkState {
   head: number;
   readonly visited: Set<string>;
   readonly missing: Set<string>;
-  readonly until: Set<ObjectId>;
+  readonly until: ReadonlySet<ObjectId>;
   readonly shallow: ReadonlySet<ObjectId>;
 }
 
@@ -48,7 +49,7 @@ async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Pro
     head: 0,
     visited: new Set<string>(),
     missing: new Set<string>(),
-    until: new Set(options.until ?? []),
+    until: asIdSet(options.until),
     shallow,
   };
   const bound = limitFor(ctx, 'ioBound');

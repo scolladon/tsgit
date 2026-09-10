@@ -331,7 +331,7 @@ const expandRange = async (
     excluded.add(commit.id);
   }
   const ids: ObjectId[] = [];
-  for await (const commit of walkCommits(ctx, { from: [to], until: [...excluded] })) {
+  for await (const commit of walkCommits(ctx, { from: [to], until: excluded })) {
     ids.push(commit.id);
   }
   return ids;

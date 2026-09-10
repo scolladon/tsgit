@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
+import * as closureNotMarksModule from '../../../../../src/application/primitives/internal/closure-not-marks.js';
 import * as resolveMaxTreeDepthModule from '../../../../../src/application/primitives/internal/resolve-max-tree-depth.js';
 import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
@@ -1207,6 +1208,32 @@ describe('computeClosure', () => {
         expect(ids.has(boundaryOnlyBlob)).toBe(false);
         expect(ids.has(left)).toBe(true);
         expect(ids.has(right)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a walk-tier closure over two linked commits with objects: true', () => {
+    describe('When computeClosure buffers the walked commits for markBoundaryTrees', () => {
+      it('Then each buffered record carries exactly id, tree and parents', async () => {
+        // Arrange — a spy on the callee, not `toEqual` on the whole record: a
+        // subset comparison cannot see an extra key (e.g. a full `Commit`'s
+        // `data`/`type`) left on the buffered value.
+        const ctx = await buildSeededContext();
+        const treeId = await writeTree(ctx, []);
+        const rootId = await writeCommit(ctx, treeId, [], 'root');
+        const headId = await writeCommit(ctx, treeId, [rootId], 'head');
+        const boundarySpy = vi.spyOn(closureNotMarksModule, 'markBoundaryTrees');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [headId], not: [], objects: true });
+
+        // Assert
+        const walked = boundarySpy.mock.calls[0]![1];
+        expect(walked).toHaveLength(2);
+        for (const record of walked) {
+          expect(Object.keys(record).sort()).toEqual(['id', 'parents', 'tree']);
+        }
       });
     });
   });

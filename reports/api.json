@@ -117884,17 +117884,40 @@
 								"isReadonly": true
 							},
 							"type": {
-								"type": "typeOperator",
-								"operator": "readonly",
-								"target": {
-									"type": "array",
-									"elementType": {
+								"type": "union",
+								"types": [
+									{
+										"type": "typeOperator",
+										"operator": "readonly",
+										"target": {
+											"type": "array",
+											"elementType": {
+												"type": "reference",
+												"target": 677,
+												"name": "ObjectId",
+												"package": "@scolladon/tsgit"
+											}
+										}
+									},
+									{
 										"type": "reference",
-										"target": 677,
-										"name": "ObjectId",
-										"package": "@scolladon/tsgit"
+										"target": {
+											"packageName": "typescript",
+											"packagePath": "lib/lib.es2015.collection.d.ts",
+											"qualifiedName": "ReadonlySet"
+										},
+										"typeArguments": [
+											{
+												"type": "reference",
+												"target": 677,
+												"name": "ObjectId",
+												"package": "@scolladon/tsgit"
+											}
+										],
+										"name": "ReadonlySet",
+										"package": "typescript"
 									}
-								}
+								]
 							}
 						},
 						{
@@ -118077,17 +118100,40 @@
 								"isReadonly": true
 							},
 							"type": {
-								"type": "typeOperator",
-								"operator": "readonly",
-								"target": {
-									"type": "array",
-									"elementType": {
+								"type": "union",
+								"types": [
+									{
+										"type": "typeOperator",
+										"operator": "readonly",
+										"target": {
+											"type": "array",
+											"elementType": {
+												"type": "reference",
+												"target": 677,
+												"name": "ObjectId",
+												"package": "@scolladon/tsgit"
+											}
+										}
+									},
+									{
 										"type": "reference",
-										"target": 677,
-										"name": "ObjectId",
-										"package": "@scolladon/tsgit"
+										"target": {
+											"packageName": "typescript",
+											"packagePath": "lib/lib.es2015.collection.d.ts",
+											"qualifiedName": "ReadonlySet"
+										},
+										"typeArguments": [
+											{
+												"type": "reference",
+												"target": 677,
+												"name": "ObjectId",
+												"package": "@scolladon/tsgit"
+											}
+										],
+										"name": "ReadonlySet",
+										"package": "typescript"
 									}
-								}
+								]
 							}
 						},
 						{

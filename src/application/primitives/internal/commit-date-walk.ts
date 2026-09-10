@@ -3,6 +3,7 @@ import { precedes, type QueueEntry } from '../../../domain/commit/priority-queue
 import { operationAborted } from '../../../domain/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { asIdSet } from './as-id-set.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { limitFor } from './concurrency.js';
 import { readCommit } from './read-commit.js';
@@ -28,7 +29,7 @@ export const selectParents = (commit: Commit, firstParent: boolean): ReadonlyArr
 
 export interface CommitDateWalkOptions {
   readonly from: ReadonlyArray<ObjectId>;
-  readonly until?: ReadonlyArray<ObjectId>;
+  readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   /**
    * Boundary override. Omitted ⇒ the repository's `.git/shallow` set is
    * loaded automatically (once per `Context`); supplied — including an
@@ -47,7 +48,7 @@ export interface CommitDateWalkOptions {
 interface DateWalk {
   readonly heap: BinaryHeap<QueueEntry<Promise<Commit | undefined>>>;
   readonly seen: Set<ObjectId>;
-  readonly until: Set<ObjectId>;
+  readonly until: ReadonlySet<ObjectId>;
   readonly firstParent: boolean;
   readonly bodies: CommitBodies;
   readonly ignoreMissing: boolean;
@@ -93,7 +94,7 @@ export async function* commitDateWalk(
   const walk: DateWalk = {
     heap: new BinaryHeap<QueueEntry<Promise<Commit | undefined>>>(precedes),
     seen: new Set<ObjectId>(options.from),
-    until: new Set<ObjectId>(options.until ?? []),
+    until: asIdSet(options.until),
     firstParent: options.firstParent ?? false,
     bodies: createBoundedReader(bound, (id) =>
       readCommit(ctx, id, { verifyHash, ignoreMissing, missing, shallow }),

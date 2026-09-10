@@ -120,7 +120,7 @@ export type UpdateRefOptions =
 
 export interface WalkCommitsOptions {
   readonly from: ReadonlyArray<ObjectId>;
-  readonly until?: ReadonlyArray<ObjectId>;
+  readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   readonly order?: 'topo' | 'first-parent';
   readonly ignoreMissing?: boolean;
   readonly verifyHash?: boolean;
@@ -147,7 +147,7 @@ export interface WalkCommitsOptions {
  */
 export interface WalkCommitsByDateOptions {
   readonly from: ReadonlyArray<ObjectId>;
-  readonly until?: ReadonlyArray<ObjectId>;
+  readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   /**
    * Commits whose parents must NOT be walked (shallow boundaries). Omitted ⇒
    * the repository's `.git/shallow` set is loaded automatically; supplied

@@ -17,12 +17,22 @@
  */
 import { operationAborted } from '../../../domain/error.js';
 import { treeDepthExceeded } from '../../../domain/objects/error.js';
-import { type Commit, isDirectory, type ObjectId } from '../../../domain/objects/index.js';
+import { isDirectory, type ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 import { isGitlink } from '../validators.js';
 import { walkCommits } from '../walk-commits.js';
 import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
+
+/** The slice of a walked commit `markBoundaryTrees` needs — its own id and
+ *  tree, plus the parents that discover further boundary commits. Declared
+ *  here (not `closure-engine.ts`) so the existing dependency direction —
+ *  `closure-engine.ts` already imports from this module — stays a DAG. */
+export interface WalkedCommit {
+  readonly id: ObjectId;
+  readonly tree: ObjectId;
+  readonly parents: ReadonlyArray<ObjectId>;
+}
 
 export interface NotMarks {
   readonly commits: ReadonlySet<ObjectId>;
@@ -99,8 +109,7 @@ async function markCommitAncestry(
 ): Promise<void> {
   for await (const commit of walkCommits(ctx, {
     from: [id],
-    // Stryker disable next-line ArrayDeclaration: equivalent — every id already in markedCommits had its own full ancestry walked, so dropping the cut-off only re-walks commits whose marks are already set.
-    until: [...markedCommits],
+    until: markedCommits,
     ignoreMissing: true,
   })) {
     markedCommits.add(commit.id);
@@ -174,12 +183,12 @@ export async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): P
  */
 export async function markBoundaryTrees(
   ctx: Context,
-  walked: ReadonlyArray<Commit>,
+  walked: ReadonlyArray<WalkedCommit>,
   marks: NotMarks,
 ): Promise<void> {
   const seenBoundary = new Set<ObjectId>();
   for (const commit of walked) {
-    for (const parentId of commit.data.parents) {
+    for (const parentId of commit.parents) {
       if (!marks.commits.has(parentId) || seenBoundary.has(parentId)) continue;
       seenBoundary.add(parentId);
       // `parentId` passed the `marks.commits` check above, and

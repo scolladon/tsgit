@@ -198,6 +198,55 @@ describe('walkCommits', () => {
     });
   });
 
+  describe('Given until as a Set with the same members as an equivalent array', () => {
+    describe('When walkCommits is called with each', () => {
+      it('Then yields the identical id sequence', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 5);
+        const headId = ids.at(-1)!;
+        const untilId = ids[1]!;
+
+        // Act
+        const viaArray = await collect(walkCommits(ctx, { from: [headId], until: [untilId] }));
+        const viaSet = await collect(
+          walkCommits(ctx, { from: [headId], until: new Set([untilId]) }),
+        );
+
+        // Assert
+        expect(viaSet.map((c) => c.id)).toEqual(viaArray.map((c) => c.id));
+      });
+    });
+  });
+
+  describe('Given a Set passed as until, empty at call time', () => {
+    describe('When an id is added to it after the first commit is yielded', () => {
+      it('Then that id is excluded from the rest of the walk', async () => {
+        // Arrange — the set must be held by REFERENCE: a copy taken during
+        // session creation would never observe this later mutation.
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 3);
+        const [rootId, midId, headId] = ids;
+        const until = new Set<ObjectId>();
+        const iterator = walkCommits(ctx, { from: [headId!], until })[Symbol.asyncIterator]();
+
+        // Act
+        const first = await iterator.next();
+        until.add(rootId!);
+        const commits: Commit[] = [];
+        if (!first.done) commits.push(first.value);
+        let step = await iterator.next();
+        while (!step.done) {
+          commits.push(step.value);
+          step = await iterator.next();
+        }
+
+        // Assert
+        expect(commits.map((c) => c.id)).toEqual([headId, midId]);
+      });
+    });
+  });
+
   describe('Given ignoreMissing=true and a missing parent', () => {
     describe('When walkCommits is called', () => {
       it('Then child is yielded without error', async () => {
