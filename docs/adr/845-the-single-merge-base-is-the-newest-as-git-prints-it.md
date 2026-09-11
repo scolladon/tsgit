@@ -51,8 +51,9 @@ shortcut, and `merge`'s `const [base] = …` consumption of the array API.
 ## Consequences
 
 `mergeBase()` and `git merge-base` agree in criss-cross histories, graph or no graph — the
-single result is the base git pops first: the newest-dated base without a graph, the first in
-generation order with one (the title predates that measured refinement). `merge` and `rebase`
+single result is the base git pops first: the newest-dated base without a graph or on a chain that
+serves no corrected commit dates, the first in generation-then-date order when every layer carries
+GDA2 (the title predates that measured refinement; see ADR-840, ADR-848). `merge` and `rebase`
 consume the default result, so on a criss-cross they now start from the base `git merge-base`
 prints rather than the lexicographically smallest one; `git merge` itself uses every base through
 a recursive virtual ancestor, a divergence this record does not close. The primitive's

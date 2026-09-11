@@ -1093,7 +1093,7 @@ describe('mergeBase', () => {
 });
 
 describe('mergeBase cancellation on the graph path', () => {
-  describe('Given a commit-graph covering the history and a signal aborted after the first commit is read', () => {
+  describe('Given a commit-graph covering the history, When a signal aborts after the first commit is read', () => {
     it('Then the paint stops at its next per-commit checkpoint instead of completing from the graph', async () => {
       // Arrange — with a graph the paint reads no object bytes, so makeReadCommit's
       // own signal check is the only cancellation point; the abort lands as the
