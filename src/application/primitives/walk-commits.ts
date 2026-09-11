@@ -23,6 +23,10 @@ interface WalkState {
   // dropping the `readonly` qualifier on the reference.
   queue: ObjectId[];
   head: number;
+  /** Ids pushed but not yet popped — git's ENQUEUED flag. An id is queued at
+   *  most once at a time, so the array grows with the history's commits, never
+   *  with its parent edges, and the bound below counts distinct pending ids. */
+  readonly queued: Set<ObjectId>;
   readonly visited: Set<string>;
   readonly missing: Set<string>;
   readonly until: ReadonlySet<ObjectId>;
@@ -47,6 +51,7 @@ async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Pro
   const state: WalkState = {
     queue: [...options.from],
     head: 0,
+    queued: new Set(options.from),
     visited: new Set<string>(),
     missing: new Set<string>(),
     until: asIdSet(options.until),
@@ -112,6 +117,7 @@ export async function* walkCommits(
     if (ctx.signal?.aborted) throw operationAborted();
     const id = state.queue[state.head]!;
     state.head += 1;
+    state.queued.delete(id);
     if (state.visited.has(id) || state.missing.has(id) || state.until.has(id)) continue;
 
     const { commit, enqueuedFromHeader } = await resolveFrontierEntry(ctx, session, id);
@@ -154,10 +160,12 @@ function enqueueParents(
 function enqueueIds(state: WalkState, ids: ReadonlyArray<ObjectId>, bodies: CommitBodies): void {
   for (const id of ids) {
     if (state.visited.has(id) || state.missing.has(id) || state.until.has(id)) continue;
-    if (state.queue.length - state.head >= MAX_WALK_QUEUE_SIZE) {
+    if (state.queued.has(id)) continue;
+    if (state.queued.size >= MAX_WALK_QUEUE_SIZE) {
       throw invalidWalkInput(REASON_WALK_QUEUE_OVERFLOW);
     }
     state.queue.push(id);
+    state.queued.add(id);
     bodies.start(id);
   }
 }

@@ -727,24 +727,17 @@ describe('walkCommits', () => {
       });
     });
 
-    describe('Given a header-driven enqueue that runs its fallback a second time', () => {
-      describe('When the queue is already near MAX_WALK_QUEUE_SIZE from an unrelated seed', () => {
-        it('Then the redundant fallback enqueue overflows where a single enqueue would not', async () => {
-          // Arrange — resolveFrontierEntry's `enqueuedFromHeader` return value
-          // gates walkCommits' `!enqueuedFromHeader` fallback enqueue: it must
-          // be true whenever the header path already enqueued this id's
-          // parents, so the fallback is skipped. If that flag were forced
-          // false (or the fallback's own guard forced true), the SAME 30
-          // parents get pushed a second time.
-          //
-          // `filler`'s 65,500 distinct (never-read) parents bring the queue to
-          // 65,500. `head`'s 30 REAL, graph-covered parents push it to 65,530
-          // — under MAX_WALK_QUEUE_SIZE (65,536), so the correct single
-          // header-enqueue never overflows. A redundant second enqueue of the
-          // same 30 pushes past 65,536 partway through, throwing
-          // INVALID_WALK_INPUT — a different, killable outcome from the
-          // OPERATION_ABORTED this test forces once the correct code reaches
-          // the loop-top abort check.
+    describe('Given a header-driven enqueue near MAX_WALK_QUEUE_SIZE from an unrelated seed', () => {
+      describe('When the graph-covered head enqueues its parents', () => {
+        it('Then the distinct pending count stays under the bound and the abort is the next stop', async () => {
+          // Arrange — `filler`'s 65,500 distinct (never-read) parents bring the
+          // pending frontier to 65,500; `head`'s 30 REAL, graph-covered parents
+          // push it to 65,530 — under MAX_WALK_QUEUE_SIZE (65,536). The bound
+          // counts DISTINCT pending ids: a parent already queued is never
+          // pushed twice, so even a repeated header/fallback enqueue of the
+          // same 30 cannot cross it. The walk's next stop is therefore the
+          // OPERATION_ABORTED this test forces at the loop-top check, never a
+          // queue overflow.
           const ctx = await buildSeededContext();
           const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
           const treeId = await writeObject(ctx, tree);
@@ -799,10 +792,56 @@ describe('walkCommits', () => {
 
           // Assert — filler then head are yielded in order; the abort (set
           // only after head's enqueue already ran) is the walk's next stop —
-          // NOT a queue overflow from a redundant enqueue
+          // never a queue overflow
           expect(first.value?.id).toBe(filler);
           expect(second.value?.id).toBe(head);
           expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        });
+      });
+    });
+
+    describe('Given a parent layer every commit of the layer above names in full', () => {
+      describe('When walking from the whole upper layer', () => {
+        it('Then each parent is queued once, so 67,600 parent references never reach the bound', async () => {
+          // Arrange — 260 roots and 260 commits each naming all 260 roots:
+          // 67,600 parent references, more than MAX_WALK_QUEUE_SIZE (65,536)
+          // raw pushes would admit, but at most 260 DISTINCT pending ids at
+          // any moment. Counting pushes refused this history; counting
+          // distinct pending ids walks it, yielding every commit exactly once.
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const roots: ObjectId[] = [];
+          for (let i = 0; i < 260; i += 1) {
+            roots.push(
+              await createCommit(ctx, {
+                tree: treeId,
+                parents: [],
+                author: AUTHOR,
+                committer: AUTHOR,
+                message: `root ${i}`,
+              }),
+            );
+          }
+          const tips: ObjectId[] = [];
+          const identity = { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 };
+          for (let i = 0; i < 260; i += 1) {
+            tips.push(
+              await createCommit(ctx, {
+                tree: treeId,
+                parents: roots,
+                author: identity,
+                committer: identity,
+                message: `tip ${i}`,
+              }),
+            );
+          }
+
+          // Act
+          const commits = await collect(walkCommits(ctx, { from: tips }));
+
+          // Assert
+          expect(commits.map((c) => c.id).sort()).toEqual([...tips, ...roots].sort());
         });
       });
     });
