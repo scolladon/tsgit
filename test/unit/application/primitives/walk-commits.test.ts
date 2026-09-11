@@ -937,6 +937,90 @@ describe('walkCommits', () => {
         });
       });
     });
+
+    describe('Given an octopus with exactly MAX_WALK_QUEUE_SIZE fresh parents and a second seed', () => {
+      describe('When walking with ignoreMissing', () => {
+        it('Then the un-popped seed counts toward the bound, so the last parent overflows', async () => {
+          // Arrange — the octopus is popped first, leaving the root seed
+          // pending; its MAX_WALK_QUEUE_SIZE parents then push the distinct
+          // pending count from 1 to the bound, and the guard reads
+          // MAX_WALK_QUEUE_SIZE before the last push. A session that seeded
+          // its pending set empty instead of from `from` would start this
+          // enqueue at 0 and admit all of them, completing cleanly.
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const parents = Array.from(
+            { length: MAX_WALK_QUEUE_SIZE },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+          const octopus = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'octopus',
+          });
+          const root = await createCommit(ctx, {
+            tree: treeId,
+            parents: [],
+            author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+            committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 },
+            message: 'root',
+          });
+
+          // Act & Assert
+          let caught: unknown;
+          try {
+            for await (const _ of walkCommits(ctx, {
+              from: [octopus, root],
+              ignoreMissing: true,
+            }))
+              void _;
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
+          expect((caught as TsgitError).data).toEqual(
+            expect.objectContaining({ reason: expect.stringContaining('queue') }),
+          );
+        });
+      });
+    });
+
+    describe('Given the same octopus walked alone, with no other seed left pending', () => {
+      describe('When walking with ignoreMissing', () => {
+        it('Then all MAX_WALK_QUEUE_SIZE parents fit and the walk completes', async () => {
+          // Arrange — the companion to the row above: with the octopus its own
+          // only seed, the pending count is 0 when its parents enqueue, so the
+          // very same MAX_WALK_QUEUE_SIZE parents land exactly ON the bound
+          // without the guard ever reading it as reached. The two rows differ
+          // by one un-popped seed and nothing else.
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const parents = Array.from(
+            { length: MAX_WALK_QUEUE_SIZE },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+          const octopus = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'octopus',
+          });
+
+          // Act
+          const commits = await collect(walkCommits(ctx, { from: [octopus], ignoreMissing: true }));
+
+          // Assert
+          expect(commits.map((c) => c.id)).toEqual([octopus]);
+        });
+      });
+    });
   });
 
   describe('abort guard inside the walk loop', () => {

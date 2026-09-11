@@ -73,6 +73,9 @@ describe('readCommitMeta', () => {
         const root = await commitAt(base, treeId, 1_700_000_000, []);
         const tip = await commitAt(base, treeId, 1_700_000_100, [root]);
         await writeCommitGraph(base, [await asCommits(base, [root, tip])]);
+        // The fixture's own asCommits reads warm the object cache; clear it so
+        // the no-read assertion below can observe an object-store read at all.
+        base.deltaCache.clear();
         const { ctx, calls } = instrumentedContext(base);
 
         // Act
@@ -130,6 +133,9 @@ describe('readCommitMeta', () => {
         const treeId = await emptyTree(base);
         const root = await commitAt(base, treeId, 1_700_000_000, []);
         await writeCommitGraph(base, [await asCommits(base, [root])]);
+        // The fixture's own asCommits reads warm the object cache; clear it so
+        // the no-read assertion below can observe an object-store read at all.
+        base.deltaCache.clear();
         const { ctx, calls } = instrumentedContext(base);
 
         // Act
@@ -259,6 +265,9 @@ describe('commitMetaOf', () => {
         const root = await commitAt(base, treeId, 1_700_000_000, []);
         await writeCommitGraph(base, [await asCommits(base, [root])]);
         const [commit] = await asCommits(base, [root]);
+        // The fixture's own asCommits reads warm the object cache; clear it so
+        // the no-read assertion below can observe an object-store read at all.
+        base.deltaCache.clear();
         const { ctx, calls } = instrumentedContext(base);
 
         // Act
@@ -279,6 +288,9 @@ describe('commitMetaOf', () => {
         const treeId = await emptyTree(base);
         const root = await commitAt(base, treeId, 1_700_000_000, []);
         const [commit] = await asCommits(base, [root]);
+        // The fixture's own asCommits reads warm the object cache; clear it so
+        // the no-read assertion below can observe an object-store read at all.
+        base.deltaCache.clear();
         const { ctx, calls } = instrumentedContext(base);
 
         // Act
@@ -299,6 +311,9 @@ describe('commitMetaOf', () => {
         const treeId = await emptyTree(base);
         const root = await commitAt(base, treeId, 1_700_000_000, []);
         const [commit] = await asCommits(base, [root]);
+        // The fixture's own asCommits reads warm the object cache; clear it so
+        // the no-read assertion below can observe an object-store read at all.
+        base.deltaCache.clear();
         const { ctx, calls } = instrumentedContext(base);
 
         // Act

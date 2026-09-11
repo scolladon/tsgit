@@ -1,6 +1,7 @@
 import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as readCommitGraphModule from '../../../../src/application/primitives/internal/read-commit-graph.js';
 import * as readCommitMetaModule from '../../../../src/application/primitives/internal/read-commit-meta.js';
 import { mergeBase } from '../../../../src/application/primitives/merge-base.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -968,6 +969,31 @@ describe('mergeBase', () => {
         expect(plain).toEqual([q]);
         expect(octopus).toEqual([p]);
         expect(every).toEqual([p, q].sort());
+      });
+    });
+
+    describe('When the graph covers every commit but serves topological levels', () => {
+      it('Then the discovery walk swaps in the date-only comparator and pops P first', async () => {
+        // Arrange — one `commitGraph.generationVersion=1` layer anywhere in a
+        // chain demotes the whole chain to topological levels, and git then
+        // orders the discovery walk by committer date alone. The graph still
+        // serves Q the generation (1000) that outranks P's (900), so a walk
+        // that kept its generation comparator would answer Q instead.
+        const ctx = await buildSeededContext();
+        const { p, q, d, e, all } = await buildGenerationVersusDate(ctx);
+        await writeCommitGraph(ctx, [await asCommits(ctx, all)]);
+        const topoLevels = vi
+          .spyOn(readCommitGraphModule, 'correctedCommitDatesEnabled')
+          .mockResolvedValue(false);
+
+        // Act
+        const plain = await mergeBase(ctx, [d, e]);
+        const every = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(plain).toEqual([p]);
+        expect(every).toEqual([p, q].sort());
+        topoLevels.mockRestore();
       });
     });
 
