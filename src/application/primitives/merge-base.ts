@@ -55,6 +55,9 @@ interface PaintEntry extends QueueEntry<undefined> {
    *  queue at most once at a time (Git's ENQUEUED bit, mirrored by
    *  {@link paint}'s `queued` set), so no two entries ever share an id. */
   readonly ins: number;
+  /** The commit's parents, read once when the entry was queued, so the pop
+   *  loop expands them without a second (memoised, still asynchronous) read. */
+  readonly parents: ReadonlyArray<ObjectId>;
 }
 
 type Precedes = (a: PaintEntry, b: PaintEntry) => boolean;
@@ -122,9 +125,18 @@ const paint = async (
   for (const two of twos) await queue.mark(two, PARENT2);
   for (let entry = queue.pop(); entry !== undefined; entry = queue.pop()) {
     if (entry.generation < options.minGeneration) break;
-    const step = visit(queue.flags, entry, results, options);
-    if (step.done) break;
-    await expandParents(read, queue, entry.oid, step.inherited);
+    const inherited = visit(queue.flags, entry, results, options);
+    if ((inherited & DONE) !== 0) break;
+    for (const parent of entry.parents) {
+      // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this
+      // skip only avoids re-marking a parent that already carries every inherited bit;
+      // without it the re-mark is idempotent (no new bit, the RESULT guard refuses a
+      // re-record, a re-popped entry outranks nothing newer) and still terminates on a
+      // finite DAG with the identical flag map and result list. The `??` fallback's `&&`
+      // form reads a marked parent as 0 and merely disables the same skip.
+      if (((queue.flags.get(parent) ?? 0) & inherited) === inherited) continue;
+      await queue.mark(parent, inherited);
+    }
   }
   return { flags: queue.flags, results };
 };
@@ -156,12 +168,15 @@ const makePaintQueue = (read: ReadCommit, precedes: Precedes): PaintQueue => {
       flags.set(id, (flags.get(id) ?? 0) | bits);
       // Git's ENQUEUED bit: an id waits in the queue at most once, so re-reaching
       // it only merges flags into the entry already queued.
-      // Stryker disable next-line all: equivalent — a duplicate entry carries the
-      // same id, hence the same generation and date, so it can only pop AFTER its
-      // twin; by then the twin has already recorded the base (`visit`'s RESULT
-      // guard skips the re-record) and propagated STALE, and re-propagating the
-      // same bits to the same parents is idempotent. Queueing twice costs pops,
-      // never a different flag map or result list.
+      // Stryker disable next-line ConditionalExpression: equivalent — a duplicate entry
+      // carries the same id, hence the same generation and date, so it can only pop
+      // AFTER its twin; by then the twin has already recorded the base (`visit`'s
+      // RESULT guard skips the re-record) and propagated STALE, and re-propagating
+      // the same bits to the same parents is idempotent. A twin that popped carrying
+      // STALE leaves the duplicate popping with STALE too, so `visit` never records
+      // it and its parents already carry STALE — the bits it adds land only on STALE
+      // commits, which neither the result filter nor `removeRedundant` reads.
+      // Queueing twice costs pops, never a different flag map or result list.
       if (queued.has(id)) return;
       queued.add(id);
       const meta = await read(id);
@@ -170,6 +185,7 @@ const makePaintQueue = (read: ReadCommit, precedes: Precedes): PaintQueue => {
         date: dateOf(meta),
         generation: generationOf(meta),
         ins: insertions++,
+        parents: meta?.parents ?? [],
         value: undefined,
       });
     },
@@ -182,55 +198,32 @@ const makePaintQueue = (read: ReadCommit, precedes: Precedes): PaintQueue => {
   };
 };
 
-interface PaintStep {
-  /** The bits this commit's parents inherit. */
-  readonly inherited: number;
-  /** Git breaks out of the walk the moment a single-result run records its base. */
-  readonly done: boolean;
-}
+/** `visit`'s own stop signal, packed beside the flag bits it returns and never
+ *  written to a flag map: Git breaks out of the walk the moment a single-result
+ *  run records its base. */
+const DONE = 16;
 
 /** One pop of Git's loop: record the commit as a base when it carries both
- *  marks, and report what its parents inherit. */
+ *  marks, and return the bits its parents inherit (plus DONE to stop). */
 const visit = (
   flags: Map<ObjectId, number>,
   entry: PaintEntry,
   results: ObjectId[],
   options: PaintOptions,
-): PaintStep => {
+): number => {
   const carried = (flags.get(entry.oid) ?? 0) & (BOTH | STALE);
-  if (carried !== BOTH) return { inherited: carried, done: false };
-  // Stryker disable next-line all: equivalent — the counterpart to the ENQUEUED
-  // dedup: an id already recorded carries BOTH, so the only bit a later mark can
-  // add is STALE, and a re-pop then reads `carried` as BOTH|STALE and never
-  // reaches here. Git keeps the guard for the same defensive reason, and
-  // `removeRedundant`'s dedupe would absorb a repeat regardless.
+  if (carried !== BOTH) return carried;
+  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — the
+  // counterpart to the ENQUEUED dedup: an id already recorded carries BOTH, so the
+  // only bit a later mark can add is STALE, and a re-pop then reads `carried` as
+  // BOTH|STALE and never reaches here. Git keeps the guard for the same defensive
+  // reason, and `removeRedundant`'s dedupe would absorb a repeat regardless.
   if (((flags.get(entry.oid) ?? 0) & RESULT) === 0) {
     flags.set(entry.oid, (flags.get(entry.oid) ?? 0) | RESULT);
     results.push(entry.oid);
-    if (!options.findAll && entry.generation < GENERATION_INFINITY) {
-      return { inherited: carried, done: true };
-    }
+    if (!options.findAll && entry.generation < GENERATION_INFINITY) return carried | DONE;
   }
-  // Stryker disable next-line all: equivalent — STALE only stops a found base's
-  // ancestors from being collected as (redundant) bases; `removeRedundant` drops
-  // those independently, so the final reduced set is unchanged either way.
-  return { inherited: carried | STALE, done: false };
-};
-
-const expandParents = async (
-  read: ReadCommit,
-  queue: PaintQueue,
-  id: ObjectId,
-  inherited: number,
-): Promise<void> => {
-  const meta = await read(id);
-  for (const parent of meta?.parents ?? []) {
-    // Stryker disable next-line all: equivalent — this skip only avoids re-marking
-    // a parent that already carries every inherited bit; without it the re-mark is
-    // idempotent and still terminates on a finite DAG with the identical flag map.
-    if (((queue.flags.get(parent) ?? 0) & inherited) === inherited) continue;
-    await queue.mark(parent, inherited);
-  }
+  return carried | STALE;
 };
 
 /** Git's `commit_list_sort_by_date`: newest committer date first, stable, so
@@ -302,13 +295,13 @@ const mergeBasesMany = async (
   // is deliberately left unflagged so nothing has to be cleaned up afterwards.
   if (twos.includes(one)) return [one];
   const { flags, results } = await paint(read, one, twos, { ...options, minGeneration: 0 });
-  // Stryker disable next-line all: equivalent — STALE reaches a recorded base
+  // Stryker disable next-line MethodExpression,ConditionalExpression,LogicalOperator: equivalent — STALE reaches a recorded base
   // only along a path down from another recorded base, so every commit this
   // drops is an ancestor of a survivor and `removeRedundant` below would drop
   // it anyway; dropping it here only spares that base its own reduction walk.
   const alive = results.filter((id) => ((flags.get(id) ?? 0) & STALE) === 0);
   const sorted = await byDateDescending(read, alive);
-  // Stryker disable next-line all: equivalent — a fast path for git's own
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a fast path for git's own
   // "0 or 1 base, nothing to reduce" exit. Falling through is harmless: a lone
   // candidate is painted against an empty rival set, which `paint`'s `!n` exit
   // answers without walking, so it is always kept and the re-sort is a no-op.
@@ -351,8 +344,10 @@ const octopusMergeBases = async (
  * graph serves corrected commit dates — the two disagree whenever a base
  * inherits its generation from an ancestor committed later than itself.
  * `{ all: true }` returns the whole reduced set, oid-sorted. `{ octopus: true }`
- * folds the commits pairwise and reports the reduced accumulator, which leads
- * with the newest-dated base. Unrelated histories yield `[]`.
+ * folds the commits pairwise and reports the reduced accumulator in Git's fold
+ * order — each pairwise fold date-sorted, the folds concatenated — so its first
+ * entry is the newest base of the FIRST fold, not the newest overall. Unrelated
+ * histories yield `[]`.
  */
 export const mergeBase = async (
   ctx: Context,
