@@ -936,18 +936,22 @@ describe('mergeBase', () => {
   });
 
   describe('Given a redundant base with a newer committer date than the base that dominates it', () => {
-    // C0@50 <- C@300 <- X@150 <- R@200, plus an independent root K@250; d and e
+    // C0@400 <- C@300 <- X@150 <- R@200, plus an independent root K@250; d and e
     // both merge [R, C] (opposite parent order). C is an ancestor of R, so the
     // reduced base is R alone — but C's committer date (300) is newer than R's
     // (200), so a date-ordered discovery walk records C first and only the
-    // reduction drops it. Measured against git 2.55.0: no graph -> `merge-base`
-    // R, `--all` R; a `generationVersion=1` graph -> C, R; a full (GDA2) graph
-    // -> R, R.
+    // reduction drops it. C0 is dated (400) NEWER than every commit above it, so
+    // a date-ordered REDUCTION walk would pop C0 (topological level 1, below the
+    // generation floor) right after C and stop before X hands C the second mark —
+    // which pins `byGenerationThenDate` on the reduction under a topological-level
+    // graph, where git keeps its generation comparator. Measured against git
+    // 2.55.0: no graph -> `merge-base` R, `--all` R; a `generationVersion=1`
+    // graph -> C, R; a full (GDA2) graph -> R, R.
     const buildSkewedRedundantBase = async (
       ctx: Context,
     ): Promise<{ c: ObjectId; r: ObjectId; d: ObjectId; e: ObjectId; all: ObjectId[] }> => {
       const treeId = await emptyTree(ctx);
-      const c0 = await commitNamed(ctx, treeId, 50, [], 'c0');
+      const c0 = await commitNamed(ctx, treeId, 400, [], 'c0');
       const c = await commitNamed(ctx, treeId, 300, [c0], 'c');
       const x = await commitNamed(ctx, treeId, 150, [c], 'x');
       const r = await commitNamed(ctx, treeId, 200, [x], 'r');
