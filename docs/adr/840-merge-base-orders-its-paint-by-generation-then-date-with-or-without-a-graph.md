@@ -38,10 +38,10 @@ candidate and its not-yet-redundant rivals and breaks when a popped generation f
 
 ## Consequences
 
-Without a graph the result set is unchanged; the single-result tie order is now git's (see
-ADR-845), which the lexicographic rule never was. With a graph, merge-base reads no commit objects and
-stops early in the reduction as git does. The `RESULT` set and the reduced set are independent of
-traversal order, so results match git in every configuration; the only residual is the tie order of
-same-second bases in the single-result rule, recorded in ADR-845. The reduction's minimum is taken
-over the whole candidate set where git takes it over the not-yet-redundant entries — never higher
-than git's, so it never prunes more than git does.
+Without a graph the result set is unchanged and the single-result tie order is git's (ADR-845),
+which the lexicographic rule never was. With a graph, merge-base reads no commit objects and stops
+early in the reduction as git does. The reduction floor is git's own — the minimum over the
+candidate and the rivals not yet ruled redundant, recomputed as the pass proceeds — and the
+comparator switch is replicated, so no traversal-order residual remains in any configuration.
+The title predates the measured refinement: the paint orders by generation then date except on a
+discovery walk over a chain without corrected commit dates, where git's date-only order applies.

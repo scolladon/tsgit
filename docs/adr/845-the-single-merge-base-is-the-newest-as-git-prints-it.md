@@ -50,11 +50,11 @@ shortcut, and `merge`'s `const [base] = …` consumption of the array API.
 
 ## Consequences
 
-`mergeBase()` and `git merge-base` agree in criss-cross histories, graph or no graph. `merge`
-and `rebase` consume the default result, so on a criss-cross they now start from the base
-`git merge-base` prints rather than the lexicographically smallest one; `git merge` itself uses
-every base through a recursive virtual ancestor, a divergence this record does not close. ADR-840's generation-then-date paint can order a same-second pair differently from
-git's date-only main paint on a topo-level (v1) graph — that is the one residual the tie row must
-exercise with a graph present. The primitive's documentation replaces "lexicographically smallest"
-with "newest". The completed backlog entry for the original work keeps its citation, annotated with
-this supersession.
+`mergeBase()` and `git merge-base` agree in criss-cross histories, graph or no graph — the
+single result is the base git pops first: the newest-dated base without a graph, the first in
+generation order with one (the title predates that measured refinement). `merge` and `rebase`
+consume the default result, so on a criss-cross they now start from the base `git merge-base`
+prints rather than the lexicographically smallest one; `git merge` itself uses every base through
+a recursive virtual ancestor, a divergence this record does not close. The primitive's
+documentation replaces "lexicographically smallest" with git's rule. The completed backlog entry
+for the original work keeps its citation, annotated with this supersession.
