@@ -99,6 +99,48 @@ const buildSharedSubtreeFixture = async (): Promise<SharedSubtreeFixture> => {
   return { dir, ctx };
 };
 
+interface MissingNotTreeFixture {
+  readonly dir: string;
+  readonly notTip: string;
+}
+
+/**
+ * `base` writes `a/one` and `b/one`; `have` edits `a/one` (subtree `a`
+ * changes, `b` is reused wholesale); `want` edits `b/one`, reusing `have`'s
+ * subtree `a` wholesale. `have`'s own root tree object is then removed from
+ * the object store — the promisor gap a `--filter=tree:0` partial clone (or a
+ * pruned/corrupt repository) leaves behind on the negative side.
+ */
+const buildMissingNotTreeFixture = async (): Promise<MissingNotTreeFixture> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-missing-not-tree-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'A U Thor');
+  git(dir, 'config', 'user.email', 'author@example.com');
+  git(dir, 'config', 'commit.gpgsign', 'false');
+
+  await mkdir(path.join(dir, 'a'), { recursive: true });
+  await mkdir(path.join(dir, 'b'), { recursive: true });
+  await writeFile(path.join(dir, 'a', 'one'), 'a/one v0\n');
+  await writeFile(path.join(dir, 'b', 'one'), 'b/one v0\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'base', 1_700_000_000);
+
+  await writeFile(path.join(dir, 'a', 'one'), 'a/one v1\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'have', 1_700_000_001);
+
+  await writeFile(path.join(dir, 'b', 'one'), 'b/one v1\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'want', 1_700_000_002);
+
+  const notTip = git(dir, 'rev-parse', 'HEAD~1').trim();
+  const notRootTree = git(dir, 'rev-parse', 'HEAD~1^{tree}').trim();
+  await rm(path.join(dir, '.git', 'objects', notRootTree.slice(0, 2), notRootTree.slice(2)), {
+    force: true,
+  });
+  return { dir, notTip };
+};
+
 describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', () => {
   describe('Given a shared-subtree history whose tip reuses its parent tree verbatim', () => {
     let fixture: SharedSubtreeFixture;
@@ -155,6 +197,39 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         const result = await sut(freshCtx, {
           wants: ['HEAD'],
           not: [notTipId],
+          objects: true,
+        });
+
+        // Assert
+        const actual = new Set(result.entries.map((entry) => entry.id));
+        expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+  });
+
+  describe('Given a history whose not tip has no root tree object in the object store', () => {
+    let fixture: MissingNotTreeFixture;
+
+    beforeAll(async () => {
+      fixture = await buildMissingNotTreeFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
+
+    describe('When revList walks the objects closure excluding that tip', () => {
+      it('Then the object id set matches git rev-list --objects want ^have, over-report and all', async () => {
+        // Arrange — `gitIdSet` spawns git through `execFileSync`, which throws
+        // on any non-zero exit: git succeeding here IS the pinned behaviour.
+        // A fresh Context, cut after the object was removed, so no cache
+        // carries a reading of the vanished tree.
+        const expected = gitIdSet(fixture.dir, '--objects', 'HEAD', '--not', fixture.notTip);
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: ['HEAD'],
+          not: [fixture.notTip],
           objects: true,
         });
 

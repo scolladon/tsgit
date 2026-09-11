@@ -15,9 +15,9 @@
  * reproduces git's measured over-report rather than the exact set difference,
  * which would be a divergence from git here.
  */
-import { operationAborted } from '../../../domain/error.js';
+import { operationAborted, TsgitError } from '../../../domain/error.js';
 import { treeDepthExceeded } from '../../../domain/objects/error.js';
-import { isDirectory, type ObjectId } from '../../../domain/objects/index.js';
+import { type GitObject, isDirectory, type ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 import { isGitlink } from '../validators.js';
@@ -52,6 +52,31 @@ export interface NotMarks {
 }
 
 /**
+ * The negative side's tolerance for a tree it cannot read: `undefined` for a
+ * locally absent object, every other failure rethrown. Git's
+ * `mark_tree_contents_uninteresting` calls `parse_tree_gently(tree,
+ * quiet_on_missing = 1)` and simply returns when it fails, after
+ * `mark_tree_uninteresting` has already flagged the tree object itself — so a
+ * negative whose tree is missing (a `--filter=tree:0` promisor gap, a pruned
+ * or corrupt tree) prunes that one oid and nothing below it, and the walk
+ * quietly over-reports instead of refusing. Measured on git 2.55.0: with the
+ * negative's root tree deleted, `rev-list --objects W ^H` and `pack-objects
+ * --revs --stdout` both exit 0. The positive side keeps refusing — git does
+ * too.
+ */
+const readTreeIfPresent = async (
+  ctx: Context,
+  treeId: ObjectId,
+): Promise<GitObject | undefined> => {
+  try {
+    return await readObject(ctx, treeId);
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND') return undefined;
+    throw error;
+  }
+};
+
+/**
  * Recursively mark `treeId` and its non-gitlink contents uninteresting.
  *
  * This descent was measured honouring `core.maxTreeDepth` exactly, to 100000
@@ -73,7 +98,8 @@ async function markTree(
   // Stryker disable next-line ConditionalExpression: equivalent — the readObject below re-checks ctx.signal and throws the identical operationAborted; the only mark this guard saves is discarded by that same throw.
   if (ctx.signal?.aborted) throw operationAborted();
   marked.add(treeId);
-  const treeObj = await readObject(ctx, treeId);
+  const treeObj = await readTreeIfPresent(ctx, treeId);
+  if (treeObj === undefined) return;
   if (treeObj.type !== 'tree') return;
   for (const entry of treeObj.entries) {
     if (isGitlink(entry.mode)) continue;

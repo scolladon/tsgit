@@ -34,6 +34,7 @@ import type {
 } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import {
+  computeLooseObjectPath,
   lookupPackIndex,
   packNameHash,
   parsePackIndex,
@@ -1920,6 +1921,158 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
         expect(result.tier).toBe('bitmap');
         expect(bitmapBytesSpy).toHaveBeenCalled();
         expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+      });
+    });
+  });
+});
+
+/** Remove `id`'s loose object from the memory store — the shape a
+ *  `--filter=tree:0` partial clone with a promisor gap, or a pruned/corrupt
+ *  repository, presents to the not-side marker. */
+const deleteLooseObject = async (ctx: Context, id: ObjectId): Promise<void> => {
+  await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
+};
+
+interface MissingRootTreeFixture {
+  readonly have: ObjectId;
+  readonly want: ObjectId;
+  readonly haveRootTree: ObjectId;
+  readonly wantRootTree: ObjectId;
+  readonly treeA1: ObjectId;
+  readonly aOneV1: ObjectId;
+  readonly treeB1: ObjectId;
+  readonly bOneV1: ObjectId;
+}
+
+/**
+ * `base` writes `a/one` and `b/one`; `have` edits `a/one` (subtree `a`
+ * changes, `b` is reused wholesale); `want` edits `b/one` (subtree `b`
+ * changes, `a` is reused wholesale from `have`). With every object present,
+ * marking `have` prunes subtree `a` and its blob from `want`'s emission.
+ */
+const buildMissingRootTreeFixture = async (ctx: Context): Promise<MissingRootTreeFixture> => {
+  const aOneV0 = await writeBlob(ctx, 'a/one v0');
+  const aOneV1 = await writeBlob(ctx, 'a/one v1');
+  const bOneV0 = await writeBlob(ctx, 'b/one v0');
+  const bOneV1 = await writeBlob(ctx, 'b/one v1');
+  const treeA0 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', aOneV0)]);
+  const treeA1 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', aOneV1)]);
+  const treeB0 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', bOneV0)]);
+  const treeB1 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', bOneV1)]);
+  const baseRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'a', treeA0),
+    treeEntry('40000' as FileMode, 'b', treeB0),
+  ]);
+  const base = await writeCommit(ctx, baseRootTree, [], 'base');
+  const haveRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'a', treeA1),
+    treeEntry('40000' as FileMode, 'b', treeB0),
+  ]);
+  const have = await writeCommit(ctx, haveRootTree, [base], 'have');
+  const wantRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'a', treeA1),
+    treeEntry('40000' as FileMode, 'b', treeB1),
+  ]);
+  const want = await writeCommit(ctx, wantRootTree, [have], 'want');
+  return { have, want, haveRootTree, wantRootTree, treeA1, aOneV1, treeB1, bOneV1 };
+};
+
+interface MissingSubtreeFixture {
+  readonly have: ObjectId;
+  readonly want: ObjectId;
+  readonly subtreeX: ObjectId;
+  readonly subtreeY: ObjectId;
+  readonly yBlob: ObjectId;
+  readonly sharedBlob: ObjectId;
+  readonly subtreeW: ObjectId;
+  readonly wantRootTree: ObjectId;
+}
+
+/**
+ * `have` holds `x/f` and `y/g`; `want` adds `w/f2` carrying the SAME blob as
+ * `x/f`, and reuses `x` and `y` wholesale. With every object present, marking
+ * `have` prunes that blob through subtree `x`, so `want` emits only its own
+ * root tree and `w`.
+ */
+const buildMissingSubtreeFixture = async (ctx: Context): Promise<MissingSubtreeFixture> => {
+  const sharedBlob = await writeBlob(ctx, 'shared-blob');
+  const yBlob = await writeBlob(ctx, 'y-content');
+  const subtreeX = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f', sharedBlob)]);
+  const subtreeY = await writeTree(ctx, [treeEntry('100644' as FileMode, 'g', yBlob)]);
+  const subtreeW = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f2', sharedBlob)]);
+  const haveRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'x', subtreeX),
+    treeEntry('40000' as FileMode, 'y', subtreeY),
+  ]);
+  const have = await writeCommit(ctx, haveRootTree, [], 'have');
+  const wantRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'w', subtreeW),
+    treeEntry('40000' as FileMode, 'x', subtreeX),
+    treeEntry('40000' as FileMode, 'y', subtreeY),
+  ]);
+  const want = await writeCommit(ctx, wantRootTree, [have], 'want');
+  return { have, want, subtreeX, subtreeY, yBlob, sharedBlob, subtreeW, wantRootTree };
+};
+
+describe('computeClosure — a not-side tree missing from the local object store', () => {
+  describe('Given a not tip whose own root tree object is absent locally', () => {
+    describe('When computeClosure walks the objects closure', () => {
+      it('Then the unreadable tree alone stays pruned and everything under the want is over-reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fixture = await buildMissingRootTreeFixture(ctx);
+        await deleteLooseObject(ctx, fixture.haveRootTree);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert — real git 2.55.0 on the identical shape exits 0 and lists
+        // exactly this set: nothing under the unreadable tree can be marked, so
+        // subtree `a` and its blob come back although the intact repository
+        // prunes both.
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([
+            fixture.want,
+            fixture.wantRootTree,
+            fixture.treeA1,
+            fixture.aOneV1,
+            fixture.treeB1,
+            fixture.bOneV1,
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a not tip whose root tree is readable but one of its subtrees is absent locally', () => {
+    describe('When computeClosure walks the objects closure', () => {
+      it('Then only that subtree’s contents are over-reported, the subtree id and its siblings staying pruned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fixture = await buildMissingSubtreeFixture(ctx);
+        await deleteLooseObject(ctx, fixture.subtreeX);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert — real git 2.55.0 on the identical shape adds exactly the
+        // shared blob: `x` itself is still marked (so `want` never descends
+        // into it), sibling `y` and its blob are still pruned in full.
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([fixture.want, fixture.wantRootTree, fixture.subtreeW, fixture.sharedBlob]),
+        );
       });
     });
   });

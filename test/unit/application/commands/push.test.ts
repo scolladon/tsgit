@@ -28,7 +28,7 @@ import { __resetConfigCacheForTests } from '../../../../src/application/primitiv
 import * as closureMod from '../../../../src/application/primitives/internal/closure-engine.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { computeLooseObjectPath, TsgitError } from '../../../../src/domain/index.js';
 import type {
   Blob,
   Commit,
@@ -2742,6 +2742,40 @@ describe('push — hooks', () => {
 
         // Assert
         expect(result.pushedRefs).toHaveLength(1);
+      });
+    });
+  });
+});
+
+describe('push — an advertised have whose tree is missing locally', () => {
+  describe('Given a locally held advertised tip whose root tree object is absent', () => {
+    describe('When push runs', () => {
+      it('Then the push still ships, over-reporting as git does instead of refusing', async () => {
+        // Arrange — the partial-clone/pruned shape: the negative's commit is
+        // held (so it survives the `hasObject` filter and reaches the not-side
+        // marker), but its tree is not. Real git 2.55.0 packs this without a
+        // murmur; refusing here would reject a push that used to succeed.
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(parent.tree)}`);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport });
+
+        // Assert — the tip's own commit, tree and blob; the unreadable tree
+        // still prunes itself, so nothing the have already holds is resent.
+        expect(result.pushedRefs[0]).toMatchObject({ name: 'refs/heads/main', status: 'ok' });
+        const body = requestBodies[0];
+        expect(body).toBeDefined();
+        expect(packObjectCount(body as Uint8Array)).toBe(3);
       });
     });
   });
