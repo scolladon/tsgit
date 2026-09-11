@@ -678,11 +678,12 @@ describe('commitDateWalk — single-parent fast path (no fan-out)', () => {
       const ids = await linearChain(ctx, 2);
       const root = ids[0]!;
       const child = ids[1]!;
-      const sut = commitDateWalk(ctx, { from: [child], until: [root] });
+      const sut = commitDateWalk;
+      const walk = sut(ctx, { from: [child], until: [root] });
 
       // Act
       const steps: DateWalkStep[] = [];
-      for await (const step of sut) steps.push(step);
+      for await (const step of walk) steps.push(step);
 
       // Assert — nothing beyond the child was ever enqueued
       expect(steps.map((s) => s.commit.id)).toEqual([child]);
@@ -703,13 +704,14 @@ describe('commitDateWalk — single-parent fast path (no fan-out)', () => {
       );
       ctx.deltaCache.delete(root);
       await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(root)}`);
-      const sut = commitDateWalk(ctx, { from: [child] });
+      const sut = commitDateWalk;
+      const walk = sut(ctx, { from: [child] });
 
       // Act
       const yielded: ObjectId[] = [];
       let caught: unknown;
       try {
-        for await (const step of sut) yielded.push(step.commit.id);
+        for await (const step of walk) yielded.push(step.commit.id);
         expect.unreachable();
       } catch (error) {
         caught = error;

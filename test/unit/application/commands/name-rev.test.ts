@@ -557,7 +557,7 @@ describe('nameRev', () => {
 
 // Narrowed to the object store itself (loose fanout dirs, pack files) — a
 // bare `objects/` substring also matches the memoised `objects/info/commit-graph`
-// probe this part introduces, which is not an object-store read.
+// probe, which is not an object-store read.
 const OBJECT_STORE_READ = /objects\/(pack\/|[0-9a-f]{2}\/)/;
 
 const withCountedObjectReads = (ctx: Context): { counted: Context; reads: () => number } => {

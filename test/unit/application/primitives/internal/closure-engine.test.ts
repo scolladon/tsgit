@@ -1325,13 +1325,13 @@ describe('computeClosure', () => {
       it('Then the marking pass reads it (its own type check, then markTree) and the want-side walk attempts no further read of it', async () => {
         // Arrange — a content-addressed byte cache already absorbs a repeat
         // read of the identical id at the filesystem layer, so the
-        // observable this part changes is the WALK's own decision to
+        // observable under test is the WALK's own decision to
         // attempt (`readObject`) a further read at all, not whether that
-        // attempt reaches disk. The not-side marking pass this part leaves
-        // untouched already costs two attempts for a `not` id that is a
+        // attempt reaches disk. The not-side marking pass already costs two
+        // attempts for a `not` id that is a
         // tree (`markUninteresting`'s own type check, then `markTree`'s);
         // the third attempt, from the want-side walk redundantly descending
-        // an already-marked subtree, is what this part removes.
+        // an already-marked subtree, is what the prune removes.
         const ctx = await buildSeededContext();
         const markedLeafBlob = await writeBlob(ctx, 'marked-leaf');
         const markedSubtreeId = await writeTree(ctx, [
@@ -1479,7 +1479,7 @@ describe('computeClosure', () => {
         });
 
         // Assert — the exact ordered entry list captured on the unpruned
-        // walk; the closure prune this part introduces must reproduce it
+        // walk; the closure prune must reproduce it
         // byte-for-byte (equivalence argument: a pruned subtree contributes
         // nothing to this sequence today either).
         expect(result.objects).toStrictEqual([

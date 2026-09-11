@@ -947,7 +947,7 @@ describe('buildPack', () => {
         // Act
         const result = await sut(ctx, { objects: closure.objects, delta: true });
 
-        // Assert — the closure prune this part introduces must not move a
+        // Assert — the closure prune must not move a
         // single byte of the pack it produces (equivalence argument: same
         // emission sequence, same nameHash, hence the same packer input).
         expect(result.sha).toBe('edc570c00dacfe58c9d65283ff299a03f3ab4737');
