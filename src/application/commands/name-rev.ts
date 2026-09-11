@@ -6,7 +6,6 @@
  * peel), and the ordered `~`/`^` navigation steps. The library renders no name
  * string and abbreviates no ref — assembling `tags/v2.0~3^2~1` is the caller's.
  */
-import { applyGraft } from '../../domain/commit/graft.js';
 import {
   buildRefFilter,
   commitIsBeforeCutoff,
@@ -14,16 +13,22 @@ import {
   foldSteps,
   isBetterName,
   mergeParentName,
+  type NameRevCutoff,
   type NameRevStep,
   nameRevCutoff,
   type RevName,
 } from '../../domain/name-rev/index.js';
-import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import type { BoundedReader } from '../primitives/internal/bounded-reader.js';
+import { boundedReaderFor } from '../primitives/internal/concurrency.js';
 import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
-import { loadShallowSet } from '../primitives/internal/shallow-set.js';
-import { readObject } from '../primitives/read-object.js';
+import {
+  type CommitMeta,
+  commitMetaOf,
+  readCommitMeta,
+} from '../primitives/internal/read-commit-meta.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { type NameRevOptions, parseNameRevOptions } from './internal/name-rev-options.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -45,6 +50,13 @@ export interface NameRevResult {
 const DEFAULT_REV = 'HEAD';
 const TAGS_PREFIX = 'refs/tags/';
 
+/** A queued commit's meta plus the id it belongs to — `walkRef`'s stack shape. */
+interface NameRevNode extends CommitMeta {
+  readonly id: ObjectId;
+}
+
+type MetaReader = BoundedReader<CommitMeta | undefined>;
+
 export const nameRev = async (
   ctx: Context,
   rev?: string,
@@ -52,12 +64,13 @@ export const nameRev = async (
 ): Promise<NameRevResult> => {
   await assertOperationalRepository(ctx);
   const target = await resolveCommit(ctx, rev ?? DEFAULT_REV);
-  const targetCommit = (await readObject(ctx, target)) as Commit;
-  const cutoff = nameRevCutoff(targetCommit.data.committer.timestamp);
+  const targetMeta = (await readCommitMeta(ctx, target)) as CommitMeta;
+  const cutoff = nameRevCutoff(targetMeta);
   const filter = buildRefFilter(parseNameRevOptions(opts));
   const refs = [...(await enumerateRefs(ctx))].filter((ref) => filter.qualifies(ref)).sort();
   const revNames = new Map<ObjectId, RevName>();
-  for (const ref of refs) await walkRef(ctx, ref, revNames, cutoff);
+  const metas: MetaReader = boundedReaderFor(ctx, 'ioBound', (id) => readCommitMeta(ctx, id));
+  for (const ref of refs) await walkRef(ctx, ref, revNames, cutoff, metas);
 
   const name = revNames.get(target);
   if (name === undefined) return { oid: target, ref: undefined, tagDeref: false, steps: [] };
@@ -69,17 +82,19 @@ const walkRef = async (
   ctx: Context,
   ref: RefName,
   revNames: Map<ObjectId, RevName>,
-  cutoff: number,
+  cutoff: NameRevCutoff,
+  metas: MetaReader,
 ): Promise<void> => {
   const tip = await seedRef(ctx, ref, revNames, cutoff);
   if (tip === undefined) return;
-  const stack: Commit[] = [tip];
+  const stack: NameRevNode[] = [tip];
   while (stack.length > 0) {
-    const commit = stack.pop() as Commit;
-    const name = revNames.get(commit.id) as RevName;
-    const queued = await expandParents(ctx, commit, name, revNames, cutoff);
+    const node = stack.pop() as NameRevNode;
+    const name = revNames.get(node.id) as RevName;
+    const queued = await expandParents(node, name, revNames, cutoff, metas);
     // Reverse-push so the first parent is popped first (git's LIFO traversal).
-    for (let index = queued.length - 1; index >= 0; index -= 1) stack.push(queued[index] as Commit);
+    for (let index = queued.length - 1; index >= 0; index -= 1)
+      stack.push(queued[index] as NameRevNode);
   }
 };
 
@@ -88,14 +103,14 @@ const seedRef = async (
   ctx: Context,
   ref: RefName,
   revNames: Map<ObjectId, RevName>,
-  cutoff: number,
-): Promise<Commit | undefined> => {
+  cutoff: NameRevCutoff,
+): Promise<NameRevNode | undefined> => {
   const resolved = await getRefStore(ctx).resolveDirect(ref);
   if (resolved.kind !== 'direct') return undefined;
   const tip = await peelRefToCommit(ctx, resolved.id);
   if (tip === undefined) return undefined;
-  if (commitIsBeforeCutoff(tip.commit.data.committer.timestamp, cutoff)) return undefined;
-  const commit = applyGraft(tip.commit, await loadShallowSet(ctx));
+  const meta = await commitMetaOf(ctx, tip.commit);
+  if (commitIsBeforeCutoff(meta, cutoff)) return undefined;
   const seed: RevName = {
     ref,
     tagDeref: tip.viaTag,
@@ -105,29 +120,35 @@ const seedRef = async (
     distance: 0,
     steps: [],
   };
-  return accept(revNames, commit.id, seed) ? commit : undefined;
+  return accept(revNames, tip.commit.id, seed) ? { id: tip.commit.id, ...meta } : undefined;
 };
 
-/** Name each parent of `commit` and return the parent commits whose name improved and are not pruned. */
-const expandParents = async (
-  ctx: Context,
-  commit: Commit,
+/** The parents whose candidate name improved on `accept`'s gate — synchronous, no read involved. */
+const acceptedParents = (
+  parents: ReadonlyArray<ObjectId>,
   name: RevName,
   revNames: Map<ObjectId, RevName>,
-  cutoff: number,
-): Promise<Commit[]> => {
-  const shallow = await loadShallowSet(ctx);
-  const queued: Commit[] = [];
-  const parents = commit.data.parents;
-  for (let index = 0; index < parents.length; index += 1) {
-    const parentOid = parents[index] as ObjectId;
-    const candidate = index === 0 ? firstParentName(name) : mergeParentName(name, index + 1);
-    if (!accept(revNames, parentOid, candidate)) continue;
-    const parentObj = await readObject(ctx, parentOid);
-    if (parentObj.type !== 'commit') continue;
-    const parent = applyGraft(parentObj, shallow);
-    if (commitIsBeforeCutoff(parent.data.committer.timestamp, cutoff)) continue;
-    queued.push(parent);
+): ObjectId[] =>
+  parents.filter((oid, index) =>
+    accept(revNames, oid, index === 0 ? firstParentName(name) : mergeParentName(name, index + 1)),
+  );
+
+/** Name each parent of `node` and return the parent nodes whose name improved and are not pruned. */
+const expandParents = async (
+  node: NameRevNode,
+  name: RevName,
+  revNames: Map<ObjectId, RevName>,
+  cutoff: NameRevCutoff,
+  metas: MetaReader,
+): Promise<NameRevNode[]> => {
+  const accepted = acceptedParents(node.parents, name, revNames);
+  for (const oid of accepted) metas.start(oid); // overlap: fire every read before consuming any
+  const queued: NameRevNode[] = [];
+  for (const oid of accepted) {
+    const meta = await metas.start(oid);
+    metas.forget(oid); // or the flood retains one memo entry per commit walked
+    if (meta === undefined || commitIsBeforeCutoff(meta, cutoff)) continue;
+    queued.push({ id: oid, ...meta });
   }
   return queued;
 };

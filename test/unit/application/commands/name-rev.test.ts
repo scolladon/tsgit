@@ -1,22 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { nameRev } from '../../../../src/application/commands/name-rev.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
+import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type {
   AuthorIdentity,
+  Commit,
   CommitData,
   ObjectId,
   TagData,
 } from '../../../../src/domain/objects/index.js';
 import { RefName } from '../../../../src/domain/objects/object-id.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeCommitGraph } from '../primitives/fixtures.js';
 
 let clock = 1_700_000_000;
 
@@ -96,6 +100,16 @@ const pointBranch = (ctx: Context, name: string, target: ObjectId): Promise<void
 const commitFileOnTop = async (ctx: Context, parent: ObjectId): Promise<ObjectId> => {
   const tree = await treeOf(ctx, parent);
   return writeCommit(ctx, tree, [parent]);
+};
+
+const asCommits = async (ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> => {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error('expected a commit');
+    commits.push(object);
+  }
+  return commits;
 };
 
 describe('nameRev', () => {
@@ -541,13 +555,18 @@ describe('nameRev', () => {
   });
 });
 
+// Narrowed to the object store itself (loose fanout dirs, pack files) — a
+// bare `objects/` substring also matches the memoised `objects/info/commit-graph`
+// probe this part introduces, which is not an object-store read.
+const OBJECT_STORE_READ = /objects\/(pack\/|[0-9a-f]{2}\/)/;
+
 const withCountedObjectReads = (ctx: Context): { counted: Context; reads: () => number } => {
   let count = 0;
   const baseFs = ctx.fs;
   const countedFs: Context['fs'] = {
     ...baseFs,
     read: (path) => {
-      if (path.includes('objects/')) {
+      if (OBJECT_STORE_READ.test(path)) {
         count += 1;
       }
       return baseFs.read(path);
@@ -746,6 +765,206 @@ describe('Given a diamond whose shared parent is reached by both merge sides', (
       // touch of `shared` (from the merge-parent side) is what `accept`'s
       // own gate — not caching — still skips.
       expect(reads()).toBe(4);
+    });
+  });
+});
+
+describe('Given a commit-graph covering a short, densely-timed chain (every commit well within the date slop)', () => {
+  const CHAIN_LENGTH = 5;
+
+  const arrange = async (): Promise<{
+    ctx: Context;
+    tip: ObjectId;
+    ancestors: ObjectId[];
+  }> => {
+    const ctx = await seed();
+    const tree = await treeOf(ctx, await commitFile(ctx, 'seed'));
+    const ancestors: ObjectId[] = [];
+    let parent: ObjectId | undefined;
+    for (let i = 0; i < CHAIN_LENGTH; i += 1) {
+      parent = await writeCommit(ctx, tree, parent === undefined ? [] : [parent]);
+      ancestors.push(parent);
+    }
+    await pointBranch(ctx, 'main', parent as ObjectId);
+    return { ctx, tip: parent as ObjectId, ancestors };
+  };
+
+  describe('When name-rev runs on the tip with no commit-graph', () => {
+    it('Then the date cutoff never fires and the whole chain is read', async () => {
+      // Arrange
+      const { ctx, tip, ancestors } = await arrange();
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      const result = await nameRev(counted, tip);
+
+      // Assert — every ancestor is within the one-day slop, so the date test
+      // never prunes; the walk reads the tip and every ancestor down to the root.
+      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(reads()).toBe(ancestors.length);
+    });
+  });
+
+  describe('When name-rev runs on the tip with a commit-graph covering the chain', () => {
+    it('Then the generation cutoff prunes every ancestor immediately, reading only the tip', async () => {
+      // Arrange
+      const { ctx, tip, ancestors } = await arrange();
+      await writeCommitGraph(ctx, [await asCommits(ctx, ancestors)]);
+      // `asCommits` reads every commit to build the graph model, warming the
+      // delta cache; clear it so the read count reflects nameRev's own reads.
+      ctx.deltaCache.clear();
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      const result = await nameRev(counted, tip);
+
+      // Assert — the tip's own generation is the cutoff (no slop), so its
+      // immediate parent already carries a strictly lower generation and is
+      // never expanded; the returned name is unchanged from the no-graph run.
+      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(reads()).toBe(1);
+    });
+  });
+});
+
+describe('Given a target covered by a commit-graph and a disjoint, graph-absent branch over a day older', () => {
+  const arrange = async (): Promise<{
+    ctx: Context;
+    target: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const target = await commitFile(ctx, 'main-tip');
+    const tree = await treeOf(ctx, target);
+    clock -= DAY_AND_A_BIT;
+    let parent = await writeCommit(ctx, tree, []);
+    for (let i = 0; i < 4; i += 1) parent = await writeCommit(ctx, tree, [parent]);
+    await pointBranch(ctx, 'stale', parent);
+    await writeCommitGraph(ctx, [await asCommits(ctx, [target])]);
+    // `asCommits` reads `target` to build the graph model, warming the delta
+    // cache; clear it so the read count reflects nameRev's own reads.
+    ctx.deltaCache.clear();
+    return { ctx, target };
+  };
+
+  describe('When name-rev runs on the target', () => {
+    it('Then the target still names correctly by its own branch', async () => {
+      // Arrange
+      const { ctx, target } = await arrange();
+      const { counted } = withCountedObjectReads(ctx);
+
+      // Act
+      const result = await nameRev(counted, target);
+
+      // Assert
+      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result.steps).toEqual([]);
+    });
+
+    it('Then the graph-absent stale branch carries an infinite generation and is traversed in full', async () => {
+      // Arrange — with no graph at all this branch is pruned by the date test
+      // (see the sibling suite above); once the target has a finite generation,
+      // the cutoff switches to the generation test, under which the graph-absent
+      // branch's infinite generation is never below it.
+      const { ctx, target } = await arrange();
+      const { counted, reads } = withCountedObjectReads(ctx);
+
+      // Act
+      await nameRev(counted, target);
+
+      // Assert — the target's own (uncached) read, plus the stale tip and its
+      // four ancestors, none pre-cached and none pruned by the generation test.
+      expect(reads()).toBe(6);
+    });
+  });
+});
+
+describe('Given a merge commit with three loose, graph-absent parents', () => {
+  const buildOctopus = async (): Promise<{
+    ctx: Context;
+    merge: ObjectId;
+    parentPaths: ReadonlySet<string>;
+  }> => {
+    const ctx = await seed();
+    const tree = await treeOf(ctx, await commitFile(ctx, 'seed'));
+    const p1 = await writeCommit(ctx, tree, []);
+    const p2 = await writeCommit(ctx, tree, []);
+    const p3 = await writeCommit(ctx, tree, []);
+    const merge = await writeCommit(ctx, tree, [p1, p2, p3]);
+    await pointBranch(ctx, 'main', merge);
+    const parentPaths = new Set(
+      [p1, p2, p3].map((id) => `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`),
+    );
+    return { ctx, merge, parentPaths };
+  };
+
+  const gatedContext = (
+    ctx: Context,
+    parentPaths: ReadonlySet<string>,
+  ): { gated: Context; starts: string[]; maxActive: () => number } => {
+    let active = 0;
+    let maxActive = 0;
+    const starts: string[] = [];
+    const gated: Context = {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        read: async (path: string) => {
+          if (!parentPaths.has(path)) return ctx.fs.read(path);
+          starts.push(path);
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+          const bytes = await ctx.fs.read(path);
+          active -= 1;
+          return bytes;
+        },
+      },
+    };
+    return { gated, starts, maxActive: () => maxActive };
+  };
+
+  describe('When name-rev expands the merge', () => {
+    it('Then all three parent meta reads are started before any resolves', async () => {
+      // Arrange
+      const { ctx, merge, parentPaths } = await buildOctopus();
+      const { gated, starts, maxActive } = gatedContext(ctx, parentPaths);
+
+      // Act
+      await nameRev(gated, merge);
+
+      // Assert — the reads overlap instead of running one at a time.
+      expect(starts.length).toBe(3);
+      expect(maxActive()).toBeGreaterThanOrEqual(2);
+    });
+
+    it('Then the bounded reader forgets each parent once its meta is consumed', async () => {
+      // Arrange
+      const { ctx, merge } = await buildOctopus();
+      const forgotten: ObjectId[] = [];
+      const original = concurrencyMod.boundedReaderFor;
+      const spy = vi
+        .spyOn(concurrencyMod, 'boundedReaderFor')
+        .mockImplementation((spyCtx, bucket, read) => {
+          const reader = original(spyCtx, bucket, read);
+          return {
+            start: reader.start,
+            forget: (id: ObjectId) => {
+              forgotten.push(id);
+              reader.forget(id);
+            },
+          };
+        });
+
+      try {
+        // Act
+        await nameRev(ctx, merge);
+      } finally {
+        spy.mockRestore();
+      }
+
+      // Assert — one forget per accepted parent; the memo never retains an entry.
+      expect(forgotten.length).toBe(3);
+      expect(new Set(forgotten).size).toBe(3);
     });
   });
 });
