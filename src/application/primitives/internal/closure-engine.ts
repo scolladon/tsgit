@@ -30,7 +30,12 @@ import { isGitlink } from '../validators.js';
 import { walkCommits } from '../walk-commits.js';
 import { walkTree } from '../walk-tree.js';
 import { type BitmapClosureRequest, resolveBitmapClosure } from './bitmap-binding.js';
-import { markBoundaryTrees, markNotSide, type NotMarks } from './closure-not-marks.js';
+import {
+  markBoundaryTrees,
+  markNotSide,
+  type NotMarks,
+  type WalkedCommit,
+} from './closure-not-marks.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
 import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
@@ -113,23 +118,46 @@ const ROOT_PATH = '' as FilePath;
 const NO_MARKS: ReadonlySet<ObjectId> = new Set();
 
 /**
+ * What `emitTree` needs to know beyond the tree it is walking: the not-side's
+ * marks, the closure-wide set of ids already emitted (by reference — this
+ * MUST be the live set the closure keeps growing, never a copy, since the
+ * prune below reads it as the walk proceeds), and `core.maxTreeDepth`
+ * resolved once for the whole closure rather than once per `emitTree` call.
+ */
+interface TreeEmitScope {
+  readonly marked: ReadonlySet<ObjectId>;
+  readonly emitted: ReadonlySet<ObjectId>;
+  readonly maxDepth: number;
+}
+
+/**
  * Emit `treeId` and its non-gitlink contents, skipping anything marked
- * uninteresting. `path` and `nameHash` come from `walkTree`'s own fold
- * (`PACK_NAME_HASH_V1`); the root tree itself carries the empty path and
- * the fold's seed.
+ * uninteresting or already emitted. `path` and `nameHash` come from
+ * `walkTree`'s own fold (`PACK_NAME_HASH_V1`); the root tree itself carries
+ * the empty path and the fold's seed.
+ *
+ * Mirrors git's `process_tree` (`list-objects.c`): a tree already
+ * UNINTERESTING or SEEN is never expanded, and never re-emitted, on the
+ * interesting side — the root short-circuit below returns before even the
+ * root emit, and `skipTree` prunes each already-known directory entry from
+ * the descent while still yielding the entry itself.
  */
 async function emitTree(
   ctx: Context,
   treeId: ObjectId,
-  marked: ReadonlySet<ObjectId>,
+  scope: TreeEmitScope,
   emit: Emit,
 ): Promise<void> {
-  if (!marked.has(treeId)) {
-    emit({ id: treeId, type: 'tree', path: ROOT_PATH, nameHash: PACK_NAME_HASH_SEED });
-  }
-  for await (const entry of walkTree(ctx, treeId, { pathHasher: PACK_NAME_HASH_V1 })) {
+  if (scope.marked.has(treeId) || scope.emitted.has(treeId)) return;
+  emit({ id: treeId, type: 'tree', path: ROOT_PATH, nameHash: PACK_NAME_HASH_SEED });
+  const skipTree = (id: ObjectId): boolean => scope.marked.has(id) || scope.emitted.has(id);
+  for await (const entry of walkTree(ctx, treeId, {
+    pathHasher: PACK_NAME_HASH_V1,
+    maxDepth: scope.maxDepth,
+    skipTree,
+  })) {
     if (isGitlink(entry.mode)) continue;
-    if (marked.has(entry.id)) continue;
+    if (scope.marked.has(entry.id)) continue;
     emit({
       id: entry.id,
       type: isDirectory(entry.mode) ? 'tree' : 'blob',
@@ -149,6 +177,7 @@ async function emitTree(
 async function resolveWants(
   ctx: Context,
   wants: ReadonlyArray<ObjectId>,
+  scope: TreeEmitScope,
   emit: Emit,
 ): Promise<Commit[]> {
   const commitSeeds: Commit[] = [];
@@ -162,7 +191,7 @@ async function resolveWants(
       continue;
     }
     if (obj.type === 'tree') {
-      await emitTree(ctx, peeled, NO_MARKS, emit);
+      await emitTree(ctx, peeled, { ...scope, marked: NO_MARKS }, emit);
       continue;
     }
     // A recorded divergence: git names a direct want after the pending
@@ -173,15 +202,17 @@ async function resolveWants(
 }
 
 /**
- * `noWalk`'s own building block: emit each commit seed itself, skipping one
- * marked uninteresting, with no parent enqueue at all. `maxCount` still
- * bounds how many seeds are emitted; `objects` still emits each seed's own
- * tree.
+ * `noWalk`'s own building block, reached only when there is no `not` side
+ * (git ignores `--no-walk` with a range): emit each commit seed itself with no
+ * parent enqueue at all. `maxCount` still bounds how many seeds are emitted;
+ * `objects` still emits each seed's own tree. With no `not` side there is no
+ * boundary tree to mark.
  */
 async function emitSeedsWithoutWalking(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
+  scope: TreeEmitScope,
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
@@ -191,7 +222,7 @@ async function emitSeedsWithoutWalking(
     if (request.maxCount !== undefined && emitted >= request.maxCount) return;
     emit({ id: seed.id, type: 'commit', nameHash: 0 });
     emitted += 1;
-    if (request.objects) await emitTree(ctx, seed.data.tree, marks.objects, emit);
+    if (request.objects) await emitTree(ctx, seed.data.tree, scope, emit);
   }
 }
 
@@ -201,29 +232,49 @@ async function emitSeedsWithoutWalking(
  * needs the FULL walked set before any tree is emitted, since a boundary a
  * later commit surfaces must still gate an earlier commit's own tree walk.
  */
-async function walkAndEmitCommits(
+/**
+ * Drain the interesting walk into a buffer. git's `mark_edges_uninteresting`
+ * runs over the WHOLE interesting frontier (`limit_list`) before `--max-count`
+ * truncates the output, so a limited-objects walk (one with a `not` side) must
+ * reach the `until` boundary before `maxCount` applies — otherwise an edge
+ * parent beyond the count never has its tree marked. A commits-only or
+ * negative-free walk has no boundary to discover past the cap and stops early.
+ */
+async function collectLimitedWalk(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
   request: ClosureRequest,
-  emit: Emit,
-): Promise<void> {
-  const walked: Commit[] = [];
+): Promise<WalkedCommit[]> {
+  const drainsFully = request.objects === true && marks.commits.size > 0;
+  const walked: WalkedCommit[] = [];
   for await (const commit of walkCommits(ctx, {
     from: commitSeeds.map((seed) => seed.id),
-    until: [...marks.commits],
+    until: marks.commits,
     ignoreMissing: true,
     order: request.firstParent === true ? 'first-parent' : 'topo',
   })) {
-    walked.push(commit);
-    if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
+    walked.push({ id: commit.id, tree: commit.data.tree, parents: commit.data.parents });
+    if (request.maxCount !== undefined && walked.length >= request.maxCount && !drainsFully) break;
   }
+  return walked;
+}
 
+async function walkAndEmitCommits(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  marks: NotMarks,
+  scope: TreeEmitScope,
+  request: ClosureRequest,
+  emit: Emit,
+): Promise<void> {
+  const walked = await collectLimitedWalk(ctx, commitSeeds, marks, request);
   if (request.objects) await markBoundaryTrees(ctx, walked, marks);
 
-  for (const commit of walked) {
+  const emitted = request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
+  for (const commit of emitted) {
     emit({ id: commit.id, type: 'commit', nameHash: 0 });
-    if (request.objects) await emitTree(ctx, commit.data.tree, marks.objects, emit);
+    if (request.objects) await emitTree(ctx, commit.tree, scope, emit);
   }
 }
 
@@ -232,13 +283,17 @@ async function emitCommitSeeds(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
+  scope: TreeEmitScope,
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
   if (commitSeeds.length === 0 || request.maxCount === 0) return;
-  if (request.noWalk === true)
-    return emitSeedsWithoutWalking(ctx, commitSeeds, marks, request, emit);
-  return walkAndEmitCommits(ctx, commitSeeds, marks, request, emit);
+  // git ignores `--no-walk` once a range (a `not` tip) is present, falling back
+  // to the ordinary bounded walk; `noWalk` shows only the tips solely when there
+  // is nothing to exclude.
+  if (request.noWalk === true && request.not.length === 0)
+    return emitSeedsWithoutWalking(ctx, commitSeeds, marks, scope, request, emit);
+  return walkAndEmitCommits(ctx, commitSeeds, marks, scope, request, emit);
 }
 
 async function walkClosure(ctx: Context, request: ClosureRequest): Promise<ClosureObject[]> {
@@ -250,8 +305,13 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
   };
 
   const marks = await markNotSide(ctx, request.not);
-  const commitSeeds = await resolveWants(ctx, request.wants, emit);
-  await emitCommitSeeds(ctx, commitSeeds, marks, request, emit);
+  const scope: TreeEmitScope = {
+    marked: marks.objects,
+    emitted: state.emitted,
+    maxDepth: marks.maxDepth,
+  };
+  const commitSeeds = await resolveWants(ctx, request.wants, scope, emit);
+  await emitCommitSeeds(ctx, commitSeeds, marks, scope, request, emit);
 
   return results;
 }

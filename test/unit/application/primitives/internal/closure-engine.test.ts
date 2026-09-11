@@ -13,13 +13,20 @@
  *  - the shared cap (`MAX_PUSH_OBJECTS`, reused via `tryEmit`)
  *  - dedup across commits sharing a tree
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
+import * as closureNotMarksModule from '../../../../../src/application/primitives/internal/closure-not-marks.js';
+import * as readCommitMetaModule from '../../../../../src/application/primitives/internal/read-commit-meta.js';
+import * as resolveMaxTreeDepthModule from '../../../../../src/application/primitives/internal/resolve-max-tree-depth.js';
+import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
+import { MAX_WALK_QUEUE_SIZE } from '../../../../../src/application/primitives/types.js';
+import { REASON_WALK_QUEUE_OVERFLOW } from '../../../../../src/application/primitives/validators.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
+import { invalidWalkInput } from '../../../../../src/domain/error.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type {
   AuthorIdentity,
@@ -31,6 +38,7 @@ import type {
 } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import {
+  computeLooseObjectPath,
   lookupPackIndex,
   packNameHash,
   parsePackIndex,
@@ -42,7 +50,12 @@ import {
   buildMidx,
   type MidxSpec,
 } from '../../../domain/storage/arbitraries.js';
-import { buildSeededContext, seedMaxTreeDepth } from '../fixtures.js';
+import {
+  buildSeededContext,
+  buildSharedSubtreeChain,
+  seedMaxTreeDepth,
+  writeCommitGraph,
+} from '../fixtures.js';
 import { writeSyntheticBitmap, writeSyntheticPack } from '../pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -193,6 +206,10 @@ const buildHavesFixture = async (): Promise<HavesFixture> => {
 
   return { ctx, root, have, want };
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('computeClosure', () => {
   describe('Given a 3-commit chain', () => {
@@ -995,9 +1012,9 @@ describe('computeClosure', () => {
     });
   });
 
-  describe('Given two commit seeds under noWalk, one of them covered by not', () => {
+  describe('Given two commit seeds under noWalk with a not tip (noWalk ignored with a range)', () => {
     describe('When computeClosure emits the seeds', () => {
-      it('Then the covered seed is skipped and the other is emitted', async () => {
+      it('Then the walk runs and excludes the covered seed, emitting only the other', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const chain = await buildLinearChain(ctx);
@@ -1209,6 +1226,32 @@ describe('computeClosure', () => {
     });
   });
 
+  describe('Given a walk-tier closure over two linked commits with objects: true', () => {
+    describe('When computeClosure buffers the walked commits for markBoundaryTrees', () => {
+      it('Then each buffered record carries exactly id, tree and parents', async () => {
+        // Arrange — a spy on the callee, not `toEqual` on the whole record: a
+        // subset comparison cannot see an extra key (e.g. a full `Commit`'s
+        // `data`/`type`) left on the buffered value.
+        const ctx = await buildSeededContext();
+        const treeId = await writeTree(ctx, []);
+        const rootId = await writeCommit(ctx, treeId, [], 'root');
+        const headId = await writeCommit(ctx, treeId, [rootId], 'head');
+        const boundarySpy = vi.spyOn(closureNotMarksModule, 'markBoundaryTrees');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [headId], not: [], objects: true });
+
+        // Assert
+        const walked = boundarySpy.mock.calls[0]![1];
+        expect(walked).toHaveLength(2);
+        for (const record of walked) {
+          expect(Object.keys(record).sort()).toEqual(['id', 'parents', 'tree']);
+        }
+      });
+    });
+  });
+
   describe('Given a want that does not resolve to any object', () => {
     describe('When computeClosure is called', () => {
       it('Then it throws OBJECT_NOT_FOUND for that id', async () => {
@@ -1281,6 +1324,67 @@ describe('computeClosure', () => {
         expect(result.objects.filter((o) => o.id === blobId)).toHaveLength(1);
         expect(result.objects.some((o) => o.id === parentId)).toBe(true);
         expect(result.objects.some((o) => o.id === childId)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a not-marked subtree also reachable, unchanged, from the want side', () => {
+    describe('When computeClosure walks objects: true', () => {
+      it('Then the marking pass reads it (its own type check, then markTree) and the want-side walk attempts no further read of it', async () => {
+        // Arrange — a content-addressed byte cache already absorbs a repeat
+        // read of the identical id at the filesystem layer, so the
+        // observable under test is the WALK's own decision to
+        // attempt (`readObject`) a further read at all, not whether that
+        // attempt reaches disk. The not-side marking pass already costs two
+        // attempts for a `not` id that is a
+        // tree (`markUninteresting`'s own type check, then `markTree`'s);
+        // the third attempt, from the want-side walk redundantly descending
+        // an already-marked subtree, is what the prune removes.
+        const ctx = await buildSeededContext();
+        const markedLeafBlob = await writeBlob(ctx, 'marked-leaf');
+        const markedSubtreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'leaf.txt', markedLeafBlob),
+        ]);
+        const otherBlobId = await writeBlob(ctx, 'kept');
+        const wantTreeId = await writeTree(ctx, [
+          treeEntry('40000' as FileMode, 'marked', markedSubtreeId),
+          treeEntry('100644' as FileMode, 'kept.txt', otherBlobId),
+        ]);
+        const commitId = await writeCommit(ctx, wantTreeId, [], 'reuses a not-marked subtree');
+        const sut = computeClosure;
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [commitId], not: [markedSubtreeId], objects: true });
+
+        // Assert
+        const attemptsOnMarkedSubtree = readSpy.mock.calls.filter(
+          ([, id]) => id === markedSubtreeId,
+        );
+        expect(attemptsOnMarkedSubtree).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a root tree already emitted while walking an earlier commit', () => {
+    describe('When computeClosure walks a later commit that reuses that exact tree', () => {
+      it('Then the later commit never attempts a second readObject of that tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'reused root');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blobId)]);
+        const parentId = await writeCommit(ctx, treeId, [], 'gen-1');
+        const childId = await writeCommit(ctx, treeId, [parentId], 'gen-2');
+        const sut = computeClosure;
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [childId], not: [], objects: true });
+
+        // Assert — one attempt as the tip commit's own root, none for the
+        // parent's identical root.
+        const attemptsOnTree = readSpy.mock.calls.filter(([, id]) => id === treeId);
+        expect(attemptsOnTree).toHaveLength(1);
       });
     });
   });
@@ -1358,6 +1462,248 @@ describe('computeClosure', () => {
           expect(data.code).toBe('PACK_TOO_LARGE');
           expect(data.limit).toBe(2);
           expect(data.objectCount).toBeGreaterThan(data.limit);
+        } finally {
+          vi.doUnmock('../../../../../src/application/primitives/types.js');
+          vi.resetModules();
+        }
+      });
+    });
+  });
+
+  describe('Given a shared-subtree commit chain and an empty commit reusing its tip tree', () => {
+    describe('When computeClosure walks objects from the empty commit', () => {
+      it('Then the emitted entries are ordered and shaped exactly as recorded on the unpruned walk', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chain = await buildSharedSubtreeChain(ctx);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [chain.c3],
+          not: [],
+          objects: true,
+        });
+
+        // Assert — the exact ordered entry list captured on the unpruned
+        // walk; the closure prune must reproduce it
+        // byte-for-byte (equivalence argument: a pruned subtree contributes
+        // nothing to this sequence today either).
+        expect(result.objects).toStrictEqual([
+          {
+            id: '00a4e3116c60e67c73ad2b29fbbbd9b5cb828617' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '7b68225667655b86be79e69007843bf429ce9067' as ObjectId,
+            type: 'tree',
+            path: '',
+            nameHash: 0,
+          },
+          {
+            id: '66f21de1c93afc3c24f8b668be9b0cc1762efa3a' as ObjectId,
+            type: 'tree',
+            path: 'a',
+            nameHash: 1627389952,
+          },
+          {
+            id: '304f2c24d9b50ed16781dfcda37f5da6140aa420' as ObjectId,
+            type: 'blob',
+            path: 'a/one',
+            nameHash: 2290941952,
+          },
+          {
+            id: '0b2f0396109eada52018c2ecc4d373abd52f09b1' as ObjectId,
+            type: 'blob',
+            path: 'a/two',
+            nameHash: 2501705728,
+          },
+          {
+            id: '77b7bffcc4087df500799be9b62b4145b367a9e7' as ObjectId,
+            type: 'tree',
+            path: 'b',
+            nameHash: 1644167168,
+          },
+          {
+            id: '847c83df585334723e9fbdd0f954d4c953ced4ac' as ObjectId,
+            type: 'blob',
+            path: 'b/one',
+            nameHash: 2291007488,
+          },
+          {
+            id: 'da9b11c7b65f351faffd81ab161c338e504a35d4' as ObjectId,
+            type: 'blob',
+            path: 'b/two',
+            nameHash: 2501771264,
+          },
+          {
+            id: 'f86601129a7fbbf8b94617d239aa6e93712ce2f5' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '0c390bf764a562d037f67f4c6ba65b769926f8fd' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: 'e6cdd70da23364b27db4b180bbce0d4ad9ce0e2f' as ObjectId,
+            type: 'tree',
+            path: '',
+            nameHash: 0,
+          },
+          {
+            id: 'c923bf899d649c44f4a42d4fb273170e5ac234df' as ObjectId,
+            type: 'tree',
+            path: 'b',
+            nameHash: 1644167168,
+          },
+          {
+            id: '1834ee9324eab6e6fa7d7df9a8c6915b81e86920' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '2b5396c9a8aa16db82ed23f17eebd290688e2f98' as ObjectId,
+            type: 'tree',
+            path: '',
+            nameHash: 0,
+          },
+          {
+            id: 'b408f90a2e66f6cb77f82740f1ccc1a4886d9536' as ObjectId,
+            type: 'tree',
+            path: 'a',
+            nameHash: 1627389952,
+          },
+          {
+            id: '125f069b69a1ec3e1b4c707d56998e13c238ce50' as ObjectId,
+            type: 'blob',
+            path: 'a/one',
+            nameHash: 2290941952,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a closure spanning several commits, each carrying its own tree, with objects: true', () => {
+    describe('When computeClosure walks the closure', () => {
+      it('Then core.maxTreeDepth is resolved exactly once for the whole closure, not once per commit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commitCount = 5;
+        let parentId: ObjectId | undefined;
+        let tipId: ObjectId = '' as ObjectId;
+        for (let generation = 0; generation < commitCount; generation += 1) {
+          const blobId = await writeBlob(ctx, `gen-${generation}`);
+          const treeId = await writeTree(ctx, [
+            treeEntry('100644' as FileMode, 'file.txt', blobId),
+          ]);
+          tipId = await writeCommit(ctx, treeId, parentId ? [parentId] : [], `gen-${generation}`);
+          parentId = tipId;
+        }
+        const resolveSpy = vi.spyOn(resolveMaxTreeDepthModule, 'resolveMaxTreeDepth');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, { tier: 'walk', wants: [tipId], not: [], objects: true });
+
+        // Assert
+        expect(resolveSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a closure whose want side revisits an already-emitted shared subtree before a fresh object trips the cap', () => {
+    describe('When MAX_PUSH_OBJECTS is lowered to trip PACK_TOO_LARGE right after that revisit', () => {
+      it('Then the refusal data is the exact count the duplicate revisit could not move', async () => {
+        // Arrange — mock the shared cap down so a small closure trips it; see
+        // the identical pattern above for why the module graph is scoped.
+        vi.resetModules();
+        vi.doMock('../../../../../src/application/primitives/types.js', async (importOriginal) => {
+          const actual =
+            await importOriginal<
+              typeof import('../../../../../src/application/primitives/types.js')
+            >();
+          return { ...actual, MAX_PUSH_OBJECTS: 7 };
+        });
+
+        try {
+          const [
+            { computeClosure: sut },
+            { TsgitError: ScopedTsgitError },
+            { writeObject: scopedWriteObject },
+            { writeTree: scopedWriteTree },
+            { buildSeededContext: scopedBuildSeededContext },
+          ] = await Promise.all([
+            import('../../../../../src/application/primitives/internal/closure-engine.js'),
+            import('../../../../../src/domain/error.js'),
+            import('../../../../../src/application/primitives/write-object.js'),
+            import('../../../../../src/application/primitives/write-tree.js'),
+            import('../fixtures.js'),
+          ]);
+          const ctx = await scopedBuildSeededContext();
+          const writeScopedBlob = async (content: string): Promise<ObjectId> => {
+            const blob: Blob = {
+              type: 'blob',
+              content: new TextEncoder().encode(content),
+              id: '' as ObjectId,
+            };
+            return scopedWriteObject(ctx, blob);
+          };
+          const writeScopedCommit = async (
+            tree: ObjectId,
+            parents: ReadonlyArray<ObjectId>,
+            message: string,
+          ): Promise<ObjectId> => {
+            const commit: Commit = {
+              type: 'commit',
+              id: '' as ObjectId,
+              data: { tree, parents, author: AUTHOR, committer: AUTHOR, message, extraHeaders: [] },
+            };
+            return scopedWriteObject(ctx, commit);
+          };
+
+          const sharedLeafBlob = await writeScopedBlob('shared-leaf');
+          const sharedSubtreeId = await scopedWriteTree(ctx, [
+            treeEntry('100644' as FileMode, 'leaf.txt', sharedLeafBlob),
+          ]);
+          const uniqueBlobC1 = await writeScopedBlob('c1-own');
+          const tree1 = await scopedWriteTree(ctx, [
+            treeEntry('40000' as FileMode, 'a_shared', sharedSubtreeId),
+            treeEntry('100644' as FileMode, 'z_uniqueC1', uniqueBlobC1),
+          ]);
+          const commit1 = await writeScopedCommit(tree1, [], 'c1');
+          const uniqueBlobC2 = await writeScopedBlob('c2-own');
+          const tree2 = await scopedWriteTree(ctx, [
+            treeEntry('40000' as FileMode, 'a_shared', sharedSubtreeId),
+            treeEntry('100644' as FileMode, 'z_uniqueC2', uniqueBlobC2),
+          ]);
+          const commit2 = await writeScopedCommit(tree2, [commit1], 'c2');
+
+          // Act — unique emissions in order: commit2, tree2, sharedSubtreeId,
+          // sharedLeafBlob, uniqueBlobC2 (5), commit1 (6), tree1 (7), then
+          // `a_shared` revisits the already-emitted sharedSubtreeId/leaf (free,
+          // no cap effect either way) before `z_uniqueC1` (8th) trips the cap.
+          let caught: unknown;
+          try {
+            await sut(ctx, { tier: 'walk', wants: [commit2], not: [], objects: true });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(ScopedTsgitError);
+          const data = (caught as InstanceType<typeof ScopedTsgitError>).data as {
+            code: string;
+            limit: number;
+            objectCount: number;
+          };
+          expect(data.code).toBe('PACK_TOO_LARGE');
+          expect(data.limit).toBe(7);
+          expect(data.objectCount).toBe(8);
         } finally {
           vi.doUnmock('../../../../../src/application/primitives/types.js');
           vi.resetModules();
@@ -1589,6 +1935,744 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
         expect(bitmapBytesSpy).toHaveBeenCalled();
         expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
       });
+    });
+  });
+});
+
+/** Remove `id`'s loose object from the memory store — the shape a
+ *  `--filter=tree:0` partial clone with a promisor gap, or a pruned/corrupt
+ *  repository, presents to the not-side marker. */
+const deleteLooseObject = async (ctx: Context, id: ObjectId): Promise<void> => {
+  await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
+};
+
+interface MissingRootTreeFixture {
+  readonly have: ObjectId;
+  readonly want: ObjectId;
+  readonly haveRootTree: ObjectId;
+  readonly wantRootTree: ObjectId;
+  readonly treeA1: ObjectId;
+  readonly aOneV1: ObjectId;
+  readonly treeB1: ObjectId;
+  readonly bOneV1: ObjectId;
+}
+
+/**
+ * `base` writes `a/one` and `b/one`; `have` edits `a/one` (subtree `a`
+ * changes, `b` is reused wholesale); `want` edits `b/one` (subtree `b`
+ * changes, `a` is reused wholesale from `have`). With every object present,
+ * marking `have` prunes subtree `a` and its blob from `want`'s emission.
+ */
+const buildMissingRootTreeFixture = async (ctx: Context): Promise<MissingRootTreeFixture> => {
+  const aOneV0 = await writeBlob(ctx, 'a/one v0');
+  const aOneV1 = await writeBlob(ctx, 'a/one v1');
+  const bOneV0 = await writeBlob(ctx, 'b/one v0');
+  const bOneV1 = await writeBlob(ctx, 'b/one v1');
+  const treeA0 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', aOneV0)]);
+  const treeA1 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', aOneV1)]);
+  const treeB0 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', bOneV0)]);
+  const treeB1 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'one', bOneV1)]);
+  const baseRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'a', treeA0),
+    treeEntry('40000' as FileMode, 'b', treeB0),
+  ]);
+  const base = await writeCommit(ctx, baseRootTree, [], 'base');
+  const haveRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'a', treeA1),
+    treeEntry('40000' as FileMode, 'b', treeB0),
+  ]);
+  const have = await writeCommit(ctx, haveRootTree, [base], 'have');
+  const wantRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'a', treeA1),
+    treeEntry('40000' as FileMode, 'b', treeB1),
+  ]);
+  const want = await writeCommit(ctx, wantRootTree, [have], 'want');
+  return { have, want, haveRootTree, wantRootTree, treeA1, aOneV1, treeB1, bOneV1 };
+};
+
+interface MissingSubtreeFixture {
+  readonly have: ObjectId;
+  readonly want: ObjectId;
+  readonly subtreeX: ObjectId;
+  readonly subtreeY: ObjectId;
+  readonly yBlob: ObjectId;
+  readonly sharedBlob: ObjectId;
+  readonly subtreeW: ObjectId;
+  readonly wantRootTree: ObjectId;
+}
+
+/**
+ * `have` holds `x/f` and `y/g`; `want` adds `w/f2` carrying the SAME blob as
+ * `x/f`, and reuses `x` and `y` wholesale. With every object present, marking
+ * `have` prunes that blob through subtree `x`, so `want` emits only its own
+ * root tree and `w`.
+ */
+const buildMissingSubtreeFixture = async (ctx: Context): Promise<MissingSubtreeFixture> => {
+  const sharedBlob = await writeBlob(ctx, 'shared-blob');
+  const yBlob = await writeBlob(ctx, 'y-content');
+  const subtreeX = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f', sharedBlob)]);
+  const subtreeY = await writeTree(ctx, [treeEntry('100644' as FileMode, 'g', yBlob)]);
+  const subtreeW = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f2', sharedBlob)]);
+  const haveRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'x', subtreeX),
+    treeEntry('40000' as FileMode, 'y', subtreeY),
+  ]);
+  const have = await writeCommit(ctx, haveRootTree, [], 'have');
+  const wantRootTree = await writeTree(ctx, [
+    treeEntry('40000' as FileMode, 'w', subtreeW),
+    treeEntry('40000' as FileMode, 'x', subtreeX),
+    treeEntry('40000' as FileMode, 'y', subtreeY),
+  ]);
+  const want = await writeCommit(ctx, wantRootTree, [have], 'want');
+  return { have, want, subtreeX, subtreeY, yBlob, sharedBlob, subtreeW, wantRootTree };
+};
+
+describe('computeClosure — a not-side tree missing from the local object store', () => {
+  describe('Given a not tip whose own root tree object is absent locally', () => {
+    describe('When computeClosure walks the objects closure', () => {
+      it('Then the unreadable tree alone stays pruned and everything under the want is over-reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fixture = await buildMissingRootTreeFixture(ctx);
+        await deleteLooseObject(ctx, fixture.haveRootTree);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert — real git 2.55.0 on the identical shape exits 0 and lists
+        // exactly this set: nothing under the unreadable tree can be marked, so
+        // subtree `a` and its blob come back although the intact repository
+        // prunes both.
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([
+            fixture.want,
+            fixture.wantRootTree,
+            fixture.treeA1,
+            fixture.aOneV1,
+            fixture.treeB1,
+            fixture.bOneV1,
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a not tip whose root tree is readable but one of its subtrees is absent locally', () => {
+    describe('When computeClosure walks the objects closure', () => {
+      it('Then only that subtree’s contents are over-reported, the subtree id and its siblings staying pruned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fixture = await buildMissingSubtreeFixture(ctx);
+        await deleteLooseObject(ctx, fixture.subtreeX);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert — real git 2.55.0 on the identical shape adds exactly the
+        // shared blob: `x` itself is still marked (so `want` never descends
+        // into it), sibling `y` and its blob are still pruned in full.
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([fixture.want, fixture.wantRootTree, fixture.subtreeW, fixture.sharedBlob]),
+        );
+      });
+    });
+  });
+});
+
+const asCommits = async (ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> => {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObjectModule.readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error('expected a commit');
+    commits.push(object);
+  }
+  return commits;
+};
+
+interface FourCommitChain extends LinearChain {
+  readonly c4: ObjectId;
+  readonly t4: ObjectId;
+  readonly b4: ObjectId;
+}
+
+/** `buildLinearChain` plus a fourth generation, so a `not` tip (`c3`) still
+ *  has two strict ancestors behind it and one interesting commit ahead. */
+const buildFourCommitChain = async (ctx: Context): Promise<FourCommitChain> => {
+  const chain = await buildLinearChain(ctx);
+  const b4 = await writeBlob(ctx, 'gen-4');
+  const t4 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'file.txt', b4)]);
+  const c4 = await writeCommit(ctx, t4, [chain.c3], 'gen-4');
+  return { ...chain, c4, t4, b4 };
+};
+
+interface OddParentFixture {
+  readonly have: ObjectId;
+  readonly want: ObjectId;
+  readonly wantRootTree: ObjectId;
+  readonly wantBlob: ObjectId;
+  readonly shared: ObjectId;
+  readonly sharedTree: ObjectId;
+  readonly sharedBlob: ObjectId;
+}
+
+/**
+ * `have` is a merge of `oddParent` — an oid the marker cannot turn into a
+ * commit — and `shared`, a real commit that `want` also names as a parent. If
+ * the not-side marker stops at `oddParent`, `shared` is never marked and the
+ * interesting walk emits it; if it steps over it, `shared` is pruned.
+ */
+const buildOddParentFixture = async (
+  ctx: Context,
+  oddParent: ObjectId,
+): Promise<OddParentFixture> => {
+  const sharedBlob = await writeBlob(ctx, 'shared');
+  const sharedTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', sharedBlob)]);
+  const shared = await writeCommit(ctx, sharedTree, [], 'shared');
+  const haveBlob = await writeBlob(ctx, 'have');
+  const haveTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', haveBlob)]);
+  const have = await writeCommit(ctx, haveTree, [oddParent, shared], 'have');
+  const wantBlob = await writeBlob(ctx, 'want');
+  const wantRootTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', wantBlob)]);
+  const want = await writeCommit(ctx, wantRootTree, [have, shared], 'want');
+  return { have, want, wantRootTree, wantBlob, shared, sharedTree, sharedBlob };
+};
+
+describe('computeClosure — marking the not side', () => {
+  describe('Given a commit-graph covering the whole not-side ancestry', () => {
+    describe('When computeClosure marks that ancestry', () => {
+      it('Then no strict not-side ancestor has its commit body read', async () => {
+        // Arrange — the graph already serves the only two fields the marker
+        // wants (root tree and parents); the tip itself is still read, since
+        // the marker must learn its object type before it can mark anything.
+        const ctx = await buildSeededContext();
+        const chain = await buildFourCommitChain(ctx);
+        await writeCommitGraph(ctx, [
+          await asCommits(ctx, [chain.c1, chain.c2, chain.c3, chain.c4]),
+        ]);
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, {
+          tier: 'walk',
+          wants: [chain.c4],
+          not: [chain.c3],
+          objects: true,
+        });
+
+        // Assert
+        const idsRead = readSpy.mock.calls.map(([, id]) => id);
+        expect(idsRead).not.toContain(chain.c1);
+        expect(idsRead).not.toContain(chain.c2);
+      });
+    });
+  });
+
+  describe('Given the same history with and without a commit-graph', () => {
+    describe('When computeClosure prunes the same not tip from both', () => {
+      it('Then both emit the identical object set', async () => {
+        // Arrange — the two fixtures are content-addressed from identical
+        // inputs, so every oid matches across them.
+        const graphed = await buildSeededContext();
+        const chain = await buildFourCommitChain(graphed);
+        await writeCommitGraph(graphed, [
+          await asCommits(graphed, [chain.c1, chain.c2, chain.c3, chain.c4]),
+        ]);
+        const bare = await buildSeededContext();
+        await buildFourCommitChain(bare);
+        const request = {
+          tier: 'walk',
+          wants: [chain.c4],
+          not: [chain.c3],
+          objects: true,
+        } as const;
+
+        // Act
+        const withGraph = await computeClosure(graphed, request);
+        const withoutGraph = await computeClosure(bare, request);
+
+        // Assert
+        expect(new Set(withGraph.objects.map((object) => object.id))).toEqual(
+          new Set(withoutGraph.objects.map((object) => object.id)),
+        );
+      });
+    });
+  });
+
+  describe('Given a not-side commit one of whose parents has no object at all', () => {
+    describe('When computeClosure marks that ancestry', () => {
+      it('Then the absent parent is stepped over and the sibling parent is still marked', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fixture = await buildOddParentFixture(ctx, '1'.repeat(40) as ObjectId);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert — `shared` and everything under it stayed pruned.
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([fixture.want, fixture.wantRootTree, fixture.wantBlob]),
+        );
+      });
+    });
+  });
+
+  describe('Given a not-side commit one of whose parent oids names a blob', () => {
+    describe('When computeClosure marks that ancestry', () => {
+      it('Then the non-commit parent is stepped over and the sibling parent is still marked', async () => {
+        // Arrange — a separate row from the absent-parent one: two independent
+        // conditions guard the same enqueue, and one input cannot prove both.
+        const ctx = await buildSeededContext();
+        const notACommit = await writeBlob(ctx, 'not a commit');
+        const fixture = await buildOddParentFixture(ctx, notACommit);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([fixture.want, fixture.wantRootTree, fixture.wantBlob]),
+        );
+      });
+    });
+  });
+});
+
+describe("computeClosure — the not-side ancestry walk keeps the commit walk's frontier discipline", () => {
+  const buildWantOver = async (
+    ctx: Context,
+    notTip: ObjectId,
+  ): Promise<{
+    readonly wantId: ObjectId;
+    readonly treeId: ObjectId;
+    readonly blobId: ObjectId;
+  }> => {
+    const blobId = await writeBlob(ctx, 'want-side content');
+    const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'w.txt', blobId)]);
+    const wantId = await writeCommit(ctx, treeId, [notTip], 'want');
+    return { wantId, treeId, blobId };
+  };
+
+  describe('Given a commit-graph covering the not side and a signal aborted right after the tip is consulted', () => {
+    describe('When computeClosure marks the not side', () => {
+      it('Then the ancestry walk stops at its own loop-top check before consulting the parent', async () => {
+        // Arrange — under a graph the marker performs no object read inside
+        // its loop, so no other abort check can fire there: the loop-top check
+        // is the only thing between consulting the tip and consulting its
+        // parent. The abort lands as the tip's meta resolves.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'have');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+        const rootId = await writeCommit(ctx, treeId, [], 'root');
+        const notTipId = await writeCommit(ctx, treeId, [rootId], 'have');
+        const { wantId } = await buildWantOver(ctx, notTipId);
+        const layer = await Promise.all(
+          [rootId, notTipId, wantId].map(
+            async (id) => (await readObjectModule.readObject(ctx, id)) as Commit,
+          ),
+        );
+        await writeCommitGraph(ctx, [layer]);
+        const controller = new AbortController();
+        const original = readCommitMetaModule.readCommitMeta;
+        const metaSpy = vi
+          .spyOn(readCommitMetaModule, 'readCommitMeta')
+          .mockImplementation(async (c, id) => {
+            const meta = await original(c, id);
+            controller.abort();
+            return meta;
+          });
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(
+            { ...ctx, signal: controller.signal },
+            { tier: 'walk', wants: [wantId], not: [notTipId], objects: true },
+          );
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — the tip was consulted once; its parent never was
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        expect(metaSpy).toHaveBeenCalledTimes(1);
+        metaSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a not tip naming more distinct parents than the frontier bound admits', () => {
+    describe('When computeClosure marks its ancestry', () => {
+      it("Then it refuses with the commit walk's own queue-overflow reason", async () => {
+        // Arrange — MAX_WALK_QUEUE_SIZE + 1 distinct, never-written parent
+        // oids: the marker must refuse exactly as `walkCommits` does, not walk
+        // an unbounded frontier.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'have');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+        const parents = Array.from(
+          { length: MAX_WALK_QUEUE_SIZE + 1 },
+          (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+        );
+        const notTipId = await writeCommit(ctx, treeId, parents, 'octopus have');
+        const { wantId } = await buildWantOver(ctx, notTipId);
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'INVALID_WALK_INPUT',
+          reason: REASON_WALK_QUEUE_OVERFLOW,
+        });
+      });
+    });
+  });
+
+  describe('Given a not-side layer every commit of the layer above names in full', () => {
+    describe('When computeClosure marks the not side', () => {
+      it('Then each parent is queued once, so 67,600 parent references stay under the bound', async () => {
+        // Arrange — 260 roots and 260 commits each naming all 260 roots, all
+        // below the not tip: 67,600 parent references, more than the bound
+        // admits as raw pushes, but at most 260 distinct pending ids.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'have');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+        const roots: ObjectId[] = [];
+        for (let i = 0; i < 260; i += 1)
+          roots.push(await writeCommit(ctx, treeId, [], `root ${i}`));
+        const layer: ObjectId[] = [];
+        for (let i = 0; i < 260; i += 1)
+          layer.push(await writeCommit(ctx, treeId, roots, `layer ${i}`));
+        const notTipId = await writeCommit(ctx, treeId, layer, 'have');
+        const {
+          wantId,
+          treeId: wantTreeId,
+          blobId: wantBlobId,
+        } = await buildWantOver(ctx, notTipId);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wantId],
+          not: [notTipId],
+          objects: true,
+        });
+
+        // Assert — the whole not side is marked; only the want's own objects survive
+        expect(new Set(result.objects.map((o) => o.id))).toEqual(
+          new Set([wantId, wantTreeId, wantBlobId]),
+        );
+      });
+    });
+  });
+});
+
+describe('computeClosure — the not-side ancestry walk consults each commit once and rethrows what it cannot classify', () => {
+  const haveTree = async (ctx: Context): Promise<ObjectId> => {
+    const blobId = await writeBlob(ctx, 'have');
+    return writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+  };
+  const consulted = (spy: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } }): ObjectId[] =>
+    spy.mock.calls.map((call) => call[1] as ObjectId);
+
+  describe('Given two not tips sharing an ancestry, When computeClosure marks the not side', () => {
+    it("Then the second tip's walk stops on the ancestry the first already marked, consulting no commit twice", async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const rootId = await writeCommit(ctx, treeId, [], 'root');
+      const tip2 = await writeCommit(ctx, treeId, [rootId], 'have two');
+      const tip1 = await writeCommit(ctx, treeId, [tip2], 'have one');
+      const wantId = await writeCommit(ctx, treeId, [tip1], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [tip1, tip2], objects: true });
+
+      // Assert
+      const ids = consulted(metaSpy);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(new Set(ids)).toEqual(new Set([tip1, tip2, rootId]));
+      metaSpy.mockRestore();
+    });
+  });
+
+  describe('Given a not-side parent the store lacks, named by two children, When computeClosure marks the not side', () => {
+    it('Then the missing parent is consulted once — the miss is remembered', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const missing = 'e'.repeat(40) as ObjectId;
+      const c1 = await writeCommit(ctx, treeId, [missing], 'child one');
+      const c2 = await writeCommit(ctx, treeId, [missing], 'child two');
+      const notTipId = await writeCommit(ctx, treeId, [c1, c2], 'have');
+      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+
+      // Assert
+      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
+      metaSpy.mockRestore();
+    });
+  });
+
+  describe('Given a not-side parent the store lacks, named again by a commit that pops after the miss, When computeClosure marks the not side', () => {
+    it('Then the parent is consulted once — the remembered miss stops the second enqueue', async () => {
+      // Arrange — the frontier is FIFO: tip → [c1, c2]; c1 → [missing]; c2 → [d];
+      // d → [missing]. It pops c1, c2, missing, d in that order, so d names the
+      // parent after its miss was recorded and after it left the pending set —
+      // only the remembered miss can stop the second consultation.
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const missing = 'e'.repeat(40) as ObjectId;
+      const c1 = await writeCommit(ctx, treeId, [missing], 'child one');
+      const d = await writeCommit(ctx, treeId, [missing], 'grandchild');
+      const c2 = await writeCommit(ctx, treeId, [d], 'child two');
+      const notTipId = await writeCommit(ctx, treeId, [c1, c2], 'have');
+      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+
+      // Assert
+      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
+      metaSpy.mockRestore();
+    });
+  });
+
+  describe('Given a not tip naming an already-marked parent beside exactly the bound of fresh parents', () => {
+    describe('When computeClosure marks the not side', () => {
+      it('Then the marked parent is not queued again, so the walk stays within the bound and completes', async () => {
+        // Arrange — M is marked when A pops; if A's reference to M were queued
+        // regardless, the pending count would reach the bound one push early
+        // and the walk would refuse instead of completing.
+        const ctx = await buildSeededContext();
+        const treeId = await haveTree(ctx);
+        const m = await writeCommit(ctx, treeId, [], 'marked first');
+        const fresh = Array.from(
+          { length: MAX_WALK_QUEUE_SIZE },
+          (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+        );
+        const a = await writeCommit(ctx, treeId, [m, ...fresh], 'octopus');
+        const notTipId = await writeCommit(ctx, treeId, [m, a], 'have');
+        const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wantId],
+          not: [notTipId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects.map((o) => o.id)).toContain(wantId);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a classified refusal', make: () => invalidWalkInput('boom') },
+    { label: 'an unclassified failure', make: () => new Error('boom') },
+  ])(
+    'Given a not-side tree read that fails with $label, When computeClosure marks the not side',
+    ({ make }) => {
+      it('Then computeClosure rethrows that very error instead of treating the tree as missing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await haveTree(ctx);
+        const notTipId = await writeCommit(ctx, treeId, [], 'have');
+        const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+        const thrown = make();
+        const original = readObjectModule.readObject;
+        const readSpy = vi
+          .spyOn(readObjectModule, 'readObject')
+          .mockImplementation(async (c, id) => {
+            if (id === treeId) throw thrown;
+            return original(c, id);
+          });
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(thrown);
+        readSpy.mockRestore();
+      });
+    },
+  );
+
+  describe.each([
+    { label: 'a classified refusal', make: () => invalidWalkInput('boom') },
+    { label: 'an unclassified failure', make: () => new Error('boom') },
+  ])(
+    'Given a not-side ancestor read that fails with $label, When computeClosure marks the not side',
+    ({ make }) => {
+      it('Then computeClosure rethrows that very error instead of skipping the ancestor', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await haveTree(ctx);
+        const rootId = await writeCommit(ctx, treeId, [], 'root');
+        const notTipId = await writeCommit(ctx, treeId, [rootId], 'have');
+        const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+        const thrown = make();
+        const original = readCommitMetaModule.readCommitMeta;
+        const metaSpy = vi
+          .spyOn(readCommitMetaModule, 'readCommitMeta')
+          .mockImplementation(async (c, id) => {
+            if (id === rootId) throw thrown;
+            return original(c, id);
+          });
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(thrown);
+        metaSpy.mockRestore();
+      });
+    },
+  );
+
+  describe('Given a commit not tip that is a boundary of the want, When computeClosure runs commits-only vs objects', () => {
+    it('Then no tree is read commits-only, but the boundary tree is read under objects', async () => {
+      // Arrange — the not tip is the want's parent, so under objects its tree
+      // is an edge parent that markBoundaryTrees marks; commits-only reads no
+      // tree at all.
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const notTipId = await writeCommit(ctx, treeId, [], 'have');
+      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+      const readSpy = vi.spyOn(readObjectModule, 'readObject');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: false });
+      const commitsOnlyReads = consulted(readSpy);
+      readSpy.mockClear();
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+      const objectsReads = consulted(readSpy);
+
+      // Assert — the objects closure is the control that proves the read is observable
+      expect(commitsOnlyReads).not.toContain(treeId);
+      expect(objectsReads).toContain(treeId);
+      readSpy.mockRestore();
+    });
+  });
+
+  describe('Given a want and an unrelated commit not tip that share a blob, When computeClosure emits objects', () => {
+    it("Then the shared blob is still emitted — a non-boundary not tip's own tree is left unmarked", async () => {
+      // Arrange — W and T have no common history; both trees name the same blob.
+      // git's `rev-list --objects W ^T` emits the shared blob because T's tree is
+      // never an edge parent of the interesting walk, so it is never marked
+      // (session-verified against git 2.55.0: 4 objects, the shared blob among
+      // them).
+      const ctx = await buildSeededContext();
+      const shared = await writeBlob(ctx, 'shared');
+      const wOnly = await writeBlob(ctx, 'w-only');
+      const treeW = await writeTree(ctx, [
+        treeEntry('100644' as FileMode, 'shared.txt', shared),
+        treeEntry('100644' as FileMode, 'w.txt', wOnly),
+      ]);
+      const treeT = await writeTree(ctx, [treeEntry('100644' as FileMode, 'shared.txt', shared)]);
+      const wantId = await writeCommit(ctx, treeW, [], 'W');
+      const notTipId = await writeCommit(ctx, treeT, [], 'T');
+      const sut = computeClosure;
+
+      // Act
+      const result = await sut(ctx, {
+        tier: 'walk',
+        wants: [wantId],
+        not: [notTipId],
+        objects: true,
+      });
+      const ids = new Set(result.objects.map((entry) => entry.id));
+
+      // Assert — the not tip's own tree/blob are excluded, but the blob the want
+      // ALSO reaches is emitted
+      expect(ids).toContain(shared);
+      expect(ids).toContain(wOnly);
+      expect(ids).toContain(treeW);
+      expect(ids).not.toContain(treeT);
+      expect(ids).not.toContain(notTipId);
+    });
+  });
+
+  describe('Given two not tips whose ancestries name the same absent parent, When computeClosure marks the not side', () => {
+    it('Then that parent is consulted once across both tips — the miss memo is shared', async () => {
+      // Arrange — tipA and tipB each name the same missing parent; the shared
+      // memo must stop the second tip from re-reading it.
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const missing = 'e'.repeat(40) as ObjectId;
+      const tipA = await writeCommit(ctx, treeId, [missing], 'have A');
+      const tipB = await writeCommit(ctx, treeId, [missing], 'have B');
+      const wantId = await writeCommit(ctx, treeId, [tipA, tipB], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [tipA, tipB], objects: true });
+
+      // Assert
+      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
+      metaSpy.mockRestore();
     });
   });
 });

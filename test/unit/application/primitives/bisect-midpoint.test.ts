@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { bisectMidpoint } from '../../../../src/application/primitives/bisect-midpoint.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { ObjectId } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import type { Commit, ObjectId } from '../../../../src/domain/objects/index.js';
+import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
 const AUTHOR = {
   name: 'A',
@@ -48,6 +49,28 @@ const buildLinear = async (
   }
   return ids;
 };
+
+const asCommits = async (
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+  ids: ReadonlyArray<ObjectId>,
+): Promise<Commit[]> => {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error('expected a commit');
+    commits.push(object);
+  }
+  return commits;
+};
+
+const OBJECT_STORE_READ = /\/objects\/(pack\/|[0-9a-f]{2}\/)/;
+
+const objectStoreReadPaths = (
+  calls: ReadonlyArray<{ readonly method: string; readonly path: string }>,
+): ReadonlyArray<string> =>
+  calls
+    .filter((call) => call.method === 'read' && OBJECT_STORE_READ.test(call.path))
+    .map((c) => c.path);
 
 describe('bisectMidpoint', () => {
   describe('Given a linear 10-commit chain, good=c[0], bad=c[9]', () => {
@@ -339,6 +362,35 @@ describe('bisectMidpoint', () => {
         // Assert
         expect(result).not.toBeUndefined();
         expect(result?.candidateCount).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a commit-graph covering the whole candidate set', () => {
+    describe('When bisectMidpoint runs', () => {
+      it('Then the result matches the graph-absent run with zero object-store reads', async () => {
+        // Arrange — a deterministic (content-addressed) chain built twice: once
+        // left graph-absent for the baseline, once with a commit-graph written
+        // before bisectMidpoint ever touches that Context, so the per-Context
+        // graph memo is warmed from the real file rather than a stale "absent".
+        const plain = await buildSeededContext();
+        const plainCommits = await buildLinear(plain, 10);
+        const baseline = await bisectMidpoint(plain, [plainCommits[0]!], plainCommits[9]!);
+
+        const base = await buildSeededContext();
+        const commits = await buildLinear(base, 10);
+        await writeCommitGraph(base, [await asCommits(base, commits)]);
+        // The graph-model read above populates the delta cache for every commit;
+        // drop it so the assertion below observes a genuine object-store miss.
+        base.deltaCache.clear();
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        const result = await bisectMidpoint(ctx, [commits[0]!], commits[9]!);
+
+        // Assert
+        expect(result).toEqual(baseline);
+        expect(objectStoreReadPaths(calls())).toEqual([]);
       });
     });
   });

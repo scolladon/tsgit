@@ -8,18 +8,20 @@
 repo.primitives.walkCommits(options?: WalkCommitsOptions): AsyncIterable<Commit>;
 
 interface WalkCommitsOptions {
-  readonly from?: RefName | ObjectId;       // default 'HEAD'
-  readonly excluding?: ReadonlyArray<RefName | ObjectId>;  // stops
-  readonly firstParent?: boolean;
-  readonly shallow?: ReadonlySet<ObjectId>; // yielded, but parents not walked
+  readonly from: ReadonlyArray<ObjectId>;     // seed commits (≥ 1)
+  readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>; // excluded boundaries
+  readonly order?: 'topo' | 'first-parent';   // default 'topo'
+  readonly ignoreMissing?: boolean;           // skip a missing object instead of throwing
+  readonly verifyHash?: boolean;              // default false (ADR-718)
+  readonly shallow?: ReadonlySet<ObjectId>;   // yielded, but parents not walked
 }
 ```
 
 ## Behaviour
 
 - DFS over reachable commits.
-- `excluding` cuts subtrees rooted at the given oids.
-- `firstParent: true` mirrors [`log`](../commands/log.md)'s semantics.
+- `until` excludes a commit before it is read — neither yielded nor expanded.
+- `order: 'first-parent'` mirrors [`log`](../commands/log.md)'s semantics; the default `'topo'` walks any parent order.
 - Back-pressure: only advances when the consumer pulls.
 - When `.git/objects/info/commit-graph` is present (single-file or chain/split form), parents and dates are served from it, falling back to object reads for any commit it doesn't cover. Results are identical with or without a graph; a corrupt or stale graph is treated as absent, and the presence of a `.git/shallow` file (even 0-byte) disables graph consultation entirely — a stale graph can never re-introduce a masked parent.
 - `shallow` omitted ⇒ the repository's `.git/shallow` set is loaded automatically, so the walk stops at a fetched shallow boundary without the caller doing anything; supplied (including an explicit empty `Set`) ⇒ the caller's set governs which commits are masked (the commit-graph presence gate above still probes `.git/shallow` once per `Context`, whatever set is passed). A boundary commit is still yielded — only its parents are skipped, and the yielded commit's own `data.parents` reports empty, matching the boundary's true git-faithful shape.

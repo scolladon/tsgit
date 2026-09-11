@@ -99,6 +99,6 @@ for (const r of result.pushedRefs) {
 
 ## See also
 
-- Primitives: [`enumeratePushObjects`](../primitives/internals.md#enumeratepushobjects), [`buildPack`](../primitives/internals.md#buildpack)
+- Primitives: [`computeClosure`](../primitives/internals.md#computeclosure), [`buildPack`](../primitives/internals.md#buildpack)
 - Related commands: [`fetch`](fetch.md), [`branch`](branch.md), [`tag`](tag.md)
 - ADRs: [013](../../adr/013-push-pack-encoding.md), [014](../../adr/014-push-refspec-scope.md), [015](../../adr/015-push-force-with-lease.md), [016](../../adr/016-push-atomic-tx.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md), [442](../../adr/442-reuse-command-runner-for-signing.md), [444](../../adr/444-signed-push-in-scope-v1.md), [447](../../adr/447-off-node-signing-hard-refuse.md), [456](../../adr/456-branch-remote-resolution-primitives.md), [458](../../adr/458-push-remote-and-push-default-canonical-git.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)

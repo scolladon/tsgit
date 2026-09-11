@@ -17,8 +17,9 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { bisectMidpoint } from '../../src/application/primitives/bisect-midpoint.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitAsync, runGitEnv } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -350,6 +351,75 @@ describe.skipIf(!GIT_AVAILABLE)('bisectMidpoint interop', () => {
 
       // Assert
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Given a linear 10-commit history under a git-written commit-graph', () => {
+    let dir = '';
+    const commits: string[] = [];
+
+    beforeAll(async () => {
+      dir = await makeRepo('linear-graph-git');
+      for (let i = 0; i < 10; i += 1) commits.push(addCommit(dir, `c${i}`, 1_700_000_000 + i));
+      await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable']);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When bisectMidpoint runs against a fresh Context opened after the write', () => {
+      it('Then structured counts still match git rev-list --bisect-vars', async () => {
+        // Arrange — a Context never used before the graph write, so the
+        // per-Context graph memo is warmed from the real file.
+        const good = commits[0]!;
+        const bad = commits[9]!;
+        const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
+        const expected = parseBisectVars(gitOut);
+        const freshCtx = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await bisectMidpoint(freshCtx, [good as never], bad as never);
+
+        // Assert
+        expect(result?.nextCommit).toBe(expected.rev);
+        expect(result?.candidateCount).toBe(expected.all);
+        expect(result?.remainingIfGood).toBe(expected.good);
+        expect(result?.remainingIfBad).toBe(expected.bad);
+        expect(result?.remainingSteps).toBe(expected.steps);
+      });
+    });
+  });
+
+  describe('Given a linear 10-commit history whose commit-graph is written by tsgit maintenance', () => {
+    let dir = '';
+    const commits: string[] = [];
+
+    beforeAll(async () => {
+      dir = await makeRepo('linear-graph-maintenance');
+      for (let i = 0; i < 10; i += 1) commits.push(addCommit(dir, `c${i}`, 1_700_000_000 + i));
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When bisectMidpoint runs after repo.maintenance writes the commit-graph', () => {
+      it('Then structured counts still match git rev-list --bisect-vars', async () => {
+        // Arrange
+        const good = commits[0]!;
+        const bad = commits[9]!;
+        const gitOut = git(dir, 'rev-list', '--bisect-vars', bad, `^${good}`);
+        const expected = parseBisectVars(gitOut);
+        const repo = await openRepository({ cwd: dir });
+        await repo.maintenance({ tasks: ['commit-graph'] });
+
+        // Act
+        const result = await repo.primitives.bisectMidpoint([good as never], bad as never);
+
+        // Assert
+        expect(result?.nextCommit).toBe(expected.rev);
+        expect(result?.candidateCount).toBe(expected.all);
+        expect(result?.remainingIfGood).toBe(expected.good);
+        expect(result?.remainingIfBad).toBe(expected.bad);
+        expect(result?.remainingSteps).toBe(expected.steps);
+      });
     });
   });
 });

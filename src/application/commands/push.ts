@@ -50,8 +50,10 @@ import {
   findInvalidPushDefault,
   readConfig,
 } from '../primitives/config-read.js';
-import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { hasObject } from '../primitives/has-object.js';
+import { computeClosure } from '../primitives/internal/closure-engine.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -345,9 +347,9 @@ const sendUpdates = async (
   const intent = resolveSigningIntent(mode, nonce, remoteName);
   const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
   // Zero-oid-advertised refs (ref-creation sentinels) are kept verbatim in
-  // `haves`: they only ever land in `walkCommits`'s `until` set, which does
-  // pure membership checks and can never match a real commit oid — so an
-  // explicit `id !== zeroOid(ctx.hashConfig)` filter would be a provable no-op.
+  // `haves`: `hasObject(ctx, zeroOid)` is always false (no pack hit, no loose
+  // file), so the sentinel drops out of `collectObjects`'s negatives on its
+  // own — one absent negative among others, not a special case.
   const haves = adv.refs.map((r) => r.id);
   const oids = await collectObjects(ctx, wants, haves);
   const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
@@ -456,11 +458,12 @@ const collectObjects = async (
   haves: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<ObjectId>> => {
   if (wants.length === 0) return [];
-  const oids: ObjectId[] = [];
-  for await (const id of enumeratePushObjects(ctx, { wants, haves })) {
-    oids.push(id);
-  }
-  return oids;
+  const distinctHaves = [...new Set(haves)];
+  // git's send-pack feed_object: a negative we do not hold locally is never fed.
+  const present = await boundedMapFor(ctx, 'ioBound', distinctHaves, (id) => hasObject(ctx, id));
+  const not = distinctHaves.filter((_, index) => present[index] === true);
+  const closure = await computeClosure(ctx, { wants, not, objects: true, tier: 'bitmap' });
+  return closure.objects.map((object) => object.id);
 };
 
 const toRefUpdate = (m: ResolvedRefspec): RefUpdate => ({

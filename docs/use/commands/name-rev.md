@@ -49,8 +49,12 @@ interface NameRevResult {
   peels an annotated tag to its commit.
 - **Unnameable:** a commit reachable from no qualifying ref returns
   `ref: undefined` (git prints `undefined`) — `name-rev` never throws.
-- **Traversal cost:** the walk prunes commits older than the target's committer
-  date minus one day (git's date cutoff), so naming a commit reads O(nearby
+- **Traversal cost:** the walk prunes commits that can never improve a name.
+  When the target carries a commit-graph generation, that generation test
+  **replaces** the date test — a commit whose own generation is lower than the
+  target's is pruned outright; only when the target has no commit-graph
+  generation does the walk fall back to git's date cutoff (older than the
+  target's committer date minus one day). So naming a commit reads O(nearby
   history), not every ref's full ancestry. This is a pure traversal
   optimisation: the returned data is identical to a full walk.
 - **Caller renders the string** — the full `ref`, `tagDeref`, and `steps` are

@@ -47,7 +47,7 @@ interface RevListResult {
 
 ## Behaviour
 
-- **The walk, not the exact set difference.** `not` tips are marked uninteresting along with their own trees, then the interesting commits are walked and every unmarked object reached is emitted. An object reachable only through an *ancestor* of a `not` tip — not through that tip's own tree — is never marked, so it is emitted too. This over-report is the walk's own behaviour, not a bug: a peer that already has a `not` tip already has everything reachable from it, ancestors included.
+- **The walk, not the exact set difference.** A `not` tip's commit ancestry is marked uninteresting; a tip's own tree is marked only when the interesting walk reaches it as an edge parent (git's `mark_edges_uninteresting`), so an object reachable through a non-boundary `not` tip's tree is still emitted, exactly as git does.
 - **Wants are peeled first.** An annotated tag in `wants` is unwrapped; the tag oid(s) join the result and the peeled commit seeds the walk. A want that resolves directly to a tree or blob has no parents — it contributes itself plus (for a tree) its own subtree, and nothing else.
 - **Empty `wants`** returns an empty result, never an error and never "everything". `wants` fully covered by `not` also returns empty.
 - **An unresolvable revision refuses**, on either side — never a silent degradation.
@@ -55,7 +55,7 @@ interface RevListResult {
 - **`all`** resolves every ref's tip the same way an explicit want is resolved, then unions it with `wants` (deduplicated). A ref that does not peel to an object — a symbolic `HEAD` on an unborn branch is the live case — is skipped rather than refusing the whole call.
 - **`maxCount`** bounds the commit walk, not the object stream: with `objects`, it is still N commits and everything *they* reach, not N objects overall. `maxCount: 0` yields an empty result rather than an unbounded one.
 - **`firstParent`** follows only the first parent at each step, so a merge commit's second-parent branch is never walked.
-- **`noWalk`** emits the resolved tips themselves and stops there — no parent is ever enqueued. Under `objects`, each tip's own tree still counts.
+- **`noWalk`** emits the resolved tips themselves and stops there — no parent is ever enqueued. It has no effect once a `not` tip is present (a range): git ignores `--no-walk` there and runs the ordinary bounded walk, and so does this. Under `objects` with no `not` side, each tip's own tree still counts.
 
 ## Tiers
 

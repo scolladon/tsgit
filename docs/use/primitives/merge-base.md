@@ -1,8 +1,12 @@
 # `mergeBase`
 
-Best common ancestor(s) of one or more commits. Always returns an array, sorted by oid; empty when the histories are disjoint.
+Best common ancestor(s) of one or more commits. Always returns an array, empty when the histories are disjoint; `{ all: true }` sorts the result by oid.
 
-By default it returns at most one base (the lexicographically smallest), mirroring `git merge-base`. Two flags extend it:
+By default it returns at most one base — the single result git's own walk pops
+first: the newest-dated common base when the repository has no commit-graph
+(or its chain serves no corrected commit dates), and the highest-generation
+one wherever a graph serves corrected commit dates along the whole chain. Two
+flags extend it:
 
 - `{ all: true }` — every best common ancestor (`git merge-base --all`). In criss-cross histories there can be more than one.
 - `{ octopus: true }` — the n-way octopus base (`git merge-base --octopus`), folded pairwise across all commits. `all` still controls truncation.

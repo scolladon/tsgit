@@ -1,6 +1,7 @@
 import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { asIdSet } from './internal/as-id-set.js';
 import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
 import { limitFor } from './internal/concurrency.js';
 import { readCommit } from './internal/read-commit.js';
@@ -16,13 +17,19 @@ import {
 } from './validators.js';
 
 interface WalkState {
-  // queue is mutated in-place via push/shift; declared without `readonly` to
-  // signal that intent honestly. Sets are also mutated, but Set's API does not
-  // require dropping the `readonly` qualifier on the reference.
+  // queue only ever grows (drained via `head`, never `shift`), and `head` is
+  // advanced in-place; both are declared without `readonly` to signal that
+  // intent honestly. Sets are also mutated, but Set's API does not require
+  // dropping the `readonly` qualifier on the reference.
   queue: ObjectId[];
+  head: number;
+  /** Ids pushed but not yet popped — git's ENQUEUED flag. An id is queued at
+   *  most once at a time, so the array grows with the history's commits, never
+   *  with its parent edges, and the bound below counts distinct pending ids. */
+  readonly queued: Set<ObjectId>;
   readonly visited: Set<string>;
   readonly missing: Set<string>;
-  readonly until: Set<ObjectId>;
+  readonly until: ReadonlySet<ObjectId>;
   readonly shallow: ReadonlySet<ObjectId>;
 }
 
@@ -43,9 +50,11 @@ async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Pro
   const shallow = await resolveShallow(ctx, options.shallow);
   const state: WalkState = {
     queue: [...options.from],
+    head: 0,
+    queued: new Set(options.from),
     visited: new Set<string>(),
     missing: new Set<string>(),
-    until: new Set(options.until ?? []),
+    until: asIdSet(options.until),
     shallow,
   };
   const bound = limitFor(ctx, 'ioBound');
@@ -104,10 +113,11 @@ export async function* walkCommits(
   const session = await createWalkSession(ctx, options);
   const { state, bodies, order } = session;
 
-  while (state.queue.length > 0) {
+  while (state.head < state.queue.length) {
     if (ctx.signal?.aborted) throw operationAborted();
-    // Caller guards `queue.length > 0`, so shift is guaranteed to return a value.
-    const id = state.queue.shift() as ObjectId;
+    const id = state.queue[state.head]!;
+    state.head += 1;
+    state.queued.delete(id);
     if (state.visited.has(id) || state.missing.has(id) || state.until.has(id)) continue;
 
     const { commit, enqueuedFromHeader } = await resolveFrontierEntry(ctx, session, id);
@@ -150,10 +160,12 @@ function enqueueParents(
 function enqueueIds(state: WalkState, ids: ReadonlyArray<ObjectId>, bodies: CommitBodies): void {
   for (const id of ids) {
     if (state.visited.has(id) || state.missing.has(id) || state.until.has(id)) continue;
-    if (state.queue.length >= MAX_WALK_QUEUE_SIZE) {
+    if (state.queued.has(id)) continue;
+    if (state.queued.size >= MAX_WALK_QUEUE_SIZE) {
       throw invalidWalkInput(REASON_WALK_QUEUE_OVERFLOW);
     }
     state.queue.push(id);
+    state.queued.add(id);
     bodies.start(id);
   }
 }

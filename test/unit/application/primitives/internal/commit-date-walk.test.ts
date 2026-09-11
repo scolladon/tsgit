@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import {
   commitDateWalk,
@@ -647,6 +647,84 @@ describe('commitDateWalk — graph-present parent push stays body-await-free (F1
         expect(yielded).toEqual([merge, fresh]);
         expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
       });
+    });
+  });
+});
+
+describe('commitDateWalk — single-parent fast path (no fan-out)', () => {
+  describe('Given a linear history, When walking by date', () => {
+    it('Then no Promise.allSettled fan-out occurs and the yield sequence is unchanged', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await linearChain(ctx, 4);
+      const allSettledSpy = vi.spyOn(Promise, 'allSettled');
+
+      // Act
+      const result = await collectIds(commitDateWalk(ctx, { from: [ids[3]!] }));
+
+      // Assert — newest-first, and every single-parent step skipped the fan-out
+      expect(result).toEqual([...ids].reverse());
+      expect(allSettledSpy).not.toHaveBeenCalled();
+      allSettledSpy.mockRestore();
+    });
+  });
+
+  describe('Given a chain whose only parent is excluded by until, When walking by date', () => {
+    it('Then the walk yields just the child and enqueues nothing further', async () => {
+      // Arrange — parents.length === 0 after the seen/until filter; a `<= 1`
+      // mutant on the zero-check would instead call enqueueCommit with
+      // parents[0] (undefined) and blow up the walk.
+      const ctx = await buildSeededContext();
+      const ids = await linearChain(ctx, 2);
+      const root = ids[0]!;
+      const child = ids[1]!;
+      const sut = commitDateWalk;
+      const walk = sut(ctx, { from: [child], until: [root] });
+
+      // Act
+      const steps: DateWalkStep[] = [];
+      for await (const step of walk) steps.push(step);
+
+      // Assert — nothing beyond the child was ever enqueued
+      expect(steps.map((s) => s.commit.id)).toEqual([child]);
+      expect(steps[0]?.frontierEmpty).toBe(true);
+      expect(steps[0]?.frontier()).toEqual([]);
+    });
+  });
+
+  describe('Given a commit whose single parent object is missing, When walking by date', () => {
+    it('Then the original rejection surfaces unwrapped', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await linearChain(ctx, 2);
+      const root = ids[0]!;
+      const child = ids[1]!;
+      const { computeLooseObjectPath } = await import(
+        '../../../../../src/domain/storage/loose-path.js'
+      );
+      ctx.deltaCache.delete(root);
+      await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(root)}`);
+      const sut = commitDateWalk;
+      const walk = sut(ctx, { from: [child] });
+
+      // Act
+      const yielded: ObjectId[] = [];
+      let caught: unknown;
+      try {
+        for await (const step of walk) yielded.push(step.commit.id);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert — child still yielded; root's rejection rethrows unwrapped
+      expect(yielded).toEqual([child]);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('OBJECT_NOT_FOUND');
+      if (data.code !== 'OBJECT_NOT_FOUND') {
+        expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+      }
+      expect(data.id).toBe(root);
     });
   });
 });

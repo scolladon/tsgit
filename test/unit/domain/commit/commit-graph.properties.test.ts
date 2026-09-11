@@ -26,7 +26,7 @@ function expectedParents(commit: CommitGraphCommitModel): ExpectedParents {
 describe('commit-graph parser properties', () => {
   describe('Given an arbitrary commit-graph layer model', () => {
     describe('When parseCommitGraphLayer(buildCommitGraphBytes(model)) decodes the built bytes', () => {
-      it('Then it recovers the header fields, oid positions, parents, generation, and dates', () => {
+      it('Then it recovers the header fields, oid positions, parents, dates, and the generation each option selects', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbCommitGraphLayerModel(), (model) => {
@@ -40,7 +40,7 @@ describe('commit-graph parser properties', () => {
             model.commits.forEach((commit, i) => {
               expect(positionOf(layer, commit.oid)).toBe(i);
 
-              const result = commitDataAt(layer, i);
+              const result = commitDataAt(layer, i, { correctedCommitDates: true });
               const expected = expectedParents(commit);
               const expectedGeneration = model.includeGenerationData
                 ? commit.committerDate + commit.generationV2Offset
@@ -52,6 +52,10 @@ describe('commit-graph parser properties', () => {
               expect(result.parent2Pos).toBe(expected.parent2Pos);
               expect(result.additionalParentPositions).toEqual(expected.additionalParentPositions);
               expect(result.generation).toBe(expectedGeneration);
+              // A caller that asks for topological levels gets the stored V1
+              // value even from a layer that carries a GDA2 chunk.
+              const topoLevels = commitDataAt(layer, i, { correctedCommitDates: false });
+              expect(topoLevels.generation).toBe(commit.generationV1);
             });
           }),
           { numRuns: 200 },

@@ -14,17 +14,27 @@ import { rm } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { computeClosure } from '../../src/application/primitives/internal/closure-engine.js';
+import {
+  type ClosureTier,
+  computeClosure,
+} from '../../src/application/primitives/internal/closure-engine.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import type { Repository } from '../../src/index.node.js';
 import { openRepository } from '../../src/index.node.js';
+import type { Context } from '../../src/ports/context.js';
 import { type BitmapClosureFixture, setupBitmapClosureFixture } from './fixtures.js';
 import type { BenchComparison } from './support/bench-dsl.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { MEDIUM_FIXTURE, MEDIUM_FIXTURE_WITH_COMMIT_GRAPH } from './support/fixture-generator.js';
 import { removeSync } from './support/fixture-scratch.js';
+import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
 
 /** Comfortably at-or-above the closure design's own 400-commit pinning scale. */
 const CLOSURE_FIXTURE_COMMITS = 500;
+
+/** The one `Context` construction every direct engine call below shares. */
+const openBenchContext = (fixture: BitmapClosureFixture): Context =>
+  createNodeContext({ workDir: fixture.cwd, hooks: false, command: false, ssh: false });
 
 /**
  * Confirms, from `computeClosure`'s own tier report — the one observable
@@ -38,7 +48,7 @@ const CLOSURE_FIXTURE_COMMITS = 500;
  * `revList`'s narrower default too.
  */
 async function assertClosureAnsweredByBitmap(fixture: BitmapClosureFixture): Promise<void> {
-  const ctx = createNodeContext({ workDir: fixture.cwd, hooks: false, command: false, ssh: false });
+  const ctx = openBenchContext(fixture);
   const result = await computeClosure(ctx, {
     wants: [fixture.headCommitId as ObjectId],
     not: [],
@@ -69,9 +79,31 @@ const closureComparison =
     };
   };
 
+/**
+ * The two engine tiers priced directly, on the SAME fixture and the SAME
+ * built `Context` (built once here, never per iteration) — isolates the
+ * tier's own cost from either command's surrounding work.
+ */
+const directTierComparison = (tier: ClosureTier) => async (): Promise<BenchComparison> => {
+  const fixture = await setupBitmapClosureFixture(CLOSURE_FIXTURE_COMMITS);
+  await assertClosureAnsweredByBitmap(fixture);
+
+  const ctx = openBenchContext(fixture);
+  const wants = [fixture.headCommitId as ObjectId];
+
+  return {
+    teardown: (): void => {
+      removeSync(fixture.cwd);
+    },
+    sut: async (): Promise<void> => {
+      await computeClosure(ctx, { wants, not: [], objects: true, tier });
+    },
+  };
+};
+
 benchScenario(
   `Given a ${CLOSURE_FIXTURE_COMMITS}-commit repository with a healthy bitmap`,
-  'When revList() computes the closure at its own default (a walk), Then measure tsgit',
+  'When revList() walks the commits-only closure at its own default tier, Then measure tsgit',
   closureComparison((repo, headCommitId) => async () => {
     await repo.revList({ wants: [headCommitId] });
   }),
@@ -79,7 +111,7 @@ benchScenario(
 
 benchScenario(
   `Given a ${CLOSURE_FIXTURE_COMMITS}-commit repository with a healthy bitmap`,
-  'When packObjects() computes the closure at its own default (a usable bitmap), Then measure tsgit',
+  'When packObjects() answers the objects closure from its default bitmap tier, deltifies and writes the pack, Then measure tsgit',
   closureComparison((repo, headCommitId, cwd) => {
     // packObjects writes a content-addressed `.pack`/`.idx` pair and refuses
     // to overwrite an existing one — same wants, same tier, same bytes, same
@@ -94,3 +126,43 @@ benchScenario(
     };
   }),
 );
+
+benchScenario(
+  `Given a ${CLOSURE_FIXTURE_COMMITS}-commit repository with a healthy bitmap`,
+  "When computeClosure({ objects: true, tier: 'walk' }) walks the full objects closure, Then measure tsgit",
+  directTierComparison('walk'),
+);
+
+benchScenario(
+  `Given a ${CLOSURE_FIXTURE_COMMITS}-commit repository with a healthy bitmap`,
+  "When computeClosure({ objects: true, tier: 'bitmap' }) answers the full objects closure from the bitmap, Then measure tsgit",
+  directTierComparison('bitmap'),
+);
+
+// ---------------------------------------------------------------------------
+// The not side: the same one-commit exclusion on the plain medium fixture and
+// on its commit-graph twin, so the marker's graph-first ancestry walk has a
+// row that prices it (every other closure row here passes `not: []`).
+// ---------------------------------------------------------------------------
+
+const notSideScaled = [
+  await resolveScaledContext(MEDIUM_FIXTURE),
+  await resolveScaledContext(MEDIUM_FIXTURE_WITH_COMMIT_GRAPH),
+];
+
+for (const scaled of notSideScaled) {
+  scaledScenario(
+    scaled,
+    'When revList() excludes HEAD~1 from HEAD, Then measure tsgit',
+    async (fixture) => {
+      const repo = await openRepository({ cwd: fixture.cwd });
+      const tips = await repo.revList({ wants: ['HEAD'], maxCount: 2 });
+      const head = tips.entries[0]!.id;
+      const parent = tips.entries[1]!.id;
+      const sut = async (): Promise<void> => {
+        await repo.revList({ wants: [head], not: [parent] });
+      };
+      return { teardown: () => repo.dispose(), sut };
+    },
+  );
+}

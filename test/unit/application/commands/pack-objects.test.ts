@@ -99,8 +99,8 @@ const rawContentOf = async (
  * — packed into ONE synthetic pack with a single hand-written bitmap entry
  * covering `C2`'s whole 8-object closure. `C1` carries no entry of its own;
  * `resolveBitmapClosure`'s fallback walk still computes its closure exactly
- * (unlike the walk TIER, which only marks a `not` tip's own tree plus one
- * hop of boundary trees) — so `wants: [C2], not: [C1]` is a fixture where
+ * (unlike the walk TIER, which marks only the trees of edge
+ * parents the interesting walk reaches) — so `wants: [C2], not: [C1]` is a fixture where
  * the two tiers legitimately disagree on count.
  */
 const buildHaveBearingBitmapFixture = async (): Promise<HaveBearingBitmapFixture> => {

@@ -13,9 +13,10 @@ import { foldSubject } from '../../domain/objects/commit-message.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import {
-  type CommitPatchInput,
   type RangeDiffEntry,
+  type RenderedPatch,
   rangeDiffEntries,
+  renderRangePatch,
 } from '../../domain/range-diff/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
@@ -63,7 +64,10 @@ const readTreeOf = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
   return obj.data.tree;
 };
 
-const hydrate = async (ctx: Context, commit: Commit): Promise<CommitPatchInput> => {
+/** Reads, diffs and renders one commit's patch text immediately — the
+ *  `PatchFile` `oldContent`/`newContent` this hydrates go out of scope here,
+ *  never surviving past this call as part of the series. */
+const hydrate = async (ctx: Context, commit: Commit): Promise<RenderedPatch> => {
   const parentId = commit.data.parents[0];
   const parentTree = parentId !== undefined ? await readTreeOf(ctx, parentId) : undefined;
   const diff = await diffTrees(ctx, parentTree, commit.data.tree, {
@@ -71,28 +75,28 @@ const hydrate = async (ctx: Context, commit: Commit): Promise<CommitPatchInput> 
     detectRenames: true,
   });
   const files = await materialisePatchFiles(ctx, diff.changes);
-  return {
+  return renderRangePatch({
     id: commit.id,
     authorName: commit.data.author.name,
     authorEmail: commit.data.author.email,
     subject: foldSubject(commit.data.message),
     message: commit.data.message,
     files,
-  };
+  });
 };
 
 /** Hydrate the series with bounded concurrency, preserving series order. */
 const hydrateSeries = (
   ctx: Context,
   commits: ReadonlyArray<Commit>,
-): Promise<ReadonlyArray<CommitPatchInput>> =>
+): Promise<ReadonlyArray<RenderedPatch>> =>
   boundedMapFor(ctx, 'ioBound', commits, (commit) => hydrate(ctx, commit));
 
 /** Walk `base..tip` (date order), drop merges, reverse to a patch series. */
 const readSeries = async (
   ctx: Context,
   range: RangeDiffRange,
-): Promise<ReadonlyArray<CommitPatchInput>> => {
+): Promise<ReadonlyArray<RenderedPatch>> => {
   const base = await resolveCommit(ctx, range.base);
   const tip = await resolveCommit(ctx, range.tip);
   const commits: Commit[] = [];

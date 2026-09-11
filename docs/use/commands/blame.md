@@ -85,8 +85,9 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   pure `git mv` **and** a rename-with-edit in one commit are both followed, matching
   `git blame`'s default rename following.
 - **`range` (`-L`):** restricts the reported lines to a 1-based inclusive window;
+  an inverted range is swapped rather than refused (git's `-L` semantics), and
   `end` past the last line is clamped. A start below 1, a start past the last
-  line, an inverted range, or a non-integer bound refuses (`INVALID_OPTION`).
+  line, or a non-integer bound refuses (`INVALID_OPTION`).
 - **Refusals:** a path absent from `rev` refuses (`PATH_NOT_IN_TREE`). In
   `worktree` mode against a non-bare repository with no work tree, `blame`
   refuses `WORK_TREE_REQUIRED` before any path check. Otherwise: an untracked

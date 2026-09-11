@@ -25,9 +25,10 @@ import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-ru
 import { push } from '../../../../src/application/commands/push.js';
 import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as closureMod from '../../../../src/application/primitives/internal/closure-engine.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { computeLooseObjectPath, TsgitError } from '../../../../src/domain/index.js';
 import type {
   Blob,
   Commit,
@@ -188,6 +189,55 @@ const seedCommit = async (
       author,
       committer: author,
       message: content,
+      extraHeaders: [],
+    },
+  };
+  const id = await writeObject(ctx, commit);
+  return { id, tree: treeId };
+};
+
+const writeBlob = async (
+  ctx: ReturnType<typeof createMemoryContext>,
+  content: string,
+): Promise<ObjectId> => {
+  const blob: Blob = { type: 'blob', content: ENCODER.encode(content), id: '' as ObjectId };
+  return writeObject(ctx, blob);
+};
+
+interface TreeFile {
+  readonly name: string;
+  readonly blobId: ObjectId;
+}
+
+/**
+ * Like `seedCommit`, but the tree carries caller-supplied entries — lets a
+ * test reuse the same blob id across generations to model an unchanged file.
+ */
+const seedTreeCommit = async (
+  ctx: ReturnType<typeof createMemoryContext>,
+  parents: ReadonlyArray<ObjectId>,
+  files: ReadonlyArray<TreeFile>,
+  message: string,
+): Promise<BuiltCommit> => {
+  const treeId = await writeTree(
+    ctx,
+    files.map((f) => treeEntry('100644' as FileMode, f.name, f.blobId)),
+  );
+  const author = {
+    name: 'A',
+    email: 'a@a',
+    timestamp: 0,
+    timezoneOffset: '+0000',
+  };
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: treeId,
+      parents,
+      author,
+      committer: author,
+      message,
       extraHeaders: [],
     },
   };
@@ -1639,6 +1689,7 @@ describe('push — matching mode', () => {
             ],
           },
         });
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
 
         // Act
         const result = await push({ ...ctx, transport });
@@ -1648,6 +1699,16 @@ describe('push — matching mode', () => {
         const names = result.pushedRefs.map((r) => r.name).sort();
         expect(names).toEqual(['refs/heads/feature', 'refs/heads/main']);
         for (const pushed of result.pushedRefs) expect(pushed.status).toBe('ok');
+
+        // Assert — a single collectObjects call over the two disjoint tips
+        // produced the union of both closures: both tips' own objects, and
+        // neither parent (each is a real, advertised negative).
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        const capturedIds = buildPackSpy.mock.calls[0]![1].objects.map((o) => o.id);
+        expect(capturedIds).toEqual(expect.arrayContaining([mainTip.id, featTip.id]));
+        expect(capturedIds).not.toEqual(expect.arrayContaining([mainParent.id, featParent.id]));
+        expect(capturedIds).toHaveLength(6);
+        buildPackSpy.mockRestore();
       });
     });
   });
@@ -1683,6 +1744,160 @@ describe('push — pack contents', () => {
         const body = requestBodies[0];
         expect(body).toBeDefined();
         expect(packObjectCount(body as Uint8Array)).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a have whose subtree is unchanged across two generations of wants', () => {
+    describe('When push runs', () => {
+      it('Then the shared blob is not resent', async () => {
+        // Arrange — g0 (have) and tip share file B's blob through g1; only a
+        // real per-tree closure subtraction (not the old commit-boundary
+        // `until`, which never inspects trees) excludes it.
+        const ctx = createMemoryContext();
+        const blobB = await writeBlob(ctx, 'unchanged-b');
+        const blobA0 = await writeBlob(ctx, 'a0');
+        const g0 = await seedTreeCommit(
+          ctx,
+          [],
+          [
+            { name: 'A', blobId: blobA0 },
+            { name: 'B', blobId: blobB },
+          ],
+          'g0',
+        );
+        const blobA1 = await writeBlob(ctx, 'a1');
+        const g1 = await seedTreeCommit(
+          ctx,
+          [g0.id],
+          [
+            { name: 'A', blobId: blobA1 },
+            { name: 'B', blobId: blobB },
+          ],
+          'g1',
+        );
+        const blobA2 = await writeBlob(ctx, 'a2');
+        const tip = await seedTreeCommit(
+          ctx,
+          [g1.id],
+          [
+            { name: 'A', blobId: blobA2 },
+            { name: 'B', blobId: blobB },
+          ],
+          'tip',
+        );
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: g0.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert
+        const capturedIds = buildPackSpy.mock.calls[0]![1].objects.map((o) => o.id);
+        expect(capturedIds).not.toContain(blobB);
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given an advertised ref oid the local repository does not hold, alongside a real one', () => {
+    describe('When push runs', () => {
+      it('Then the absent oid is dropped as a negative rather than refusing the push', async () => {
+        // Arrange — kills a naive `not: haves` (no local presence filter):
+        // that shape would hand the absent oid straight to the closure
+        // engine's not-side walk, which reads it and throws OBJECT_NOT_FOUND.
+        const ctx = createMemoryContext();
+        const base = await seedCommit(ctx, [], 'base');
+        const tip = await seedCommit(ctx, [base.id], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const absentOid = 'f'.repeat(40);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: base.id },
+            { name: 'refs/heads/other', id: absentOid },
+          ],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const closureSpy = vi.spyOn(closureMod, 'computeClosure');
+
+        // Act
+        const result = await push({ ...ctx, transport });
+
+        // Assert
+        expect(result.pushedRefs[0]).toMatchObject({ name: 'refs/heads/main', status: 'ok' });
+        expect(closureSpy.mock.calls[0]![1].not).toEqual([base.id]);
+        closureSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given only the zero-oid ref-creation sentinel is advertised', () => {
+    describe('When push runs', () => {
+      it('Then the sentinel is dropped as a negative and the full closure of wants ships', async () => {
+        // Arrange — an empty advertisement encodes as the single
+        // `capabilities^{}` / zero-oid ref line, so `haves` is `[ZERO_OID]`.
+        // Trigger this in isolation from the "absent real oid" case above —
+        // the filter is one predicate over two independently-reachable inputs.
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert — no real have present, so nothing is excluded from the
+        // tip's full closure: parent + tip, each commit + tree + blob.
+        const body = requestBodies[0];
+        expect(body).toBeDefined();
+        expect(packObjectCount(body as Uint8Array)).toBe(6);
+      });
+    });
+  });
+
+  describe('Given a want and a real advertised have', () => {
+    describe('When push computes its closure', () => {
+      it('Then computeClosure is asked for objects on the bitmap tier with the present negatives', async () => {
+        // Arrange — a unit-level spy on the captured request is required: the
+        // mutation config is unit-only and cannot see a tier choice that is
+        // otherwise observable only through a real bitmap.
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const closureSpy = vi.spyOn(closureMod, 'computeClosure');
+
+        // Act
+        await push({ ...ctx, transport });
+
+        // Assert
+        expect(closureSpy).toHaveBeenCalledTimes(1);
+        const request = closureSpy.mock.calls[0]![1];
+        expect(request.tier).toBe('bitmap');
+        expect(request.objects).toBe(true);
+        expect(request.wants).toEqual([tip.id]);
+        expect(request.not).toEqual([parent.id]);
+        closureSpy.mockRestore();
       });
     });
   });
@@ -2527,6 +2742,40 @@ describe('push — hooks', () => {
 
         // Assert
         expect(result.pushedRefs).toHaveLength(1);
+      });
+    });
+  });
+});
+
+describe('push — an advertised have whose tree is missing locally', () => {
+  describe('Given a locally held advertised tip whose root tree object is absent', () => {
+    describe('When push runs', () => {
+      it('Then the push still ships, over-reporting as git does instead of refusing', async () => {
+        // Arrange — the partial-clone/pruned shape: the negative's commit is
+        // held (so it survives the `hasObject` filter and reaches the not-side
+        // marker), but its tree is not. Real git 2.55.0 packs this without a
+        // murmur; refusing here would reject a push that used to succeed.
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(parent.tree)}`);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport });
+
+        // Assert — the tip's own commit, tree and blob; the unreadable tree
+        // still prunes itself, so nothing the have already holds is resent.
+        expect(result.pushedRefs[0]).toMatchObject({ name: 'refs/heads/main', status: 'ok' });
+        const body = requestBodies[0];
+        expect(body).toBeDefined();
+        expect(packObjectCount(body as Uint8Array)).toBe(3);
       });
     });
   });

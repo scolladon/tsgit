@@ -3,6 +3,7 @@ import { createCommit } from '../../../../../src/application/primitives/create-c
 import {
   commitHeader,
   insertBounded,
+  isGraphKnownAbsent,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import {
   commitGraphChainPath,
@@ -10,6 +11,7 @@ import {
   commonGitDir,
 } from '../../../../../src/application/primitives/path-layout.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
+import { walkCommits } from '../../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { NO_PARENT } from '../../../../../src/domain/commit/commit-graph.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -20,6 +22,7 @@ import type {
   Tree,
 } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { buildCommitGraphBytes } from '../../../domain/commit/arbitraries.js';
 import { buildSeededContext, instrumentedContext, writeCommitGraph } from '../fixtures.js';
 
 const withFsOverride = (ctx: Context, overrides: Partial<Context['fs']>): Context => ({
@@ -110,6 +113,129 @@ const AUTHOR: AuthorIdentity = {
   timestamp: 1700000000,
   timezoneOffset: '+0000',
 };
+
+const oid = (prefix: string): ObjectId => (prefix + '0'.repeat(40 - prefix.length)) as ObjectId;
+
+interface MixedChainCommits {
+  readonly root: ObjectId;
+  readonly middle: ObjectId;
+  readonly tip: ObjectId;
+}
+
+/**
+ * Write git's "mixed generation" chain shape: the BASE layer stores corrected
+ * commit dates (GDA2), while the TIP layer — a `commitGraph.generationVersion=1`
+ * write — stores none. Generations are chosen so the two readings disagree:
+ * corrected dates would report 1000/1001 for the base layer, topological levels
+ * report 1/2. Synthetic oids, because only the graph is being read here.
+ */
+async function writeMixedGenerationChain(ctx: Context): Promise<MixedChainCommits> {
+  const commits: MixedChainCommits = { root: oid('aa01'), middle: oid('aa02'), tip: oid('aa03') };
+  const baseBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 0,
+    baseGraphHashes: [],
+    includeGenerationData: true,
+    commits: [
+      {
+        oid: commits.root,
+        rootTree: oid('ee01'),
+        parentPositions: [],
+        generationV1: 1,
+        committerDate: 1000,
+        generationV2Offset: 0,
+      },
+      {
+        oid: commits.middle,
+        rootTree: oid('ee02'),
+        parentPositions: [0],
+        generationV1: 2,
+        committerDate: 900,
+        generationV2Offset: 101,
+      },
+    ],
+  });
+  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const tipBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 1,
+    baseGraphHashes: [baseHash],
+    includeGenerationData: false,
+    commits: [
+      {
+        oid: commits.tip,
+        rootTree: oid('ee03'),
+        parentPositions: [1],
+        generationV1: 3,
+        committerDate: 500,
+        generationV2Offset: 0,
+      },
+    ],
+  });
+  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const gitDir = commonGitDir(ctx);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
+  await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${baseHash}\n${tipHash}\n`);
+  return commits;
+}
+
+/**
+ * A real two-layer chain (base [c0, c1], tip [c2]) whose BASE-layer commit c1
+ * names a parent position that lands in the TIP layer — an upward cross-layer
+ * reference git's `insert_parent_or_die` refuses (`pos >= num_commits +
+ * num_commits_in_base` for c1's OWN layer). The commits themselves are written
+ * to the store, so a degraded reader still walks the true ancestry.
+ */
+async function writeBadCrossLayerChain(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<{ c0: Commit; c1: Commit; c2: Commit }> {
+  const tree = await emptyTree(ctx);
+  const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
+  const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
+  const c2 = await makeCommit(ctx, tree, [c1.id], 3, 'c2');
+  const baseSorted = [c0.id, c1.id].sort();
+  const c1Local = baseSorted.indexOf(c1.id);
+  const baseBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 0,
+    baseGraphHashes: [],
+    includeGenerationData: true,
+    commits: baseSorted.map((id, i) => ({
+      oid: id,
+      rootTree: tree,
+      // c1 points at global position 2 (c2, in the TIP layer) — the illegal
+      // upward reference; c0 is a root.
+      parentPositions: id === c1.id ? [2] : [],
+      generationV1: i + 1,
+      committerDate: 100 + i,
+      generationV2Offset: 0,
+    })),
+  });
+  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const tipBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 1,
+    baseGraphHashes: [baseHash],
+    includeGenerationData: false,
+    commits: [
+      {
+        oid: c2.id,
+        rootTree: tree,
+        parentPositions: [c1Local],
+        generationV1: 3,
+        committerDate: 500,
+        generationV2Offset: 0,
+      },
+    ],
+  });
+  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const gitDir = commonGitDir(ctx);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
+  await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${baseHash}\n${tipHash}\n`);
+  return { c0, c1, c2 };
+}
 
 async function emptyTree(ctx: Awaited<ReturnType<typeof buildSeededContext>>): Promise<ObjectId> {
   const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
@@ -220,6 +346,75 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given a fixture graph over a child whose parent carries a much newer date', () => {
+      describe('When commitHeader is called for both commits', () => {
+        it('Then each generation is the corrected commit date git would store', async () => {
+          // Arrange — git's corrected commit date is
+          // `max(committerDate, max(parentGeneration) + 1)`, so a child
+          // committed BEFORE its parent still outranks it by exactly one.
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const root = await makeCommit(ctx, tree, [], 1000, 'root');
+          const child = await makeCommit(ctx, tree, [root.id], 10, 'child');
+          await writeCommitGraph(ctx, [[root, child]]);
+
+          // Act
+          const rootHeader = await commitHeader(ctx, root.id);
+          const childHeader = await commitHeader(ctx, child.id);
+
+          // Assert
+          expect(rootHeader?.generation).toBe(1000);
+          expect(childHeader?.generation).toBe(1001);
+        });
+      });
+    });
+
+    describe('Given a layer set that omits a commit referenced as a parent', () => {
+      describe('When the fixture is asked to write that graph', () => {
+        it('Then it refuses, because a valid commit-graph never omits a parent', async () => {
+          // Arrange — encoding the absent parent as position 0 would forge a
+          // phantom edge to whichever commit sorts first, silently weakening
+          // every walk assertion built on the graph.
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const root = await makeCommit(ctx, tree, [], 1, 'root');
+          const child = await makeCommit(ctx, tree, [root.id], 2, 'child');
+          const sut = writeCommitGraph;
+
+          // Act
+          const attempt = sut(ctx, [[child]]);
+
+          // Assert
+          await expect(attempt).rejects.toThrow(`parent ${root.id} is outside every layer`);
+        });
+      });
+    });
+
+    describe('Given a chain whose tip layer stores no corrected commit dates', () => {
+      describe('When commitHeader is called for commits in both layers', () => {
+        it('Then every layer serves topological levels, not just the one missing GDA2', async () => {
+          // Arrange — git's `validate_mixed_generation_chain` clears
+          // `read_generation_data` on EVERY layer as soon as one lacks GDA2, so
+          // the base layer's stored corrected dates (1000/1001) must not be
+          // served alongside the tip layer's levels.
+          const ctx = await buildSeededContext();
+          const { root, middle, tip } = await writeMixedGenerationChain(ctx);
+
+          // Act
+          const rootHeader = await commitHeader(ctx, root);
+          const middleHeader = await commitHeader(ctx, middle);
+          const tipHeader = await commitHeader(ctx, tip);
+
+          // Assert
+          expect(rootHeader?.generation).toBe(1);
+          expect(middleHeader?.generation).toBe(2);
+          expect(tipHeader?.generation).toBe(3);
+          expect(middleHeader?.parents).toEqual([root]);
+          expect(tipHeader?.parents).toEqual([middle]);
+        });
+      });
+    });
+
     describe('Given a commit that is real but absent from an otherwise-valid graph', () => {
       describe('When commitHeader is called for it', () => {
         it('Then returns undefined', async () => {
@@ -281,9 +476,11 @@ describe('read-commit-graph', () => {
           const secondHeader = await commitHeader(ctx, commit.id);
 
           // Assert — degraded on the first call AND the cached verdict is the
-          // fallback (never a memoized rejection poisoning later walks)
+          // fallback (never a memoized rejection poisoning later walks); the
+          // session now knows the graph is absent
           expect(header).toBeUndefined();
           expect(secondHeader).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
         });
       });
     });
@@ -713,15 +910,13 @@ describe('read-commit-graph', () => {
       });
     });
 
-    describe('Given a CDAT parent position that resolves to an out-of-range oid lookup', () => {
+    describe('Given a CDAT parent position far beyond every layer', () => {
       describe('When commitHeader is called for the commit that carries it', () => {
-        it('Then the resulting (non-decode-failure) error propagates instead of degrading to absent', async () => {
-          // Arrange — a globalPos far beyond any layer's real coverage still
-          // "matches" the base layer (layerOffsets[0]===0), so
-          // findLayerForGlobalPosition returns a wildly out-of-range localPos;
-          // reading its oid clamps to an empty slice, and ObjectId.fromRaw
-          // rejects it with INVALID_OBJECT_ID — a code that does NOT start
-          // with INVALID_COMMIT_GRAPH, so it must propagate, not be swallowed.
+        it('Then the graph degrades to absent and the session records it, instead of reading past the OID table', async () => {
+          // Arrange — git dies with `invalid parent position N`; tsgit's
+          // documented posture for a graph that fails to decode is to answer
+          // from objects for the rest of the session, so the position is
+          // refused as a decode fault and the graph becomes absent.
           const ctx = await buildSeededContext();
           const tree = await emptyTree(ctx);
           const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
@@ -732,13 +927,86 @@ describe('read-commit-graph', () => {
           const original = await ctx.fs.read(graphPath);
           await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 0x6fffffff));
 
-          // Act + Assert
-          try {
-            await commitHeader(ctx, c1.id);
-            expect.unreachable();
-          } catch (error) {
-            expect((error as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
-          }
+          // Act
+          const header = await commitHeader(ctx, c1.id);
+
+          // Assert
+          expect(header).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a CDAT parent position equal to the layer commit count (one past the last entry)', () => {
+      describe('When commitHeader is called for the commit that carries it', () => {
+        it('Then the graph degrades to absent rather than fabricating a parent from the bytes after the OID table', async () => {
+          // Arrange — position == commitCount is the boundary that used to slip
+          // through: the 20 bytes after OIDL are the first CDAT entry's root
+          // tree, which came back as a "parent".
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
+          const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
+          await writeCommitGraph(ctx, [[c0, c1]]);
+          const gitDir = commonGitDir(ctx);
+          const graphPath = commitGraphPath(gitDir);
+          const original = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 2));
+
+          // Act
+          const header = await commitHeader(ctx, c1.id);
+          const walked: ObjectId[] = [];
+          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
+
+          // Assert — no fabricated parent; the walk falls back to the bodies
+          expect(header).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(walked).toEqual([c1.id, c0.id]);
+        });
+      });
+    });
+
+    describe('Given a chain whose base-layer commit names a parent position in the tip layer', () => {
+      describe('When commitHeader is called for that base commit', () => {
+        it('Then the graph degrades to absent rather than following an upward cross-layer edge', async () => {
+          // Arrange — position 2 is a real OIDL slot (c2 in the tip layer), so
+          // only the child's own-layer bound (git's insert_parent_or_die) can
+          // catch it; the resolved-layer check alone would accept it. git 2.55.0
+          // exits 128 `invalid parent position 2` on the same shape.
+          const ctx = await buildSeededContext();
+          const { c0, c1 } = await writeBadCrossLayerChain(ctx);
+
+          // Act
+          const header = await commitHeader(ctx, c1.id);
+          const walked: ObjectId[] = [];
+          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
+
+          // Assert — no fabricated cross-layer parent; the walk answers from objects
+          expect(header).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(walked).toEqual([c1.id, c0.id]);
+        });
+      });
+    });
+
+    describe('Given a graph that degrades to absent mid-session', () => {
+      describe('When commitHeader is called again for an oid it served before the fault', () => {
+        it('Then it returns undefined — the header cache does not outlive the degrade verdict', async () => {
+          // Arrange — c2 (tip) resolves and is cached; c1 (base) then degrades
+          // the graph. A stale cache would still hand back c2's header.
+          const ctx = await buildSeededContext();
+          const { c1, c2 } = await writeBadCrossLayerChain(ctx);
+          const beforeFault = await commitHeader(ctx, c2.id);
+          expect(beforeFault).toBeDefined();
+
+          // Act
+          const faulted = await commitHeader(ctx, c1.id);
+          const afterFault = await commitHeader(ctx, c2.id);
+
+          // Assert
+          expect(faulted).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(afterFault).toBeUndefined();
         });
       });
     });
@@ -875,6 +1143,59 @@ describe('insertBounded', () => {
         expect(map.size).toBe(2);
         expect(map.has('a')).toBe(true);
       });
+    });
+  });
+});
+
+describe('isGraphKnownAbsent', () => {
+  describe('Given a session that has not probed for a graph yet', () => {
+    describe('When asked whether the graph is known absent', () => {
+      it('Then it is not — nothing has been probed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = isGraphKnownAbsent;
+
+        // Act
+        const result = sut(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a repository with no commit-graph, When one header probe has run', () => {
+    it('Then the session knows the graph is absent', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const tree = await emptyTree(ctx);
+      const commit = await makeCommit(ctx, tree, [], 1, 'no-graph');
+      await commitHeader(ctx, commit.id);
+      const sut = isGraphKnownAbsent;
+
+      // Act
+      const result = sut(ctx);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given a repository with a commit-graph, When one header probe has run', () => {
+    it('Then the session does not call the graph absent', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const tree = await emptyTree(ctx);
+      const commit = await makeCommit(ctx, tree, [], 1, 'graphed');
+      await writeCommitGraph(ctx, [[commit]]);
+      await commitHeader(ctx, commit.id);
+      const sut = isGraphKnownAbsent;
+
+      // Act
+      const result = sut(ctx);
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 });

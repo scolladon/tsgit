@@ -42,12 +42,32 @@ interface LoadedGraph {
   readonly layers: readonly CommitGraphLayer[];
   /** Global position offset per layer — layerOffsets[i] + local position = global position. */
   readonly layerOffsets: readonly number[];
+  /**
+   * Git's `validate_mixed_generation_chain` verdict: corrected commit dates are
+   * served only when EVERY layer carries a GDA2 chunk. One
+   * `commitGraph.generationVersion=1` layer anywhere in the chain demotes the
+   * whole chain to topological levels — a corrected date and a topological
+   * level are not comparable, so mixing them would order a walk by nonsense.
+   */
+  readonly correctedCommitDates: boolean;
+}
+
+function loadedGraph(layers: readonly CommitGraphLayer[]): LoadedGraph {
+  return {
+    layers,
+    layerOffsets: computeLayerOffsets(layers),
+    correctedCommitDates: layers.every((layer) => layer._generationDataRange !== undefined),
+  };
 }
 
 // Keyed by session so a long-running (or repeated) walk parses the graph
 // files at most once per repo lifetime, shared across every Context derived
 // from the same repository-open — mirrors `registryCache` in read-object.ts.
 const graphCache = new WeakMap<Context['session'], Promise<LoadedGraph | undefined>>();
+/** Sessions whose graph probe already answered "absent" — the synchronous
+ *  mirror of a memoised `undefined` in `graphCache`, so a graph-first reader
+ *  can skip the probe (and its microtask hop) on every later commit. */
+const absentGraphs = new WeakSet<Context['session']>();
 
 // Entry cap mirrors `DEFAULT_DELTA_CACHE_ENTRIES` (`src/index.node.ts`) — the
 // repo's existing bound for a per-repository memo cache, reused here rather
@@ -143,10 +163,11 @@ async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | un
 
   const hashes = parseChainLayerHashes(chainText);
   // Stryker disable next-line ConditionalExpression: equivalent — dropping this
-  // guard falls through to `layers: []`, a 0-layer LoadedGraph. Every consumer
-  // (findOwnPosition's `for (i<layers.length)`) treats a 0-layer graph exactly
-  // like an absent one — 0 iterations, `undefined` either way — so commitHeader's
-  // observable result is identical with or without the early return.
+  // guard falls through to `loadedGraph([])`, a 0-layer LoadedGraph. Every
+  // consumer treats that exactly like an absent graph: findOwnPosition's
+  // `for (i<layers.length)` runs 0 iterations and returns `undefined`, so
+  // commitHeader never reaches `commitDataAt` and the vacuously-true
+  // `correctedCommitDates` the empty `every` produces is never read.
   if (hashes.length === 0) return undefined;
 
   const layers: CommitGraphLayer[] = [];
@@ -155,7 +176,7 @@ async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | un
     if (bytes === undefined) return undefined;
     layers.push(parseCommitGraphLayer(bytes));
   }
-  return { layers, layerOffsets: computeLayerOffsets(layers) };
+  return loadedGraph(layers);
 }
 
 function computeLayerOffsets(layers: readonly CommitGraphLayer[]): readonly number[] {
@@ -185,8 +206,7 @@ async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined>
   try {
     const single = await tryRead(ctx, commitGraphPath(gitDir));
     if (single !== undefined) {
-      const layer = parseCommitGraphLayer(single);
-      return { layers: [layer], layerOffsets: [0] };
+      return loadedGraph([parseCommitGraphLayer(single)]);
     }
     return loadChain(ctx, gitDir);
   } catch (error) {
@@ -212,9 +232,31 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
     graphCache.set(ctx.session, cached);
     // Never memoize a rejection: a transient fs failure must not permanently
     // poison every later commit walk for this repository.
-    cached.catch(() => graphCache.delete(ctx.session));
+    cached.then(
+      (graph) => {
+        if (graph === undefined) absentGraphs.add(ctx.session);
+      },
+      () => graphCache.delete(ctx.session),
+    );
   }
   return cached;
+}
+
+/**
+ * Git's `corrected_commit_dates_enabled`: whether the generations this module
+ * serves are corrected commit dates (comparable with committer seconds) or
+ * mere topological levels. A walk that orders its queue by generation must ask
+ * first — git swaps in its date-only comparator when the answer is `false`.
+ *
+ * Git also answers `false` for a graph that covers no commits at all; tsgit
+ * needs no such clause, because a commit no graph covers already resolves to
+ * `GENERATION_NUMBER_INFINITY`. With every generation equal and infinite, the
+ * generation clause of any comparator ties on every pair and falls straight
+ * through to the date clause, so the two verdicts are indistinguishable.
+ */
+export async function correctedCommitDatesEnabled(ctx: Context): Promise<boolean> {
+  const graph = await loadGraph(ctx);
+  return graph !== undefined && graph.correctedCommitDates;
 }
 
 function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
@@ -230,11 +272,13 @@ function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
 function findOwnPosition(
   graph: LoadedGraph,
   id: ObjectId,
-): { readonly layer: CommitGraphLayer; readonly localPos: number } | undefined {
+):
+  | { readonly layer: CommitGraphLayer; readonly localPos: number; readonly layerIndex: number }
+  | undefined {
   for (let i = 0; i < graph.layers.length; i += 1) {
     const layer = graph.layers[i]!;
     const localPos = positionOf(layer, id);
-    if (localPos !== undefined) return { layer, localPos };
+    if (localPos !== undefined) return { layer, localPos, layerIndex: i };
   }
   return undefined;
 }
@@ -252,6 +296,8 @@ function findLayerForGlobalPosition(
   for (let i = graph.layers.length - 1; i >= 0; i -= 1) {
     const offset = graph.layerOffsets[i]!;
     if (globalPos >= offset) {
+      // The own-layer bound in resolveParentIds is the only range guard; here we
+      // only resolve which layer owns an already-validated position.
       return { layer: graph.layers[i]!, localPos: globalPos - offset };
     }
   }
@@ -267,13 +313,27 @@ function oidAtPosition(layer: CommitGraphLayer, localPos: number): ObjectId {
   return ObjectId.fromRaw(layer._bytes.subarray(offset, offset + layer._hashLength));
 }
 
-function resolveParentIds(graph: LoadedGraph, data: CommitData): readonly ObjectId[] {
+function resolveParentIds(
+  graph: LoadedGraph,
+  data: CommitData,
+  ownBound: number,
+): readonly ObjectId[] {
   const positions: number[] = [];
   if (data.parent1Pos !== undefined) positions.push(data.parent1Pos);
   if (data.parent2Pos !== undefined) positions.push(data.parent2Pos);
   positions.push(...data.additionalParentPositions);
 
   return positions.map((pos) => {
+    // git's `insert_parent_or_die` bounds a parent by the CHILD's own layer:
+    // `pos >= g->num_commits + g->num_commits_in_base`. A position naming a
+    // commit in a HIGHER layer of the chain cannot exist (a layer only
+    // references itself and its bases), so refuse it before resolving;
+    // `findLayerForGlobalPosition` then only resolves the owning layer.
+    if (pos >= ownBound) {
+      // Stryker disable next-line StringLiteral: equivalent — swallowed by
+      // commitHeader's degrade-to-absent catch; only the code is observable.
+      throw invalidCommitGraphChunk(`invalid parent position ${pos}`);
+    }
     const { layer, localPos } = findLayerForGlobalPosition(graph, pos);
     return oidAtPosition(layer, localPos);
   });
@@ -283,6 +343,13 @@ function resolveParentIds(graph: LoadedGraph, data: CommitData): readonly Object
  * Graph-only lookup: `undefined` when `id` is not present in the graph, or the
  * graph itself is absent/stale — the caller falls back to a full object read.
  */
+/** True once this session's graph probe has answered "absent" (no graph, a
+ *  shallow repository, or a graph degraded on a decode fault). A synchronous
+ *  read, so callers can skip `commitHeader` outright. */
+export function isGraphKnownAbsent(ctx: Context): boolean {
+  return absentGraphs.has(ctx.session);
+}
+
 export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHeader | undefined> {
   const cache = getHeaderCache(ctx);
   const cached = cache.get(id);
@@ -295,10 +362,13 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     const found = findOwnPosition(graph, id);
     if (found === undefined) return undefined;
 
-    const data = commitDataAt(found.layer, found.localPos);
+    const data = commitDataAt(found.layer, found.localPos, {
+      correctedCommitDates: graph.correctedCommitDates,
+    });
+    const ownBound = graph.layerOffsets[found.layerIndex]! + found.layer.commitCount;
     const header: CommitHeader = {
       rootTree: data.rootTree,
-      parents: resolveParentIds(graph, data),
+      parents: resolveParentIds(graph, data, ownBound),
       committerDate: data.committerDate,
       generation: data.generation,
     };
@@ -310,6 +380,11 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     // the rest of the repo lifetime, exactly like a corrupt file on disk.
     if (isGraphDecodeFailure(error)) {
       graphCache.set(ctx.session, Promise.resolve(undefined));
+      absentGraphs.add(ctx.session);
+      // Headers served from this graph before the fault must not linger: the
+      // verdict is "absent for the session", so drop the cache — every later
+      // lookup falls through to loadGraph (now absent) and answers from objects.
+      headerCache.delete(ctx.session);
       return undefined;
     }
     throw error;

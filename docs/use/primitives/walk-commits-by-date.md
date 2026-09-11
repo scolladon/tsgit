@@ -14,7 +14,7 @@ repo.primitives.walkCommitsByDate(options: WalkCommitsByDateOptions): AsyncItera
 
 interface WalkCommitsByDateOptions {
   readonly from: ReadonlyArray<ObjectId>;     // seed commits (≥ 1)
-  readonly until?: ReadonlyArray<ObjectId>;   // excluded boundaries
+  readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>; // excluded boundaries
   readonly shallow?: ReadonlySet<ObjectId>;   // yielded, but parents not walked
   readonly ignoreMissing?: boolean;           // skip a missing object instead of throwing
   readonly verifyHash?: boolean;              // default false (ADR-718)

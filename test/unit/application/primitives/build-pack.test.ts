@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildPack } from '../../../../src/application/primitives/build-pack.js';
 import * as configReadModule from '../../../../src/application/primitives/config-read.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { computeClosure } from '../../../../src/application/primitives/internal/closure-engine.js';
 import * as deltifyModule from '../../../../src/application/primitives/internal/deltify.js';
 import * as readObjectModule from '../../../../src/application/primitives/read-object.js';
 import { readRawObject } from '../../../../src/application/primitives/read-object.js';
@@ -27,7 +28,7 @@ import {
   parsePackEntryHeader,
   parsePackHeader,
 } from '../../../../src/domain/storage/index.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, buildSharedSubtreeChain } from './fixtures.js';
 
 const PACK_HEADER_BYTES = 12;
 
@@ -925,6 +926,31 @@ describe('buildPack', () => {
             expect(emitted).toBe(oids[pack.emissionOrder[ordinal]!]);
           }
         }
+      });
+    });
+  });
+
+  describe('Given the objects closure of a shared-subtree commit chain', () => {
+    describe('When buildPack runs with delta selection on', () => {
+      it('Then the pack sha is the byte-identity golden recorded on the unpruned closure walk', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chain = await buildSharedSubtreeChain(ctx);
+        const closure = await computeClosure(ctx, {
+          tier: 'walk',
+          wants: [chain.c3],
+          not: [],
+          objects: true,
+        });
+        const sut = buildPack;
+
+        // Act
+        const result = await sut(ctx, { objects: closure.objects, delta: true });
+
+        // Assert — the closure prune must not move a
+        // single byte of the pack it produces (equivalence argument: same
+        // emission sequence, same nameHash, hence the same packer input).
+        expect(result.sha).toBe('edc570c00dacfe58c9d65283ff299a03f3ab4737');
       });
     });
   });

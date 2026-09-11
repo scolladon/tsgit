@@ -120,7 +120,13 @@ export type UpdateRefOptions =
 
 export interface WalkCommitsOptions {
   readonly from: ReadonlyArray<ObjectId>;
-  readonly until?: ReadonlyArray<ObjectId>;
+  /**
+   * Boundary commits: neither they nor their ancestors are yielded. A
+   * `ReadonlySet` is read by reference, never copied — a caller that mutates
+   * it before iteration starts changes the walk; an array is copied into a
+   * set once.
+   */
+  readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   readonly order?: 'topo' | 'first-parent';
   readonly ignoreMissing?: boolean;
   readonly verifyHash?: boolean;
@@ -147,7 +153,13 @@ export interface WalkCommitsOptions {
  */
 export interface WalkCommitsByDateOptions {
   readonly from: ReadonlyArray<ObjectId>;
-  readonly until?: ReadonlyArray<ObjectId>;
+  /**
+   * Boundary commits: neither they nor their ancestors are yielded. A
+   * `ReadonlySet` is read by reference, never copied — a caller that mutates
+   * it before iteration starts changes the walk; an array is copied into a
+   * set once.
+   */
+  readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   /**
    * Commits whose parents must NOT be walked (shallow boundaries). Omitted ⇒
    * the repository's `.git/shallow` set is loaded automatically; supplied
@@ -207,6 +219,14 @@ export interface WalkTreeOptions {
    * Default `false`, no cost.
    */
   readonly pathBytes?: boolean;
+  /**
+   * Prune: when it returns `true` for a directory entry's id, that entry is
+   * still yielded but its subtree is not entered. Evaluated once per directory
+   * entry, after the recursion check and BEFORE the entry is yielded — a
+   * consumer that reacts to the yield cannot influence the verdict. Never
+   * called for a blob or a gitlink entry. Absent, the walk is unchanged.
+   */
+  readonly skipTree?: (id: ObjectId) => boolean;
 }
 
 export interface WalkWorkingTreeEntry {

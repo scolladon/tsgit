@@ -21,8 +21,16 @@ import {
   type NameRevResult,
   nameRev as nameRevCmd,
 } from '../../src/application/commands/name-rev.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  runGit,
+  runGitAsync,
+  runGitEnv,
+  tryRunGit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -154,6 +162,64 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         );
       });
     });
+
+    describe('When the repository gains a commit-graph (`git commit-graph write --reachable`)', () => {
+      let freshCtx: Context;
+
+      beforeAll(async () => {
+        await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable']);
+        freshCtx = createNodeContext({ workDir: dir });
+      }, SETUP_TIMEOUT);
+
+      it.each(REV_RENDER_MATRIX)(
+        'Then $label renders identically to before the graph',
+        async ({ rev }) => {
+          // Arrange & Act & Assert
+          expect(renderNameRev(await nameRevCmd(freshCtx, rev()))).toBe(gitNameRev(dir, rev()));
+        },
+      );
+
+      it('Then a refs filter still matches git name-rev --refs', async () => {
+        // Arrange & Act & Assert
+        expect(renderNameRev(await nameRevCmd(freshCtx, c0, { refs: 'refs/tags/rel*' }))).toBe(
+          gitNameRev(dir, c0, '--refs=refs/tags/rel*'),
+        );
+      });
+
+      it('Then an exclude filter still matches git name-rev --exclude', async () => {
+        // Arrange & Act & Assert
+        expect(renderNameRev(await nameRevCmd(freshCtx, c0, { exclude: 'refs/tags/*' }))).toBe(
+          gitNameRev(dir, c0, '--exclude=refs/tags/*'),
+        );
+      });
+
+      it('Then describe --contains still reconstructs git describe --contains', async () => {
+        // Arrange & Act & Assert
+        expect(renderContains(await describeCmd(freshCtx, c0, { contains: true }))).toBe(
+          git(dir, 'describe', '--contains', c0).trim(),
+        );
+      });
+
+      it('Then describe --contains --match still reconstructs git', async () => {
+        // Arrange & Act & Assert
+        expect(
+          renderContains(await describeCmd(freshCtx, c0, { contains: true, match: 'rel*' })),
+        ).toBe(git(dir, 'describe', '--contains', '--match', 'rel*', c0).trim());
+      });
+    });
+
+    describe('When the commit-graph is instead written by tsgit maintenance', () => {
+      it('Then name-rev still matches git across every rev kind', async () => {
+        // Arrange
+        const repo = await openRepository({ cwd: dir });
+        await repo.maintenance({ tasks: ['commit-graph'] });
+
+        // Act & Assert
+        for (const { rev } of REV_RENDER_MATRIX) {
+          expect(renderNameRev(await repo.nameRev(rev()))).toBe(gitNameRev(dir, rev()));
+        }
+      });
+    });
   });
 
   describe('Given a merge with a multi-commit side branch', () => {
@@ -207,6 +273,30 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         expect(renderNameRev(await nameRevCmd(ctx, rev()))).toBe(gitNameRev(dir, rev()));
       });
     });
+
+    describe('When the repository gains a commit-graph (`git commit-graph write --reachable`)', () => {
+      let freshCtx: Context;
+
+      beforeAll(async () => {
+        await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable']);
+        freshCtx = createNodeContext({ workDir: dir });
+      }, SETUP_TIMEOUT);
+
+      it('Then first-parent ancestors still render with `~n`', async () => {
+        // Arrange & Act & Assert
+        expect(renderNameRev(await nameRevCmd(freshCtx, merge))).toBe(gitNameRev(dir, merge));
+        expect(renderNameRev(await nameRevCmd(freshCtx, m1))).toBe(gitNameRev(dir, m1));
+        expect(renderNameRev(await nameRevCmd(freshCtx, base))).toBe(gitNameRev(dir, base));
+      });
+
+      it.each(SIDE_COMMIT_MATRIX)(
+        'Then $label renders identically to before the graph',
+        async ({ rev }) => {
+          // Arrange & Act & Assert
+          expect(renderNameRev(await nameRevCmd(freshCtx, rev()))).toBe(gitNameRev(dir, rev()));
+        },
+      );
+    });
   });
 
   describe('Given a repository with no tags', () => {
@@ -254,6 +344,41 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         expect(threw).toBe(true);
       });
     });
+
+    describe('When the repository gains a commit-graph (`git commit-graph write --reachable`)', () => {
+      let freshCtx: Context;
+
+      beforeAll(async () => {
+        await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable']);
+        freshCtx = createNodeContext({ workDir: dir });
+      }, SETUP_TIMEOUT);
+
+      it('Then --tags on an untagged commit is still undefined, matching git', async () => {
+        // Arrange & Act
+        const result = await nameRevCmd(freshCtx, c0, { tags: true });
+
+        // Assert
+        expect(result.ref).toBeUndefined();
+        expect(renderNameRev(result)).toBe(gitNameRev(dir, c0, '--tags'));
+      });
+
+      it('Then describe --contains still co-refuses with git', async () => {
+        // Arrange
+        const gitResult = tryRunGit(['-C', dir, 'describe', '--contains', c0]);
+        let threw = false;
+
+        // Act
+        try {
+          await describeCmd(freshCtx, c0, { contains: true });
+        } catch {
+          threw = true;
+        }
+
+        // Assert
+        expect(gitResult.ok).toBe(false);
+        expect(threw).toBe(true);
+      });
+    });
   });
 
   describe('Given a linear history with a far-older pruned ancestor, When nameRevCmd resolves the middle commit', () => {
@@ -282,6 +407,20 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
 
       // Assert
       expect(renderNameRev(result)).toBe(gitNameRev(dir, c1));
+    });
+
+    describe('When the repository gains a commit-graph (`git commit-graph write --reachable`)', () => {
+      it('Then the middle commit still resolves, now pruned by the generation cutoff instead of the date cutoff', async () => {
+        // Arrange
+        await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable']);
+        const freshCtx = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await nameRevCmd(freshCtx, c1);
+
+        // Assert
+        expect(renderNameRev(result)).toBe(gitNameRev(dir, c1));
+      });
     });
   });
 
@@ -323,6 +462,93 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         // it otherwise disambiguates with — renderNameRev's general reconstruction keeps it.
         const withoutTagsPrefix = renderNameRev(result).replace(/^tags\//, '');
         expect(withoutTagsPrefix).toBe(gitNameRev(dir, newCommit, '--tags'));
+      });
+    });
+
+    describe('When the repository gains a commit-graph (`git commit-graph write --reachable`)', () => {
+      let freshCtx: Context;
+
+      beforeAll(async () => {
+        await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable']);
+        freshCtx = createNodeContext({ workDir: dir });
+      }, SETUP_TIMEOUT);
+
+      it('Then the newer tag still names the newer commit with the older seed pruned by generation', async () => {
+        // Arrange & Act
+        const result = await nameRevCmd(freshCtx, newCommit);
+
+        // Assert
+        expect(renderNameRev(result)).toBe(gitNameRev(dir, newCommit));
+      });
+
+      it('Then the --tags variant still matches with the older seed pruned by generation', async () => {
+        // Arrange & Act
+        const result = await nameRevCmd(freshCtx, newCommit, { tags: true });
+
+        // Assert
+        const withoutTagsPrefix = renderNameRev(result).replace(/^tags\//, '');
+        expect(withoutTagsPrefix).toBe(gitNameRev(dir, newCommit, '--tags'));
+      });
+    });
+  });
+
+  describe('Given a split commit-graph chain whose newest layer stores no corrected commit dates', () => {
+    let dir = '';
+    let ctx: Context;
+    const commits: Record<string, string> = {};
+
+    /**
+     * git's own mixed-generation chain: a default (`generationVersion=2`) base
+     * layer over `root ← merged`, then a `commitGraph.generationVersion=1`
+     * layer over the rest. git clears `read_generation_data` across the WHOLE
+     * chain, so every commit is ranked by topological level; reading the base
+     * layer's corrected commit dates alongside the newer layer's levels puts
+     * the two oldest commits billions of units above every tip and prunes them
+     * out of the walk entirely.
+     */
+    beforeAll(async () => {
+      dir = await makeRepo('mixed-generation-chain');
+      const tree = git(dir, 'mktree').trim();
+      const commitTree = (name: string, epoch: number, parents: ReadonlyArray<string>): string => {
+        const args = ['-C', dir, 'commit-tree', tree];
+        for (const parent of parents) args.push('-p', parent);
+        return runGit([...args, '-m', name], { env: datedEnv(epoch) }).trim();
+      };
+      commits.root = commitTree('root', 1_700_000_100, []);
+      commits.merged = commitTree('merged', 1_700_000_900, [commits.root]);
+      git(dir, 'update-ref', 'refs/heads/seed', commits.merged);
+      await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable', '--split=no-merge']);
+      commits.side = commitTree('side', 1_700_000_300, []);
+      commits.topic = commitTree('topic', 1_700_000_400, [commits.side]);
+      const a = commitTree('a', 1_700_000_500, [commits.topic, commits.merged]);
+      const z = commitTree('z', 1_700_000_500, [commits.topic, commits.merged]);
+      git(dir, 'update-ref', 'refs/heads/a', a);
+      git(dir, 'update-ref', 'refs/heads/z', z);
+      git(dir, 'update-ref', '-d', 'refs/heads/seed');
+      await runGitAsync([
+        '-C',
+        dir,
+        '-c',
+        'commitGraph.generationVersion=1',
+        'commit-graph',
+        'write',
+        '--reachable',
+        '--split=no-merge',
+      ]);
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('When nameRevCmd names commits from both chain layers', () => {
+      it.each(['root', 'merged', 'side', 'topic'])('Then %s matches git name-rev', async (name) => {
+        // Arrange & Act
+        const result = await nameRevCmd(ctx, commits[name]!);
+
+        // Assert
+        expect(renderNameRev(result)).toBe(gitNameRev(dir, commits[name]!));
       });
     });
   });

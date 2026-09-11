@@ -252,8 +252,23 @@ function compareOidAt(layer: CommitGraphLayer, index: number, targetBytes: Uint8
   return 0;
 }
 
+/**
+ * The chain-wide `read_generation_data` verdict a layer is read under. Git
+ * clears it across EVERY layer of a chain as soon as one of them lacks a GDA2
+ * chunk, so a layer that does store corrected commit dates must still be able
+ * to serve its CDAT topological level instead. Required, never defaulted — a
+ * single layer cannot see the rest of its chain, so the caller owns the verdict.
+ */
+export interface CommitDataOptions {
+  readonly correctedCommitDates: boolean;
+}
+
 /** Reads root tree, parent positions, generation, and committer date for a layer-local position. */
-export function commitDataAt(layer: CommitGraphLayer, localPos: number): CommitData {
+export function commitDataAt(
+  layer: CommitGraphLayer,
+  localPos: number,
+  options: CommitDataOptions,
+): CommitData {
   const entryOffset = layer._commitDataOffset + localPos * layer._commitDataEntrySize;
   const view = layer._view;
   const hashLength = layer._hashLength;
@@ -270,7 +285,11 @@ export function commitDataAt(layer: CommitGraphLayer, localPos: number): CommitD
 
   const parent1Pos = parent1Raw === NO_PARENT ? undefined : parent1Raw;
   const { parent2Pos, additionalParentPositions } = resolveSecondParent(layer, parent2Raw);
-  const generation = resolveGeneration(layer, localPos, generationV1, committerDate);
+  const generationRange = options.correctedCommitDates ? layer._generationDataRange : undefined;
+  const generation = resolveGeneration(layer, generationRange, localPos, {
+    generationV1,
+    committerDate,
+  });
 
   return { rootTree, parent1Pos, parent2Pos, additionalParentPositions, generation, committerDate };
 }
@@ -308,20 +327,23 @@ function readEdgeChain(layer: CommitGraphLayer, edgePos: number): number[] {
   throw invalidCommitGraphChunk('truncated EDGE chunk: octopus parent list never terminates');
 }
 
+/** `generationRange` is the layer's GDA2 chunk, or `undefined` when this read
+ *  must serve the CDAT topological level — either because the layer stores no
+ *  GDA2, or because its chain rules corrected commit dates out. */
 function resolveGeneration(
   layer: CommitGraphLayer,
+  generationRange: ChunkRange | undefined,
   localPos: number,
-  generationV1: number,
-  committerDate: number,
+  stored: { readonly generationV1: number; readonly committerDate: number },
 ): number {
-  if (layer._generationDataRange === undefined) {
-    return generationV1;
+  if (generationRange === undefined) {
+    return stored.generationV1;
   }
-  const raw = layer._view.getUint32(layer._generationDataRange.start + localPos * 4);
+  const raw = layer._view.getUint32(generationRange.start + localPos * 4);
   if ((raw & GENERATION_OVERFLOW_FLAG) !== 0) {
-    return committerDate + readOverflowOffset(layer, raw & EDGE_POS_MASK);
+    return stored.committerDate + readOverflowOffset(layer, raw & EDGE_POS_MASK);
   }
-  return committerDate + raw;
+  return stored.committerDate + raw;
 }
 
 /** The true (64-bit) corrected-date offset for a GDA2 entry whose overflow
