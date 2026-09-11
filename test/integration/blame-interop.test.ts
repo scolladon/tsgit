@@ -306,6 +306,13 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       range: { start: 1, end: 2 },
     },
     {
+      label: 'a worktree -L window whose ends are uncommitted around a committed line',
+      fixture: () => worktree,
+      file: 'f.txt',
+      worktreeMode: true,
+      range: { start: 2, end: 4 },
+    },
+    {
       label: 'an unchanged file across deep ancestry',
       fixture: () => deepAncestry,
       file: 'stable.txt',
