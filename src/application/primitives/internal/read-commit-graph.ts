@@ -233,6 +233,23 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
   return cached;
 }
 
+/**
+ * Git's `corrected_commit_dates_enabled`: whether the generations this module
+ * serves are corrected commit dates (comparable with committer seconds) or
+ * mere topological levels. A walk that orders its queue by generation must ask
+ * first — git swaps in its date-only comparator when the answer is `false`.
+ *
+ * Git also answers `false` for a graph that covers no commits at all; tsgit
+ * needs no such clause, because a commit no graph covers already resolves to
+ * `GENERATION_NUMBER_INFINITY`. With every generation equal and infinite, the
+ * generation clause of any comparator ties on every pair and falls straight
+ * through to the date clause, so the two verdicts are indistinguishable.
+ */
+export async function correctedCommitDatesEnabled(ctx: Context): Promise<boolean> {
+  const graph = await loadGraph(ctx);
+  return graph !== undefined && graph.correctedCommitDates;
+}
+
 function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
   let cache = headerCache.get(ctx.session);
   if (cache === undefined) {

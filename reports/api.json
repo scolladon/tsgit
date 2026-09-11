@@ -142407,7 +142407,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", the rest are the others. Returns the single base\nwith the newest committer date by default, ties resolved as Git's own\ngeneration-then-date-ordered walk resolves them; the full reduced set,\noid-sorted, with "
+										"text": ", the rest are the others. By default the answer is the\nsingle base Git's walk pops FIRST: the newest-dated common base in a\nrepository with no commit-graph, but the highest-generation one wherever a\ngraph serves corrected commit dates — the two disagree whenever a base\ninherits its generation from an ancestor committed later than itself.\n"
 									},
 									{
 										"kind": "code",
@@ -142415,7 +142415,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; the octopus fold with "
+										"text": " returns the whole reduced set, oid-sorted. "
 									},
 									{
 										"kind": "code",
@@ -142423,7 +142423,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\nUnrelated histories yield "
+										"text": "\nfolds the commits pairwise and reports the reduced accumulator, which leads\nwith the newest-dated base. Unrelated histories yield "
 									},
 									{
 										"kind": "code",
