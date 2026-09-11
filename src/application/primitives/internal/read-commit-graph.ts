@@ -42,6 +42,22 @@ interface LoadedGraph {
   readonly layers: readonly CommitGraphLayer[];
   /** Global position offset per layer — layerOffsets[i] + local position = global position. */
   readonly layerOffsets: readonly number[];
+  /**
+   * Git's `validate_mixed_generation_chain` verdict: corrected commit dates are
+   * served only when EVERY layer carries a GDA2 chunk. One
+   * `commitGraph.generationVersion=1` layer anywhere in the chain demotes the
+   * whole chain to topological levels — a corrected date and a topological
+   * level are not comparable, so mixing them would order a walk by nonsense.
+   */
+  readonly correctedCommitDates: boolean;
+}
+
+function loadedGraph(layers: readonly CommitGraphLayer[]): LoadedGraph {
+  return {
+    layers,
+    layerOffsets: computeLayerOffsets(layers),
+    correctedCommitDates: layers.every((layer) => layer._generationDataRange !== undefined),
+  };
 }
 
 // Keyed by session so a long-running (or repeated) walk parses the graph
@@ -143,10 +159,11 @@ async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | un
 
   const hashes = parseChainLayerHashes(chainText);
   // Stryker disable next-line ConditionalExpression: equivalent — dropping this
-  // guard falls through to `layers: []`, a 0-layer LoadedGraph. Every consumer
-  // (findOwnPosition's `for (i<layers.length)`) treats a 0-layer graph exactly
-  // like an absent one — 0 iterations, `undefined` either way — so commitHeader's
-  // observable result is identical with or without the early return.
+  // guard falls through to `loadedGraph([])`, a 0-layer LoadedGraph. Every
+  // consumer treats that exactly like an absent graph: findOwnPosition's
+  // `for (i<layers.length)` runs 0 iterations and returns `undefined`, so
+  // commitHeader never reaches `commitDataAt` and the vacuously-true
+  // `correctedCommitDates` the empty `every` produces is never read.
   if (hashes.length === 0) return undefined;
 
   const layers: CommitGraphLayer[] = [];
@@ -155,7 +172,7 @@ async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | un
     if (bytes === undefined) return undefined;
     layers.push(parseCommitGraphLayer(bytes));
   }
-  return { layers, layerOffsets: computeLayerOffsets(layers) };
+  return loadedGraph(layers);
 }
 
 function computeLayerOffsets(layers: readonly CommitGraphLayer[]): readonly number[] {
@@ -185,8 +202,7 @@ async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined>
   try {
     const single = await tryRead(ctx, commitGraphPath(gitDir));
     if (single !== undefined) {
-      const layer = parseCommitGraphLayer(single);
-      return { layers: [layer], layerOffsets: [0] };
+      return loadedGraph([parseCommitGraphLayer(single)]);
     }
     return loadChain(ctx, gitDir);
   } catch (error) {
@@ -295,7 +311,9 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     const found = findOwnPosition(graph, id);
     if (found === undefined) return undefined;
 
-    const data = commitDataAt(found.layer, found.localPos);
+    const data = commitDataAt(found.layer, found.localPos, {
+      correctedCommitDates: graph.correctedCommitDates,
+    });
     const header: CommitHeader = {
       rootTree: data.rootTree,
       parents: resolveParentIds(graph, data),

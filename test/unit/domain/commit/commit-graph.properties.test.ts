@@ -40,7 +40,7 @@ describe('commit-graph parser properties', () => {
             model.commits.forEach((commit, i) => {
               expect(positionOf(layer, commit.oid)).toBe(i);
 
-              const result = commitDataAt(layer, i);
+              const result = commitDataAt(layer, i, { correctedCommitDates: true });
               const expected = expectedParents(commit);
               const expectedGeneration = model.includeGenerationData
                 ? commit.committerDate + commit.generationV2Offset

@@ -285,4 +285,77 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
       });
     });
   });
+
+  describe('Given a split commit-graph chain whose newest layer stores no corrected commit dates', () => {
+    let dir = '';
+    let ctx: Context;
+    let a = '' as ObjectId;
+    let z = '' as ObjectId;
+
+    /**
+     * A default (`generationVersion=2`) base layer over `root ← merged`, then a
+     * `commitGraph.generationVersion=1` layer over the rest. git clears
+     * `read_generation_data` across the WHOLE chain, so the walk ranks every
+     * commit by topological level; reading the base layer's corrected commit
+     * dates alongside the newer layer's levels would rank the two oldest
+     * commits billions of units above every tip.
+     */
+    beforeAll(async () => {
+      dir = await makeRepo('mixed-generation-chain');
+      const tree = git(dir, 'mktree').trim();
+      const commitTree = (name: string, epoch: number, parents: ReadonlyArray<string>): string => {
+        const args = ['-C', dir, 'commit-tree', tree];
+        for (const parent of parents) args.push('-p', parent);
+        return runGit([...args, '-m', name], { env: datedEnv(epoch) }).trim();
+      };
+      const root = commitTree('root', 1_700_000_100, []);
+      const merged = commitTree('merged', 1_700_000_900, [root]);
+      git(dir, 'update-ref', 'refs/heads/seed', merged);
+      await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable', '--split=no-merge']);
+      const side = commitTree('side', 1_700_000_300, []);
+      const topic = commitTree('topic', 1_700_000_400, [side]);
+      a = commitTree('a', 1_700_000_500, [topic, merged]) as ObjectId;
+      z = commitTree('z', 1_700_000_500, [topic, merged]) as ObjectId;
+      git(dir, 'update-ref', 'refs/heads/a', a);
+      git(dir, 'update-ref', 'refs/heads/z', z);
+      git(dir, 'update-ref', '-d', 'refs/heads/seed');
+      await runGitAsync([
+        '-C',
+        dir,
+        '-c',
+        'commitGraph.generationVersion=1',
+        'commit-graph',
+        'write',
+        '--reachable',
+        '--split=no-merge',
+      ]);
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When mergeBase runs over the two tips that share both bases', () => {
+      it('Then the single result matches git merge-base under the demoted chain', async () => {
+        // Arrange
+        const expected = git(dir, 'merge-base', a, z).trim();
+
+        // Act
+        const result = await mergeBase(ctx, [a, z]);
+
+        // Assert
+        expect(result).toEqual([expected]);
+      });
+
+      it('Then the { all: true } set matches git merge-base --all under the demoted chain', async () => {
+        // Arrange
+        const expected = git(dir, 'merge-base', '--all', a, z).trim().split('\n');
+
+        // Act
+        const result = await mergeBase(ctx, [a, z], { all: true });
+
+        // Assert
+        expect(asSortedSet(result)).toEqual(asSortedSet(expected));
+      });
+    });
+  });
 });

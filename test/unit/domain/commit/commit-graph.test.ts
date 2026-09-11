@@ -270,7 +270,7 @@ describe('commit-graph', () => {
 
           // Act + Assert
           model.commits.forEach((c, i) => {
-            const result = commitDataAt(layer, i);
+            const result = commitDataAt(layer, i, { correctedCommitDates: true });
             expect(result.rootTree).toBe(c.rootTree);
             expect(result.committerDate).toBe(c.committerDate);
             expect(result.generation).toBe(c.committerDate + c.generationV2Offset);
@@ -298,7 +298,7 @@ describe('commit-graph', () => {
             const layer = parseCommitGraphLayer(buildCommitGraphBytes(fiveCommitModel()));
 
             // Act
-            const result = commitDataAt(layer, pos);
+            const result = commitDataAt(layer, pos, { correctedCommitDates: true });
 
             // Assert
             expect(result.parent1Pos).toBe(expectedParent1);
@@ -316,7 +316,7 @@ describe('commit-graph', () => {
           const layer = parseCommitGraphLayer(buildCommitGraphBytes(octopusModel()));
 
           // Act
-          const result = commitDataAt(layer, 3);
+          const result = commitDataAt(layer, 3, { correctedCommitDates: true });
 
           // Assert
           expect(result.parent1Pos).toBe(0);
@@ -376,10 +376,30 @@ describe('commit-graph', () => {
           const layer = parseCommitGraphLayer(buildCommitGraphBytes(model));
 
           // Act
-          const result = commitDataAt(layer, 2);
+          const result = commitDataAt(layer, 2, { correctedCommitDates: true });
 
           // Assert
           expect(result.generation).toBe(model.commits[2]!.generationV1);
+        });
+      });
+    });
+
+    describe('Given a layer that does carry a GDA2 chunk', () => {
+      describe('When reading commit data with corrected commit dates ruled out', () => {
+        it('Then generation is the CDAT v1 topological level, not the stored corrected date', () => {
+          // Arrange — git clears `read_generation_data` across a WHOLE chain as
+          // soon as any one layer lacks GDA2, so a layer that does store
+          // corrected dates must still serve topological levels when asked.
+          const model = fiveCommitModel();
+          const layer = parseCommitGraphLayer(buildCommitGraphBytes(model));
+          const entry = model.commits[2]!;
+
+          // Act
+          const result = commitDataAt(layer, 2, { correctedCommitDates: false });
+
+          // Assert
+          expect(result.generation).toBe(entry.generationV1);
+          expect(result.generation).not.toBe(entry.committerDate + entry.generationV2Offset);
         });
       });
     });
@@ -602,7 +622,7 @@ describe('commit-graph', () => {
 
           // Act & Assert
           expectThrows(
-            () => commitDataAt(layer, 3),
+            () => commitDataAt(layer, 3, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
             'missing EDGE chunk',
           );
@@ -620,7 +640,7 @@ describe('commit-graph', () => {
 
           // Act & Assert
           expectThrows(
-            () => commitDataAt(layer, 3),
+            () => commitDataAt(layer, 3, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
             'never terminates',
           );
@@ -636,7 +656,7 @@ describe('commit-graph', () => {
           const layer = parseCommitGraphLayer(buildCommitGraphBytes(model));
 
           // Act
-          const result = commitDataAt(layer, 1);
+          const result = commitDataAt(layer, 1, { correctedCommitDates: true });
 
           // Assert
           const overflowCommit = model.commits[1]!;
@@ -656,7 +676,11 @@ describe('commit-graph', () => {
           const layer = parseCommitGraphLayer(bytes);
 
           // Act & Assert
-          expectThrows(() => commitDataAt(layer, 0), 'INVALID_COMMIT_GRAPH_CHUNK', 'missing GDO2');
+          expectThrows(
+            () => commitDataAt(layer, 0, { correctedCommitDates: true }),
+            'INVALID_COMMIT_GRAPH_CHUNK',
+            'missing GDO2',
+          );
         });
       });
     });
@@ -669,7 +693,11 @@ describe('commit-graph', () => {
           const layer = parseCommitGraphLayer(bytes);
 
           // Act & Assert
-          expectThrows(() => commitDataAt(layer, 1), 'INVALID_COMMIT_GRAPH_CHUNK', 'out of range');
+          expectThrows(
+            () => commitDataAt(layer, 1, { correctedCommitDates: true }),
+            'INVALID_COMMIT_GRAPH_CHUNK',
+            'out of range',
+          );
         });
       });
     });
@@ -683,7 +711,11 @@ describe('commit-graph', () => {
           const layer = parseCommitGraphLayer(bytes);
 
           // Act & Assert
-          expectThrows(() => commitDataAt(layer, 1), 'INVALID_COMMIT_GRAPH_CHUNK', 'out of range');
+          expectThrows(
+            () => commitDataAt(layer, 1, { correctedCommitDates: true }),
+            'INVALID_COMMIT_GRAPH_CHUNK',
+            'out of range',
+          );
         });
       });
     });

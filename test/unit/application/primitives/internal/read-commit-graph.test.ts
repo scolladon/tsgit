@@ -20,6 +20,7 @@ import type {
   Tree,
 } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { buildCommitGraphBytes } from '../../../domain/commit/arbitraries.js';
 import { buildSeededContext, instrumentedContext, writeCommitGraph } from '../fixtures.js';
 
 const withFsOverride = (ctx: Context, overrides: Partial<Context['fs']>): Context => ({
@@ -110,6 +111,72 @@ const AUTHOR: AuthorIdentity = {
   timestamp: 1700000000,
   timezoneOffset: '+0000',
 };
+
+const oid = (prefix: string): ObjectId => (prefix + '0'.repeat(40 - prefix.length)) as ObjectId;
+
+interface MixedChainCommits {
+  readonly root: ObjectId;
+  readonly middle: ObjectId;
+  readonly tip: ObjectId;
+}
+
+/**
+ * Write git's "mixed generation" chain shape: the BASE layer stores corrected
+ * commit dates (GDA2), while the TIP layer — a `commitGraph.generationVersion=1`
+ * write — stores none. Generations are chosen so the two readings disagree:
+ * corrected dates would report 1000/1001 for the base layer, topological levels
+ * report 1/2. Synthetic oids, because only the graph is being read here.
+ */
+async function writeMixedGenerationChain(ctx: Context): Promise<MixedChainCommits> {
+  const commits: MixedChainCommits = { root: oid('aa01'), middle: oid('aa02'), tip: oid('aa03') };
+  const baseBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 0,
+    baseGraphHashes: [],
+    includeGenerationData: true,
+    commits: [
+      {
+        oid: commits.root,
+        rootTree: oid('ee01'),
+        parentPositions: [],
+        generationV1: 1,
+        committerDate: 1000,
+        generationV2Offset: 0,
+      },
+      {
+        oid: commits.middle,
+        rootTree: oid('ee02'),
+        parentPositions: [0],
+        generationV1: 2,
+        committerDate: 900,
+        generationV2Offset: 101,
+      },
+    ],
+  });
+  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const tipBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 1,
+    baseGraphHashes: [baseHash],
+    includeGenerationData: false,
+    commits: [
+      {
+        oid: commits.tip,
+        rootTree: oid('ee03'),
+        parentPositions: [1],
+        generationV1: 3,
+        committerDate: 500,
+        generationV2Offset: 0,
+      },
+    ],
+  });
+  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const gitDir = commonGitDir(ctx);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
+  await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${baseHash}\n${tipHash}\n`);
+  return commits;
+}
 
 async function emptyTree(ctx: Awaited<ReturnType<typeof buildSeededContext>>): Promise<ObjectId> {
   const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
@@ -260,6 +327,31 @@ describe('read-commit-graph', () => {
 
           // Assert
           await expect(attempt).rejects.toThrow(`parent ${root.id} is outside every layer`);
+        });
+      });
+    });
+
+    describe('Given a chain whose tip layer stores no corrected commit dates', () => {
+      describe('When commitHeader is called for commits in both layers', () => {
+        it('Then every layer serves topological levels, not just the one missing GDA2', async () => {
+          // Arrange — git's `validate_mixed_generation_chain` clears
+          // `read_generation_data` on EVERY layer as soon as one lacks GDA2, so
+          // the base layer's stored corrected dates (1000/1001) must not be
+          // served alongside the tip layer's levels.
+          const ctx = await buildSeededContext();
+          const { root, middle, tip } = await writeMixedGenerationChain(ctx);
+
+          // Act
+          const rootHeader = await commitHeader(ctx, root);
+          const middleHeader = await commitHeader(ctx, middle);
+          const tipHeader = await commitHeader(ctx, tip);
+
+          // Assert
+          expect(rootHeader?.generation).toBe(1);
+          expect(middleHeader?.generation).toBe(2);
+          expect(tipHeader?.generation).toBe(3);
+          expect(middleHeader?.parents).toEqual([root]);
+          expect(tipHeader?.parents).toEqual([middle]);
         });
       });
     });

@@ -20,7 +20,7 @@ function readParentPositions(
   layer: ReturnType<typeof parseCommitGraphLayer>,
   localPos: number,
 ): readonly number[] {
-  const data = commitDataAt(layer, localPos);
+  const data = commitDataAt(layer, localPos, { correctedCommitDates: true });
   return [
     ...(data.parent1Pos !== undefined ? [data.parent1Pos] : []),
     ...(data.parent2Pos !== undefined ? [data.parent2Pos] : []),
@@ -79,7 +79,7 @@ describe('serializeCommitGraph properties', () => {
             for (const commit of commits) {
               const localPos = positionOf(result, commit.id);
               expect(localPos).not.toBeUndefined();
-              const data = commitDataAt(result, localPos!);
+              const data = commitDataAt(result, localPos!, { correctedCommitDates: true });
 
               expect(data.rootTree).toBe(commit.rootTree);
               expect(data.committerDate).toBe(commit.committerDate);

@@ -491,4 +491,65 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       });
     });
   });
+
+  describe('Given a split commit-graph chain whose newest layer stores no corrected commit dates', () => {
+    let dir = '';
+    let ctx: Context;
+    const commits: Record<string, string> = {};
+
+    /**
+     * git's own mixed-generation chain: a default (`generationVersion=2`) base
+     * layer over `root ← merged`, then a `commitGraph.generationVersion=1`
+     * layer over the rest. git clears `read_generation_data` across the WHOLE
+     * chain, so every commit is ranked by topological level; reading the base
+     * layer's corrected commit dates alongside the newer layer's levels puts
+     * the two oldest commits billions of units above every tip and prunes them
+     * out of the walk entirely.
+     */
+    beforeAll(async () => {
+      dir = await makeRepo('mixed-generation-chain');
+      const tree = git(dir, 'mktree').trim();
+      const commitTree = (name: string, epoch: number, parents: ReadonlyArray<string>): string => {
+        const args = ['-C', dir, 'commit-tree', tree];
+        for (const parent of parents) args.push('-p', parent);
+        return runGit([...args, '-m', name], { env: datedEnv(epoch) }).trim();
+      };
+      commits.root = commitTree('root', 1_700_000_100, []);
+      commits.merged = commitTree('merged', 1_700_000_900, [commits.root]);
+      git(dir, 'update-ref', 'refs/heads/seed', commits.merged);
+      await runGitAsync(['-C', dir, 'commit-graph', 'write', '--reachable', '--split=no-merge']);
+      commits.side = commitTree('side', 1_700_000_300, []);
+      commits.topic = commitTree('topic', 1_700_000_400, [commits.side]);
+      const a = commitTree('a', 1_700_000_500, [commits.topic, commits.merged]);
+      const z = commitTree('z', 1_700_000_500, [commits.topic, commits.merged]);
+      git(dir, 'update-ref', 'refs/heads/a', a);
+      git(dir, 'update-ref', 'refs/heads/z', z);
+      git(dir, 'update-ref', '-d', 'refs/heads/seed');
+      await runGitAsync([
+        '-C',
+        dir,
+        '-c',
+        'commitGraph.generationVersion=1',
+        'commit-graph',
+        'write',
+        '--reachable',
+        '--split=no-merge',
+      ]);
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('When nameRevCmd names commits from both chain layers', () => {
+      it.each(['root', 'merged', 'side', 'topic'])('Then %s matches git name-rev', async (name) => {
+        // Arrange & Act
+        const result = await nameRevCmd(ctx, commits[name]!);
+
+        // Assert
+        expect(renderNameRev(result)).toBe(gitNameRev(dir, commits[name]!));
+      });
+    });
+  });
 });
