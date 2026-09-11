@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as readCommitMetaModule from '../../../../src/application/primitives/internal/read-commit-meta.js';
 import { mergeBase } from '../../../../src/application/primitives/merge-base.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -22,6 +23,13 @@ const objectStoreReadPaths = (
   calls
     .filter((call) => call.method === 'read' && OBJECT_STORE_READ.test(call.path))
     .map((c) => c.path);
+
+/** Every oid the walk asked `readCommitMeta` about — the per-call memo means
+ *  each consulted commit appears exactly once, so the set pins the walk's
+ *  reach without depending on where the bytes came from. */
+const consultedIds = (
+  spy: MockInstance<typeof readCommitMetaModule.readCommitMeta>,
+): ReadonlySet<ObjectId> => new Set(spy.mock.calls.map(([, id]) => id));
 
 const asCommits = async (ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> => {
   const commits: Commit[] = [];
@@ -677,66 +685,60 @@ describe('mergeBase', () => {
 
   describe('Given two disjoint candidate chains whose reduction boundary is graph-covered', () => {
     describe('When mergeBase({ all: true }) reduces the two non-redundant candidates', () => {
-      it('Then removeRedundant breaks at the minimum generation and never reads past it', async () => {
+      it('Then removeRedundant breaks at the minimum generation and never consults past it', async () => {
         // Arrange — P and Q are fully disjoint linear chains; D and E both
         // merge their tips directly, so p2 and q2 are both non-redundant
-        // merge bases with no common ancestor between them. The commit-graph
-        // covers p1, p2, q0, q1, q2 (every commit removeRedundant needs to
-        // confirm neither candidate reaches the other) but NOT p0 — a walk
-        // that failed to stop at the candidate-set minimum generation (300,
-        // since q1's covered generation 250 falls below it) would carry on
-        // past p1 into p0, an object-store read.
-        const base = await buildSeededContext();
-        const treeId = await emptyTree(base);
-        const p0 = await commitWith(base, treeId, 100, []);
-        const p1 = await commitWith(base, treeId, 200, [p0]);
-        const p2 = await commitWith(base, treeId, 300, [p1]);
-        const q0 = await commitWith(base, treeId, 150, []);
-        const q1 = await commitWith(base, treeId, 250, [q0]);
-        const q2 = await commitWith(base, treeId, 350, [q1]);
-        const d = await commitWith(base, treeId, 1000, [p2, q2]);
-        const e = await commitWith(base, treeId, 1001, [q2, p2]);
-        await writeCommitGraph(base, [await asCommits(base, [p1, p2, q0, q1, q2, d, e])]);
-        base.deltaCache.clear();
-        const { ctx, calls } = instrumentedContext(base);
+        // merge bases with no common ancestor between them. The graph covers
+        // EVERY commit, so the oracle is which commits the walk consults, not
+        // where the bytes come from: the reduction floor is the candidate-set
+        // minimum generation (300), so q1 (250) trips the break and the two
+        // roots are never reached.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const p0 = await commitWith(ctx, treeId, 100, []);
+        const p1 = await commitWith(ctx, treeId, 200, [p0]);
+        const p2 = await commitWith(ctx, treeId, 300, [p1]);
+        const q0 = await commitWith(ctx, treeId, 150, []);
+        const q1 = await commitWith(ctx, treeId, 250, [q0]);
+        const q2 = await commitWith(ctx, treeId, 350, [q1]);
+        const d = await commitWith(ctx, treeId, 1000, [p2, q2]);
+        const e = await commitWith(ctx, treeId, 1001, [q2, p2]);
+        await writeCommitGraph(ctx, [await asCommits(ctx, [p0, p1, p2, q0, q1, q2, d, e])]);
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
 
         // Act
         const result = await mergeBase(ctx, [d, e], { all: true });
 
         // Assert
         expect(result).toEqual([p2, q2].sort());
-        expect(objectStoreReadPaths(calls())).toEqual([]);
+        expect(consultedIds(consult)).toEqual(new Set([d, e, p1, p2, q1, q2]));
       });
     });
   });
 
-  describe('Given the mirrored disjoint chains, where Q now carries the lower intermediate generation', () => {
-    describe('When mergeBase({ all: true }) reduces the two non-redundant candidates', () => {
-      it('Then the protected deepest ancestor follows the generation values, not a fixed side', async () => {
-        // Arrange — same shape as the P/Q fixture above with the roles
-        // swapped: q1's generation (200) is now the lower one, so the break
-        // must protect q0 this time. A comparator that ignored generation (or
-        // favoured a hard-coded side) would protect the wrong one.
-        const base = await buildSeededContext();
-        const treeId = await emptyTree(base);
-        const p0 = await commitWith(base, treeId, 150, []);
-        const p1 = await commitWith(base, treeId, 250, [p0]);
-        const p2 = await commitWith(base, treeId, 350, [p1]);
-        const q0 = await commitWith(base, treeId, 100, []);
-        const q1 = await commitWith(base, treeId, 200, [q0]);
-        const q2 = await commitWith(base, treeId, 300, [q1]);
-        const d = await commitWith(base, treeId, 1000, [p2, q2]);
-        const e = await commitWith(base, treeId, 1001, [q2, p2]);
-        await writeCommitGraph(base, [await asCommits(base, [p0, p1, p2, q1, q2, d, e])]);
-        base.deltaCache.clear();
-        const { ctx, calls } = instrumentedContext(base);
+  describe('Given an octopus accumulator holding an ancestor far below the other candidate', () => {
+    describe('When mergeBase({ octopus: true, all: true }) reduces it under a full graph', () => {
+      it('Then the reduction floor is the LOWEST candidate generation, so the ancestor is dropped', async () => {
+        // Arrange — a←m←c and a←b, so folding [d, e, c] leaves the
+        // accumulator {a, c} with a (generation 100) an ancestor of c
+        // (generation 300). Only a floor taken as the MINIMUM of the two lets
+        // the reduction walk descend from c to a and mark it redundant; a
+        // floor of 300 would break at m and keep the ancestor.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const a = await commitWith(ctx, treeId, 100, []);
+        const m = await commitWith(ctx, treeId, 200, [a]);
+        const c = await commitWith(ctx, treeId, 300, [m]);
+        const b = await commitWith(ctx, treeId, 400, [a]);
+        const d = await commitWith(ctx, treeId, 500, [b, c]);
+        const e = await commitWith(ctx, treeId, 600, [c, b]);
+        await writeCommitGraph(ctx, [await asCommits(ctx, [a, m, c, b, d, e])]);
 
         // Act
-        const result = await mergeBase(ctx, [d, e], { all: true });
+        const result = await mergeBase(ctx, [d, e, c], { octopus: true, all: true });
 
         // Assert
-        expect(result).toEqual([p2, q2].sort());
-        expect(objectStoreReadPaths(calls())).toEqual([]);
+        expect(result).toEqual([c]);
       });
     });
   });

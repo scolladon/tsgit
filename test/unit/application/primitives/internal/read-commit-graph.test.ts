@@ -220,6 +220,50 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given a fixture graph over a child whose parent carries a much newer date', () => {
+      describe('When commitHeader is called for both commits', () => {
+        it('Then each generation is the corrected commit date git would store', async () => {
+          // Arrange — git's corrected commit date is
+          // `max(committerDate, max(parentGeneration) + 1)`, so a child
+          // committed BEFORE its parent still outranks it by exactly one.
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const root = await makeCommit(ctx, tree, [], 1000, 'root');
+          const child = await makeCommit(ctx, tree, [root.id], 10, 'child');
+          await writeCommitGraph(ctx, [[root, child]]);
+
+          // Act
+          const rootHeader = await commitHeader(ctx, root.id);
+          const childHeader = await commitHeader(ctx, child.id);
+
+          // Assert
+          expect(rootHeader?.generation).toBe(1000);
+          expect(childHeader?.generation).toBe(1001);
+        });
+      });
+    });
+
+    describe('Given a layer set that omits a commit referenced as a parent', () => {
+      describe('When the fixture is asked to write that graph', () => {
+        it('Then it refuses, because a valid commit-graph never omits a parent', async () => {
+          // Arrange — encoding the absent parent as position 0 would forge a
+          // phantom edge to whichever commit sorts first, silently weakening
+          // every walk assertion built on the graph.
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const root = await makeCommit(ctx, tree, [], 1, 'root');
+          const child = await makeCommit(ctx, tree, [root.id], 2, 'child');
+          const sut = writeCommitGraph;
+
+          // Act
+          const attempt = sut(ctx, [[child]]);
+
+          // Assert
+          await expect(attempt).rejects.toThrow(`parent ${root.id} is outside every layer`);
+        });
+      });
+    });
+
     describe('Given a commit that is real but absent from an otherwise-valid graph', () => {
       describe('When commitHeader is called for it', () => {
         it('Then returns undefined', async () => {

@@ -478,18 +478,58 @@ export function serializeIndexFixture(index: GitIndex): Uint8Array {
 
 const byOidAscending = (a: Commit, b: Commit): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
+/** A valid commit-graph layer set covers every parent it references; encoding
+ *  an absent one as position 0 would forge a phantom edge to whichever commit
+ *  sorts first and silently weaken every assertion built on the graph. */
+function requireCovered<V>(covered: ReadonlyMap<ObjectId, V>, parent: ObjectId): V {
+  const value = covered.get(parent);
+  if (value === undefined) {
+    throw new Error(`commit-graph fixture: parent ${parent} is outside every layer`);
+  }
+  return value;
+}
+
+/**
+ * Git's corrected commit dates over the whole layer set, base → tip:
+ * `generation = max(committerDate, max(parentGeneration) + 1)`. Iterative so a
+ * long fixture chain cannot overflow the stack; each commit is settled only
+ * once every parent it names already is.
+ */
+function correctedCommitDates(commits: ReadonlyArray<Commit>): ReadonlyMap<ObjectId, number> {
+  const byOid = new Map(commits.map((commit) => [commit.id, commit]));
+  const generations = new Map<ObjectId, number>();
+  for (const start of commits) {
+    const pending: ObjectId[] = [start.id];
+    while (pending.length > 0) {
+      const oid = pending[pending.length - 1]!;
+      const parents = requireCovered(byOid, oid).data.parents;
+      const unsettled = parents.filter((parent) => !generations.has(parent));
+      if (unsettled.length > 0) {
+        for (const parent of unsettled) pending.push(requireCovered(byOid, parent).id);
+        continue;
+      }
+      pending.pop();
+      const commit = requireCovered(byOid, oid);
+      const fromParents = parents.map((parent) => requireCovered(generations, parent) + 1);
+      generations.set(oid, Math.max(commit.data.committer.timestamp, ...fromParents));
+    }
+  }
+  return generations;
+}
+
 function layerModelFor(
   sorted: ReadonlyArray<Commit>,
   positionOf: ReadonlyMap<ObjectId, number>,
+  generations: ReadonlyMap<ObjectId, number>,
   baseGraphHashes: ReadonlyArray<ObjectId>,
 ): CommitGraphLayerModel {
   const commits: CommitGraphCommitModel[] = sorted.map((commit) => ({
     oid: commit.id,
     rootTree: commit.data.tree,
-    parentPositions: commit.data.parents.map((parent) => positionOf.get(parent)!),
+    parentPositions: commit.data.parents.map((parent) => requireCovered(positionOf, parent)),
     generationV1: 1,
     committerDate: commit.data.committer.timestamp,
-    generationV2Offset: 0,
+    generationV2Offset: requireCovered(generations, commit.id) - commit.data.committer.timestamp,
   }));
   return {
     hashVersion: 1,
@@ -506,7 +546,9 @@ function layerModelFor(
  * format, via the domain parser's own test encoder). Each layer is sorted by
  * oid — the on-disk fanout/OIDL requirement — and parent references are
  * resolved to GLOBAL positions across the concatenated layer ordering, the
- * same arithmetic `read-commit-graph.ts` decodes.
+ * same arithmetic `read-commit-graph.ts` decodes. Generations are git's own
+ * corrected commit dates, so a fixture graph orders a walk exactly as a
+ * git-written one does. Refuses a layer set that omits a referenced parent.
  */
 export async function writeCommitGraph(
   ctx: Context,
@@ -523,9 +565,12 @@ export async function writeCommitGraph(
     cumulative += sorted.length;
     return sorted;
   });
+  const generations = correctedCommitDates(layers.flat());
 
   if (sortedLayers.length === 1) {
-    const bytes = buildCommitGraphBytes(layerModelFor(sortedLayers[0]!, positionOf, []));
+    const bytes = buildCommitGraphBytes(
+      layerModelFor(sortedLayers[0]!, positionOf, generations, []),
+    );
     await ctx.fs.write(commitGraphPath(gitDir), bytes);
     return;
   }
@@ -533,7 +578,9 @@ export async function writeCommitGraph(
   const hashes: ObjectId[] = [];
   for (const sorted of sortedLayers) {
     const baseGraphHashes = hashes.length > 0 ? [hashes[hashes.length - 1]!] : [];
-    const bytes = buildCommitGraphBytes(layerModelFor(sorted, positionOf, baseGraphHashes));
+    const bytes = buildCommitGraphBytes(
+      layerModelFor(sorted, positionOf, generations, baseGraphHashes),
+    );
     const hash = (await ctx.hash.hashHex(bytes)) as ObjectId;
     hashes.push(hash);
     await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${hash}.graph`, bytes);
