@@ -32,3 +32,7 @@ a stored `0` yields `GENERATION_INFINITY`, playing git's `GENERATION_NUMBER_INFI
 With no graph every generation is infinite, so every generation-aware comparator degenerates to
 today's date order and every cutoff is inert — the gate is the data, not a flag. A graph-absent
 commit met while a graph-covered target sets the cutoff is never pruned, exactly as in git.
+
+The shared reader and its three consumers, together with the prune predicate and the set-accepting
+walks landed alongside it, push the `primitives` chunk 481 B gzipped past its 62 kB budget; the
+budget moves to 63 kB in the same change, as the house convention for genuine growth prescribes.
