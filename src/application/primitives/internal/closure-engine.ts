@@ -232,20 +232,20 @@ async function emitSeedsWithoutWalking(
  * needs the FULL walked set before any tree is emitted, since a boundary a
  * later commit surfaces must still gate an earlier commit's own tree walk.
  */
-async function walkAndEmitCommits(
+/**
+ * Drain the interesting walk into a buffer. git's `mark_edges_uninteresting`
+ * runs over the WHOLE interesting frontier (`limit_list`) before `--max-count`
+ * truncates the output, so a limited-objects walk (one with a `not` side) must
+ * reach the `until` boundary before `maxCount` applies — otherwise an edge
+ * parent beyond the count never has its tree marked. A commits-only or
+ * negative-free walk has no boundary to discover past the cap and stops early.
+ */
+async function collectLimitedWalk(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
-  scope: TreeEmitScope,
   request: ClosureRequest,
-  emit: Emit,
-): Promise<void> {
-  // git's `mark_edges_uninteresting` runs over the WHOLE interesting frontier
-  // (`limit_list`) before `--max-count` truncates the output, so an edge parent
-  // beyond the count still has its tree marked. A limited-objects walk (one with
-  // a `not` side) must therefore drain to the `until` boundary before applying
-  // `maxCount`; a commits-only or negative-free walk has no boundary to discover
-  // past the cap and breaks early as before.
+): Promise<WalkedCommit[]> {
   const drainsFully = request.objects === true && marks.commits.size > 0;
   const walked: WalkedCommit[] = [];
   for await (const commit of walkCommits(ctx, {
@@ -257,7 +257,18 @@ async function walkAndEmitCommits(
     walked.push({ id: commit.id, tree: commit.data.tree, parents: commit.data.parents });
     if (request.maxCount !== undefined && walked.length >= request.maxCount && !drainsFully) break;
   }
+  return walked;
+}
 
+async function walkAndEmitCommits(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  marks: NotMarks,
+  scope: TreeEmitScope,
+  request: ClosureRequest,
+  emit: Emit,
+): Promise<void> {
+  const walked = await collectLimitedWalk(ctx, commitSeeds, marks, request);
   if (request.objects) await markBoundaryTrees(ctx, walked, marks);
 
   const emitted = request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
