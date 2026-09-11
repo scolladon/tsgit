@@ -315,7 +315,7 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
     }, 60_000);
   });
 
-  describe('Given a clone and one commit adding a single new file on top of shared history', () => {
+  describe('Given a clone of the shared history, When one commit adding a single new file is pushed', () => {
     it("Then the bare repo's object set grows by exactly git's minimal pack", async () => {
       // Arrange — clone into an isolated workdir.
       const localDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-push-minimal-it-'));

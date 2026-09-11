@@ -171,15 +171,13 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         freshCtx = createNodeContext({ workDir: dir });
       }, SETUP_TIMEOUT);
 
-      describe('When nameRevCmd renders each rev kind', () => {
-        it.each(REV_RENDER_MATRIX)(
-          'Then $label, identically to before the graph',
-          async ({ rev }) => {
-            // Arrange & Act & Assert
-            expect(renderNameRev(await nameRevCmd(freshCtx, rev()))).toBe(gitNameRev(dir, rev()));
-          },
-        );
-      });
+      it.each(REV_RENDER_MATRIX)(
+        'Then $label renders identically to before the graph',
+        async ({ rev }) => {
+          // Arrange & Act & Assert
+          expect(renderNameRev(await nameRevCmd(freshCtx, rev()))).toBe(gitNameRev(dir, rev()));
+        },
+      );
 
       it('Then a refs filter still matches git name-rev --refs', async () => {
         // Arrange & Act & Assert
@@ -284,24 +282,20 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         freshCtx = createNodeContext({ workDir: dir });
       }, SETUP_TIMEOUT);
 
-      describe('When nameRevCmd renders first-parent ancestors', () => {
-        it('Then first-parent ancestors still render with `~n`', async () => {
-          // Arrange & Act & Assert
-          expect(renderNameRev(await nameRevCmd(freshCtx, merge))).toBe(gitNameRev(dir, merge));
-          expect(renderNameRev(await nameRevCmd(freshCtx, m1))).toBe(gitNameRev(dir, m1));
-          expect(renderNameRev(await nameRevCmd(freshCtx, base))).toBe(gitNameRev(dir, base));
-        });
+      it('Then first-parent ancestors still render with `~n`', async () => {
+        // Arrange & Act & Assert
+        expect(renderNameRev(await nameRevCmd(freshCtx, merge))).toBe(gitNameRev(dir, merge));
+        expect(renderNameRev(await nameRevCmd(freshCtx, m1))).toBe(gitNameRev(dir, m1));
+        expect(renderNameRev(await nameRevCmd(freshCtx, base))).toBe(gitNameRev(dir, base));
       });
 
-      describe('When nameRevCmd renders side-branch commits', () => {
-        it.each(SIDE_COMMIT_MATRIX)(
-          'Then $label, identically to before the graph',
-          async ({ rev }) => {
-            // Arrange & Act & Assert
-            expect(renderNameRev(await nameRevCmd(freshCtx, rev()))).toBe(gitNameRev(dir, rev()));
-          },
-        );
-      });
+      it.each(SIDE_COMMIT_MATRIX)(
+        'Then $label renders identically to before the graph',
+        async ({ rev }) => {
+          // Arrange & Act & Assert
+          expect(renderNameRev(await nameRevCmd(freshCtx, rev()))).toBe(gitNameRev(dir, rev()));
+        },
+      );
     });
   });
 
