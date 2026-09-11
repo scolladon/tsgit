@@ -109091,7 +109091,31 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Emit the resolved tips themselves and stop — no parent traversal.\nUnder "
+										"text": "Emit the resolved tips themselves and stop — no parent traversal. Ignored\nonce a "
+									},
+									{
+										"kind": "code",
+										"text": "`not`"
+									},
+									{
+										"kind": "text",
+										"text": " tip is present (git drops "
+									},
+									{
+										"kind": "code",
+										"text": "`--no-walk`"
+									},
+									{
+										"kind": "text",
+										"text": " for a range); with no\n"
+									},
+									{
+										"kind": "code",
+										"text": "`not`"
+									},
+									{
+										"kind": "text",
+										"text": " side and "
 									},
 									{
 										"kind": "code",
@@ -117883,6 +117907,22 @@
 								"isOptional": true,
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Boundary commits: neither they nor their ancestors are yielded. A\n"
+									},
+									{
+										"kind": "code",
+										"text": "`ReadonlySet`"
+									},
+									{
+										"kind": "text",
+										"text": " is read by reference, never copied — a caller that mutates\nit before iteration starts changes the walk; an array is copied into a\nset once."
+									}
+								]
+							},
 							"type": {
 								"type": "union",
 								"types": [
@@ -118098,6 +118138,22 @@
 							"flags": {
 								"isOptional": true,
 								"isReadonly": true
+							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Boundary commits: neither they nor their ancestors are yielded. A\n"
+									},
+									{
+										"kind": "code",
+										"text": "`ReadonlySet`"
+									},
+									{
+										"kind": "text",
+										"text": " is read by reference, never copied — a caller that mutates\nit before iteration starts changes the walk; an array is copied into a\nset once."
+									}
+								]
 							},
 							"type": {
 								"type": "union",
@@ -142423,7 +142479,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\nfolds the commits pairwise and reports the reduced accumulator, which leads\nwith the newest-dated base. Unrelated histories yield "
+										"text": "\nfolds the commits pairwise and reports the reduced accumulator in Git's fold\norder — each pairwise fold date-sorted, the folds concatenated — so its first\nentry is the newest base of the FIRST fold, not the newest overall. Unrelated\nhistories yield "
 									},
 									{
 										"kind": "code",
@@ -154111,7 +154167,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " first, then every diff runs through "
+										"text": " first, then the diffs run through "
 									},
 									{
 										"kind": "code",
@@ -154119,7 +154175,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " so\nthe walk's read-ahead is never stalled waiting on a diff per iteration."
+										"text": "\nunder the CPU bucket — a recursive, rename-detecting tree diff is\nCPU-dominant and hydrates blob contents for similarity, so the bound follows\nthe cores rather than the I/O pool and keeps the in-flight blob footprint to\na handful of commits while their reads still overlap."
 									}
 								]
 							},
