@@ -1377,7 +1377,7 @@
     "@vitest/coverage-v8": "4.1.11",
     "cspell": "10.3.0",
     "dependency-cruiser": "18.2.0",
-    "fast-check": "4.9.0",
+    "fast-check": "4.10.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.42.0",
     "jscpd": "5.0.16",
