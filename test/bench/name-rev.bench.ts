@@ -98,6 +98,11 @@ await tieredScenario(
 
 const MANY_TAGS_COMMITS = 200;
 
+// Every commit shares one committer second on purpose: the date cutoff
+// (target minus one day) then prunes no tag at its seed, so the row prices the
+// all-tags-live worst case the bounded parent reader exists for. With spread
+// dates almost every tag is pruned at seed and the row collapses to the
+// per-command floor.
 const MANY_TAGS_AUTHOR = {
   name: 'Bench',
   email: 'bench@tsgit.dev',
@@ -164,7 +169,7 @@ const setupManyTagsFixture = async (): Promise<ManyTagsFixture> => {
 
 benchScenario(
   `Given an in-process repository with ${MANY_TAGS_COMMITS} commits and ${MANY_TAGS_COMMITS} lightweight tags spread over the history`,
-  'When name-rev() names a commit under 200 tags, Then measure tsgit',
+  'When name-rev() names a commit under 200 tags all within the cutoff slop, Then measure tsgit',
   async () => {
     const fixture = await setupManyTagsFixture();
     const repo = await openRepository({ cwd: fixture.cwd });
