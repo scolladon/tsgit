@@ -968,3 +968,25 @@ describe('Given a merge commit with three loose, graph-absent parents', () => {
     });
   });
 });
+
+describe('Given the only ref is a descendant dated more than a day before the target (clock skew)', () => {
+  describe('When nameRev names the target', () => {
+    it("Then the descendant seed is pruned at the date cutoff, leaving the target unnamed — git's cutoff", async () => {
+      // Arrange — base <- target at a recent epoch, then a child of target
+      // committed more than a day EARLIER (clock skew). The branch follows to
+      // that child, so the only seed's tip is before `target_date - 1 day`;
+      // git's date-based cutoff prunes it, so the target gets no name.
+      const ctx = await seed();
+      await commitFile(ctx, 'base');
+      const target = await commitFile(ctx, 'target');
+      clock = 100;
+      await commitFile(ctx, 'skewed-descendant');
+
+      // Act
+      const result = await nameRev(ctx, target);
+
+      // Assert — the skewed descendant seed is pruned, so nothing names target
+      expect(result.ref).toBeUndefined();
+    });
+  });
+});

@@ -67,6 +67,9 @@ export const nameRev = async (
   const targetMeta = (await readCommitMeta(ctx, target)) as CommitMeta;
   const cutoff = nameRevCutoff(targetMeta);
   const filter = buildRefFilter(parseNameRevOptions(opts));
+  // Stryker disable next-line MethodExpression: equivalent — `listRefNames` already
+  // returns refs in name order, so this `.sort()` is a defensive no-op (the
+  // reverse-alphabetical tie test names the same ref with or without it).
   const refs = [...(await enumerateRefs(ctx))].filter((ref) => filter.qualifies(ref)).sort();
   const revNames = new Map<ObjectId, RevName>();
   const metas: MetaReader = boundedReaderFor(ctx, 'ioBound', (id) => readCommitMeta(ctx, id));

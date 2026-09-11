@@ -62,6 +62,9 @@ interface PaintEntry extends QueueEntry<undefined> {
 type Precedes = (a: PaintEntry, b: PaintEntry) => boolean;
 
 /** Git's `prio_queue` FIFO tie-break on an otherwise-equal key. */
+// Stryker disable next-line EqualityOperator: equivalent — `ins` is a unique
+// per-entry counter (insertions++ on every push), so a.ins === b.ins never
+// holds and `<` and `<=` order every pair identically.
 const byInsertion: Precedes = (a, b) => a.ins < b.ins;
 
 /** Git's `compare_commits_by_commit_date` — newest committer date first. */
