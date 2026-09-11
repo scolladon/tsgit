@@ -75630,7 +75630,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " past the last line is clamped; a start\nbelow 1, a start past the last line, or an inverted/non-integer range refuse."
+										"text": " past the last line is clamped and inverted\nbounds are swapped (as git does); a start below 1, a start past the last\nline, or a non-integer bound refuse."
 									}
 								]
 							},

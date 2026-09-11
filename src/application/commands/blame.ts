@@ -51,8 +51,9 @@ export interface BlameOptions {
   readonly worktree?: boolean;
   /**
    * Restrict the reported lines to a 1-based inclusive `[start, end]` window over
-   * the final file (git's `-L`). `end` past the last line is clamped; a start
-   * below 1, a start past the last line, or an inverted/non-integer range refuse.
+   * the final file (git's `-L`). `end` past the last line is clamped and inverted
+   * bounds are swapped (as git does); a start below 1, a start past the last
+   * line, or a non-integer bound refuse.
    */
   readonly range?: { readonly start: number; readonly end: number };
 }
@@ -156,17 +157,23 @@ export const blame = async (
       // consult — blame is keyed on `is_bare_repository()`, not work-tree
       // presence (unlike the worktree-less-non-bare shape below, which
       // `requireWorkTree` still refuses).
-      await seed(board, await resolveCommitIsh(ctx, DEFAULT_REV), filePath, DEFAULT_REV);
+      await seed(
+        board,
+        await resolveCommitIsh(ctx, DEFAULT_REV),
+        filePath,
+        DEFAULT_REV,
+        opts.range,
+      );
     } else {
-      await seedWorkingTree(board, requireWorkTree(ctx, 'blame'), filePath);
+      await seedWorkingTree(board, requireWorkTree(ctx, 'blame'), filePath, opts.range);
     }
   } else {
     const rev = opts.rev ?? DEFAULT_REV;
-    await seed(board, await resolveCommitIsh(ctx, rev), filePath, rev);
+    await seed(board, await resolveCommitIsh(ctx, rev), filePath, rev, opts.range);
   }
   await walk(board);
   const lines = [...board.finalized].sort((a, b) => a.finalLine - b.finalLine);
-  return { path: filePath, lines: applyRange(lines, opts.range) };
+  return { path: filePath, lines };
 };
 
 /** `path` split into its `/`-separated segments, for the tree descent below. */
@@ -183,7 +190,12 @@ const isBlameableEntry = (entry: TreeEntry): boolean =>
  * walk; lines that differ (or the whole file when the path is staged-new) finalize
  * as uncommitted. A path absent from both HEAD and the index is untracked → refuse.
  */
-const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath): Promise<void> => {
+const seedWorkingTree = async (
+  sb: Scoreboard,
+  workDir: string,
+  path: FilePath,
+  range: BlameOptions['range'],
+): Promise<void> => {
   // Worktree mode reads the file from disk, so the path is constrained to the
   // repository (rejects `..`, absolute paths, and `.git`) before any FS access —
   // committed-rev mode is unaffected (it resolves paths through the object tree).
@@ -192,11 +204,10 @@ const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath):
   const data = await readCommitData(sb.ctx, head);
   const workingBlob = await readWorkingFile(sb.ctx, workDir, path);
   const workingLines = splitLines(workingBlob);
-  // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty working file; without the guard the zero-count entry flows through splitAgainstParent/finalize and yields no lines, the same empty result (mirrors the committed-rev seed guard below)
-  if (workingLines.length === 0) return;
-  const whole: ReadonlyArray<BlameEntry> = [
-    { finalStart: 0, count: workingLines.length, sourceStart: 0 },
-  ];
+  const window = resolveLineWindow(workingLines.length, range);
+  // Stryker disable next-line ConditionalExpression: equivalent — undefined only for a no-range empty working file (every other empty-file shape now refuses inside resolveLineWindow, mirroring the committed-rev seed guard below); dropping the guard would leave no window to build an entry from, so it only short-circuits that single narrowed no-range case to the same empty result
+  if (window === undefined) return;
+  const whole: ReadonlyArray<BlameEntry> = [seedEntry(window)];
   const segments = pathSegments(path);
   const resolved = await findTreeEntryChain(sb.ctx, data.tree, segments);
   if (resolved !== undefined && isBlameableEntry(resolved.entry)) {
@@ -253,28 +264,50 @@ const finalizeUncommitted = (
   }
 };
 
-/** Filter to a 1-based inclusive line window, clamping `end` and refusing bad bounds. */
-const applyRange = (
-  lines: ReadonlyArray<BlameLine>,
+/** A resolved 1-based inclusive `[start, last]` line window, `last` already clamped to the file. */
+interface LineWindow {
+  readonly start: number;
+  readonly last: number;
+}
+
+/**
+ * Resolve the queried file's line count and an optional `-L` range into the
+ * window to seed, in git's own check order (`builtin/blame.c` `cmd_blame`,
+ * `line-range.c` `parse_loc`/`parse_range_arg`): each bound must be a positive
+ * integer (start first, then end), inverted bounds are swapped rather than
+ * refused, a start beyond the file's line count refuses, and an end beyond it
+ * is clamped. No range over an empty file seeds nothing (`undefined`); every
+ * other empty-file shape refuses through the bound checks above.
+ */
+const resolveLineWindow = (
+  lineCount: number,
   range: BlameOptions['range'],
-): ReadonlyArray<BlameLine> => {
-  if (range === undefined) return lines;
+): LineWindow | undefined => {
+  if (range === undefined) return lineCount === 0 ? undefined : { start: 1, last: lineCount };
   const { start, end } = range;
   if (!Number.isInteger(start) || !Number.isInteger(end)) {
     throw invalidOption('-L', 'line numbers must be integers');
   }
   if (start < 1) throw invalidOption('-L', `invalid line number: ${start}`);
-  if (start > lines.length) throw invalidOption('-L', `file has only ${lines.length} lines`);
-  if (end < start) throw invalidOption('-L', `range end ${end} precedes start ${start}`);
-  const last = Math.min(end, lines.length);
-  return lines.filter((line) => line.finalLine >= start && line.finalLine <= last);
+  if (end < 1) throw invalidOption('-L', `invalid line number: ${end}`);
+  const [bottom, top] = end < start ? [end, start] : [start, end];
+  if (bottom > lineCount) throw invalidOption('-L', `file has only ${lineCount} lines`);
+  return { start: bottom, last: Math.min(top, lineCount) };
 };
+
+/** The single `BlameEntry` a resolved window seeds — the queried file's own numbering, before any parent walk. */
+const seedEntry = (window: LineWindow): BlameEntry => ({
+  finalStart: window.start - 1,
+  count: window.last - window.start + 1,
+  sourceStart: window.start - 1,
+});
 
 const seed = async (
   sb: Scoreboard,
   commit: ObjectId,
   path: FilePath,
   rev: string,
+  range: BlameOptions['range'],
 ): Promise<void> => {
   const data = await readCommitData(sb.ctx, commit);
   const segments = pathSegments(path);
@@ -282,14 +315,15 @@ const seed = async (
   if (resolved === undefined || !isBlameableEntry(resolved.entry)) throw pathNotInTree(rev, path);
   const blob = (await readBlob(sb.ctx, resolved.entry.id)).content;
   const lines = splitLines(blob);
-  // Stryker disable next-line ConditionalExpression: equivalent — lines.length===0 only for an empty blob; without the guard the zero-count entry is scheduled and finalizes no lines, the same empty result
-  if (lines.length === 0) return;
+  const window = resolveLineWindow(lines.length, range);
+  // Stryker disable next-line ConditionalExpression: equivalent — undefined only for a no-range empty blob (every other empty-file shape now refuses inside resolveLineWindow); dropping the guard would leave no window to build an entry from, so it only short-circuits that single narrowed no-range case to the same empty result
+  if (window === undefined) return;
   schedule(sb, {
     commit,
     path,
     pathSegments: segments,
     blobId: resolved.entry.id,
-    entries: [{ finalStart: 0, count: lines.length, sourceStart: 0 }],
+    entries: [seedEntry(window)],
     lines,
     oidChain: resolved.oidChain,
     commitData: data,

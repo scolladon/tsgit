@@ -183,6 +183,19 @@ describe('Given an empty file', () => {
       expect(result.path).toBe('empty.txt');
     });
   });
+
+  describe('When blaming it with a line range', () => {
+    it('Then it refuses with INVALID_OPTION file has only 0 lines', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'empty.txt', '');
+
+      // Act + Assert
+      await expect(blame(ctx, 'empty.txt', { range: { start: 1, end: 1 } })).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'file has only 0 lines' },
+      });
+    });
+  });
 });
 
 describe('Given a path that cannot resolve to a blob in the tree', () => {
@@ -940,16 +953,40 @@ describe('Given a multi-commit file and a line range', () => {
     });
   });
 
+  describe('When the range is inverted', () => {
+    it('Then the bounds are swapped and the resulting window is blamed', async () => {
+      // Arrange
+      const { ctx, c1, c2 } = await buildThreeLineFile();
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { range: { start: 3, end: 1 } });
+
+      // Assert
+      expect(result.lines.map((l) => l.finalLine)).toEqual([1, 2, 3]);
+      expect(committedLines(result).map((l) => l.commit)).toEqual([c1, c2, c1]);
+    });
+  });
+
   describe('When the range is invalid', () => {
     it.each([
       {
-        label: 'an inverted range',
-        range: { start: 3, end: 1 },
-        reason: 'range end 1 precedes start 3',
-      },
-      {
         label: 'a start below 1',
         range: { start: 0, end: 2 },
+        reason: 'invalid line number: 0',
+      },
+      {
+        label: 'a negative start',
+        range: { start: -1, end: 3 },
+        reason: 'invalid line number: -1',
+      },
+      {
+        label: 'an end below 1',
+        range: { start: 1, end: 0 },
+        reason: 'invalid line number: 0',
+      },
+      {
+        label: 'a start below 1 that also exceeds the file length',
+        range: { start: 0, end: 10 },
         reason: 'invalid line number: 0',
       },
       {
@@ -962,6 +999,11 @@ describe('Given a multi-commit file and a line range', () => {
         range: { start: 1.5, end: 2 },
         reason: 'line numbers must be integers',
       },
+      {
+        label: 'a non-integer end',
+        range: { start: 1, end: 2.5 },
+        reason: 'line numbers must be integers',
+      },
     ])('Then it refuses with INVALID_OPTION ($label)', async ({ range, reason }) => {
       // Arrange
       const { ctx } = await buildThreeLineFile();
@@ -970,6 +1012,32 @@ describe('Given a multi-commit file and a line range', () => {
       await expect(blame(ctx, 'f.txt', { range })).rejects.toMatchObject({
         data: { code: 'INVALID_OPTION', option: '-L', reason },
       });
+    });
+  });
+});
+
+describe('Given four commits that each append one new line', () => {
+  describe('When blaming only the window covering the last line', () => {
+    it('Then only the introducing suspect is read and earlier ancestors are never walked', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'line1\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2\n');
+      await commitFile(ctx, 'c3', 'f.txt', 'line1\nline2\nline3\n');
+      const c4 = await commitFile(ctx, 'c4', 'f.txt', 'line1\nline2\nline3\nline4\n');
+      const readCommitDataSpy = vi.spyOn(historyRewriteMod, 'readCommitData');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { range: { start: 4, end: 4 } });
+
+      // Assert
+      const readsOf = (id: ObjectId): number =>
+        readCommitDataSpy.mock.calls.filter(([, calledId]) => calledId === id).length;
+      expect(result.lines.map((l) => l.finalLine)).toEqual([4]);
+      expect(committedLines(result)[0]!.commit).toBe(c4);
+      expect(readsOf(c2)).toBe(0);
+      expect(readsOf(c1)).toBe(0);
+      readCommitDataSpy.mockRestore();
     });
   });
 });
@@ -1149,6 +1217,26 @@ describe('Given a worktree blame and a line range', () => {
       expect(result.lines[1]).toMatchObject({ committed: true, commit: c1 });
     });
   });
+
+  describe('When the range spans two committed edits either side of an uncommitted line', () => {
+    it('Then each line in the window carries its own attribution, uncommitted in the middle', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'b0', 'f.txt', 'a\nb\nc\nd\ne\n');
+      const b1 = await commitFile(ctx, 'b1', 'f.txt', 'a\nB\nc\nd\ne\n');
+      const b2 = await commitFile(ctx, 'b2', 'f.txt', 'a\nB\nc\nD\ne\n');
+      await write(ctx, 'f.txt', 'a\nB\nC\nD\ne\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true, range: { start: 2, end: 4 } });
+
+      // Assert
+      expect(result.lines.map((l) => l.finalLine)).toEqual([2, 3, 4]);
+      expect(result.lines[0]).toMatchObject({ committed: true, commit: b1 });
+      expect(result.lines[1]).toMatchObject({ committed: false });
+      expect(result.lines[2]).toMatchObject({ committed: true, commit: b2 });
+    });
+  });
 });
 
 describe('Given a worktree blame with an empty working file', () => {
@@ -1164,6 +1252,48 @@ describe('Given a worktree blame with an empty working file', () => {
 
       // Assert
       expect(result.lines).toEqual([]);
+    });
+  });
+
+  describe('When blaming it with a line range', () => {
+    it('Then it refuses with INVALID_OPTION file has only 0 lines', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await write(ctx, 'f.txt', '');
+
+      // Act + Assert
+      await expect(
+        blame(ctx, 'f.txt', { worktree: true, range: { start: 1, end: 1 } }),
+      ).rejects.toMatchObject({
+        data: { code: 'INVALID_OPTION', option: '-L', reason: 'file has only 0 lines' },
+      });
+    });
+  });
+});
+
+describe('Given four commits that each append one new line, blamed via the worktree', () => {
+  describe('When blaming only the window covering the last line', () => {
+    it('Then only the introducing suspect is read and earlier ancestors are never walked', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'line1\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2\n');
+      await commitFile(ctx, 'c3', 'f.txt', 'line1\nline2\nline3\n');
+      const c4 = await commitFile(ctx, 'c4', 'f.txt', 'line1\nline2\nline3\nline4\n');
+      const readCommitDataSpy = vi.spyOn(historyRewriteMod, 'readCommitData');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true, range: { start: 4, end: 4 } });
+
+      // Assert
+      const readsOf = (id: ObjectId): number =>
+        readCommitDataSpy.mock.calls.filter(([, calledId]) => calledId === id).length;
+      expect(result.lines.map((l) => l.finalLine)).toEqual([4]);
+      expect(result.lines[0]).toMatchObject({ committed: true, commit: c4 });
+      expect(readsOf(c2)).toBe(0);
+      expect(readsOf(c1)).toBe(0);
+      readCommitDataSpy.mockRestore();
     });
   });
 });

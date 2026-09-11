@@ -23,7 +23,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type BlameLine, type BlameResult, blame } from '../../src/application/commands/blame.js';
 import { ZERO_OID } from '../../src/domain/objects/object-id.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 /** Porcelain renders the zero oid for the "Not Committed Yet" pseudo-commit. */
 const oidOf = (line: BlameLine): string => (line.committed ? line.commit : ZERO_OID);
@@ -159,6 +159,9 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
   let worktree: { dir: string; ctx: Context };
   let deepAncestry: { dir: string; ctx: Context };
   let oursMerge: { dir: string; ctx: Context };
+  let rangeMatrix: { dir: string; ctx: Context };
+  let rangeMatrixBase: string;
+  let emptyFile: { dir: string; ctx: Context };
 
   beforeAll(async () => {
     const linearDir = await makeRepo('linear');
@@ -224,13 +227,39 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       env: datedEnv(clock),
     });
     oursMerge = { dir: oursMergeDir, ctx: createNodeContext({ workDir: oursMergeDir }) };
+
+    // A 5-line file rewritten twice (b0 all lines, b1 rewrites line 2, b2
+    // rewrites line 4) — the fixture the -L window/clamp/swap/refusal rows
+    // below are pinned against.
+    const rangeMatrixDir = await makeRepo('range-matrix');
+    await commitContent(rangeMatrixDir, 'f.txt', 'a\nb\nc\nd\ne\n');
+    // Captured before later commits shift HEAD — blame's `rev` resolves refs
+    // and oids, not gitrevisions ancestry syntax like `HEAD~2`.
+    rangeMatrixBase = git(rangeMatrixDir, 'rev-parse', 'HEAD').trim();
+    await commitContent(rangeMatrixDir, 'f.txt', 'a\nB\nc\nd\ne\n');
+    await commitContent(rangeMatrixDir, 'f.txt', 'a\nB\nc\nD\ne\n');
+    rangeMatrix = { dir: rangeMatrixDir, ctx: createNodeContext({ workDir: rangeMatrixDir }) };
+
+    // A committed empty file — pins the -L empty-file refusal and the
+    // no-range empty-file success (no output, exit 0) side by side.
+    const emptyFileDir = await makeRepo('empty-file');
+    await commitContent(emptyFileDir, 'e.txt', '');
+    emptyFile = { dir: emptyFileDir, ctx: createNodeContext({ workDir: emptyFileDir }) };
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
     await Promise.all(
-      [linear, prepend, merged, renamed, worktree, deepAncestry, oursMerge].map((r) =>
-        rm(r.dir, { recursive: true, force: true }),
-      ),
+      [
+        linear,
+        prepend,
+        merged,
+        renamed,
+        worktree,
+        deepAncestry,
+        oursMerge,
+        rangeMatrix,
+        emptyFile,
+      ].map((r) => rm(r.dir, { recursive: true, force: true })),
     );
   });
 
@@ -286,6 +315,47 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       fixture: () => oursMerge,
       file: 'f.txt',
     },
+    {
+      label: 'an -L window over a middle rewrite',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 2, end: 4 },
+    },
+    {
+      label: 'an -L clamp beyond the last line',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 3, end: 100 },
+    },
+    {
+      label: 'inverted -L bounds swapped into a forward window',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 4, end: 2 },
+    },
+    {
+      label: 'inverted -L bounds swapped into a window reaching the last line',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 5, end: 3 },
+    },
+    {
+      label: 'a single-line -L window',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 3, end: 3 },
+    },
+    {
+      label: 'an empty file with no range',
+      fixture: () => emptyFile,
+      file: 'e.txt',
+    },
+    {
+      label: 'a followed rename narrowed to a single -L line',
+      fixture: () => renamed,
+      file: 'renamed.txt',
+      range: { start: 1, end: 1 },
+    },
   ];
 
   describe('Given the blame-porcelain fixture matrix, When blame runs for each scenario', () => {
@@ -310,6 +380,89 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
         } else {
           expect(ours).toBe(gitPorcelain(dir, file, ...gitArgs));
         }
+      },
+    );
+  });
+
+  interface BlameRefusalScenario {
+    readonly label: string;
+    readonly fixture: () => { dir: string; ctx: Context };
+    readonly file: string;
+    readonly range: { start: number; end: number };
+    readonly rev?: () => string;
+    readonly gitPattern: RegExp;
+    readonly reason: string;
+  }
+
+  // Every row runs the same -L window through real git and tsgit and asserts
+  // both refuse: git with a `fatal:` line matching `gitPattern` and exit 128,
+  // tsgit with `INVALID_OPTION` carrying the exact `reason`.
+  const BLAME_REFUSAL_MATRIX: ReadonlyArray<BlameRefusalScenario> = [
+    {
+      label: 'a start beyond the file length',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 6, end: 7 },
+      gitPattern: /file f\.txt has only 5 lines/,
+      reason: 'file has only 5 lines',
+    },
+    {
+      label: 'a start of zero',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 0, end: 3 },
+      gitPattern: /invalid line number: 0/,
+      reason: 'invalid line number: 0',
+    },
+    {
+      label: 'a negative start',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: -1, end: 3 },
+      gitPattern: /invalid line number: -1/,
+      reason: 'invalid line number: -1',
+    },
+    {
+      label: 'an end of zero at an older revision',
+      fixture: () => rangeMatrix,
+      file: 'f.txt',
+      range: { start: 1, end: 0 },
+      rev: () => rangeMatrixBase,
+      gitPattern: /invalid line number: 0/,
+      reason: 'invalid line number: 0',
+    },
+    {
+      label: 'an empty file',
+      fixture: () => emptyFile,
+      file: 'e.txt',
+      range: { start: 1, end: 1 },
+      gitPattern: /file e\.txt has only 0 lines/,
+      reason: 'file has only 0 lines',
+    },
+  ];
+
+  describe('Given the blame -L refusal matrix, When both tools are asked for an invalid range', () => {
+    it.each(BLAME_REFUSAL_MATRIX)(
+      'Then $label refuses with a matching fatal message and exit 128',
+      async ({ fixture, file, range, rev, gitPattern, reason }) => {
+        // Arrange
+        const { dir, ctx } = fixture();
+        const revArg = rev?.() ?? 'HEAD';
+
+        // Act — git
+        const gitResult = tryRunGitWithExit(
+          ['-C', dir, 'blame', '-L', `${range.start},${range.end}`, revArg, '--', file],
+          { env: runGitEnv() },
+        );
+
+        // Assert — git
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toMatch(gitPattern);
+
+        // Act + Assert — tsgit
+        await expect(blame(ctx, file, { rev: revArg, range })).rejects.toMatchObject({
+          data: { code: 'INVALID_OPTION', option: '-L', reason },
+        });
       },
     );
   });
