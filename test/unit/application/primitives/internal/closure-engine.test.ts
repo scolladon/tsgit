@@ -13,7 +13,7 @@
  *  - the shared cap (`MAX_PUSH_OBJECTS`, reused via `tryEmit`)
  *  - dedup across commits sharing a tree
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
@@ -206,6 +206,10 @@ const buildHavesFixture = async (): Promise<HavesFixture> => {
 
   return { ctx, root, have, want };
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('computeClosure', () => {
   describe('Given a 3-commit chain', () => {

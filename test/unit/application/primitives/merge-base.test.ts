@@ -1,4 +1,4 @@
-import { describe, expect, it, type MockInstance, vi } from 'vitest';
+import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as readCommitGraphModule from '../../../../src/application/primitives/internal/read-commit-graph.js';
@@ -158,6 +158,10 @@ const buildChildAfterParent = async (
   }
   throw new Error('could not build child-after-parent pair');
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('mergeBase', () => {
   describe('Given a single commit [c]', () => {
