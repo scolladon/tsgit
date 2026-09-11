@@ -74,8 +74,11 @@ const toEntry = (commit: Commit, changes: TreeDiff): WhatchangedEntry => ({
  * (commit-ish stops), and `before` (only `committer.timestamp < before`).
  *
  * Selection (walking, filtering, `limit`) and diffing are two stages: the walk
- * drains into `selected` first, then every diff runs through `boundedMapFor` so
- * the walk's read-ahead is never stalled waiting on a diff per iteration.
+ * drains into `selected` first, then the diffs run through `boundedMapFor`
+ * under the CPU bucket — a recursive, rename-detecting tree diff is
+ * CPU-dominant and hydrates blob contents for similarity, so the bound follows
+ * the cores rather than the I/O pool and keeps the in-flight blob footprint to
+ * a handful of commits while their reads still overlap.
  */
 export const whatchanged = async (
   ctx: Context,
@@ -90,7 +93,7 @@ export const whatchanged = async (
       ? walkCommits(ctx, { from: [startId], until: exclude, order: 'first-parent' })
       : walkCommitsByDate(ctx, { from: [startId], until: exclude });
   const selected = await selectCommits(walk, beforeSeconds, opts.limit);
-  const changes = await boundedMapFor(ctx, 'ioBound', selected, (commit) =>
+  const changes = await boundedMapFor(ctx, 'cpuBound', selected, (commit) =>
     diffCommitAgainstParent(ctx, commit.data.parents[0], commit.data.tree),
   );
   return selected.map((commit, index) => toEntry(commit, changes[index]!));
