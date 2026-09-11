@@ -34,7 +34,9 @@ a graph, and the paint loop is being rewritten for the generation cutoff.
 date. Equal committer dates are ordered exactly as git orders its result list; the implementation
 reproduces that order and **pins it** with a criss-cross interop row whose two bases share a
 committer second, run with and without a written commit-graph — the tie rule is measured against
-git, never assumed from prose.
+git, never assumed from prose. Measured outcome: git's order follows the paint queue's insertion
+order (ADR-840 records the comparator), and a stable date-descending sort over the paint's
+discovery order reproduces it in every pinned configuration.
 
 Superseded from ADR-191: the lexicographically-smallest selection rule and its claim to mirror
 git.

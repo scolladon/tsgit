@@ -24,13 +24,18 @@ the minimum generation over the candidates.
 ## Decision
 
 **Adopted-as-recommended (no user judgment).** The heap compares higher generation first, then
-the existing date-then-oid rule. The main paint passes `min_generation = 0`; the reduction paints
-each candidate with the minimum generation over the whole candidate set and breaks when a popped
-generation falls below it.
+newer committer date, then **insertion order** — the tie-break git's `prio_queue` applies through
+its insertion counter. The shared date-then-oid comparator the paint used before is not git's rule
+for this walk: measured on a criss-cross whose two bases share a committer second (git 2.55.0,
+with and without a graph), git returns the base its queue saw first, and only the insertion-order
+tie reproduces that deterministically. The shared comparator itself is untouched; other walks keep
+it. The main paint passes `min_generation = 0`; the reduction paints each candidate with the
+minimum generation over the whole candidate set and breaks when a popped generation falls below it.
 
 ## Consequences
 
-Without a graph nothing observable changes. With a graph, merge-base reads no commit objects and
+Without a graph the result set is unchanged; the single-result tie order is now git's (see
+ADR-845), which the lexicographic rule never was. With a graph, merge-base reads no commit objects and
 stops early in the reduction as git does. The `RESULT` set and the reduced set are independent of
 traversal order, so results match git in every configuration; the only residual is the tie order of
 same-second bases in the single-result rule, recorded in ADR-845. The reduction's minimum is taken
