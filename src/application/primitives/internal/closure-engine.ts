@@ -281,7 +281,7 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
     results.push(entry);
   };
 
-  const marks = await markNotSide(ctx, request.not, { objects: request.objects === true });
+  const marks = await markNotSide(ctx, request.not);
   const scope: TreeEmitScope = {
     marked: marks.objects,
     emitted: state.emitted,

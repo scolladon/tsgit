@@ -141,6 +141,43 @@ const buildMissingNotTreeFixture = async (): Promise<MissingNotTreeFixture> => {
   return { dir, notTip };
 };
 
+interface UnrelatedSharedBlobFixture {
+  readonly dir: string;
+  readonly wantTip: string;
+  readonly notTip: string;
+}
+
+/**
+ * Two commits with NO common history that name the same blob: `W` (on `main`)
+ * carries `shared` and `w`; `T` (an orphan root) carries only `shared`. git's
+ * limited `rev-list --objects W ^T` never marks `T`'s tree (it is not an edge
+ * parent of the interesting walk), so the shared blob — reachable from `W` too
+ * — is still emitted. Pins that a non-boundary `not` tip leaves its own tree
+ * unmarked.
+ */
+const buildUnrelatedSharedBlobFixture = async (): Promise<UnrelatedSharedBlobFixture> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-unrelated-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'A U Thor');
+  git(dir, 'config', 'user.email', 'author@example.com');
+  git(dir, 'config', 'commit.gpgsign', 'false');
+
+  await writeFile(path.join(dir, 'shared'), 'shared\n');
+  await writeFile(path.join(dir, 'w'), 'w\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'W', 1_700_000_000);
+  const wantTip = git(dir, 'rev-parse', 'HEAD').trim();
+
+  git(dir, 'checkout', '-q', '--orphan', 'other');
+  git(dir, 'rm', '-q', '-rf', '.');
+  await writeFile(path.join(dir, 'shared'), 'shared\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'T', 1_700_000_001);
+  const notTip = git(dir, 'rev-parse', 'HEAD').trim();
+
+  return { dir, wantTip, notTip };
+};
+
 describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', () => {
   describe('Given a shared-subtree history whose tip reuses its parent tree verbatim', () => {
     let fixture: SharedSubtreeFixture;
@@ -229,6 +266,41 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         // Act
         const result = await sut(ctx, {
           wants: ['HEAD'],
+          not: [fixture.notTip],
+          objects: true,
+        });
+
+        // Assert
+        const actual = new Set(result.entries.map((entry) => entry.id));
+        expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+  });
+  describe('Given two unrelated commits that share a blob', () => {
+    let fixture: UnrelatedSharedBlobFixture;
+
+    beforeAll(async () => {
+      fixture = await buildUnrelatedSharedBlobFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
+
+    describe('When revList walks the objects closure from the want excluding the unrelated tip', () => {
+      it('Then the shared blob is still emitted — the set matches git rev-list --objects want ^T', async () => {
+        // Arrange
+        const expected = gitIdSet(
+          fixture.dir,
+          '--objects',
+          fixture.wantTip,
+          '--not',
+          fixture.notTip,
+        );
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [fixture.wantTip],
           not: [fixture.notTip],
           objects: true,
         });

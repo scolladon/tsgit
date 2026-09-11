@@ -2586,9 +2586,11 @@ describe('computeClosure — the not-side ancestry walk consults each commit onc
     },
   );
 
-  describe('Given a commit not tip, When computeClosure runs a commits-only closure', () => {
-    it("Then the tip's tree is never read — git marks trees only under --objects", async () => {
-      // Arrange
+  describe('Given a commit not tip that is a boundary of the want, When computeClosure runs commits-only vs objects', () => {
+    it('Then no tree is read commits-only, but the boundary tree is read under objects', async () => {
+      // Arrange — the not tip is the want's parent, so under objects its tree
+      // is an edge parent that markBoundaryTrees marks; commits-only reads no
+      // tree at all.
       const ctx = await buildSeededContext();
       const treeId = await haveTree(ctx);
       const notTipId = await writeCommit(ctx, treeId, [], 'have');
@@ -2607,6 +2609,66 @@ describe('computeClosure — the not-side ancestry walk consults each commit onc
       expect(commitsOnlyReads).not.toContain(treeId);
       expect(objectsReads).toContain(treeId);
       readSpy.mockRestore();
+    });
+  });
+
+  describe('Given a want and an unrelated commit not tip that share a blob, When computeClosure emits objects', () => {
+    it("Then the shared blob is still emitted — a non-boundary not tip's own tree is left unmarked", async () => {
+      // Arrange — W and T have no common history; both trees name the same blob.
+      // git's `rev-list --objects W ^T` emits the shared blob because T's tree is
+      // never an edge parent of the interesting walk, so it is never marked
+      // (session-verified against git 2.55.0: 4 objects, the shared blob among
+      // them).
+      const ctx = await buildSeededContext();
+      const shared = await writeBlob(ctx, 'shared');
+      const wOnly = await writeBlob(ctx, 'w-only');
+      const treeW = await writeTree(ctx, [
+        treeEntry('100644' as FileMode, 'shared.txt', shared),
+        treeEntry('100644' as FileMode, 'w.txt', wOnly),
+      ]);
+      const treeT = await writeTree(ctx, [treeEntry('100644' as FileMode, 'shared.txt', shared)]);
+      const wantId = await writeCommit(ctx, treeW, [], 'W');
+      const notTipId = await writeCommit(ctx, treeT, [], 'T');
+      const sut = computeClosure;
+
+      // Act
+      const result = await sut(ctx, {
+        tier: 'walk',
+        wants: [wantId],
+        not: [notTipId],
+        objects: true,
+      });
+      const ids = new Set(result.objects.map((entry) => entry.id));
+
+      // Assert — the not tip's own tree/blob are excluded, but the blob the want
+      // ALSO reaches is emitted
+      expect(ids).toContain(shared);
+      expect(ids).toContain(wOnly);
+      expect(ids).toContain(treeW);
+      expect(ids).not.toContain(treeT);
+      expect(ids).not.toContain(notTipId);
+    });
+  });
+
+  describe('Given two not tips whose ancestries name the same absent parent, When computeClosure marks the not side', () => {
+    it('Then that parent is consulted once across both tips — the miss memo is shared', async () => {
+      // Arrange — tipA and tipB each name the same missing parent; the shared
+      // memo must stop the second tip from re-reading it.
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const missing = 'e'.repeat(40) as ObjectId;
+      const tipA = await writeCommit(ctx, treeId, [missing], 'have A');
+      const tipB = await writeCommit(ctx, treeId, [missing], 'have B');
+      const wantId = await writeCommit(ctx, treeId, [tipA, tipB], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [tipA, tipB], objects: true });
+
+      // Assert
+      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
+      metaSpy.mockRestore();
     });
   });
 });

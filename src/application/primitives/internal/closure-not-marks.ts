@@ -6,14 +6,14 @@
  * A `not` tip's *entire* commit ancestry is marked uninteresting — git's own
  * merge-base exclusion, propagated through every parent edge, so a commit
  * reachable from BOTH a `want` and a `not` (a shared ancestor) is still
- * excluded. Trees are marked more narrowly: only the explicit `not` tip's own
- * tree, plus the own tree of every commit the *interesting* walk's parent
- * pointers discover to already be uninteresting (a "boundary" commit — the
- * merge-base is the common case, but a diamond can surface more than one). An
- * ancestor's tree that the interesting walk never touches is never marked, so
- * an object reachable only through it is emitted again — that is what
- * reproduces git's measured over-report rather than the exact set difference,
- * which would be a divergence from git here.
+ * excluded. Trees are marked more narrowly, and NEVER for a `not` tip merely
+ * for being a tip: only the own tree of every commit the *interesting* walk's
+ * parent pointers discover to be uninteresting (a "boundary" commit — the
+ * merge-base is the common case, a diamond can surface more than one), which
+ * `markBoundaryTrees` marks under `--objects`. git's limited walk does the same
+ * (`mark_edges_uninteresting` marks only edge parents' trees), so a `not` tip
+ * no interesting walk reaches leaves its own tree unmarked and a blob it shares
+ * with a `want` is still emitted — reproducing git's set, not a tighter one.
  */
 import { invalidWalkInput, operationAborted, TsgitError } from '../../../domain/error.js';
 import { treeDepthExceeded } from '../../../domain/objects/error.js';
@@ -49,6 +49,22 @@ export interface NotMarks {
   readonly seenTrees: Set<ObjectId>;
   /** Resolved once by `markNotSide` from `core.maxTreeDepth` — `markBoundaryTrees`
    *  reads it back from here instead of resolving it again. */
+  readonly maxDepth: number;
+}
+
+/**
+ * The mutable working set every `not` tip contributes to. `markNotSide` returns
+ * the read-only {@link NotMarks} view of it. `missing` is an internal dedup memo
+ * — a parent the store cannot serve, remembered so a later child (in this tip's
+ * walk or a sibling tip's) never pays the miss twice — and is not part of that
+ * view.
+ */
+interface NotMarksAccumulator {
+  readonly commits: Set<ObjectId>;
+  readonly commitTrees: Map<ObjectId, ObjectId>;
+  readonly objects: Set<ObjectId>;
+  readonly seenTrees: Set<ObjectId>;
+  readonly missing: Set<ObjectId>;
   readonly maxDepth: number;
 }
 
@@ -134,7 +150,7 @@ const readCommitMetaIfPresent = async (
  * Marks `id` and its FULL commit ancestry uninteresting — git's own
  * merge-base exclusion: a commit reachable from a `not` tip is excluded from
  * the walk even when it is ALSO reachable from a `want`, however many parent
- * edges separate it from the tip. `markedCommits` doubles as the visited set
+ * edges separate it from the tip. `acc.commits` doubles as the visited set
  * and the short-circuit on a commit a prior `not` id's own pass already
  * covered, so overlapping ancestries are walked once. Distinct from tree
  * marking (`markTree`, above), which stays scoped to specific commits' own
@@ -159,23 +175,22 @@ const readCommitMetaIfPresent = async (
 async function markCommitAncestry(
   ctx: Context,
   id: ObjectId,
-  markedCommits: Set<ObjectId>,
-  commitTrees: Map<ObjectId, ObjectId>,
+  acc: NotMarksAccumulator,
 ): Promise<void> {
-  const frontier: AncestryFrontier = { queue: [id], queued: new Set([id]), missing: new Set() };
+  const frontier: AncestryFrontier = { queue: [id], queued: new Set([id]) };
   for (let head = 0; head < frontier.queue.length; head += 1) {
     if (ctx.signal?.aborted) throw operationAborted();
     const current = frontier.queue[head] as ObjectId;
     frontier.queued.delete(current);
-    if (markedCommits.has(current)) continue;
+    if (acc.commits.has(current) || acc.missing.has(current)) continue;
     const meta = await readCommitMetaIfPresent(ctx, current);
     if (meta === undefined) {
-      frontier.missing.add(current);
+      acc.missing.add(current);
       continue;
     }
-    markedCommits.add(current);
-    commitTrees.set(current, meta.tree);
-    enqueueUnmarkedParents(frontier, meta.parents, markedCommits);
+    acc.commits.add(current);
+    acc.commitTrees.set(current, meta.tree);
+    enqueueUnmarkedParents(frontier, meta.parents, acc);
   }
 }
 
@@ -188,19 +203,15 @@ async function markCommitAncestry(
 interface AncestryFrontier {
   readonly queue: ObjectId[];
   readonly queued: Set<ObjectId>;
-  /** Ids the store could not serve — remembered so a later child naming the
-   *  same absent parent does not pay the miss again (`walkCommits` keeps the
-   *  same memo in its `missing` set). */
-  readonly missing: Set<ObjectId>;
 }
 
 function enqueueUnmarkedParents(
   frontier: AncestryFrontier,
   parents: ReadonlyArray<ObjectId>,
-  markedCommits: ReadonlySet<ObjectId>,
+  acc: NotMarksAccumulator,
 ): void {
   for (const parent of parents) {
-    if (markedCommits.has(parent) || frontier.queued.has(parent) || frontier.missing.has(parent)) {
+    if (acc.commits.has(parent) || frontier.queued.has(parent) || acc.missing.has(parent)) {
       continue;
     }
     if (frontier.queued.size >= MAX_WALK_QUEUE_SIZE) {
@@ -219,73 +230,53 @@ function enqueueUnmarkedParents(
 async function markUninteresting(
   ctx: Context,
   id: ObjectId,
-  markedCommits: Set<ObjectId>,
-  commitTrees: Map<ObjectId, ObjectId>,
-  markedObjects: Set<ObjectId>,
-  seenTrees: Set<ObjectId>,
-  maxDepth: number,
-  objects: boolean,
+  acc: NotMarksAccumulator,
 ): Promise<void> {
   const obj = await readObject(ctx, id);
   if (obj.type === 'tag') {
-    await markUninteresting(
-      ctx,
-      obj.data.object,
-      markedCommits,
-      commitTrees,
-      markedObjects,
-      seenTrees,
-      maxDepth,
-      objects,
-    );
+    await markUninteresting(ctx, obj.data.object, acc);
     return;
   }
   if (obj.type === 'commit') {
-    await markCommitAncestry(ctx, id, markedCommits, commitTrees);
-    // git marks a not-tip's tree only under `--objects` (`mark_edges_uninteresting`
-    // runs when `revs.tree_objects` is set); a commits-only closure never reads
-    // it, so parsing a 20 000-entry tree there would be pure waste.
-    if (objects) await markTree(ctx, obj.data.tree, markedObjects, seenTrees, maxDepth);
+    // A commit `not` tip contributes only its ancestry commits — NOT its own
+    // tree. git's limited walk marks a tree uninteresting only when the
+    // interesting walk's parent pointers reach the commit that owns it (an edge
+    // parent), which `markBoundaryTrees` replicates under `--objects`; a tip no
+    // interesting walk touches leaves its tree unmarked, exactly as git does.
+    await markCommitAncestry(ctx, id, acc);
     return;
   }
   if (obj.type === 'tree') {
-    await markTree(ctx, id, markedObjects, seenTrees, maxDepth);
+    // A directly-named tree/blob `not` id is marked outright — git's
+    // `handle_commit` marks a pending object of that type directly.
+    await markTree(ctx, id, acc.objects, acc.seenTrees, acc.maxDepth);
     return;
   }
-  markedObjects.add(id);
+  acc.objects.add(id);
 }
 
-/** What the not side must mark: every tip's commit ancestry always; a commit
- *  tip's own tree only when the closure emits objects (git's `--objects`). */
-export interface NotSideScope {
-  readonly objects: boolean;
-}
-
-/** Mark every `not` tip's full ancestry (commits) and, under `objects`, its
- *  own tree — see this module's own doc. */
-export async function markNotSide(
-  ctx: Context,
-  not: ReadonlyArray<ObjectId>,
-  scope: NotSideScope,
-): Promise<NotMarks> {
-  const commits = new Set<ObjectId>();
-  const commitTrees = new Map<ObjectId, ObjectId>();
-  const objects = new Set<ObjectId>();
-  const seenTrees = new Set<ObjectId>();
-  const maxDepth = await resolveMaxTreeDepth(ctx);
+/** Mark every `not` tip's full commit ancestry; a directly-named tree/blob tip
+ *  outright. A tip's own tree is left to `markBoundaryTrees` — see this
+ *  module's own doc. */
+export async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): Promise<NotMarks> {
+  const acc: NotMarksAccumulator = {
+    commits: new Set<ObjectId>(),
+    commitTrees: new Map<ObjectId, ObjectId>(),
+    objects: new Set<ObjectId>(),
+    seenTrees: new Set<ObjectId>(),
+    missing: new Set<ObjectId>(),
+    maxDepth: await resolveMaxTreeDepth(ctx),
+  };
   for (const notId of not) {
-    await markUninteresting(
-      ctx,
-      notId,
-      commits,
-      commitTrees,
-      objects,
-      seenTrees,
-      maxDepth,
-      scope.objects,
-    );
+    await markUninteresting(ctx, notId, acc);
   }
-  return { commits, commitTrees, objects, seenTrees, maxDepth };
+  return {
+    commits: acc.commits,
+    commitTrees: acc.commitTrees,
+    objects: acc.objects,
+    seenTrees: acc.seenTrees,
+    maxDepth: acc.maxDepth,
+  };
 }
 
 /**
