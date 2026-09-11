@@ -49,3 +49,8 @@ equivalence; the row now pins that the distinct pending count stays under the bo
 refused only because many children name the same parents now walk — pinned by a 260 × 260 layer
 in both walks. The not-side marker additionally regains the loop-top abort check and the bound it
 lost when it stopped delegating to `walkCommits`.
+
+Together with the reworked merge-base paint, the graph-first marker and the chain-wide graph
+verdict landed in the same review round, the pending sets push the `primitives` chunk 69 B past its
+63 kB budget and the package tarball 1.7 kB past its 918 KiB cap; both move one step (64 kB,
+920 KiB) as the house convention for genuine growth prescribes.

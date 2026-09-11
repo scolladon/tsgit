@@ -125,7 +125,7 @@ done
 # rename-kind work took four separate raises (906 -> 908 -> 909 -> 910) as each review cycle
 # overran the previous cap by a few hundred bytes, and each raise cost a full validate re-run.
 # Re-measure once at the end of review rather than bumping again per fix commit.
-SIZE_CAP=$((918 * 1024))
+SIZE_CAP=$((920 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
