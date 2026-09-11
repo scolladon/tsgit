@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/scolladon/tsgit/compare/v4.0.0...v4.1.0) (2026-09-11)
+
+
+### Features
+
+* **history:** prune the object closure and route the history walks through the commit-graph ([be57e0c](https://github.com/scolladon/tsgit/commit/be57e0cce13699610ef06bf531dc64ac9e2ee385))
+
 ## [4.0.0](https://github.com/scolladon/tsgit/compare/v3.6.0...v4.0.0) (2026-09-10)
 
 
