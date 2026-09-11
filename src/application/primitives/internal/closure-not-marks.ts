@@ -162,14 +162,17 @@ async function markCommitAncestry(
   markedCommits: Set<ObjectId>,
   commitTrees: Map<ObjectId, ObjectId>,
 ): Promise<void> {
-  const frontier: AncestryFrontier = { queue: [id], queued: new Set([id]) };
+  const frontier: AncestryFrontier = { queue: [id], queued: new Set([id]), missing: new Set() };
   for (let head = 0; head < frontier.queue.length; head += 1) {
     if (ctx.signal?.aborted) throw operationAborted();
     const current = frontier.queue[head] as ObjectId;
     frontier.queued.delete(current);
     if (markedCommits.has(current)) continue;
     const meta = await readCommitMetaIfPresent(ctx, current);
-    if (meta === undefined) continue;
+    if (meta === undefined) {
+      frontier.missing.add(current);
+      continue;
+    }
     markedCommits.add(current);
     commitTrees.set(current, meta.tree);
     enqueueUnmarkedParents(frontier, meta.parents, markedCommits);
@@ -185,6 +188,10 @@ async function markCommitAncestry(
 interface AncestryFrontier {
   readonly queue: ObjectId[];
   readonly queued: Set<ObjectId>;
+  /** Ids the store could not serve — remembered so a later child naming the
+   *  same absent parent does not pay the miss again (`walkCommits` keeps the
+   *  same memo in its `missing` set). */
+  readonly missing: Set<ObjectId>;
 }
 
 function enqueueUnmarkedParents(
@@ -193,7 +200,9 @@ function enqueueUnmarkedParents(
   markedCommits: ReadonlySet<ObjectId>,
 ): void {
   for (const parent of parents) {
-    if (markedCommits.has(parent) || frontier.queued.has(parent)) continue;
+    if (markedCommits.has(parent) || frontier.queued.has(parent) || frontier.missing.has(parent)) {
+      continue;
+    }
     if (frontier.queued.size >= MAX_WALK_QUEUE_SIZE) {
       throw invalidWalkInput(REASON_WALK_QUEUE_OVERFLOW);
     }
@@ -215,6 +224,7 @@ async function markUninteresting(
   markedObjects: Set<ObjectId>,
   seenTrees: Set<ObjectId>,
   maxDepth: number,
+  objects: boolean,
 ): Promise<void> {
   const obj = await readObject(ctx, id);
   if (obj.type === 'tag') {
@@ -226,12 +236,16 @@ async function markUninteresting(
       markedObjects,
       seenTrees,
       maxDepth,
+      objects,
     );
     return;
   }
   if (obj.type === 'commit') {
     await markCommitAncestry(ctx, id, markedCommits, commitTrees);
-    await markTree(ctx, obj.data.tree, markedObjects, seenTrees, maxDepth);
+    // git marks a not-tip's tree only under `--objects` (`mark_edges_uninteresting`
+    // runs when `revs.tree_objects` is set); a commits-only closure never reads
+    // it, so parsing a 20 000-entry tree there would be pure waste.
+    if (objects) await markTree(ctx, obj.data.tree, markedObjects, seenTrees, maxDepth);
     return;
   }
   if (obj.type === 'tree') {
@@ -241,16 +255,35 @@ async function markUninteresting(
   markedObjects.add(id);
 }
 
-/** Mark every `not` tip's full ancestry (commits) and own tree (objects) —
- *  see this module's own doc. */
-export async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): Promise<NotMarks> {
+/** What the not side must mark: every tip's commit ancestry always; a commit
+ *  tip's own tree only when the closure emits objects (git's `--objects`). */
+export interface NotSideScope {
+  readonly objects: boolean;
+}
+
+/** Mark every `not` tip's full ancestry (commits) and, under `objects`, its
+ *  own tree — see this module's own doc. */
+export async function markNotSide(
+  ctx: Context,
+  not: ReadonlyArray<ObjectId>,
+  scope: NotSideScope,
+): Promise<NotMarks> {
   const commits = new Set<ObjectId>();
   const commitTrees = new Map<ObjectId, ObjectId>();
   const objects = new Set<ObjectId>();
   const seenTrees = new Set<ObjectId>();
   const maxDepth = await resolveMaxTreeDepth(ctx);
   for (const notId of not) {
-    await markUninteresting(ctx, notId, commits, commitTrees, objects, seenTrees, maxDepth);
+    await markUninteresting(
+      ctx,
+      notId,
+      commits,
+      commitTrees,
+      objects,
+      seenTrees,
+      maxDepth,
+      scope.objects,
+    );
   }
   return { commits, commitTrees, objects, seenTrees, maxDepth };
 }

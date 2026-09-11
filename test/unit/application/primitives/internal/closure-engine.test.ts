@@ -26,6 +26,7 @@ import { MAX_WALK_QUEUE_SIZE } from '../../../../../src/application/primitives/t
 import { REASON_WALK_QUEUE_OVERFLOW } from '../../../../../src/application/primitives/validators.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
+import { invalidWalkInput } from '../../../../../src/domain/error.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type {
   AuthorIdentity,
@@ -2272,22 +2273,34 @@ describe("computeClosure — the not-side ancestry walk keeps the commit walk's 
     return { wantId, treeId, blobId };
   };
 
-  describe('Given a signal already aborted when the not side starts marking', () => {
-    describe('When computeClosure walks the closure', () => {
-      it('Then the ancestry walk stops at its first step without consulting a single commit', async () => {
-        // Arrange — the abort is set before the call, so the marker's own
-        // loop-top check is the first thing that can see it; without that
-        // check the marker would read the whole not-side ancestry and only
-        // the later commit walk would notice the signal.
+  describe('Given a commit-graph covering the not side and a signal aborted right after the tip is consulted', () => {
+    describe('When computeClosure marks the not side', () => {
+      it('Then the ancestry walk stops at its own loop-top check before consulting the parent', async () => {
+        // Arrange — under a graph the marker performs no object read inside
+        // its loop, so no other abort check can fire there: the loop-top check
+        // is the only thing between consulting the tip and consulting its
+        // parent. The abort lands as the tip's meta resolves.
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'have');
         const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
         const rootId = await writeCommit(ctx, treeId, [], 'root');
         const notTipId = await writeCommit(ctx, treeId, [rootId], 'have');
         const { wantId } = await buildWantOver(ctx, notTipId);
+        const layer = await Promise.all(
+          [rootId, notTipId, wantId].map(
+            async (id) => (await readObjectModule.readObject(ctx, id)) as Commit,
+          ),
+        );
+        await writeCommitGraph(ctx, [layer]);
         const controller = new AbortController();
-        controller.abort();
-        const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+        const original = readCommitMetaModule.readCommitMeta;
+        const metaSpy = vi
+          .spyOn(readCommitMetaModule, 'readCommitMeta')
+          .mockImplementation(async (c, id) => {
+            const meta = await original(c, id);
+            controller.abort();
+            return meta;
+          });
         const sut = computeClosure;
 
         // Act
@@ -2302,9 +2315,9 @@ describe("computeClosure — the not-side ancestry walk keeps the commit walk's 
           caught = error;
         }
 
-        // Assert
+        // Assert — the tip was consulted once; its parent never was
         expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
-        expect(metaSpy).not.toHaveBeenCalled();
+        expect(metaSpy).toHaveBeenCalledTimes(1);
         metaSpy.mockRestore();
       });
     });
@@ -2381,6 +2394,193 @@ describe("computeClosure — the not-side ancestry walk keeps the commit walk's 
           new Set([wantId, wantTreeId, wantBlobId]),
         );
       });
+    });
+  });
+});
+
+describe('computeClosure — the not-side ancestry walk consults each commit once and rethrows what it cannot classify', () => {
+  const haveTree = async (ctx: Context): Promise<ObjectId> => {
+    const blobId = await writeBlob(ctx, 'have');
+    return writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+  };
+  const consulted = (spy: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } }): ObjectId[] =>
+    spy.mock.calls.map((call) => call[1] as ObjectId);
+
+  describe('Given two not tips sharing an ancestry, When computeClosure marks the not side', () => {
+    it("Then the second tip's walk stops on the ancestry the first already marked, consulting no commit twice", async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const rootId = await writeCommit(ctx, treeId, [], 'root');
+      const tip2 = await writeCommit(ctx, treeId, [rootId], 'have two');
+      const tip1 = await writeCommit(ctx, treeId, [tip2], 'have one');
+      const wantId = await writeCommit(ctx, treeId, [tip1], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [tip1, tip2], objects: true });
+
+      // Assert
+      const ids = consulted(metaSpy);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(new Set(ids)).toEqual(new Set([tip1, tip2, rootId]));
+      metaSpy.mockRestore();
+    });
+  });
+
+  describe('Given a not-side parent the store lacks, named by two children, When computeClosure marks the not side', () => {
+    it('Then the missing parent is consulted once — the miss is remembered', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const missing = 'e'.repeat(40) as ObjectId;
+      const c1 = await writeCommit(ctx, treeId, [missing], 'child one');
+      const c2 = await writeCommit(ctx, treeId, [missing], 'child two');
+      const notTipId = await writeCommit(ctx, treeId, [c1, c2], 'have');
+      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+
+      // Assert
+      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
+      metaSpy.mockRestore();
+    });
+  });
+
+  describe('Given a not tip naming an already-marked parent beside exactly the bound of fresh parents', () => {
+    describe('When computeClosure marks the not side', () => {
+      it('Then the marked parent is not queued again, so the walk stays within the bound and completes', async () => {
+        // Arrange — M is marked when A pops; if A's reference to M were queued
+        // regardless, the pending count would reach the bound one push early
+        // and the walk would refuse instead of completing.
+        const ctx = await buildSeededContext();
+        const treeId = await haveTree(ctx);
+        const m = await writeCommit(ctx, treeId, [], 'marked first');
+        const fresh = Array.from(
+          { length: MAX_WALK_QUEUE_SIZE },
+          (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+        );
+        const a = await writeCommit(ctx, treeId, [m, ...fresh], 'octopus');
+        const notTipId = await writeCommit(ctx, treeId, [m, a], 'have');
+        const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wantId],
+          not: [notTipId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects.map((o) => o.id)).toContain(wantId);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a classified refusal', make: () => invalidWalkInput('boom') },
+    { label: 'an unclassified failure', make: () => new Error('boom') },
+  ])(
+    'Given a not-side tree read that fails with $label, When computeClosure marks the not side',
+    ({ make }) => {
+      it('Then computeClosure rethrows that very error instead of treating the tree as missing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await haveTree(ctx);
+        const notTipId = await writeCommit(ctx, treeId, [], 'have');
+        const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+        const thrown = make();
+        const original = readObjectModule.readObject;
+        const readSpy = vi
+          .spyOn(readObjectModule, 'readObject')
+          .mockImplementation(async (c, id) => {
+            if (id === treeId) throw thrown;
+            return original(c, id);
+          });
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(thrown);
+        readSpy.mockRestore();
+      });
+    },
+  );
+
+  describe.each([
+    { label: 'a classified refusal', make: () => invalidWalkInput('boom') },
+    { label: 'an unclassified failure', make: () => new Error('boom') },
+  ])(
+    'Given a not-side ancestor read that fails with $label, When computeClosure marks the not side',
+    ({ make }) => {
+      it('Then computeClosure rethrows that very error instead of skipping the ancestor', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await haveTree(ctx);
+        const rootId = await writeCommit(ctx, treeId, [], 'root');
+        const notTipId = await writeCommit(ctx, treeId, [rootId], 'have');
+        const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+        const thrown = make();
+        const original = readCommitMetaModule.readCommitMeta;
+        const metaSpy = vi
+          .spyOn(readCommitMetaModule, 'readCommitMeta')
+          .mockImplementation(async (c, id) => {
+            if (id === rootId) throw thrown;
+            return original(c, id);
+          });
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(thrown);
+        metaSpy.mockRestore();
+      });
+    },
+  );
+
+  describe('Given a commit not tip, When computeClosure runs a commits-only closure', () => {
+    it("Then the tip's tree is never read — git marks trees only under --objects", async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const notTipId = await writeCommit(ctx, treeId, [], 'have');
+      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+      const readSpy = vi.spyOn(readObjectModule, 'readObject');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: false });
+      const commitsOnlyReads = consulted(readSpy);
+      readSpy.mockClear();
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+      const objectsReads = consulted(readSpy);
+
+      // Assert — the objects closure is the control that proves the read is observable
+      expect(commitsOnlyReads).not.toContain(treeId);
+      expect(objectsReads).toContain(treeId);
+      readSpy.mockRestore();
     });
   });
 });
