@@ -125,7 +125,10 @@ done
 # rename-kind work took four separate raises (906 -> 908 -> 909 -> 910) as each review cycle
 # overran the previous cap by a few hundred bytes, and each raise cost a full validate re-run.
 # Re-measure once at the end of review rather than bumping again per fix commit.
-SIZE_CAP=$((920 * 1024))
+# The closure and history-walk work then added the object-closure prune, the shared
+# commit-graph reader and the not-side marker; its end-of-review measure overran 920 KiB
+# by 65 bytes, so the cap is 921 KiB.
+SIZE_CAP=$((921 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
