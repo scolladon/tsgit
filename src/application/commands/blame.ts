@@ -205,7 +205,6 @@ const seedWorkingTree = async (
   const workingBlob = await readWorkingFile(sb.ctx, workDir, path);
   const workingLines = splitLines(workingBlob);
   const window = resolveLineWindow(workingLines.length, range);
-  // Stryker disable next-line ConditionalExpression: equivalent — undefined only for a no-range empty working file (every other empty-file shape now refuses inside resolveLineWindow, mirroring the committed-rev seed guard below); dropping the guard would leave no window to build an entry from, so it only short-circuits that single narrowed no-range case to the same empty result
   if (window === undefined) return;
   const whole: ReadonlyArray<BlameEntry> = [seedEntry(window)];
   const segments = pathSegments(path);
@@ -316,7 +315,6 @@ const seed = async (
   const blob = (await readBlob(sb.ctx, resolved.entry.id)).content;
   const lines = splitLines(blob);
   const window = resolveLineWindow(lines.length, range);
-  // Stryker disable next-line ConditionalExpression: equivalent — undefined only for a no-range empty blob (every other empty-file shape now refuses inside resolveLineWindow); dropping the guard would leave no window to build an entry from, so it only short-circuits that single narrowed no-range case to the same empty result
   if (window === undefined) return;
   schedule(sb, {
     commit,
