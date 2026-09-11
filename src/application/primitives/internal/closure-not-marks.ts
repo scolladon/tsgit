@@ -15,12 +15,13 @@
  * reproduces git's measured over-report rather than the exact set difference,
  * which would be a divergence from git here.
  */
-import { operationAborted, TsgitError } from '../../../domain/error.js';
+import { invalidWalkInput, operationAborted, TsgitError } from '../../../domain/error.js';
 import { treeDepthExceeded } from '../../../domain/objects/error.js';
 import { type GitObject, isDirectory, type ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
-import { isGitlink } from '../validators.js';
+import { MAX_WALK_QUEUE_SIZE } from '../types.js';
+import { isGitlink, REASON_WALK_QUEUE_OVERFLOW } from '../validators.js';
 import { type CommitMeta, readCommitMeta } from './read-commit-meta.js';
 import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
@@ -161,15 +162,43 @@ async function markCommitAncestry(
   markedCommits: Set<ObjectId>,
   commitTrees: Map<ObjectId, ObjectId>,
 ): Promise<void> {
-  const queue: ObjectId[] = [id];
-  for (let head = 0; head < queue.length; head += 1) {
-    const current = queue[head] as ObjectId;
+  const frontier: AncestryFrontier = { queue: [id], queued: new Set([id]) };
+  for (let head = 0; head < frontier.queue.length; head += 1) {
+    if (ctx.signal?.aborted) throw operationAborted();
+    const current = frontier.queue[head] as ObjectId;
+    frontier.queued.delete(current);
     if (markedCommits.has(current)) continue;
     const meta = await readCommitMetaIfPresent(ctx, current);
     if (meta === undefined) continue;
     markedCommits.add(current);
     commitTrees.set(current, meta.tree);
-    for (const parent of meta.parents) queue.push(parent);
+    enqueueUnmarkedParents(frontier, meta.parents, markedCommits);
+  }
+}
+
+/**
+ * The ancestry walk's head-cursor frontier. `queued` is git's ENQUEUED flag:
+ * a parent named by many children is queued once, and the bound counts
+ * distinct pending ids — the same discipline and the same refusal
+ * `walkCommits` applies to its own frontier.
+ */
+interface AncestryFrontier {
+  readonly queue: ObjectId[];
+  readonly queued: Set<ObjectId>;
+}
+
+function enqueueUnmarkedParents(
+  frontier: AncestryFrontier,
+  parents: ReadonlyArray<ObjectId>,
+  markedCommits: ReadonlySet<ObjectId>,
+): void {
+  for (const parent of parents) {
+    if (markedCommits.has(parent) || frontier.queued.has(parent)) continue;
+    if (frontier.queued.size >= MAX_WALK_QUEUE_SIZE) {
+      throw invalidWalkInput(REASON_WALK_QUEUE_OVERFLOW);
+    }
+    frontier.queue.push(parent);
+    frontier.queued.add(parent);
   }
 }
 

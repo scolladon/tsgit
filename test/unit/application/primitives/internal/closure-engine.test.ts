@@ -18,9 +18,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
 import * as closureNotMarksModule from '../../../../../src/application/primitives/internal/closure-not-marks.js';
+import * as readCommitMetaModule from '../../../../../src/application/primitives/internal/read-commit-meta.js';
 import * as resolveMaxTreeDepthModule from '../../../../../src/application/primitives/internal/resolve-max-tree-depth.js';
 import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
+import { MAX_WALK_QUEUE_SIZE } from '../../../../../src/application/primitives/types.js';
+import { REASON_WALK_QUEUE_OVERFLOW } from '../../../../../src/application/primitives/validators.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
@@ -2248,6 +2251,134 @@ describe('computeClosure — marking the not side', () => {
         // Assert
         expect(new Set(result.objects.map((object) => object.id))).toEqual(
           new Set([fixture.want, fixture.wantRootTree, fixture.wantBlob]),
+        );
+      });
+    });
+  });
+});
+
+describe("computeClosure — the not-side ancestry walk keeps the commit walk's frontier discipline", () => {
+  const buildWantOver = async (
+    ctx: Context,
+    notTip: ObjectId,
+  ): Promise<{
+    readonly wantId: ObjectId;
+    readonly treeId: ObjectId;
+    readonly blobId: ObjectId;
+  }> => {
+    const blobId = await writeBlob(ctx, 'want-side content');
+    const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'w.txt', blobId)]);
+    const wantId = await writeCommit(ctx, treeId, [notTip], 'want');
+    return { wantId, treeId, blobId };
+  };
+
+  describe('Given a signal already aborted when the not side starts marking', () => {
+    describe('When computeClosure walks the closure', () => {
+      it('Then the ancestry walk stops at its first step without consulting a single commit', async () => {
+        // Arrange — the abort is set before the call, so the marker's own
+        // loop-top check is the first thing that can see it; without that
+        // check the marker would read the whole not-side ancestry and only
+        // the later commit walk would notice the signal.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'have');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+        const rootId = await writeCommit(ctx, treeId, [], 'root');
+        const notTipId = await writeCommit(ctx, treeId, [rootId], 'have');
+        const { wantId } = await buildWantOver(ctx, notTipId);
+        const controller = new AbortController();
+        controller.abort();
+        const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(
+            { ...ctx, signal: controller.signal },
+            { tier: 'walk', wants: [wantId], not: [notTipId], objects: true },
+          );
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        expect(metaSpy).not.toHaveBeenCalled();
+        metaSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a not tip naming more distinct parents than the frontier bound admits', () => {
+    describe('When computeClosure marks its ancestry', () => {
+      it("Then it refuses with the commit walk's own queue-overflow reason", async () => {
+        // Arrange — MAX_WALK_QUEUE_SIZE + 1 distinct, never-written parent
+        // oids: the marker must refuse exactly as `walkCommits` does, not walk
+        // an unbounded frontier.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'have');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+        const parents = Array.from(
+          { length: MAX_WALK_QUEUE_SIZE + 1 },
+          (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+        );
+        const notTipId = await writeCommit(ctx, treeId, parents, 'octopus have');
+        const { wantId } = await buildWantOver(ctx, notTipId);
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'INVALID_WALK_INPUT',
+          reason: REASON_WALK_QUEUE_OVERFLOW,
+        });
+      });
+    });
+  });
+
+  describe('Given a not-side layer every commit of the layer above names in full', () => {
+    describe('When computeClosure marks the not side', () => {
+      it('Then each parent is queued once, so 67,600 parent references stay under the bound', async () => {
+        // Arrange — 260 roots and 260 commits each naming all 260 roots, all
+        // below the not tip: 67,600 parent references, more than the bound
+        // admits as raw pushes, but at most 260 distinct pending ids.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'have');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
+        const roots: ObjectId[] = [];
+        for (let i = 0; i < 260; i += 1)
+          roots.push(await writeCommit(ctx, treeId, [], `root ${i}`));
+        const layer: ObjectId[] = [];
+        for (let i = 0; i < 260; i += 1)
+          layer.push(await writeCommit(ctx, treeId, roots, `layer ${i}`));
+        const notTipId = await writeCommit(ctx, treeId, layer, 'have');
+        const {
+          wantId,
+          treeId: wantTreeId,
+          blobId: wantBlobId,
+        } = await buildWantOver(ctx, notTipId);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wantId],
+          not: [notTipId],
+          objects: true,
+        });
+
+        // Assert — the whole not side is marked; only the want's own objects survive
+        expect(new Set(result.objects.map((o) => o.id))).toEqual(
+          new Set([wantId, wantTreeId, wantBlobId]),
         );
       });
     });
