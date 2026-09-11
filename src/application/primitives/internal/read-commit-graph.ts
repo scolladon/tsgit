@@ -272,11 +272,13 @@ function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
 function findOwnPosition(
   graph: LoadedGraph,
   id: ObjectId,
-): { readonly layer: CommitGraphLayer; readonly localPos: number } | undefined {
+):
+  | { readonly layer: CommitGraphLayer; readonly localPos: number; readonly layerIndex: number }
+  | undefined {
   for (let i = 0; i < graph.layers.length; i += 1) {
     const layer = graph.layers[i]!;
     const localPos = positionOf(layer, id);
-    if (localPos !== undefined) return { layer, localPos };
+    if (localPos !== undefined) return { layer, localPos, layerIndex: i };
   }
   return undefined;
 }
@@ -300,6 +302,9 @@ function findLayerForGlobalPosition(
       // commit names nothing — refuse before any byte is read, or the bytes
       // after the OID table would be handed back as a fabricated parent.
       if (localPos >= layer.commitCount) {
+        // Stryker disable next-line StringLiteral: equivalent — the message is
+        // swallowed by commitHeader's degrade-to-absent catch; only the code
+        // (and the refusal itself) is ever observable.
         throw invalidCommitGraphChunk(`invalid parent position ${globalPos}`);
       }
       return { layer, localPos };
@@ -317,13 +322,28 @@ function oidAtPosition(layer: CommitGraphLayer, localPos: number): ObjectId {
   return ObjectId.fromRaw(layer._bytes.subarray(offset, offset + layer._hashLength));
 }
 
-function resolveParentIds(graph: LoadedGraph, data: CommitData): readonly ObjectId[] {
+function resolveParentIds(
+  graph: LoadedGraph,
+  data: CommitData,
+  ownBound: number,
+): readonly ObjectId[] {
   const positions: number[] = [];
   if (data.parent1Pos !== undefined) positions.push(data.parent1Pos);
   if (data.parent2Pos !== undefined) positions.push(data.parent2Pos);
   positions.push(...data.additionalParentPositions);
 
   return positions.map((pos) => {
+    // git's `insert_parent_or_die` bounds a parent by the CHILD's own layer:
+    // `pos >= g->num_commits + g->num_commits_in_base`. A position naming a
+    // commit in a HIGHER layer of the chain cannot exist (a layer only
+    // references itself and its bases), so refuse it before resolving — the
+    // resolved-layer check below then only guards a position past the whole
+    // chain.
+    if (pos >= ownBound) {
+      // Stryker disable next-line StringLiteral: equivalent — swallowed by
+      // commitHeader's degrade-to-absent catch; only the code is observable.
+      throw invalidCommitGraphChunk(`invalid parent position ${pos}`);
+    }
     const { layer, localPos } = findLayerForGlobalPosition(graph, pos);
     return oidAtPosition(layer, localPos);
   });
@@ -355,9 +375,10 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     const data = commitDataAt(found.layer, found.localPos, {
       correctedCommitDates: graph.correctedCommitDates,
     });
+    const ownBound = graph.layerOffsets[found.layerIndex]! + found.layer.commitCount;
     const header: CommitHeader = {
       rootTree: data.rootTree,
-      parents: resolveParentIds(graph, data),
+      parents: resolveParentIds(graph, data, ownBound),
       committerDate: data.committerDate,
       generation: data.generation,
     };
@@ -370,6 +391,10 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     if (isGraphDecodeFailure(error)) {
       graphCache.set(ctx.session, Promise.resolve(undefined));
       absentGraphs.add(ctx.session);
+      // Headers served from this graph before the fault must not linger: the
+      // verdict is "absent for the session", so drop the cache — every later
+      // lookup falls through to loadGraph (now absent) and answers from objects.
+      headerCache.delete(ctx.session);
       return undefined;
     }
     throw error;

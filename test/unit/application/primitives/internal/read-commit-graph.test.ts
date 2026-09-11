@@ -180,6 +180,63 @@ async function writeMixedGenerationChain(ctx: Context): Promise<MixedChainCommit
   return commits;
 }
 
+/**
+ * A real two-layer chain (base [c0, c1], tip [c2]) whose BASE-layer commit c1
+ * names a parent position that lands in the TIP layer — an upward cross-layer
+ * reference git's `insert_parent_or_die` refuses (`pos >= num_commits +
+ * num_commits_in_base` for c1's OWN layer). The commits themselves are written
+ * to the store, so a degraded reader still walks the true ancestry.
+ */
+async function writeBadCrossLayerChain(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<{ c0: Commit; c1: Commit; c2: Commit }> {
+  const tree = await emptyTree(ctx);
+  const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
+  const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
+  const c2 = await makeCommit(ctx, tree, [c1.id], 3, 'c2');
+  const baseSorted = [c0.id, c1.id].sort();
+  const c1Local = baseSorted.indexOf(c1.id);
+  const baseBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 0,
+    baseGraphHashes: [],
+    includeGenerationData: true,
+    commits: baseSorted.map((id, i) => ({
+      oid: id,
+      rootTree: tree,
+      // c1 points at global position 2 (c2, in the TIP layer) — the illegal
+      // upward reference; c0 is a root.
+      parentPositions: id === c1.id ? [2] : [],
+      generationV1: i + 1,
+      committerDate: 100 + i,
+      generationV2Offset: 0,
+    })),
+  });
+  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const tipBytes = buildCommitGraphBytes({
+    hashVersion: 1,
+    numBaseGraphs: 1,
+    baseGraphHashes: [baseHash],
+    includeGenerationData: false,
+    commits: [
+      {
+        oid: c2.id,
+        rootTree: tree,
+        parentPositions: [c1Local],
+        generationV1: 3,
+        committerDate: 500,
+        generationV2Offset: 0,
+      },
+    ],
+  });
+  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const gitDir = commonGitDir(ctx);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
+  await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
+  await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${baseHash}\n${tipHash}\n`);
+  return { c0, c1, c2 };
+}
+
 async function emptyTree(ctx: Awaited<ReturnType<typeof buildSeededContext>>): Promise<ObjectId> {
   const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
   return writeObject(ctx, tree);
@@ -905,6 +962,51 @@ describe('read-commit-graph', () => {
           expect(header).toBeUndefined();
           expect(isGraphKnownAbsent(ctx)).toBe(true);
           expect(walked).toEqual([c1.id, c0.id]);
+        });
+      });
+    });
+
+    describe('Given a chain whose base-layer commit names a parent position in the tip layer', () => {
+      describe('When commitHeader is called for that base commit', () => {
+        it('Then the graph degrades to absent rather than following an upward cross-layer edge', async () => {
+          // Arrange — position 2 is a real OIDL slot (c2 in the tip layer), so
+          // only the child's own-layer bound (git's insert_parent_or_die) can
+          // catch it; the resolved-layer check alone would accept it. git 2.55.0
+          // exits 128 `invalid parent position 2` on the same shape.
+          const ctx = await buildSeededContext();
+          const { c0, c1 } = await writeBadCrossLayerChain(ctx);
+
+          // Act
+          const header = await commitHeader(ctx, c1.id);
+          const walked: ObjectId[] = [];
+          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
+
+          // Assert — no fabricated cross-layer parent; the walk answers from objects
+          expect(header).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(walked).toEqual([c1.id, c0.id]);
+        });
+      });
+    });
+
+    describe('Given a graph that degrades to absent mid-session', () => {
+      describe('When commitHeader is called again for an oid it served before the fault', () => {
+        it('Then it returns undefined — the header cache does not outlive the degrade verdict', async () => {
+          // Arrange — c2 (tip) resolves and is cached; c1 (base) then degrades
+          // the graph. A stale cache would still hand back c2's header.
+          const ctx = await buildSeededContext();
+          const { c1, c2 } = await writeBadCrossLayerChain(ctx);
+          const beforeFault = await commitHeader(ctx, c2.id);
+          expect(beforeFault).toBeDefined();
+
+          // Act
+          const faulted = await commitHeader(ctx, c1.id);
+          const afterFault = await commitHeader(ctx, c2.id);
+
+          // Assert
+          expect(faulted).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(afterFault).toBeUndefined();
         });
       });
     });
