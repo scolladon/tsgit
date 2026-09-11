@@ -25,8 +25,8 @@ signature change regenerates the API report.
 1. **`set(): boolean`**, refusal is `false` (chosen) — pros: smallest public surface; the eight
    call sites that do not care are unchanged. Cons: `toBe(false)` at an assertion does not say
    why; a third verdict later would be a breaking change.
-2. **Typed verdict `'stored' | 'refused'`** (the design's recommendation) — pros: self-documenting
-   at the call site, extensible. Cons: one more exported type name in the public surface.
+2. **Typed verdict `'stored' | 'refused'`** — pros: self-documenting at the call site,
+   extensible. Cons: one more exported type name in the public surface.
 3. **Boolean plus a `refusedCount` counter** — pros: enables a runtime health probe. Cons: adds
    mutable state to the cache with no consumer that reads it.
 
@@ -47,8 +47,8 @@ deliberately shrunk budget, alongside ADR-851's valve-ordering invariant.
 
 `reports/api.json` regenerates. Nine `set` call sites compile unchanged; two — the FlatTree cache
 and the parsed-object memo — gain the assertions above. The delta-base cache's own call site can
-never see `false`, because ADR-854's per-chain insert budget is strictly tighter than the whole-
-budget refusal and runs first.
+never see `false`, because the delta-base cache's per-chain insert budget (design D3-i) is
+strictly tighter than the whole-budget refusal and runs first.
 
 Rejected alternatives and why, so they are not re-proposed: throwing (a large blob is not an
 error), a logger channel (no logger exists in the port set at this layer), and a counter (no
