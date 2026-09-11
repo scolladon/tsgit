@@ -1,6 +1,6 @@
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import type { QueueEntry } from '../../domain/commit/priority-queue.js';
-import { invalidWalkInput } from '../../domain/error.js';
+import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { correctedCommitDatesEnabled } from './internal/read-commit-graph.js';
@@ -26,11 +26,10 @@ type ReadCommit = (id: ObjectId) => Promise<CommitMeta | undefined>;
 const makeReadCommit = (ctx: Context): ReadCommit => {
   const cache = new Map<ObjectId, CommitMeta | undefined>();
   return async (id) => {
-    // Stryker disable next-line all: equivalent — the cache is a pure memoisation
-    // over `readCommitMeta`'s deterministic read; forcing a miss only re-invokes
-    // it and re-derives the identical metadata, never changing a result (the
-    // forced-hit direction returns `undefined` and is killed by every
-    // commit-resolving test).
+    // The graph-first paint reads no object bytes, so this reader is merge-base's
+    // only per-commit checkpoint for cancellation — the cadence `readObject`
+    // gave on the object path (git checks between pops the same way).
+    if (ctx.signal?.aborted) throw operationAborted();
     if (!cache.has(id)) cache.set(id, await readCommitMeta(ctx, id));
     return cache.get(id);
   };
@@ -301,10 +300,6 @@ const mergeBasesMany = async (
   // it anyway; dropping it here only spares that base its own reduction walk.
   const alive = results.filter((id) => ((flags.get(id) ?? 0) & STALE) === 0);
   const sorted = await byDateDescending(read, alive);
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a fast path for git's own
-  // "0 or 1 base, nothing to reduce" exit. Falling through is harmless: a lone
-  // candidate is painted against an empty rival set, which `paint`'s `!n` exit
-  // answers without walking, so it is always kept and the re-sort is a no-op.
   if (sorted.length <= 1) return sorted;
   return byDateDescending(read, await removeRedundant(read, sorted, options.correctedCommitDates));
 };

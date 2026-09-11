@@ -935,6 +935,83 @@ describe('mergeBase', () => {
     });
   });
 
+  describe('Given a redundant base with a newer committer date than the base that dominates it', () => {
+    // C0@50 <- C@300 <- X@150 <- R@200, plus an independent root K@250; d and e
+    // both merge [R, C] (opposite parent order). C is an ancestor of R, so the
+    // reduced base is R alone — but C's committer date (300) is newer than R's
+    // (200), so a date-ordered discovery walk records C first and only the
+    // reduction drops it. Measured against git 2.55.0: no graph -> `merge-base`
+    // R, `--all` R; a `generationVersion=1` graph -> C, R; a full (GDA2) graph
+    // -> R, R.
+    const buildSkewedRedundantBase = async (
+      ctx: Context,
+    ): Promise<{ c: ObjectId; r: ObjectId; d: ObjectId; e: ObjectId; all: ObjectId[] }> => {
+      const treeId = await emptyTree(ctx);
+      const c0 = await commitNamed(ctx, treeId, 50, [], 'c0');
+      const c = await commitNamed(ctx, treeId, 300, [c0], 'c');
+      const x = await commitNamed(ctx, treeId, 150, [c], 'x');
+      const r = await commitNamed(ctx, treeId, 200, [x], 'r');
+      const k = await commitNamed(ctx, treeId, 250, [], 'k');
+      const d = await commitNamed(ctx, treeId, 2000, [r, c], 'd');
+      const e = await commitNamed(ctx, treeId, 2000, [c, r], 'e');
+      return { c, r, d, e, all: [c0, c, x, r, k, d, e] };
+    };
+
+    describe('When the history carries no commit-graph', () => {
+      it('Then the reduction still drops the redundant base — plain and all answer R', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { r, d, e } = await buildSkewedRedundantBase(ctx);
+
+        // Act
+        const plain = await mergeBase(ctx, [d, e]);
+        const every = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(plain).toEqual([r]);
+        expect(every).toEqual([r]);
+      });
+    });
+
+    describe('When a generationVersion=1 graph forces the date-only discovery walk', () => {
+      it('Then plain answers the redundant newest base C git prints, and all still reduces to R', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { c, r, d, e, all } = await buildSkewedRedundantBase(ctx);
+        await writeCommitGraph(ctx, [await asCommits(ctx, all)]);
+        const topoLevels = vi
+          .spyOn(readCommitGraphModule, 'correctedCommitDatesEnabled')
+          .mockResolvedValue(false);
+
+        // Act
+        const plain = await mergeBase(ctx, [d, e]);
+        const every = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(plain).toEqual([c]);
+        expect(every).toEqual([r]);
+        topoLevels.mockRestore();
+      });
+    });
+
+    describe('When a full commit-graph serves corrected commit dates', () => {
+      it('Then the generation walk reaches R first — plain and all answer R', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { r, d, e, all } = await buildSkewedRedundantBase(ctx);
+        await writeCommitGraph(ctx, [await asCommits(ctx, all)]);
+
+        // Act
+        const plain = await mergeBase(ctx, [d, e]);
+        const every = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(plain).toEqual([r]);
+        expect(every).toEqual([r]);
+      });
+    });
+  });
+
   describe('Given two bases whose generation order and committer-date order disagree', () => {
     // KP@999 ← Q@10 gives Q a corrected commit date of 1000, above the
     // independent root P@900 — so the generation walk pops Q first while the
@@ -1011,6 +1088,43 @@ describe('mergeBase', () => {
         expect(plain).toEqual([p]);
         expect(octopus).toEqual([p]);
       });
+    });
+  });
+});
+
+describe('mergeBase cancellation on the graph path', () => {
+  describe('Given a commit-graph covering the history and a signal aborted after the first commit is read', () => {
+    it('Then the paint stops at its next per-commit checkpoint instead of completing from the graph', async () => {
+      // Arrange — with a graph the paint reads no object bytes, so makeReadCommit's
+      // own signal check is the only cancellation point; the abort lands as the
+      // first commit's metadata resolves, and the second read must refuse.
+      const ctx = await buildSeededContext();
+      const { a, b, c, d, e } = await buildCrissCross(ctx);
+      await writeCommitGraph(ctx, [await asCommits(ctx, [a, b, c, d, e])]);
+      const controller = new AbortController();
+      const original = readCommitMetaModule.readCommitMeta;
+      const metaSpy = vi
+        .spyOn(readCommitMetaModule, 'readCommitMeta')
+        .mockImplementation(async (innerCtx, id) => {
+          const meta = await original(innerCtx, id);
+          controller.abort();
+          return meta;
+        });
+      const sut = mergeBase;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut({ ...ctx, signal: controller.signal }, [d, e]);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+      expect(metaSpy).toHaveBeenCalledTimes(1);
+      metaSpy.mockRestore();
     });
   });
 });
