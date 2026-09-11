@@ -296,18 +296,9 @@ function findLayerForGlobalPosition(
   for (let i = graph.layers.length - 1; i >= 0; i -= 1) {
     const offset = graph.layerOffsets[i]!;
     if (globalPos >= offset) {
-      const layer = graph.layers[i]!;
-      const localPos = globalPos - offset;
-      // git's `insert_parent_or_die`: a parent position past the layer's last
-      // commit names nothing — refuse before any byte is read, or the bytes
-      // after the OID table would be handed back as a fabricated parent.
-      if (localPos >= layer.commitCount) {
-        // Stryker disable next-line StringLiteral: equivalent — the message is
-        // swallowed by commitHeader's degrade-to-absent catch; only the code
-        // (and the refusal itself) is ever observable.
-        throw invalidCommitGraphChunk(`invalid parent position ${globalPos}`);
-      }
-      return { layer, localPos };
+      // The own-layer bound in resolveParentIds is the only range guard; here we
+      // only resolve which layer owns an already-validated position.
+      return { layer: graph.layers[i]!, localPos: globalPos - offset };
     }
   }
   // Stryker disable next-line StringLiteral: equivalent (unreachable) — layerOffsets[0]
@@ -336,9 +327,8 @@ function resolveParentIds(
     // git's `insert_parent_or_die` bounds a parent by the CHILD's own layer:
     // `pos >= g->num_commits + g->num_commits_in_base`. A position naming a
     // commit in a HIGHER layer of the chain cannot exist (a layer only
-    // references itself and its bases), so refuse it before resolving — the
-    // resolved-layer check below then only guards a position past the whole
-    // chain.
+    // references itself and its bases), so refuse it before resolving;
+    // `findLayerForGlobalPosition` then only resolves the owning layer.
     if (pos >= ownBound) {
       // Stryker disable next-line StringLiteral: equivalent — swallowed by
       // commitHeader's degrade-to-absent catch; only the code is observable.

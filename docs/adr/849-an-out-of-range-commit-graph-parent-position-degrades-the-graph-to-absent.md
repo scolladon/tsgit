@@ -40,8 +40,9 @@ answer from objects.
 **Adopted-as-recommended (no user judgment).** `resolveParentIds` refuses a parent position at or
 past the CHILD's own-layer bound (`layerOffsets[childLayer] + layer.commitCount`, git's
 `num_commits + num_commits_in_base`) with `INVALID_COMMIT_GRAPH_CHUNK` before resolving it;
-`findLayerForGlobalPosition` keeps the same check against the resolved layer as the single-layer and
-whole-chain guard. `commitHeader`'s existing decode-fault handling turns either refusal into "graph
+For a single-file graph the child's layer offset is 0, so the own-layer bound reduces to the layer's
+commit count — the single-layer and whole-chain guard in one; `findLayerForGlobalPosition` then only
+resolves which layer owns an already-validated position. `commitHeader`'s existing decode-fault handling turns either refusal into "graph
 absent for this session", and the session's cached headers are dropped so nothing served before the
 fault lingers. Nothing is ever read from the bytes past the OID table, and an upward cross-layer
 reference — a real slot for a higher layer — is refused exactly where git dies.
