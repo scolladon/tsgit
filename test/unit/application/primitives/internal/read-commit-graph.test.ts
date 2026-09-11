@@ -11,6 +11,7 @@ import {
   commonGitDir,
 } from '../../../../../src/application/primitives/path-layout.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
+import { walkCommits } from '../../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { NO_PARENT } from '../../../../../src/domain/commit/commit-graph.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -852,15 +853,13 @@ describe('read-commit-graph', () => {
       });
     });
 
-    describe('Given a CDAT parent position that resolves to an out-of-range oid lookup', () => {
+    describe('Given a CDAT parent position far beyond every layer', () => {
       describe('When commitHeader is called for the commit that carries it', () => {
-        it('Then the resulting (non-decode-failure) error propagates instead of degrading to absent', async () => {
-          // Arrange — a globalPos far beyond any layer's real coverage still
-          // "matches" the base layer (layerOffsets[0]===0), so
-          // findLayerForGlobalPosition returns a wildly out-of-range localPos;
-          // reading its oid clamps to an empty slice, and ObjectId.fromRaw
-          // rejects it with INVALID_OBJECT_ID — a code that does NOT start
-          // with INVALID_COMMIT_GRAPH, so it must propagate, not be swallowed.
+        it('Then the graph degrades to absent and the session records it, instead of reading past the OID table', async () => {
+          // Arrange — git dies with `invalid parent position N`; tsgit's
+          // documented posture for a graph that fails to decode is to answer
+          // from objects for the rest of the session, so the position is
+          // refused as a decode fault and the graph becomes absent.
           const ctx = await buildSeededContext();
           const tree = await emptyTree(ctx);
           const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
@@ -871,13 +870,41 @@ describe('read-commit-graph', () => {
           const original = await ctx.fs.read(graphPath);
           await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 0x6fffffff));
 
-          // Act + Assert
-          try {
-            await commitHeader(ctx, c1.id);
-            expect.unreachable();
-          } catch (error) {
-            expect((error as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
-          }
+          // Act
+          const header = await commitHeader(ctx, c1.id);
+
+          // Assert
+          expect(header).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a CDAT parent position equal to the layer commit count (one past the last entry)', () => {
+      describe('When commitHeader is called for the commit that carries it', () => {
+        it('Then the graph degrades to absent rather than fabricating a parent from the bytes after the OID table', async () => {
+          // Arrange — position == commitCount is the boundary that used to slip
+          // through: the 20 bytes after OIDL are the first CDAT entry's root
+          // tree, which came back as a "parent".
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
+          const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
+          await writeCommitGraph(ctx, [[c0, c1]]);
+          const gitDir = commonGitDir(ctx);
+          const graphPath = commitGraphPath(gitDir);
+          const original = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 2));
+
+          // Act
+          const header = await commitHeader(ctx, c1.id);
+          const walked: ObjectId[] = [];
+          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
+
+          // Assert — no fabricated parent; the walk falls back to the bodies
+          expect(header).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(walked).toEqual([c1.id, c0.id]);
         });
       });
     });

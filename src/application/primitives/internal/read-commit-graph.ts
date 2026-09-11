@@ -294,7 +294,15 @@ function findLayerForGlobalPosition(
   for (let i = graph.layers.length - 1; i >= 0; i -= 1) {
     const offset = graph.layerOffsets[i]!;
     if (globalPos >= offset) {
-      return { layer: graph.layers[i]!, localPos: globalPos - offset };
+      const layer = graph.layers[i]!;
+      const localPos = globalPos - offset;
+      // git's `insert_parent_or_die`: a parent position past the layer's last
+      // commit names nothing — refuse before any byte is read, or the bytes
+      // after the OID table would be handed back as a fabricated parent.
+      if (localPos >= layer.commitCount) {
+        throw invalidCommitGraphChunk(`invalid parent position ${globalPos}`);
+      }
+      return { layer, localPos };
     }
   }
   // Stryker disable next-line StringLiteral: equivalent (unreachable) — layerOffsets[0]
