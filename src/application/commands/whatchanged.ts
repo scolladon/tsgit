@@ -10,7 +10,9 @@
  * line rendering, oid abbreviation, and date formatting are caller concerns.
  */
 import type { TreeDiff } from '../../domain/diff/index.js';
+import type { Commit } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
@@ -31,11 +33,49 @@ export interface WhatchangedEntry extends LogEntry {
   readonly changes: TreeDiff;
 }
 
+/** git's non-merge + `before` filter, in seconds (git's on-disk resolution). */
+const isSelected = (commit: Commit, beforeSeconds: number | undefined): boolean => {
+  if (commit.data.parents.length >= 2) return false;
+  if (beforeSeconds !== undefined && commit.data.committer.timestamp >= beforeSeconds) {
+    return false;
+  }
+  return true;
+};
+
+/** Drain the walk into the selected commits, honoring `limit` on selection, not diffing. */
+const selectCommits = async (
+  walk: AsyncIterable<Commit>,
+  beforeSeconds: number | undefined,
+  limit: number | undefined,
+): Promise<Commit[]> => {
+  const selected: Commit[] = [];
+  for await (const commit of walk) {
+    if (!isSelected(commit, beforeSeconds)) continue;
+    selected.push(commit);
+    if (limit !== undefined && selected.length >= limit) break;
+  }
+  return selected;
+};
+
+const toEntry = (commit: Commit, changes: TreeDiff): WhatchangedEntry => ({
+  id: commit.id,
+  tree: commit.data.tree,
+  parents: commit.data.parents,
+  author: commit.data.author,
+  committer: commit.data.committer,
+  message: commit.data.message,
+  changes,
+});
+
 /**
  * Walk commits from `rev` (default HEAD), excluding merges (≥2 parents), and pair
  * each with its first-parent `TreeDiff` (recursive, rename-detecting like
  * `git show`). Honors `order`, `limit` (counts emitted entries), `excluding`
  * (commit-ish stops), and `before` (only `committer.timestamp < before`).
+ *
+ * Selection (walking, filtering, `limit`) and diffing are two stages: the walk
+ * drains into `selected` first, then every diff runs through `boundedMapFor` so
+ * the walk's read-ahead is never stalled waiting on a diff per iteration.
  */
 export const whatchanged = async (
   ctx: Context,
@@ -44,30 +84,14 @@ export const whatchanged = async (
   await assertOperationalRepository(ctx);
   const startId = await resolveCommit(ctx, opts.rev ?? 'HEAD');
   const exclude = await Promise.all((opts.excluding ?? []).map((r) => resolveCommit(ctx, r)));
-  const before = opts.before;
+  const beforeSeconds = opts.before !== undefined ? opts.before.getTime() / 1000 : undefined;
   const walk =
     opts.order === 'first-parent'
       ? walkCommits(ctx, { from: [startId], until: exclude, order: 'first-parent' })
       : walkCommitsByDate(ctx, { from: [startId], until: exclude });
-  const out: WhatchangedEntry[] = [];
-  let yielded = 0;
-  for await (const value of walk) {
-    if (value.data.parents.length >= 2) continue;
-    if (before !== undefined && value.data.committer.timestamp >= before.getTime() / 1000) {
-      continue;
-    }
-    const changes = await diffCommitAgainstParent(ctx, value.data.parents[0], value.data.tree);
-    out.push({
-      id: value.id,
-      tree: value.data.tree,
-      parents: value.data.parents,
-      author: value.data.author,
-      committer: value.data.committer,
-      message: value.data.message,
-      changes,
-    });
-    yielded += 1;
-    if (opts.limit !== undefined && yielded >= opts.limit) break;
-  }
-  return out;
+  const selected = await selectCommits(walk, beforeSeconds, opts.limit);
+  const changes = await boundedMapFor(ctx, 'ioBound', selected, (commit) =>
+    diffCommitAgainstParent(ctx, commit.data.parents[0], commit.data.tree),
+  );
+  return selected.map((commit, index) => toEntry(commit, changes[index]!));
 };

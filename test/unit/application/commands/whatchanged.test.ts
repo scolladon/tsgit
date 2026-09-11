@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { whatchanged } from '../../../../src/application/commands/whatchanged.js';
+import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   type AuthorIdentity,
@@ -241,6 +242,29 @@ describe('whatchanged', () => {
 
       // Assert — D dropped; spine D→B→A yields B, A (C, the 2nd parent, absent)
       expect(messages(result)).toEqual(['B', 'A']);
+    });
+  });
+
+  describe('Given a merge inside a limited window, When whatchanged runs', () => {
+    it('Then boundedMapFor diffs only the selected commits, once, in output order', async () => {
+      // Arrange — D (merge) must be dropped before the diff stage ever sees it.
+      // `diffTrees` also calls `boundedMapFor` internally (rename expansion), so
+      // filter to the top-level call by its `Commit`-shaped items.
+      const { ctx, b, c } = await seedDiamond();
+      const spy = vi.spyOn(concurrencyMod, 'boundedMapFor');
+
+      // Act
+      const result = await whatchanged(ctx, { limit: 2 });
+
+      // Assert
+      const commitLevelCalls = spy.mock.calls.filter(
+        (call) => (call[2] as ReadonlyArray<{ type?: string }>)[0]?.type === 'commit',
+      );
+      expect(commitLevelCalls).toHaveLength(1);
+      const items = commitLevelCalls[0]?.[2] as ReadonlyArray<{ id: ObjectId }>;
+      expect(items.map((entry) => entry.id)).toEqual([c, b]);
+      expect(messages(result)).toEqual(['C', 'B']);
+      spy.mockRestore();
     });
   });
 

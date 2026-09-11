@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
-import type { CommitPatchInput } from '../../../../src/domain/range-diff/index.js';
-import { rangeDiffEntries } from '../../../../src/domain/range-diff/index.js';
+import type { CommitPatchInput, RenderedPatch } from '../../../../src/domain/range-diff/index.js';
+import { rangeDiffEntries, renderRangePatch } from '../../../../src/domain/range-diff/index.js';
 
 const oid = (char: string): ObjectId => char.repeat(40) as ObjectId;
 const path = (p: string): FilePath => p as FilePath;
@@ -21,12 +21,15 @@ const addFile = (id: string, name: string, content: string, message: string): Co
   ],
 });
 
+const rendered = (id: string, name: string, content: string, message: string): RenderedPatch =>
+  renderRangePatch(addFile(id, name, content, message));
+
 describe('rangeDiffEntries', () => {
   describe('Given two single-commit series that add the same content under different messages, When run', () => {
     it('Then the commit is matched and reported as changed', () => {
       // Arrange
-      const old = [addFile('1', 'f.txt', 'hello\n', 'old message')];
-      const next = [addFile('2', 'f.txt', 'hello\n', 'new message')];
+      const old = [rendered('1', 'f.txt', 'hello\n', 'old message')];
+      const next = [rendered('2', 'f.txt', 'hello\n', 'new message')];
 
       // Act
       const result = rangeDiffEntries(old, next, 60);
@@ -42,8 +45,8 @@ describe('rangeDiffEntries', () => {
   describe('Given series that add unrelated files, When run', () => {
     it('Then the old commit is a deletion and the new commit a creation', () => {
       // Arrange
-      const old = [addFile('1', 'a.txt', 'aaa\n', 'add a')];
-      const next = [addFile('2', 'b.txt', 'bbb\n', 'add b')];
+      const old = [rendered('1', 'a.txt', 'aaa\n', 'add a')];
+      const next = [rendered('2', 'b.txt', 'bbb\n', 'add b')];
 
       // Act
       const result = rangeDiffEntries(old, next, 60);

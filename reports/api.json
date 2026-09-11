@@ -154095,7 +154095,31 @@
 									},
 									{
 										"kind": "text",
-										"text": ")."
+										"text": ").\n\nSelection (walking, filtering, "
+									},
+									{
+										"kind": "code",
+										"text": "`limit`"
+									},
+									{
+										"kind": "text",
+										"text": ") and diffing are two stages: the walk\ndrains into "
+									},
+									{
+										"kind": "code",
+										"text": "`selected`"
+									},
+									{
+										"kind": "text",
+										"text": " first, then every diff runs through "
+									},
+									{
+										"kind": "code",
+										"text": "`boundedMapFor`"
+									},
+									{
+										"kind": "text",
+										"text": " so\nthe walk's read-ahead is never stalled waiting on a diff per iteration."
 									}
 								]
 							},

@@ -101,6 +101,10 @@ export async function* commitDateWalk(
     ),
     ignoreMissing,
   };
+  // One closure per walk, not per pop: `entries()` reads `walk.heap` live, so
+  // every step's snapshot is still valid "until the iterator resumes" — the
+  // contract `frontier` documents above.
+  const frontier = (): ReadonlyArray<ObjectId> => walk.heap.entries().map((entry) => entry.oid);
 
   await enqueueSeeds(ctx, walk);
 
@@ -115,7 +119,7 @@ export async function* commitDateWalk(
     yield {
       commit,
       frontierEmpty: walk.heap.size() === 0,
-      frontier: () => walk.heap.entries().map((entry) => entry.oid),
+      frontier,
     };
     if (shallow.has(commit.id)) continue;
     await enqueueParents(ctx, walk, commit);
@@ -149,6 +153,10 @@ const enqueueParents = async (ctx: Context, walk: DateWalk, commit: Commit): Pro
     walk.seen.add(parent);
     return true;
   });
+  if (parents.length === 0) return;
+  // A single parent needs no fan-out: `enqueueCommit` already awaits the same
+  // `resolveHeapEntry` and pushes, so a rejection still rethrows unwrapped.
+  if (parents.length === 1) return enqueueCommit(ctx, walk, parents[0]!);
   const settled = await Promise.allSettled(
     parents.map((parent) => resolveHeapEntry(ctx, walk, parent)),
   );

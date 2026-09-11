@@ -14,6 +14,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import type { LineDiff } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import * as rangeDiffDomainMod from '../../../../src/domain/range-diff/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const makeClock = () => {
@@ -309,6 +310,35 @@ describe('rangeDiff', () => {
       // without it the patch degrades to separate `(deleted)`/`(new)` headers.
       expect(result.map((e) => e.status)).toEqual(['changed']);
       expect(patchLinesInclude(result[0]?.diffOfDiffs, 'f.txt => g.txt')).toBe(true);
+    });
+  });
+
+  describe('Given a range whose commit touches real file content, When rangeDiff hydrates the series', () => {
+    it('Then the hydrated patch handed to rangeDiffEntries carries no raw file content', async () => {
+      // Arrange — hydrate must render immediately, releasing PatchFile
+      // oldContent/newContent per commit rather than holding them until
+      // rangeDiffEntries renders.
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const clock = makeClock();
+      const base = await commitFile(ctx, clock, 'seed', 'seed\n', 'seed');
+      const tip = await commitFile(ctx, clock, 'f.txt', 'hello\n', 'add f');
+      const spy = vi.spyOn(rangeDiffDomainMod, 'rangeDiffEntries');
+
+      // Act
+      await rangeDiff(ctx, { old: { base, tip: base }, new: { base, tip } });
+
+      // Assert
+      try {
+        const newSeries = spy.mock.calls[0]?.[1];
+        expect(newSeries).toHaveLength(1);
+        const keys = Object.keys(newSeries?.[0] as object);
+        expect(keys).not.toContain('files');
+        expect(keys).not.toContain('oldContent');
+        expect(keys).not.toContain('newContent');
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 
