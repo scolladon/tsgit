@@ -25,7 +25,9 @@ import type { Context } from '../../src/ports/context.js';
 import { type BitmapClosureFixture, setupBitmapClosureFixture } from './fixtures.js';
 import type { BenchComparison } from './support/bench-dsl.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { MEDIUM_FIXTURE, MEDIUM_FIXTURE_WITH_COMMIT_GRAPH } from './support/fixture-generator.js';
 import { removeSync } from './support/fixture-scratch.js';
+import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
 
 /** Comfortably at-or-above the closure design's own 400-commit pinning scale. */
 const CLOSURE_FIXTURE_COMMITS = 500;
@@ -136,3 +138,31 @@ benchScenario(
   "When computeClosure({ objects: true, tier: 'bitmap' }) answers the full objects closure from the bitmap, Then measure tsgit",
   directTierComparison('bitmap'),
 );
+
+// ---------------------------------------------------------------------------
+// The not side: the same one-commit exclusion on the plain medium fixture and
+// on its commit-graph twin, so the marker's graph-first ancestry walk has a
+// row that prices it (every other closure row here passes `not: []`).
+// ---------------------------------------------------------------------------
+
+const notSideScaled = [
+  await resolveScaledContext(MEDIUM_FIXTURE),
+  await resolveScaledContext(MEDIUM_FIXTURE_WITH_COMMIT_GRAPH),
+];
+
+for (const scaled of notSideScaled) {
+  scaledScenario(
+    scaled,
+    'When revList() excludes HEAD~1 from HEAD, Then measure tsgit',
+    async (fixture) => {
+      const repo = await openRepository({ cwd: fixture.cwd });
+      const tips = await repo.revList({ wants: ['HEAD'], maxCount: 2 });
+      const head = tips.entries[0]!.id;
+      const parent = tips.entries[1]!.id;
+      const sut = async (): Promise<void> => {
+        await repo.revList({ wants: [head], not: [parent] });
+      };
+      return { teardown: () => repo.dispose(), sut };
+    },
+  );
+}
