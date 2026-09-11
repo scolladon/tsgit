@@ -48,8 +48,9 @@ export interface RevListOptions {
   /** Follow only the first parent of each commit. */
   readonly firstParent?: boolean;
   /**
-   * Emit the resolved tips themselves and stop — no parent traversal.
-   * Under `objects`, each tip's own tree still counts.
+   * Emit the resolved tips themselves and stop — no parent traversal. Ignored
+   * once a `not` tip is present (git drops `--no-walk` for a range); with no
+   * `not` side and `objects`, each tip's own tree still counts.
    */
   readonly noWalk?: boolean;
   /**

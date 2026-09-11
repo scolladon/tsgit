@@ -1008,9 +1008,9 @@ describe('computeClosure', () => {
     });
   });
 
-  describe('Given two commit seeds under noWalk, one of them covered by not', () => {
+  describe('Given two commit seeds under noWalk with a not tip (noWalk ignored with a range)', () => {
     describe('When computeClosure emits the seeds', () => {
-      it('Then the covered seed is skipped and the other is emitted', async () => {
+      it('Then the walk runs and excludes the covered seed, emitting only the other', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const chain = await buildLinearChain(ctx);

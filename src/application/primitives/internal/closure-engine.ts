@@ -202,10 +202,11 @@ async function resolveWants(
 }
 
 /**
- * `noWalk`'s own building block: emit each commit seed itself, skipping one
- * marked uninteresting, with no parent enqueue at all. `maxCount` still
- * bounds how many seeds are emitted; `objects` still emits each seed's own
- * tree.
+ * `noWalk`'s own building block, reached only when there is no `not` side
+ * (git ignores `--no-walk` with a range): emit each commit seed itself with no
+ * parent enqueue at all. `maxCount` still bounds how many seeds are emitted;
+ * `objects` still emits each seed's own tree. With no `not` side there is no
+ * boundary tree to mark.
  */
 async function emitSeedsWithoutWalking(
   ctx: Context,
@@ -239,6 +240,13 @@ async function walkAndEmitCommits(
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
+  // git's `mark_edges_uninteresting` runs over the WHOLE interesting frontier
+  // (`limit_list`) before `--max-count` truncates the output, so an edge parent
+  // beyond the count still has its tree marked. A limited-objects walk (one with
+  // a `not` side) must therefore drain to the `until` boundary before applying
+  // `maxCount`; a commits-only or negative-free walk has no boundary to discover
+  // past the cap and breaks early as before.
+  const drainsFully = request.objects === true && marks.commits.size > 0;
   const walked: WalkedCommit[] = [];
   for await (const commit of walkCommits(ctx, {
     from: commitSeeds.map((seed) => seed.id),
@@ -247,12 +255,13 @@ async function walkAndEmitCommits(
     order: request.firstParent === true ? 'first-parent' : 'topo',
   })) {
     walked.push({ id: commit.id, tree: commit.data.tree, parents: commit.data.parents });
-    if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
+    if (request.maxCount !== undefined && walked.length >= request.maxCount && !drainsFully) break;
   }
 
   if (request.objects) await markBoundaryTrees(ctx, walked, marks);
 
-  for (const commit of walked) {
+  const emitted = request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
+  for (const commit of emitted) {
     emit({ id: commit.id, type: 'commit', nameHash: 0 });
     if (request.objects) await emitTree(ctx, commit.tree, scope, emit);
   }
@@ -268,7 +277,10 @@ async function emitCommitSeeds(
   emit: Emit,
 ): Promise<void> {
   if (commitSeeds.length === 0 || request.maxCount === 0) return;
-  if (request.noWalk === true)
+  // git ignores `--no-walk` once a range (a `not` tip) is present, falling back
+  // to the ordinary bounded walk; `noWalk` shows only the tips solely when there
+  // is nothing to exclude.
+  if (request.noWalk === true && request.not.length === 0)
     return emitSeedsWithoutWalking(ctx, commitSeeds, marks, scope, request, emit);
   return walkAndEmitCommits(ctx, commitSeeds, marks, scope, request, emit);
 }

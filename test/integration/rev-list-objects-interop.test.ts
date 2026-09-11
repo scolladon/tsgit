@@ -178,6 +178,45 @@ const buildUnrelatedSharedBlobFixture = async (): Promise<UnrelatedSharedBlobFix
   return { dir, wantTip, notTip };
 };
 
+interface BoundaryBeyondCountFixture {
+  readonly dir: string;
+  readonly w2: string;
+  readonly w3: string;
+  readonly notTip: string;
+}
+
+/**
+ * Linear P `{shared, t}` <- W2 `{+w2}` <- W3 `{+w3}`. With `^P`, P is the edge
+ * parent of W2, so git marks P's tree over the WHOLE interesting walk before
+ * `--max-count` truncates the output and regardless of `--no-walk` (which git
+ * ignores once a range is present). Pins both cases against git.
+ */
+const buildBoundaryBeyondCountFixture = async (): Promise<BoundaryBeyondCountFixture> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-boundary-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'A U Thor');
+  git(dir, 'config', 'user.email', 'author@example.com');
+  git(dir, 'config', 'commit.gpgsign', 'false');
+
+  await writeFile(path.join(dir, 'shared'), 'shared\n');
+  await writeFile(path.join(dir, 't'), 't\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'P', 1_700_000_000);
+  const notTip = git(dir, 'rev-parse', 'HEAD').trim();
+
+  await writeFile(path.join(dir, 'w2'), 'w2\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'W2', 1_700_000_001);
+  const w2 = git(dir, 'rev-parse', 'HEAD').trim();
+
+  await writeFile(path.join(dir, 'w3'), 'w3\n');
+  git(dir, 'add', '-A');
+  commit(dir, 'W3', 1_700_000_002);
+  const w3 = git(dir, 'rev-parse', 'HEAD').trim();
+
+  return { dir, w2, w3, notTip };
+};
+
 describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', () => {
   describe('Given a shared-subtree history whose tip reuses its parent tree verbatim', () => {
     let fixture: SharedSubtreeFixture;
@@ -303,6 +342,72 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
           wants: [fixture.wantTip],
           not: [fixture.notTip],
           objects: true,
+        });
+
+        // Assert
+        const actual = new Set(result.entries.map((entry) => entry.id));
+        expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+  });
+  describe('Given a linear history whose edge parent lies beyond the requested count', () => {
+    let fixture: BoundaryBeyondCountFixture;
+
+    beforeAll(async () => {
+      fixture = await buildBoundaryBeyondCountFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
+
+    describe('When revList excludes the root with maxCount 1 under objects', () => {
+      it('Then it marks the edge parent tree over the full walk — matching git rev-list --objects -n 1 W3 ^P', async () => {
+        // Arrange
+        const expected = gitIdSet(
+          fixture.dir,
+          '--objects',
+          '-n',
+          '1',
+          fixture.w3,
+          '--not',
+          fixture.notTip,
+        );
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [fixture.w3],
+          not: [fixture.notTip],
+          objects: true,
+          maxCount: 1,
+        });
+
+        // Assert
+        const actual = new Set(result.entries.map((entry) => entry.id));
+        expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+
+    describe('When revList excludes the root under noWalk and objects', () => {
+      it('Then noWalk is ignored with a range, matching git rev-list --no-walk --objects W2 ^P', async () => {
+        // Arrange
+        const expected = gitIdSet(
+          fixture.dir,
+          '--objects',
+          '--no-walk',
+          fixture.w2,
+          '--not',
+          fixture.notTip,
+        );
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [fixture.w2],
+          not: [fixture.notTip],
+          objects: true,
+          noWalk: true,
         });
 
         // Assert

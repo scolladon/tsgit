@@ -45,7 +45,7 @@ export interface NotMarks {
    *  trees as it discovers them — see `markBoundaryTrees`. */
   readonly objects: Set<ObjectId>;
   /** Threaded through to `markBoundaryTrees` so a tree already marked here
-   *  (the tip's own) is never re-walked. */
+   *  (a directly-named tree tip's) is never re-walked. */
   readonly seenTrees: Set<ObjectId>;
   /** Resolved once by `markNotSide` from `core.maxTreeDepth` — `markBoundaryTrees`
    *  reads it back from here instead of resolving it again. */
@@ -182,7 +182,7 @@ async function markCommitAncestry(
     if (ctx.signal?.aborted) throw operationAborted();
     const current = frontier.queue[head] as ObjectId;
     frontier.queued.delete(current);
-    if (acc.commits.has(current) || acc.missing.has(current)) continue;
+    if (acc.commits.has(current)) continue;
     const meta = await readCommitMetaIfPresent(ctx, current);
     if (meta === undefined) {
       acc.missing.add(current);
@@ -224,8 +224,8 @@ function enqueueUnmarkedParents(
 
 /**
  * Mark one `not` tip uninteresting: peel a tag chain, then mark a commit's
- * full ancestry (commits) and own tree (objects), or mark a tree/blob tip
- * directly.
+ * full ancestry (commits only — its own tree is left to `markBoundaryTrees`),
+ * or mark a tree/blob tip directly.
  */
 async function markUninteresting(
   ctx: Context,
