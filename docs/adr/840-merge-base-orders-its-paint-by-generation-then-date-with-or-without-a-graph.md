@@ -23,14 +23,18 @@ the minimum generation over the candidates.
 
 ## Decision
 
-**Adopted-as-recommended (no user judgment).** The heap compares higher generation first, then
-newer committer date, then **insertion order** — the tie-break git's `prio_queue` applies through
-its insertion counter. The shared date-then-oid comparator the paint used before is not git's rule
-for this walk: measured on a criss-cross whose two bases share a committer second (git 2.55.0,
-with and without a graph), git returns the base its queue saw first, and only the insertion-order
-tie reproduces that deterministically. The shared comparator itself is untouched; other walks keep
-it. The main paint passes `min_generation = 0`; the reduction paints each candidate with the
-minimum generation over the whole candidate set and breaks when a popped generation falls below it.
+**Adopted-as-recommended (no user judgment), refined after measurement.** git's own comparator
+switch is replicated rather than the "always" rule first recorded here: when the paint's
+`min_generation` is 0 AND corrected commit dates are not enabled for the chain (ADR-848), the queue
+orders by committer date then insertion order; otherwise by generation, then date, then insertion
+order. The insertion order is the tie-break git's `prio_queue` applies through its counter, and it
+is total because an id is queued at most once at a time (git's `ENQUEUED` dedup, now replicated).
+Measured on a criss-cross whose two bases share a committer second (git 2.55.0, with and without a
+graph) git returns the base its queue saw first; measured on a `generationVersion=1` graph the
+date order, never the level order, decides — the one row that falsified "always". The shared
+date-then-oid comparator is untouched; other walks keep it. The main paint passes
+`min_generation = 0`; the reduction paints each candidate with the minimum generation over the
+candidate and its not-yet-redundant rivals and breaks when a popped generation falls below it.
 
 ## Consequences
 
