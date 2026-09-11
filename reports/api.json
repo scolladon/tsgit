@@ -142407,7 +142407,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", the rest are the others. Returns the lexicographically\nsmallest single base by default; the full reduced set with "
+										"text": ", the rest are the others. Returns the single base\nwith the newest committer date by default, ties resolved as Git's own\ngeneration-then-date-ordered walk resolves them; the full reduced set,\noid-sorted, with "
 									},
 									{
 										"kind": "code",
@@ -142415,7 +142415,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ";\nthe octopus fold with "
+										"text": "; the octopus fold with "
 									},
 									{
 										"kind": "code",
@@ -142423,7 +142423,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ". Unrelated histories yield "
+										"text": ".\nUnrelated histories yield "
 									},
 									{
 										"kind": "code",

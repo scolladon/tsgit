@@ -2,11 +2,36 @@ import { describe, expect, it } from 'vitest';
 
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { mergeBase } from '../../../../src/application/primitives/merge-base.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  Commit,
+  ObjectId,
+  Tree,
+} from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
+
+const OBJECT_STORE_READ = /\/objects\/(pack\/|[0-9a-f]{2}\/)/;
+
+const objectStoreReadPaths = (
+  calls: ReadonlyArray<{ readonly method: string; readonly path: string }>,
+): ReadonlyArray<string> =>
+  calls
+    .filter((call) => call.method === 'read' && OBJECT_STORE_READ.test(call.path))
+    .map((c) => c.path);
+
+const asCommits = async (ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> => {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error('expected a commit');
+    commits.push(object);
+  }
+  return commits;
+};
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -74,6 +99,29 @@ const buildCrissCross = async (
   const d = await commitWith(ctx, treeId, 4, [b, c]);
   const e = await commitWith(ctx, treeId, 5, [c, b]);
   return { a, b, c, d, e };
+};
+
+/**
+ * Retry `buildCrissCross`'s shape with a varying salt until C's oid is NOT the
+ * lexicographically smallest of {B, C} — the newest-base (single-result) and
+ * oid-sorted ({ all: true }) rules then genuinely disagree, rather than
+ * coincidentally aligning for one particular hash.
+ */
+const buildCrissCrossWithDisagreeingOrders = async (
+  ctx: Context,
+): Promise<{ b: ObjectId; c: ObjectId; d: ObjectId; e: ObjectId }> => {
+  const treeId = await emptyTree(ctx);
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const salt = attempt * 10;
+    const a = await commitWith(ctx, treeId, 1000 + salt, []);
+    const b = await commitWith(ctx, treeId, 2000 + salt, [a]);
+    const c = await commitWith(ctx, treeId, 3000 + salt, [a]);
+    const d = await commitWith(ctx, treeId, 4000 + salt, [b, c]);
+    const e = await commitWith(ctx, treeId, 5000 + salt, [c, b]);
+    const [lexSmallest] = [b, c].sort() as [ObjectId, ObjectId];
+    if (c !== lexSmallest) return { b, c, d, e };
+  }
+  throw new Error('could not build a disagreeing criss-cross after 200 attempts');
 };
 
 /**
@@ -207,25 +255,25 @@ describe('mergeBase', () => {
     });
   });
 
-  describe('Given a criss-cross with two best common ancestors B and C', () => {
+  describe('Given a criss-cross with two best common ancestors B (older) and C (newer)', () => {
     describe('When mergeBase([D, E]) (default truncates)', () => {
-      it('Then returns only the lexicographically smallest base', async () => {
-        // Arrange
+      it('Then returns the newest base, not the lexicographically smallest', async () => {
+        // Arrange — B (date 2) and C (date 3) are both valid bases; the
+        // newest-date base wins the single-result rule regardless of oid order.
         const ctx = await buildSeededContext();
-        const { a, b, c, d, e } = await buildCrissCross(ctx);
-        const [smaller] = [b, c].sort() as [ObjectId, ObjectId];
+        const { a, c, d, e } = await buildCrissCross(ctx);
 
         // Act
         const result = await mergeBase(ctx, [d, e]);
 
         // Assert
-        expect(result).toEqual([smaller]);
+        expect(result).toEqual([c]);
         expect(result).not.toContain(a);
       });
     });
 
     describe('When mergeBase([D, E], { all: true })', () => {
-      it('Then returns both B and C sorted, without the redundant A', async () => {
+      it('Then returns both B and C oid-sorted, without the redundant A', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const { a, b, c, d, e } = await buildCrissCross(ctx);
@@ -237,6 +285,27 @@ describe('mergeBase', () => {
         // Assert
         expect(result).toEqual(expected);
         expect(result).not.toContain(a);
+      });
+    });
+  });
+
+  describe('Given a criss-cross whose newest base is not the lexicographically smallest', () => {
+    describe('When mergeBase runs both without and with { all: true }', () => {
+      it('Then the single-result and { all: true } orders deliberately disagree', async () => {
+        // Arrange — retry with a varying salt until the newest base's oid is
+        // NOT the lexicographically smallest of {B, C}, proving the two rules
+        // genuinely diverge rather than coincidentally aligning for one hash.
+        const ctx = await buildSeededContext();
+        const { b, c, d, e } = await buildCrissCrossWithDisagreeingOrders(ctx);
+
+        // Act
+        const single = await mergeBase(ctx, [d, e]);
+        const all = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(single).toEqual([c]);
+        expect(all).toEqual([b, c].sort());
+        expect(all[0]).not.toEqual(single[0]);
       });
     });
   });
@@ -447,17 +516,16 @@ describe('mergeBase', () => {
     });
 
     describe('When mergeBase([D, E], { octopus: true }) (default truncates)', () => {
-      it('Then returns the lexicographically smallest single base', async () => {
+      it('Then returns the newest single base', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const { b, c, d, e } = await buildCrissCross(ctx);
-        const [smaller] = [b, c].sort() as [ObjectId, ObjectId];
+        const { c, d, e } = await buildCrissCross(ctx);
 
         // Act
         const result = await mergeBase(ctx, [d, e], { octopus: true });
 
         // Assert
-        expect(result).toEqual([smaller]);
+        expect(result).toEqual([c]);
       });
     });
   });
@@ -538,6 +606,137 @@ describe('mergeBase', () => {
 
         // Assert
         expect(result).toEqual([boundary]);
+      });
+    });
+  });
+
+  describe('Given a commit-graph covering every commit in a criss-cross reduction', () => {
+    describe('When mergeBase({ all: true }) runs', () => {
+      it('Then it reads no object from the store', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const { a, b, c, d, e } = await buildCrissCross(base);
+        await writeCommitGraph(base, [await asCommits(base, [a, b, c, d, e])]);
+        // The fixture's own asCommits reads (to build the graph model) warm
+        // the object cache; clear it so the assertion below reflects the
+        // graph path, not leftover fixture-setup reads.
+        base.deltaCache.clear();
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        const result = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(result).toEqual([b, c].sort());
+        expect(objectStoreReadPaths(calls())).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given no commit-graph exists', () => {
+    describe('When mergeBase({ all: true }) reduces a criss-cross', () => {
+      it('Then the reduced set is unchanged and every read still hits the object store', async () => {
+        // Arrange — regression guard for the migration to readCommitMeta: the
+        // no-graph fallback path must still resolve every commit.
+        const base = await buildSeededContext();
+        const { a, b, c, d, e } = await buildCrissCross(base);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        const result = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(result).toEqual([b, c].sort());
+        expect(result).not.toContain(a);
+        expect(objectStoreReadPaths(calls()).length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given a diamond whose shared root carries a much lower generation than its children', () => {
+    describe('When mergeBase([b, c]) runs', () => {
+      it('Then the main discovery paint still finds the low-generation root (it never breaks)', async () => {
+        // Arrange — mergeBasesMany's own paint always passes minGeneration 0,
+        // so a root whose generation is far below its children must still be
+        // discovered rather than pruned by an early break.
+        const base = await buildSeededContext();
+        const treeId = await emptyTree(base);
+        const root = await commitWith(base, treeId, 1, []);
+        const b = await commitWith(base, treeId, 1_000, [root]);
+        const c = await commitWith(base, treeId, 1_001, [root]);
+        await writeCommitGraph(base, [await asCommits(base, [root, b, c])]);
+
+        // Act
+        const result = await mergeBase(base, [b, c]);
+
+        // Assert
+        expect(result).toEqual([root]);
+      });
+    });
+  });
+
+  describe('Given two disjoint candidate chains whose reduction boundary is graph-covered', () => {
+    describe('When mergeBase({ all: true }) reduces the two non-redundant candidates', () => {
+      it('Then removeRedundant breaks at the minimum generation and never reads past it', async () => {
+        // Arrange — P and Q are fully disjoint linear chains; D and E both
+        // merge their tips directly, so p2 and q2 are both non-redundant
+        // merge bases with no common ancestor between them. The commit-graph
+        // covers p1, p2, q0, q1, q2 (every commit removeRedundant needs to
+        // confirm neither candidate reaches the other) but NOT p0 — a walk
+        // that failed to stop at the candidate-set minimum generation (300,
+        // since q1's covered generation 250 falls below it) would carry on
+        // past p1 into p0, an object-store read.
+        const base = await buildSeededContext();
+        const treeId = await emptyTree(base);
+        const p0 = await commitWith(base, treeId, 100, []);
+        const p1 = await commitWith(base, treeId, 200, [p0]);
+        const p2 = await commitWith(base, treeId, 300, [p1]);
+        const q0 = await commitWith(base, treeId, 150, []);
+        const q1 = await commitWith(base, treeId, 250, [q0]);
+        const q2 = await commitWith(base, treeId, 350, [q1]);
+        const d = await commitWith(base, treeId, 1000, [p2, q2]);
+        const e = await commitWith(base, treeId, 1001, [q2, p2]);
+        await writeCommitGraph(base, [await asCommits(base, [p1, p2, q0, q1, q2, d, e])]);
+        base.deltaCache.clear();
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        const result = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(result).toEqual([p2, q2].sort());
+        expect(objectStoreReadPaths(calls())).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the mirrored disjoint chains, where Q now carries the lower intermediate generation', () => {
+    describe('When mergeBase({ all: true }) reduces the two non-redundant candidates', () => {
+      it('Then the protected deepest ancestor follows the generation values, not a fixed side', async () => {
+        // Arrange — same shape as the P/Q fixture above with the roles
+        // swapped: q1's generation (200) is now the lower one, so the break
+        // must protect q0 this time. A comparator that ignored generation (or
+        // favoured a hard-coded side) would protect the wrong one.
+        const base = await buildSeededContext();
+        const treeId = await emptyTree(base);
+        const p0 = await commitWith(base, treeId, 150, []);
+        const p1 = await commitWith(base, treeId, 250, [p0]);
+        const p2 = await commitWith(base, treeId, 350, [p1]);
+        const q0 = await commitWith(base, treeId, 100, []);
+        const q1 = await commitWith(base, treeId, 200, [q0]);
+        const q2 = await commitWith(base, treeId, 300, [q1]);
+        const d = await commitWith(base, treeId, 1000, [p2, q2]);
+        const e = await commitWith(base, treeId, 1001, [q2, p2]);
+        await writeCommitGraph(base, [await asCommits(base, [p0, p1, p2, q1, q2, d, e])]);
+        base.deltaCache.clear();
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        const result = await mergeBase(ctx, [d, e], { all: true });
+
+        // Assert
+        expect(result).toEqual([p2, q2].sort());
+        expect(objectStoreReadPaths(calls())).toEqual([]);
       });
     });
   });
