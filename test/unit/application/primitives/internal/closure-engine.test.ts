@@ -2451,6 +2451,32 @@ describe('computeClosure — the not-side ancestry walk consults each commit onc
     });
   });
 
+  describe('Given a not-side parent the store lacks, named again by a commit that pops after the miss, When computeClosure marks the not side', () => {
+    it('Then the parent is consulted once — the remembered miss stops the second enqueue', async () => {
+      // Arrange — the frontier is FIFO: tip → [c1, c2]; c1 → [missing]; c2 → [d];
+      // d → [missing]. It pops c1, c2, missing, d in that order, so d names the
+      // parent after its miss was recorded and after it left the pending set —
+      // only the remembered miss can stop the second consultation.
+      const ctx = await buildSeededContext();
+      const treeId = await haveTree(ctx);
+      const missing = 'e'.repeat(40) as ObjectId;
+      const c1 = await writeCommit(ctx, treeId, [missing], 'child one');
+      const d = await writeCommit(ctx, treeId, [missing], 'grandchild');
+      const c2 = await writeCommit(ctx, treeId, [d], 'child two');
+      const notTipId = await writeCommit(ctx, treeId, [c1, c2], 'have');
+      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
+      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+      const sut = computeClosure;
+
+      // Act
+      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
+
+      // Assert
+      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
+      metaSpy.mockRestore();
+    });
+  });
+
   describe('Given a not tip naming an already-marked parent beside exactly the bound of fresh parents', () => {
     describe('When computeClosure marks the not side', () => {
       it('Then the marked parent is not queued again, so the walk stays within the bound and completes', async () => {
