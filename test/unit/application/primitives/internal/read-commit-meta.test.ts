@@ -121,6 +121,44 @@ describe('readCommitMeta', () => {
     });
   });
 
+  describe('Given a commit-graph covering the commit', () => {
+    describe('When readCommitMeta runs and the caller wants the root tree', () => {
+      it('Then the root tree comes from the graph with no object-store read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const treeId = await emptyTree(base);
+        const root = await commitAt(base, treeId, 1_700_000_000, []);
+        await writeCommitGraph(base, [await asCommits(base, [root])]);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        const result = await readCommitMeta(ctx, root);
+
+        // Assert
+        expect(result?.tree).toBe(treeId);
+        expect(objectStoreReadPaths(calls())).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given no commit-graph covering the commit', () => {
+    describe('When readCommitMeta runs and the caller wants the root tree', () => {
+      it('Then the root tree comes from the commit object itself', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const root = await commitAt(ctx, treeId, 1_700_000_000, []);
+
+        // Act
+        const result = await readCommitMeta(ctx, root);
+
+        // Assert
+        expect(result?.tree).toBe(treeId);
+        expect(result?.generation).toBe(GENERATION_INFINITY);
+      });
+    });
+  });
+
   describe('Given a shallow boundary commit (the graph is disabled)', () => {
     describe('When readCommitMeta runs on the boundary', () => {
       it('Then falls back to the object read and grafts its parents to empty', async () => {
@@ -204,6 +242,26 @@ describe('commitMetaOf', () => {
 
         // Assert
         expect(result.generation).toBe(1_700_000_000);
+        expect(objectStoreReadPaths(calls())).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a commit already in hand and a caller that wants its root tree', () => {
+    describe('When commitMetaOf runs', () => {
+      it('Then the root tree comes from the commit in hand, with no object-store read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const treeId = await emptyTree(base);
+        const root = await commitAt(base, treeId, 1_700_000_000, []);
+        const [commit] = await asCommits(base, [root]);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        const result = await commitMetaOf(ctx, commit!);
+
+        // Assert
+        expect(result.tree).toBe(treeId);
         expect(objectStoreReadPaths(calls())).toEqual([]);
       });
     });

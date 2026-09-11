@@ -46,7 +46,12 @@ import {
   buildMidx,
   type MidxSpec,
 } from '../../../domain/storage/arbitraries.js';
-import { buildSeededContext, buildSharedSubtreeChain, seedMaxTreeDepth } from '../fixtures.js';
+import {
+  buildSeededContext,
+  buildSharedSubtreeChain,
+  seedMaxTreeDepth,
+  writeCommitGraph,
+} from '../fixtures.js';
 import { writeSyntheticBitmap, writeSyntheticPack } from '../pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -2072,6 +2077,177 @@ describe('computeClosure — a not-side tree missing from the local object store
         // into it), sibling `y` and its blob are still pruned in full.
         expect(new Set(result.objects.map((object) => object.id))).toEqual(
           new Set([fixture.want, fixture.wantRootTree, fixture.subtreeW, fixture.sharedBlob]),
+        );
+      });
+    });
+  });
+});
+
+const asCommits = async (ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> => {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObjectModule.readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error('expected a commit');
+    commits.push(object);
+  }
+  return commits;
+};
+
+interface FourCommitChain extends LinearChain {
+  readonly c4: ObjectId;
+  readonly t4: ObjectId;
+  readonly b4: ObjectId;
+}
+
+/** `buildLinearChain` plus a fourth generation, so a `not` tip (`c3`) still
+ *  has two strict ancestors behind it and one interesting commit ahead. */
+const buildFourCommitChain = async (ctx: Context): Promise<FourCommitChain> => {
+  const chain = await buildLinearChain(ctx);
+  const b4 = await writeBlob(ctx, 'gen-4');
+  const t4 = await writeTree(ctx, [treeEntry('100644' as FileMode, 'file.txt', b4)]);
+  const c4 = await writeCommit(ctx, t4, [chain.c3], 'gen-4');
+  return { ...chain, c4, t4, b4 };
+};
+
+interface OddParentFixture {
+  readonly have: ObjectId;
+  readonly want: ObjectId;
+  readonly wantRootTree: ObjectId;
+  readonly wantBlob: ObjectId;
+  readonly shared: ObjectId;
+  readonly sharedTree: ObjectId;
+  readonly sharedBlob: ObjectId;
+}
+
+/**
+ * `have` is a merge of `oddParent` — an oid the marker cannot turn into a
+ * commit — and `shared`, a real commit that `want` also names as a parent. If
+ * the not-side marker stops at `oddParent`, `shared` is never marked and the
+ * interesting walk emits it; if it steps over it, `shared` is pruned.
+ */
+const buildOddParentFixture = async (
+  ctx: Context,
+  oddParent: ObjectId,
+): Promise<OddParentFixture> => {
+  const sharedBlob = await writeBlob(ctx, 'shared');
+  const sharedTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', sharedBlob)]);
+  const shared = await writeCommit(ctx, sharedTree, [], 'shared');
+  const haveBlob = await writeBlob(ctx, 'have');
+  const haveTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', haveBlob)]);
+  const have = await writeCommit(ctx, haveTree, [oddParent, shared], 'have');
+  const wantBlob = await writeBlob(ctx, 'want');
+  const wantRootTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', wantBlob)]);
+  const want = await writeCommit(ctx, wantRootTree, [have, shared], 'want');
+  return { have, want, wantRootTree, wantBlob, shared, sharedTree, sharedBlob };
+};
+
+describe('computeClosure — marking the not side', () => {
+  describe('Given a commit-graph covering the whole not-side ancestry', () => {
+    describe('When computeClosure marks that ancestry', () => {
+      it('Then no strict not-side ancestor has its commit body read', async () => {
+        // Arrange — the graph already serves the only two fields the marker
+        // wants (root tree and parents); the tip itself is still read, since
+        // the marker must learn its object type before it can mark anything.
+        const ctx = await buildSeededContext();
+        const chain = await buildFourCommitChain(ctx);
+        await writeCommitGraph(ctx, [
+          await asCommits(ctx, [chain.c1, chain.c2, chain.c3, chain.c4]),
+        ]);
+        const readSpy = vi.spyOn(readObjectModule, 'readObject');
+        const sut = computeClosure;
+
+        // Act
+        await sut(ctx, {
+          tier: 'walk',
+          wants: [chain.c4],
+          not: [chain.c3],
+          objects: true,
+        });
+
+        // Assert
+        const idsRead = readSpy.mock.calls.map(([, id]) => id);
+        expect(idsRead).not.toContain(chain.c1);
+        expect(idsRead).not.toContain(chain.c2);
+      });
+    });
+  });
+
+  describe('Given the same history with and without a commit-graph', () => {
+    describe('When computeClosure prunes the same not tip from both', () => {
+      it('Then both emit the identical object set', async () => {
+        // Arrange — the two fixtures are content-addressed from identical
+        // inputs, so every oid matches across them.
+        const graphed = await buildSeededContext();
+        const chain = await buildFourCommitChain(graphed);
+        await writeCommitGraph(graphed, [
+          await asCommits(graphed, [chain.c1, chain.c2, chain.c3, chain.c4]),
+        ]);
+        const bare = await buildSeededContext();
+        await buildFourCommitChain(bare);
+        const request = {
+          tier: 'walk',
+          wants: [chain.c4],
+          not: [chain.c3],
+          objects: true,
+        } as const;
+
+        // Act
+        const withGraph = await computeClosure(graphed, request);
+        const withoutGraph = await computeClosure(bare, request);
+
+        // Assert
+        expect(new Set(withGraph.objects.map((object) => object.id))).toEqual(
+          new Set(withoutGraph.objects.map((object) => object.id)),
+        );
+      });
+    });
+  });
+
+  describe('Given a not-side commit one of whose parents has no object at all', () => {
+    describe('When computeClosure marks that ancestry', () => {
+      it('Then the absent parent is stepped over and the sibling parent is still marked', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fixture = await buildOddParentFixture(ctx, '1'.repeat(40) as ObjectId);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert — `shared` and everything under it stayed pruned.
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([fixture.want, fixture.wantRootTree, fixture.wantBlob]),
+        );
+      });
+    });
+  });
+
+  describe('Given a not-side commit one of whose parent oids names a blob', () => {
+    describe('When computeClosure marks that ancestry', () => {
+      it('Then the non-commit parent is stepped over and the sibling parent is still marked', async () => {
+        // Arrange — a separate row from the absent-parent one: two independent
+        // conditions guard the same enqueue, and one input cannot prove both.
+        const ctx = await buildSeededContext();
+        const notACommit = await writeBlob(ctx, 'not a commit');
+        const fixture = await buildOddParentFixture(ctx, notACommit);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [fixture.want],
+          not: [fixture.have],
+          objects: true,
+        });
+
+        // Assert
+        expect(new Set(result.objects.map((object) => object.id))).toEqual(
+          new Set([fixture.want, fixture.wantRootTree, fixture.wantBlob]),
         );
       });
     });

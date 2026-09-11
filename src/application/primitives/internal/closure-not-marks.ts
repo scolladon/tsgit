@@ -21,7 +21,7 @@ import { type GitObject, isDirectory, type ObjectId } from '../../../domain/obje
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 import { isGitlink } from '../validators.js';
-import { walkCommits } from '../walk-commits.js';
+import { type CommitMeta, readCommitMeta } from './read-commit-meta.js';
 import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
 /** The slice of a walked commit `markBoundaryTrees` needs — its own id and
@@ -112,20 +112,48 @@ async function markTree(
 }
 
 /**
+ * The negative side's tolerance for a commit it cannot resolve: `undefined`
+ * for a locally absent object, every other failure rethrown. `readCommitMeta`
+ * already answers `undefined` for an oid that resolves to something other
+ * than a commit, so both kinds of parent the marker cannot follow reach the same skip.
+ */
+const readCommitMetaIfPresent = async (
+  ctx: Context,
+  id: ObjectId,
+): Promise<CommitMeta | undefined> => {
+  try {
+    return await readCommitMeta(ctx, id);
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND') return undefined;
+    throw error;
+  }
+};
+
+/**
  * Marks `id` and its FULL commit ancestry uninteresting — git's own
  * merge-base exclusion: a commit reachable from a `not` tip is excluded from
  * the walk even when it is ALSO reachable from a `want`, however many parent
- * edges separate it from the tip. `until` short-circuits on a commit a prior
- * `not` id's own walk already covered, so overlapping ancestries are walked
- * once. Distinct from tree marking (`markTree`, above), which stays scoped
- * to specific commits' own trees — that asymmetry is what reproduces git's
- * own over-report.
+ * edges separate it from the tip. `markedCommits` doubles as the visited set
+ * and the short-circuit on a commit a prior `not` id's own pass already
+ * covered, so overlapping ancestries are walked once. Distinct from tree
+ * marking (`markTree`, above), which stays scoped to specific commits' own
+ * trees — that asymmetry is what reproduces git's own over-report.
  *
- * Records each walked commit's own tree in `commitTrees` too: `walkCommits`
- * has already read the body, so `markBoundaryTrees` can look up a marked
- * ancestor's tree later without a second read — and, since it only ever
- * reads that map at a key `commits` also gained here, the lookup is proven
- * to hit.
+ * Records each walked commit's own tree in `commitTrees` too, so
+ * `markBoundaryTrees` can look a marked ancestor's tree up later instead of
+ * reading it — and, since it only ever reads that map at a key `commits`
+ * also gained here, the lookup is proven to hit.
+ *
+ * Root tree and parents are the only two fields this needs, and
+ * `readCommitMeta` serves both from the commit-graph without touching the
+ * object store. That is git's own behaviour on the negative side:
+ * `repo_parse_commit` answers a commit from the graph whether or not its body
+ * is still there, and walks the parents the graph names. The deferred enqueue
+ * in `walkCommits` exists to protect a YIELDING walk under `ignoreMissing`,
+ * which only needs to hold because the body it yields must exist; nothing
+ * here is yielded, so nothing here needs the body. A shallow repository
+ * disables the graph outright, so the fallback's grafted parents still cut
+ * the ancestry at the boundary exactly as before.
  */
 async function markCommitAncestry(
   ctx: Context,
@@ -133,13 +161,15 @@ async function markCommitAncestry(
   markedCommits: Set<ObjectId>,
   commitTrees: Map<ObjectId, ObjectId>,
 ): Promise<void> {
-  for await (const commit of walkCommits(ctx, {
-    from: [id],
-    until: markedCommits,
-    ignoreMissing: true,
-  })) {
-    markedCommits.add(commit.id);
-    commitTrees.set(commit.id, commit.data.tree);
+  const queue: ObjectId[] = [id];
+  for (let head = 0; head < queue.length; head += 1) {
+    const current = queue[head] as ObjectId;
+    if (markedCommits.has(current)) continue;
+    const meta = await readCommitMetaIfPresent(ctx, current);
+    if (meta === undefined) continue;
+    markedCommits.add(current);
+    commitTrees.set(current, meta.tree);
+    for (const parent of meta.parents) queue.push(parent);
   }
 }
 

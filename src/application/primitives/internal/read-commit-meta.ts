@@ -19,6 +19,9 @@ export const GENERATION_INFINITY = Number.POSITIVE_INFINITY;
 
 export interface CommitMeta {
   readonly parents: ReadonlyArray<ObjectId>;
+  /** The commit's own root tree: the graph's stored `rootTree` on a hit, the
+   *  commit object's own `tree` header on the fallback. */
+  readonly tree: ObjectId;
   readonly committerDate: number;
   /** Graph generation — topo level or corrected commit date — or
    *  GENERATION_INFINITY when no graph serves this commit (or serves it with 0). */
@@ -27,6 +30,7 @@ export interface CommitMeta {
 
 const fromHeader = (header: CommitHeader): CommitMeta => ({
   parents: header.parents,
+  tree: header.rootTree,
   committerDate: header.committerDate,
   generation: header.generation > 0 ? header.generation : GENERATION_INFINITY,
 });
@@ -45,6 +49,7 @@ export const readCommitMeta = async (
   const grafted = applyGraft(object, await loadShallowSet(ctx));
   return {
     parents: grafted.data.parents,
+    tree: grafted.data.tree,
     committerDate: grafted.data.committer.timestamp,
     generation: GENERATION_INFINITY,
   };
@@ -57,6 +62,7 @@ export const commitMetaOf = async (ctx: Context, commit: Commit): Promise<Commit
   const grafted = applyGraft(commit, await loadShallowSet(ctx));
   return {
     parents: grafted.data.parents,
+    tree: commit.data.tree,
     committerDate: commit.data.committer.timestamp,
     generation: header === undefined ? GENERATION_INFINITY : fromHeader(header).generation,
   };
