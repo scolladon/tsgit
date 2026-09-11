@@ -120,6 +120,12 @@ export type UpdateRefOptions =
 
 export interface WalkCommitsOptions {
   readonly from: ReadonlyArray<ObjectId>;
+  /**
+   * Boundary commits: neither they nor their ancestors are yielded. A
+   * `ReadonlySet` is read by reference, never copied — a caller that mutates
+   * it before iteration starts changes the walk; an array is copied into a
+   * set once.
+   */
   readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   readonly order?: 'topo' | 'first-parent';
   readonly ignoreMissing?: boolean;
@@ -147,6 +153,12 @@ export interface WalkCommitsOptions {
  */
 export interface WalkCommitsByDateOptions {
   readonly from: ReadonlyArray<ObjectId>;
+  /**
+   * Boundary commits: neither they nor their ancestors are yielded. A
+   * `ReadonlySet` is read by reference, never copied — a caller that mutates
+   * it before iteration starts changes the walk; an array is copied into a
+   * set once.
+   */
   readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   /**
    * Commits whose parents must NOT be walked (shallow boundaries). Omitted ⇒

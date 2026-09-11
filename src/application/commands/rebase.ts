@@ -175,11 +175,6 @@ const commitsToReplay = async (
     for await (const c of walkCommits(ctx, { from: [base] })) excluded.add(c.id);
   }
   const ids: ObjectId[] = [];
-  // equivalent-mutant (the `until` exclusion defeated, e.g. the property
-  // dropped): dropping the exclusion makes this walk yield `base` + its
-  // ancestors too, but `dropCherryEquivalents` feeds the SAME (mutated) walk
-  // for the upstream patch-id side, so those extra commits are patch-id-dropped
-  // right back out — the net replay set is unchanged.
   for await (const c of walkCommits(ctx, { from: [head], until: excluded })) ids.push(c.id);
   return ids.reverse();
 };
