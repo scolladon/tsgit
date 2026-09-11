@@ -3,6 +3,7 @@ import { createCommit } from '../../../../../src/application/primitives/create-c
 import {
   commitHeader,
   insertBounded,
+  isGraphKnownAbsent,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import {
   commitGraphChainPath,
@@ -417,9 +418,11 @@ describe('read-commit-graph', () => {
           const secondHeader = await commitHeader(ctx, commit.id);
 
           // Assert — degraded on the first call AND the cached verdict is the
-          // fallback (never a memoized rejection poisoning later walks)
+          // fallback (never a memoized rejection poisoning later walks); the
+          // session now knows the graph is absent
           expect(header).toBeUndefined();
           expect(secondHeader).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(true);
         });
       });
     });
@@ -1011,6 +1014,59 @@ describe('insertBounded', () => {
         expect(map.size).toBe(2);
         expect(map.has('a')).toBe(true);
       });
+    });
+  });
+});
+
+describe('isGraphKnownAbsent', () => {
+  describe('Given a session that has not probed for a graph yet', () => {
+    describe('When asked whether the graph is known absent', () => {
+      it('Then it is not — nothing has been probed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = isGraphKnownAbsent;
+
+        // Act
+        const result = sut(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a repository with no commit-graph, When one header probe has run', () => {
+    it('Then the session knows the graph is absent', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const tree = await emptyTree(ctx);
+      const commit = await makeCommit(ctx, tree, [], 1, 'no-graph');
+      await commitHeader(ctx, commit.id);
+      const sut = isGraphKnownAbsent;
+
+      // Act
+      const result = sut(ctx);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given a repository with a commit-graph, When one header probe has run', () => {
+    it('Then the session does not call the graph absent', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const tree = await emptyTree(ctx);
+      const commit = await makeCommit(ctx, tree, [], 1, 'graphed');
+      await writeCommitGraph(ctx, [[commit]]);
+      await commitHeader(ctx, commit.id);
+      const sut = isGraphKnownAbsent;
+
+      // Act
+      const result = sut(ctx);
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 });

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
+import * as readCommitGraphModule from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import {
   commitMetaOf,
   GENERATION_INFINITY,
@@ -155,6 +156,29 @@ describe('readCommitMeta', () => {
         // Assert
         expect(result?.tree).toBe(treeId);
         expect(result?.generation).toBe(GENERATION_INFINITY);
+      });
+    });
+  });
+
+  describe('Given no commit-graph and a session whose first read already probed for one', () => {
+    describe('When readCommitMeta reads a second commit', () => {
+      it('Then the graph is not probed again — the read goes straight to the object store', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const root = await commitAt(ctx, treeId, 1_700_000_000, []);
+        const child = await commitAt(ctx, treeId, 1_700_000_001, [root]);
+        await readCommitMeta(ctx, child);
+        const headerSpy = vi.spyOn(readCommitGraphModule, 'commitHeader');
+        const sut = readCommitMeta;
+
+        // Act
+        const result = await sut(ctx, root);
+
+        // Assert
+        expect(result?.generation).toBe(GENERATION_INFINITY);
+        expect(headerSpy).not.toHaveBeenCalled();
+        headerSpy.mockRestore();
       });
     });
   });

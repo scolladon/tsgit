@@ -64,6 +64,10 @@ function loadedGraph(layers: readonly CommitGraphLayer[]): LoadedGraph {
 // files at most once per repo lifetime, shared across every Context derived
 // from the same repository-open — mirrors `registryCache` in read-object.ts.
 const graphCache = new WeakMap<Context['session'], Promise<LoadedGraph | undefined>>();
+/** Sessions whose graph probe already answered "absent" — the synchronous
+ *  mirror of a memoised `undefined` in `graphCache`, so a graph-first reader
+ *  can skip the probe (and its microtask hop) on every later commit. */
+const absentGraphs = new WeakSet<Context['session']>();
 
 // Entry cap mirrors `DEFAULT_DELTA_CACHE_ENTRIES` (`src/index.node.ts`) — the
 // repo's existing bound for a per-repository memo cache, reused here rather
@@ -228,7 +232,12 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
     graphCache.set(ctx.session, cached);
     // Never memoize a rejection: a transient fs failure must not permanently
     // poison every later commit walk for this repository.
-    cached.catch(() => graphCache.delete(ctx.session));
+    cached.then(
+      (graph) => {
+        if (graph === undefined) absentGraphs.add(ctx.session);
+      },
+      () => graphCache.delete(ctx.session),
+    );
   }
   return cached;
 }
@@ -316,6 +325,13 @@ function resolveParentIds(graph: LoadedGraph, data: CommitData): readonly Object
  * Graph-only lookup: `undefined` when `id` is not present in the graph, or the
  * graph itself is absent/stale — the caller falls back to a full object read.
  */
+/** True once this session's graph probe has answered "absent" (no graph, a
+ *  shallow repository, or a graph degraded on a decode fault). A synchronous
+ *  read, so callers can skip `commitHeader` outright. */
+export function isGraphKnownAbsent(ctx: Context): boolean {
+  return absentGraphs.has(ctx.session);
+}
+
 export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHeader | undefined> {
   const cache = getHeaderCache(ctx);
   const cached = cache.get(id);
@@ -345,6 +361,7 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     // the rest of the repo lifetime, exactly like a corrupt file on disk.
     if (isGraphDecodeFailure(error)) {
       graphCache.set(ctx.session, Promise.resolve(undefined));
+      absentGraphs.add(ctx.session);
       return undefined;
     }
     throw error;
