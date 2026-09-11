@@ -5,7 +5,15 @@ subjects:
 ---
 # 736 — The delta-base cache is a separate, additive budget — not a fraction
 
-- **Status:** accepted
+> **Superseded by [ADR-852](852-the-delta-base-cache-honours-core-delta-base-cache-limit.md)**
+> for the default sizing rule and the family total: the cache now reads git's own
+> `core.deltaBaseCacheLimit` and defaults to git's 96 MiB rather than to `ctx.deltaCache.maxSize`,
+> so `deltaCacheMaxBytes` no longer scales this particular cache and the documented family total is
+> about 136 MiB, not ~34 MiB. That the budget is separate and **additive** rather than a fraction —
+> this record's central point — is carried forward, along with `DELTA_BASE_CACHE_MAX_ENTRIES` and
+> the fixed per-entry overhead term in the sizer.
+
+- **Status:** superseded by ADR-852
 - **Date:** 2026-08-27
 - **Design:** docs/design/perf-remediation-2026-08.md · **Supersedes/Refines:** none
 
