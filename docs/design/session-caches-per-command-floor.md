@@ -8,13 +8,17 @@
 > (HEAD read twice, `.git/config` stat'd on every sequential `readConfig`, `packed-refs`
 > probed twice per packed ref, loose refs enumerated serially). Eight sub-items (a)–(h), all
 > pure-perf: no object SHA, ref, reflog, state file or refusal changes — **except** where a pin
-> below found an existing divergence that the touched code fixes for free (symlinked HEAD,
-> `reflog expire`'s reachability rule) and where a newly honoured config key is refused the way
-> git refuses it (`core.deltaBaseCacheLimit`), each recorded as a decision.
-> Status: revised against ADRs 850–857 → self-reviewed ×3. Two decisions went **against** the
-> first draft's recommendation and drive this revision: the delta-base cache honours
-> `core.deltaBaseCacheLimit` at git's 96 MiB default on every adapter (ADR-852), and the
-> `{ type, content }` cache value type lands **now**, as a major release (ADR-854).
+> below found an existing divergence that the touched code fixes (symlinked HEAD, `reflog
+> expire`'s reachability rule, `branch.create`'s untyped start point), where a newly honoured
+> config key is refused the way git refuses it (`core.deltaBaseCacheLimit`), and where the tier
+> that refuses it takes `core.maxTreeDepth` with it — each recorded as a decision.
+> Status: revised against ADRs 850–860 and `docs/spike/config-validation-tier.md` → self-reviewed
+> ×3. Three decisions went **against** an earlier draft's recommendation: the delta-base cache
+> honours `core.deltaBaseCacheLimit` at git's 96 MiB default on every adapter (ADR-852); the
+> `{ type, content }` cache value type lands **now**, as a major (ADR-854); and a malformed
+> repo-settings key is refused at its own tier — the object-store / index / commit-graph boundary
+> plus git's own per-builtin calls — **not** at the eager operational gate (ADR-859), which also
+> corrects this doc's own C2 pin (spike §5.3) and moves `core.maxTreeDepth` off the gate.
 
 ---
 
@@ -34,8 +38,11 @@ Review numbers (`revParse('HEAD')` 0.29 ms / 4 fs calls / 13 libuv hops; `catFil
 `branch.list` 1 000 loose 79 ms → 12–14 ms pooled; warm `log` medium 21–30 ms → 9.4–11.5 ms once
 the memo fits; `status` 145 → 138 ms once the FlatTree fits) were measured on `1f84254c` and are
 **not re-run** here — 31.1 changed nothing on these paths, and the harness parts below are what
-make them quotable main-vs-branch. Git probes in this doc were run fresh (matrix at the end);
-the `core.deltaBaseCacheLimit` matrix (section C) was added in this revision.
+make them quotable main-vs-branch. Git probes in this doc were run fresh (matrix at the end):
+section C (`core.deltaBaseCacheLimit`) was added by the previous revision and its C2/C3 rows are
+corrected here against the spike; sections B (branch start point), W (work-tree vs
+repo-settings order in the transcribed builtins) and N (`notes` on a ref-less fixture) were
+pinned in this revision.
 
 ### What exists today (the subsystems touched)
 
@@ -47,7 +54,7 @@ the `core.deltaBaseCacheLimit` matrix (section C) was added in this revision.
 | FlatTree cache | `src/application/primitives/read-head-tree.ts` | Session-keyed, `FLAT_TREE_CACHE_FRACTION = 1/16` (`:50, :68-71`), `flatTreeByteSize` = 48 + Σ(path + oid + 110) (`:112-118`) ≈ 164 B × entries ⇒ medium HEAD (20 000 files) = 3.3 MB > 1 MiB → `set` refused on every `status`/`rm`; break-even ≈ 6 400 tracked files. Key `(rootTreeOid, maxDepth)` (ADR-726, carried forward by ADR-851). Consumers: `status.ts:162`, `rm.ts:171`. |
 | Delta-base cache | `src/application/primitives/pack-registry.ts:187-199` (`DeltaBaseCacheEntry = { type, content, chainDepth }`), `:629` (`DELTA_BASE_CACHE_MAX_ENTRIES = 65_536`), `:631-643` (`createPackRegistry(ctx): PackRegistry`, **synchronous**, `createLruCache<DeltaBaseCacheEntry>(ctx.deltaCache.maxSize, 65_536)`), `:919, :961` (`clear` on refresh/dispose); `object-caches.ts:249-274` (`deltaBaseCacheEntrySize` = content + 200 B; `cacheDeltaBase` returns `void`); `object-resolver.ts:471-531` | Sized at `ctx.deltaCache.maxSize` — a **full additional** budget (ADR-736, now superseded on this point by ADR-852). Registry creation: `read-object.ts:39` `registryCache: WeakMap<Session, PackRegistry>`, `:47-53` `getPackRegistry(ctx)` **synchronous**, `:63-65` `refreshPackRegistry`, `:72-74` `disposePackRegistry`; 19 `getPackRegistry` call sites across 14 files (all inside `async` functions) plus one direct `createPackRegistry` in `commands/fetch-missing.ts:66`. None of `getPackRegistry` / `createPackRegistry` / `PackRegistry` / `DeltaBaseCacheEntry` is in `reports/api.json`. The registry reads **no** config today. The unwind loop `:504-519` inserts one full intermediate per level, nearest-the-base first. |
 | Config read | `src/application/primitives/config-read.ts` (1 737 lines) | Session-keyed `cache` (`:256`) validated by `coalescedMtimeKey` (`:228-248`, coalesces **concurrent** stats only) on every `readConfigEntry` (`:342-356`) — one `stat` per sequential `readConfig`. 48 call sites across 29 `src/` files. `ParsedConfig.core` (`:44-57`) is a typed record (`maxTreeDepth?: number` at `:57`) built by `mergeCore` (`:963-970`) → `applyCoreEntry` → per-key appliers (`applyMaxTreeDepthEntry:900-905`, lenient: an invalid value merges as absent) → `finalizeCore` (`:1450-1466`). Refusals live in separate finders over the cached tokens: `findLastInvalidMaxTreeDepth` (`:736-768`, last-wins, `parseGitInt` + C-int narrowing), `findFirstInvalidPackInt` (`:676-703`) whose `checkPackWindowMemoryBound` (`:1240-1245`) is git's **unsigned-long** grammar (`parseGitInt(value, GIT_UINT64_MAX)`, negative ⇒ `'invalid unit'`). `gateVerdictCache` (`:279`) is session-keyed and **not** mtime-keyed. Import closure of `config-read.ts` (depcruise, 78 modules): `config-scoped-read.ts`, `internal/config-key.ts`, `internal/config-scope.ts`, `path-layout.ts`, `internal/layout-verdict.ts` + domain/ports — **no** object-store module (`pack-registry`, `read-object`, `object-resolver`, `object-caches`, `blob-source`, `read-head-tree`). |
-| Gate | `src/application/primitives/internal/repo-state.ts` | `hasUsableHead` (`:130-144`): `lstat HEAD` → symlink ⇒ `readlink` + `isRefsLinkText`; else `readUtf8` + `isValidHeadContent`. Runs on **every** command (`assertOperationalRepository:320-325`, `assertRepository:98-103`) ahead of the session-memoised verdict (`computeGateVerdict:305-309` = `assertTrustedAndFormat` → `assertEagerConfigValid:211-244`). `assertEagerConfigValid` throws `core.maxTreeDepth` **first** (last-wins finder, pinned), then the lowest-line entry among five streaming classes (valueless string, compression, core boolean, `logAllRefUpdates`, `[diff "x"]` boolean). `readHeadRaw` (`:351-355`) already resolves HEAD **through the ref store** — it is not a third reader. |
+| Gate | `src/application/primitives/internal/repo-state.ts` | `hasUsableHead` (`:130-144`): `lstat HEAD` → symlink ⇒ `readlink` + `isRefsLinkText`; else `readUtf8` + `isValidHeadContent`. Runs on **every** command (`assertOperationalRepository:320-325`, `assertRepository:98-103`) ahead of the session-memoised verdict (`computeGateVerdict:305-309` = `assertTrustedAndFormat` → `assertEagerConfigValid:211-244`). `assertEagerConfigValid` throws `core.maxTreeDepth` **first** (last-wins finder; the "first regardless of line order" pin was measured on `status`/`commit`, two of the 5 minority commands, and generalised — spike §6, superseded by ADR-859), then the lowest-line entry among five streaming classes (valueless string, compression, core boolean, `logAllRefUpdates`, `[diff "x"]` boolean). `readHeadRaw` (`:351-355`) already resolves HEAD **through the ref store** — it is not a third reader. |
 | Ref store | `src/application/primitives/ref-store.ts` (913 lines) | Context-identity-keyed store (`:270-279`, deliberately not session-keyed — `:243-269`). `loadPackedRefs` (`:376-391`): `exists` (a `stat` on Node, `node-file-system.ts:719-730`) then `stat`, cache keyed `mtimeMs:size`. `readLooseContent` (`:393-401`) `readUtf8` follows symlinks. `resolveDirect` (`:403-415`) loose-then-packed. `collectCandidateNames` (`:532-542`) holds the packed **entries with oids**; `listRefs` (`:561-569`) still `resolveEntry`s every name serially. `packRefs` (`:875-898`): serial `exists` per packable (`:881-885`), pooled `buildPackedEntry`, serial `rm` (`:890-892`). `verifyIntegrity` (`:575-597`) serial too (fsck's; not in scope). |
 | Scoped config | `src/application/primitives/internal/config-scope.ts:52-76`, `config-scoped-read.ts:148-166` | `isWorktreeScopeActive` raw-reads + `parseIniSections` the local file **outside every cache**, reached from `resolveScopePath('worktree')`. `readSingleScope` (module-private) already caches local sections behind an mtime key. Import direction today: `config-scoped-read.ts → internal/config-scope.ts` (`:8`). |
 | Reflog append | `src/application/primitives/record-ref-update.ts` (66 lines), `src/adapters/node/node-file-system.ts:705-712` | `isLoggable` reads config (`:51`) and `resolveReflogIdentity` reads it again (`reflog-identity.ts:26`); `appendUtf8` runs `mkdir -p` before every append (`:709`). |
@@ -69,8 +76,15 @@ the `core.deltaBaseCacheLimit` matrix (section C) was added in this revision.
   **ADR-853** `LruCache.set(): boolean` (D1). **ADR-854** `{ type, content }` in `ctx.deltaCache`
   now, as a major (D3). **ADR-855** HEAD freshness is the gate's `lstat` identity, `ino === 0`
   adapters re-read (D4). **ADR-856** the HEAD slot keys on Context identity (D4). **ADR-857**
-  `reflog expire` follows git's reachability rule (D8). These eight are settled; the
-  [decision record](#decision-candidates) below restates each with its outcome.
+  `reflog expire` follows git's reachability rule (D8). **ADR-858** the explicit
+  `deltaBaseCacheMaxBytes` option suppresses the key — not read, not validated — as git's `-c`
+  does (D2-ii, D2-iii). **ADR-859** the repo-settings class `{ core.maxTreeDepth,
+  core.deltaBaseCacheLimit }` is validated by one `assertRepoSettingsValid(ctx)` at the
+  object-store / index / commit-graph boundary plus explicit calls transcribing git's own
+  per-builtin `prepare_repo_settings` sites; only the class moves, no verb moves between gates
+  (D2-iii). **ADR-860** `branch.create` verifies its start point peels to a commit (D12). These
+  eleven are settled; the [decision record](#decision-candidates) below restates each with its
+  outcome.
 - **ADR-722** caches key on `ctx.session`; `deriveContext` mints a fresh token on gitDir /
   commonDir / fs-root-set / hash-algorithm change. The ref store is the documented exception
   (Context identity, `ref-store.ts:243-269`); ADR-856 extends that exception to the HEAD slot.
@@ -79,15 +93,22 @@ the `core.deltaBaseCacheLimit` matrix (section C) was added in this revision.
   sizer; the per-session memo and deep-readonly `CommitData`; the delta-base cache being
   **additive**, `DELTA_BASE_CACHE_MAX_ENTRIES` and the 200 B sizer term; the `reflog` command
   shape. **ADR-788** the index-pass base cache has its own budget and is outside the family.
-- **ADR-637** `core.maxTreeDepth` unclamped/refused-when-malformed — the epoch changes *when* it
-  is stat'd, never what is resolved; its finder + lazy-resolver pair (`findLastInvalidMaxTreeDepth`
-  + `resolveMaxTreeDepth`) is the house pattern a new numeric `[core]` key follows.
+- **ADR-637** is superseded in scope by ADR-859. Carried forward: `core.maxTreeDepth` is the
+  cap's identity, honoured unclamped with a 2048 default, the `slashCount > cap` predicate, one
+  shared source per site, `CONFIG_BAD_NUMERIC_VALUE` with no new public surface, the local-only
+  `readConfig` scope divergence, and the lazy twin `resolveMaxTreeDepth` at the tree-walk
+  boundary. Superseded: the refusal's placement at the eager operational gate, and the claim that
+  the key is reported first regardless of line order. Its finder + lazy-resolver pair is **not**
+  the pattern the new key follows — spike §6 shows that shape already drifted on tier and on
+  order; both keys now share one tier (D2-iii). The epoch changes *when* the key is stat'd, never
+  what is resolved.
 - **ADR-351** one config cache, one invalidation point — the epoch is a bit on that cache.
 - **ADR-707** `packRefs` surface; **ADR-709/294** common-dir rule.
 - `.claude/workflow/surface-gates.md`: `LruCache`, `Context`, `RawObject`, `parseObject`,
   `OpenNodeRepositoryOptions` / `OpenRepositoryOptions` are public → `reports/api.json`
-  regenerated in the slice that changes each; no new Tier-1 command, no new error code
-  (`CONFIG_BAD_NUMERIC_VALUE` and `INVALID_OPTION` already exist).
+  regenerated in the slice that changes each; no new Tier-1 command; no new error code
+  (`CONFIG_BAD_NUMERIC_VALUE`, `INVALID_OPTION` and `UNEXPECTED_OBJECT_TYPE` already exist) unless
+  [NDC-3](#new-decision-candidates) resolves to a dedicated code for D12's refusal.
 - **Release line.** Phase 31 is scoped as the **v5** line (`docs/BACKLOG.md:572`). ADR-854's
   public value-type change is breaking; the commit that lands it carries the conventional-commit
   `!` marker so release-please cuts `5.0.0` — budgeted, not forced by this item alone.
@@ -147,13 +168,18 @@ the `core.deltaBaseCacheLimit` matrix (section C) was added in this revision.
     comment (correction in the table above), so `bytes` leaving it is part of the same major.
 13. **`core.deltaBaseCacheLimit` is not "async config at registry creation, wrong for a browser
     tab" as the first draft argued** — ADR-852 weighed both and chose parity. What the draft did
-    not check, and this revision pins (section C): git 2.55 parses the key with its unsigned-long
-    grammar (`k`/`m`/`g` accepted, `0` accepted, negative and empty are `invalid unit`, oversize
-    is `out of range`), resolves it **last-wins**, does **not** validate a file value a
-    command-line `-c` overrides, and dies on a malformed value in **most but not all** commands
-    (`branch --list`, `tag -l`, `remote`, `notes list`, `pack-refs`, `config` run; everything that
-    touches the object store or ref iteration dies) — the refusal placement is therefore a
-    decision (NDC-2), not a transcription.
+    not check, and section C pins: git 2.55 parses the key with its unsigned-long grammar
+    (`k`/`m`/`g` accepted, `0` accepted, negative and empty are `invalid unit`, oversize is `out
+    of range`), resolves it **last-wins**, does **not** validate a file value a command-line `-c`
+    overrides (C5 → ADR-858), and dies on a malformed value in exactly the commands that reach
+    `prepare_repo_settings` (`repo-settings.c:142`, the key's only library read site) — by
+    touching the object store, the index or a derived structure, or through one of four builtins
+    that call it in their own prologue — and nowhere else (spike §3). The previous revision read
+    C2's `notes list` / `pack-refs --all` "runs" rows as unconditional and counted `remote` among
+    the verbs tsgit would over-refuse; both were wrong (spike §5.2–5.3: the two rows are
+    fixture-conditional — both die as soon as one note / one loose ref exists — and `remote.*`
+    sits on the acceptance tier, which never ran the eager check). The refusal is therefore not a
+    placement to choose but a tier to transcribe: ADR-859, D2-iii.
 
 ---
 
@@ -162,11 +188,11 @@ the `core.deltaBaseCacheLimit` matrix (section C) was added in this revision.
 | # | Requirement | Oracle |
 |---|---|---|
 | R1 | The two derived caches **engage on the medium fixture** under default options: the parsed memo retains all 5 000 walked commits (entry-bound, 32 768 default — ADR-851); `readHeadTree` on a 20 000-entry HEAD (3.3 MB against an 8 MiB budget) is a cache hit on the second call. A refused `set` is **observable** (`false`, ADR-853) so neither can go dead silently again; the valve-ordering invariant is a test, not a comment. | `object-caches.test`: 5 000 distinct entries → `entryCount === 5 000`; `read-head-tree.test`: second call issues zero object reads (`instrumentedContext`), `set` returned `true`; `bench:ab` `log()` medium ≈ 2× lower, `status()` medium not worse (local only until 31.4 — see D11). |
-| R2 | **Per-command floor** (Node, warm, ADR-850): `revParse('HEAD')` = 3 fs calls / 6 libuv hops (was 4 / 13); `catFile` = 2 calls / 2 hops (was 2 / 5 — the `readFile HEAD` becomes a `stat .git/config`); `branch.create` ≤ 13 (was 16; exact before/after recorded); no command issues more than one `stat .git/config` and one `lstat HEAD` per gate; the pack registry's config read inside a gated command issues **zero** stats. | `floor-oracle.mjs` under `fs-count.cjs` on `medium-v3` (recorded in the PR); unit: `instrumentedContext` over `assertOperationalRepository` + `resolveRef('HEAD')` sequences and over a first `readObject` after a gate (no `stat` of `config`). `rev-parse.bench`/`cat-file.bench` main-vs-branch. |
+| R2 | **Per-command floor** (Node, warm, ADR-850): `revParse('HEAD')` = 3 fs calls / 6 libuv hops (was 4 / 13); `catFile` = 2 calls / 2 hops (was 2 / 5 — the `readFile HEAD` becomes a `stat .git/config`); `branch.create` ≤ 13 + its new object read (was 16; exact before/after recorded — D12 adds one `readObject` of the start point, which git also performs); no command issues more than one `stat .git/config` and one `lstat HEAD` per gate; the pack registry's config read **and** the repo-settings check (D2-iii) inside a gated command issue **zero** stats, and the settled-verdict fast path adds no promise hop to `getPackRegistry` / `commitHeader` on a warm session. | `floor-oracle.mjs` under `fs-count.cjs` on `medium-v3` (recorded in the PR); unit: `instrumentedContext` over `assertOperationalRepository` + `resolveRef('HEAD')` sequences and over a first `readObject` / `readIndex` / `commitHeader` after a gate (no `stat` of `config`). `rev-parse.bench`/`cat-file.bench`/`log.bench` main-vs-branch. |
 | R3 | `tag.list` over N packed-only tags issues **O(1)** fs calls beyond the loose walk (was 3N); `branch.list` over N loose branches resolves through the `ioBound` pool. | New `tag-list.bench` (2 000 / 10 000 packed) and `branch-list.bench` (1 000 loose), `bench:ab` ≥ 4× lower on both; unit fs-count on `listRefs`. |
 | R4 | The config freshness contract is exactly ADR-850's, documented on `internals.md` (`readConfig`, `invalidateConfigCache`), with the set of tests that needed an explicit `invalidateConfigCache` enumerated in the PR. `core.deltaBaseCacheLimit` is read **once per pack registry** (per session) — ledger row L7. | `config-read.test` epoch matrix (D5); the unit suite's failing set when the epoch lands is the enumeration. |
-| R5 | **Observable behaviour unchanged** — object bytes, ref/reflog contents, refusal codes and messages — except three pinned faithfulness changes: symlinked HEAD resolves `symbolic` (Pin H1, ADR-855); `reflog expire` follows git's rule (Pins R1–R7, ADR-857); a malformed `core.deltaBaseCacheLimit` is refused `CONFIG_BAD_NUMERIC_VALUE` with git's `reason` (Pins C1–C5; placement per NDC-2). Every freshness window that changes is listed in the [ledger](#freshness-ledger-what-an-external-writer-can-observe). | Existing interop suites green; new `head-symlink-interop`, extended `reflog-interop` matrix, extended `config-interop` (C-matrix); `packed-refs-interop`/`pack-refs-interop` unchanged. |
-| R6 | `npm run validate` green; `npm run check:architecture` green with the new `pack-registry → config-read` edge; mutation budget intact (app ≥ 95); `reports/api.json` regenerated for `LruCache.set`, the five validated options, `Context.deltaCache`'s value type, `RawObject`, `parseObjectContent`; the breaking commit carries `!`; docs per [Docs consequences](#docs-consequences); backlog 31.2 ticked by the docs phase. | Bare gate runs into files (`echo $?`); `npm run docs:json` diff committed in the slice adding each public change. |
+| R5 | **Observable behaviour unchanged** — object bytes, ref/reflog contents, refusal codes and messages — except the pinned faithfulness changes: symlinked HEAD resolves `symbolic` (Pin H1, ADR-855); `reflog expire` follows git's rule (Pins R1–R7, ADR-857); a malformed `core.deltaBaseCacheLimit` is refused `CONFIG_BAD_NUMERIC_VALUE` with git's `reason` (Pins C1–C4) at the repo-settings tier (ADR-859) and never when `deltaBaseCacheMaxBytes` is supplied (C5, ADR-858); `core.maxTreeDepth` moves to that tier — `branch.list`, `tag.list`, `branch.rename` now **run** on a malformed value, `notes.list` and `packRefs` run on the idle fixture and refuse otherwise, and when a streaming class is malformed on the same file the gate names it first in the 19 commands where git does (spike §6), leaving `status`, `commit`, `diff`, `bundle.create`, `rebase` (+ `maintenance` for the new key only) as the recorded ordering residual (D2-iii); `branch.create` refuses a non-commit start point and lands an annotated tag on its peeled commit (Pins B1–B8, ADR-860). Every freshness window that changes is listed in the [ledger](#freshness-ledger-what-an-external-writer-can-observe). | Existing interop suites green — `max-tree-depth-config-interop` re-run **unchanged** (every row it pins holds under the new tier); new `head-symlink-interop`, `repo-settings-config-interop`, `branch-start-point-interop`; extended `reflog-interop` matrix and `config-interop` (correction 8); `packed-refs-interop`/`pack-refs-interop` unchanged. |
+| R6 | `npm run validate` green; `npm run check:architecture` green with the new edges `pack-registry → internal/resolve-delta-base-cache-limit → config-read` and `{ read-object, pack-registry, read-index, internal/read-commit-graph, the 9 transcribing command files } → internal/repo-settings-gate → config-read`; mutation budget intact (app ≥ 95); `reports/api.json` regenerated for `LruCache.set`, the five validated options, `Context.deltaCache`'s value type, `RawObject`, `parseObjectContent` (and `docs/use/errors.md` + `api.json` for a new code only if NDC-3 resolves (b)); the breaking commit carries `!`; docs per [Docs consequences](#docs-consequences); backlog 31.2 ticked by the docs phase. | Bare gate runs into files (`echo $?`); `npm run docs:json` diff committed in the slice adding each public change. |
 
 ---
 
@@ -176,28 +202,34 @@ the `core.deltaBaseCacheLimit` matrix (section C) was added in this revision.
 
 Harness first (so every A/B has before/after on the same series keys — 31.1's Part 1 lesson),
 then the cache seam (domain → application), then the ref/config seam in dependency order, then
-the tail. Thirteen work items (D1–D11, with D2 and D3 each in two halves), proposed as **eleven parts** (details in
-[Partition proposal](#partition-proposal)):
+the tail. Fifteen work items (D1–D12, with D2 in three parts and D3 in two), proposed as
+**thirteen parts / seventeen commits** (details in [Partition proposal](#partition-proposal)):
 
 | Part | Items | Owns |
 |---|---|---|
 | P0 | D11 harness (benches + oracle script) | `test/bench/*`, no `src/` |
 | P1 | D1 `LruCache.set` verdict | `lru-cache.ts` (+ api.json) |
 | P2 | D2-i (a) memo entry-bound, (b-i) FlatTree budget, five validated options, `cacheBudgets` | `object-caches.ts`, `read-head-tree.ts`, seven entry/adapter files, `validate-options.ts`, `ports/context.ts` (+ api.json) |
-| P3 | D2-ii `core.deltaBaseCacheLimit`: parse + finder + gate check + lazy resolver, async registry construction | `config-read.ts`, `internal/repo-state.ts` (`assertEagerConfigValid`), new `internal/resolve-delta-base-cache-limit.ts`, `pack-registry.ts`, `read-object.ts`, 20 call sites |
-| P4 | D3-i (c-i) delta-base per-chain budget | `object-resolver.ts`, `object-caches.ts` |
-| P5 | D3-ii (c-iii) `{ type, content }` value type *(2 commits; the second is the breaking one)* | `domain/objects/git-object.ts`, `ports/context.ts`, seven creation sites, `object-resolver.ts`, `read-object.ts`, `primitives/types.ts`, `blob-source.ts`, `fsck/content-validation.ts` (+ api.json) |
-| P6 | D4 (d) HEAD reader + slot + symlink fix | new `internal/head-file.ts`, `repo-state.ts` (`hasUsableHead`), `ref-store.ts` (`resolveDirect`, HEAD writes), `bootstrap.ts:77` |
-| P7 | D5 (e) config epoch + verdict re-keying, (h-i) `isWorktreeScopeActive`, (h-ii) one config read per ref update | `config-read.ts`, `repo-state.ts` (`assertOperationalRepository`), `config-scoped-read.ts`, `internal/config-scope.ts`, `record-ref-update.ts`, `reflog-identity.ts` |
-| P8 | D6 (f) packed-refs + D7 (g) pooled enumeration *(2 commits)* | `ref-store.ts` (`loadPackedRefs`, `listRefs`, `packRefs`), `reflog.ts` (`resolveTips`), `list-worktrees.ts` |
-| P9 | D8 (h-v) reflog expire model | `reflog.ts`, `reflog-interop.test.ts` |
-| P10 | D9 (h-iv) rev-parse sweep + D10 (h-iii) `appendUtf8` *(2 commits)* | `resolve-ref.ts`, `rev-parse.ts`, `commit-ish.ts`; `node-file-system.ts` |
+| P3 | D2-ii `core.deltaBaseCacheLimit`: lenient parse, budget resolver (option ⊳ key ⊳ 96 MiB — ADR-858), **async registry construction** | `config-read.ts` (parse only), new `internal/resolve-delta-base-cache-limit.ts`, `pack-registry.ts`, `read-object.ts`, 20 call sites |
+| P4 | D12 `branch.create` types its start point through the store (ADR-860) | `commands/branch.ts` (`resolveBranchTarget`), new `branch-start-point-interop.test.ts` |
+| P5 | D2-iii the repo-settings tier (ADR-859 + ADR-858) *(2 commits: the tier with `core.maxTreeDepth` migrated; then `core.deltaBaseCacheLimit` joins the class with its finder + C-matrix)* | new `internal/repo-settings-gate.ts`, `config-read.ts` (second verdict memo + finder), `internal/repo-state.ts` (−1 finder), `read-object.ts` (`getPackRegistry`), `pack-registry.ts` (`createPackRegistry`), `read-index.ts`, `internal/read-commit-graph.ts`, 9 command files, new `repo-settings-config-interop.test.ts` |
+| P6 | D3-i (c-i) delta-base per-chain budget | `object-resolver.ts`, `object-caches.ts` |
+| P7 | D3-ii (c-iii) `{ type, content }` value type *(2 commits; the second is the breaking one)* | `domain/objects/git-object.ts`, `ports/context.ts`, seven creation sites, `object-resolver.ts`, `read-object.ts`, `primitives/types.ts`, `blob-source.ts`, `fsck/content-validation.ts` (+ api.json) |
+| P8 | D4 (d) HEAD reader + slot + symlink fix | new `internal/head-file.ts`, `repo-state.ts` (`hasUsableHead`), `ref-store.ts` (`resolveDirect`, HEAD writes), `bootstrap.ts:77` |
+| P9 | D5 (e) config epoch + re-keying of **both** verdict memos, (h-i) `isWorktreeScopeActive`, (h-ii) one config read per ref update | `config-read.ts`, `repo-state.ts` (`assertOperationalRepository`), `config-scoped-read.ts`, `internal/config-scope.ts`, `record-ref-update.ts`, `reflog-identity.ts` |
+| P10 | D6 (f) packed-refs + D7 (g) pooled enumeration *(2 commits)* | `ref-store.ts` (`loadPackedRefs`, `listRefs`, `packRefs`), `reflog.ts` (`resolveTips`), `list-worktrees.ts` |
+| P11 | D8 (h-v) reflog expire model | `reflog.ts`, `reflog-interop.test.ts` |
+| P12 | D9 (h-iv) rev-parse sweep + D10 (h-iii) `appendUtf8` *(2 commits)* | `resolve-ref.ts`, `rev-parse.ts`, `commit-ish.ts`; `node-file-system.ts` |
 
-Every part is behaviour-preserving **except** P3 (a malformed `core.deltaBaseCacheLimit` is
-refused — Pins C1–C5; NDC-2), P5 (public type change, no runtime-observable change), P6
-(symlinked HEAD becomes `symbolic` — Pin H1), P7 (an externally-introduced malformed `[core]`
-value is refused by the **next** command instead of never — correction 8), and P9 (git's expire
-rule — Pins R1–R7); each is pinned by an interop test and each moves *toward* git.
+Every part is behaviour-preserving **except** P4 (a non-commit start point is refused and an
+annotated tag lands on its commit — Pins B1–B8, ADR-860), P5 (a malformed `core.deltaBaseCacheLimit`
+is refused — Pins C1–C5; `core.maxTreeDepth` changes tier — three verbs newly run, two run on
+the idle fixture, the two-class order flips to git's majority — spike §5–6, ADR-859/858), P7
+(public type change, no runtime-observable change), P8 (symlinked HEAD becomes `symbolic` — Pin
+H1), P9 (an externally-introduced malformed `[core]` value is refused by the **next** command
+instead of never — correction 8), and P11 (git's expire rule — Pins R1–R7); each is pinned by an
+interop test and each moves *toward* git. P3 is transitional on its own: until P5 lands, a
+malformed key is *lenient* (absent → 96 MiB) — a branch-internal state, never a release.
 
 ---
 
@@ -239,7 +271,7 @@ Rejected (ADR-853 records them so they are not re-proposed): throwing, a logger 
 
 ---
 
-### D2 — (a) memo bound by entries, (b-i) FlatTree on its own budget, (c-ii) the delta-base budget from `core.deltaBaseCacheLimit`, options (ADR-851 + ADR-852, settled)
+### D2 — (a) memo bound by entries, (b-i) FlatTree on its own budget, (c-ii) the delta-base budget from `core.deltaBaseCacheLimit`, options, and the repo-settings tier (ADR-851 + ADR-852 + ADR-858 + ADR-859, settled)
 
 **What goes wrong today.** Both derived caches take `1/16 × deltaCacheMaxBytes` and a 65 536
 entry cap that "never binds". For the memo the byte cap binds at ≤ 4 096 entries (256 B floor);
@@ -296,16 +328,27 @@ lowercased in every such message; it is shown in canonical case throughout this 
 is `… out of range` (C1). It resolves **last-wins** — an invalid line followed by a valid one is
 fine, a valid line followed by an invalid one dies (C4), exactly `core.maxTreeDepth`'s model. A
 command-line `-c core.deltaBaseCacheLimit=1m` over a malformed file value runs: the overridden
-file value is never validated (C5). Git dies on a malformed value in 46 of the 60 distinct commands
-probed — everything that opens the object store or iterates refs — and runs in `symbolic-ref`,
-`branch --list`, `tag -l`, `check-ref-format`, `hash-object` (without `-w`), `count-objects`,
-`config`, `var`, `remote`, `notes list`, `pack-refs`, `prune`, `init` (C2). When another `[core]`
-class is malformed on the same file, `core.maxTreeDepth`'s refusal wins over this key in every
-command, and the streaming classes (`core.sparseCheckout`, `core.compression`) win over it in 27
-of 33 commands; the six exceptions (`diff`, `status`, `commit`, `gc`, `bundle create`, `rebase`)
-report this key first (C3). Git's default is `96 * 1024 * 1024` bytes, per thread, per process.
+file value is never validated (C5 — ADR-858 makes `deltaBaseCacheMaxBytes` that `-c`). Git has
+no die-set list: the key is read in one library function, `prepare_repo_settings`
+(`repo-settings.c:142`), and a command dies iff it reaches that function — by reading an object
+(loose or packed), reading the index, enumerating packs, loading the commit-graph / midx /
+bitmap, or through one of four builtins that call it at the top of `cmd_*` (`rev-parse`,
+`worktree`, `sparse-checkout`, `stash`) (spike §3.2). On the C2 fixture that is 46 of 60
+commands; the 14 that ran (`symbolic-ref`, `branch --list`, `tag -l`, `check-ref-format`,
+`hash-object` without `-w`, `count-objects`, `config`, `var`, `remote`, `prune`, `init`, `bisect
+log`, and — **only because that fixture held no note and, `gc` having run earlier in the same
+sequence, no loose ref** — `notes list` and `pack-refs --all`) are the ones that touch none of
+those (C2, corrected; spike §5.3 pins the two conditional rows in both fixtures). When another
+`[core]` class is malformed on the same file, `core.maxTreeDepth` is named before this key in 23
+of 24 commands (`gc` names this key first: `gc.c:219` reads it ahead of `prepare_repo_settings`),
+and the streaming classes (`core.sparseCheckout`, `core.compression`) are named before it in 27
+of 33 commands, the six exceptions being `diff`, `status`, `commit`, `gc`, `bundle create`,
+`rebase` (C3) — an order that is nothing but *where the builtin calls `prepare_repo_settings`
+relative to its `git_default_config` pass* (spike §3.3), which is why one tier reproduces it and
+no eager order can. Git's default is `96 * 1024 * 1024` bytes, per thread, per process.
 
-**Parse and finder** (`config-read.ts`, house pattern = `core.maxTreeDepth`):
+**Parse and finder** (`config-read.ts`; same grammar helpers as `core.maxTreeDepth` — the
+lenient parse lands in P3, the finder in P5 with the tier that calls it):
 
 ```ts
 // ParsedConfig.core (:44-57) gains
@@ -322,31 +365,27 @@ export const findLastInvalidDeltaBaseCacheLimit = async (ctx): Promise<InvalidNu
 A value above `Number.MAX_SAFE_INTEGER` (git accepts up to 2⁶⁴−1) becomes an inexact `number`;
 it is a comparison bound for `LruCache`, never arithmetic, so inexactness is harmless and stated.
 
-**Refusal.** Two guards, deliberately redundant like `core.maxTreeDepth`'s (each covers a surface
-the other cannot):
-
-- **Eager, at the gate** — `assertEagerConfigValid` (`repo-state.ts:211-244`) runs
-  `findLastInvalidDeltaBaseCacheLimit` and throws `configBadNumericValue(key, source, value,
-  reason)` **after** the `core.maxTreeDepth` throw and **after** the five streaming classes'
-  lowest-line pick — git's majority ordering (C3). The finder is **skipped when
-  `ctx.cacheBudgets?.deltaBaseCacheMaxBytes !== undefined`** — the explicit option is tsgit's
-  `-c`, and git validates no file value a `-c` overrides (C5). Placement and ordering are
-  NDC-2; the recommendation is this shape.
-- **Lazy, at first use** — a new `internal/resolve-delta-base-cache-limit.ts`, the 23-line twin
-  of `internal/resolve-max-tree-depth.ts`:
+**Refusal — at the repo-settings tier, not here.** The class check is D2-iii's
+`assertRepoSettingsValid(ctx)` (ADR-859); it runs this key's finder — **skipped when
+`ctx.cacheBudgets?.deltaBaseCacheMaxBytes !== undefined`**, the transcription of C5 that ADR-858
+makes a pin rather than an optimisation — and is the first statement of `createPackRegistry`.
+So the budget resolver below never refuses: by the time it runs, a malformed key has already
+been thrown at the same call site, and a throw here would be unreachable code (mutation testing
+would flag it). There is no `resolveDeltaBaseCacheLimit` twin of `resolveMaxTreeDepth`: the twin
+exists for `core.maxTreeDepth` because its consumers (tree walks) can run ahead of the store
+boundary; this key's only consumer *is* the store boundary.
 
 ```ts
+// src/application/primitives/internal/resolve-delta-base-cache-limit.ts (new, P3)
 export const GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES = 96 * 1024 * 1024;
-/** Refuses CONFIG_BAD_NUMERIC_VALUE on a malformed last entry (primitive-only sessions never run the gate);
- *  otherwise the parsed value, or git's default when the key is absent. */
-export const resolveDeltaBaseCacheLimit = async (ctx: Context): Promise<number> => {
-  const invalid = await findLastInvalidDeltaBaseCacheLimit(ctx);
-  if (invalid !== undefined) throw configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
-  return (await readConfig(ctx)).core?.deltaBaseCacheLimit ?? GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES;
-};
-// same module — the one resolver createPackRegistry calls (NDC-1 (a): option wins, config never read when set)
+/** ADR-858: the explicit option is tsgit's `-c` — when supplied the key is neither read nor
+ *  validated (C5). Otherwise the last-wins parsed value, or git's default when absent. A
+ *  malformed key never reaches this line once P5 lands: `assertRepoSettingsValid` precedes it
+ *  at the same call site (until then — P3 alone — a malformed key is lenient, D0). */
 export const deltaBaseCacheBudgetFor = async (ctx: Context): Promise<number> =>
-  ctx.cacheBudgets?.deltaBaseCacheMaxBytes ?? (await resolveDeltaBaseCacheLimit(ctx));
+  ctx.cacheBudgets?.deltaBaseCacheMaxBytes ??
+  (await readConfig(ctx)).core?.deltaBaseCacheLimit ??
+  GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES;
 ```
 
 **Where the read sits — registry construction becomes async.** ADR-852 fixes the moment
@@ -356,6 +395,7 @@ export const deltaBaseCacheBudgetFor = async (ctx: Context): Promise<number> =>
 ```ts
 // pack-registry.ts
 export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
+  await assertRepoSettingsValid(ctx);        // P5: git's prepare_repo_settings on store setup — covers fetch-missing.ts:66's direct construction too
   const storeGate = createStoreGate(ctx);
   const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(
     await deltaBaseCacheBudgetFor(ctx),      // was ctx.deltaCache.maxSize
@@ -364,9 +404,12 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   …
 }
 // read-object.ts
-const registryMemos = new WeakMap<Context['session'], PromiseMemo<PackRegistry>>();   // single-flight: N concurrent first reads construct once
+const registryMemos = new WeakMap<Context['session'], PromiseMemo<PackRegistry>>();   // single-flight: N concurrent first reads construct once; a rejection (the class refusal included) clears the slot
 const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();           // for the two sync/void helpers
-export const getPackRegistry = (ctx: Context): Promise<PackRegistry> => memoFor(ctx).get();
+export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);           // P5: per-command re-validation once P9's epoch drops the memo; a settled session pays one WeakSet probe, no hop
+  return memoFor(ctx).get();
+};
 export function refreshPackRegistry(ctx: Context): void { resolvedRegistries.get(ctx.session)?.refresh(); }   // a registry still constructing has not scanned yet — nothing to refresh
 export async function disposePackRegistry(ctx: Context): Promise<void> { await (await registryMemos.get(ctx.session)?.peek())?.dispose(); }
 ```
@@ -376,10 +419,12 @@ The 19 `getPackRegistry` call sites (`read-object.ts:154,166,228`, `resolve-oid-
 `internal/closure-engine.ts:337`, `commands/internal/gc-pipeline.ts:829,870,1069`, six `fsck/*`
 passes) and `fetch-missing.ts:66`'s private `createPackRegistry` all sit inside `async`
 functions and gain one `await`; none of these names is public. The registry is created on the
-**first object read** of a session (every `readObject`/`readRawObject`/`hasObject`/… calls
-`getPackRegistry` before touching the store), so inside a Tier-1 command it is always created
-**after** that command's gate: under ADR-850 the config entry is `trusted` and the read is a
-parse-cache hit — **zero stats** (R2's oracle). A primitive-only session pays one stat, which is
+**first object read** of a session — every `readObject`/`readRawObject`/`readObjectMetadata*`
+(`read-object.ts:154,166,228`), `hasObject`, `resolveOidPrefix`, `enumerateObjects` and
+`blob-source.ts:86`'s `assertLoadable` call `getPackRegistry` **before** touching the store,
+loose or packed, which is exactly why D2-iii hangs the class check on it — so inside a Tier-1
+command it is always created **after** that command's gate: under ADR-850 the config entry is
+`trusted` and the read is a parse-cache hit — **zero stats** (R2's oracle). A primitive-only session pays one stat, which is
 that session's contract for every `readConfig` anyway. `fsck`'s audit Context shares the
 session, so it shares the registry; the budget is resolved from whichever Context constructs it,
 and the audit view isolates only `deltaCache`, never `.git/config` — same value either way.
@@ -387,15 +432,19 @@ and the audit view isolates only `deltaCache`, never `.git/config` — same valu
 `core.deltaBaseCacheLimit = 0` (git-legal) yields `createLruCache(0)` whose every `set` is
 refused — the cache is inert, `probe` always misses, exactly git's "limit 0" outcome.
 
-**Import direction (checked, not left to the implementer).** The new edge is
-`pack-registry.ts → internal/resolve-delta-base-cache-limit.ts → config-read.ts`. depcruise's
-transitive closure of `config-read.ts` (78 modules) contains `config-scoped-read.ts`,
-`internal/config-key.ts`, `internal/config-scope.ts`, `path-layout.ts`,
-`internal/layout-verdict.ts` and domain/ports only — no `pack-registry`, `read-object`,
-`object-resolver`, `object-caches`, `blob-source` or `read-head-tree` — so the edge closes no
-cycle; `deltaBaseCacheBudgetFor` lives in that same module so `pack-registry.ts` gains no runtime
-edge into `object-caches.ts` (whose own import of `pack-registry.ts` is type-only). `npm run check:architecture`
-(`no-circular`, `viaOnly: dependencyTypesNot: ['type-only']`) is P3's gate oracle.
+**Import direction (checked, not left to the implementer).** The new edges are
+`pack-registry.ts → internal/resolve-delta-base-cache-limit.ts → config-read.ts` (P3) and
+`{ read-object.ts, pack-registry.ts, read-index.ts, internal/read-commit-graph.ts, 9 command
+files } → internal/repo-settings-gate.ts → config-read.ts` (P5). depcruise's transitive closure
+of `config-read.ts` (78 modules) contains `config-scoped-read.ts`, `internal/config-key.ts`,
+`internal/config-scope.ts`, `path-layout.ts`, `internal/layout-verdict.ts` and domain/ports only
+— no `pack-registry`, `read-object`, `read-index`, `read-commit-graph`, `object-resolver`,
+`object-caches`, `blob-source` or `read-head-tree` — so neither edge closes a cycle;
+`deltaBaseCacheBudgetFor` lives in its own module so `pack-registry.ts` gains no runtime edge
+into `object-caches.ts` (whose own import of `pack-registry.ts` is type-only); commands importing
+`primitives/internal/*` has precedent (`tag.ts:22` `boolean-config-guard`, `merge.ts:41`
+`resolve-max-tree-depth`). `npm run check:architecture` (`no-circular`, `viaOnly:
+dependencyTypesNot: ['type-only']`) is the gate oracle of P3 and P5.
 
 **Entry cap against a 96 MiB budget.** `DELTA_BASE_CACHE_MAX_ENTRIES = 65_536` is carried forward
 (ADR-852). The crossover is a **1 536 B mean entry** (96 MiB / 65 536; ≈ 1 336 B of content after
@@ -432,6 +481,174 @@ compiling and behaves as a default-budget Context.
 `deltaCacheMaxBytes` scales the memo and the FlatTree; only the key or `deltaBaseCacheMaxBytes`
 scales the delta-base cache. `forgetParsedObjectMemo` unchanged. A sweep on the **large** fixture
 (50 k commits) is the honest follow-on and stays out of scope with its reason.
+
+#### D2-iii — the repo-settings tier: `{ core.maxTreeDepth, core.deltaBaseCacheLimit }` validated at the object-store, index and commit-graph boundary (ADR-859 + ADR-858, settled)
+
+**Mechanism (git, from source and probe — spike §3, §5, §6; sections C, N, O, W below).** Both
+keys are read in `prepare_repo_settings` (`repo-settings.c:103` and `:142`) and nowhere else;
+across 86 probed commands × the two keys the outcome is identical in every cell (§5.1). A
+command dies on a malformed value iff it reaches that function: any object read
+(`odb_read_object` / `parse_object` → `lookup_replace_object` → `replace_refs_enabled`), any
+pack enumeration (`prepare_packed_git` → midx), any index read (`repo_read_index`), any
+commit-graph / bitmap / sparse-index load, or an explicit call in one of 37 builtins — four of
+which (`rev-parse.c:782`, `worktree.c:1489`, `sparse-checkout.c:1206`, `stash.c:2488`) call it
+at the top of `cmd_*`. Its position against the streaming classes is the position of that call
+against the builtin's `git_default_config` pass (§3.3): streaming first in 19 of 24 commands,
+the class first in `status`, `commit`, `diff`, `bundle create`, `rebase` (§6) — and for
+`core.deltaBaseCacheLimit` alone also in `gc`, whose `gc_config` reads that one key ahead of
+everything (`gc.c:219`, C3).
+
+**What tsgit has today, and why it is the wrong tier.** `assertEagerConfigValid`
+(`repo-state.ts:211-244`) throws `core.maxTreeDepth` first on every operational verb. Measured
+against the same git: it refuses `branch.list`, `tag.list` and `branch.rename` where git runs
+(git lists and renames refs without parsing an object — `builtin/branch.c:795`, `tag.c:549`);
+it refuses `notes.list` / `packRefs` on the idle fixture where git runs; and it names the class
+ahead of the streaming classes in the 19 commands where git names it after. The unit tests that
+pin that ordering (`test/unit/application/commands/internal/repo-state.test.ts:1356-1406`)
+measured `status`/`commit` — two of the 5 minority commands — and generalised. `remote.*` was
+never over-refused: it sits on `assertAcceptedRepository`, which runs no eager check (spike
+Table 1). The genuine over-refusal is exactly three verbs.
+
+**Change (ADR-859).** One validator for the class, memoised per session beside the gate verdict,
+called from every boundary git's die-set is a function of, plus explicit calls transcribing
+git's own per-builtin sites. Only the class moves; **no verb moves between gates** — every other
+refusal (discovery, ownership, format, the five streaming classes, work-tree,
+pending-operation) is byte-identical before and after.
+
+```ts
+// src/application/primitives/internal/repo-settings-gate.ts (new, P5)
+import { configBadNumericValue } from '../../../domain/commands/error.js';
+import type { Context } from '../../../ports/context.js';
+import { findLastInvalidDeltaBaseCacheLimit, findLastInvalidMaxTreeDepth, memoizeRepoSettingsVerdict } from '../config-read.js';
+
+/** git's `prepare_repo_settings` (repo-settings.c): the class's keys, in its order of reading. */
+const computeRepoSettingsVerdict = async (ctx: Context): Promise<void> => {
+  const [maxTreeDepth, deltaBaseCacheLimit] = await Promise.all([
+    findLastInvalidMaxTreeDepth(ctx),                                    // repo-settings.c:103
+    ctx.cacheBudgets?.deltaBaseCacheMaxBytes === undefined              // ADR-858 / C5: an option-overridden file value is never validated
+      ? findLastInvalidDeltaBaseCacheLimit(ctx)                          // repo-settings.c:142 (P5, commit 2)
+      : undefined,
+  ]);
+  const invalid = maxTreeDepth ?? deltaBaseCacheLimit;                  // in-function order; `gc.c:219` is the one recorded exception
+  if (invalid !== undefined) throw configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
+};
+
+/** The class's refusal. Memoised per session (single-flight; a rejection is never cached) so a
+ *  command's second, third … boundary touch costs a WeakMap hit; dropped by
+ *  `invalidateConfigCache` and — from P9 — by the gate's epoch on a changed config key. */
+export const assertRepoSettingsValid = (ctx: Context): Promise<void> =>
+  memoizeRepoSettingsVerdict(ctx, computeRepoSettingsVerdict);
+
+// config-read.ts — beside gateVerdictCache (:279); one invalidation domain (invalidateConfigCache:389-393, __resetConfigCacheForTests:365-369)
+let repoSettingsVerdictCache: WeakMap<Context['session'], Promise<void>> = new WeakMap();
+let settledRepoSettings = new WeakSet<Context['session']>();            // added when the memoised promise RESOLVES; dropped together with the memo
+export const memoizeRepoSettingsVerdict = (ctx, compute) =>
+  memoizeSessionVerdict(repoSettingsVerdictCache, ctx, compute, () => settledRepoSettings.add(ctx.session));
+/** The hot-path fast path: a synchronous "already resolved for this session" so `getPackRegistry`
+ *  and `commitHeader` skip the await on a warm session (cost accounting below). */
+export const repoSettingsVerdictSettled = (ctx: Context): boolean => settledRepoSettings.has(ctx.session);
+// memoizeGateVerdict (:299-311) becomes the same `memoizeSessionVerdict(slot, ctx, compute, onResolve?)`
+// helper over gateVerdictCache — one single-flight + rejection-eviction body, two slots; its
+// existing kill tests carry over unchanged.
+```
+
+**Call sites** — five boundary statements in four files, thirteen transcribing statements in
+nine command files (the placement inside each verb is pinned, not reasoned — O and W below):
+
+| # | Site | Where exactly | Why (git's route) |
+|---|---|---|---|
+| 1 | `read-object.ts` `getPackRegistry` | first statement, behind the `repoSettingsVerdictSettled` fast path (code in D2-ii) — every object read, loose or packed, passes here first | `odb_read_object` / `prepare_packed_git` (spike §3.2) |
+| 1′ | `pack-registry.ts` `createPackRegistry` | first statement | the store's own setup; covers `fetch-missing.ts:66`'s private construction, which never goes through `getPackRegistry` |
+| 2 | `read-index.ts` `readIndex` (`:169`) | first statement, **before** the `exists` probe — git's `repo_read_index` (`repository.c:449`) calls `prepare_repo_settings` unconditionally, an absent index included | `repo_read_index` |
+| 3 | `internal/read-commit-graph.ts` `commitHeader` (`:353`) and `correctedCommitDatesEnabled` (`:257`) | first statement of each, behind the fast path — **not** inside the memoised `loadGraph`: a later command whose walk is served entirely from `headerCache` (31.1's graph-first `readCommitMeta`) would otherwise re-touch no boundary at all (§5.4's caveat, taken one step further) | `commit-graph.c` ×3 |
+| 4 | `rev-parse.ts:36` `revParse` | right after `assertOperationalRepository` (O: even an unresolvable argument and `--git-dir` die on the class) | `rev-parse.c:782`, top of `cmd_rev_parse` |
+| 4 | `worktree.ts` `worktreeList/Add/Move/Remove` (`:61,220,310,343`) | a `gateWorktree(ctx)` prologue = gate + class, the `assertSparseReady` shape; `worktree` has no work-tree requirement (O: `remove nope` / `move nope` die on the class) | `worktree.c:1489`, top of `cmd_worktree` |
+| 4 | `sparse-checkout.ts:69-73` `assertSparseReady` | after the gate, **before** `requireWorkTree` — W1: in a bare repo `sparse-checkout list` dies on the class, not on the work tree | `sparse-checkout.c:1206` |
+| 4 | `stash.ts` `stashPush/List/Drop/Apply/Pop` (`:201,289,303,436,495`) | a `gateStash(ctx, op)` prologue = gate → `requireWorkTree(ctx, op)` → class, in that order — W1: in a bare repo `stash list` dies on the work tree first (`NEED_WORK_TREE` runs in `run_builtin`, before `cmd_stash`); `stash.drop` on an empty stack dies on the class (O) | `stash.c:2488` |
+| 5 | `reflog.ts:76-81` `reflog` | after the `exists` dispatch and before `delete` / `expire` / `show` — O: `reflog exists` **runs** in git (exit 0/1 by existence, no store), the other three die | `reflog show` is `log -g` — parses each entry's commit (`log.c:780`); `delete`/`expire` walk |
+| 5 | `branch.ts:143` `branchDelete` | right after the gate, before the checked-out and not-found checks — O: unforced `branch -d nope` dies on the class (git looks HEAD's commit up first, `branch.c:161`); tsgit's delete has no force form | merged-ness check + `was <abbrev>` (`branch.c:161,:319`) |
+| 5 | `tag.ts:85-92` `tagCreate` | after the target resolves (`:91-92`) and before the annotated/lightweight split — the point where git types the target; V: `tag t3 nope` reports the unresolvable target **without** the class, `tag t2` dies on it | git types the target (`tag.c:658,:404`); tsgit's lightweight path is `resolveRef` + `updateRef` |
+| 5 | `tag.ts:210-216` `tagDelete` | after the `refExists` check, before `updateRef` — O: `tag -d nope` is "not found", exit 1, no class; `tag -d t1` dies on it | `was <abbrev>` (`tag.c:134`) |
+| 5 | `submodule.ts:221` `submoduleInit`, `:306` `syncLevel` | after the gate, **before** `requireWorkTree` (W1: bare `submodule init` dies on the class) and before `readWorktreeGitmodules` (O: no `.gitmodules` still dies) | `submodule--helper.c:237` reads the index before listing modules |
+| 5 | `notes.ts` `notesAdd`, `notesRead`, `notesRemove` (`:96,:129,:177`) — **not** `notesList` | right after the gate | N: with no notes ref git dies on `show`/`remove`/`add` (it parses the target and, for `add`, writes an object — `hash-object -w` dies too, H) and runs on `list`; tsgit's three resolve the target as a ref/oid only and, with no notes ref, touch nothing before their own outcome — spike §5.4 listed them as agreeing, which holds only once a note exists (the same fixture-conditionality as §5.3) |
+
+The seven group-5 verbs ADR-859 ratified are all covered — six transcribed, `branch.create`
+structurally — and the three `notes` verbs are additions under the same ratified rule,
+surfaced by N. Not transcribed, on purpose: `branch.create` — D12 types its start point through `readObject`,
+so it reaches boundary 1 for the same reason git does (ADR-860; ADR-859 drops the call rather
+than keeping it as redundancy); `notes.list`, `packRefs` — they read an object exactly when git
+does (`loadNotesTree` → `readObject`; `peelToNonTag`, `ref-store.ts:845-863`), so both fixtures
+come out right with no per-verb code (§5.3, N1); `branch.list`, `tag.list`, `branch.rename` —
+git runs; `reflog exists` — git runs (O). Everything else operational reaches a boundary before
+its first write — `add`/`mv`/`rm`/`commit`/`checkout`/`reset`/`grep` through the index, the
+history and object verbs through the store or the graph, `fetch` through `isEverythingLocal` →
+`hasObject` (`fetch.ts:199`) before `fetchPack` (W3: git writes no pack), `submodule.add`
+through `assertPathFree` → `readIndex` before its clone (W3: git creates no child directory),
+`packRefs` through `peelToNonTag` before it writes `packed-refs`, annotated `tag.create` through
+`resolveObjectType` (`tag.ts:182`). Tier-2 `writeObject` / `writeTree` / `updateRef` touch no
+boundary and keep running where `hash-object -w` / `write-tree` / `update-ref` die (H) —
+[NDC-4](#new-decision-candidates) is whether the write entry joins the boundaries. The plan pins
+"first touch precedes first write" per `@writes`-tagged verb with a unit fs-count rather than
+trusting this reading (spike §7 M2's own caveat); the one Tier-1 verb this revision found
+violating it was `notes.add` on a ref-less repository, now transcribed (and covered
+structurally if NDC-4 resolves (a)).
+
+**`core.maxTreeDepth` moves with the class.** `findLastInvalidMaxTreeDepth` leaves
+`assertEagerConfigValid` (`repo-state.ts:212-213` and the `:221-228` throw; the import at `:39`;
+the docblock `:195-210` that calls the ordering "PINNED against measured git behaviour" is
+rewritten to say what was measured and on which set). `assertEagerConfigValid` keeps the five
+streaming classes and their lowest-line pick, unchanged. `resolveMaxTreeDepth`
+(`internal/resolve-max-tree-depth.ts`, 9 call sites) keeps its refusal: its callers are tree
+walks that may resolve the cap before their first object read, so the redundancy is real there
+(ADR-859 carries it forward), unlike the delta key's (D2-ii).
+
+**Ordering, after.** Within a command the gate runs first (streaming classes, lowest line); the
+class throws at the first boundary touch or transcribed call — git's majority. The recorded
+residual, pinned as such in `repo-settings-config-interop`: **five commands** where git names
+the class first — `status`, `commit`, `diff`, `bundle.create`, `rebase` — because their builtins
+call `prepare_repo_settings` before their config pass; plus `maintenance` (git `gc`) for
+`core.deltaBaseCacheLimit` only, which `gc_config` reads ahead of both (`gc.c:219`, C3) — the
+same line is also the one intra-class inversion (that key ahead of `core.maxTreeDepth`, §5.1),
+so `maintenance` with both keys malformed names `core.maxTreeDepth` where git names the other.
+Under the eager gate those were 19 order mismatches plus three over-refusals; now they are 5 (+1
+cell for one key) and no over-refusal. No eager order could reach that (spike §6): the residual
+is the price of not carrying a per-builtin ordering table, and ADR-859 accepts it.
+
+**Hot-path cost.** `getPackRegistry` runs once per object read and `commitHeader` once per
+walked commit; a plain `await` on the memoised verdict would add one microtask hop to each — on
+the medium `log` (5 000 commits × 2 touches ≈ 10 000 hops at ~0.1–0.2 µs) that is ≈ 1–2 ms
+against R1's 9.4–11.5 ms target, which is why both sites branch on the synchronous
+`repoSettingsVerdictSettled(ctx)` and await only on a miss (a session's first touch, or its
+first touch after an invalidation). `readIndex` and `createPackRegistry` await plainly — one hop
+beside two fs calls, or once per session. The number is an estimate; `log.bench` main-vs-branch
+is the oracle (D11).
+
+**Freshness.** The verdict memo lives with the parse cache and the gate verdict: dropped by
+`invalidateConfigCache` (P5) and, from P9, by the epoch on a changed `mtimeKey` — so an external
+edit that makes the class malformed between two commands is refused at the next command's first
+boundary touch, the same window as the gate's own classes (ledger L8). `cacheBudgets` is set
+only by the entry factories and never changes within a session, so the ADR-858 skip is a stable
+input to a session-keyed memo.
+
+**Tests that change** (moves and rewrites enumerated so the planner does not rediscover them):
+
+| Today (`test/unit/application/commands/internal/repo-state.test.ts`) | Fate |
+|---|---|
+| `:1266-1291` `assertEagerConfigValid` throws `invalid unit` on `core.maxTreeDepth = 2.5` | **moves** to `repo-settings-gate.test.ts` as `assertRepoSettingsValid`; an inverse case is added here — `assertEagerConfigValid` **and** `assertOperationalRepository` resolve on that config (the gate no longer owns the class) |
+| `:1293-1318` `out of range` on `2147483648` | moves likewise |
+| `:1320-1331` porcelain `assertRepository` survives; `:1333-1353` `configGet`/`configList` survive | **stay** (unchanged behaviour) |
+| `:1356-1380` "`core.loosecompression = bogus` on an earlier line — maxTreeDepth wins" | **rewritten**: `assertOperationalRepository` throws the streaming class — `CONFIG_BAD_NUMERIC_VALUE` with `key === 'core.loosecompression'` — and `assertRepoSettingsValid` alone throws `core.maxtreedepth`; the title states the majority (19 of 24) and names the 5 exceptions |
+| `:1382-1406` "`core.sparseCheckout = bogus` on an earlier line — maxTreeDepth wins" | **rewritten**: the gate throws `CONFIG_BAD_BOOLEAN_VALUE` `core.sparsecheckout`; the class is refused only at a boundary (`readIndex` in the same test) |
+| `:1408-1420` invalid-then-valid resolves; `:1422-1446` valid-then-invalid throws | move to `repo-settings-gate.test.ts` (last-wins is the class's property) |
+
+`test/integration/max-tree-depth-config-interop.test.ts` is **re-run unchanged**: every row it
+pins (log / rev-parse / add / commit / archive / fsck / grep / bundle create refuse; config /
+remote / init / bundle list-heads / verify run; last-wins on `status`) holds under the new tier
+— `revParse` through its transcribed call, the rest through a boundary. The rows it never had
+(the three newly-running verbs, the two fixture-conditional pairs, the transcribed verbs on
+their boundary-free paths, the two-class ordering split, O's intra-verb orders) go to the new
+`repo-settings-config-interop.test.ts`, parameterised over both keys of the class (§5.1 says
+the cells agree; the test proves it on tsgit's surface).
 
 ---
 
@@ -559,7 +776,7 @@ raw.bytes  (RawObject)                                 serializeHeader(raw.type,
 ```
 
 `reports/api.json` regenerates for `Context`, `RawObject`, `ObjectContent`, `parseObjectContent`.
-The breaking commit is the second of P5 (the first adds `ObjectContent` + `parseObjectContent`
+The breaking commit is the second of P7 (the first adds `ObjectContent` + `parseObjectContent`
 additively); it carries `feat(objects)!:` so release-please cuts **5.0.0** (Phase 31 = v5 line).
 Stryker directives touched: `object-resolver.ts:621` (the `resolveBaseForRefDelta` shortcut —
 re-prove at the new lines: the fall-through now returns the same `ObjectContent` from the same
@@ -677,8 +894,9 @@ interface CachedConfigEntry { readonly promise: Promise<ConfigCacheEntry>; reado
 let gateVerdictCache: WeakMap<Context['session'], { readonly promise: Promise<FilePath>; readonly mtimeKey: string }>;
 
 /** Called by `assertOperationalRepository` AFTER `hasUsableHead`: one stat. A changed key drops
- *  the parse entry AND the verdict memo (correction 8 — the verdict is re-derived from fresh
- *  tokens, as git's per-process `git_default_config` would); an unchanged key marks the entry
+ *  the parse entry AND both verdict memos — the gate's and the repo-settings class's (D2-iii)
+ *  — (correction 8 — each verdict is re-derived from fresh tokens, as git's per-process
+ *  `git_default_config` and `prepare_repo_settings` would); an unchanged key marks the entry
  *  trusted so every `readConfig` in this command skips its stat. */
 export const openConfigEpoch = async (ctx: Context): Promise<void> => { … };
 
@@ -688,12 +906,14 @@ const readConfigEntry = async (ctx) => {
   if (cached?.trusted === true) return cached.promise;             // inside an epoch: no stat
   … today's stat-validated path, which does NOT set `trusted` …    // primitive-only sessions: per-read freshness kept
 };
-export const invalidateConfigCache = (ctx) => { cache.delete(…); gateVerdictCache.delete(…); invalidateScopedConfigCache(ctx); };   // unchanged shape: the epoch dies with the entry
+export const invalidateConfigCache = (ctx) => { cache.delete(…); gateVerdictCache.delete(…); repoSettingsVerdictCache.delete(…); settledRepoSettings.delete(…); invalidateScopedConfigCache(ctx); };   // P5's shape, unchanged here: the epoch dies with the entry
 ```
 
-`memoizeGateVerdict(ctx, compute)` becomes `memoizeGateVerdict(ctx, mtimeKey, compute)`: a memo
-whose key differs is recomputed — which is also what re-runs D2-ii's
-`findLastInvalidDeltaBaseCacheLimit` after an external edit. `assertOperationalRepository` =
+`memoizeSessionVerdict(slot, ctx, compute, onResolve?)` (D2-iii) becomes
+`memoizeSessionVerdict(slot, ctx, mtimeKey, compute, onResolve?)`: a memo whose key differs is
+recomputed — for **both** slots, so the repo-settings class is re-validated at the next
+boundary touch after an external edit (L8), not only the gate's own classes.
+`assertOperationalRepository` =
 `hasUsableHead` (D4's `validateHead`) → `openConfigEpoch` → memoised verdict. `assertRepository`
 (the `config` porcelain's bare gate) does **not** open an epoch (its readers are the scoped cache,
 which keeps its own per-call stat — out of scope). Nested gates re-stat: harmless, one hop.
@@ -709,7 +929,8 @@ entry). A raw external write is seen **at the next operational gate** (next comm
 `invalidateConfigCache`; a session that never runs a gate keeps per-read staleness detection.
 Same-millisecond same-size rewrites were already undetectable (`mtimeMs:size` key) — unchanged.
 The pack registry's `core.deltaBaseCacheLimit` read is a **one-time** consumer of this cache
-(ledger L7): a later edit is not applied to a registry that already exists.
+(ledger L7): a later edit is not applied to a registry that already exists — its *refusal*, by
+contrast, is re-checked at the next command's first boundary touch (L8).
 
 **Test impact.** Heuristic sweep: 46 test files seed `.git/config` with a raw `writeUtf8`; 3
 also call `invalidateConfigCache`; 14 mix a Tier-1 command with a config-reading primitive. The
@@ -913,7 +1134,8 @@ propagates without `mkdir`.
 | (b-i) FlatTree | `status.bench` medium, `bench:ab` **locally** on the generated fixture (review: 145 → 138). The CI nightly `status` row measures the tar-restored stat-invalid state (31.4/F4) until 31.4 lands — not publishable from the nightly for this item; say so in the PR | exists, CI row polluted |
 | (b-ii) `set` verdict | structural; unit only | no bench by nature |
 | (c-i) per-chain budget | **none** — `delta-chain-read.bench`'s chains total far below the 24 MiB chain budget, so it never binds on any existing fixture; unit invariant only (D3-i). A fixture whose intermediates exceed 24 MiB would make it measurable and is not built here (cost: a new generated fixture family) | **no honest bench today** |
-| (c-ii) `core.deltaBaseCacheLimit` | correctness (C-matrix interop); fs-count: the registry's config read inside a gated command issues zero `stat` of `config` (unit, `instrumentedContext`); `delta-chain-read.bench` warm rows non-regression | pinned + unit |
+| (c-ii) `core.deltaBaseCacheLimit` + the D2-iii tier | correctness (`repo-settings-config-interop`, both keys); fs-count: the registry's config read **and** the class check inside a gated command issue zero `stat` of `config` (unit, `instrumentedContext`); `log.bench` both rows (D2-iii's fast-path claim — a hop per `commitHeader` would show here) and `delta-chain-read.bench` warm rows non-regression | pinned + unit + existing bench |
+| D12 `branch.create` typing | correctness (`branch-start-point-interop`); the R2 fs-count on `branch.create` gains the one `readObject` git also pays | pinned; no bench by nature |
 | (c-iii) `{ type, content }` | `delta-chain-read.bench` (all three rows — every pack-resolved read loses one `prependHeader`) and `loose-read.bench` (loose arm unchanged in cost: `splitObject` is a view) `bench:ab`; the ≤ 40 µs/400 KB number is ADR-854's, from the review, not re-measured | exists (non-regression) |
 | (d) HEAD | fs-count oracle (`floor-oracle.mjs` below) on `revParse('HEAD')` (4 → 2 calls) and `catFile` (2 → 1); `rev-parse.bench`, `cat-file.bench` `bench:ab` | exists |
 | (e) epoch | fs-count on `branch.create` (16 → ≤ 12, exact recorded) and on a `commit` of one file (`stat .git/config` per `writeObject` → 1 per command); `commit.bench` `bench:ab` | exists |
@@ -957,6 +1179,69 @@ both sides, alternating rounds; published numbers only from the nightly artifact
 
 ---
 
+### D12 — `branch.create` verifies its start point is a commit (ADR-860, settled)
+
+**Mechanism (git 2.55.0, Pins B1–B11).** `git branch <new> [<start>]` validates the name,
+refuses an existing branch (unless `-f`) **before** resolving the start point (B10), resolves
+it (`fatal: not a valid object name: '<start>'` when it does not resolve, B7), then **types it
+through the object store**: a tree or blob — by full oid, abbreviated oid, lightweight tag or
+annotated tag — is refused with `error: object <oid> is a <type>, not a commit` + `fatal: not a
+valid branch point: '<start>'` (the start point verbatim as typed), exit 128, and **nothing is
+written** (B2–B6, B8); an annotated tag over a commit is **peeled** — the branch lands on the
+commit, never on the tag object (B4). The typing is the store touch that reaches
+`prepare_repo_settings`: under a malformed class `branch fresh <tree>` dies on the class, `branch
+side <tree>` on "already exists" (O).
+
+**Today (`branch.ts:118-140`, `resolveBranchTarget:227-241`).** The start point is a full oid
+passed through untyped, or a ref resolved **without** `peel`, then `updateRef(…, expected:
+'absent')`. So `branch.create({ startPoint: <tree-oid> })` writes a branch no later operation
+can use; `branch.create({ startPoint: 'refs/tags/<annotated>' })` writes a branch pointing at the
+tag object; and because the exists check is the CAS on `updateRef`, `branch.create({ name:
+'side', startPoint: 'nope' })` reports `BRANCH_NOT_FOUND` where git reports "already exists".
+
+**Change.**
+
+```ts
+// branch.ts — branchCreate, in git's order (B9 → B10 → B7 → B2)
+await assertOperationalRepository(ctx);
+const name = validateRefName(`${HEADS_PREFIX}${input.name}`);                        // 'bad..name' → INVALID_REF, as today (B9)
+if (input.force !== true && (await refExists(ctx, name))) throw branchExists(name);   // B10: before the start point resolves; the CAS on updateRef stays as the race guard
+const startPoint = input.startPoint ?? 'HEAD';
+const id = await resolveBranchTarget(ctx, startPoint);                               // unchanged ladder (oid | refs/heads/<x> | <x> | HEAD) → BRANCH_NOT_FOUND (B7); resolveRef(…, { peel: true }) — B4
+const object = await readObject(ctx, id);                                            // THE store touch — ADR-859's boundary 1, which is why D2-iii transcribes no call here; a full oid that does not exist → OBJECT_NOT_FOUND (B7, oid form)
+if (object.type !== 'commit') throw unexpectedObjectType('commit', object.type, id);  // NDC-3: the code; git's `error:` line is `object <id> is a <actual>, not a <expected>`
+… updateRef(ctx, name, id, …) as today → { name, id }                                 // id = the PEELED commit (B4)
+```
+
+`resolveBranchTarget`'s ladder keeps its shape — a full oid, `refs/heads/<x>`, `<x>` verbatim,
+or `HEAD` — and gains `{ peel: true }` on its `resolveRef` calls (`peelChain` reads the tag
+objects, another store touch). `force: true` skips the exists check (B10′: `branch -f side nope`
+resolves the start point first) and keeps today's overwrite semantics. The exists check moving
+ahead of resolution is an intra-verb order change to two refusals that already exist; it is
+pinned (B10) and moves toward git, inside the verb ADR-860 already opens.
+
+**Not changed, recorded (out of scope):** the ladder does not DWIM `refs/tags/<x>` /
+`refs/remotes/<x>` and does not accept an abbreviated oid where git's `get_oid` does (B5/B6 by
+tag *name*, B8) — a pre-existing gap of the start-point grammar, not of its typing; the same
+tag-name gap exists for the target of `notes.*` and lightweight `tag.create` (ADR-860's
+"family not audited").
+
+**Tests.** `branch.test.ts` (`:452-490`'s two oid cases stay): tree oid, blob oid, lightweight
+tag → tree, annotated tag → tree each refuse with `UNEXPECTED_OBJECT_TYPE` `{ id, expected:
+'commit', actual }` and write nothing (`refExists` false afterwards); annotated tag → commit
+creates the branch at the **commit** oid; existing name + unresolvable start point →
+`BRANCH_EXISTS`; `force` + unresolvable → `BRANCH_NOT_FOUND`; a nonexistent full oid →
+`OBJECT_NOT_FOUND`. Unit tests elsewhere that used `branch.create` to point a branch at a
+non-commit as a fixture shortcut are enumerated by running the suite (ADR-860): `grep -rn
+"startPoint:" test/unit` finds 11 uses, all commit oids or `HEAD`/branch names, so the expected
+set is empty — the run is the proof. New `test/integration/branch-start-point-interop.test.ts`
+(`@proves … bucket: cross-tool-interop, interopSurface: branch`; `makePeerPair` +
+`initBothRepos` from `interop-helpers.ts`): B1–B11 against real git — exit code, the `error:` /
+`fatal:` lines reconstructed from `{ id, actual }` plus the caller's own `startPoint` (ADR-249),
+and for B4 the branch oid equal to `git rev-parse <tag>^{commit}`.
+
+---
+
 ### Freshness ledger (what an external writer can observe)
 
 Every cache or epoch this design adds or changes, with the exact window in which an
@@ -967,11 +1252,12 @@ verified against the current code.
 |---|---|---|---|---|
 | L1 | `${gitDir}/HEAD` content | read on every `resolveDirect('HEAD')` and at every gate | Node: `lstat`-identity check at every gate; trusted for the rest of that command. Memory/browser (`ino === 0`): re-read at every gate, reused within the command | **Within one command** after its gate. Same-identity rewrite (same `mtimeNs`, `ctimeNs`, `ino`, `size`) on Node — requires an in-place write within one ns tick; git-style lock-and-rename always changes `ino` |
 | L2 | `.git/config` for `readConfig` consumers | `stat` on every sequential read (same-ms same-size rewrites undetectable) | one `stat` at every operational gate; trusted within the command; per-read `stat` when no gate ran (primitive-only sessions) | **Within one command** after its gate |
-| L3 | `.git/config` for the **gate verdict** | session-memoised; external edits never re-validated until `invalidateConfigCache` | re-validated by the gate's `stat` every command (ADR-850) | **Improves** (closes correction 8) |
+| L3 | `.git/config` for the **gate verdict** (discovery booleans, ownership, format, the five streaming classes) | session-memoised; external edits never re-validated until `invalidateConfigCache` | re-validated by the gate's `stat` every command (ADR-850) | **Improves** (closes correction 8) |
 | L4 | `packed-refs` | `exists` + `stat` per load, `mtimeMs:size` key | one `stat` per load, same key | none |
 | L5 | scoped config (`config` porcelain) | `stat` per `readSingleScope`; worktree flag raw-read per call | `stat` per `readSingleScope`; worktree flag from the cached local read | none (the raw read had no cache to be staler than) |
 | L6 | parsed memo / FlatTree / delta-base | immutable-object caches; gc `forget`s | same, larger | none |
-| L7 | `core.deltaBaseCacheLimit` → delta-base cache **size** | not read | read once when the session's pack registry is constructed (first object read); neither `invalidateConfigCache` nor `refreshPackRegistry` re-sizes an existing registry; a fresh `openRepository` (new session) sees the new value. The **refusal** of a malformed value follows L3 (gate, every command) | **Per session**, like git's per-process read — new window, stated |
+| L7 | `core.deltaBaseCacheLimit` → delta-base cache **size** | not read | read once when the session's pack registry is constructed (first object read); neither `invalidateConfigCache` nor `refreshPackRegistry` re-sizes an existing registry; a fresh `openRepository` (new session) sees the new value. The **refusal** of a malformed value follows L8, not this row | **Per session**, like git's per-process read — new window, stated |
+| L8 | `.git/config` for the **repo-settings verdict** (`core.maxTreeDepth`, `core.deltaBaseCacheLimit` — D2-iii) | `core.maxTreeDepth`: session-memoised inside the gate verdict (L3's gap); `core.deltaBaseCacheLimit`: not read | one session-memoised verdict beside the gate's, consulted at every store / index / graph entry and transcribed prologue; dropped by `invalidateConfigCache` (P5) and by the epoch's changed key (P9) — an external edit is refused at the **next command's first boundary touch** | **Improves** for `core.maxTreeDepth` (correction 8 closed for it too); the new key inherits the same window. Within one command: unchanged — git reads the class once per process as well |
 
 ---
 
@@ -979,22 +1265,28 @@ verified against the current code.
 
 | Function | Owner | Inherits |
 |---|---|---|
-| `repo-state.ts` `assertEagerConfigValid` | D2-ii (P3) — the new finder call, last | D5 leaves it |
-| `repo-state.ts` `hasUsableHead` | D4 (P6) | D5 leaves it; `assertOperationalRepository` gains the epoch call (P7) after P6 lands |
-| `config-read.ts` `ParsedConfig.core` / `mergeCore` / new finder | D2-ii (P3) | D5 (P7) adds the `trusted` bit to `CachedConfigEntry` and re-keys the verdict — different functions, same file, ordered P3 → P7 |
-| `pack-registry.ts` `createPackRegistry` | D2-ii (P3) — async, budget from `deltaBaseCacheBudgetFor` | D3-i reads `registry.deltaBaseCache.maxSize` (P4) |
-| `read-object.ts` `getPackRegistry` (+ 19 callers) | D2-ii (P3) — `Promise<PackRegistry>` via memo | D3-ii (P5) edits `readRawObject`'s body only |
-| `object-caches.ts` | D2-i (budgets, constants, `budgetsFor`) → D3-i (`cacheDeltaBase` returns the verdict, `DELTA_BASE_CHAIN_INSERT_FRACTION`) → D3-ii (`OBJECT_CACHE_ENTRY_OVERHEAD_BYTES`) — P2, P4, P5 in that order | D1's `set` verdict flows through |
-| `object-resolver.ts` `resolvePackChainWithDepth` | D3-i (P4) the insert loop; D3-ii (P5) the tail (`{ type, content }` instead of `prependHeader`) | sequential, P4 then P5 |
-| `object-resolver.ts` everything else in D3-ii | D3-ii (P5) | — |
+| `repo-state.ts` `assertEagerConfigValid` | D2-iii (P5) — the `core.maxTreeDepth` finder call **leaves**; the five streaming classes and their lowest-line pick are untouched | D5 (P9) leaves it |
+| `repo-state.ts` `hasUsableHead` | D4 (P8) | D5 leaves it; `assertOperationalRepository` gains the epoch call (P9) after P8 lands |
+| `config-read.ts` `ParsedConfig.core` / `mergeCore` (P3); `findLastInvalidDeltaBaseCacheLimit`, `repoSettingsVerdictCache`, `settledRepoSettings`, `memoizeSessionVerdict` (P5) | D2-ii, D2-iii | D5 (P9) adds the `trusted` bit to `CachedConfigEntry` and re-keys **both** verdict slots — different functions, same file, ordered P3 → P5 → P9 |
+| `internal/repo-settings-gate.ts` (new) | D2-iii (P5) — `assertRepoSettingsValid`; commit 1 with one finder, commit 2 adds the second | every boundary and prologue below calls it; nothing else edits it |
+| `pack-registry.ts` `createPackRegistry` | D2-ii (P3) — async, budget from `deltaBaseCacheBudgetFor`; D2-iii (P5) — the class check as its first statement | D3-i reads `registry.deltaBaseCache.maxSize` (P6) |
+| `read-object.ts` `getPackRegistry` (+ 19 callers) | D2-ii (P3) — `Promise<PackRegistry>` via memo; D2-iii (P5) — the settled fast path + check | D3-ii (P7) edits `readRawObject`'s body only |
+| `read-index.ts` `readIndex` | D2-iii (P5) — first statement | — |
+| `internal/read-commit-graph.ts` `commitHeader` / `correctedCommitDatesEnabled` | D2-iii (P5) — first statement, fast-pathed | D8 (P11) reads through `readCommitMeta`, which inherits |
+| `commands/branch.ts` | D12 (P4) `branchCreate` + `resolveBranchTarget`; D2-iii (P5) `branchDelete`'s transcribed call | two parts, different functions, P4 then P5 |
+| `commands/reflog.ts` `reflog` prologue | D2-iii (P5) — the transcribed call after the `exists` dispatch | D7 (P10) `resolveTips`, D8 (P11) `runExpire` — different functions |
+| `commands/{rev-parse,worktree,sparse-checkout,stash,tag,submodule,notes}.ts` prologues | D2-iii (P5) | D9 (P12) edits `rev-parse.ts:61-77` (`resolveBase`), not the prologue |
+| `object-caches.ts` | D2-i (budgets, constants, `budgetsFor`) → D3-i (`cacheDeltaBase` returns the verdict, `DELTA_BASE_CHAIN_INSERT_FRACTION`) → D3-ii (`OBJECT_CACHE_ENTRY_OVERHEAD_BYTES`) — P2, P6, P7 in that order | D1's `set` verdict flows through |
+| `object-resolver.ts` `resolvePackChainWithDepth` | D3-i (P6) the insert loop; D3-ii (P7) the tail (`{ type, content }` instead of `prependHeader`) | sequential, P6 then P7 |
+| `object-resolver.ts` everything else in D3-ii | D3-ii (P7) | — |
 | `ref-store.ts` `resolveDirect` HEAD arm | D4 | D6/D7 never touch `resolveDirect` |
 | `ref-store.ts` `loadPackedRefs` | D6 | D7 calls it concurrently (safe, D7) |
-| `ref-store.ts` `listRefs` | D6 splits loose/packed; **D7 pools the loose arm in the same part** (P8, two commits) | `packableEntries`/`packRefs` inherit both |
-| `reflog.ts` `resolveTips` | D7 pools it | D8 narrows its use to `UE_HEAD` — P8 lands first, P9 keeps the pooled helper |
-| `config-read.ts` cache entry / verdict memo | D5 | `resolve-max-tree-depth` / `write-object` / `record-ref-update` / the registry's config read inherit stat-free reads without edits |
+| `ref-store.ts` `listRefs` | D6 splits loose/packed; **D7 pools the loose arm in the same part** (P10, two commits) | `packableEntries`/`packRefs` inherit both |
+| `reflog.ts` `resolveTips` | D7 pools it | D8 narrows its use to `UE_HEAD` — P10 lands first, P11 keeps the pooled helper |
+| `config-read.ts` cache entry / verdict memos | D5 | `resolve-max-tree-depth` / `write-object` / `record-ref-update` / the registry's config read / the repo-settings finders inherit stat-free reads without edits |
 | `record-ref-update.ts` | D5 (h-ii) | D10 changes only the adapter under `appendReflogFile` |
 | `LruCache` type | D1 | every `set` caller unchanged unless listed in D1 |
-| `Context` (`cacheBudgets`, `deltaCache` value type) | D2-i adds `cacheBudgets` (P2); D3-ii flips `deltaCache` (P5) | two api.json regens on the same file, P2 then P5 |
+| `Context` (`cacheBudgets`, `deltaCache` value type) | D2-i adds `cacheBudgets` (P2); D3-ii flips `deltaCache` (P7) | two api.json regens on the same file, P2 then P7 |
 | `OpenRepositoryOptions` family + `validate-options.ts` | D2-i | — |
 
 ---
@@ -1020,18 +1312,73 @@ from the `v2.55.0` tag (`reflog.c`, `refs/files-backend.c`, `setup.c`).
 | P1 | `mkdir .git/packed-refs` → `for-each-ref`, `tag -l`, `rev-parse refs/heads/main`, `branch -l` all `fatal: couldn't read .git/packed-refs: Is a directory`, exit 128 |
 | P2 | absent `packed-refs` → `tag -l` empty, `for-each-ref` lists loose refs, exit 0 |
 
-#### C — `core.deltaBaseCacheLimit` (added in this revision; a two-commit repo with one pack)
+#### C — `core.deltaBaseCacheLimit` (added by the previous revision on a two-commit repo with one pack; C2/C3 corrected here against spike §5 — the probe sequence ran `gc` before `pack-refs --all`, which is why that row read "runs")
 
 | Probe | Command / value | Result |
 |---|---|---|
 | C1 grammar | value ∈ { `96m`, `96M`, `98304k`, `1K`, `100663296`, `1g`, `0`, `0x6000000` } | every probed command exit 0 — unit suffixes (×1024ⁿ), hex, and `0` accepted |
 | C1 grammar | value ∈ { `-1`, `abc`, `96x`, `1.5m`, `` (empty), valueless key } | `fatal: bad numeric config value '<v>' for 'core.deltaBaseCacheLimit' in file .git/config: invalid unit`, exit 128 (`''` is printed for the empty and valueless forms) — a negative is a **syntax** refusal (`invalid unit`), git's unsigned-long grammar |
 | C1 grammar | `99999999999999g` | `… out of range`, exit 128 |
-| C2 die-set | value `-1`; 64 invocations, 60 distinct commands | **dies (46):** `rev-parse` (any form, incl. `--git-dir`), `for-each-ref`, `show-ref`, `update-ref`, `reflog show/expire`, `describe`, `ls-files`, `status`, `diff`, `log`, `show`, `cat-file`, `hash-object -w`, `write-tree`, `read-tree`, `checkout`, `switch`, `merge-base`, `name-rev`, `rev-list`, `worktree list`, `stash list`, `sparse-checkout list`, `check-ignore`, `check-attr`, `ls-remote`, `fsck`, `gc`, `repack`, `bundle create`, `commit`, `reset`, `rm`, `add`, `mv`, `blame`, `grep`, `clean`, `cherry-pick`, `revert`, `rebase`, `apply`, `verify-pack`, `index-pack`, `ls-tree`, `archive`, `submodule status`, `maintenance run`. **runs (14):** `symbolic-ref`, `branch --list`, `tag -l`, `check-ref-format`, `hash-object` (no `-w`), `count-objects`, `config`, `var`, `remote -v`, `notes list`, `pack-refs --all`, `prune`, `init`, and `bisect log` (exit 1 for its own reason — no bisection in progress — not the key) |
-| C3 ordering | `[core] sparseCheckout = not-a-bool` + `deltaBaseCacheLimit = -1` (either line order); likewise `compression = 99` + the key | the streaming class (`bad boolean config value … core.sparsecheckout` / `bad zlib compression level 99`) is reported first in 27 of 33 commands; **`diff`, `status`, `commit`, `gc`, `bundle create`, `rebase`** report `core.deltaBaseCacheLimit` first. `maxTreeDepth = abc` + the key: `core.maxtreedepth` first in every command, either order |
+| C2 die-set | value `-1`; 64 invocations, 60 distinct commands | **dies (46):** `rev-parse` (any form, incl. `--git-dir`), `for-each-ref`, `show-ref`, `update-ref`, `reflog show/expire`, `describe`, `ls-files`, `status`, `diff`, `log`, `show`, `cat-file`, `hash-object -w`, `write-tree`, `read-tree`, `checkout`, `switch`, `merge-base`, `name-rev`, `rev-list`, `worktree list`, `stash list`, `sparse-checkout list`, `check-ignore`, `check-attr`, `ls-remote`, `fsck`, `gc`, `repack`, `bundle create`, `commit`, `reset`, `rm`, `add`, `mv`, `blame`, `grep`, `clean`, `cherry-pick`, `revert`, `rebase`, `apply`, `verify-pack`, `index-pack`, `ls-tree`, `archive`, `submodule status`, `maintenance run`. **runs (14):** `symbolic-ref`, `branch --list`, `tag -l`, `check-ref-format`, `hash-object` (no `-w`), `count-objects`, `config`, `var`, `remote -v`, `prune`, `init`, `bisect log` (exit 1 for its own reason — no bisection in progress — not the key), and `notes list` / `pack-refs --all` — **fixture-conditional (corrected)**: the fixture held no note, and `gc` earlier in the sequence had packed every ref, so neither had anything to read; spike §5.3 (eight ref-kind variants) and N1 below pin both as *dies as soon as one note / one loose ref of any kind exists*. The split is not a list — it is the set of commands that reach `prepare_repo_settings` (spike §3.2) |
+| C3 ordering | `[core] sparseCheckout = not-a-bool` + `deltaBaseCacheLimit = -1` (either line order); likewise `compression = 99` + the key | the streaming class (`bad boolean config value … core.sparsecheckout` / `bad zlib compression level 99`) is reported first in 27 of 33 commands; **`diff`, `status`, `commit`, `gc`, `bundle create`, `rebase`** report `core.deltaBaseCacheLimit` first. `maxTreeDepth = abc` + the key: `core.maxtreedepth` first in 23 of 24 commands, either order; **`gc`** names `core.deltaBaseCacheLimit` first (`gc.c:219` reads it ahead of `prepare_repo_settings` — corrected from "every command"; spike §5.1). One mechanism throughout: the position of the builtin's `prepare_repo_settings` call against its config pass (spike §3.3) |
 | C4 last-wins | `deltaBaseCacheLimit = -1` then `= 96m` → exit 0; `= 96m` then `= -1` → dies; valueless then `= 1m` → exit 0 | config-set resolution (last write wins), like `core.maxTreeDepth`, unlike the streaming classes |
 | C5 `-c` override | file `= -1`; `git -c core.deltaBaseCacheLimit=1m rev-parse HEAD` → exit 0; `-c …=abc` over a valid or invalid file → `… for 'core.deltaBaseCacheLimit': invalid unit` (no `in file` suffix) | an overridden file value is never validated; a malformed override is |
 | V1 loose header (for D3-ii's verify path) | a loose blob rewritten on disk with a non-canonical header — `blob 07\0`, `blob  7\0`, `blob 7 \0` — under its canonical id | `cat-file -p`/`-s`: `error: unable to parse <id> header`, exit 128; `fsck`: `object corrupt or missing` — git never hashes a non-canonical stored header, it refuses to parse it |
+
+#### B — `branch <new> <start>` start-point typing (ADR-860; one-commit repo, `tag-to-commit` = annotated tag → commit, `tag-to-tree` = annotated tag → tree, `light-to-tree` = lightweight tag → tree)
+
+| Probe | Command | Result |
+|---|---|---|
+| B1 | `branch b1 <commit-oid>` | exit 0; `rev-parse b1` = the commit |
+| B2 | `branch b2 <tree-oid>` | `error: object <tree-oid> is a tree, not a commit` / `fatal: not a valid branch point: '<tree-oid>'`, exit 128; no ref written |
+| B3 | `branch b3 <blob-oid>` | same shape, `is a blob, not a commit` |
+| B4 | `branch b4 tag-to-commit` | exit 0; `rev-parse b4` = the **commit** (peeled), not the tag object |
+| B5 | `branch b5 tag-to-tree` | `… is a tree, not a commit` / `fatal: not a valid branch point: 'tag-to-tree'` — the name as typed |
+| B6 | `branch b6 light-to-tree` | same as B5 with `'light-to-tree'` |
+| B7 | `branch b7 nope` | `fatal: not a valid object name: 'nope'`, exit 128 — a different message from B2–B6 |
+| B8 | `branch b8 <7-hex tree prefix>` | refused as B2, `'<prefix>'` printed as typed |
+| B9 | `branch 'bad..name'` | `fatal: 'bad..name' is not a valid branch name` — before the start point is looked at |
+| B10 | `branch side nope` (existing name, unresolvable start) | `fatal: a branch named 'side' already exists` — the exists check **precedes** start-point resolution; `-f side nope` → B7's message (force skips the check) |
+| B10′ | `branch side <tree-oid>` under a malformed class key | "already exists" — no class die, so the exists check also precedes the typing; `-f side <tree>` and `fresh <tree>` die on the class |
+| B11 (contrast, Tier 2) | `update-ref refs/heads/plumb <tree-oid>` | `fatal: update_ref failed for ref 'refs/heads/plumb': trying to write non-commit object … to branch 'refs/heads/plumb'`, exit 128 — git's ref transaction types `refs/heads/*` too; tsgit's Tier-2 `updateRef` does not (recorded, out of scope) |
+
+`for-each-ref refs/heads` after the matrix: `b1 commit`, `b4 commit`, `main commit` — nothing else was written.
+
+#### W — work-tree vs repo-settings order in the transcribed builtins (bare clone of the one-commit repo; malformed `core.deltaBaseCacheLimit=-1`, then `core.sparseCheckout=bogus` for contrast)
+
+| Probe | Command | First fatal |
+|---|---|---|
+| W1 | bare: `stash list` | `this operation must be run in a work tree` — work tree **before** the class (`NEED_WORK_TREE` in `run_builtin`); same when the streaming class is the malformed one |
+| W1 | bare: `sparse-checkout list`, `worktree list`, `submodule init`, `rev-parse HEAD`, `reflog show HEAD` | the class — **before** any work-tree requirement; `sparse-checkout list` names the streaming class instead when that one is malformed |
+| W2 | non-bare, both classes malformed: `sparse-checkout list`, `stash list`, `worktree list`, `rev-parse HEAD` | `bad boolean config value 'bogus' for 'core.sparsecheckout'` — streaming first in all four (members of the 19-set) |
+| W3 | `submodule add ../src child` (super has the malformed key) | class die, exit 128; **no `child/` directory, no `.gitmodules`** — the class is reached before the clone; on a clean super, `submodule add ../src a` with `a` already in the index → `'a' already exists in the index` (the index read precedes the clone) |
+| W3 | `fetch origin` into a repo with the malformed key (peer one commit ahead) | class die; the pack count in `objects/pack` is unchanged and no `refs/remotes/*` is written |
+
+#### N — `notes` on a ref-less repository (one-commit repo; `refs/notes/commits` absent unless stated)
+
+| Probe | Command | Result |
+|---|---|---|
+| N1 | `notes list`, no notes ref — seven layouts: empty `git init`; loose objects + loose `main`; packed objects + loose `main`; loose objects + packed `main`; both packed; one loose object with an unborn HEAD; objects present with `main` deleted | exit 0 in every layout — the condition is the notes ref, nothing else |
+| N1′ | `notes list`, one note exists | class die, exit 128 (spike §5.3 agrees) |
+| N2 | `notes show HEAD`, no notes ref | class die, exit 128 (clean config: `error: no note found for object …`, exit 1) |
+| N3 | `notes remove HEAD` / `notes remove --ignore-missing HEAD`, no notes ref | class die, exit 128 (clean config: `Object HEAD has no note`, exit 1) |
+| N4 | `notes add -m n HEAD` / `notes add -m n <nonexistent full oid>`, no notes ref | class die, exit 128; **zero loose objects written** |
+| N5 (clean config) | `notes add -m n <nonexistent full oid>` | exit 0 — git does not require the annotated object to exist; tsgit's `resolveObject` oid pass-through agrees |
+
+#### O — intra-verb order: the verb's own argument errors against the class (one-commit repo with `side` and `t1`; malformed `core.deltaBaseCacheLimit=-1`)
+
+| Probe | Command | First fatal / error |
+|---|---|---|
+| O1 | `branch -d nope`, `branch -d main`, `branch -d side` | the class — HEAD's commit is looked up before the not-found / checked-out checks; `branch -D nope` → `error: branch 'nope' not found`, exit 1 (the forced form skips that lookup — tsgit has no forced delete) |
+| O2 | `tag -d nope` | `error: tag 'nope' not found.`, exit 1 — **no** class; `tag -d t1` → the class |
+| O3 | `tag bad..name`, `tag t1` (exists), `tag t2` | the class — git resolves and types the default target (HEAD) before validating the name or the collision; `tag t3 nope` → `fatal: Failed to resolve 'nope' as a valid ref.`, no class — an unresolvable target is reported before the typing |
+| O4 | `branch bad..name` / `branch side` / `branch b9 nope` | name / "already exists" / "not a valid object name" — none reach the class (B9, B10, B7) |
+| O5 | `reflog exists HEAD` → exit 0; `reflog exists refs/heads/nope` → exit 1 | **runs** — no store; `reflog delete HEAD@{0}`, `reflog expire --expire=now HEAD`, `reflog show`, `reflog` → the class; `reflog show nope` → `ambiguous argument 'nope'` (revision parsing, no class) |
+| O6 | `rev-parse nope`, `rev-parse --git-dir` | the class (top of `cmd_rev_parse`, before any argument) |
+| O7 | `submodule init` / `submodule sync` with no `.gitmodules` | the class |
+| O8 | `worktree remove nope`, `worktree move nope elsewhere` | the class (before the path is looked up) |
+| O9 | `stash drop` on an empty stack; `sparse-checkout list` with no sparse config | the class |
+| H (Tier 2) | `hash-object -w --stdin`, `write-tree` | the class — git's write path consults the packed store before writing; tsgit's `writeObject` / `writeTree` touch no boundary — NDC-4 |
 
 #### R — `reflog expire` (history: A(…000) → B(…100) on `main`; `side` = B → C(…200); `main` reset to A, so `main`'s log is `0→A`, `A→B`, `B→A`; B reachable only from `side`; later D(…200) committed on main then reset away — D unreachable from every tip)
 
@@ -1065,11 +1412,12 @@ unreachable(cb, new_commit, new)) return 1; } }`. `unreachable` — null oid ⇒
 
 ## Decision candidates
 
-Settled record. Every candidate the first draft raised was ratified on 2026-09-11; two went
-against the draft's recommendation (DC-2's delta-base row and DC-4) and this revision folds them
-through. Each row names its ADR — the ADR is the binding text, this table is the map.
+Settled record. Every candidate this design raised — seven in the first draft, two more when
+ADR-852 was folded through (NDC-1, NDC-2), one surfaced by the spike (DC-8) — has been
+ratified; three went against the recommendation in force at the time (DC-2's delta-base row,
+DC-4, NDC-2). Each row names its ADR — the ADR is the binding text, this table is the map.
 
-| # | Choice | Ratified outcome | Draft recommended | ADR |
+| # | Choice | Ratified outcome | Recommended at the time | ADR |
 |---|---|---|---|---|
 | DC-1 | Config freshness contract | **Gate-armed epoch** — one `stat` in `assertOperationalRepository`, entry trusted for the command, verdict memo re-keyed on the stat; primitive-only sessions keep per-read stats; a raw external write is seen at the next command or `invalidateConfigCache` | same | [ADR-850](../adr/850-config-is-read-once-per-command-at-the-operational-gate.md) |
 | DC-2 | Cache budgets — memo and FlatTree | **Entry-first bounds, explicit options, conservative defaults**: memo 32 768 entries + 16 MiB valve, FlatTree 8 MiB; the valve-ordering invariant is a test | same (a′) | [ADR-851](../adr/851-derived-object-caches-are-bound-by-entries-with-explicit-budgets.md) |
@@ -1079,6 +1427,9 @@ through. Each row names its ADR — the ADR is the binding text, this table is t
 | DC-5 | HEAD slot identity | **`lstat` identity `(mtimeNs\|mtimeMs, ctimeNs\|ctimeMs, ino, size)` trusted across commands only when `ino !== 0`**; `ino === 0` adapters re-read at each gate and share within the command; the miss-path read on Node goes through `openWithNoFollow` so bytes and identity come from one handle; symlinked HEAD resolves `symbolic` | same (a) | [ADR-855](../adr/855-head-freshness-is-the-gate-lstat-identity.md) |
 | DC-6 | HEAD slot keying | **`WeakMap<Context, HeadSlot>`** — state read through a Context's own `fs` keys on the Context, not the session (refines ADR-722) | same (a) | [ADR-856](../adr/856-the-head-slot-is-keyed-on-context-identity.md) |
 | DC-7 | `reflog expire` reachability rule | **Git's model in-PR**: `UE_ALWAYS`/`UE_HEAD`/`UE_NORMAL`, `timestamp < expire` unconditional, old + new checked, walk bounded at `expire_total`; ADR-064 superseded in scope; Pins R1–R7 as interop tests | same (a) | [ADR-857](../adr/857-reflog-expire-follows-git-reachability-rule.md) |
+| NDC-1 | Precedence between the explicit `deltaBaseCacheMaxBytes` option and `core.deltaBaseCacheLimit` | **The option wins and suppresses the key** — when supplied, the key is neither read nor validated (git's `-c`, Pin C5); the D2-iii skip condition is a pin, not an optimisation | same (a) | [ADR-858](../adr/858-the-explicit-delta-base-budget-option-suppresses-the-config-key.md) |
+| NDC-2 | Where a malformed `core.deltaBaseCacheLimit` is refused, and in which order against the other `[core]` classes | **A repo-settings class validated at its own tier** (spike M2): `assertRepoSettingsValid(ctx)` in `internal/repo-settings-gate.ts`, memoised beside the gate verdict, called at the object-store entry (inside the async registry construction), `readIndex`, the commit-graph loader, and from explicit calls transcribing git's four whole-command `prepare_repo_settings` sites plus the verbs where git reaches the store for a check tsgit performs differently; **`core.maxTreeDepth` moves to the class** (ADR-637 superseded in scope, its ordering tests rewritten against the probed majority); the three over-refused verbs now run; the residual is the ordering split (5 commands, + `gc` for the new key) | **against** — this doc recommended (a), eager at the operational gate plus a lazy twin, and counted five over-refused verbs; the spike showed the eager shape already drifted for `core.maxTreeDepth` on tier and on order, that two of the five were fixture artefacts and one (`remote.*`) never over-refused, and that only a boundary placement reproduces git's die-set *and* its majority ordering without a table | [ADR-859](../adr/859-repo-settings-are-validated-at-their-own-tier.md) · [spike](../spike/config-validation-tier.md) |
+| DC-8 (spike DC-C) | `branch.create`'s untyped start point, surfaced while tracing which verbs reach the store | **Fix it in this change**: resolve through the store, refuse a non-commit, pin by interop; its transcribed group-5 call is dropped because the verb now reaches the boundary naturally | fix now (spike: "raise it with the session rather than filing it silently") | [ADR-860](../adr/860-branch-create-verifies-its-start-point-is-a-commit.md) |
 
 **Rejected candidates — not decisions** (carried from the first draft, plus two this revision
 adds):
@@ -1108,17 +1459,29 @@ adds):
   (new) — rejected in D3-ii: it would shrink what a public dial retains by ≈ 40 % for small
   objects and evict a 50 k-commit walk that fits today; the 32 B wrapper term is the honest
   marginal delta of the new shape.
+- *A `resolveDeltaBaseCacheLimit` lazy twin for the new key, mirroring `resolveMaxTreeDepth`*
+  (this revision) — dead code once the class check precedes it at the same call site (D2-ii);
+  the maxTreeDepth twin survives only because its callers can run ahead of the boundary.
+- *Putting the class check inside the memoised `loadGraph` rather than at `commitHeader`* (this
+  revision) — a later command whose walk is served from `headerCache` would re-touch no
+  boundary (D2-iii, boundary 3).
+- *A per-command exemption list for the die-set* — the shape the user first asked about;
+  dominated by the tier on every axis and refuted by the spike (§7).
+- *Reordering `tag.create`'s name validation behind its target resolution to match O3* — a
+  pre-existing intra-verb order, not this item's; recorded under out of scope.
 
 ## New decision candidates
 
-Folding ADR-852 through surfaced **two** load-bearing choices no ADR covers, both on the newly
-honoured key. Neither is manufactured: each changes a unit test's expected value and a sentence
-on `internals.md`, and each has a git pin (C5, C2/C3) that argues for one side.
+Folding ADRs 858–860 through surfaced **two** choices no ADR covers and the planner cannot
+settle alone, both pinned in this revision (sections B and O/H). The expected outcome of this
+pass was an empty section; it is not empty because two pins contradicted what the ratified
+texts assumed — a public error code ADR-860 never names, and a Tier-2 write entry the spike said
+"would refuse for free" and does not. Neither re-litigates a ratified matter.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| NDC-1 | **Precedence between the explicit `deltaBaseCacheMaxBytes` option and `core.deltaBaseCacheLimit`** — ADR-852 names "two levers, in this order" without saying which wins when both are set | (a) **the option wins**, and when it is set the key is neither read nor validated — tsgit's option is git's `-c`: last-wins in the config set, and git validates no file value a `-c` overrides (Pin C5). (b) the key wins; the option only replaces the absent-key default of 96 MiB — the literal "in this order" reading; a host that must cap memory cannot, if the repository's config says `96m`. (c) `min(option, key)` — a ceiling semantic (the host caps, the repo may only lower); no git analogue, and a user raising the key above the option is silently ignored | **(a)** | It is the only alternative with a pinned git precedent, it is what an embedding host (the browser case ADR-852 itself raises) needs, and it makes the gate finder's skip condition (D2-ii) a faithful transcription of C5 rather than a convenience. |
-| NDC-2 | **Where a malformed `core.deltaBaseCacheLimit` is refused, and in which order against the other `[core]` classes** — git dies in 46 of 60 pinned commands (C2) at `prepare_repo_settings`, a point tsgit has no equivalent of | (a) **eager at the operational gate** (`assertEagerConfigValid`, every gated command; last-wins finder; ordered after `core.maxTreeDepth` and after the five streaming classes — git's majority, C3) **plus** the lazy twin at `resolveDeltaBaseCacheLimit` for primitive-only sessions — the `core.maxTreeDepth` house pattern. Divergence: tsgit refuses `branch.list`, `tag.list`, `remote`, `notes.list`, `packRefs` where git 2.55 runs (pinned), and reports the numeric refusal *after* a streaming-class refusal in the six commands where git reports it first. (b) **lazy only**, at registry construction (first object read): no gate change. Divergence: `revParse`, `reflog show`, `worktree list`, `sparseCheckout list`, ref-only `branch`/`tag` verbs run where git dies, and the refusal surfaces mid-command after the gate passed. (c) gate-eager with an ordering that matches `status`/`commit` (the key before the streaming classes): matches 6 commands, mismatches 27 | **(a)** | Both (a) and (b) diverge on a pinned set; (a) diverges **fail-closed** (refuses where git runs) and at one boundary with one memoised verdict and one test shape, (b) diverges **fail-open** and lets a command start work before refusing. (a) also keeps the primitive path covered exactly as `core.maxTreeDepth` does. The over-refused set is five ref-only verbs and the ordering mismatch is observable only when two classes are malformed at once — both recorded in the ADR and in `config-interop`. |
+| NDC-3 | **The error code for D12's non-commit refusal** — ADR-860 pins the behaviour, not the code; R6 and `.claude/workflow/surface-gates.md` say "no new error code", and a new one trips five gates (error union, exhaustiveness switches, barrel-surface test, `docs/use/errors.md`, `api.json`) | (a) **reuse `UNEXPECTED_OBJECT_TYPE` `{ id, expected: 'commit', actual }`** — its documented meaning is exactly this ("asked for tree, got blob"), git's `error:` line reconstructs from it 1:1, and the `fatal: not a valid branch point: '<start>'` line needs only the caller's own input (ADR-249); (b) a new `INVALID_BRANCH_POINT { startPoint, id, objectType }` carrying the start point verbatim — one error, both lines, five gates, a public addition on the 5.0 line; (c) reuse `BRANCH_NOT_FOUND` — wrong: git distinguishes "not a valid object name" (B7) from "not a valid branch point" (B2) | **(a)** | The reasoning ADR-637 ratified for `CONFIG_BAD_NUMERIC_VALUE`: an existing code with the right data and no new public surface; the interop test proves the reconstruction. (b) is the honest alternative if the session wants the start point inside the error rather than beside it. |
+| NDC-4 | **Whether Tier-2 `writeObject` joins the repo-settings boundaries** — spike §5.5 claimed `writeObject`/`writeTree` "would refuse under M2 because they enter the store"; they do not (`write-object.ts:34` reads config and writes a loose file, no registry touch), while git's `hash-object -w` / `write-tree` die (H) and `notes add` on a ref-less repo dies with nothing written (N4) | (a) **add the fast-pathed `assertRepoSettingsValid` as `writeObject`'s first statement** — the write entry becomes a boundary like the read entry: `hash-object -w` / `write-tree` parity on Tier 2, every Tier-1 object write covered structurally so the "first touch precedes first write" audit shrinks to ref and working-tree writes, one WeakSet probe per object write on a settled session; `notes.add`'s transcribed call becomes redundant and is not written, as `branch.create`'s was dropped; (b) record it as a Tier-2 residual beside `updateRef` (spike §5.5) — ADR-859 named three boundaries and Tier 2 is ungated by design; `notes.add` keeps its transcribed call; (c) a follow-up backlog entry for the Tier-2 write primitives (`writeObject`, `writeTree`, `updateRef` — B11) | **(a)** | It is git's own shape (the write path consults the packed store before writing), it costs nothing measurable, it lands in the part that already edits the boundaries, and it turns a per-verb ordering argument into a structural one. (b) is defensible under ADR-859's letter; (c) is what this repo's default forbids (follow-ups are discussed, not filed). `updateRef`'s typing (B11) is a different refusal and stays recorded either way. |
 
 ---
 
@@ -1141,12 +1504,16 @@ enum of outcomes — a parameterised sweep, not a property. The expire predicate
 | D2-i memo | `object-caches.test.ts`: 5 000 distinct commit-shaped entries at the default budget → `entryCount === 5 000`; `parsedObjectMemoMaxEntries` option honoured; a 64 KiB-message entry stored; the valve-admits-entries invariant (`32_768 × 512 ≤ 16 MiB`) as a literal test, plus the derivation at `deltaCacheMaxBytes = 4 MiB` → 8 192 entries | Constant mutants via the invariant; option plumbing via a non-default value observed in `entryCount` |
 | D2-i FlatTree | `read-head-tree.test.ts`: 20 000-entry synthetic tree at defaults → second call zero object reads (`instrumentedContext`), `set` verdict `true`; the over-cap case (`:171`) re-pinned under a shrunk `flatTreeCacheMaxBytes`; the "multiplied share" case (`:395`) rewritten for the new sizing; `164 × 50_000 ≤ 8 MiB` literal | Budget mutants via the 20 000-entry hit |
 | D2-i options | `validate-options.test`, `index.node.test`/`index.browser.test`/`memory-adapter.test`: each of the five options refused when non-integer or negative (`INVALID_OPTION`), `0` accepted, defaulted when absent, reaching `ctx.cacheBudgets` when present | Each option's absence/presence isolated; boundary triples |
-| D2-ii parse + finder | `config-read.test.ts` (+ `config-read.properties` untouched): `ParsedConfig.core.deltaBaseCacheLimit` for `96m`/`1K`/`0x6000000`/`0` (values 100 663 296 / 1 024 / 100 663 296 / 0), absent for `-1`/`abc`/`1.5m`; `findLastInvalidDeltaBaseCacheLimit` over the C1 matrix → `{ key, source, value, reason }` (`key` is the lowercased qualified name, built exactly as `findLastInvalidMaxTreeDepth` builds `core.maxtreedepth`)`` (each of `invalid unit` / `out of range` / valueless `''` isolated); last-wins (C4 both orders); `repo-state.test.ts`: `assertEagerConfigValid` throws `CONFIG_BAD_NUMERIC_VALUE` with that `data`, **after** a same-file malformed `core.sparseCheckout` (`CONFIG_BAD_BOOLEAN_VALUE` wins) and after `core.maxTreeDepth`; skipped when `ctx.cacheBudgets.deltaBaseCacheMaxBytes` is set (C5) | Reason-literal and comparison mutants via the matrix; ordering mutants via the two-class cases; the skip via presence/absence of the option |
-| D2-ii resolver + registry | new `resolve-delta-base-cache-limit.test.ts`: absent key → 100 663 296; present → value; malformed → throws with `data`; `deltaBaseCacheBudgetFor` option-over-key, and no config read at all when the option is set (NDC-1 (a)); `pack-registry.test.ts`: `createPackRegistry` resolves; `deltaBaseCache.maxSize` equals the key's value / the option / 96 MiB; `readConfig` spy: one read per session, none on `refreshPackRegistry`; `read-object.test.ts`: two concurrent first `readObject`s construct one registry (`createPackRegistry` spy `toHaveBeenCalledTimes(1)`); a first `readObject` after `assertOperationalRepository` issues zero `stat` of `config` (`instrumentedContext`; lands with P7, see partition) | Default-constant mutants; precedence mutants; single-flight via the spy count |
+| D2-ii parse (P3) + finder (P5) | `config-read.test.ts` (+ `config-read.properties` untouched): `ParsedConfig.core.deltaBaseCacheLimit` for `96m`/`1K`/`0x6000000`/`0` (values 100 663 296 / 1 024 / 100 663 296 / 0), absent for `-1`/`abc`/`1.5m`; `findLastInvalidDeltaBaseCacheLimit` over the C1 matrix → `{ key, source, value, reason }` (`key` is the lowercased qualified name, built exactly as `findLastInvalidMaxTreeDepth` builds `core.maxtreedepth`) — each of `invalid unit` / `out of range` / valueless `''` isolated; last-wins (C4 both orders). **Nothing in `repo-state.test.ts` for this key** — the gate never sees it | Reason-literal and comparison mutants via the matrix |
+| D2-ii budget + registry (P3) | new `resolve-delta-base-cache-limit.test.ts`: absent key → 100 663 296; present → value; `deltaBaseCacheBudgetFor` option-over-key, and **no config read at all** when the option is set (ADR-858 — a `readConfig` spy); `pack-registry.test.ts`: `createPackRegistry` resolves; `deltaBaseCache.maxSize` equals the key's value / the option / 96 MiB; `readConfig` spy: one read per session, none on `refreshPackRegistry`; `read-object.test.ts`: two concurrent first `readObject`s construct one registry (`createPackRegistry` spy `toHaveBeenCalledTimes(1)`); a first `readObject` after `assertOperationalRepository` issues zero `stat` of `config` (`instrumentedContext`; lands with P9, see partition) | Default-constant mutants; precedence mutants; single-flight via the spy count |
+| D2-iii gate (P5) | new `test/unit/application/primitives/internal/repo-settings-gate.test.ts`: the four moved `core.maxTreeDepth` cases (`invalid unit`, `out of range`, invalid-then-valid, valid-then-invalid — D2-iii's table) re-homed on `assertRepoSettingsValid`; the C1/C4 rows for `core.deltaBaseCacheLimit` (commit 2); both keys malformed → `core.maxtreedepth` named (in-function order); **ADR-858's skip, observably**: malformed key + `cacheBudgets.deltaBaseCacheMaxBytes` → resolves, the same config without the option → throws; memo: two concurrent calls run the finders once (spy), a rejection is not cached (a second call re-runs and re-throws), `invalidateConfigCache` drops it (malformed → throws; file fixed + invalidate → resolves; file broken **without** invalidate → still resolves until P9 — the per-session contract, asserted as such and rewritten in P9); `repoSettingsVerdictSettled` false before, true after resolution, false after invalidate and after a rejection; `repo-state.test.ts`: the two rewritten ordering cases + the inverse case (`assertOperationalRepository` resolves on a malformed class alone) | Order mutants via the both-malformed case; the skip via option presence; memo mutants via spy counts and the settled predicate; the dropped `findLastInvalidMaxTreeDepth` call in `assertEagerConfigValid` via the inverse case |
+| D2-iii boundaries (P5) | `read-object.test.ts`: a first `readObject` (loose fixture **and** packed fixture) on a malformed class throws `CONFIG_BAD_NUMERIC_VALUE` with `data`; a session whose registry already exists + `invalidateConfigCache` + malformed rewrite → the next `readObject` refuses (the `getPackRegistry` per-call check) and, once valid again + invalidate, reads (the registry memo cleared by the rejection is rebuilt); `pack-registry.test.ts`: `createPackRegistry` alone refuses; `fetch-missing.test.ts`: its private construction refuses; `read-index.test.ts`: `readIndex` refuses **with no index file present** (git's unconditional `repo_read_index` order); `internal/read-commit-graph.test.ts`: `commitHeader` and `correctedCommitDatesEnabled` refuse before probing the graph file (`exists` spy not called), `graphCache` holds no rejection, `isGraphKnownAbsent` stays false; a header-cache hit after `invalidateConfigCache` + malformed rewrite still refuses (the check precedes the cache lookup) | Each boundary's call isolated by fixture; the fast path via a finder spy (zero calls on a settled session); the `commitHeader` placement via the header-cache-hit case |
+| D2-iii transcribed calls (P5) | one case per statement, in the verb's own test file, asserting `data` and — where O pins it — the order against the verb's own errors: `rev-parse.test.ts` (the ref form refuses); `worktree.test.ts` (`list`, forced `remove`, `move` refuse); `sparse-checkout.test.ts` (`list` refuses; a bare-layout Context: the class before `WORK_TREE_REQUIRED` — W1); `stash.test.ts` (`list`, `drop` on an empty stack refuse; bare-layout: `WORK_TREE_REQUIRED` before the class — W1); `reflog.test.ts` (`show`, `delete`, `expire` refuse; **`exists` succeeds** — O5); `branch.test.ts` (`delete` of a missing branch refuses on the class, not `BRANCH_NOT_FOUND` — O1; `list` and `rename` **succeed** on a malformed class); `tag.test.ts` (lightweight `create` refuses, but an unresolvable target reports `REF_NOT_FOUND` first — O3; `delete` of a missing tag reports `TAG_NOT_FOUND`, of an existing one the class — O2; `list` succeeds); `submodule.test.ts` (`init`/`sync` with no `.gitmodules` refuse; bare-layout: the class before the work tree — W1); `notes.test.ts` (`add`/`read`/`remove` with no notes ref refuse and write nothing; `list` with no notes ref succeeds, with one note refuses — N); `pack-refs.test.ts` (idle → succeeds; one loose ref → refuses) | Removing any one call flips exactly one test; the not-transcribed verbs' success cases kill an over-eager call |
+| D12 (P4) | `branch.test.ts` as listed in D12; `unexpectedObjectType` data (`id`, `expected`, `actual`) asserted field by field; nothing written after a refusal | Type-literal mutants via the tree/blob pair; the peel via the annotated-tag → commit oid; the exists-order via `side` + unresolvable |
 | D3-i | `object-resolver.test.ts` (`:1606-1900` chain suites): a chain whose levels exceed ¼ of a small `deltaBaseCacheMaxBytes` inserts the base-nearest levels only (`entryCount`, `has(key)` per level), bytes returned identical; the base insert is itself subject to the budget (a base larger than ¼ is skipped, its levels still cached if they fit); `cacheDeltaBase` returns `true` at every inserted level; `chainDepth` on a later probe hit unchanged (existing `:1670` suite) | `continue` → insertion mutants via `has(key)`; fraction mutants via the boundary level; the base arm isolated |
 | D3-ii | `git-object.test.ts`: `parseObjectContent` per type; `parseObject ≡ parseObjectContent ∘ splitObject`; `object-resolver.test.ts`: the four `deltaCache.set(id, rawBytes, …)` seeds (`:828, :860, :889, :920`) become `{ type, content }`; the five poisoned-cache suites (`:2536, :2572, :3156, :3195, :3237`) deleted (unreachable by type); `verifyHash: true` on a cache hit / pack read hashes header ‖ content (a hasher double records two `update`s); sizer charges `content.byteLength + 32`; `read-object.test.ts`: `readRawObject` returns `{ type, content }` with no `bytes` key; `blob-source.test.ts` (`:79, :100` seeds); `pack-registry.test.ts:4172`, `fsck.test.ts:6057` seeds; `content-validation.test.ts`: packed-object hash pass hashes `serializeHeader` ‖ body (mismatch still reported); the 15 trivial `set('a', one, 1)` seeds in the adapter/entry-point/repository tests become `{ type: 'blob', content: one }`; six explicit `LruCache<Uint8Array>` generics in tests → `LruCache<ObjectContent>` | Sizer constant via `currentSize` after one insert; hasher-order mutants via the recorded `update` sequence; `typeNameToPackType` exhaustive switch via one case per type |
 | D4 | `repo-state.test.ts` matrix (`:202-340`) unchanged + new: second gate on an unchanged HEAD issues `lstat` only (a `ctx.fs` proxy whose `lstat` reports Node-shaped fields with `ino !== 0` — the memory adapter reports 0, so the identity path is reachable only through a proxy; ADR-856's Context keying makes the proxied Context's slot its own) and its miss path goes `openWithNoFollow` → `handle.stat` → `read` → `close`; the plain memory adapter (`ino === 0`) re-reads through `readUtf8` and never opens a handle; rewritten HEAD (new ino) re-read; `ref-store.test.ts`: `resolveDirect('HEAD')` after a gate issues **no** `readUtf8`; the two existing call-list assertions naming `readUtf8` on `/HEAD` re-pinned; symlinked HEAD → `{ kind: 'symbolic', target: 'refs/heads/main' }` (memory adapter `symlink`); own `setSymbolic('HEAD')` invalidates; `bootstrap` write invalidates; primitive-only sequence re-validates by `lstat` each call; `unusable` with an EACCES cause rethrows `PERMISSION_DENIED` from `resolveDirect` | Trust-bit mutants: a stale slot served after a rewrite; identity-field mutants via the proxy varying one field at a time (mtime, ctime, ino, size); reader-selection mutant via the `ino === 0` adapter never calling `openWithNoFollow`; cause-filter mutant via the EACCES case |
-| D5 | `config-read.test.ts`: gate → `readConfig`×3 = one `stat`; raw rewrite inside the epoch unseen, seen at the next gate; `invalidateConfigCache` clears `trusted`; no gate → `stat` per read (today's tests hold); verdict memo re-run on key change (raw rewrite to a malformed `core.sparseCheckout` — and to a malformed `core.deltaBaseCacheLimit` — between two commands → second refuses; today's `:110/:130` tests kept); `config-scoped-read.test.ts`: unscoped `config.get` → one local read; `record-ref-update.test.ts`: `readConfig` spy called once | Bit mutants via stat counts; memo-key mutants via the malformed-rewrite refusal |
+| D5 | `config-read.test.ts`: gate → `readConfig`×3 = one `stat`; raw rewrite inside the epoch unseen, seen at the next gate; `invalidateConfigCache` clears `trusted`; no gate → `stat` per read (today's tests hold); both verdict memos re-run on key change (raw rewrite to a malformed `core.sparseCheckout` between two commands → the second's gate refuses; to a malformed `core.deltaBaseCacheLimit` / `core.maxTreeDepth` → the second's gate passes and its first boundary touch refuses; today's `:110/:130` tests kept); `config-scoped-read.test.ts`: unscoped `config.get` → one local read; `record-ref-update.test.ts`: `readConfig` spy called once | Bit mutants via stat counts; memo-key mutants via the malformed-rewrite refusal |
 | D6 | `ref-store.test.ts`: absent `packed-refs` → one `stat`, zero `exists`; packed-only names in `listRefs` → zero `readUtf8` under the prefix; loose-overrides-packed, unparseable-loose-excluded (`:633`, `:885`, `:955` suites) unchanged; a directory at `packed-refs` throws the adapter's mapped error as today | Split mutants via read counts |
 | D7 | `ref-store.test.ts`: `listRefs` over 64 loose names — an `fs` double that records max in-flight `readUtf8` > 1 and asserts sorted output; `packRefs` prune probe pooled; `list-worktrees.test.ts` order + in-flight; `reflog.test.ts` `resolveTips` dedup | Serial-vs-pooled via in-flight counter (a `boundedMapFor` → `for…await` mutant reads 1) |
 | D8 | `reflog.test.ts`: the R-matrix as parameterised cases over `{expire, unreachable} × {reachable-from-own-tip, reachable-from-other-tip, unreachable, null-old}`; `UE_ALWAYS` short-circuit issues zero object reads; bounded walk stops at `expireCut`; `HEAD` uses all tips; unresolvable ref under `all` ⇒ always | Each predicate arm isolated; `<` vs `<=` at the cut; old/new symmetry via a case where only `old` is unreachable |
@@ -1163,7 +1530,10 @@ Rules as 31.1: one shared repo per `describe` in `beforeAll`, 60 s timeout, `GIT
 | new `head-symlink-interop.test.ts` | H1: after `ln -s refs/heads/main .git/HEAD`, tsgit `revParse('HEAD')`, `currentBranchRef`, `branch.list` `current`, and a `commit` advancing `main` all agree with git; H2: the non-`refs/` link refuses `NOT_A_REPOSITORY` where git fails discovery |
 | `reflog-interop.test.ts` (extend) | R1–R6 on the pinned history with twin repos (git rewrites the peer, tsgit ours; compare log bytes); R6′ `--all` over a gone ref |
 | `packed-refs-interop.test.ts` / `pack-refs-interop.test.ts` | unchanged — re-run (D6/D7 must not move a byte) |
-| `config-interop.test.ts` (extend) | the correction-8 case (external edit making `core.sparseCheckout` malformed between two tsgit commands is refused by the second); **C1** (each grammar row: tsgit's `CONFIG_BAD_NUMERIC_VALUE.reason` equals git's `invalid unit` / `out of range` suffix; accepted values run); **C4** last-wins both orders; **C2** the pinned die-set on tsgit's own surface — `log`, `status`, `catFile`, `revParse` refuse, `config.get` runs, and the five over-refused verbs (`branch.list`, `tag.list`, `remote`, `notes.list`, `packRefs`) are pinned **as the recorded divergence** (test title says so); **C3** `core.maxTreeDepth` wins, a streaming class wins (tsgit's order) with the six-command exception listed in the test's comment |
+| `max-tree-depth-config-interop.test.ts` | unchanged — re-run (every row it pins holds under the new tier; D2-iii) |
+| `config-interop.test.ts` (extend) | the correction-8 case (external edit making `core.sparseCheckout` malformed between two tsgit commands is refused by the second) |
+| new `repo-settings-config-interop.test.ts` (`@proves … bucket: cross-tool-interop`; `interopSurface` lists only the `@writes`-declared names it exercises — `tooling/audit-write-surfaces.ts` warns on undeclared ones) | parameterised over `core.maxTreeDepth = abc` and `core.deltaBaseCacheLimit = -1` (spike §5.1: identical cells): **C1** grammar rows for the new key (tsgit's `reason` equals git's `invalid unit` / `out of range` suffix; accepted values run); **C4** last-wins both orders; **C5** the option over a malformed file value runs where `git -c` runs (ADR-858); **the three newly-running verbs** (`branch.list`, `tag.list`, `branch.rename`: git exit 0, tsgit succeeds); **the fixture-conditional pairs** (`notes.list` / `packRefs`: run idle, refuse with one note / one loose ref — N1, §5.3); **the transcribed verbs on their boundary-free paths** (`revParse` ref form; `reflog` show, and `exists` runs; `worktree.list`; `sparseCheckout.list`; `stash.list`/`drop`; `branch.delete`; lightweight `tag.create`; `tag.delete`; `submodule.init`/`sync`; `notes.add`/`read`/`remove` on a ref-less repo); **O's intra-verb orders** (O1–O3, O5) and **W1** (bare `stash list` vs `sparse-checkout list`); **the two-class ordering split** — `log` names the streaming class first in both tools, `status` names the class first in git and the streaming class in tsgit, pinned **as the recorded residual** (the test title says so; `commit`, `diff`, `bundle.create`, `rebase` listed in the comment, `maintenance` for the new key only) |
+| new `branch-start-point-interop.test.ts` (`interopSurface: branch`) | B1–B11 (D12) |
 
 ### fs-count oracles
 
@@ -1187,6 +1557,8 @@ local `status` medium is the FlatTree oracle until 31.4 fixes the CI row.
 | `fsck.ts:46, :48` | BooleanLiteral — `createNoDeltaCache` `has`/`delete` arms | Value type only; re-run |
 | `ref-store.ts:318, :320` | Equality/Conditional — `compareRefNames` | Untouched; re-run |
 | `config-read.ts:185` | StringLiteral — absent sentinel | Untouched; re-run |
+| `read-index.ts:87` | ConditionalExpression/EqualityOperator — `isRacyMatch` | Untouched line; `readIndex` above it gains a first statement (P5); re-run |
+| `read-object.ts` (none today) | — | `getPackRegistry`'s fast path is a new branch: its kill test is the finder spy at zero calls on a settled session, not a directive |
 | `config-scope.ts:105` | ConditionalExpression — global path | Moves with `resolveScopePath` refactor; re-prove in place |
 | `update-config.ts:435, :564` | CallExpression — invalidate pairing | Unchanged; re-run |
 | `gc-pipeline.ts:1016, :1067` | CallExpression — memo forget / registry refresh | `getPackRegistry` becomes awaited on the same lines; re-prove after P3 |
@@ -1201,16 +1573,26 @@ kill tests; ranges from `git diff main` (working-tree-inclusive).
 ### Docs consequences
 
 For the docs phase: `docs/use/primitives/internals.md` — `readConfig` / `invalidateConfigCache`
-(ADR-850's contract, the gate's stat, the verdict re-keying, L7 for the registry's one-time
-read), `parsedObjectMemoFor …` and `readHeadTree` (entry-bound sizing, the five options, the
-**136 MiB** family total replacing "~34 MiB" at `:82`, `core.deltaBaseCacheLimit` + the
-option precedence, `LruCache.set` verdict), the `PackRegistry.deltaBaseCache` sentence at `:37`
-(sized from the key, async construction), `RefStore · getRefStore` (single stat, packed-only
-from snapshot, pooled `listRefs`, HEAD read through the slot, symlinked HEAD symbolic),
-`recordRefUpdate` (one config read), `listWorktrees` (pooled); `docs/understand/performance.md:59`
-(the ~34 MiB sentence → 136 MiB, the key); `docs/use/primitives/read-object.md` (`RawObject` is
-`{ type, content }`); `docs/use/commands/reflog.md` Behaviour (ADR-857's rule verbatim);
-`docs/use/commands/rev-parse.md` (no change in behaviour; none needed); the three new options
+(`:61`: ADR-850's contract, the gate's stat, **both** verdict memos re-keyed, L7 for the
+registry's one-time read, L8 for the class), a new `repo-settings-gate.ts` paragraph (the class,
+its three boundaries and the transcribed prologues, the memo beside the gate verdict, the
+settled fast path, the 5-command ordering residual — ADR-859), the `pack-registry.ts` paragraph
+at `:35` and the `read-index.ts` paragraph at `:64` each gaining "validates the repo-settings
+class first", `parsedObjectMemoFor …` and `readHeadTree` (entry-bound sizing, the five options,
+the **136 MiB** family total replacing "~34 MiB" at `:82`, `core.deltaBaseCacheLimit` + the
+option precedence (ADR-858), `LruCache.set` verdict; `readHeadTree`'s `core.maxTreeDepth`
+sentence at `:91` unchanged — the key's *identity* is not what moved), the
+`PackRegistry.deltaBaseCache` sentence at `:37` (sized from the key, async construction),
+`RefStore · getRefStore` (single stat, packed-only from snapshot, pooled `listRefs`, HEAD read
+through the slot, symlinked HEAD symbolic), `recordRefUpdate` (one config read), `listWorktrees`
+(pooled); `docs/understand/performance.md:59` (the ~34 MiB sentence → 136 MiB, the key);
+`docs/use/primitives/read-object.md` (`RawObject` is `{ type, content }`);
+`docs/use/commands/reflog.md` Behaviour (ADR-857's rule verbatim); `docs/use/commands/branch.md`
+Behaviour (`create`: the start point must peel to a commit, an annotated tag lands on its
+commit, an existing name is refused before the start point resolves — ADR-860);
+`docs/use/errors.md` (`UNEXPECTED_OBJECT_TYPE` row gains `branch.create` as a thrower, or a new
+row under NDC-3 (b); the `CONFIG_BAD_NUMERIC_VALUE` row names the tier); `docs/use/commands/rev-parse.md`
+(no change in behaviour; none needed); the three new options
 documented wherever `deltaCacheMaxEntries` is today (`docs/understand/architecture.md` is the
 only non-design hit; the docs phase decides between extending it and adding an `openRepository`
 options row to `docs/use/README.md`); a **5.0 migration note** with D3-ii's before/after table;
@@ -1244,8 +1626,27 @@ suffix only.
   A/B and the entry-bound invariant are the oracle (ADR-851).
 - **A fixture that makes the per-chain budget measurable** — intermediates > 24 MiB per chain;
   a new generated fixture family (D11).
-- **Matching git's per-command die-set for `core.deltaBaseCacheLimit` exactly** — tsgit has no
-  `prepare_repo_settings` moment; NDC-2 picks one boundary and pins the divergence.
+- **The two-class ordering residual** — `status`, `commit`, `diff`, `bundle.create`, `rebase`
+  (and `maintenance` for `core.deltaBaseCacheLimit`) name the repo-settings class first in git
+  and the streaming class first in tsgit; matching it would mean a per-builtin ordering table,
+  which ADR-859 declines. Pinned as the residual, not fixed. (Matching git's per-command
+  die-set itself is **in** scope — D2-iii is that mechanism; the previous revision's note that
+  it was out of scope is withdrawn.)
+- **Tier-2 write primitives and the repo-settings class** — `updateRef` runs where git's
+  `update-ref` dies (it types `refs/heads/*` through the store — B11, spike §5.5) and stays as
+  today; `writeObject` / `writeTree` per NDC-4.
+- **The start-point / target grammar of `branch.create`, lightweight `tag.create` and
+  `notes.*`** — no `refs/tags/` / `refs/remotes/` DWIM and no abbreviated oid where git's
+  `get_oid` accepts both (B5/B6 by tag name, B8); lightweight `tag.create` does not type its
+  target where git does (ADR-860's recorded family gap).
+- **Pre-existing intra-verb refusal orders surfaced by O** — `tag.create` validates the name
+  before its target where git types the target first (O3); `reflog show <unknown>` returns an
+  empty log where git refuses `ambiguous argument` (O5); neither is moved here.
+- **`core.logAllRefUpdates` on `remote.*` / `ls-remote`** — git dies, tsgit's acceptance tier
+  runs (spike §5.6): one class, the other direction; not this item.
+- **The 21 other keys `prepare_repo_settings` reads** (`core.commitGraph`, `index.version`,
+  `pack.useSparse`, …) — tsgit validates none; the class in `repo-settings-gate.ts` is where
+  they would go, but honouring any of them is a config-subsystem change.
 - **Regenerating `docs/perf/baseline.*`** — the `profile` workload set is unchanged.
 - **F2, F4, F5, F7–F10, F12, F13** of the review — 31.3–31.6.
 
@@ -1256,12 +1657,16 @@ suffix only.
 Sized for TDD slices in dependency order. "Gate" is the part gate from `.claude/workflow.md`
 (`vitest run <touched-tests>` + `check:types` + `biome` + `check:spelling`); the phase gate is
 `npm run validate`. Parts marked *(2 commits)* land as two atomic commits inside one part
-because their oracles differ while their files overlap. **Ordering constraints introduced by
-this revision:** P1 → P2 → P3 → P4 → P5 are strictly sequential (each edits `object-caches.ts`
-and/or `object-resolver.ts` where the previous one left off); P3 must precede P6 and P7 (all
-three edit `internal/repo-state.ts`, different functions); the "registry read is stat-free
-inside a gate" oracle can only be asserted after P7, so it lives in P7's test file although the
-code is P3's; P5's second commit is the breaking one and carries the `!` marker.
+because their oracles differ while their files overlap. **Ordering constraints:** P1 → P2 → P3
+→ P5 → P6 → P7 are strictly sequential (P2/P6/P7 each edit `object-caches.ts` and/or
+`object-resolver.ts` where the previous one left off; **P5 needs P3's async
+`createPackRegistry` — the class check is its first `await` — and P3's lenient parse**); **P4
+must precede P5** so that `repo-settings-config-interop` pins `branch.create` refusing through
+the store, never through a transcribed call that would then be deleted; P5 must precede P8 and
+P9 (all three edit `internal/repo-state.ts`, different functions); the "registry read and class
+check are stat-free inside a gate" oracle can only be asserted after P9, so it lives in P9's
+test files although the code is P3's/P5's; P9 re-keys the verdict slot P5 creates; P7's second
+commit is the breaking one and carries the `!` marker.
 
 ### P0 — Harness (no `src/`)
 
@@ -1307,40 +1712,118 @@ code is P3's; P5's second commit is the breaking one and carries the `!` marker.
   delta-base row is P3's).
 - **Gate:** those test files + api.json regen. Depends on P1 (the invariant tests read `set`'s verdict).
 
-### P3 — `core.deltaBaseCacheLimit`: parse, finder, gate check, lazy resolver, async registry (D2-ii; ADR-852, NDC-1, NDC-2)
+### P3 — `core.deltaBaseCacheLimit` budget and the async registry (D2-ii; ADR-852, ADR-858)
 
 - **Files:** `config-read.ts` (`ParsedConfig.core:44-57` + `deltaBaseCacheLimit?`;
   `MutableCore:855-870`; new `applyDeltaBaseCacheLimitEntry` beside `applyMaxTreeDepthEntry:900-905`
-  reusing `checkPackWindowMemoryBound:1240-1245`; `applyCoreEntry` dispatch; `finalizeCore:1450-1466`;
-  new `findLastInvalidDeltaBaseCacheLimit` after `findLastInvalidMaxTreeDepth:736-768`),
-  `internal/repo-state.ts` (`assertEagerConfigValid:211-244` — the new finder runs after the
-  `pickLowerLine` throw, skipped when `ctx.cacheBudgets?.deltaBaseCacheMaxBytes !== undefined`),
-  new `internal/resolve-delta-base-cache-limit.ts` (template: `internal/resolve-max-tree-depth.ts`,
-  23 lines; exports `GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES`, `resolveDeltaBaseCacheLimit`,
-  `deltaBaseCacheBudgetFor`), `pack-registry.ts` (`createPackRegistry:631-643`
+  reusing `checkPackWindowMemoryBound:1240-1245`; `applyCoreEntry` dispatch; `finalizeCore:1450-1466`
+  — the **lenient parse only**; the finder is P5's), new
+  `internal/resolve-delta-base-cache-limit.ts` (exports `GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES`,
+  `deltaBaseCacheBudgetFor` — no refusal, D2-ii), `pack-registry.ts` (`createPackRegistry:631-643`
   → `async`, budget from `deltaBaseCacheBudgetFor`; comment `:633-639` rewritten to the key),
   `read-object.ts` (`registryCache:39` → `PromiseMemo` map + resolved map; `getPackRegistry:47-53`
   → `Promise<PackRegistry>`; `refreshPackRegistry:63-65`; `disposePackRegistry:72-74`; the three
   internal callers `:154,166,228`), and the 16 other call sites listed in D2-ii, each `await`ed.
+  **Not** `internal/repo-state.ts`: the gate never learns this key.
 - **Signatures changing:** `createPackRegistry(ctx: Context): PackRegistry` →
   `Promise<PackRegistry>`; `getPackRegistry(ctx: Context): PackRegistry` → `Promise<PackRegistry>`.
-  Neither is public. `createPromiseMemo` (`internal/promise-memo.ts:22`) is the memo.
-- **Tests:** `config-read.test.ts` (C1/C4 matrix for the parse and the finder),
-  `repo-state.test.ts` (`:110`, `:130` neighbourhood — the C3 ordering cases, the C5 skip),
-  new `resolve-delta-base-cache-limit.test.ts` (incl. `deltaBaseCacheBudgetFor` precedence), `pack-registry.test.ts` (`:2570-2596` + `maxSize` from key/option/default; one
-  config read per session), `read-object.test.ts` (single-flight), every test that stubs or
-  calls `getPackRegistry` synchronously (grep `getPackRegistry(` under `test/`), and
-  `config-interop.test.ts` (C1, C2 on tsgit's surface incl. the five over-refused verbs as the
-  recorded divergence, C3, C4).
-- **If the new candidates resolve otherwise:** NDC-1 (b) or (c) changes one line in
-  `deltaBaseCacheBudgetFor` and drops the gate finder's skip condition; NDC-2 (b) drops the
-  `repo-state.ts` edit and the C2 over-refusal rows from `config-interop`; nothing else in this
-  part or any other moves.
-- **Gate:** those files + `npm run check:architecture` (the new inward edge; `no-circular`) +
-  the interop file (git-spawning: 60 s timeout, shared `beforeAll`). Depends on P2
-  (`cacheBudgets`). Must precede P6/P7 (`repo-state.ts`).
+  Neither is public. `createPromiseMemo` (`internal/promise-memo.ts:22`) is the memo — a
+  rejection clears the slot (`:24-31`), which P5's class refusal relies on.
+- **Tests:** `config-read.test.ts` (the lenient-parse rows of C1), new
+  `resolve-delta-base-cache-limit.test.ts` (default / key / option precedence; a `readConfig` spy
+  proving **no read** when the option is set — ADR-858), `pack-registry.test.ts` (`:2570-2596` +
+  `maxSize` from key/option/default; one config read per session), `read-object.test.ts`
+  (single-flight), every test that stubs or calls `getPackRegistry` synchronously (grep
+  `getPackRegistry(` under `test/`).
+- **Transitional:** a malformed key is lenient (absent → 96 MiB) until P5 — stated in D0; no
+  interop row is written for the key here.
+- **Gate:** those files + `npm run check:architecture` (the new inward edge; `no-circular`).
+  Depends on P2 (`cacheBudgets`). Must precede P5.
 
-### P4 — Delta-base per-chain budget (D3-i)
+### P4 — `branch.create` types its start point (D12; ADR-860)
+
+- **Files:** `src/application/commands/branch.ts` (`branchCreate:118-140` — the exists check
+  ahead of resolution, `readObject` + the type check after it; `resolveBranchTarget:227-241` —
+  `{ peel: true }` on both `resolveRef` calls); imports `readObject`
+  (`../primitives/read-object.js`) and `unexpectedObjectType` (`domain/objects/error.ts:81`,
+  `{ code: 'UNEXPECTED_OBJECT_TYPE', expected, actual, id }`) — or the new code if NDC-3
+  resolves (b), in which case the five surface gates of `.claude/workflow/surface-gates.md` are
+  pre-paid here (`src/domain/error.ts` union + `exhaustiveness.ts` + the barrel-surface test +
+  a `docs/use/errors.md` row + `api.json`).
+- **Signatures changing:** none public; `resolveBranchTarget(ctx, startPoint: string):
+  Promise<ObjectId>` keeps its shape.
+- **Fixtures/helpers:** `branch.test.ts` `seedWithCommit` (`:39-55`) — extend with a tree oid
+  (`writeObject` a tree), a blob oid, `updateRef('refs/tags/light-to-tree', tree)` and annotated tags
+  written via `writeObject({ type: 'tag', … })` pointing at the tree and at the commit;
+  `refExists` for the nothing-written assertion. Interop: `makePeerPair`, `initBothRepos`,
+  `runGit`, `tryRunGitWithExit` (`interop-helpers.ts:181,191,91,257`); the peer builds
+  `tag-to-commit`/`tag-to-tree`/`light-to-tree` with `git tag -a` / `git tag`.
+- **Tests:** `branch.test.ts` (D12's list; `:452-490` kept), new
+  `test/integration/branch-start-point-interop.test.ts` (B1–B11; `@proves` header with
+  `bucket: cross-tool-interop`, `interopSurface: branch`).
+- **Gate:** those two files (interop git-spawning: 60 s timeout, shared `beforeAll`).
+  Independent of P1–P3 in code; placed here so P5's interop pins the verb on the store.
+
+### P5 — The repo-settings tier (D2-iii; ADR-859, ADR-858) *(2 commits)*
+
+- **Commit 1 — the tier, with `core.maxTreeDepth` migrated.**
+  - **Files:** new `src/application/primitives/internal/repo-settings-gate.ts`
+    (`assertRepoSettingsValid`; one finder at this commit). `config-read.ts`:
+    `repoSettingsVerdictCache` + `settledRepoSettings` beside `gateVerdictCache:279`;
+    `memoizeGateVerdict:299-311` generalised to `memoizeSessionVerdict(slot, ctx, compute,
+    onResolve?)` with `memoizeGateVerdict` and the new `memoizeRepoSettingsVerdict` as its two
+    bindings; `repoSettingsVerdictSettled`; `__resetConfigCacheForTests:365-369` and
+    `invalidateConfigCache:389-393` drop the new slot and the settled set.
+    `internal/repo-state.ts`: `assertEagerConfigValid:211-244` loses `findLastInvalidMaxTreeDepth`
+    (`:213`, the `:221-228` throw, the import at `:39`); docblock `:195-210` rewritten (what was
+    measured, on which set, where the class now lives). Boundaries: `read-object.ts`
+    `getPackRegistry` (fast path + check), `pack-registry.ts` `createPackRegistry` (first
+    statement), `read-index.ts` `readIndex:169` (first statement, before `exists`),
+    `internal/read-commit-graph.ts` `commitHeader:353` and `correctedCommitDatesEnabled:257`
+    (first statement, fast-pathed). Prologues, placements per O/W (D2-iii table):
+    `rev-parse.ts:36`; `worktree.ts:61,220,310,343` via a `gateWorktree` helper;
+    `sparse-checkout.ts:69-73` `assertSparseReady` (class before `requireWorkTree`);
+    `stash.ts:201,289,303,436,495` via a `gateStash(ctx, op)` helper (class after
+    `requireWorkTree`); `reflog.ts:76-81` (after the `exists` dispatch); `branch.ts:143`
+    `branchDelete` (right after the gate); `tag.ts:85-92` `tagCreate` (after the target
+    resolves) and `:210-216` `tagDelete` (after `refExists`); `submodule.ts:221` and `:306`
+    (class before `requireWorkTree`); `notes.ts:96,129,177` (right after the gate; **not**
+    `:150`). If NDC-4 resolves (a): `write-object.ts:34`'s function gains the check as its
+    first statement and `notes.ts:96`'s call is not written.
+  - **Signatures changing:** none public. `memoizeGateVerdict(ctx, compute)` keeps its call
+    shape; `getPackRegistry` stays `Promise<PackRegistry>`; `commitHeader`,
+    `correctedCommitDatesEnabled`, `readIndex`, `createPackRegistry` keep theirs (already
+    `async`).
+  - **Fixtures/helpers:** `createMemoryContext`, `seedRepo`/`seedConfig` as
+    `test/unit/application/commands/internal/repo-state.test.ts` defines them (copy or lift into
+    a shared fixture — the new gate test needs the same three); `instrumentedContext`
+    (`test/unit/application/primitives/fixtures.ts:343`) for the zero-finder-call spy; a
+    bare-layout Context (`layout.workDir` undefined) for the W1 order cases; the
+    `max-tree-depth-config-interop.test.ts` scaffold (`datedEnv`,
+    `assertRefusesWithBadMaxTreeDepth`, one shared `beforeAll` repo, `tryRunGitWithExit`) as the
+    template for the new interop file.
+  - **Tests:** new `test/unit/application/primitives/internal/repo-settings-gate.test.ts`;
+    `test/unit/application/commands/internal/repo-state.test.ts` (`:1265-1446`: four cases
+    move, two rewritten, two stay — D2-iii's table); `read-object.test.ts`,
+    `pack-registry.test.ts`, `fetch-missing.test.ts`, `read-index.test.ts`,
+    `internal/read-commit-graph.test.ts` (boundaries); `rev-parse.test.ts`, `worktree.test.ts`,
+    `sparse-checkout.test.ts`, `stash.test.ts`, `reflog.test.ts`, `branch.test.ts`,
+    `tag.test.ts`, `submodule.test.ts`, `notes.test.ts`, `pack-refs.test.ts` (one case per
+    statement + the success cases of the not-transcribed verbs); `config-read.test.ts`
+    (memo / settled / invalidate); new `test/integration/repo-settings-config-interop.test.ts`
+    (the `core.maxTreeDepth` parameter at this commit); `max-tree-depth-config-interop.test.ts`
+    re-run unchanged.
+- **Commit 2 — `core.deltaBaseCacheLimit` joins the class.**
+  - **Files:** `config-read.ts` (`findLastInvalidDeltaBaseCacheLimit` after
+    `findLastInvalidMaxTreeDepth:736-768`, sharing `InvalidNumericEntry`'s shape),
+    `repo-settings-gate.ts` (the second finder behind the ADR-858 skip).
+  - **Tests:** `config-read.test.ts` (C1 finder rows, C4), `repo-settings-gate.test.ts` (C1 /
+    C4 / the C5 skip, the both-malformed order), `repo-settings-config-interop.test.ts` (the
+    second key's parameter; C1 / C4 / C5 rows).
+- **Gate:** all files above + `npm run check:architecture` (the new inward edges) + both
+  interop files (git-spawning). Depends on P3 and P4. Must precede P8/P9.
+
+### P6 — Delta-base per-chain budget (D3-i)
 
 - **Files:** `object-resolver.ts` (`resolvePackChainWithDepth:471-531` loop `:494-519` →
   `insertLevel` with the chain budget; base insert inside the budget), `object-caches.ts:264-274`
@@ -1348,7 +1831,7 @@ code is P3's; P5's second commit is the breaking one and carries the `!` marker.
 - **Tests:** `object-resolver.test.ts` chain suites (`:1606-1900`), `object-caches.test.ts`.
 - **Gate:** those two files. Depends on P1 (verdict) and P3 (the registry's `maxSize` is the key's).
 
-### P5 — `{ type, content }` in the loose-object cache (D3-ii; ADR-854) *(2 commits; the second is breaking)*
+### P7 — `{ type, content }` in the loose-object cache (D3-ii; ADR-854) *(2 commits; the second is breaking)*
 
 - **Commit 1 (additive, domain):** `src/domain/objects/git-object.ts` (`ObjectContent`,
   `parseObjectContent` extracted from `parseObject:37-51`'s switch; `parseObject` delegates),
@@ -1378,9 +1861,9 @@ code is P3's; P5's second commit is the breaking one and carries the `!` marker.
   `object-resolver.test.ts`, `context.test.ts`, `repository.test.ts`, `snapshot-wiring.test.ts`.
   Contextually-typed `createLruCache(…)` calls in test fixtures (≈ 90) compile unchanged.
 - **Gate:** commit 1 domain tests + api.json; commit 2 the files above + api.json +
-  `check:types` across the repo (the type flip is the compile gate). Depends on P4 (same loop tail).
+  `check:types` across the repo (the type flip is the compile gate). Depends on P6 (same loop tail).
 
-### P6 — HEAD reader and slot (D4; ADR-855, ADR-856)
+### P8 — HEAD reader and slot (D4; ADR-855, ADR-856)
 
 - **Files:** new `src/application/primitives/internal/head-file.ts`; `internal/repo-state.ts`
   (`hasUsableHead:130-144` → `validateHead`; `isRefsLinkText`/`isValidHeadContent` stay);
@@ -1390,35 +1873,40 @@ code is P3's; P5's second commit is the breaking one and carries the `!` marker.
   (`ports/file-system.ts:214`), `FileHandle.stat/read/close` (`:34-48`);
   `FileStat.mtimeNs/ctimeNs/ino/size` (`:2-18`). The `ino === 0` discriminator selects
   `readUtf8`; `ino !== 0` selects `openWithNoFollow` (the browser adapter throws on it, `:205-207`).
-- **Tests:** `test/unit/application/primitives/internal/repo-state.test.ts` (matrix `:202-340`,
+- **Tests:** `test/unit/application/commands/internal/repo-state.test.ts` (matrix `:202-340`,
   `:184` deleted-HEAD), `ref-store.test.ts` (`:867` symbolic HEAD suite; the two call-list
   assertions that name `readUtf8` on `/HEAD`; new HEAD suites), new `head-file.test.ts`
   (fixtures: `buildSeededContext`, `instrumentedContext`, the no-dereference fixture at
   `fixtures.ts:325-331` for the symlink arm; an `fs` proxy reporting `ino !== 0` for the
   identity + handle path), `list-worktrees.test.ts` (per-worktree slot), new
   `test/integration/head-symlink-interop.test.ts` (twin-repo helpers from `interop-helpers.ts`).
-- **Gate:** those files + the interop test. Depends on P3 (`repo-state.ts`). Must precede P7.
+- **Gate:** those files + the interop test. Depends on P5 (`repo-state.ts`). Must precede P9.
 
-### P7 — Config epoch, worktree-scope check, one config read per ref update (D5; ADR-850)
+### P9 — Config epoch, worktree-scope check, one config read per ref update (D5; ADR-850)
 
-- **Files:** `config-read.ts` (`CachedConfigEntry:177-180` + `trusted`; `gateVerdictCache:279`;
-  `memoizeGateVerdict:299-311`; `readConfigEntry:342-356`; `__resetConfigCacheForTests:365-369`;
-  `invalidateConfigCache:389-393`; new `openConfigEpoch`), `internal/repo-state.ts`
+- **Files:** `config-read.ts` (`CachedConfigEntry:177-180` + `trusted`; both verdict slots —
+  `memoizeSessionVerdict` gains the `mtimeKey` parameter, `openConfigEpoch` drops both slots and
+  the settled set on a changed key; `readConfigEntry:342-356`; `__resetConfigCacheForTests`;
+  `invalidateConfigCache`; new `openConfigEpoch`), `internal/repo-state.ts`
   (`assertOperationalRepository:320-325`, `computeGateVerdict:305-309`),
   `config-scoped-read.ts` (`readSingleScope:148-166`; `isWorktreeScopeActive` moves here),
   `internal/config-scope.ts` (`isWorktreeScopeActive:52-76` removed; `resolveScopePath:83-112`
   takes the verdict), `update-config.ts` / `update-config-sections.ts` (callers of
   `resolveScopePath('worktree')`), `record-ref-update.ts:49-53`, `reflog-identity.ts:25-26`.
-- **Tests:** `config-read.test.ts` (+ properties file untouched), `repo-state.test.ts` (`:110`,
-  `:130` verdict cases; the malformed-`deltaBaseCacheLimit`-between-commands case),
-  `config-scoped-read.test.ts`, `config-scope.test.ts` (+ properties), `record-ref-update.test.ts`,
-  `reflog-identity.test.ts`, `read-object.test.ts` (**the P3 oracle**: first `readObject` after
+- **Tests:** `config-read.test.ts` (+ properties file untouched; both memos re-run on key
+  change), `repo-state.test.ts` (`:110`, `:130` verdict cases; the
+  malformed-class-between-commands case — refused at the second command's first boundary touch,
+  gate passing), `repo-settings-gate.test.ts` (the "broken without invalidate → still resolves"
+  case flips to "→ refused at the next gate + boundary touch"), `config-scoped-read.test.ts`,
+  `config-scope.test.ts` (+ properties), `record-ref-update.test.ts`, `reflog-identity.test.ts`,
+  `read-object.test.ts` / `read-index.test.ts` / `internal/read-commit-graph.test.ts` (**the
+  P3/P5 oracle**: a first `readObject` / `readIndex` / `commitHeader` after
   `assertOperationalRepository` issues zero `stat` of `config`), `config-interop.test.ts`
   (correction 8 case); then the mechanical enumeration: `npm run test:unit`, add
   `invalidateConfigCache` where a gated command precedes a raw rewrite and a gate-less read.
-- **Gate:** those files + `npm run check:architecture` (import cycle). Depends on P6.
+- **Gate:** those files + `npm run check:architecture` (import cycle). Depends on P8.
 
-### P8 — `packed-refs` single stat + pooled enumeration (D6, D7) *(2 commits)*
+### P10 — `packed-refs` single stat + pooled enumeration (D6, D7) *(2 commits)*
 
 - **Files:** `ref-store.ts` (`loadPackedRefs:376-391`, `listRefs:561-569`, `packRefs:875-898`),
   `commands/reflog.ts` (`resolveTips:234-241`), `list-worktrees.ts:192-208`.
@@ -1426,32 +1914,34 @@ code is P3's; P5's second commit is the breaking one and carries the `!` marker.
   spread-ceiling suite), `list-worktrees.test.ts`, `reflog.test.ts` (`resolveTips`),
   `packed-refs-interop.test.ts` + `pack-refs-interop.test.ts` re-run.
 - **Gate:** ref-store + list-worktrees + reflog unit files; interop re-run. Commit 1 (D6) has
-  the fs-count oracle; commit 2 (D7) the in-flight oracle. Independent of P6/P7 in code; ordered
+  the fs-count oracle; commit 2 (D7) the in-flight oracle. Independent of P8/P9 in code; ordered
   after them only because `listRefs`'s HEAD candidate reads through the slot.
 
-### P9 — `reflog expire` rule (D8; ADR-857)
+### P11 — `reflog expire` rule (D8; ADR-857)
 
 - **Files:** `commands/reflog.ts` (`runExpire:156-200`, `keepEntry:213-221`,
-  `collectReachable:224-232`, `resolveTips` from P8); reads `readCommitMeta`
-  (`internal/read-commit-meta.ts`, 31.1), `resolveRef(…, { peel: true })`, `readObject` for the
-  non-commit check; `resolveExpiryCutoff` (`primitives/expiry-cutoff.ts`).
+  `collectReachable:224-232`, `resolveTips` from P10; the P5 prologue call stays where it is);
+  reads `readCommitMeta` (`internal/read-commit-meta.ts`, 31.1), `resolveRef(…, { peel: true })`,
+  `readObject` for the non-commit check; `resolveExpiryCutoff` (`primitives/expiry-cutoff.ts`).
 - **Tests:** `reflog.test.ts:742-1010` rewritten to the R-matrix; `reflog-interop.test.ts`
   (expire suites `:695-960`, `:1074`, `:1134`, `:1358`) extended with R1–R6′; `docs/adr/064`
   supersession note is already committed.
-- **Gate:** the two files (interop git-spawning). Depends on P8 for the pooled `resolveTips`.
+- **Gate:** the two files (interop git-spawning). Depends on P10 for the pooled `resolveTips`.
 
-### P10 — rev-parse sweep + `appendUtf8` (D9, D10) *(2 commits)*
+### P12 — rev-parse sweep + `appendUtf8` (D9, D10) *(2 commits)*
 
-- **Files:** `resolve-ref.ts:10-64` (`resolveRefOrMissing`), `commands/rev-parse.ts:61-77`,
-  `commands/internal/commit-ish.ts:22`, `domain/refs` `refCandidates` (unchanged shape);
-  `adapters/node/node-file-system.ts:705-712`.
+- **Files:** `resolve-ref.ts:10-64` (`resolveRefOrMissing`), `commands/rev-parse.ts:61-77`
+  (`resolveBase`; the P5 prologue call at `:36` is untouched), `commands/internal/commit-ish.ts:22`,
+  `domain/refs` `refCandidates` (unchanged shape); `adapters/node/node-file-system.ts:705-712`.
 - **Tests:** `resolve-ref.test.ts`, `rev-parse.test.ts`, `commit-ish` tests,
   `node-file-system-injected.test.ts` (+ `node-file-system.test.ts` append cases).
 - **Gate:** commit 1 primitives/commands tests; commit 2 adapter tests. Independent of every
   other part; last because smallest.
 
-**Shared-commit guidance.** P1, P2, P3 and P5 each regenerate `reports/api.json` (four regens; `ParsedConfig`
-is public — 5 hits — so P3's new `core.deltaBaseCacheLimit` field is a report change too); P5's two commits share a
-seam but only the second is breaking; P8's two commits share files and a gate but not an
-oracle; P10's two commits share nothing but size. Every other part is independent by gate and
-by file, in the order above. Eleven parts, fourteen commits.
+**Shared-commit guidance.** P1, P2, P3 and P7 each regenerate `reports/api.json` (four regens;
+`ParsedConfig` is public — 5 hits — so P3's new `core.deltaBaseCacheLimit` field is a report
+change too; P4 adds a fifth only under NDC-3 (b)); P5's two commits share the gate module and
+the interop file but not a key; P7's two commits share a seam but only the second is breaking;
+P10's two commits share files and a gate but not an oracle; P12's two commits share nothing but
+size. Every other part is independent by gate and by file, in the order above. **Thirteen
+parts, seventeen commits.**
