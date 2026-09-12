@@ -87,7 +87,7 @@ not a validate gate, so it must be pre-paid in the part that changes a public sy
 
 | Part | Extra step | Why |
 |---|---|---|
-| **1** (harness) | **Full-suite bench smoke**: `npx vitest bench --run` over the three touched bench files, and confirm the scratch repos are actually removed afterwards | Bench files touch harness hooks and prove nothing at part-TDD level. `afterAll` never runs under `vitest bench` and tinybench teardown is un-awaited — cleanup must go through `BenchComparison.teardown` + `removeSync`, not a hook. A warm-up error is swallowed as a zero-sample pass, so assert `sampleCount > 0` per row. |
+| **1** (harness) | **Full-suite bench smoke**: `npx vitest bench --run --config vitest.bench.config.ts` over the three touched bench files, and confirm the scratch repos are actually removed afterwards | Bench files touch harness hooks and prove nothing at part-TDD level. `afterAll` never runs under `vitest bench` and tinybench teardown is un-awaited — cleanup must go through `BenchComparison.teardown` + `removeSync`, not a hook. A warm-up error is swallowed as a zero-sample pass, so assert `sampleCount > 0` per row. |
 | **4** (async registry) | **Measurement probe**: `npm run bench:ab -- main feat/session-caches-per-command-floor 2` over `log.bench`, `cat-file.bench`, `delta-chain-read.bench` | 19 call sites gain a promise hop on the object-read hot path and the registry's construction becomes async behind a single-flight memo. Reviewer reading cannot see a hop regression; only absolute wall-clock main-vs-branch can. |
 | **6** (repo-settings tier) | **Measurement probe**: `bench:ab` `log.bench` both rows | `commitHeader` runs once per walked commit and `getPackRegistry` once per object read; the design's whole reason for the synchronous `repoSettingsVerdictSettled` fast path is ≈ 1–2 ms per 5 000-commit `log`. The estimate is unverified — this bench is its oracle. |
 | **8** (`{ type, content }`) | **Measurement probe**: `bench:ab` `delta-chain-read.bench` (all three rows) + `loose-read.bench` (both rows) | The change removes one content-sized copy per pack-resolved read and moves a hash onto the verify path. It also changes the **public type surface** and therefore the emitted `.d.ts` shape — run `npm run check:size` and `check:exports` fresh (after `rm -rf dist .wireit`) before committing. |
@@ -146,7 +146,7 @@ the `profile` workload set is unchanged.
 
 ### TDD steps
 
-1. **RED** — `npx vitest bench --run test/bench/tag-list.bench.ts`. Fails: *no test files found*
+1. **RED** — `npx vitest bench --run --config vitest.bench.config.ts test/bench/tag-list.bench.ts`. Fails: *no test files found*
    (the file does not exist). This is the honest failing-first oracle for a bench part; there is
    no unit assertion that can precede a bench file's existence.
 2. **GREEN** — write `tag-list.bench.ts`: `setupSmallRepo()` base, N lightweight tags via
@@ -155,11 +155,11 @@ the `profile` workload set is unchanged.
 3. **RED** — same for `test/bench/branch-list.bench.ts` (1 000 loose branches via `updateRef`, no
    `packRefs`).
 4. **GREEN** — write it.
-5. **RED** — `npx vitest bench --run test/bench/rev-parse.bench.ts` and observe only the HEAD row
+5. **RED** — `npx vitest bench --run --config vitest.bench.config.ts test/bench/rev-parse.bench.ts` and observe only the HEAD row
    in `raw.json`.
 6. **GREEN** — add the abbreviated-oid row (resolve the medium head commit, take its 7-hex
    prefix).
-7. **Full-suite bench smoke (mandatory for this part)** — `npx vitest bench --run` over the three
+7. **Full-suite bench smoke (mandatory for this part)** — `npx vitest bench --run --config vitest.bench.config.ts` over the three
    files; assert **every** entry in `raw.json` has `sampleCount > 0` (a warm-up error is swallowed
    as a zero-sample pass, so a "green" run with a zero-sample row is a failure). Confirm the
    scratch directories are gone afterwards; if they are not, the teardown is riding on a dead
@@ -170,7 +170,7 @@ the `profile` workload set is unchanged.
 ### Gate
 
 ```
-npx vitest bench --run test/bench/tag-list.bench.ts test/bench/branch-list.bench.ts test/bench/rev-parse.bench.ts && npm run check:types && ./node_modules/.bin/biome check test/bench/tag-list.bench.ts test/bench/branch-list.bench.ts test/bench/rev-parse.bench.ts test/bench/fixtures.ts && npm run check:spelling
+npx vitest bench --run --config vitest.bench.config.ts test/bench/tag-list.bench.ts test/bench/branch-list.bench.ts test/bench/rev-parse.bench.ts && npm run check:types && ./node_modules/.bin/biome check test/bench/tag-list.bench.ts test/bench/branch-list.bench.ts test/bench/rev-parse.bench.ts test/bench/fixtures.ts && npm run check:spelling
 ```
 
 Bare bypasses if either wireit script reports `Ran 0 scripts and skipped 1`:
