@@ -430,11 +430,14 @@ describe('buildCacheBudgets', () => {
     describe('When building the frozen CacheBudgets', () => {
       it('Then the result is an empty, frozen object', () => {
         // Arrange
-        const sut = buildCacheBudgets({});
+        const sut = buildCacheBudgets;
 
-        // Act + Assert
-        expect(sut).toEqual({});
-        expect(Object.isFrozen(sut)).toBe(true);
+        // Act
+        const result = sut({});
+
+        // Assert
+        expect(result).toEqual({});
+        expect(Object.isFrozen(result)).toBe(true);
       });
     });
   });
@@ -442,11 +445,14 @@ describe('buildCacheBudgets', () => {
   describe('Given only parsedObjectMemoMaxEntries set', () => {
     describe('When building the frozen CacheBudgets', () => {
       it('Then only that key is present', () => {
+        // Arrange
+        const sut = buildCacheBudgets;
+
         // Act
-        const sut = buildCacheBudgets({ parsedObjectMemoMaxEntries: 42 });
+        const result = sut({ parsedObjectMemoMaxEntries: 42 });
 
         // Assert
-        expect(sut).toEqual({ parsedObjectMemoMaxEntries: 42 });
+        expect(result).toEqual({ parsedObjectMemoMaxEntries: 42 });
       });
     });
   });
@@ -454,11 +460,14 @@ describe('buildCacheBudgets', () => {
   describe('Given only flatTreeCacheMaxBytes set', () => {
     describe('When building the frozen CacheBudgets', () => {
       it('Then only that key is present', () => {
+        // Arrange
+        const sut = buildCacheBudgets;
+
         // Act
-        const sut = buildCacheBudgets({ flatTreeCacheMaxBytes: 99 });
+        const result = sut({ flatTreeCacheMaxBytes: 99 });
 
         // Assert
-        expect(sut).toEqual({ flatTreeCacheMaxBytes: 99 });
+        expect(result).toEqual({ flatTreeCacheMaxBytes: 99 });
       });
     });
   });
@@ -466,11 +475,14 @@ describe('buildCacheBudgets', () => {
   describe('Given only deltaBaseCacheMaxBytes set', () => {
     describe('When building the frozen CacheBudgets', () => {
       it('Then only that key is present', () => {
+        // Arrange
+        const sut = buildCacheBudgets;
+
         // Act
-        const sut = buildCacheBudgets({ deltaBaseCacheMaxBytes: 7 });
+        const result = sut({ deltaBaseCacheMaxBytes: 7 });
 
         // Assert
-        expect(sut).toEqual({ deltaBaseCacheMaxBytes: 7 });
+        expect(result).toEqual({ deltaBaseCacheMaxBytes: 7 });
       });
     });
   });
