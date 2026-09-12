@@ -1,6 +1,6 @@
 ---
 subjects:
-  - src/application/primitives/internal/config-read.ts
+  - src/application/primitives/config-read.ts
   - src/application/primitives/internal/repo-state.ts
 ---
 # 850 — Config is read once per command, at the operational gate

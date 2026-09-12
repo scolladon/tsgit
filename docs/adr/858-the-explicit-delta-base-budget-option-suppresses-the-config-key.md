@@ -1,7 +1,7 @@
 ---
 subjects:
   - src/application/primitives/pack-registry.ts
-  - src/application/primitives/internal/config-read.ts
+  - src/application/primitives/config-read.ts
 ---
 # 858 — The explicit delta-base budget option suppresses the config key
 

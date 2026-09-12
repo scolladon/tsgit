@@ -1,7 +1,7 @@
 ---
 subjects:
   - src/ports/context.ts
-  - src/application/primitives/internal/object-resolver.ts
+  - src/application/primitives/object-resolver.ts
 ---
 # 854 — The loose-object cache stores `{ type, content }`, not header-prefixed bytes
 

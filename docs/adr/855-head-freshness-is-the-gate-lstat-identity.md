@@ -1,7 +1,7 @@
 ---
 subjects:
   - src/application/primitives/internal/repo-state.ts
-  - src/application/primitives/internal/ref-store.ts
+  - src/application/primitives/ref-store.ts
 ---
 # 855 — HEAD freshness is the gate's `lstat` identity, and adapters without inodes re-read
 

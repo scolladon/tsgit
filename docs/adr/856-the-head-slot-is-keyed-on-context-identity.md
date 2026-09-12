@@ -1,6 +1,6 @@
 ---
 subjects:
-  - src/application/primitives/internal/ref-store.ts
+  - src/application/primitives/ref-store.ts
 ---
 # 856 — The HEAD slot is keyed on Context identity, not on the session
 
