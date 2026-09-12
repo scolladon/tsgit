@@ -11,7 +11,7 @@ import {
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
-import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import {
   appendReflog,
   deleteReflog,
@@ -19,6 +19,8 @@ import {
   readReflog,
   reflogExists,
 } from '../../../../src/application/primitives/reflog-store.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
@@ -34,13 +36,54 @@ const author: AuthorIdentity = {
   timezoneOffset: '+0000',
 };
 
+/**
+ * Extends the base commit fixture with non-commit branch-point candidates:
+ * a bare tree and blob (by oid), a lightweight tag over the tree, and
+ * annotated tags over the tree and over the commit — the shapes
+ * `branch.create`'s start-point typing (D12) must refuse or peel.
+ */
 const seedWithCommit = async () => {
   const ctx = createMemoryContext();
   await init(ctx);
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
-  return { ctx, commitId: c.id };
+  const treeId = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+  const blobId = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode('blob'),
+  });
+  await updateRef(ctx, 'refs/tags/light-to-tree' as RefName, treeId, { reflogMessage: 'test' });
+  const tagToTreeId = await writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: {
+      object: treeId,
+      objectType: 'tree',
+      tagName: 'tag-to-tree',
+      tagger: author,
+      message: 'tag-to-tree\n',
+      extraHeaders: [],
+    },
+  });
+  await updateRef(ctx, 'refs/tags/tag-to-tree' as RefName, tagToTreeId, { reflogMessage: 'test' });
+  const tagToCommitId = await writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: {
+      object: c.id,
+      objectType: 'commit',
+      tagName: 'tag-to-commit',
+      tagger: author,
+      message: 'tag-to-commit\n',
+      extraHeaders: [],
+    },
+  });
+  await updateRef(ctx, 'refs/tags/tag-to-commit' as RefName, tagToCommitId, {
+    reflogMessage: 'test',
+  });
+  return { ctx, commitId: c.id, treeId, blobId, tagToTreeId, tagToCommitId };
 };
 
 /**
@@ -496,6 +539,181 @@ describe('branch', () => {
 
         // Assert
         expect(result.id).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a startPoint that resolves to a tree (full oid)', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE and writes nothing', async () => {
+        // Arrange
+        const { ctx, treeId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: treeId });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that resolves to a blob (full oid)', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE and writes nothing', async () => {
+        // Arrange
+        const { ctx, blobId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: blobId });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'blob',
+          id: blobId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that is a lightweight tag over a tree', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE for the tree and writes nothing', async () => {
+        // Arrange
+        const { ctx, treeId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: 'refs/tags/light-to-tree' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that is an annotated tag over a tree', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE with the tag oid, not the tree, and writes nothing', async () => {
+        // Arrange — git reports the resolved tag's own oid, never the peeled
+        // target, alongside the fully-peeled type (measured, git 2.55.0).
+        const { ctx, tagToTreeId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: 'refs/tags/tag-to-tree' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: tagToTreeId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that is an annotated tag over a commit', () => {
+    describe('When branch create runs', () => {
+      it('Then the branch lands on the commit, not the tag object', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+
+        // Act
+        const result = await branchCreate(ctx, {
+          name: 'peeled',
+          startPoint: 'refs/tags/tag-to-commit',
+        });
+
+        // Assert
+        expect(result.id).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given an existing branch name and an unresolvable startPoint', () => {
+    describe('When branch create runs without force', () => {
+      it('Then throws BRANCH_EXISTS before the startPoint ever resolves', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'side' });
+
+        // Act + Assert
+        await expectError(
+          () => branchCreate(ctx, { name: 'side', startPoint: 'nope' }),
+          'BRANCH_EXISTS',
+        );
+      });
+    });
+  });
+
+  describe('Given an existing branch name and an unresolvable startPoint, with force', () => {
+    describe('When branch create runs', () => {
+      it('Then throws BRANCH_NOT_FOUND — force skips the exists check, not resolution', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'side' });
+
+        // Act + Assert
+        await expectError(
+          () => branchCreate(ctx, { name: 'side', startPoint: 'nope', force: true }),
+          'BRANCH_NOT_FOUND',
+        );
+      });
+    });
+  });
+
+  describe('Given a startPoint that is a nonexistent full oid', () => {
+    describe('When branch create runs', () => {
+      it('Then throws OBJECT_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const missing = ObjectId.fromRaw(new Uint8Array(20).fill(0x09));
+
+        // Act + Assert
+        await expectError(
+          () => branchCreate(ctx, { name: 'ghost', startPoint: missing }),
+          'OBJECT_NOT_FOUND',
+        );
       });
     });
   });

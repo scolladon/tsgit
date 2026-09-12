@@ -6,6 +6,7 @@
  */
 import { TsgitError } from '../../domain/error.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
+import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { isOid, zeroOid } from '../../domain/objects/index.js';
 import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-messages.js';
@@ -13,6 +14,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { errorDataCode } from '../primitives/internal/error-data-code.js';
+import { readObject } from '../primitives/read-object.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -117,8 +119,12 @@ export const branchCreate = async (
 ): Promise<BranchCreateResult> => {
   await assertOperationalRepository(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
+  if (input.force !== true && (await refExists(ctx, name))) {
+    throw branchExists(name);
+  }
   const startPoint = input.startPoint ?? 'HEAD';
-  const target = await resolveBranchTarget(ctx, startPoint);
+  const id = await resolveBranchTarget(ctx, startPoint);
+  const target = await requireCommit(ctx, id);
   const reflogMessage = branchCreatedFrom(startPoint);
   try {
     await updateRef(
@@ -238,4 +244,21 @@ const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<Ob
     }
   }
   throw branchNotFound(startPoint as RefName);
+};
+
+/**
+ * Peels `id` through any tag objects to the commit it names (git's
+ * `lookup_commit_reference`). The refusal keeps `id` as resolved — an
+ * annotated tag's own oid, never its target — because that is the oid git's
+ * `error: object <oid> is a <type>, not a commit` reports (measured, git
+ * 2.55.0); only `actual` reflects the fully peeled type.
+ */
+const requireCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
+  let current = id;
+  for (;;) {
+    const object = await readObject(ctx, current);
+    if (object.type === 'commit') return current;
+    if (object.type !== 'tag') throw unexpectedObjectType('commit', object.type, id);
+    current = object.data.object;
+  }
 };
