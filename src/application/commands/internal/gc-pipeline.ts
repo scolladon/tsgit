@@ -826,7 +826,7 @@ async function packedAnywhere(
   ctx: Context,
   looseSet: ReadonlySet<ObjectId>,
 ): Promise<ReadonlySet<ObjectId>> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const looseArray = [...looseSet];
   const hits = await boundedMapFor(ctx, 'ioBound', looseArray, async (id) =>
     (await registry.lookup(id)) !== undefined ? id : undefined,
@@ -867,7 +867,7 @@ export async function runGcTask(
   const looseSet = new Set(looseIds);
   const looseObjectsBefore = looseIds.length;
 
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const allPacksBefore = await registry.all();
   const packsBefore = allPacksBefore.length;
 
@@ -1064,9 +1064,9 @@ export async function runGcTask(
   await removeStaleTempFiles(ctx, packDir, cutoff);
 
   // --- step 11: invalidate, refresh, packBytesAfter ---
-  // Stryker disable next-line CallExpression: equivalent — the registry's dirty-flag/lazy-rescan model (`refreshPackRegistry` marks dirty; the NEXT `.all()`/`.lookup()` call performs the actual re-scan) means this call is always redundant with an earlier one: every pack write in this run happens before step 8's own `refreshPackRegistry` + the registry calls inside the verify/packedAnywhere loops (so those already observe every write), and `retireSupersededPacks` performs its OWN `registry.refresh()` immediately before any unlink whenever it retires anything — so `getPackRegistry(ctx).all()` below always re-scans against a state already known-fresh, with or without this line — confirmed empirically (hand-applied CallExpression removal, full covering set still green).
+  // Stryker disable next-line CallExpression: equivalent — the registry's dirty-flag/lazy-rescan model (`refreshPackRegistry` marks dirty; the NEXT `.all()`/`.lookup()` call performs the actual re-scan) means this call is always redundant with an earlier one: every pack write in this run happens before step 8's own `refreshPackRegistry` + the registry calls inside the verify/packedAnywhere loops (so those already observe every write), and `retireSupersededPacks` performs its OWN `registry.refresh()` immediately before any unlink whenever it retires anything — so `(await getPackRegistry(ctx)).all()` below always re-scans against a state already known-fresh, with or without this line — confirmed empirically (hand-applied CallExpression removal, full covering set still green).
   refreshPackRegistry(ctx);
-  const allPacksAfter = await getPackRegistry(ctx).all();
+  const allPacksAfter = await (await getPackRegistry(ctx)).all();
   const packsAfter = allPacksAfter.length;
   const afterStats = await lstatPacks(ctx, allPacksAfter);
   const packBytesAfter = sumPackBytes([...afterStats.values()]);

@@ -242,7 +242,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           await expectBothRead(withMidx.dir, withMidxCtx, oid);
           await expectBothRead(withoutMidxDir, withoutMidxCtx, oid);
         }
-        expect(await getPackRegistry(withMidxCtx).all()).toHaveLength(3);
+        expect(await (await getPackRegistry(withMidxCtx)).all()).toHaveLength(3);
       });
     });
 
@@ -659,7 +659,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const gitResult = batchCheck(dup.dir, dup.dupOid);
-          const registry = getPackRegistry(sut);
+          const registry = await getPackRegistry(sut);
           const hit = await registry.lookup(dup.dupOid as never);
 
           // Assert — git still reads it (silent) and the midx is still the

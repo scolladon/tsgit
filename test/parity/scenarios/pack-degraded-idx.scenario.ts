@@ -86,7 +86,7 @@ export const packDegradedIdxScenario: Scenario<PackDegradedIdxResult> = {
 
     // A fresh generation registers the vanish pack (arms 1+2 stay excluded)
     // WITHOUT probing its header — all() touches only the parsed idx.
-    const registry = getPackRegistry(repo.ctx);
+    const registry = await getPackRegistry(repo.ctx);
     registry.refresh();
     const packsRegisteredBeforeVanish = (await registry.all()).length;
 

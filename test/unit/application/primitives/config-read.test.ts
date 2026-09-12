@@ -2164,6 +2164,50 @@ describe('primitives/config-read', () => {
       );
     });
   });
+  describe('Given a config with a [core] deltaBaseCacheLimit value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n\tdeltaBaseCacheLimit = 96m\n', expected: 100_663_296 },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 1K\n', expected: 1_024 },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 0x6000000\n', expected: 100_663_296 },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 0\n', expected: 0 },
+      ])('Then parsed.core.deltaBaseCacheLimit is $expected', async ({ config, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.deltaBaseCacheLimit).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a [core] section with an invalid deltaBaseCacheLimit value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n\tdeltaBaseCacheLimit = -1\n', label: 'invalid unit (-1)' },
+        { config: '[core]\n\tdeltaBaseCacheLimit = abc\n', label: 'invalid unit (abc)' },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 1.5m\n', label: 'invalid unit (1.5m)' },
+      ])(
+        'Then deltaBaseCacheLimit is absent and readConfig does not throw ($label)',
+        async ({ config }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, config);
+
+          // Act
+          const result = await readConfig(ctx);
+
+          // Assert
+          expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
+        },
+      );
+    });
+  });
+
   describe('Given a cached config and invalidateConfigCache for that context', () => {
     describe('When readConfig is called again', () => {
       it('Then the file is re-read', async () => {

@@ -355,7 +355,7 @@ describe('packObjects', () => {
       it('Then the pack is written there and the repository pack registry is not refreshed', async () => {
         // Arrange
         const { ctx } = await seedOneCommit();
-        const registry = getPackRegistry(ctx);
+        const registry = await getPackRegistry(ctx);
         const before = await registry.all();
         expect(before).toHaveLength(0);
         // A pack lands in the repository's own pack directory behind that
@@ -388,7 +388,7 @@ describe('packObjects', () => {
       it('Then the pack lands in the repository pack directory and the registry is refreshed', async () => {
         // Arrange
         const { ctx } = await seedOneCommit();
-        const registry = getPackRegistry(ctx);
+        const registry = await getPackRegistry(ctx);
         const before = await registry.all();
         expect(before).toHaveLength(0);
         const sut = packObjects;

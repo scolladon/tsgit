@@ -39,7 +39,7 @@ export async function runMidxHealthPass(
   ctx: Context,
   _opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const health = await registry.midxHealth();
 
   const findings: FsckFinding[] = [];

@@ -334,7 +334,7 @@ async function tryBitmapClosure(
   ctx: Context,
   request: ClosureRequest,
 ): Promise<ClosureObject[] | undefined> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
   if (midxArtefact !== undefined) {
     return [...(await resolveBitmapClosure(ctx, midxArtefact, projectedRequest(request)))];

@@ -247,7 +247,7 @@ describe('object-resolver', () => {
       it('Then returns a zero-entry tree', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const sut = resolveObject;
 
         // Act
@@ -265,7 +265,7 @@ describe('object-resolver', () => {
         // Arrange — e69de29b… is the empty BLOB, not the empty tree; it is
         // NOT virtual and must still miss like any other absent object.
         const ctx = await buildSeededContext();
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const emptyBlobId = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391' as ObjectId;
         const sut = resolveObject;
 
@@ -291,7 +291,7 @@ describe('object-resolver', () => {
       it('Then returns a zero-entry tree', async () => {
         // Arrange
         const ctx = createMemoryContext({ algorithm: 'sha256' });
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const emptyTreeOidSha256 =
           '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' as ObjectId;
         const sut = resolveObject;
@@ -312,7 +312,7 @@ describe('object-resolver', () => {
         // the same constant the implementation selects would let a selection
         // bug agree with itself.
         const ctx = createMemoryContext();
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const emptyTreeOidSha1 = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as ObjectId;
         const sut = resolveObject;
 
@@ -331,7 +331,7 @@ describe('object-resolver', () => {
         // Arrange — the SHA-1 empty-tree oid is the wrong length/value for a
         // SHA-256 repo's `emptyTreeOid`, so the intercept must not fire.
         const ctx = createMemoryContext({ algorithm: 'sha256' });
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const sut = resolveObject;
 
         // Act
@@ -358,7 +358,7 @@ describe('object-resolver', () => {
         const ctx = await buildSeededContext({ objects: [blob] });
         const { serializeObject } = await import('../../../../src/domain/objects/index.js');
         const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, id, true);
@@ -375,7 +375,7 @@ describe('object-resolver', () => {
       it('Then throws OBJECT_NOT_FOUND', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         try {
@@ -401,7 +401,7 @@ describe('object-resolver', () => {
         badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
         await ctx.fs.write(`${ctx.layout.gitDir}/objects/pack/multi-pack-index`, badMidx);
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const registry = createPackRegistry(instrumented);
+        const registry = await createPackRegistry(instrumented);
 
         // Act
         let caught: unknown;
@@ -427,7 +427,7 @@ describe('object-resolver', () => {
         const controller = new AbortController();
         controller.abort();
         const ctx = await buildSeededContext({ signal: controller.signal });
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         try {
@@ -455,7 +455,7 @@ describe('object-resolver', () => {
         const rawBytes = new TextEncoder().encode('blob 3\0xyz');
         const compressed = await ctx.compressor.deflate(rawBytes);
         await ctx.fs.write(loosePath, compressed);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, fakeId, false);
@@ -480,7 +480,7 @@ describe('object-resolver', () => {
         const actualOid = await ctx.hash.hashHex(rawBytes);
         const compressed = await ctx.compressor.deflate(rawBytes);
         await ctx.fs.write(loosePath, compressed);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         try {
@@ -510,7 +510,7 @@ describe('object-resolver', () => {
         const [id] = await writeSyntheticPack(ctx, 'base-only', [
           { kind: 'base', type: 'blob', content },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, id as ObjectId, true);
@@ -534,7 +534,7 @@ describe('object-resolver', () => {
           { kind: 'ofs-delta', baseIndex: 0, targetContent },
         ]);
         const deltaId = ids[1]!;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, deltaId as ObjectId, true);
@@ -561,7 +561,7 @@ describe('object-resolver', () => {
           { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent },
         ]);
         const deltaId = ids2[0]!;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, deltaId as ObjectId, true);
@@ -591,7 +591,7 @@ describe('object-resolver', () => {
         const [id] = await writeSyntheticPack(ctx, `base-${kind}`, [
           { kind: 'base', type: kind, content },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, id as ObjectId, false);
@@ -622,7 +622,7 @@ describe('object-resolver', () => {
               targetContent: new TextEncoder().encode('xy'),
             },
           ]);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           // Prime the cache with the base.
           await resolveObject(ctx, registry, baseId as ObjectId, false);
 
@@ -657,7 +657,7 @@ describe('object-resolver', () => {
               targetContent: new TextEncoder().encode('xx'),
             },
           ]);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           // Prime the cache: an uncapped read admits the base.
           await resolveObject(ctx, registry, baseId as ObjectId, false);
           expect(ctx.deltaCache.get(baseId as ObjectId)).toBeDefined();
@@ -698,7 +698,7 @@ describe('object-resolver', () => {
             { kind: 'ofs-delta', baseIndex: 0, targetContent },
           ]);
           const deltaId = ids[1] as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act — cap rejects on the base, not the target.
           try {
@@ -736,7 +736,7 @@ describe('object-resolver', () => {
             { kind: 'ofs-delta', baseIndex: 0, targetContent },
           ]);
           const deltaId = ids[1] as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act
           try {
@@ -769,7 +769,7 @@ describe('object-resolver', () => {
           { kind: 'ofs-delta', baseIndex: 0, targetContent },
         ]);
         const deltaId = ids[1]! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         expect(ctx.deltaCache.get(deltaId)).toBeUndefined();
 
         // Act
@@ -798,7 +798,7 @@ describe('object-resolver', () => {
             { kind: 'ofs-delta', baseIndex: 0, targetContent },
           ]);
           const deltaId = ids[1]! as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const first = await resolveObject(ctx, registry, deltaId, true);
           const lookupSpy = vi.spyOn(registry, 'lookup');
           const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
@@ -825,7 +825,7 @@ describe('object-resolver', () => {
           const rawBytes = new TextEncoder().encode('blob 3\0xyz');
           const actualOid = (await ctx.hash.hashHex(rawBytes)) as ObjectId;
           ctx.deltaCache.set(fakeId, rawBytes, rawBytes.length);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act
           try {
@@ -857,7 +857,7 @@ describe('object-resolver', () => {
           cached.set(header, 0);
           cached.set(content, header.length);
           ctx.deltaCache.set(fakeId, cached, cached.length);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act
           try {
@@ -886,7 +886,7 @@ describe('object-resolver', () => {
           const fakeId = 'd'.repeat(40) as ObjectId;
           const rawBytes = new TextEncoder().encode('blob 3\0xyz');
           ctx.deltaCache.set(fakeId, rawBytes, rawBytes.length);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const hashSpy = vi.spyOn(ctx.hash, 'hashHex');
 
           // Act
@@ -917,7 +917,7 @@ describe('object-resolver', () => {
           const fakeId = 'd'.repeat(40) as ObjectId;
           const rawBytes = new TextEncoder().encode('blob 3\0xyz');
           ctx.deltaCache.set(fakeId, rawBytes, rawBytes.length);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           vi.spyOn(ctx.deltaCache, 'get').mockImplementationOnce(() => {
             controller.abort();
             return rawBytes;
@@ -956,7 +956,7 @@ describe('object-resolver', () => {
               }) as typeof ctx.fs.readdir,
             },
           };
-          const registry = createPackRegistry(abortingCtx);
+          const registry = await createPackRegistry(abortingCtx);
           const lookupSpy = vi.spyOn(registry, 'lookup');
 
           // Act
@@ -990,7 +990,7 @@ describe('object-resolver', () => {
           const [id] = await writeSyntheticPack(ctx, 'abort-lookup', [
             { kind: 'base', type: 'blob', content },
           ]);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const baseLookup = registry.lookup.bind(registry);
           let offsetTableSpy: RegisteredPack['offsetTable'] | undefined;
           vi.spyOn(registry, 'lookup').mockImplementationOnce(async (oid) => {
@@ -1034,7 +1034,7 @@ describe('object-resolver', () => {
           const [id] = await writeSyntheticPack(ctx, 'abort-chain', [
             { kind: 'base', type: 'blob', content },
           ]);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const baseLookup = registry.lookup.bind(registry);
           vi.spyOn(registry, 'lookup').mockImplementationOnce(async (oid) => {
             const hit = await baseLookup(oid);
@@ -1080,7 +1080,7 @@ describe('object-resolver', () => {
           const ctx = await buildSeededContext({ signal: controller.signal });
           const content = new TextEncoder().encode('hash me then abort');
           const id = await writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const baseHashHex = ctx.hash.hashHex.bind(ctx.hash);
           vi.spyOn(ctx.hash, 'hashHex').mockImplementationOnce(async (data) => {
             const result = await baseHashHex(data);
@@ -1121,7 +1121,7 @@ describe('object-resolver', () => {
           }
           const ids = await writeSyntheticPack(ctx, 'multi-level-abort', entries);
           const id = ids.at(-1) as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const baseLookup = registry.lookup.bind(registry);
           let readSliceSpy: RegisteredPack['readSlice'] | undefined;
           vi.spyOn(registry, 'lookup').mockImplementationOnce(async (oid) => {
@@ -1167,7 +1167,7 @@ describe('object-resolver', () => {
           const ctx = await buildSeededContext({ objects: [blob] });
           const { serializeObject } = await import('../../../../src/domain/objects/index.js');
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           expect(ctx.deltaCache.get(id)).toBeUndefined();
 
           // Act
@@ -1194,7 +1194,7 @@ describe('object-resolver', () => {
           const ctx = await buildSeededContext({ objects: [blob] });
           const { serializeObject } = await import('../../../../src/domain/objects/index.js');
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           expect(ctx.deltaCache.get(id)).toBeUndefined();
 
           // Act
@@ -1221,7 +1221,7 @@ describe('object-resolver', () => {
           const ctx = await buildSeededContext({ objects: [blob] });
           const { serializeObject } = await import('../../../../src/domain/objects/index.js');
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
 
           // Act
@@ -1256,7 +1256,7 @@ describe('object-resolver', () => {
         ]);
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const registry = createPackRegistry(instrumented);
+        const registry = await createPackRegistry(instrumented);
 
         // Act
         const result = await resolveObject(instrumented, registry, id, true);
@@ -1308,7 +1308,7 @@ describe('object-resolver', () => {
             },
           },
         };
-        const registry = createPackRegistry(stubCtx);
+        const registry = await createPackRegistry(stubCtx);
 
         // Act
         const result = await resolveObject(stubCtx, registry, id, true);
@@ -1331,7 +1331,7 @@ describe('object-resolver', () => {
         ]);
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const registry = createPackRegistry(instrumented);
+        const registry = await createPackRegistry(instrumented);
 
         // Act
         const result = await resolveObject(instrumented, registry, id as ObjectId, true);
@@ -1363,7 +1363,7 @@ describe('object-resolver', () => {
         badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
         await writeMidxBytes(ctx, badMidx);
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const registry = createPackRegistry(instrumented);
+        const registry = await createPackRegistry(instrumented);
 
         // Act
         let caught: unknown;
@@ -1406,7 +1406,7 @@ describe('object-resolver', () => {
         const ctx = { ...baseCtx, logger: { warn } };
         await writeMidxBytes(ctx, truncateMidxTo8(buildMidx(healthyMidxSpec())));
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const registry = createPackRegistry(instrumented);
+        const registry = await createPackRegistry(instrumented);
 
         // Act
         const result = await resolveObject(instrumented, registry, id, true);
@@ -1440,7 +1440,7 @@ describe('object-resolver', () => {
                 (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId,
             ),
           );
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const readdirSpy = vi.spyOn(ctx.fs, 'readdir');
           const existsSpy = vi.spyOn(ctx.fs, 'exists');
 
@@ -1478,7 +1478,7 @@ describe('object-resolver', () => {
           const ctx = await buildSeededContext({ objects: [blob] });
           const { serializeObject } = await import('../../../../src/domain/objects/index.js');
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           await resolveObject(ctx, registry, id, true);
           // F2.3 also populates the delta cache on a loose read; drop that
           // entry so this probe exercises the fanout MEMBERSHIP cache's own
@@ -1525,7 +1525,7 @@ describe('object-resolver', () => {
           const ctx = await buildSeededContext({ objects: [blob] });
           const { serializeObject } = await import('../../../../src/domain/objects/index.js');
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const readSpy = vi.spyOn(ctx.fs, 'read');
 
           // Act
@@ -1545,7 +1545,7 @@ describe('object-resolver', () => {
           // check still fires once on a cold registry; what must NOT happen
           // is a per-object exists/read probe against the loose object path.
           const ctx = await buildSeededContext();
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const missingId = 'b'.repeat(40) as ObjectId;
           const loosePathPattern = /\/objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/;
           const readSpy = vi.spyOn(ctx.fs, 'read');
@@ -1581,7 +1581,7 @@ describe('object-resolver', () => {
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
           const prefix = id.slice(0, 2);
           const decoyId = `${prefix}${'0'.repeat(38)}` as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           try {
             // Primes the fanout-dir cache as empty for this prefix.
             await resolveObject(ctx, registry, decoyId, true);
@@ -1617,7 +1617,7 @@ describe('object-resolver', () => {
           { kind: 'ofs-delta', baseIndex: 1, targetContent: tip },
         ]);
         const tipId = ids[2]!;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, tipId as ObjectId, true);
@@ -1650,7 +1650,7 @@ describe('object-resolver', () => {
           ]);
           const tip1Id = ids[2]! as ObjectId;
           const tip2Id = ids[3]! as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           await resolveObject(ctx, registry, tip1Id, true);
           const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
 
@@ -1685,7 +1685,7 @@ describe('object-resolver', () => {
           ]);
           const tip1Id = ids[2]! as ObjectId;
           const tip2Id = ids[3]! as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           await resolveObjectBytesWithDepth(ctx, registry, tip1Id, false, undefined, 0);
 
           // Act
@@ -1721,7 +1721,7 @@ describe('object-resolver', () => {
             { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('generation one tip') },
           ]);
           const tip1Id = gen1[1]! as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           await resolveObject(ctx, registry, tip1Id, true);
 
           // Act — refresh, then replace the SAME pack name with a new
@@ -1744,16 +1744,16 @@ describe('object-resolver', () => {
     describe('Given an intermediate larger than the byte cap', () => {
       describe('When resolveObject is called', () => {
         it('Then it is not cached and the read still succeeds', async () => {
-          // Arrange — a deltaCacheMaxBytes sized so the 1-byte base fits under
-          // the cap once the fixed per-entry overhead is added (1 + 200 = 201
-          // <= 205), while BOTH the 64-byte mid intermediate (64 + 200 = 264)
-          // AND the tip's own reconstructed entry (11 + 200 = 211, also
-          // cached under its own offset once fully resolved) exceed it — a
-          // cap that fit the tip too would evict the base via normal LRU
+          // Arrange — a deltaBaseCacheMaxBytes sized so the 1-byte base fits
+          // under the cap once the fixed per-entry overhead is added (1 + 200
+          // = 201 <= 205), while BOTH the 64-byte mid intermediate (64 + 200
+          // = 264) AND the tip's own reconstructed entry (11 + 200 = 211,
+          // also cached under its own offset once fully resolved) exceed it —
+          // a cap that fit the tip too would evict the base via normal LRU
           // eviction, defeating the point of this fixture. Every oversized
           // entry is silently dropped by LruCache.set rather than thrown
           // from, and the read still completes correctly.
-          const ctx = createMemoryContext({ deltaCacheMaxBytes: 205 });
+          const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 205 });
           const baseContent = ENC.encode('a');
           const midContent = new Uint8Array(64).fill(0x42);
           const tipContent = ENC.encode('tip content');
@@ -1768,7 +1768,7 @@ describe('object-resolver', () => {
           const tipId = built.ids[2]! as ObjectId;
           const baseOffset = built.offsets[0]!;
           const midOffset = built.offsets[1]!;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act
           const result = await resolveObject(ctx, registry, tipId, true);
@@ -1809,7 +1809,7 @@ describe('object-resolver', () => {
           await ctx.fs.write(`${packBase}.idx`, built.idxBytes);
           const tipId = built.ids[2]! as ObjectId;
           const midOffset = built.offsets[1]!;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act
           const result = await resolveObject(ctx, registry, tipId, true);
@@ -1833,7 +1833,7 @@ describe('object-resolver', () => {
           const [id] = await writeSyntheticPack(ctx, 'pack-single-base', [
             { kind: 'base', type: 'blob', content },
           ]);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act
           const result = await resolveObject(ctx, registry, id as ObjectId, true);
@@ -1861,7 +1861,7 @@ describe('object-resolver', () => {
             { kind: 'ofs-delta', baseIndex: 1, targetContent: ENC.encode('tip') },
           ]);
           const tipId = ids[2]! as ObjectId;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           deltaBaseCacheKeySpy.mockClear();
 
           // Act
@@ -1898,7 +1898,7 @@ describe('object-resolver', () => {
             targetContent: baseContent,
           },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, deltaId as ObjectId, false);
@@ -1924,7 +1924,7 @@ describe('object-resolver', () => {
         }
         const ids = await writeSyntheticPack(ctx, 'at-cap', entries);
         const tipId = ids.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, tipId, false);
@@ -1981,7 +1981,7 @@ describe('object-resolver', () => {
             targetContent: commitContent,
           },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, deltaId as ObjectId, false);
@@ -2005,7 +2005,7 @@ describe('object-resolver', () => {
           ]);
           const firstId = ids[0] as ObjectId;
           const sut = resolveObject;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
 
           // Act
@@ -2039,7 +2039,7 @@ describe('object-resolver', () => {
           ]);
           const firstId = ids[0] as ObjectId;
           const sut = resolveObject;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
 
           // Act
@@ -2062,7 +2062,7 @@ describe('object-resolver', () => {
           ]);
           const id = ids[0] as ObjectId;
           const sut = resolveObject;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           // Compute expected slice length from the real offset table before the act.
           const packs = await registry.all();
           const table = await packs[0]!.offsetTable();
@@ -2097,7 +2097,7 @@ describe('object-resolver', () => {
             { kind: 'base', type: 'blob', content },
           ]);
           const id = ids[0] as ObjectId;
-          const realPack = (await createPackRegistry(ctx).all())[0]!;
+          const realPack = (await (await createPackRegistry(ctx)).all())[0]!;
           const realTable = await realPack.offsetTable();
           const entryOffset = expectSortedOffsets(realTable)[0]!;
           const boundary = realTable.trailerStart; // the entry's real end
@@ -2444,7 +2444,7 @@ describe('object-resolver', () => {
         ]);
         const deltaId = ids[1] as ObjectId;
         const sut = resolveObject;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         // Compute expected slice lengths from the real offset table before resolveObject runs.
         const packs = await registry.all();
         const table = await packs[0]!.offsetTable();
@@ -2495,7 +2495,7 @@ describe('object-resolver', () => {
             { kind: 'ofs-delta', baseIndex: 3, targetContent: step4 },
           ]);
           const tipId = ids[4]!;
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
 
           // Act
@@ -2533,7 +2533,7 @@ describe('object-resolver', () => {
         ]);
         const bad = new TextEncoder().encode('blob 9 garbage');
         ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         try {
@@ -2569,7 +2569,7 @@ describe('object-resolver', () => {
         ]);
         const bad = new TextEncoder().encode('blob\0');
         ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         try {
@@ -2597,7 +2597,7 @@ describe('object-resolver', () => {
         }
         const ids = await writeSyntheticPack(ctx, 'long-chain', entries);
         const tipId = ids.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         try {
@@ -2631,7 +2631,7 @@ describe('object-resolver', () => {
         const ids = await writeSyntheticPack(ctx, 'long-chain-warm', entries);
         const lowerId = ids[25]! as ObjectId;
         const tipId = ids.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act — warm the cache with the lower object first.
         await resolveObject(ctx, registry, lowerId, false);
@@ -2669,7 +2669,7 @@ describe('object-resolver', () => {
           entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
         }
         const ids = await writeSyntheticPack(ctx, 'long-chain-successive-warm', entries);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act — warm the cache bottom-up in five 10-level steps, then read the tip.
         for (const position of [10, 20, 30, 40, 50]) {
@@ -2706,7 +2706,7 @@ describe('object-resolver', () => {
           entries.push({ kind: 'ofs-delta', baseIndex: i, targetContent: target });
         }
         const ids = await writeSyntheticPack(ctx, 'shallow-after-deep', entries);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         await resolveObject(ctx, registry, ids.at(-1) as ObjectId, false);
 
         // Act
@@ -2755,7 +2755,7 @@ describe('object-resolver', () => {
         }
         const bIds = await writeSyntheticPack(ctx, 'ref-hop-b', bEntries);
         const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         let caught: unknown;
@@ -2808,7 +2808,7 @@ describe('object-resolver', () => {
           previousId = id!;
           previousContent = targetContent;
         }
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         let caught: unknown;
@@ -2862,7 +2862,7 @@ describe('object-resolver', () => {
         }
         const bIds = await writeSyntheticPack(ctx, 'within-cap-b', bEntries);
         const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         const result = await resolveObject(ctx, registry, bTipId, false);
@@ -2912,7 +2912,7 @@ describe('object-resolver', () => {
         const bIds = await writeSyntheticPack(ctx, 'cache-hop-b', bEntries);
         const bEntry0Id = bIds[0]! as ObjectId;
         const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act — cold read warms the offset-keyed cache at entry 0's position.
         await resolveObject(ctx, registry, bEntry0Id, false);
@@ -2975,7 +2975,7 @@ describe('object-resolver', () => {
         }
         const bIds = await writeSyntheticPack(ctx, 'hop-resume-b', bEntries);
         const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act — warm A's position 10 (intermediate, not the tip), then
         // resolve B's tip, which resolves A's tip for the first time as its
@@ -3039,7 +3039,7 @@ describe('object-resolver', () => {
         const bIds = await writeSyntheticPack(ctx, 'return-b', bEntries);
         const bEntry0Id = bIds[0]! as ObjectId;
         const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act — warm A's position 1 (intermediate, not the tip): A's tip is
         // resolved for the first time below, as bEntry0's own REF_DELTA
@@ -3106,7 +3106,7 @@ describe('object-resolver', () => {
         }
         const bIds = await writeSyntheticPack(ctx, 'cache-consequence-b', bEntries);
         const bTipId = bIds.at(-1)! as ObjectId;
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act — cold read of the tip: nothing has warmed A's id-cache yet.
         let coldCaught: unknown;
@@ -3153,7 +3153,7 @@ describe('object-resolver', () => {
         ]);
         const bad = new TextEncoder().encode('weird 5\0hello');
         ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
 
         // Act
         try {
@@ -3192,7 +3192,7 @@ describe('object-resolver', () => {
           // 14-byte buffer, no NUL anywhere.
           const bad = new TextEncoder().encode('blob 9 garbage');
           ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act — cap = 4, far below the 14-byte poisoned buffer.
           try {
@@ -3234,7 +3234,7 @@ describe('object-resolver', () => {
           bad[0] = 0x00;
           bad.fill(0x41, 1);
           ctx.deltaCache.set(baseId as ObjectId, bad, bad.length);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
 
           // Act — cap = 4, content size 20 > 4.
           try {
@@ -3471,7 +3471,7 @@ describe('object-resolver', () => {
           // Arrange
           const ctx = await buildSeededContext();
           const commitId = await writeCommitWithMessage(ctx, 'memo hit commit');
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
           const baseline = parseSpy.mock.calls.length;
 
@@ -3494,7 +3494,7 @@ describe('object-resolver', () => {
           const ctx = await buildSeededContext();
           const commitId = await writeCommitWithMessage(ctx, 'tag target');
           const tagId = await writeTagWithMessage(ctx, commitId, 'v1', 'memo hit tag');
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
           const baseline = parseSpy.mock.calls.length;
 
@@ -3518,7 +3518,7 @@ describe('object-resolver', () => {
           const ctx = createMemoryContext({ deltaCacheMaxBytes: 1 });
           const message = 'a message long enough to exceed a near-zero memo cap';
           const commitId = await writeCommitWithMessage(ctx, message);
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
           const baseline = parseSpy.mock.calls.length;
 
@@ -3544,7 +3544,7 @@ describe('object-resolver', () => {
           // keep the sizer's result positive.
           const ctx = await buildSeededContext();
           const commitId = await writeCommitWithMessage(ctx, '');
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
           const baseline = parseSpy.mock.calls.length;
 
@@ -3606,7 +3606,7 @@ describe('object-resolver', () => {
           // the entry cap is a second, independent defence.
           const ctx = await buildSeededContext();
           const commitId = await writeCommitWithMessage(ctx, 'entry cap wiring');
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           createLruCacheSpy.mockClear();
 
           // Act
@@ -3638,7 +3638,7 @@ describe('object-resolver', () => {
             ctx.deltaCache.maxSize / PARSED_OBJECT_TYPICAL_ENTRY_BYTES,
           );
           const commitId = await writeCommitWithMessage(ctx, 'entry cap eviction seed');
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           createLruCacheSpy.mockClear();
           await resolveObject(ctx, registry, commitId, false);
           const memoCallIndex = createLruCacheSpy.mock.calls.findIndex(
@@ -3682,7 +3682,7 @@ describe('object-resolver', () => {
           const commitB = await writeCommitWithMessage(ctx, 'BBBBBBBBBB');
           const commitC = await writeCommitWithMessage(ctx, 'CCCCCCCCCC');
           const commitD = await writeCommitWithMessage(ctx, 'DDDDDDDDDD');
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
           const baseline = parseSpy.mock.calls.length;
 
@@ -3717,7 +3717,7 @@ describe('object-resolver', () => {
             ...ctx,
             deltaCache: createLruCache<Uint8Array>(0),
           });
-          const registry = createPackRegistry(ctx);
+          const registry = await createPackRegistry(ctx);
           const parseSpy = vi.spyOn(gitObjectMod, 'parseObject');
           const baseline = parseSpy.mock.calls.length;
 

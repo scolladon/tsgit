@@ -51,7 +51,7 @@ const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<Ob
 
 /** Packed objects whose id starts with `prefix`, across every registered pack. */
 const scanPacks = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
-  const packs = await getPackRegistry(ctx).all();
+  const packs = await (await getPackRegistry(ctx)).all();
   const found: ObjectId[] = [];
   for (const pack of packs) {
     const index = await pack.index();

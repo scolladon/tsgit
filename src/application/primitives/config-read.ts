@@ -57,6 +57,13 @@ export interface ParsedConfig {
     readonly maxTreeDepth?: number;
     /** `core.sshCommand` — shell string resolved by `resolveSshCommand` ahead of `GIT_SSH`. */
     readonly sshCommand?: string;
+    /**
+     * `core.deltaBaseCacheLimit` — unsigned-long bytes; absent when unset or
+     * malformed (lenient read). A value above `Number.MAX_SAFE_INTEGER`
+     * becomes an inexact `number`; it is only ever used as a comparison bound
+     * for `LruCache`, never arithmetic, so the inexactness is harmless.
+     */
+    readonly deltaBaseCacheLimit?: number;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -864,6 +871,7 @@ type MutableCore = {
   looseCompression?: number;
   maxTreeDepth?: number;
   sshCommand?: string;
+  deltaBaseCacheLimit?: number;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -902,6 +910,23 @@ const applyMaxTreeDepthEntry = (core: MutableCore, value: string): MutableCore |
   if (!parsed.ok) return undefined;
   if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) return undefined;
   return { ...core, maxTreeDepth: parsed.value };
+};
+
+const DELTA_BASE_CACHE_LIMIT_KEY = 'deltabasecachelimit';
+
+/**
+ * Apply `core.deltaBaseCacheLimit`: git's unsigned-long grammar, reusing
+ * `checkPackWindowMemoryBound` — the same bound `pack.windowMemory` uses
+ * (decimal / hex / octal, one optional k/m/g unit, negative refused). Merges
+ * as absent on any failure — this is the LENIENT read only; the eager
+ * refusal for a malformed value is a separate finder, not added here.
+ */
+const applyDeltaBaseCacheLimitEntry = (
+  core: MutableCore,
+  value: string,
+): MutableCore | undefined => {
+  const checked = checkPackWindowMemoryBound(value);
+  return checked.ok ? { ...core, deltaBaseCacheLimit: checked.value } : undefined;
 };
 
 // One map is BOTH the key set and the field dispatch: a new boolean key
@@ -957,6 +982,7 @@ const applyCoreEntry = (
     return applyLooseCompressionEntry(core, lowered, value);
   }
   if (lowered === MAX_TREE_DEPTH_KEY) return applyMaxTreeDepthEntry(core, value);
+  if (lowered === DELTA_BASE_CACHE_LIMIT_KEY) return applyDeltaBaseCacheLimitEntry(core, value);
   return undefined;
 };
 
@@ -1464,6 +1490,9 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
     ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
     ...(core.maxTreeDepth !== undefined ? { maxTreeDepth: core.maxTreeDepth } : {}),
     ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
+    ...(core.deltaBaseCacheLimit !== undefined
+      ? { deltaBaseCacheLimit: core.deltaBaseCacheLimit }
+      : {}),
   };
 };
 
@@ -1529,6 +1558,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       sparseCheckoutCone?: boolean;
       looseCompression?: number;
       maxTreeDepth?: number;
+      deltaBaseCacheLimit?: number;
     };
     user?: { name?: string; email?: string; signingKey?: string };
     remote?: ReadonlyMap<

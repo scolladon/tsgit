@@ -31,7 +31,7 @@ export async function enumerateObjects(
 
   await collectLooseObjectIds(ctx, ids);
   if (includePacks) {
-    const registry = getPackRegistry(ctx);
+    const registry = await getPackRegistry(ctx);
     const packs = accessiblePacksOnly ? (await registry.health()).accessible : await registry.all();
     await collectPackedObjectIds(packs, ids);
   }

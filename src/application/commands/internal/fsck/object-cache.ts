@@ -273,7 +273,7 @@ async function recoverStoredType(
   id: ObjectId,
   readErr: unknown,
 ): Promise<RecoveryOutcome> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const looseBytes = await looseCompressedBytes(ctx, id);
   if (looseBytes === undefined) {
     return await packedStoredType(ctx, registry, id);

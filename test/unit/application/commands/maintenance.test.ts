@@ -152,7 +152,7 @@ function installReaddirOverrides(ctx: Context): {
  *  test is visible. */
 async function packMemberOids(ctx: Context, packSha: string): Promise<ReadonlySet<ObjectId>> {
   refreshPackRegistry(ctx);
-  const packs = await getPackRegistry(ctx).all();
+  const packs = await (await getPackRegistry(ctx)).all();
   const pack = packs.find((p) => p.name === `pack-${packSha}`);
   if (pack === undefined) return new Set();
   return new Set(allObjectIds(await pack.index()));
@@ -163,7 +163,7 @@ async function packMemberOids(ctx: Context, packSha: string): Promise<ReadonlySe
 async function readCruftMtime(ctx: Context, cruftSha: string, id: ObjectId): Promise<number> {
   refreshPackRegistry(ctx);
   const packDir = packDirOf(ctx);
-  const packs = await getPackRegistry(ctx).all();
+  const packs = await (await getPackRegistry(ctx)).all();
   const pack = packs.find((p) => p.name === `pack-${cruftSha}`) as NonNullable<
     (typeof packs)[number]
   >;
@@ -1220,7 +1220,7 @@ describe('maintenance', () => {
         // Assert — the fault propagated (not swallowed as "not reachable"),
         // and nothing was destroyed: the repository never reached a write.
         expect(caught).toBe(eacces);
-        expect((await getPackRegistry(ctx).all()).length).toBe(0);
+        expect((await (await getPackRegistry(ctx)).all()).length).toBe(0);
       });
     });
   });
@@ -1370,7 +1370,7 @@ describe('maintenance', () => {
         expect((caught as TsgitError & { data: { reason: string } }).data.reason).toBe(
           `reflog file exceeds ${MAX_REFLOG_BYTES} bytes`,
         );
-        expect((await getPackRegistry(ctx).all()).length).toBe(0);
+        expect((await (await getPackRegistry(ctx)).all()).length).toBe(0);
       });
     });
   });
@@ -1420,7 +1420,7 @@ describe('maintenance', () => {
         // Assert — a genuine I/O fault still aborts even though a
         // parse-shaped reflog fault is now tolerated.
         expect(caught).toBe(eacces);
-        expect((await getPackRegistry(ctx).all()).length).toBe(0);
+        expect((await (await getPackRegistry(ctx)).all()).length).toBe(0);
       });
     });
   });
@@ -2781,7 +2781,7 @@ describe('maintenance', () => {
         expect(idxUnlinked).toBe(true);
         expect(await ctx.fs.exists(retiredIdxPath)).toBe(false);
         refreshPackRegistry(ctx);
-        const registeredNames = (await getPackRegistry(ctx).all()).map((p) => p.name);
+        const registeredNames = (await (await getPackRegistry(ctx)).all()).map((p) => p.name);
         expect(registeredNames).not.toContain(`pack-${first.cruftPackId}`);
       });
     });
@@ -3844,7 +3844,7 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const sut = maintenance;
         await sut(ctx, { tasks: ['gc'] });
-        const registry = getPackRegistry(ctx);
+        const registry = await getPackRegistry(ctx);
         const settleSpy = vi.spyOn(registry, 'settleRefresh');
 
         // Act — same content, nothing to retire.
@@ -4125,7 +4125,7 @@ describe('maintenance', () => {
         expect(caught).toBeDefined();
         expect(idxUnlinked).toBe(true);
         refreshPackRegistry(ctx);
-        const registeredNames = (await getPackRegistry(ctx).all()).map((p) => p.name);
+        const registeredNames = (await (await getPackRegistry(ctx)).all()).map((p) => p.name);
         expect(registeredNames).not.toContain(`pack-${first.packId}`);
       });
     });
@@ -4146,7 +4146,7 @@ describe('maintenance', () => {
         await add(ctx, ['b.txt']);
         await commit(ctx, { message: 'second', author: AUTHOR });
 
-        const registry = getPackRegistry(ctx);
+        const registry = await getPackRegistry(ctx);
         const lookupSpy = vi.spyOn(registry, 'lookup');
         const refreshSpy = vi.spyOn(registry, 'refresh');
         const settleSpy = vi.spyOn(registry, 'settleRefresh');
@@ -4579,7 +4579,7 @@ describe('maintenance', () => {
         await commit(ctx, { message: 'second', author: AUTHOR });
         const packDir = packDirOf(ctx);
 
-        const registry = getPackRegistry(ctx);
+        const registry = await getPackRegistry(ctx);
         const events: string[] = [];
         const settleSpy = vi.spyOn(registry, 'settleRefresh').mockImplementation(async () => {
           events.push('settleRefresh');
@@ -4852,7 +4852,7 @@ describe('maintenance', () => {
         expect(caught).toBeDefined();
         expect(idxUnlinked).toBe(true);
         refreshPackRegistry(ctx);
-        const registeredNames = (await getPackRegistry(ctx).all()).map((p) => p.name);
+        const registeredNames = (await (await getPackRegistry(ctx)).all()).map((p) => p.name);
         expect(registeredNames).not.toContain(`pack-${firstPromisorSha}`);
         expect(await ctx.fs.exists(`${packDir}/pack-${firstPromisorSha}.promisor`)).toBe(true);
       });

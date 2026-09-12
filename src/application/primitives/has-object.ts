@@ -11,7 +11,7 @@ import { commonGitDir, looseObjectPath } from './path-layout.js';
 import { getPackRegistry } from './read-object.js';
 
 export const hasObject = async (ctx: Context, id: ObjectId): Promise<boolean> => {
-  const hit = await getPackRegistry(ctx).lookup(id);
+  const hit = await (await getPackRegistry(ctx)).lookup(id);
   if (hit !== undefined) return true;
   return ctx.fs.exists(looseObjectPath(commonGitDir(ctx), id));
 };

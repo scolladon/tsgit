@@ -12,6 +12,7 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
+import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import {
   assertChainDepthWithinCap,
   isBase,
@@ -29,14 +30,26 @@ import {
 import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
- * Per-session registry cache. Keyed by `ctx.session` (not the Context
- * instance itself) so that every Context derived from the same
- * `openRepository()`/`createXContext()` call — a long-running walk
+ * Per-session single-flight registry construction. Keyed by `ctx.session`
+ * (not the Context instance itself) so that every Context derived from the
+ * same `openRepository()`/`createXContext()` call — a long-running walk
  * (walkCommits, walkTree), or a same-repository derivation such as fsck's
  * audit view — reuses the parsed .idx files across thousands of object reads
- * instead of re-scanning the pack directory each time.
+ * instead of re-scanning the pack directory each time. `PromiseMemo`, not a
+ * plain `WeakMap<Session, PackRegistry>`: `createPackRegistry` now crosses an
+ * `await` (it reads `core.deltaBaseCacheLimit`), so two concurrent first
+ * reads racing on an empty cache must join the same construction instead of
+ * each starting — and finishing — their own registry.
  */
-const registryCache = new WeakMap<Context['session'], PackRegistry>();
+const registryMemos = new WeakMap<Context['session'], PromiseMemo<PackRegistry>>();
+
+/**
+ * The settled registry for a session that has already resolved once — the
+ * synchronous surface `refreshPackRegistry` needs. A registry still under
+ * construction has not scanned the pack directory yet, so there is nothing
+ * for a concurrent `refresh()` to do; it simply misses.
+ */
+const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
 
 /**
  * Per-session in-flight lazy-fetch map. Concurrent reads of the same missing
@@ -44,14 +57,16 @@ const registryCache = new WeakMap<Context['session'], PackRegistry>();
  */
 const inflightCache = new WeakMap<Context['session'], Map<string, Promise<boolean>>>();
 
-export function getPackRegistry(ctx: Context): PackRegistry {
-  let registry = registryCache.get(ctx.session);
-  if (registry === undefined) {
-    registry = createPackRegistry(ctx);
-    registryCache.set(ctx.session, registry);
+export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
+  let memo = registryMemos.get(ctx.session);
+  if (memo === undefined) {
+    memo = createPromiseMemo(() => createPackRegistry(ctx));
+    registryMemos.set(ctx.session, memo);
   }
+  const registry = await memo.get();
+  resolvedRegistries.set(ctx.session, registry);
   return registry;
-}
+};
 
 /**
  * Drop the per-session pack-registry's cached `.idx` scan so the next read
@@ -61,7 +76,7 @@ export function getPackRegistry(ctx: Context): PackRegistry {
  * exposed when its `merge` step could not see freshly-fetched commits.
  */
 export function refreshPackRegistry(ctx: Context): void {
-  registryCache.get(ctx.session)?.refresh();
+  resolvedRegistries.get(ctx.session)?.refresh();
 }
 
 /**
@@ -70,7 +85,7 @@ export function refreshPackRegistry(ctx: Context): void {
  * touched a pack disposes without scanning `objects/pack/`.
  */
 export async function disposePackRegistry(ctx: Context): Promise<void> {
-  await registryCache.get(ctx.session)?.dispose();
+  await (await registryMemos.get(ctx.session)?.peek())?.dispose();
 }
 
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {
@@ -151,7 +166,7 @@ export async function readObject(
   options?: ReadObjectOptions,
 ): Promise<GitObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObject(ctx, registry, id, verifyHash, options?.maxBytes),
   );
@@ -163,7 +178,7 @@ export async function readRawObject(
   options?: ReadObjectOptions,
 ): Promise<RawObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   return withLazyFetchRetry(ctx, id, registry, async () => {
     const resolved = await resolveObjectBytesWithDepth(
       ctx,
@@ -225,7 +240,7 @@ export async function readObjectMetadataWithContent(
   ctx: Context,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObjectMetadataWithContent(ctx, registry, id),
   );

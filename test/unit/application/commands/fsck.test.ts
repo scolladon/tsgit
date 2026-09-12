@@ -6918,7 +6918,7 @@ describe('Given fsck audit reads through the shared registry with createNoDeltaC
       await fsck(ctx);
 
       // Assert
-      const registry = getPackRegistry(ctx);
+      const registry = await getPackRegistry(ctx);
       expect(registry.deltaBaseCache.entryCount).toBe(0);
     });
   });

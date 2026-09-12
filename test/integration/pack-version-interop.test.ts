@@ -390,7 +390,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         } catch (error) {
           caught = error;
         }
-        const packs = await getPackRegistry(sut).all();
+        const packs = await (await getPackRegistry(sut)).all();
 
         // Assert
         expect(gitBatch.exitCode).toBe(0);
@@ -435,7 +435,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Act
         const gitPayload = catFileRaw(dir, packedOid);
         const object = await readObject(sut, packedOid);
-        const packs = await getPackRegistry(sut).all();
+        const packs = await (await getPackRegistry(sut)).all();
 
         // Assert
         expect(object.type).toBe('blob');
@@ -462,7 +462,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         } catch (error) {
           caught = error;
         }
-        const packs = await getPackRegistry(sut).all();
+        const packs = await (await getPackRegistry(sut)).all();
         const looseObject = await readObject(sut, looseOid);
 
         // Assert
@@ -494,7 +494,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         } catch (error) {
           caught = error;
         }
-        const packs = await getPackRegistry(sut).all();
+        const packs = await (await getPackRegistry(sut)).all();
 
         // Assert
         expect(gitBatch.exitCode).toBe(0);
@@ -526,8 +526,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Act
         const lookupFaultCount = countObjects(lookupFaultDir);
         const scanFaultCount = countObjects(scanFaultDir);
-        const lookupFaultPacks = await getPackRegistry(lookupFaultCtx).all();
-        const scanFaultPacks = await getPackRegistry(scanFaultCtx).all();
+        const lookupFaultPacks = await (await getPackRegistry(lookupFaultCtx)).all();
+        const scanFaultPacks = await (await getPackRegistry(scanFaultCtx)).all();
         const lookupFaultEnumerated = await collectPackedIds(lookupFaultCtx);
         const scanFaultEnumerated = await collectPackedIds(scanFaultCtx);
 

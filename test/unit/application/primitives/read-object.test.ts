@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
+import * as packRegistryMod from '../../../../src/application/primitives/pack-registry.js';
 import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { fileNotFound, type TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID, serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -470,6 +471,19 @@ describe('readObject', () => {
               if (path === '/elsewhere/.git/objects/pack') readdirCount += 1;
               return originalReaddir('/repo/.git/objects/pack');
             },
+            // `/elsewhere` sits outside the memory adapter's sandboxed root,
+            // so it can never resolve — `readConfig` (now read at
+            // registry-construction time, for `core.deltaBaseCacheLimit`)
+            // must see the same "no config file" absence a real unopened
+            // gitDir would produce, not the sandbox's PERMISSION_DENIED.
+            stat: async (path: string) => {
+              if (path === '/elsewhere/.git/config') throw fileNotFound(path);
+              return ctx.fs.stat(path);
+            },
+            readUtf8: async (path: string) => {
+              if (path === '/elsewhere/.git/config') throw fileNotFound(path);
+              return ctx.fs.readUtf8(path);
+            },
           },
         });
 
@@ -484,6 +498,25 @@ describe('readObject', () => {
         expect(fresh.session).not.toBe(ctx.session);
         expect(readdirCount).toBe(1);
       });
+    });
+  });
+});
+
+describe('Given a fresh session and two concurrent first readObject calls', () => {
+  describe('When neither call has settled before the other starts', () => {
+    it('Then only one pack registry is constructed for the session', async () => {
+      // Arrange
+      const blob: Blob = { type: 'blob', content: new Uint8Array([7]), id: '' as ObjectId };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+      const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+      // Act
+      await Promise.all([readObject(ctx, id), readObject(ctx, id)]);
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
     });
   });
 });

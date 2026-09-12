@@ -1790,7 +1790,7 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
   }
 
   async function firstRegisteredPack(ctx: Context) {
-    const [pack] = await getPackRegistry(ctx).all();
+    const [pack] = await (await getPackRegistry(ctx)).all();
     if (pack === undefined) throw new Error('expected a registered pack');
     return pack;
   }

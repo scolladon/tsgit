@@ -57,6 +57,7 @@ import {
   packBaseName,
 } from './internal/pack-shared.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
+import { deltaBaseCacheBudgetFor } from './internal/resolve-delta-base-cache-limit.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
@@ -628,17 +629,17 @@ function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
  */
 const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
 
-export function createPackRegistry(ctx: Context): PackRegistry {
+export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   const storeGate = createStoreGate(ctx);
-  // A SEPARATE, ADDITIONAL byte budget the same size as the ordinary delta
-  // cache's own — not a share carved out of it. The two caches hold
-  // different things (raw loose-format bytes vs. header-split reconstructed
-  // delta bases) and compete only for process memory, not a shared
-  // accounting ledger; sizing this one AT `ctx.deltaCache.maxSize` rather
-  // than a fraction of it is a deliberate choice, not an oversight — see the
-  // delta-base cache sizing decision.
+  // A SEPARATE, ADDITIONAL byte budget from the ordinary delta cache's own —
+  // not a share carved out of it. The two caches hold different things (raw
+  // loose-format bytes vs. header-split reconstructed delta bases) and
+  // compete only for process memory, not a shared accounting ledger. Sized
+  // from `core.deltaBaseCacheLimit` (git's own dial for this cache, resolved
+  // once here, at construction — never re-derived on `refresh()`), an
+  // explicit `ctx.cacheBudgets` override, or git's 96 MiB default.
   const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(
-    ctx.deltaCache.maxSize,
+    await deltaBaseCacheBudgetFor(ctx),
     DELTA_BASE_CACHE_MAX_ENTRIES,
   );
 

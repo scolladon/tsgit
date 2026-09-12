@@ -62,10 +62,10 @@ describe('parsedObjectByteSize', () => {
 describe('probeDeltaBaseCache', () => {
   describe('Given a Context with caching disabled (zero deltaCache budget) sharing a registry populated by an enabled Context', () => {
     describe('When probeDeltaBaseCache is called on the disabled Context', () => {
-      it('Then it returns undefined without reading the shared cache entry', () => {
+      it('Then it returns undefined without reading the shared cache entry', async () => {
         // Arrange
         const enabledCtx = createMemoryContext();
-        const registry = createPackRegistry(enabledCtx);
+        const registry = await createPackRegistry(enabledCtx);
         const key = deltaBaseCacheKey('pack-a', 10);
         registry.deltaBaseCache.set(
           key,
@@ -88,10 +88,10 @@ describe('probeDeltaBaseCache', () => {
 
   describe('Given a cached delta-base entry whose content exceeds maxBytes', () => {
     describe('When probeDeltaBaseCache is called with that cap', () => {
-      it('Then it throws OBJECT_TOO_LARGE — the cap applies to cache hits, not only fresh reads', () => {
+      it('Then it throws OBJECT_TOO_LARGE — the cap applies to cache hits, not only fresh reads', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const key = deltaBaseCacheKey('pack-a', 10);
         const content = new Uint8Array(50);
         registry.deltaBaseCache.set(

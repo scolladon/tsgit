@@ -83,7 +83,7 @@ export async function openBlobSource(
   // Same store-setup gate as resolveObjectBytesWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
-  await getPackRegistry(ctx).assertLoadable();
+  await (await getPackRegistry(ctx)).assertLoadable();
 
   if (gate.maxBufferedBytes > 0) {
     const cached = ctx.deltaCache.get(id);
@@ -99,7 +99,7 @@ export async function openBlobSource(
   }
 
   checkAborted(ctx);
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const hit = await registry.lookup(id);
   if (hit === undefined) throw objectNotFound(id);
 

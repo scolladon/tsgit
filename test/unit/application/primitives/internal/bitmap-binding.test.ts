@@ -306,7 +306,7 @@ async function buildLinearBitmapFixture(
 }
 
 async function firstPack(ctx: Context, deps: FixtureDeps = DEFAULT_DEPS) {
-  const [pack] = await deps.registry(ctx).all();
+  const [pack] = await (await deps.registry(ctx)).all();
   if (pack === undefined) throw new Error('expected a registered pack');
   return pack;
 }
@@ -1431,7 +1431,7 @@ describe('Given the out-of-range whole-artefact fixture, under an instrumented C
           registry: scopedGetPackRegistry,
         };
         const fixture = await buildWholeArtefactDeclineFixture('ordering', scopedDeps);
-        const [pack] = await scopedGetPackRegistry(fixture.ctx).all();
+        const [pack] = await (await scopedGetPackRegistry(fixture.ctx)).all();
         const packPositionsSpy = vi.spyOn(
           pack as { packPositions: () => unknown },
           'packPositions',
@@ -1564,7 +1564,7 @@ async function realMidxBinding(
 }
 
 async function loadMidxArtefact(ctx: Context): Promise<LoadedMidxBitmap | undefined> {
-  return loadMidxBitmapArtefact(ctx, await getPackRegistry(ctx).midxBitmap());
+  return loadMidxBitmapArtefact(ctx, await (await getPackRegistry(ctx)).midxBitmap());
 }
 
 interface MidxBitmapFixture {
@@ -1927,7 +1927,7 @@ describe('Given a midx bitmap beside a midx with no reverse-index chunk', () => 
       // Act
       const artefact = await loadMidxBitmapArtefact(
         wrapped,
-        await getPackRegistry(wrapped).midxBitmap(),
+        await (await getPackRegistry(wrapped)).midxBitmap(),
       );
 
       // Assert
@@ -2300,7 +2300,7 @@ describe.each([
         // Act
         const artefact = await loadMidxBitmapArtefact(
           wrapped,
-          await getPackRegistry(wrapped).midxBitmap(),
+          await (await getPackRegistry(wrapped)).midxBitmap(),
         );
 
         // Assert
@@ -2427,7 +2427,7 @@ describe('Given the out-of-range midx whole-artefact fixture', () => {
       const wrapped = { ...fixture.ctx, logger: { warn } };
 
       // Act
-      await loadMidxBitmapArtefact(wrapped, await getPackRegistry(wrapped).midxBitmap());
+      await loadMidxBitmapArtefact(wrapped, await (await getPackRegistry(wrapped)).midxBitmap());
 
       // Assert
       expect(warn).toHaveBeenCalledTimes(1);

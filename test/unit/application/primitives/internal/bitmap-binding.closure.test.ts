@@ -158,7 +158,7 @@ async function writeBitmapFor(
 }
 
 async function loadArtefact(ctx: Context): Promise<LoadedPackBitmap> {
-  const [pack] = await getPackRegistry(ctx).all();
+  const [pack] = await (await getPackRegistry(ctx)).all();
   if (pack === undefined) throw new Error('expected a registered pack');
   const artefact = await loadPackBitmapArtefact(ctx, pack);
   if (artefact === undefined) throw new Error('expected a usable bitmap artefact');
@@ -442,7 +442,7 @@ describe('Given more extended positions across one closure than the push limit a
           commitOf(emptyTreeId, [excludedRootId], 'excluded'),
         );
 
-        const [pack] = await scopedRegistry(ctx).all();
+        const [pack] = await (await scopedRegistry(ctx)).all();
         const artefact = await scopedLoad(ctx, pack as NonNullable<typeof pack>);
         const sut = scopedResolve;
 
