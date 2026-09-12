@@ -21110,6 +21110,62 @@
 									"variant": "signature",
 									"kind": 4096,
 									"flags": {},
+									"comment": {
+										"summary": [
+											{
+												"kind": "text",
+												"text": "Store "
+											},
+											{
+												"kind": "code",
+												"text": "`value`"
+											},
+											{
+												"kind": "text",
+												"text": " under "
+											},
+											{
+												"kind": "code",
+												"text": "`key`"
+											},
+											{
+												"kind": "text",
+												"text": ". Returns "
+											},
+											{
+												"kind": "code",
+												"text": "`true`"
+											},
+											{
+												"kind": "text",
+												"text": " when the entry is now resident,\n"
+											},
+											{
+												"kind": "code",
+												"text": "`false`"
+											},
+											{
+												"kind": "text",
+												"text": " when it was REFUSED because "
+											},
+											{
+												"kind": "code",
+												"text": "`byteSize`"
+											},
+											{
+												"kind": "text",
+												"text": " exceeds the cache's whole\nbudget — the one case that never evicts anything and leaves the cache\nexactly as it was. A refusal is a sizing fact the caller may need to\nsurface (a derived cache whose every entry is refused is dead, not slow).\nStill throws on "
+											},
+											{
+												"kind": "code",
+												"text": "`byteSize <= 0`"
+											},
+											{
+												"kind": "text",
+												"text": "."
+											}
+										]
+									},
 									"parameters": [
 										{
 											"id": 9280,
@@ -21151,7 +21207,7 @@
 									],
 									"type": {
 										"type": "intrinsic",
-										"name": "void"
+										"name": "boolean"
 									}
 								}
 							]

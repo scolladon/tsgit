@@ -42,7 +42,7 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
 function createNoDeltaCache(): LruCache<Uint8Array> {
   return {
     get: () => undefined,
-    set: () => undefined,
+    set: () => false,
     // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .has() on a Context's deltaCache (only .get()/.set(), via object-resolver.ts and blob-source.ts), so this arm's return value is unobservable.
     has: () => false,
     // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .delete() on a Context's deltaCache, so this arm's return value is unobservable.

@@ -1,6 +1,14 @@
 export interface LruCache<V> {
   get(key: string): V | undefined;
-  set(key: string, value: V, byteSize: number): void;
+  /**
+   * Store `value` under `key`. Returns `true` when the entry is now resident,
+   * `false` when it was REFUSED because `byteSize` exceeds the cache's whole
+   * budget — the one case that never evicts anything and leaves the cache
+   * exactly as it was. A refusal is a sizing fact the caller may need to
+   * surface (a derived cache whose every entry is refused is dead, not slow).
+   * Still throws on `byteSize <= 0`.
+   */
+  set(key: string, value: V, byteSize: number): boolean;
   has(key: string): boolean;
   delete(key: string): boolean;
   clear(): void;
@@ -89,12 +97,12 @@ export function createLruCache<V>(
       return node.value;
     },
 
-    set(key: string, value: V, byteSize: number): void {
+    set(key: string, value: V, byteSize: number): boolean {
       if (byteSize <= 0) {
         throw new Error('byteSize must be positive');
       }
       if (byteSize > maxSizeBytes) {
-        return;
+        return false;
       }
       const existing = map.get(key);
       if (existing !== undefined) {
@@ -115,6 +123,7 @@ export function createLruCache<V>(
         currentSize += byteSize;
       }
       evict();
+      return true;
     },
 
     has(key: string): boolean {
