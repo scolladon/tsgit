@@ -284,6 +284,14 @@ export interface RuntimeFallback {
    */
   readonly concurrency?: ConcurrencyLimits;
   /**
+   * Optional explicit overrides for the derived object caches' budgets,
+   * built by the entry point from its own option surface. Absent when the
+   * entry point exposes no such options (`index.default.ts`) or the caller
+   * set none of them — `budgetsFor`/`deltaBaseCacheBudgetFor` derive every
+   * default from `deltaCache.maxSize` in that case.
+   */
+  readonly cacheBudgets?: Context['cacheBudgets'];
+  /**
    * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
    * (which may lie outside `workDir`) as well as the repository itself — for the
    * worktree containment escape (ADR-298). The node shim roots a fresh adapter
@@ -486,6 +494,7 @@ interface OptionalCtxInputs {
   readonly env: EnvReader | undefined;
   readonly ssh: SshTransport | undefined;
   readonly concurrency: ConcurrencyLimits | undefined;
+  readonly cacheBudgets: Context['cacheBudgets'];
 }
 
 /**
@@ -502,6 +511,7 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.env !== undefined ? { env: inputs.env } : {}),
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
   ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
+  ...(inputs.cacheBudgets !== undefined ? { cacheBudgets: inputs.cacheBudgets } : {}),
 });
 
 /**
@@ -681,6 +691,7 @@ export const openRepository = async (
       env: fallback.env,
       ssh: fallback.ssh,
       concurrency: fallback.concurrency,
+      cacheBudgets: fallback.cacheBudgets,
     }),
     promisor,
     session: createSession(),

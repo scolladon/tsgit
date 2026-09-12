@@ -4,6 +4,7 @@ export type { Compressor } from './compressor.js';
 export type {
   AuthorIdentity,
   AuthStrategy,
+  CacheBudgets,
   Context,
   CreateContextParts,
   RepositoryConfig,

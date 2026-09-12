@@ -2,7 +2,12 @@
 import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
-import { type Context, type CreateContextParts, createContext } from '../../ports/context.js';
+import {
+  buildCacheBudgets,
+  type Context,
+  type CreateContextParts,
+  createContext,
+} from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
 import { BrowserCompressor } from './browser-compressor.js';
 import { nativeMachineFacts } from './browser-concurrency.js';
@@ -20,6 +25,12 @@ export interface BrowserAdapterOptions {
   readonly signal?: AbortSignal;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Override for the parsed-object memo's entry cap (default: derived from `deltaCacheMaxBytes`). */
+  readonly parsedObjectMemoMaxEntries?: number;
+  /** Override for the FlatTree cache's own byte valve (default: derived from `deltaCacheMaxBytes`). */
+  readonly flatTreeCacheMaxBytes?: number;
+  /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
+  readonly deltaBaseCacheMaxBytes?: number;
   /**
    * Hash algorithm this context's objects are read/written under. Default
    * `'sha1'`. A sync factory has no repository to detect a declared format
@@ -54,6 +65,11 @@ export function createBrowserContext(options: BrowserAdapterOptions): Context {
     runtime: 'browser',
     hashConfig: configFor(algorithm),
     deltaCache,
+    cacheBudgets: buildCacheBudgets({
+      parsedObjectMemoMaxEntries: options.parsedObjectMemoMaxEntries,
+      flatTreeCacheMaxBytes: options.flatTreeCacheMaxBytes,
+      deltaBaseCacheMaxBytes: options.deltaBaseCacheMaxBytes,
+    }),
     concurrency: deriveLimits(nativeMachineFacts()),
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
   };

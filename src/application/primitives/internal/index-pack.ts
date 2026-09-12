@@ -130,9 +130,10 @@ export const INDEX_PASS_BASE_CACHE_MAX_BYTES = 8 * 1024 * 1024;
  * undercounts a typical entry's real retained cost, so a pack crafted with
  * many tiny base objects could otherwise hold far more LIVE entries than
  * {@link INDEX_PASS_BASE_CACHE_ENTRY_OVERHEAD_BYTES} alone models — the
- * same failure mode the sibling read-path caches guard against with their
- * own entry caps (`FLAT_TREE_CACHE_MAX_ENTRIES`, `PARSED_OBJECT_MEMO_MAX_ENTRIES`),
- * at their same 65 536.
+ * same failure mode the FlatTree cache guards against with its own entry
+ * cap, `FLAT_TREE_CACHE_MAX_ENTRIES`, at the same 65 536 (the parsed-object
+ * memo's own cap is derived from its byte valve instead, not a fixed
+ * constant).
  *
  * Sized against measurement, not a smaller "just big enough" guess: pass 1
  * offers EVERY base entry to the cache, not only the ones that turn out to

@@ -21,6 +21,7 @@ import { nativePolicy } from './adapters/node/path-policy.js';
 import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { buildCacheBudgets } from './ports/context.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
 import { canonicalizeTrustedDirectories } from './repository/canonicalize-trusted-directories.js';
 import type { RepositoryLayoutInput } from './repository/layout-input.js';
@@ -50,6 +51,12 @@ export interface OpenNodeRepositoryOptions extends OpenRepositoryOptions {
   readonly allowInsecureHttp?: boolean;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Override for the parsed-object memo's entry cap (default: derived from `deltaCacheMaxBytes`). */
+  readonly parsedObjectMemoMaxEntries?: number;
+  /** Override for the FlatTree cache's own byte valve (default: derived from `deltaCacheMaxBytes`). */
+  readonly flatTreeCacheMaxBytes?: number;
+  /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
+  readonly deltaBaseCacheMaxBytes?: number;
 }
 
 export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Promise<Repository> => {
@@ -116,6 +123,11 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
+    cacheBudgets: buildCacheBudgets({
+      parsedObjectMemoMaxEntries: opts.parsedObjectMemoMaxEntries,
+      flatTreeCacheMaxBytes: opts.flatTreeCacheMaxBytes,
+      deltaBaseCacheMaxBytes: opts.deltaBaseCacheMaxBytes,
+    }),
     concurrency: deriveLimits(nativeMachineFacts()),
     // A linked worktree lives outside `workDir`; root a fresh adapter at the
     // repo's own workDir PLUS every path the caller asked for (the facade
@@ -138,6 +150,9 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     allowInsecureHttp: _a,
     deltaCacheMaxBytes: _b,
     deltaCacheMaxEntries: _c,
+    parsedObjectMemoMaxEntries: _d,
+    flatTreeCacheMaxBytes: _e,
+    deltaBaseCacheMaxBytes: _f,
     ...coreOpts
   } = opts;
   return openRepositoryCore({ ...coreOpts, cwd: resolvedCwd }, fallback);

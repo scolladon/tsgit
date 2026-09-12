@@ -13,6 +13,7 @@ import { NodeHashService } from '../../../../src/adapters/node/node-hash-service
 import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
 import { NodeSshTransport } from '../../../../src/adapters/node/node-ssh-transport.js';
+import { parsedObjectMemoFor } from '../../../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 
@@ -252,6 +253,29 @@ describe('createNodeContext', () => {
         expect(sut.deltaCache.entryCount).toBe(1);
         expect(sut.deltaCache.has('b')).toBe(true);
         expect(sut.deltaCache.has('a')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given parsedObjectMemoMaxEntries=3', () => {
+    describe('When a 4th tiny entry is set', () => {
+      it('Then the memo evicts down to the cap (the option reaches ctx.cacheBudgets)', () => {
+        // Arrange
+        const sut = createNodeContext({
+          workDir: '/tmp/tsgit-memo-entries',
+          parsedObjectMemoMaxEntries: 3,
+        });
+        const memo = parsedObjectMemoFor(sut);
+        const dummy = {} as never;
+
+        // Act
+        memo?.set('a', dummy, 1);
+        memo?.set('b', dummy, 1);
+        memo?.set('c', dummy, 1);
+        memo?.set('d', dummy, 1);
+
+        // Assert
+        expect(memo?.entryCount).toBe(3);
       });
     });
   });

@@ -3,7 +3,12 @@ import * as nodePath from 'node:path';
 import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
-import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
+import {
+  buildCacheBudgets,
+  type Context,
+  createContext,
+  type RepositoryLayout,
+} from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
@@ -26,6 +31,12 @@ export interface NodeAdapterOptions {
   readonly signal?: AbortSignal;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Override for the parsed-object memo's entry cap (default: derived from `deltaCacheMaxBytes`). */
+  readonly parsedObjectMemoMaxEntries?: number;
+  /** Override for the FlatTree cache's own byte valve (default: derived from `deltaCacheMaxBytes`). */
+  readonly flatTreeCacheMaxBytes?: number;
+  /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
+  readonly deltaBaseCacheMaxBytes?: number;
   /**
    * Wire the git-hook runner (default true). Pass `false` to disable hooks.
    * A wired runner spawns `.git/hooks/*` scripts that inherit the full
@@ -82,6 +93,11 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     runtime: 'node' as const,
     hashConfig: configFor(algorithm),
     deltaCache,
+    cacheBudgets: buildCacheBudgets({
+      parsedObjectMemoMaxEntries: options.parsedObjectMemoMaxEntries,
+      flatTreeCacheMaxBytes: options.flatTreeCacheMaxBytes,
+      deltaBaseCacheMaxBytes: options.deltaBaseCacheMaxBytes,
+    }),
     concurrency: deriveLimits(nativeMachineFacts()),
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.hooks === false ? {} : { hooks: new NodeHookRunner() }),

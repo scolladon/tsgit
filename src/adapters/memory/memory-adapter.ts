@@ -2,7 +2,12 @@ import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
-import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
+import {
+  buildCacheBudgets,
+  type Context,
+  createContext,
+  type RepositoryLayout,
+} from '../../ports/context.js';
 import type { EnvReader } from '../../ports/env-reader.js';
 import type { HookRunner } from '../../ports/hook-runner.js';
 import { noopProgress } from '../../progress.js';
@@ -20,6 +25,12 @@ export interface MemoryAdapterOptions {
   readonly signal?: AbortSignal;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Override for the parsed-object memo's entry cap (default: derived from `deltaCacheMaxBytes`). */
+  readonly parsedObjectMemoMaxEntries?: number;
+  /** Override for the FlatTree cache's own byte valve (default: derived from `deltaCacheMaxBytes`). */
+  readonly flatTreeCacheMaxBytes?: number;
+  /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
+  readonly deltaBaseCacheMaxBytes?: number;
   /** Optional home directory exposed via `ctx.layout.homeDir` (default: undefined). */
   readonly homeDir?: string;
   /** Optional hook runner exposed via `ctx.hooks` (default: undefined — hooks inert). */
@@ -78,6 +89,11 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
     runtime: 'memory' as const,
     hashConfig,
     deltaCache,
+    cacheBudgets: buildCacheBudgets({
+      parsedObjectMemoMaxEntries: options.parsedObjectMemoMaxEntries,
+      flatTreeCacheMaxBytes: options.flatTreeCacheMaxBytes,
+      deltaBaseCacheMaxBytes: options.deltaBaseCacheMaxBytes,
+    }),
     // No real machine to report facts for (no cores, no libuv threadpool);
     // `deriveLimits({})` is the same safe floor `limitFor` would fall back
     // to for an absent `concurrency`, set explicitly so the floor reads as

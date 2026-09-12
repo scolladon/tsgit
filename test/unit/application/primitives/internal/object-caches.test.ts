@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   forgetParsedObjectMemo,
+  memoByteValve,
+  memoMaxEntries,
+  PARSED_OBJECT_TYPICAL_ENTRY_BYTES,
   parsedObjectByteSize,
   parsedObjectMemoFor,
   probeDeltaBaseCache,
@@ -113,6 +116,67 @@ describe('probeDeltaBaseCache', () => {
           actualSize: 50,
           limit: 10,
         });
+      });
+    });
+  });
+});
+
+describe('parsedObjectMemoFor — entry-bound sizing', () => {
+  describe('Given a 5,000-commit-shaped walk at the default deltaCacheMaxBytes budget', () => {
+    describe('When 5,000 distinct commit-shaped entries are inserted', () => {
+      it('Then every entry is retained — the byte cap no longer binds first', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const memo = parsedObjectMemoFor(ctx);
+        const walkLength = 5_000;
+
+        // Act — 256 bytes/entry mirrors a short-message, parentless commit.
+        for (let i = 0; i < walkLength; i += 1) {
+          memo?.set(`commit-${i}`, {} as never, 256);
+        }
+
+        // Assert — the previous 1/16-of-16MiB byte cap (1 MiB) admitted only
+        // ~4,096 entries at this size; the new full-valve sizing admits the
+        // whole walk.
+        expect(memo?.entryCount).toBe(walkLength);
+      });
+    });
+  });
+
+  describe('Given the default deltaCacheMaxBytes budget', () => {
+    describe('When resolving the memo entry cap and its byte valve', () => {
+      it('Then maxEntries × typicalEntryBytes never exceeds the valve, and a typical entry is admitted', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const memo = parsedObjectMemoFor(ctx);
+        const cap = memoMaxEntries(ctx);
+        const valve = memoByteValve(ctx);
+
+        // Act — a future retune that flips the binding constraint back to a
+        // fixed entry cap would fail one of the assertions below instead of
+        // shipping a dead cache silently.
+        const admitted = memo?.set('typical', {} as never, PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
+
+        // Assert — literal at the default, decoupled from the production formula.
+        expect(cap).toBe(32_768);
+        expect(valve).toBe(16 * 1024 * 1024);
+        expect(cap * PARSED_OBJECT_TYPICAL_ENTRY_BYTES).toBeLessThanOrEqual(valve);
+        expect(admitted).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a non-default deltaCacheMaxBytes of 4 MiB', () => {
+    describe('When resolving the memo entry cap', () => {
+      it('Then the cap derives from the valve — 8,192 entries', () => {
+        // Arrange
+        const ctx = createMemoryContext({ deltaCacheMaxBytes: 4 * 1024 * 1024 });
+
+        // Act
+        const cap = memoMaxEntries(ctx);
+
+        // Assert
+        expect(cap).toBe(8_192);
       });
     });
   });

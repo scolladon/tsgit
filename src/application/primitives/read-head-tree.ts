@@ -22,7 +22,7 @@ import { createLruCache, type LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { flattenTree } from './flatten-tree.js';
 import { resolveFlattenBounds } from './internal/flatten-raw.js';
-import { deltaBaseCachingEnabled } from './internal/object-caches.js';
+import { budgetsFor, deltaBaseCachingEnabled } from './internal/object-caches.js';
 import { readObject } from './read-object.js';
 import { resolveRef } from './resolve-ref.js';
 
@@ -42,12 +42,15 @@ import { resolveRef } from './resolve-ref.js';
 const flatTreeCaches = new WeakMap<Context['session'], LruCache<FlatTree>>();
 
 /**
- * Share of `ctx.deltaCache`'s own byte budget this cache gets, as an
- * independent allocation — mirrors `object-resolver.ts`'s
- * `PARSED_OBJECT_MEMO_FRACTION`: the two caches hold different things and
- * compete only for process memory, not a shared accounting ledger.
+ * Bytes per tracked file the sizer below charges: 48 (base) is amortised
+ * over the tree, so this is the marginal cost — path (~14) + oid (40) + the
+ * fixed per-entry overhead (110, see {@link FLAT_TREE_ENTRY_OVERHEAD_BYTES}).
+ * Used by the valve-ordering invariant that pins a medium HEAD tree
+ * (~50,000 tracked files) against the FlatTree cache's own byte valve
+ * (`budgetsFor` in `internal/object-caches.ts`) — the ordering a future
+ * retune could otherwise flip silently.
  */
-export const FLAT_TREE_CACHE_FRACTION = 0.0625;
+export const FLAT_TREE_TYPICAL_ENTRY_BYTES = 164;
 
 /**
  * Entry-count ceiling on the number of DISTINCT `(rootTreeOid, maxDepth)`
@@ -66,7 +69,7 @@ function flatTreeCacheFor(ctx: Context): LruCache<FlatTree> | undefined {
   const existing = flatTreeCaches.get(ctx.session);
   if (existing !== undefined) return existing;
   const created = createLruCache<FlatTree>(
-    ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
+    budgetsFor(ctx).flatTreeCacheMaxBytes,
     FLAT_TREE_CACHE_MAX_ENTRIES,
   );
   flatTreeCaches.set(ctx.session, created);

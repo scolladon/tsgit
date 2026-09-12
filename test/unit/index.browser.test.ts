@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parsedObjectMemoFor } from '../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.browser.js';
 import type { FileSystem } from '../../src/ports/file-system.js';
@@ -228,6 +229,30 @@ describe('browser shim — openRepository', () => {
 
         // Assert — the cap of 3 evicted the least-recently-used entry.
         expect(sut.ctx.deltaCache.entryCount).toBe(3);
+      });
+    });
+  });
+
+  describe('Given an explicit parsedObjectMemoMaxEntries of 3', () => {
+    describe('When a 4th tiny entry is set', () => {
+      it('Then the memo evicts down to the cap', async () => {
+        // Arrange — the option must reach ctx.cacheBudgets for the derived
+        // memo to honour it instead of the deltaCache-derived default.
+        const sut = await openRepository({
+          rootHandle: fakeHandle,
+          parsedObjectMemoMaxEntries: 3,
+        });
+        const memo = parsedObjectMemoFor(sut.ctx);
+        const dummy = {} as never;
+
+        // Act
+        memo?.set('a', dummy, 1);
+        memo?.set('b', dummy, 1);
+        memo?.set('c', dummy, 1);
+        memo?.set('d', dummy, 1);
+
+        // Assert
+        expect(memo?.entryCount).toBe(3);
       });
     });
   });

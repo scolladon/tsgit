@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
-  PARSED_OBJECT_MEMO_FRACTION,
-  PARSED_OBJECT_MEMO_MAX_ENTRIES,
+  PARSED_OBJECT_TYPICAL_ENTRY_BYTES,
   parsedObjectByteSize,
 } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
@@ -3615,43 +3614,46 @@ describe('object-resolver', () => {
 
           // Assert
           const memoCall = createLruCacheSpy.mock.calls.find(
-            (call) => call[0] === ctx.deltaCache.maxSize * PARSED_OBJECT_MEMO_FRACTION,
+            (call) => call[0] === ctx.deltaCache.maxSize,
           );
-          expect(memoCall?.[1]).toBe(PARSED_OBJECT_MEMO_MAX_ENTRIES);
+          expect(memoCall?.[1]).toBe(
+            Math.floor(ctx.deltaCache.maxSize / PARSED_OBJECT_TYPICAL_ENTRY_BYTES),
+          );
         });
       });
     });
 
     describe('Given a deltaCache sized so the byte budget never binds', () => {
-      describe('When more entries than PARSED_OBJECT_MEMO_MAX_ENTRIES are inserted', () => {
+      describe('When more entries than the derived entry cap are inserted', () => {
         it('Then the entry cap itself evicts down to the cap, not the byte budget', async () => {
           // Arrange — a deltaCache large enough that the memo's own byte
-          // share never binds at PARSED_OBJECT_MEMO_MAX_ENTRIES tiny
-          // entries; only the entry-count cap can be what evicts. Direct
-          // `.set()` calls on the memo itself (grabbed off the createLruCache
-          // spy's own return value) keep this fast — resolving
-          // PARSED_OBJECT_MEMO_MAX_ENTRIES + 1 distinct real commits through
-          // resolveObject would be impractical.
-          const ctx = createMemoryContext({
-            deltaCacheMaxBytes: PARSED_OBJECT_MEMO_MAX_ENTRIES * 100,
-          });
+          // valve never binds at tiny synthetic entries; only the
+          // entry-count cap (derived from that same valve) can be what
+          // evicts. Direct `.set()` calls on the memo itself (grabbed off
+          // the createLruCache spy's own return value) keep this fast —
+          // resolving that many distinct real commits through resolveObject
+          // would be impractical.
+          const ctx = createMemoryContext({ deltaCacheMaxBytes: 6_553_600 });
+          const derivedEntryCap = Math.floor(
+            ctx.deltaCache.maxSize / PARSED_OBJECT_TYPICAL_ENTRY_BYTES,
+          );
           const commitId = await writeCommitWithMessage(ctx, 'entry cap eviction seed');
           const registry = createPackRegistry(ctx);
           createLruCacheSpy.mockClear();
           await resolveObject(ctx, registry, commitId, false);
           const memoCallIndex = createLruCacheSpy.mock.calls.findIndex(
-            (call) => call[1] === PARSED_OBJECT_MEMO_MAX_ENTRIES,
+            (call) => call[1] === derivedEntryCap,
           );
           const memo = createLruCacheSpy.mock.results[memoCallIndex]?.value as LruCache<unknown>;
 
           // Act
-          for (let i = 0; i <= PARSED_OBJECT_MEMO_MAX_ENTRIES; i += 1) {
+          for (let i = 0; i <= derivedEntryCap; i += 1) {
             memo.set(`synthetic-${i}`, {}, 1);
           }
 
           // Assert — capped at the entry count; the byte budget (far larger
-          // than PARSED_OBJECT_MEMO_MAX_ENTRIES tiny 1-byte entries) never bound.
-          expect(memo.entryCount).toBe(PARSED_OBJECT_MEMO_MAX_ENTRIES);
+          // than these tiny 1-byte entries) never bound.
+          expect(memo.entryCount).toBe(derivedEntryCap);
         });
       });
     });
@@ -3667,10 +3669,14 @@ describe('object-resolver', () => {
           // touched). Sized via the production sizer itself (default sha1
           // hexLength=40, matching this Context's unspecified algorithm) so
           // the cap tracks PARSED_OBJECT_FIXED_OVERHEAD_BYTES automatically.
+          // A generous `parsedObjectMemoMaxEntries` override keeps the
+          // entry-count cap from binding first, so the byte valve (`cap`) is
+          // the constraint under test.
           const perEntry = parsedObjectByteSize({ message: 'AAAAAAAAAA', extraHeaders: [] }, 40);
           const cap = perEntry * 3;
           const ctx = createMemoryContext({
-            deltaCacheMaxBytes: cap / PARSED_OBJECT_MEMO_FRACTION,
+            deltaCacheMaxBytes: cap,
+            parsedObjectMemoMaxEntries: 10,
           });
           const commitA = await writeCommitWithMessage(ctx, 'AAAAAAAAAA');
           const commitB = await writeCommitWithMessage(ctx, 'BBBBBBBBBB');

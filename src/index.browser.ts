@@ -13,6 +13,7 @@ import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.
 import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { buildCacheBudgets } from './ports/context.js';
 import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
 import { portablePosixPolicy } from './repository/portable-posix-policy.js';
 import { resolveAgainst } from './repository/resolve-layout.js';
@@ -41,6 +42,12 @@ export interface OpenBrowserRepositoryOptions extends OpenRepositoryOptions {
   readonly bare?: boolean;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Override for the parsed-object memo's entry cap (default: derived from `deltaCacheMaxBytes`). */
+  readonly parsedObjectMemoMaxEntries?: number;
+  /** Override for the FlatTree cache's own byte valve (default: derived from `deltaCacheMaxBytes`). */
+  readonly flatTreeCacheMaxBytes?: number;
+  /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
+  readonly deltaBaseCacheMaxBytes?: number;
 }
 
 /**
@@ -95,6 +102,11 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
+    cacheBudgets: buildCacheBudgets({
+      parsedObjectMemoMaxEntries: opts.parsedObjectMemoMaxEntries,
+      flatTreeCacheMaxBytes: opts.flatTreeCacheMaxBytes,
+      deltaBaseCacheMaxBytes: opts.deltaBaseCacheMaxBytes,
+    }),
     concurrency: deriveLimits(nativeMachineFacts()),
   };
   // Strip the browser-only opts before forwarding so the core sees only its
@@ -105,6 +117,9 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
     bare: _b,
     deltaCacheMaxBytes: _d,
     deltaCacheMaxEntries: _e,
+    parsedObjectMemoMaxEntries: _p,
+    flatTreeCacheMaxBytes: _t,
+    deltaBaseCacheMaxBytes: _c,
     ...coreOpts
   } = opts;
   return openRepositoryCore({ cwd: ROOT_WORK_DIR, ...coreOpts }, fallback);

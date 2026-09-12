@@ -47,58 +47,84 @@ type MemoisedObject = Commit | Tag;
 const parsedObjectMemos = new WeakMap<Context['session'], LruCache<MemoisedObject>>();
 
 /**
- * Share of `ctx.deltaCache`'s own byte budget the parsed-object memo gets,
- * as an independent allocation (not carved out of the byte cache itself —
- * the two caches hold different things and compete only for process
- * memory/cache locality, not a shared accounting ledger).
+ * The parsed-object memo is bound in the unit its consumer scales with —
+ * entries, because a walk of N commits needs N slots — not in bytes. A byte
+ * cap alone binds far too early: at a 1/16-of-16MiB share with a 256 B fixed
+ * overhead per entry, the cap bound at ≤ 4,096 entries, so a 5,000-commit
+ * walk in the same order every time (the worst case an LRU has) collapsed to
+ * roughly 0% hits. The module's own fraction sweep — 1/16 vs 1/8 vs 1/4 of
+ * the medium fixture's 16 MiB default — measured no difference between
+ * fractions, because that fixture's walk was entirely on the wrong side of
+ * the cliff already: any of the three fractions capped at a few thousand
+ * entries against a 5,000-commit walk. See the medium-fixture A/B in
+ * `log.bench` for the corrected before/after numbers.
  *
- * A/B-measured (`log`/`show`/`describe`/`blame`'s medium-fixture scenarios,
- * plus `loose-read`'s two scenarios to price the shared budget) at 1/16,
- * 1/8 and 1/4 of the 16 MiB default. Absolute means, ms, memo disabled
- * (fraction 0) vs each candidate:
- *
- * | scenario                | disabled | 1/16  | 1/8   | 1/4   |
- * |-------------------------|---------:|------:|------:|------:|
- * | log (medium, 5000)      |   18.30  |  7.80 |  8.11 |  8.22 |
- * | log via commit-graph    |   18.09  |  7.65 |  7.86 |  7.71 |
- * | show (medium)           |    0.324 | 0.271 | 0.275 | 0.275 |
- * | describe (medium)       |    0.761 | 0.536 | 0.535 | 0.531 |
- * | blame (deep, 500)       |    2.766 | 1.386 | 1.390 | 1.379 |
- * | loose-read (fresh repo) |    0.491 | 0.479 | 0.483 | 0.476 |
- * | loose-read (reused)     |  0.0007  |0.0007 |0.0007 |0.0007 |
- *
- * Enabling the memo at all is the win (>2x on `log`/`log`-via-graph/`blame`,
- * ~15-30% on `show`/`describe`); the three fractions land within each
- * other's noise band on this fixture, because the memo's footprint here
- * (message-only, per {@link parsedObjectByteSize}) is tiny next to any of
- * the three caps — none of them evict mid-walk. `loose-read` (blob-only,
- * never touches this memo) is flat across every fraction, confirming no
- * interference with the existing loose-read byte cache that shares
- * `ctx.deltaCache`'s budget. 1/16 wins outright on the dominant `log`
- * scenario and claims the least share of the shared budget, so it is the
- * one that ships.
+ * The byte cap becomes a *valve* instead: it is `ctx.deltaCache`'s own
+ * budget (not a fraction of it), sized so it only ever binds for atypical
+ * entries — a signed/mergetag-heavy commit, an octopus merge — never for a
+ * typical one. {@link memoMaxEntries} derives the default entry count FROM
+ * that valve, which is what keeps the ordering (entries bind, bytes rarely
+ * do) structural at every `deltaCacheMaxBytes` dial, not just the default:
+ * a 4 MiB browser tab still gets `entries × typicalEntryBytes ≤ valve`.
  */
-export const PARSED_OBJECT_MEMO_FRACTION = 0.0625;
+export const memoByteValve = (ctx: Context): number => ctx.deltaCache.maxSize;
 
 /**
- * Entry-count ceiling for the parsed-object memo, mirroring the commit-graph
- * header cache's own cap — a byte cap alone under-defends against a repo of
- * many small commits (short messages, no signature). At the DEFAULT
- * `deltaCacheMaxBytes`, the byte budget itself binds first — it fills at
- * roughly 4,000-5,000 short-message entries, well under this cap — so the
- * entry-count check only becomes the binding constraint once a caller
- * enlarges `deltaCacheMaxBytes` well past the default.
+ * Per-entry ceiling {@link memoMaxEntries}'s default derives from: 256 B of
+ * {@link PARSED_OBJECT_FIXED_OVERHEAD_BYTES} plus a 256 B typical
+ * message/parents allowance. `maxEntries × this` is what the byte valve must
+ * admit at every `deltaCacheMaxBytes` dial — the invariant a unit test pins
+ * so a future retune that flips the binding constraint fails a test instead
+ * of shipping another dead cache.
  */
-export const PARSED_OBJECT_MEMO_MAX_ENTRIES = 65_536;
+export const PARSED_OBJECT_TYPICAL_ENTRY_BYTES = 512;
+
+/**
+ * Entry-count cap for the parsed-object memo — a caller-supplied
+ * `cacheBudgets.parsedObjectMemoMaxEntries` always wins; otherwise derived
+ * from {@link memoByteValve} so it tracks `ctx.deltaCache.maxSize` at every
+ * dial (32,768 at the 16 MiB default). A second FIXED cap here (as this
+ * module used to carry) would either never bind — once the valve moved off
+ * the wrong fraction — or silently re-create the exact cliff this sizing
+ * exists to remove, so none is layered on top.
+ */
+export const memoMaxEntries = (ctx: Context): number =>
+  ctx.cacheBudgets?.parsedObjectMemoMaxEntries ??
+  Math.floor(memoByteValve(ctx) / PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
+
+/**
+ * Share of `ctx.deltaCache`'s own byte budget the FlatTree cache gets by
+ * default when the caller supplies no explicit `flatTreeCacheMaxBytes` — 8
+ * MiB at the 16 MiB default, admitting a ~50,000-tracked-file HEAD (see
+ * `FLAT_TREE_TYPICAL_ENTRY_BYTES` in `read-head-tree.ts`, which sizes each
+ * cached tree's actual footprint).
+ */
+const FLAT_TREE_DEFAULT_SHARE = 0.5;
+
+/**
+ * The two synchronous derived-cache budgets, resolved together — the
+ * parsed-object memo's entry cap and the FlatTree's own byte valve — shaped
+ * on the existing `concurrency?`/`limitFor` house pattern: an explicit
+ * `ctx.cacheBudgets` member always wins, otherwise the default derives from
+ * `ctx.deltaCache`'s own budget. `read-head-tree.ts` imports this rather
+ * than re-deriving its own share of `ctx.deltaCache.maxSize`.
+ */
+export interface ResolvedCacheBudgets {
+  readonly parsedObjectMemoMaxEntries: number;
+  readonly flatTreeCacheMaxBytes: number;
+}
+
+export const budgetsFor = (ctx: Context): ResolvedCacheBudgets => ({
+  parsedObjectMemoMaxEntries: memoMaxEntries(ctx),
+  flatTreeCacheMaxBytes:
+    ctx.cacheBudgets?.flatTreeCacheMaxBytes ?? ctx.deltaCache.maxSize * FLAT_TREE_DEFAULT_SHARE,
+});
 
 export function parsedObjectMemoFor(ctx: Context): LruCache<MemoisedObject> | undefined {
   if (!deltaBaseCachingEnabled(ctx)) return undefined;
   const existing = parsedObjectMemos.get(ctx.session);
   if (existing !== undefined) return existing;
-  const created = createLruCache<MemoisedObject>(
-    ctx.deltaCache.maxSize * PARSED_OBJECT_MEMO_FRACTION,
-    PARSED_OBJECT_MEMO_MAX_ENTRIES,
-  );
+  const created = createLruCache<MemoisedObject>(memoByteValve(ctx), memoMaxEntries(ctx));
   parsedObjectMemos.set(ctx.session, created);
   return created;
 }

@@ -4,9 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
+import { budgetsFor } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
-  FLAT_TREE_CACHE_FRACTION,
   FLAT_TREE_CACHE_MAX_ENTRIES,
+  FLAT_TREE_TYPICAL_ENTRY_BYTES,
   flatTreeByteSize,
   readHeadTree,
 } from '../../../../src/application/primitives/read-head-tree.js';
@@ -385,22 +386,21 @@ describe('readHeadTree', () => {
 
         // Assert
         const memoCall = createLruCacheSpy.mock.calls.find(
-          (call) => call[0] === ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
+          (call) => call[0] === budgetsFor(ctx).flatTreeCacheMaxBytes,
         );
         expect(memoCall?.[1]).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
       });
     });
   });
 
-  describe('Given a deltaCache sized so a real one-entry tree fits the multiplied share but not a 16×-larger divided one', () => {
+  describe('Given a deltaCache sized so a real one-entry tree fits the multiplied share but not the halved one', () => {
     describe('When readHeadTree runs twice', () => {
       it('Then it is not cached — the share is a FRACTION of the deltaCache budget, not a multiple of it', async () => {
-        // Arrange — 1000-byte deltaCache: the correct 1/16 share (62.5
-        // bytes) is far smaller than any real one-entry FlatTree (~200
-        // bytes), so real code never caches it. A 16×-inflated share
-        // (maxSize / FLAT_TREE_CACHE_FRACTION = 16000 bytes) would
-        // comfortably fit the same tree and wrongly cache it.
-        const ctx = createMemoryContext({ deltaCacheMaxBytes: 1000 });
+        // Arrange — 300-byte deltaCache: the correct 0.5 share (150 bytes)
+        // is smaller than any real one-entry FlatTree (~203 bytes), so real
+        // code never caches it. A mutated share (maxSize / share = 600
+        // bytes) would comfortably fit the same tree and wrongly cache it.
+        const ctx = createMemoryContext({ deltaCacheMaxBytes: 300 });
         await commitOneFile(ctx);
         const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
         const baseline = flattenSpy.mock.calls.length;
@@ -433,20 +433,20 @@ describe('readHeadTree', () => {
         createLruCacheSpy.mockClear();
         await commitOneFile(ctx);
         await readHeadTree(ctx);
-        // THREE distinct caches share this exact 65_536 entry cap by design
-        // (each module's own doc cross-references the others): the pack
+        // TWO distinct caches share this exact 65_536 entry cap by design
+        // (each module's own doc cross-references the other): the pack
         // registry's delta-base cache (`pack-registry.ts`, constructed
         // EAGERLY the moment `readObject` first calls `getPackRegistry`,
-        // before it ever resolves the object), object-resolver's
-        // parsed-object memo (populated resolving that same commit), and
-        // read-head-tree's own flat-tree cache. A bare `findIndex` on
-        // `call[1]` grabs whichever spawns FIRST — the delta-base cache,
-        // never the flat-tree one. The flat-tree cache is always the LAST
-        // of the three: `flatTreeCacheFor` is only ever called, within
-        // `readHeadTree`, after the HEAD commit read that triggers the
-        // other two. Asserting the count pins that structural ordering
-        // instead of silently trusting it, and picks the LAST match rather
-        // than the first.
+        // before it ever resolves the object) and read-head-tree's own
+        // flat-tree cache. The parsed-object memo's own entry cap is now
+        // DERIVED from its byte valve, not this fixed constant, so it no
+        // longer coincides here. A bare `findIndex` on `call[1]` grabs
+        // whichever spawns FIRST — the delta-base cache, never the
+        // flat-tree one. The flat-tree cache is always the LAST of the two:
+        // `flatTreeCacheFor` is only ever called, within `readHeadTree`,
+        // after the HEAD commit read that triggers the other one. Asserting
+        // the count pins that structural ordering instead of silently
+        // trusting it, and picks the LAST match rather than the first.
         const matchingCallIndexes = createLruCacheSpy.mock.calls.reduce<number[]>(
           (acc, call, index) => {
             if (call[1] === FLAT_TREE_CACHE_MAX_ENTRIES) acc.push(index);
@@ -454,7 +454,7 @@ describe('readHeadTree', () => {
           },
           [],
         );
-        expect(matchingCallIndexes).toHaveLength(3);
+        expect(matchingCallIndexes).toHaveLength(2);
         const memoCallIndex = matchingCallIndexes.at(-1) as number;
         const cache = createLruCacheSpy.mock.results[memoCallIndex]?.value as LruCache<FlatTree>;
         const dummy: FlatTree = { entries: new Map() };
@@ -467,6 +467,47 @@ describe('readHeadTree', () => {
         // Assert — capped at the entry count; the byte budget (far larger
         // than FLAT_TREE_CACHE_MAX_ENTRIES tiny 1-byte entries) never bound.
         expect(cache.entryCount).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
+      });
+    });
+  });
+
+  describe('Given the default deltaCacheMaxBytes budget', () => {
+    describe('When sizing a medium HEAD tree of 50,000 tracked files against the FlatTree byte valve', () => {
+      it('Then the typical entry size never exceeds the valve, and such an entry is admitted', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+        const cache = storage.createLruCache<FlatTree>(valve, FLAT_TREE_CACHE_MAX_ENTRIES);
+        const typicalTreeBytes = FLAT_TREE_TYPICAL_ENTRY_BYTES * 50_000;
+
+        // Act — a future retune that flips the binding constraint would fail
+        // one of the assertions below instead of shipping a dead cache.
+        const admitted = cache.set('typical', { entries: new Map() }, typicalTreeBytes);
+
+        // Assert — literal at the default, decoupled from the production formula.
+        expect(valve).toBe(8 * 1024 * 1024);
+        expect(typicalTreeBytes).toBeLessThanOrEqual(valve);
+        expect(admitted).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a deliberately shrunk flatTreeCacheMaxBytes', () => {
+    describe('When the cache is asked to hold an entry over that budget', () => {
+      it('Then set reports the refusal instead of silently dropping it', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ flatTreeCacheMaxBytes: 100 });
+        createLruCacheSpy.mockClear();
+        await commitOneFile(ctx);
+        await readHeadTree(ctx);
+        const callIndex = createLruCacheSpy.mock.calls.findIndex((call) => call[0] === 100);
+        const cache = createLruCacheSpy.mock.results[callIndex]?.value as LruCache<FlatTree>;
+
+        // Act
+        const result = cache.set('synthetic', { entries: new Map() }, 1000);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

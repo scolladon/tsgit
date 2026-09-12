@@ -3,7 +3,13 @@ import type { ConcurrencyLimits } from '../../../src/domain/concurrency/derive-l
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
-import { type Context, createContext, type RepositoryLayout } from '../../../src/ports/context.js';
+import {
+  buildCacheBudgets,
+  type CacheBudgets,
+  type Context,
+  createContext,
+  type RepositoryLayout,
+} from '../../../src/ports/context.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import type { HashService } from '../../../src/ports/hash-service.js';
 import type { HttpTransport } from '../../../src/ports/http-transport.js';
@@ -283,6 +289,58 @@ describe('Context', () => {
     });
   });
 
+  describe('Given parts without cacheBudgets', () => {
+    describe('When creating context', () => {
+      it('Then ctx.cacheBudgets is undefined — every derived cache resolves its own default', () => {
+        // Arrange
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.cacheBudgets).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given parts with cacheBudgets', () => {
+    describe('When creating context', () => {
+      it('Then ctx.cacheBudgets carries it', () => {
+        // Arrange
+        const cacheBudgets: CacheBudgets = { parsedObjectMemoMaxEntries: 42 };
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+          cacheBudgets,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.cacheBudgets).toBe(cacheBudgets);
+      });
+    });
+  });
+
   describe('Given a Context built by createContext', () => {
     describe('When reading ctx.session', () => {
       it('Then it carries a frozen session token', () => {
@@ -362,6 +420,57 @@ describe('Context', () => {
 
         // Assert
         expect(sut.cwd).toBe(bareLayout.gitDir);
+      });
+    });
+  });
+});
+
+describe('buildCacheBudgets', () => {
+  describe('Given no raw fields set', () => {
+    describe('When building the frozen CacheBudgets', () => {
+      it('Then the result is an empty, frozen object', () => {
+        // Arrange
+        const sut = buildCacheBudgets({});
+
+        // Act + Assert
+        expect(sut).toEqual({});
+        expect(Object.isFrozen(sut)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given only parsedObjectMemoMaxEntries set', () => {
+    describe('When building the frozen CacheBudgets', () => {
+      it('Then only that key is present', () => {
+        // Act
+        const sut = buildCacheBudgets({ parsedObjectMemoMaxEntries: 42 });
+
+        // Assert
+        expect(sut).toEqual({ parsedObjectMemoMaxEntries: 42 });
+      });
+    });
+  });
+
+  describe('Given only flatTreeCacheMaxBytes set', () => {
+    describe('When building the frozen CacheBudgets', () => {
+      it('Then only that key is present', () => {
+        // Act
+        const sut = buildCacheBudgets({ flatTreeCacheMaxBytes: 99 });
+
+        // Assert
+        expect(sut).toEqual({ flatTreeCacheMaxBytes: 99 });
+      });
+    });
+  });
+
+  describe('Given only deltaBaseCacheMaxBytes set', () => {
+    describe('When building the frozen CacheBudgets', () => {
+      it('Then only that key is present', () => {
+        // Act
+        const sut = buildCacheBudgets({ deltaBaseCacheMaxBytes: 7 });
+
+        // Assert
+        expect(sut).toEqual({ deltaBaseCacheMaxBytes: 7 });
       });
     });
   });

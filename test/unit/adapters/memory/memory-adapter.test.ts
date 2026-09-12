@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { MemoryCommandRunner } from '../../../../src/adapters/memory/memory-command-runner.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { limitFor } from '../../../../src/application/primitives/internal/concurrency.js';
+import { parsedObjectMemoFor } from '../../../../src/application/primitives/internal/object-caches.js';
 import { deriveLimits } from '../../../../src/domain/concurrency/derive-limits.js';
 
 describe('createMemoryContext', () => {
@@ -256,6 +257,26 @@ describe('createMemoryContext', () => {
         expect(sut.deltaCache.entryCount).toBe(2);
         expect(sut.deltaCache.get('a')).toBeUndefined();
         expect(sut.deltaCache.get('c')).toEqual(new Uint8Array([3]));
+      });
+    });
+  });
+
+  describe('Given a parsedObjectMemoMaxEntries cap', () => {
+    describe('When more entries than the cap are inserted', () => {
+      it('Then the memo evicts down to the cap', () => {
+        // Arrange — the option must reach ctx.cacheBudgets for the derived
+        // memo to honour it instead of the deltaCache-derived default.
+        const sut = createMemoryContext({ parsedObjectMemoMaxEntries: 2 });
+        const memo = parsedObjectMemoFor(sut);
+        const dummy = {} as never;
+
+        // Act
+        memo?.set('a', dummy, 1);
+        memo?.set('b', dummy, 1);
+        memo?.set('c', dummy, 1);
+
+        // Assert
+        expect(memo?.entryCount).toBe(2);
       });
     });
   });

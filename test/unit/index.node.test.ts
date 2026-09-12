@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
+import { parsedObjectMemoFor } from '../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../src/domain/index.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../src/domain/objects/hash-config.js';
 import { openRepository } from '../../src/index.node.js';
@@ -202,6 +203,33 @@ describe('Node shim — deltaCacheMaxEntries option', () => {
 
           // Assert
           expect(sut.ctx.deltaCache.entryCount).toBe(3);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — parsedObjectMemoMaxEntries option', () => {
+  describe('Given an explicit parsedObjectMemoMaxEntries of 3', () => {
+    describe('When a 4th tiny entry is set', () => {
+      it('Then the memo evicts down to the cap', async () => {
+        // Arrange — the option must reach ctx.cacheBudgets for the derived
+        // memo to honour it instead of the deltaCache-derived default.
+        const sut = await openRepository({ cwd: tmpdir, parsedObjectMemoMaxEntries: 3 });
+        const memo = parsedObjectMemoFor(sut.ctx);
+        const dummy = {} as never;
+
+        try {
+          // Act
+          memo?.set('a', dummy, 1);
+          memo?.set('b', dummy, 1);
+          memo?.set('c', dummy, 1);
+          memo?.set('d', dummy, 1);
+
+          // Assert
+          expect(memo?.entryCount).toBe(3);
         } finally {
           await sut.dispose();
         }
