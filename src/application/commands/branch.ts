@@ -14,6 +14,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { errorDataCode } from '../primitives/internal/error-data-code.js';
+import { peelChain } from '../primitives/internal/peel-chain.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
@@ -250,17 +251,18 @@ const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<Ob
 
 /**
  * Peels `id` through any tag objects to the commit it names (git's
- * `lookup_commit_reference`). The refusal keeps `id` as resolved — an
- * annotated tag's own oid, never its target — because that is the oid git's
- * `error: object <oid> is a <type>, not a commit` reports (measured, git
- * 2.55.0); only `actual` reflects the fully peeled type.
+ * `lookup_commit_reference`), bounded by `MAX_PEEL_DEPTH` — the same shared
+ * walker `readTree`/`peelToTree` use, so a hostile repository's self- or
+ * mutually-referential tag chain refuses with `REF_CHAIN_TOO_DEEP` instead of
+ * looping forever. The refusal keeps `id` as resolved — an annotated tag's
+ * own oid, never its target — because that is the oid git's `error: object
+ * <oid> is a <type>, not a commit` reports (measured, git 2.55.0); only
+ * `actual` reflects the fully peeled type.
  */
 const requireCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
-  let current = id;
-  for (;;) {
-    const object = await readObject(ctx, current);
-    if (object.type === 'commit') return current;
-    if (object.type !== 'tag') throw unexpectedObjectType('commit', object.type, id);
-    current = object.data.object;
-  }
+  const { id: peeledId, result } = await peelChain(ctx, id, readObject, (object) =>
+    object.type === 'tag' ? object.data.object : undefined,
+  );
+  if (result.type !== 'commit') throw unexpectedObjectType('commit', result.type, id);
+  return peeledId;
 };

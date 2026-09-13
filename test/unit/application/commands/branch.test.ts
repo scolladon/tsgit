@@ -14,6 +14,7 @@ import {
   __resetConfigCacheForTests,
   invalidateConfigCache,
 } from '../../../../src/application/primitives/config-read.js';
+import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import {
   appendReflog,
@@ -25,8 +26,8 @@ import {
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
-import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, RefName, Tag } from '../../../../src/domain/objects/index.js';
+import { ObjectId, serializeObject, zeroOid } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
@@ -87,6 +88,21 @@ const seedWithCommit = async () => {
     reflogMessage: 'test',
   });
   return { ctx, commitId: c.id, treeId, blobId, tagToTreeId, tagToCommitId };
+};
+
+/**
+ * Plants a raw loose tag object at `id`'s OWN chosen path without computing
+ * its hash from `tag`'s content — the on-disk shape a hostile repository can
+ * plant (git's cryptographic hash makes an honest self- or mutually-
+ * referential tag chain impossible to produce any other way). `readObject`
+ * defaults to `verifyHash: false`, so the mismatch between `id` and the
+ * content's real hash is never checked.
+ */
+const writeForgedLooseTag = async (ctx: Context, id: ObjectId, tag: Tag): Promise<void> => {
+  const bytes = serializeObject(tag, ctx.hashConfig);
+  const compressed = await ctx.compressor.deflate(bytes);
+  await ctx.fs.mkdir(objectsDir(ctx.layout.gitDir, id.slice(0, 2)));
+  await ctx.fs.writeExclusive(looseObjectPath(ctx.layout.gitDir, id), compressed);
 };
 
 /**
@@ -191,6 +207,22 @@ describe('branch', () => {
 
         // Act + Assert
         await expectError(() => branchDelete(ctx, { name: 'nope' }), 'CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When branch create runs (cold session — first touch settles the invalid verdict)', () => {
+      it('Then it dies on the class before writing the ref — typing the start point reaches the boundary naturally', async () => {
+        // Arrange — branch.create carries no explicit assertRepoSettingsValid
+        // call of its own; requireCommit's readObject on the resolved start
+        // point is the first object-store touch, and that boundary's own
+        // fast path settles the (invalid) verdict.
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act + Assert
+        await expectError(() => branchCreate(ctx, { name: 'nope' }), 'CONFIG_BAD_NUMERIC_VALUE');
+        expect(await refExists(ctx, 'refs/heads/nope' as RefName)).toBe(false);
       });
     });
   });
@@ -717,6 +749,59 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a two-object tag cycle (A -> B -> A), forged directly on disk', () => {
+    describe('When branch create runs', () => {
+      it('Then throws REF_CHAIN_TOO_DEEP instead of hanging', async () => {
+        // Arrange — no honest hash chain can produce a mutual reference, so
+        // both tags are forged straight onto the loose-object store.
+        const { ctx } = await seedWithCommit();
+        const tagAId = ObjectId.from('a'.repeat(40));
+        const tagBId = ObjectId.from('b'.repeat(40));
+        await writeForgedLooseTag(ctx, tagAId, {
+          type: 'tag',
+          id: tagAId,
+          data: {
+            object: tagBId,
+            objectType: 'tag',
+            tagName: 'cycle-a',
+            tagger: author,
+            message: 'cycle-a\n',
+            extraHeaders: [],
+          },
+        });
+        await writeForgedLooseTag(ctx, tagBId, {
+          type: 'tag',
+          id: tagBId,
+          data: {
+            object: tagAId,
+            objectType: 'tag',
+            tagName: 'cycle-b',
+            tagger: author,
+            message: 'cycle-b\n',
+            extraHeaders: [],
+          },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'x', startPoint: tagAId });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the full payload, not just the code: pins the depth cap
+        // as the refusal, not some other error shape.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_CHAIN_TOO_DEEP',
+          depth: 6,
+          chain: [],
+        });
+      }, 5_000);
+    });
+  });
+
   describe('Given an existing branch name and an unresolvable startPoint', () => {
     describe('When branch create runs without force', () => {
       it('Then throws BRANCH_EXISTS before the startPoint ever resolves', async () => {
@@ -1041,6 +1126,38 @@ describe('branch', () => {
 
         // Assert — original error, not remapped to BRANCH_EXISTS.
         expect(err).toBe(boom);
+      });
+    });
+  });
+
+  describe('Given a create/create race between the early exists probe and the CAS write', () => {
+    describe('When branch create runs', () => {
+      it('Then the CAS conflict still surfaces as BRANCH_EXISTS', async () => {
+        // Arrange — the early `refExists` probe reads the loose ref file and
+        // finds it absent; a concurrent `branch create` lands before
+        // `updateRef`'s own CAS re-reads the SAME file, which now reports the
+        // ref present, so `expected: 'absent'` conflicts. This is the only
+        // path that reaches the catch's positive arm (REF_UPDATE_CONFLICT ->
+        // BRANCH_EXISTS) — the pre-existing "already exists" test proves the
+        // early check instead.
+        const { ctx, commitId } = await seedWithCommit();
+        const racedPath = `${ctx.layout.gitDir}/refs/heads/race`;
+        let reads = 0;
+        const racyCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string) => {
+              if (path !== racedPath) return ctx.fs.readUtf8(path);
+              reads += 1;
+              if (reads === 1) throw fileNotFound(path);
+              return `${commitId}\n`;
+            },
+          },
+        };
+
+        // Act + Assert
+        await expectError(() => branchCreate(racyCtx, { name: 'race' }), 'BRANCH_EXISTS');
       });
     });
   });
