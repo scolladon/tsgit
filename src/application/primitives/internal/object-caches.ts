@@ -95,9 +95,9 @@ export const memoMaxEntries = (ctx: Context): number =>
 /**
  * Share of `ctx.deltaCache`'s own byte budget the FlatTree cache gets by
  * default when the caller supplies no explicit `flatTreeCacheMaxBytes` — 8
- * MiB at the 16 MiB default, admitting a ~50,000-tracked-file HEAD (see
- * `FLAT_TREE_TYPICAL_ENTRY_BYTES` in `read-head-tree.ts`, which sizes each
- * cached tree's actual footprint).
+ * MiB at the 16 MiB default, admitting a ~50,000-tracked-file HEAD (the
+ * valve-ordering invariant measures that headroom through `flatTreeByteSize`
+ * itself, not through a restated constant).
  */
 const FLAT_TREE_DEFAULT_SHARE = 0.5;
 

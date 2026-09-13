@@ -42,17 +42,6 @@ import { resolveRef } from './resolve-ref.js';
 const flatTreeCaches = new WeakMap<Context['session'], LruCache<FlatTree>>();
 
 /**
- * Bytes per tracked file the sizer below charges: 48 (base) is amortised
- * over the tree, so this is the marginal cost — path (~14) + oid (40) + the
- * fixed per-entry overhead (110, see {@link FLAT_TREE_ENTRY_OVERHEAD_BYTES}).
- * Used by the valve-ordering invariant that pins a medium HEAD tree
- * (~50,000 tracked files) against the FlatTree cache's own byte valve
- * (`budgetsFor` in `internal/object-caches.ts`) — the ordering a future
- * retune could otherwise flip silently.
- */
-export const FLAT_TREE_TYPICAL_ENTRY_BYTES = 164;
-
-/**
  * Entry-count ceiling on the number of DISTINCT `(rootTreeOid, maxDepth)`
  * trees this cache holds — independent of `MAX_FLAT_TREE_ENTRIES`, which
  * bounds the entries WITHIN one tree. Mirrors the parsed-object memo and the
