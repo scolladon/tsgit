@@ -136,7 +136,15 @@ done
 # `verifyObjectContent` incremental-hash helper that replaces a header-copy-then-hash
 # with hash-and-compare, and the cache-entry-overhead constant its sizer charges. None is
 # removable without reintroducing the per-read header buffer this change exists to drop.
-SIZE_CAP=$((924 * 1024))
+# Raised 924 -> 927 KiB by the ref, HEAD, config-epoch and reflog work in the same
+# change set: the measured tarball landed at 948 653 B, 2 477 B over the old cap.
+# Attribution, all runtime code every distribution form ships: the repo-settings
+# validation tier and its session-memoised verdict, the single HEAD reader with its
+# lstat-identity slot, the config epoch's trusted-entry bookkeeping, the packed-refs
+# snapshot path and the pooled loose-ref enumeration, and git's reflog expire model
+# (per-ref mark walk with a date-bounded frontier). None is removable without dropping
+# the behaviour each one exists to provide.
+SIZE_CAP=$((927 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
