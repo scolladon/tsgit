@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import {
+  resolveRef,
+  resolveRefOrMissing,
+} from '../../../../src/application/primitives/resolve-ref.js';
 import type { ResolveRefOptions } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -129,6 +132,46 @@ describe('resolveRef', () => {
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_NOT_FOUND');
+        }
+      });
+    });
+  });
+
+  describe('Given a dangling symbolic ref (x → gone, gone absent)', () => {
+    describe('When resolveRef is called on x', () => {
+      it('Then throws REF_NOT_FOUND naming the ref the chain ENDED on, not the ref asked for', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/x', 'ref: refs/heads/gone\n');
+
+        // Act + Assert
+        try {
+          await resolveRef(ctx, 'refs/heads/x' as RefName);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('REF_NOT_FOUND');
+          if (data.code === 'REF_NOT_FOUND') {
+            expect(data.name).toBe('refs/heads/gone');
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a loose ref file whose content is neither an oid nor a symbolic target', () => {
+    describe('When resolveRef is called', () => {
+      it('Then throws INVALID_OBJECT_ID (a non-miss failure still propagates)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/bad', 'not-a-valid-ref-content\n');
+
+        // Act + Assert
+        try {
+          await resolveRef(ctx, 'refs/heads/bad' as RefName);
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
         }
       });
     });
@@ -330,6 +373,90 @@ describe('resolveRef', () => {
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');
+        }
+      });
+    });
+  });
+});
+
+describe('resolveRefOrMissing', () => {
+  describe('Given a missing ref chain', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then resolves to undefined (no REF_NOT_FOUND thrown)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = await resolveRefOrMissing(ctx, 'refs/heads/gone' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a ref that resolves to a concrete id', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then resolves to the id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+
+        // Act
+        const result = await resolveRefOrMissing(ctx, 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBe(MAIN_ID);
+      });
+    });
+  });
+
+  describe('Given an annotated tag pointing to a commit and peel=true', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then resolves to the peeled object id (peel option threads through)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, tree);
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: treeId,
+            objectType: 'tree',
+            tagName: 'v1',
+            tagger: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
+            message: 'v1',
+            extraHeaders: [],
+          },
+        };
+        const tagId = await writeObject(ctx, tag);
+        await ctx.fs.writeUtf8('/repo/.git/refs/tags/v1', `${tagId}\n`);
+
+        // Act
+        const result = await resolveRefOrMissing(ctx, 'refs/tags/v1' as RefName, { peel: true });
+
+        // Assert
+        expect(result).toBe(treeId);
+      });
+    });
+  });
+
+  describe('Given a symbolic ref cycle', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then throws REF_CYCLE_DETECTED (a non-miss failure still propagates)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/loop\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop', 'ref: HEAD\n');
+
+        // Act + Assert
+        try {
+          await resolveRefOrMissing(ctx, 'HEAD');
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('REF_CYCLE_DETECTED');
         }
       });
     });

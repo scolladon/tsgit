@@ -24,7 +24,7 @@ import { readTree } from '../primitives/read-tree.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
   parseExpression,
@@ -63,10 +63,15 @@ const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise
 const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
   if (isOid(base, ctx.hashConfig)) return ObjectIdFactory.from(base);
   // Try as a ref name; the verbatim candidate also covers the HEAD literal,
-  // which resolveRef accepts directly.
+  // which resolveRef accepts directly. resolveRefOrMissing signals a miss by
+  // returning undefined rather than throwing REF_NOT_FOUND, so a swept-past
+  // candidate costs no stack-capturing throw; git's expand_ref still
+  // continues past any OTHER failure (a dangling/broken candidate), hence
+  // the catch stays.
   for (const candidate of refCandidates(base)) {
     try {
-      return await resolveRef(ctx, candidate);
+      const id = await resolveRefOrMissing(ctx, candidate);
+      if (id !== undefined) return id;
     } catch {
       // continue
     }

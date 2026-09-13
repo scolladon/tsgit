@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
+import * as resolveRefMod from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS, serializeIndex } from '../../../../src/domain/git-index/index.js';
@@ -397,6 +399,31 @@ describe('revParse', () => {
         const data = (caught as TsgitError).data as { code: string; id: string };
         expect(data.code).toBe('OBJECT_NOT_FOUND');
         expect(data.id).toBe('no-such-thing');
+      });
+    });
+  });
+
+  describe('Given a base matching none of the six ref candidates', () => {
+    describe('When revParse sweeps the candidates', () => {
+      it('Then probes resolveDirect exactly 6 times and never invokes the throwing resolveRef', async () => {
+        // Arrange — a RefStore double (the real store, spied) counts direct
+        // probes; resolveRef is the sweep's OLD throw-per-miss path.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const resolveDirectSpy = vi.spyOn(getRefStore(ctx), 'resolveDirect');
+        const resolveRefSpy = vi.spyOn(resolveRefMod, 'resolveRef');
+
+        // Act
+        try {
+          await revParse(ctx, 'totally-unknown-base');
+          expect.unreachable();
+        } catch {
+          // OBJECT_NOT_FOUND — already asserted by the sibling case above.
+        }
+
+        // Assert
+        expect(resolveDirectSpy).toHaveBeenCalledTimes(6);
+        expect(resolveRefSpy).not.toHaveBeenCalled();
       });
     });
   });

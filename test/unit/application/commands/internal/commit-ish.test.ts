@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../../src/application/commands/branch.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { resolveCommitIsh } from '../../../../../src/application/commands/internal/commit-ish.js';
+import * as resolveRefMod from '../../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
@@ -156,6 +157,23 @@ describe('resolveCommitIsh', () => {
 
         // Assert
         expect(code).toBe('REF_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a commit-ish matching none of the ref-DWIM candidates', () => {
+    describe('When resolved', () => {
+      it('Then sweeps via resolveRefOrMissing (no thrown-and-caught miss per candidate)', async () => {
+        // Arrange
+        const { ctx } = await seedCommit();
+        const resolveRefOrMissingSpy = vi.spyOn(resolveRefMod, 'resolveRefOrMissing');
+
+        // Act
+        const code = await codeOf(() => resolveCommitIsh(ctx, 'nope'));
+
+        // Assert
+        expect(code).toBe('REF_NOT_FOUND');
+        expect(resolveRefOrMissingSpy).toHaveBeenCalledTimes(6);
       });
     });
   });
