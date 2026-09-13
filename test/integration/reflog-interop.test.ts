@@ -161,6 +161,21 @@ describe.skipIf(!GIT_AVAILABLE)(
      */
     let reachabilityWithDBaseDir = '';
     let reachabilityWithDB = '';
+    /**
+     * A fifth base repo pinning F1: `main` commits P then Q then R, then a
+     * `reset --hard` back to P and forward to R again — R's parent Q sits
+     * below the total cutoff under test, so the bounded pass marks Q but
+     * never expands it, leaving P (reachable only through Q) unmarked. Git's
+     * date bound is laziness only: a miss on P drops the bound and re-expands
+     * Q, finding P after all.
+     */
+    let frontierBaseDir = '';
+    /**
+     * A sixth base repo pinning F3: `main` commits A, then HEAD detaches and
+     * commits B — B is reachable only by way of the detached HEAD, which
+     * `UE_HEAD` never seeds as a tip in its own right.
+     */
+    let detachedHeadBaseDir = '';
     const REACHABILITY_EPOCH = 1_700_000_000;
     const caseRoots: string[] = [];
 
@@ -271,6 +286,56 @@ describe.skipIf(!GIT_AVAILABLE)(
       runGit(['-C', reachabilityWithDBaseDir, 'reset', '-q', '--hard', reachabilityWithDB], {
         env: datedEnv(REACHABILITY_EPOCH + 200),
       });
+
+      frontierBaseDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-interop-frontier-'));
+      runGit(['init', '-q', '-b', 'main', frontierBaseDir]);
+      git(frontierBaseDir, 'config', 'user.name', 'Ada');
+      git(frontierBaseDir, 'config', 'user.email', 'ada@example.com');
+      git(frontierBaseDir, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(frontierBaseDir);
+      await writeFile(path.join(frontierBaseDir, 'p.txt'), 'p\n');
+      git(frontierBaseDir, 'add', '-A');
+      runGit(['-C', frontierBaseDir, 'commit', '-q', '-m', 'p'], {
+        env: datedEnv(REACHABILITY_EPOCH + 1000),
+      });
+      const frontierP = git(frontierBaseDir, 'rev-parse', 'HEAD').trim();
+      await writeFile(path.join(frontierBaseDir, 'q.txt'), 'q\n');
+      git(frontierBaseDir, 'add', '-A');
+      runGit(['-C', frontierBaseDir, 'commit', '-q', '-m', 'q'], {
+        env: datedEnv(REACHABILITY_EPOCH + 1500),
+      });
+      await writeFile(path.join(frontierBaseDir, 'r.txt'), 'r\n');
+      git(frontierBaseDir, 'add', '-A');
+      runGit(['-C', frontierBaseDir, 'commit', '-q', '-m', 'r'], {
+        env: datedEnv(REACHABILITY_EPOCH + 3000),
+      });
+      const frontierR = git(frontierBaseDir, 'rev-parse', 'HEAD').trim();
+      runGit(['-C', frontierBaseDir, 'reset', '-q', '--hard', frontierP], {
+        env: datedEnv(REACHABILITY_EPOCH + 3500),
+      });
+      runGit(['-C', frontierBaseDir, 'reset', '-q', '--hard', frontierR], {
+        env: datedEnv(REACHABILITY_EPOCH + 3600),
+      });
+
+      detachedHeadBaseDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-interop-detach-'));
+      runGit(['init', '-q', '-b', 'main', detachedHeadBaseDir]);
+      git(detachedHeadBaseDir, 'config', 'user.name', 'Ada');
+      git(detachedHeadBaseDir, 'config', 'user.email', 'ada@example.com');
+      git(detachedHeadBaseDir, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(detachedHeadBaseDir);
+      await writeFile(path.join(detachedHeadBaseDir, 'a.txt'), 'a\n');
+      git(detachedHeadBaseDir, 'add', '-A');
+      runGit(['-C', detachedHeadBaseDir, 'commit', '-q', '-m', 'a'], {
+        env: datedEnv(REACHABILITY_EPOCH),
+      });
+      runGit(['-C', detachedHeadBaseDir, 'checkout', '-q', '--detach'], {
+        env: datedEnv(REACHABILITY_EPOCH + 50),
+      });
+      await writeFile(path.join(detachedHeadBaseDir, 'b.txt'), 'b\n');
+      git(detachedHeadBaseDir, 'add', '-A');
+      runGit(['-C', detachedHeadBaseDir, 'commit', '-q', '-m', 'b'], {
+        env: datedEnv(REACHABILITY_EPOCH + 100),
+      });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
@@ -278,6 +343,8 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(freshBaseDir, { recursive: true, force: true });
       await rm(reachabilityBaseDir, { recursive: true, force: true });
       await rm(reachabilityWithDBaseDir, { recursive: true, force: true });
+      await rm(frontierBaseDir, { recursive: true, force: true });
+      await rm(detachedHeadBaseDir, { recursive: true, force: true });
       await Promise.all(
         caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
       );
@@ -1710,6 +1777,118 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(result).toEqual({ kind: 'expire', removed: 2, kept: 2 });
           const peerBytes = await readFile(mainLogPath(peer));
           const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a mark left over below the total cutoff, reachable only through it', () => {
+      describe('When expire runs with explicit numeric cutoffs on refs/heads/main', () => {
+        it('Then git and tsgit both drop the bound on the miss and keep the same three entries, byte-identical', async () => {
+          // Arrange — R's parent Q sits below the total cutoff, so the
+          // bounded pass marks Q but stops there, without ever reaching P.
+          // git's date bound is laziness only: the first miss on P drops the
+          // bound and re-expands Q, discovering P after all.
+          const peer = await cloneRepo(frontierBaseDir, 'frontier-peer');
+          const ours = await cloneRepo(frontierBaseDir, 'frontier-ours');
+          const expire = `@${REACHABILITY_EPOCH + 2000}`;
+          const expireUnreachable = `@${REACHABILITY_EPOCH + 4000}`;
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            `--expire=${expire}`,
+            `--expire-unreachable=${expireUnreachable}`,
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire,
+            expireUnreachable,
+          });
+
+          // Assert — `0→P` and `P→Q` are below the total cutoff and expire
+          // unconditionally; `Q→R`, `R→P` and `P→R` all survive, P and R
+          // proven mutually reachable only once the bound is dropped.
+          expect(result).toEqual({ kind: 'expire', removed: 2, kept: 3 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given an entry naming an object that was never written', () => {
+      describe('When expire runs with --expire=never --expire-unreachable=now on refs/heads/main', () => {
+        it('Then git and tsgit both treat the missing object as a gentle-lookup miss and keep every entry, byte-identical', async () => {
+          // Arrange — git's `lookup_commit_reference_gently` returns NULL on
+          // any resolution failure, a name that was never written included;
+          // the caller keeps the entry rather than aborting the expire.
+          const peer = await caseDir('missing-object-peer');
+          const ours = await caseDir('missing-object-ours');
+          const missing = 'f'.repeat(40);
+          const line2 = `${c0} ${missing} Ada <ada@example.com> ${BASE_EPOCH + 100} +0200\tprobe: named object never written\n`;
+          const line3 = `${missing} ${c0} Ada <ada@example.com> ${BASE_EPOCH + 200} +0200\tprobe: named object never written\n`;
+          const text = `${baseLines[0]}${line2}${line3}`;
+          await writeFile(mainLogPath(peer), text, 'utf8');
+          await writeFile(mainLogPath(ours), text, 'utf8');
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            '--expire=never',
+            '--expire-unreachable=now',
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 3 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given HEAD detached at a commit no ref under refs/ names', () => {
+      describe('When expire runs with --expire=never --expire-unreachable=now on HEAD', () => {
+        it('Then git and tsgit both exclude HEAD itself from the tip set, byte-identical', async () => {
+          // Arrange — git seeds `UE_HEAD`'s mark list via `refs_for_each_ref`,
+          // refs under `refs/` only; `HEAD` is never pushed as a tip in its
+          // own right, detached or not. `main` (the only ref) sits at A; B is
+          // reachable only by way of the detached HEAD.
+          const peer = await cloneRepo(detachedHeadBaseDir, 'detached-peer');
+          const ours = await cloneRepo(detachedHeadBaseDir, 'detached-ours');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', '--expire-unreachable=now', 'HEAD');
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert — the entry naming B (`commit: b`) expires; B is
+          // unreachable from `main` (the only ref, still at A), and the
+          // detached HEAD that names it is never itself a tip.
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 2 });
+          const peerBytes = await readFile(headLogPath(peer));
+          const oursBytes = await readFile(headLogPath(ours));
           expect(oursBytes).toEqual(peerBytes);
         });
       });

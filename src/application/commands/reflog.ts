@@ -14,8 +14,8 @@ import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
-import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
-import { readCommitMeta } from '../primitives/internal/read-commit-meta.js';
+import { type PeeledRef, peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
+import { type CommitMeta, readCommitMeta } from '../primitives/internal/read-commit-meta.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
@@ -247,27 +247,49 @@ const expireKindFor = async (
 };
 
 /** Mark-and-sweep state for one ref's walk: `marked` commits are confirmed
- *  reachable within the total-cutoff bound; `frontier` holds ids reached but
- *  not yet popped. Mutable by design — the walk is driven incrementally, one
- *  query at a time, and shared across every entry of the same ref. */
+ *  reachable; `frontier` holds ids reached but not yet popped; `leftover`
+ *  holds marked commits whose expansion the total-cutoff bound skipped, kept
+ *  so the bound can be dropped and retried on a miss — git's
+ *  `mark_reachable`/`unreachable()` pair, where the date bound is laziness
+ *  only, never a permanent verdict. Mutable by design — the walk is driven
+ *  incrementally, one query at a time, and shared across every entry of the
+ *  same ref. */
 interface ReachabilityState {
   readonly marked: Set<ObjectId>;
   readonly frontier: ObjectId[];
+  readonly leftover: ObjectId[];
   head: number;
+  boundActive: boolean;
 }
 
 const createReachability = (tips: ReadonlyArray<ObjectId>): ReachabilityState => ({
   marked: new Set(),
   frontier: [...tips],
+  leftover: [],
   head: 0,
+  boundActive: true,
 });
+
+const isObjectNotFound = (err: unknown): boolean =>
+  err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND';
+
+/** git's gentle `repo_parse_commit`: a missing ancestor is skipped rather
+ *  than aborting the walk. Left unmarked — a parse failure proves nothing
+ *  about reachability, so it must never answer a later `isMarked` check. */
+const readAncestorMeta = async (ctx: Context, id: ObjectId): Promise<CommitMeta | undefined> => {
+  try {
+    return await readCommitMeta(ctx, id);
+  } catch (err) {
+    if (isObjectNotFound(err)) return undefined;
+    throw err;
+  }
+};
 
 /**
  * Pop the next unexpanded frontier commit and mark it reachable; only while
- * it is at or above the total cutoff are its parents themselves enqueued. A
- * commit older than the cutoff is marked (it WAS reached) but never expanded
- * past, so anything reachable only through its own ancestry stays unmarked —
- * git's `leftover` frontier. Returns false once the frontier is exhausted.
+ * the bound is inactive, or the commit is at or above the total cutoff, are
+ * its parents themselves enqueued. A commit the bound skips is recorded in
+ * `leftover` — reached, but not yet proven to reach further.
  */
 const expandFrontier = async (
   ctx: Context,
@@ -278,19 +300,39 @@ const expandFrontier = async (
   const id = state.frontier[state.head] as ObjectId;
   state.head += 1;
   if (state.marked.has(id)) return true;
+  const meta = await readAncestorMeta(ctx, id);
+  if (meta === undefined) return true;
   state.marked.add(id);
-  const meta = await readCommitMeta(ctx, id);
-  if (meta !== undefined && meta.committerDate >= expireCut) {
-    for (const parent of meta.parents) {
-      if (!state.marked.has(parent)) state.frontier.push(parent);
-    }
+  if (state.boundActive && meta.committerDate < expireCut) {
+    state.leftover.push(id);
+    return true;
+  }
+  for (const parent of meta.parents) {
+    if (!state.marked.has(parent)) state.frontier.push(parent);
   }
   return true;
 };
 
-/** Whether `id` is reachable within the bound, extending the walk from the
- *  frontier before answering — as many steps as it takes to find it, or to
- *  exhaust the frontier trying. */
+/**
+ * Once the bounded frontier is exhausted, a non-empty `leftover` means the
+ * date bound only stopped the walk early — git's `unreachable()` miss
+ * handler drops the bound (`mark_limit = 0`) and resumes expansion from
+ * those commits down to the root. An already-dropped bound, or an empty
+ * leftover, means the walk is genuinely exhausted.
+ */
+const dropBoundAndRetry = (state: ReachabilityState): boolean => {
+  if (!state.boundActive || state.leftover.length === 0) return false;
+  state.boundActive = false;
+  for (const id of state.leftover) state.marked.delete(id);
+  state.frontier.push(...state.leftover);
+  state.leftover.length = 0;
+  return true;
+};
+
+/** Whether `id` is reachable, extending the walk from the frontier before
+ *  answering — as many steps as it takes to find it, dropping the
+ *  total-cutoff bound once and retrying from the leftover commits if the
+ *  first, bounded pass misses. */
 const isMarked = async (
   ctx: Context,
   state: ReachabilityState,
@@ -298,13 +340,28 @@ const isMarked = async (
   id: ObjectId,
 ): Promise<boolean> => {
   while (!state.marked.has(id)) {
-    if (!(await expandFrontier(ctx, state, expireCut))) return false;
+    const expanded = await expandFrontier(ctx, state, expireCut);
+    if (!expanded && !dropBoundAndRetry(state)) return false;
   }
   return true;
 };
 
-/** A null object id or one that does not peel to a commit is never
- *  unreachable — it is kept, exactly as git's own gentle lookup treats it. */
+/** git's `lookup_commit_reference_gently`: a name that resolves to nothing at
+ *  all — pruned, or never written — returns NULL rather than aborting. */
+const peelGently = async (ctx: Context, oid: ObjectId): Promise<PeeledRef | undefined> => {
+  try {
+    return await peelRefToCommit(ctx, oid);
+  } catch (err) {
+    if (isObjectNotFound(err)) return undefined;
+    throw err;
+  }
+};
+
+/** A null object id, one that never resolved, or one that does not peel to a
+ *  commit is never unreachable — it is kept, exactly as git's own gentle
+ *  lookup treats it. Marks are consulted first: a marked id is already a
+ *  confirmed-reachable commit by construction (marks come from
+ *  `readCommitMeta` parents), so only a miss pays for the peel. */
 const isUnreachable = async (
   ctx: Context,
   state: ReachabilityState,
@@ -312,7 +369,8 @@ const isUnreachable = async (
   oid: ObjectId,
 ): Promise<boolean> => {
   if (oid === zeroOid(ctx.hashConfig)) return false;
-  const peeled = await peelRefToCommit(ctx, oid);
+  if (state.marked.has(oid)) return false;
+  const peeled = await peelGently(ctx, oid);
   if (peeled === undefined) return false;
   return !(await isMarked(ctx, state, expireCut, peeled.commit.id));
 };
@@ -344,9 +402,12 @@ const resolveTips = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
   // independent read; the dedup moves to a `Set` built over the results
   // instead of accumulating into one while iterating serially. Survives only
   // for `HEAD`'s every-tip mark list — a single named ref peels its own tip
-  // directly (`expireKindFor`).
+  // directly (`expireKindFor`). git seeds this list via `refs_for_each_ref`
+  // — refs under `refs/` only — so the `HEAD` pseudo-ref `enumerateRefs`
+  // also reports is never a tip in its own right, detached or not.
   const refs = await enumerateRefs(ctx);
-  const resolved = await boundedMapFor(ctx, 'ioBound', refs, (ref) => tryResolve(ctx, ref));
+  const tipRefs = refs.filter((ref) => ref !== 'HEAD');
+  const resolved = await boundedMapFor(ctx, 'ioBound', tipRefs, (ref) => tryResolve(ctx, ref));
   const ids = resolved.filter((id): id is ObjectId => id !== undefined);
   return [...new Set(ids)];
 };

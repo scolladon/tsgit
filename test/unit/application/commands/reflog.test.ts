@@ -19,6 +19,13 @@ import { parseApproxidate, serializeReflogLine } from '../../../../src/domain/re
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
+interface BadNumericData {
+  readonly code: string;
+  readonly key: string;
+  readonly value: string;
+  readonly reason: string;
+}
+
 const HEAD = 'HEAD' as RefName;
 const BRANCH = 'refs/heads/main' as RefName;
 const TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as ObjectId;
@@ -284,8 +291,13 @@ describe('reflog command', () => {
           caught = err;
         }
 
-        // Assert
-        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        // Assert — the whole payload, each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as BadNumericData;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(data.key).toBe('core.maxtreedepth');
+        expect(data.value).toBe('2.5');
+        expect(data.reason).toBe('invalid unit');
       });
     });
 
@@ -306,8 +318,13 @@ describe('reflog command', () => {
           caught = err;
         }
 
-        // Assert
-        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        // Assert — the whole payload, each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as BadNumericData;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(data.key).toBe('core.maxtreedepth');
+        expect(data.value).toBe('2.5');
+        expect(data.reason).toBe('invalid unit');
       });
     });
 
@@ -327,8 +344,13 @@ describe('reflog command', () => {
           caught = err;
         }
 
-        // Assert
-        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        // Assert — the whole payload, each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as BadNumericData;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(data.key).toBe('core.maxtreedepth');
+        expect(data.value).toBe('2.5');
+        expect(data.reason).toBe('invalid unit');
       });
     });
   });
@@ -1828,6 +1850,159 @@ describe('reflog command', () => {
       });
     });
 
+    describe('Given an entry whose new object id names an object that was never written', () => {
+      describe('When expire evaluates it', () => {
+        it('Then the missing object is a gentle-lookup miss, not a thrown error, and the entry is kept', async () => {
+          // Arrange — git's `lookup_commit_reference_gently` returns NULL on
+          // any resolution failure, a pruned-but-still-named object included;
+          // the caller keeps the entry rather than aborting the whole expire.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: tip, newId: OID_X, identity: identityAt(now - 45 * DAY) }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+    });
+
+    describe('Given peeling an object id raises an error unrelated to a missing object', () => {
+      describe('When expire evaluates reachability', () => {
+        it('Then the error propagates rather than being treated as a gentle-lookup miss', async () => {
+          // Arrange — narrows the gentle-lookup catch to the one code git's
+          // NULL-on-any-failure keep rule actually covers; anything else
+          // (a corrupt object, an aborted read) must not be swallowed.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: tip, newId: OID_X, identity: identityAt(now - 45 * DAY) }),
+          ]);
+          const original = readObjectMod.readObject;
+          const boom = new TsgitError({ code: 'OPERATION_ABORTED' });
+          const spy = vi
+            .spyOn(readObjectMod, 'readObject')
+            .mockImplementation(async (readCtx, id, options) =>
+              id === OID_X ? Promise.reject(boom) : original(readCtx, id, options),
+            );
+
+          // Act
+          let caught: unknown;
+          try {
+            await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(caught).toBe(boom);
+        });
+      });
+    });
+
+    describe('Given a detached HEAD pointing to a commit no ref under refs/ names', () => {
+      describe('When expire runs against HEAD', () => {
+        it('Then HEAD itself is not a tip — the entry naming the detached commit expires', async () => {
+          // Arrange — git seeds `UE_HEAD`'s mark list via `refs_for_each_ref`,
+          // refs under `refs/` only; `HEAD` is never pushed as a tip in its
+          // own right, detached or not. `main` (the only ref) sits at A; B is
+          // reachable only by way of the detached HEAD.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const a = await writeCommit(ctx, [], now - 40 * DAY);
+          const b = await writeCommit(ctx, [a], now - 20 * DAY);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': a }, head: b });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: a, newId: b, identity: identityAt(now - 35 * DAY) }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+          // Assert — without the fix, resolving `HEAD` itself as a tip marks
+          // B reachable and keeps this entry instead.
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        });
+      });
+    });
+
+    describe('Given a missing ancestor reached mid-walk through a sibling parent link', () => {
+      describe('When expire runs', () => {
+        it('Then the missing ancestor is skipped rather than aborting the walk, and the reachable sibling is still found', async () => {
+          // Arrange — Mid is a merge of `missing` (never written) and `g`
+          // (real); `missing` sorts first in the parent list, so the walk
+          // hits and skips it before it ever reaches `g`. Without the fix,
+          // `readCommitMeta(missing)` throws and the whole expire aborts.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const g = await writeCommit(ctx, [], now - 60 * DAY);
+          const missing = 'e'.repeat(40) as ObjectId;
+          const mid = await writeCommit(ctx, [missing, g], now - 40 * DAY);
+          const tip = await writeCommit(ctx, [mid], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: ZERO_OID, newId: g, identity: identityAt(now - 45 * DAY) }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+    });
+
+    describe('Given reading an ancestor raises an error unrelated to a missing object', () => {
+      describe('When expire expands the frontier', () => {
+        it('Then the error propagates rather than being treated as a skippable parse failure', async () => {
+          // Arrange — narrows git's gentle `repo_parse_commit` skip to the
+          // one failure mode it actually covers; anything else must abort
+          // the walk, not silently leave the ancestor unmarked.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const parent = await writeCommit(ctx, [], now - 10 * DAY);
+          const tip = await writeCommit(ctx, [parent], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: ZERO_OID, newId: parent, identity: identityAt(now - 45 * DAY) }),
+          ]);
+          const original = readCommitMetaMod.readCommitMeta;
+          const boom = new TsgitError({ code: 'OPERATION_ABORTED' });
+          const spy = vi
+            .spyOn(readCommitMetaMod, 'readCommitMeta')
+            .mockImplementation(async (metaCtx, id) =>
+              id === parent ? Promise.reject(boom) : original(metaCtx, id),
+            );
+
+          // Act
+          let caught: unknown;
+          try {
+            await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(caught).toBe(boom);
+        });
+      });
+    });
+
     describe('Given a named ref whose tip is not a commit', () => {
       describe('When expire runs on it with a middle-band timestamp', () => {
         it('Then the entry expires without a reachability check', async () => {
@@ -1912,12 +2087,51 @@ describe('reflog command', () => {
       });
     });
 
-    describe('Given a commit chain crossing the total cutoff', () => {
+    describe('Given a cutoff pair where the unreachable clock is later than the total clock', () => {
+      describe('When expire runs', () => {
+        it('Then it does read objects — the positive control proving the spy above actually intercepts', async () => {
+          // Arrange — same fixture as the sibling "never reads a single
+          // object" test, but with the cutoffs reversed so the walk is NOT
+          // skipped. Without this control, a spy that silently fails to
+          // intercept `readObject` would make the sibling's `toBe(0)` pass
+          // for the wrong reason.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 45 * DAY) }),
+          ]);
+          const spy = vi.spyOn(readObjectMod, 'readObject');
+
+          // Act
+          let calls: number;
+          try {
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: 'never',
+              expireUnreachable: 'now',
+            });
+            calls = spy.mock.calls.length;
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(calls).toBeGreaterThan(0);
+        });
+      });
+    });
+
+    describe('Given a commit chain crossing the total cutoff, reachable only through the aged commit', () => {
       describe('When expire checks reachability of a commit beyond the aged boundary', () => {
-        it('Then the walk does not expand past the aged commit', async () => {
-          // Arrange — tip T is young enough to expand into its parent P; P
-          // is already below the total cutoff, so it is marked but never
-          // expanded, and grandparent G is never visited at all.
+        it('Then the bound is dropped on a miss and the entry is kept, not expired', async () => {
+          // Arrange — tip T is young enough to expand into its parent P; P is
+          // already below the total cutoff, so the bounded pass marks P but
+          // does not expand it, leaving grandparent G unreached. git's date
+          // bound is laziness only: the first miss on G drops the bound and
+          // re-expands P, so G is found and the entry naming it survives.
           const epoch = 1_700_000_000;
           const ctx = createMemoryContext();
           const g = await writeCommit(ctx, [], epoch);
@@ -1944,11 +2158,18 @@ describe('reflog command', () => {
             spy.mockRestore();
           }
 
-          // Assert
-          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          // Assert — the entry is kept (not removed), and P is visited twice:
+          // once during the bounded pass (marked, not expanded — the "first
+          // miss" on G has not happened yet), and again only after that miss
+          // drops the bound, this time expanding into G.
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
           expect(visited).toContain(t);
-          expect(visited).toContain(p);
-          expect(visited).not.toContain(g);
+          const pVisitIndexes = visited.reduce<number[]>(
+            (acc, id, index) => (id === p ? [...acc, index] : acc),
+            [],
+          );
+          expect(pVisitIndexes).toHaveLength(2);
+          expect(visited.indexOf(g)).toBeGreaterThan(pVisitIndexes[1] as number);
         });
       });
     });
