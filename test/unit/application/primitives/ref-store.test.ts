@@ -731,6 +731,28 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given the same ref name loose AND packed (loose shadows packed)', () => {
+    describe('When listing refs with no prefix', () => {
+      it('Then exactly one entry is returned, carrying the LOOSE oid', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [{ name: 'refs/heads/main' as RefName, id: 'c'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs();
+
+        // Assert — a flipped/dropped `!looseSet.has(entry.name)` dedup guard
+        // would emit the packed oid as a second, duplicate entry.
+        const matches = result.filter((entry) => entry.name === 'refs/heads/main');
+        expect(matches).toHaveLength(1);
+        expect(matches[0]?.value).toEqual({ kind: 'direct', id: 'a'.repeat(40) });
+      });
+    });
+  });
+
   describe('Given loose refs under refs/heads/ and a sibling refs/tags/ namespace', () => {
     describe('When listing refs with prefix refs/heads/', () => {
       it('Then the walk never reads the refs/tags directory', async () => {

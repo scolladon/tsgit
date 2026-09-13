@@ -178,6 +178,46 @@ describe('resolveCommitIsh', () => {
     });
   });
 
+  describe('Given a broken ref candidate ahead of a resolvable one', () => {
+    describe('When resolveCommitIsh sweeps refs/tags/ (broken) before refs/heads/ (valid)', () => {
+      it('Then the broken candidate is swept past and refs/heads/x resolves', async () => {
+        // Arrange — refCandidates tries refs/tags/<base> BEFORE
+        // refs/heads/<base>; garbage loose-ref content makes the chain
+        // resolution throw INVALID_OBJECT_ID, which the sweep's catch must
+        // swallow to reach the valid candidate.
+        const { ctx, head } = await seedCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, 'not-an-oid\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${head}\n`);
+
+        // Act
+        const result = await resolveCommitIsh(ctx, 'x');
+
+        // Assert
+        expect(result).toBe(head);
+      });
+    });
+  });
+
+  describe('Given a symref-cycle ref candidate ahead of a resolvable one', () => {
+    describe('When resolveCommitIsh sweeps refs/tags/ (cyclic) before refs/heads/ (valid)', () => {
+      it('Then the cyclic candidate is swept past and refs/heads/x resolves', async () => {
+        // Arrange — refs/tags/x and refs/tags/loop point at each other, so
+        // the sweep's own cycle detection throws REF_CYCLE_DETECTED for that
+        // candidate; the catch must swallow it to reach refs/heads/x.
+        const { ctx, head } = await seedCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, 'ref: refs/tags/loop\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/loop`, 'ref: refs/tags/x\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${head}\n`);
+
+        // Act
+        const result = await resolveCommitIsh(ctx, 'x');
+
+        // Assert
+        expect(result).toBe(head);
+      });
+    });
+  });
+
   describe('Given the short name origin/<branch> of a remote-tracking ref', () => {
     describe('When resolved', () => {
       it('Then resolves via refs/remotes/<base>', async () => {

@@ -428,6 +428,51 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given a broken ref candidate ahead of a resolvable one', () => {
+    describe('When revParse sweeps refs/tags/ (broken) before refs/heads/ (valid)', () => {
+      it('Then the broken candidate is swept past and refs/heads/x resolves', async () => {
+        // Arrange — refCandidates tries refs/tags/<base> BEFORE
+        // refs/heads/<base>; garbage loose-ref content makes resolveDirect
+        // throw INVALID_REF, which the sweep's catch must swallow to reach
+        // the valid candidate. Without the catch, this throws instead of
+        // resolving.
+        const ctx = createMemoryContext();
+        const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, 'not-an-oid\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${commit}\n`);
+
+        // Act
+        const result = await revParse(ctx, 'x');
+
+        // Assert
+        expect(result).toBe(commit);
+      });
+    });
+  });
+
+  describe('Given a symref-cycle ref candidate ahead of a resolvable one', () => {
+    describe('When revParse sweeps refs/tags/ (cyclic) before refs/heads/ (valid)', () => {
+      it('Then the cyclic candidate is swept past and refs/heads/x resolves', async () => {
+        // Arrange — refs/tags/x and refs/tags/loop point at each other,
+        // so the sweep's own cycle-detection throws REF_CYCLE_DETECTED for
+        // that candidate; the catch must swallow it to reach refs/heads/x.
+        const ctx = createMemoryContext();
+        const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, 'ref: refs/tags/loop\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/loop`, 'ref: refs/tags/x\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${commit}\n`);
+
+        // Act
+        const result = await revParse(ctx, 'x');
+
+        // Assert
+        expect(result).toBe(commit);
+      });
+    });
+  });
+
   describe('Given HEAD with one parent op', () => {
     describe('When revParse(HEAD^)', () => {
       it('Then returns the first parent', async () => {

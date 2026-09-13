@@ -139,6 +139,35 @@ describe('packRefs — files backend', () => {
     });
   });
 
+  describe('Given a files repository whose main branch is loose AND stale-packed under the same name', () => {
+    describe('When packRefs runs', () => {
+      it('Then packed-refs names main exactly once, carrying the current loose oid', async () => {
+        // Arrange — a stale packed-refs entry for refs/heads/main pre-dates
+        // the loose file's current commit. `packableEntries` derives from
+        // `listRefs()`; a flipped/dropped `!looseSet.has(entry.name)` dedup
+        // guard there would let this stale packed entry survive alongside
+        // the loose one, producing a duplicate `main` line in packed-refs.
+        const { ctx, commitId } = await seedOneCommit();
+        const staleOid = 'c'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8(
+          packedRefsPathOf(ctx),
+          `# pack-refs with: peeled fully-peeled sorted \n${staleOid} refs/heads/main\n`,
+        );
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.packedRefCount).toBe(1);
+        const packed = await ctx.fs.readUtf8(packedRefsPathOf(ctx));
+        const mainLines = packed.split('\n').filter((line) => line.endsWith(' refs/heads/main'));
+        expect(mainLines).toHaveLength(1);
+        expect(mainLines[0]).toBe(`${commitId} refs/heads/main`);
+      });
+    });
+  });
+
   describe('Given a freshly initialised files repository with no refs', () => {
     describe('When packRefs runs', () => {
       it('Then the repository is unchanged — no packed-refs file is written', async () => {
