@@ -13,8 +13,7 @@ import { configSectionNotFound, invalidOption } from '../../domain/commands/erro
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { invalidateConfigCache, scanHeaderPrefix, skipGitSpace } from './config-read.js';
-import { invalidateScopedConfigCache } from './config-scoped-read.js';
-import { resolveScopePath } from './internal/config-scope.js';
+import { invalidateScopedConfigCache, resolveConfigScopePath } from './config-scoped-read.js';
 import {
   rejectEmptyPlainSection,
   rejectSection,
@@ -249,7 +248,7 @@ export const renameConfigSection = async ({
   const to = parseNewSectionName(newName);
   if (to.subsection !== undefined) rejectSubsection(to.subsection);
   const targetScope: ConfigScope = scope ?? 'local';
-  const path = await resolveScopePath(ctx, targetScope);
+  const path = await resolveConfigScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
   // Header-recognition existence check — lenient on malformed headers/values,
   // exactly like git's copy_or_rename machinery. A malformed header is not
@@ -280,7 +279,7 @@ export const removeConfigSection = async ({
   readonly scope?: ConfigScope;
 }): Promise<void> => {
   const targetScope: ConfigScope = scope ?? 'local';
-  const path = await resolveScopePath(ctx, targetScope);
+  const path = await resolveConfigScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
   // Header-recognition existence check — lenient on malformed headers/values,
   // exactly like git's remove-section machinery. Matching is raw/byte-exact on

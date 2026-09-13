@@ -39,6 +39,7 @@ import {
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
   memoizeGateVerdict,
+  openConfigEpoch,
   type ValuelessEntry,
 } from '../config-read.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
@@ -287,14 +288,24 @@ const computeGateVerdict = async (ctx: Context): Promise<FilePath> => {
  * the `[core]` section passes full validation, then return the repo root.
  * Operational commands take this; the config porcelain stays on the bare
  * `assertRepository` so it survives a valueless or invalid `[core]` entry
- * (git's split). `hasUsableHead` runs fresh on every call — it is the one
- * part of this gate that must notice a change made outside `updateConfig*`
- * — then the rest of the verdict is served from the per-Context memo.
+ * (git's split). Three named steps, in order:
+ *
+ * 1. `hasUsableHead` — runs fresh on every call; the one part of this gate
+ *    that must notice a HEAD change made outside `updateConfig*`.
+ * 2. `openConfigEpoch` — the one `stat` of `.git/config` this command pays;
+ *    everything downstream this command reads config through is served
+ *    from the entry it trusts.
+ * 3. The memoised verdict — served from the per-session memo, re-derived
+ *    only when the epoch just re-keyed it.
+ *
+ * The two steps are never parallelised: a `stat` of config ahead of the HEAD
+ * check would read a non-repository's config before refusing it.
  */
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
   if (!(await hasUsableHead(ctx))) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
+  await openConfigEpoch(ctx);
   return await memoizeGateVerdict(ctx, computeGateVerdict);
 };
 

@@ -13,7 +13,7 @@ import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { sanitizeReflogMessage, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
 import { shouldAutocreateReflog } from '../../domain/reflog/should-log.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from './config-read.js';
+import { type ParsedConfig, readConfig } from './config-read.js';
 import { perWorktreeRefDir, reflogPath } from './path-layout.js';
 import { resolveReflogIdentity } from './reflog-identity.js';
 
@@ -27,6 +27,11 @@ export interface RecordRefUpdateOptions {
  * closed for `ref` — once a reflog file exists every update appends to it,
  * otherwise the `core.logAllRefUpdates` prefix rule decides.
  * `options.unconditional` skips that gate entirely.
+ *
+ * Reads config exactly ONCE and threads it into both consumers (the
+ * loggability gate and identity resolution) rather than letting each read
+ * it on its own — under an open epoch both reads are stat-free anyway; this
+ * fold removes the second one's promise hop regardless.
  */
 export async function recordRefUpdate(
   ctx: Context,
@@ -36,8 +41,9 @@ export async function recordRefUpdate(
   message: string,
   options?: RecordRefUpdateOptions,
 ): Promise<void> {
-  if (options?.unconditional !== true && !(await isLoggable(ctx, ref))) return;
-  const identity = await resolveReflogIdentity(ctx);
+  const config = await readConfig(ctx);
+  if (options?.unconditional !== true && !(await isLoggable(ctx, ref, config))) return;
+  const identity = await resolveReflogIdentity(ctx, config);
   await appendReflogFile(ctx, ref, {
     oldId,
     newId,
@@ -46,9 +52,8 @@ export async function recordRefUpdate(
   });
 }
 
-async function isLoggable(ctx: Context, ref: RefName): Promise<boolean> {
+async function isLoggable(ctx: Context, ref: RefName, config: ParsedConfig): Promise<boolean> {
   if (await reflogFileExists(ctx, ref)) return true;
-  const config = await readConfig(ctx);
   return shouldAutocreateReflog(ref, config.core ?? {});
 }
 

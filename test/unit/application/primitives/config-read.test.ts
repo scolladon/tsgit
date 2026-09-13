@@ -35,14 +35,23 @@ import {
 } from '../../../../src/application/primitives/config-scoped-read.js';
 import { assertValidBooleanConfig } from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
+import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
 import { notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context, RepositoryFormatRefusal } from '../../../../src/ports/context.js';
+import { instrumentedContext } from './fixtures.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
 };
+
+const seedHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+};
+
+const configStatCalls = (calls: ReadonlyArray<{ method: string; path: string }>): number =>
+  calls.filter((c) => c.method === 'stat' && c.path.endsWith('/config')).length;
 
 /** A context carrying a format-acceptance refusal — the repository config scope is dropped. */
 const rejectedCtx = (
@@ -2292,6 +2301,78 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(computeThird).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the operational gate has opened an epoch for this command', () => {
+    describe('When three sequential readConfig calls follow', () => {
+      it('Then only the gate itself pays a stat of config (the three reads are free)', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedHead(base);
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await assertOperationalRepository(ctx);
+        await readConfig(ctx);
+        await readConfig(ctx);
+        await readConfig(ctx);
+
+        // Assert
+        expect(configStatCalls(calls())).toBe(1);
+      });
+    });
+
+    describe('When a raw writeUtf8 rewrites the file inside the epoch', () => {
+      it('Then a readConfig within the same command does not see it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedHead(ctx);
+        await seed(ctx, '[core]\n  bare = true\n');
+        await assertOperationalRepository(ctx);
+
+        // Act — a raw rewrite past the epoch, no invalidateConfigCache call
+        await seed(ctx, '[core]\n  bare = false\n');
+        const result = await readConfig(ctx);
+
+        // Assert — still the trusted, pre-rewrite value
+        expect(result.core?.bare).toBe(true);
+      });
+
+      it('Then the NEXT operational gate observes it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedHead(ctx);
+        await seed(ctx, '[core]\n  bare = true\n');
+        await assertOperationalRepository(ctx);
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act — the next command's gate re-stats and re-keys the epoch
+        await assertOperationalRepository(ctx);
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bare).toBe(false);
+      });
+    });
+
+    describe('When invalidateConfigCache runs inside the epoch', () => {
+      it('Then the trusted bit is cleared and the next readConfig stats again', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedHead(base);
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+        await assertOperationalRepository(ctx);
+
+        // Act
+        invalidateConfigCache(ctx);
+        await readConfig(ctx);
+
+        // Assert — the epoch's own stat, plus one more paid by the freshly untrusted read
+        expect(configStatCalls(calls())).toBe(2);
       });
     });
   });

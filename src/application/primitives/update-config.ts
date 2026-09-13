@@ -24,9 +24,8 @@ import {
   parseIniSections,
   tokenizeConfigLines,
 } from './config-read.js';
-import { invalidateScopedConfigCache } from './config-scoped-read.js';
+import { invalidateScopedConfigCache, resolveConfigScopePath } from './config-scoped-read.js';
 import { collectValues } from './internal/config-key.js';
-import { resolveScopePath } from './internal/config-scope.js';
 import {
   rejectControlChars,
   rejectEmptyPlainSection,
@@ -618,7 +617,7 @@ const readModifyWriteScopedConfig = async (
   scope: ConfigScope,
   transform: (text: string) => string,
 ): Promise<void> => {
-  const path = await resolveScopePath(ctx, scope);
+  const path = await resolveConfigScopePath(ctx, scope);
   const before = await readConfigText(ctx, path);
   parseIniSectionsForWrite(before, path);
   const after = transform(before);
@@ -678,7 +677,7 @@ export const unsetConfigEntry = async ({
 }): Promise<void> => {
   const parsed = parseConfigKey(key);
   const targetScope: ConfigScope = scope ?? 'local';
-  const path = await resolveScopePath(ctx, targetScope);
+  const path = await resolveConfigScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
   // parseIniSections throws on malformed headers/values; translate header
   // errors to CONFIG_INVALID_FILE so the shape matches git's write refusal.
@@ -712,7 +711,7 @@ export const unsetAllConfigEntries = async ({
 }): Promise<void> => {
   const parsed = parseConfigKey(key);
   const targetScope: ConfigScope = scope ?? 'local';
-  const path = await resolveScopePath(ctx, targetScope);
+  const path = await resolveConfigScopePath(ctx, targetScope);
   const text = await readConfigText(ctx, path);
   // Translate header malformation to CONFIG_INVALID_FILE (same as unsetConfigEntry).
   const sections = parseIniSectionsForWrite(text, path);

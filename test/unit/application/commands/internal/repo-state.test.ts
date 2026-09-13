@@ -898,6 +898,33 @@ describe('internal/repo-state', () => {
         });
       });
     });
+
+    describe('Given a valid config accepted by a first command, then rewritten to a malformed value by a raw external write', () => {
+      describe('When a second assertOperationalRepository call runs (no invalidateConfigCache)', () => {
+        it('Then the second call refuses — the epoch re-stats and notices the edit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = true\n');
+          await assertOperationalRepository(ctx);
+
+          // Act — a raw rewrite between two commands, no invalidateConfigCache call
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = maybe\n');
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string };
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe('core.sparsecheckout');
+        });
+      });
+    });
   });
 
   describe('assertEagerConfigValid', () => {

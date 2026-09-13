@@ -5,6 +5,7 @@ import {
   assertRepoSettingsValid,
   repoSettingsVerdictSettled,
 } from '../../../../../src/application/primitives/internal/repo-settings-gate.js';
+import { assertOperationalRepository } from '../../../../../src/application/primitives/internal/repo-state.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
@@ -171,20 +172,32 @@ describe('internal/repo-settings-gate', () => {
       });
     });
 
-    describe('Given a resolved session whose file is rewritten to a malformed value WITHOUT invalidateConfigCache', () => {
-      describe('When assertRepoSettingsValid is called again', () => {
-        it('Then it still resolves — the per-session memo does not notice an un-invalidated external edit', async () => {
+    describe('Given a resolved session whose file is rewritten to a malformed value, then the operational gate runs again', () => {
+      describe('When assertRepoSettingsValid is called again (no invalidateConfigCache call)', () => {
+        it('Then the gate itself passes but the next boundary touch refuses — the epoch re-keyed the memo', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
           await seedConfig(ctx, '[core]\n\tbare = false\n');
           await assertRepoSettingsValid(ctx);
 
-          // Act — external rewrite, no invalidateConfigCache call
+          // Act — external rewrite, then the next command's own operational gate
           await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n');
+          const root = await assertOperationalRepository(ctx);
 
-          // Assert — the settled memo is stale on purpose (Part 10 adds the epoch)
-          await assertRepoSettingsValid(ctx);
+          // Assert — the eager gate does not validate this class, so it passes …
+          expect(root).toBe(ctx.layout.workDir);
+          // … but the first boundary touch after it must refuse.
+          let caught: unknown;
+          try {
+            await assertRepoSettingsValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.maxtreedepth');
         });
       });
     });

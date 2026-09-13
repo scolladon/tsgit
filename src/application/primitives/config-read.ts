@@ -184,6 +184,15 @@ interface ConfigCacheEntry {
 interface CachedConfigEntry {
   readonly promise: Promise<ConfigCacheEntry>;
   readonly mtimeKey: string;
+  /**
+   * Set by `openConfigEpoch` (the operational gate's one-stat-per-command
+   * freshness boundary) — never by `readConfigEntry`'s own per-read path.
+   * While `true`, every `readConfigEntry` call this command makes serves
+   * this entry with ZERO further `stat`; a primitive-only session, which
+   * never opens an epoch, never sees this flip and keeps paying its own
+   * per-read stat (see `readConfigEntry`).
+   */
+  trusted: boolean;
 }
 
 /** Sentinel `mtimeKey` for "the config file does not exist" — distinct from
@@ -283,7 +292,14 @@ let cache: WeakMap<Context['session'], CachedConfigEntry> = new WeakMap();
  * keep passing through the original Context, since `invalidateConfigCache`
  * only ever drops the caller's own key.
  */
-let gateVerdictCache: WeakMap<Context['session'], Promise<FilePath>> = new WeakMap();
+interface VerdictEntry<T> {
+  readonly promise: Promise<T>;
+  readonly mtimeKey: string;
+  /** Flipped by `memoizeSessionVerdict` the instant `promise` RESOLVES — never on a rejection. */
+  settled: boolean;
+}
+
+let gateVerdictCache: WeakMap<Context['session'], VerdictEntry<FilePath>> = new WeakMap();
 
 /**
  * The repo-settings class's own verdict memo (`internal/repo-settings-gate.ts`'s
@@ -293,28 +309,39 @@ let gateVerdictCache: WeakMap<Context['session'], Promise<FilePath>> = new WeakM
  * reverse to avoid a cycle), a separate slot because the two verdicts are
  * independent classes with independent computations.
  */
-let repoSettingsVerdictCache: WeakMap<Context['session'], Promise<void>> = new WeakMap();
+let repoSettingsVerdictCache: WeakMap<Context['session'], VerdictEntry<void>> = new WeakMap();
 
 /**
- * Sessions whose repo-settings verdict has SETTLED — the memoised promise
- * resolved, not merely been requested. The synchronous hot-path fast path
- * `repoSettingsVerdictSettled` (below) reads this set directly so a warm
- * session's `getPackRegistry` / `commitHeader` touch skips the `await`
- * entirely rather than paying a microtask hop on every object read / walked
- * commit. Added by `onResolve` only on a successful resolution — never on a
- * rejection — and dropped together with the memo by `invalidateConfigCache`
- * and `__resetConfigCacheForTests`, so it can never report `true` for a
- * session whose memo no longer holds the verdict that produced it.
+ * The mtimeKey a verdict memo re-keys against: whatever the parse `cache`
+ * currently associates with this session — TRUSTED or not — read with ZERO
+ * I/O (a plain property lookup, never a `stat`). A session that has never
+ * read config at all falls back to the same absent sentinel `configMtimeKey`
+ * uses, so two SYNCHRONOUS, back-to-back calls in the same tick (before
+ * either's `compute` has had a chance to populate the parse cache) still
+ * observe an IDENTICAL key and correctly share one in-flight `compute` —
+ * single-flight survives the mtimeKey becoming part of the cache key.
+ *
+ * Inside an open epoch this is the epoch's own fresh key, so a verdict memo
+ * re-derives the instant `openConfigEpoch` notices a changed file — closing
+ * the gap `internal/repo-settings-gate.ts`'s docstring describes. Outside an
+ * epoch (primitive-only), it is whatever the LAST per-read stat produced,
+ * which is enough to notice a rewrite once something has actually re-read
+ * the file — the freshness `readConfigEntry` itself already guarantees.
  */
-let settledRepoSettings = new WeakSet<Context['session']>();
+const snapshotConfigMtimeKey = (ctx: Context): string =>
+  cache.get(ctx.session)?.mtimeKey ?? CONFIG_ABSENT_MTIME_KEY;
 
 /**
- * Get-or-populate a per-session verdict memo in `slot`: a second call sharing
- * the same, unchanged session joins the promise the first call started
- * rather than re-running `compute`. The caller's invalidator drops the
- * relevant slot, so a config write observed through it — from ANY Context
- * sharing the session, not just the one that first populated the memo — is
- * observed here too.
+ * Get-or-populate a per-session verdict memo in `slot`, re-keyed on
+ * `mtimeKey`: a second call sharing the same, unchanged session AND the same
+ * `mtimeKey` joins the promise the first call started rather than re-running
+ * `compute`; a call whose `mtimeKey` differs from what is cached is treated
+ * as a miss and recomputes — this is what lets an external edit invalidate a
+ * verdict memo without either binding needing to call `invalidateConfigCache`
+ * itself. The caller's invalidator still drops the relevant slot outright,
+ * so a config write observed through it — from ANY Context sharing the
+ * session, not just the one that first populated the memo — is observed
+ * here too.
  *
  * A REJECTED verdict is never left cached: `compute` can fail on a transient
  * condition (EACCES/EIO/EMFILE reading the config file) that has nothing to
@@ -326,55 +353,58 @@ let settledRepoSettings = new WeakSet<Context['session']>();
  * (e.g., a concurrent call after invalidation), and this handler must not
  * evict that fresh entry out from under it.
  *
- * `onResolve`, when supplied, runs only on a SUCCESSFUL resolution — the
- * repo-settings binding uses it to mark the session settled for
- * `repoSettingsVerdictSettled`'s synchronous fast path; the gate-verdict
- * binding has no such fast path and passes none.
+ * `settled` lives on the ENTRY, not on a session-keyed side set: replacing
+ * the entry (a changed `mtimeKey`) starts a fresh, unsettled one by
+ * construction, so `repoSettingsVerdictSettled`'s hot path can never report
+ * `true` for a verdict a NEWER key has already superseded.
  */
 const memoizeSessionVerdict = <T>(
-  slot: WeakMap<Context['session'], Promise<T>>,
+  slot: WeakMap<Context['session'], VerdictEntry<T>>,
   ctx: Context,
+  mtimeKey: string,
   compute: (ctx: Context) => Promise<T>,
-  onResolve?: () => void,
 ): Promise<T> => {
   const existing = slot.get(ctx.session);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined && existing.mtimeKey === mtimeKey) return existing.promise;
   const pending = compute(ctx);
-  slot.set(ctx.session, pending);
-  pending.then(onResolve).catch(() => {
-    if (slot.get(ctx.session) === pending) slot.delete(ctx.session);
-  });
+  const entry: VerdictEntry<T> = { promise: pending, mtimeKey, settled: false };
+  slot.set(ctx.session, entry);
+  pending
+    .then(() => {
+      entry.settled = true;
+    })
+    .catch(() => {
+      if (slot.get(ctx.session) === entry) slot.delete(ctx.session);
+    });
   return pending;
 };
 
 export const memoizeGateVerdict = (
   ctx: Context,
   compute: (ctx: Context) => Promise<FilePath>,
-): Promise<FilePath> => memoizeSessionVerdict(gateVerdictCache, ctx, compute);
+): Promise<FilePath> =>
+  memoizeSessionVerdict(gateVerdictCache, ctx, snapshotConfigMtimeKey(ctx), compute);
 
 /**
- * `internal/repo-settings-gate.ts`'s own binding of {@link memoizeSessionVerdict}:
- * marks the session settled (for {@link repoSettingsVerdictSettled}) the
- * moment the class's verdict resolves — never on a rejection, so a malformed
- * class never reports "settled".
+ * `internal/repo-settings-gate.ts`'s own binding of {@link memoizeSessionVerdict}.
  */
 export const memoizeRepoSettingsVerdict = (
   ctx: Context,
   compute: (ctx: Context) => Promise<void>,
 ): Promise<void> =>
-  memoizeSessionVerdict(repoSettingsVerdictCache, ctx, compute, () =>
-    settledRepoSettings.add(ctx.session),
-  );
+  memoizeSessionVerdict(repoSettingsVerdictCache, ctx, snapshotConfigMtimeKey(ctx), compute);
 
 /**
  * The synchronous hot-path fast path: true once `assertRepoSettingsValid` has
- * RESOLVED for this session — never merely been called. `getPackRegistry` and
- * `commitHeader` branch on this to skip the `await` on a warm session; a
- * `false` here means the caller must await `assertRepoSettingsValid` itself
- * (first touch this session, or the first touch after an invalidation).
+ * RESOLVED for this session's CURRENT key — never merely been called, and
+ * never for a verdict a changed config key has since superseded.
+ * `getPackRegistry` and `commitHeader` branch on this to skip the `await` on
+ * a warm session; a `false` here means the caller must await
+ * `assertRepoSettingsValid` itself (first touch this session, the first
+ * touch after an invalidation, or the first touch after the epoch re-keyed).
  */
 export const repoSettingsVerdictSettled = (ctx: Context): boolean =>
-  settledRepoSettings.has(ctx.session);
+  repoSettingsVerdictCache.get(ctx.session)?.settled === true;
 
 /**
  * Read and cache the LOCAL config (see `loadConfigEntry`'s own docstring for
@@ -410,6 +440,15 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   // untrusted layout is recomputed fresh every call (cheap: no fs access)
   // rather than consulting or populating the cache below.
   if (layoutFailsTrustGate(ctx.layout)) return loadConfigEntry(ctx);
+  // Inside an epoch `openConfigEpoch` already opened (this command's own
+  // gate, or an earlier one against the same session): the entry is fresh
+  // by construction, so every further call this command makes is a plain
+  // WeakMap hit — ZERO further `stat`.
+  const trusted = cache.get(ctx.session);
+  if (trusted?.trusted === true) return trusted.promise;
+  // No open epoch (a primitive-only session, or one whose epoch has not run
+  // yet) — today's per-read freshness check: pay a stat, and reuse the
+  // cached parse only when that stat's key still matches it.
   const path = `${commonGitDir(ctx)}/config`;
   const mtimeKey = await coalescedMtimeKey(ctx, path);
   const cached = cache.get(ctx.session);
@@ -417,14 +456,47 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
     return cached.promise;
   }
   const promise = loadConfigEntry(ctx);
-  cache.set(ctx.session, { promise, mtimeKey });
+  cache.set(ctx.session, { promise, mtimeKey, trusted: false });
   return promise;
 };
 
 /**
- * @internal — test-only cache reset between cases. Replaces every WeakMap/WeakSet
- * this module owns (the parse cache, the two verdict memos, the settled-repo-
- * settings set, and the in-flight stat-coalescing memo), mirroring what
+ * The operational gate's freshness boundary: exactly ONE `stat` of
+ * `.git/config`, run once per `assertOperationalRepository` call. An
+ * unchanged key marks the existing parse entry `trusted` for the rest of
+ * this command, so every `readConfigEntry` call it makes — including the
+ * gate's OWN eager finders, called right after this returns — shares that
+ * one parse with zero further `stat`. A changed key (or a session that has
+ * never read config at all) seeds a FRESH, already-trusted entry instead:
+ * calling `loadConfigEntry` here, rather than merely dropping the stale one,
+ * is what lets a cold-cache command still end this call with a populated,
+ * trusted entry — the same total cost (one stat, one read) TODAY's
+ * gate-triggered `assertEagerConfigValid` fan-out already pays, just moved
+ * earlier. Both verdict memos (`memoizeGateVerdict`, `memoizeRepoSettingsVerdict`)
+ * re-key themselves against this entry's `mtimeKey` on their own next call —
+ * this function does not touch them directly.
+ *
+ * An untrusted/implicit-bare layout is skipped entirely: `readConfigEntry`
+ * never populates the cache for one either, so there is nothing to trust and
+ * nothing to stat — the ownership-trust gate (`assertTrusted`, downstream)
+ * still refuses on its own.
+ */
+export const openConfigEpoch = async (ctx: Context): Promise<void> => {
+  if (layoutFailsTrustGate(ctx.layout)) return;
+  const path = `${commonGitDir(ctx)}/config`;
+  const mtimeKey = await coalescedMtimeKey(ctx, path);
+  const existing = cache.get(ctx.session);
+  if (existing !== undefined && existing.mtimeKey === mtimeKey) {
+    existing.trusted = true;
+    return;
+  }
+  cache.set(ctx.session, { promise: loadConfigEntry(ctx), mtimeKey, trusted: true });
+};
+
+/**
+ * @internal — test-only cache reset between cases. Replaces every WeakMap
+ * this module owns (the parse cache — trusted bit included, the two verdict
+ * memos, and the in-flight stat-coalescing memo), mirroring what
  * `invalidateConfigCache` drops in production plus the transient memo that
  * never survives past its own settling anyway.
  */
@@ -432,7 +504,6 @@ export const __resetConfigCacheForTests = (): void => {
   cache = new WeakMap();
   gateVerdictCache = new WeakMap();
   repoSettingsVerdictCache = new WeakMap();
-  settledRepoSettings = new WeakSet();
   inflightMtimeKey = new WeakMap();
 };
 
@@ -440,10 +511,10 @@ export const __resetConfigCacheForTests = (): void => {
  * Drop the cached `readConfig` entry for the session, AND both verdict
  * memos — the operational gate's (`memoizeGateVerdict`) and the repo-settings
  * class's (`memoizeRepoSettingsVerdict`), owned here for the same reason (see
- * `memoizeGateVerdict`'s docstring) — plus the settled-repo-settings set, all
- * session-keyed, so a call through ANY Context sharing `ctx.session` drops
- * the entry every OTHER Context in that session would otherwise keep serving
- * stale. One invalidation domain for every cache `readConfigEntry` feeds.
+ * `memoizeGateVerdict`'s docstring) — all session-keyed, so a call through
+ * ANY Context sharing `ctx.session` drops the entry every OTHER Context in
+ * that session would otherwise keep serving stale. One invalidation domain
+ * for every cache `readConfigEntry` feeds.
  *
  * DELEGATES to `invalidateScopedConfigCache` (`config-scoped-read.ts`) so a
  * caller who invalidates only this cache — an embedder unaware of the
@@ -460,7 +531,6 @@ export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx.session);
   gateVerdictCache.delete(ctx.session);
   repoSettingsVerdictCache.delete(ctx.session);
-  settledRepoSettings.delete(ctx.session);
   invalidateScopedConfigCache(ctx);
 };
 

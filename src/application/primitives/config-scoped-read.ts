@@ -1,11 +1,20 @@
 import type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
 import { parseConfigKey } from '../../domain/commands/config-key.js';
 import { configMultipleValues, configScopeNotAvailable } from '../../domain/commands/error.js';
-import { type IniSection, parseIniSections } from '../../domain/config/config-ini.js';
+import {
+  type IniSection,
+  parseGitBoolean,
+  parseIniSections,
+} from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { collectScopedValues, collectValues } from './internal/config-key.js';
-import { mergeConfigsByScope, resolveScopePath, SCOPE_ORDER } from './internal/config-scope.js';
+import {
+  mergeConfigsByScope,
+  resolveScopePath,
+  resolveWorktreeScopePath,
+  SCOPE_ORDER,
+} from './internal/config-scope.js';
 import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 
 interface CachedScopeEntry {
@@ -135,8 +144,55 @@ const readScopeFile = async (ctx: Context, path: string): Promise<ReadonlyArray<
 };
 
 /**
- * `resolveScopePath` is re-run on every call whose scope path cannot be
- * served from the mtime-checked cache below — deliberately NOT
+ * True iff the local config's `[extensions] worktreeConfig` parses as true
+ * under git's boolean grammar — the gate for the per-worktree config file at
+ * `${gitDir}/config.worktree`. Lives here, not in `internal/config-scope.ts`,
+ * so it can share `readSingleScope`'s cached, mtime-checked local-scope read
+ * below instead of a second, raw, uncached read of the identical file:
+ * importing `readSingleScope` from `internal/config-scope.ts` would close an
+ * import cycle (this module already imports THAT one for `resolveScopePath`
+ * / `mergeConfigsByScope`).
+ */
+export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
+  // Every caller sits behind the acceptance tier today, so this keys on the
+  // same predicate `readSingleScope` uses for 'local'/'worktree' rather than
+  // resting the "a refused repository's config is never parsed" invariant on
+  // caller discipline at one site.
+  if (layoutFailsAcceptance(ctx.layout)) return false;
+  const sections = await readSingleScope(ctx, 'local');
+  for (const section of sections) {
+    if (section.section.toLowerCase() !== 'extensions') continue;
+    if (section.subsection !== undefined) continue;
+    for (const entry of section.entries) {
+      if (entry.key.toLowerCase() !== 'worktreeconfig') continue;
+      const parsed = parseGitBoolean(entry.value);
+      // A value git's boolean grammar refuses is inert here — the
+      // discovery-tier gate in `assertRepository` is what raises it, and it
+      // runs before this on every command.
+      return parsed.ok && parsed.value;
+    }
+  }
+  return false;
+};
+
+/**
+ * Single dispatch point for resolving ANY config scope's on-disk path,
+ * `'worktree'` included — which needs `isWorktreeScopeActive`'s verdict
+ * before `resolveWorktreeScopePath` can answer. Used by `readSingleScope`
+ * below, and by the config writers (`update-config.ts`,
+ * `update-config-sections.ts`), which resolve a caller-supplied — not
+ * statically known — scope the same way.
+ */
+export const resolveConfigScopePath = async (ctx: Context, scope: ConfigScope): Promise<string> => {
+  if (scope === 'worktree') {
+    return resolveWorktreeScopePath(ctx, { active: await isWorktreeScopeActive(ctx) });
+  }
+  return resolveScopePath(ctx, scope);
+};
+
+/**
+ * `resolveConfigScopePath` is re-run on every call whose scope path cannot
+ * be served from the mtime-checked cache below — deliberately NOT
  * single-flighted the way a resolved path's contents are. For `'worktree'`,
  * resolving the path is itself content-dependent (`isWorktreeScopeActive`
  * reads the local config to decide whether the scope exists at all), so
@@ -152,7 +208,7 @@ const readSingleScope = async (
   if (layoutFailsAcceptance(ctx.layout) && (scope === 'local' || scope === 'worktree')) {
     throw configScopeNotAvailable(scope, 'repository-not-accepted');
   }
-  const path = await resolveScopePath(ctx, scope);
+  const path = await resolveConfigScopePath(ctx, scope);
   const bucket = getSectionsCacheBucket(ctx);
   const mtimeKey = await scopeFileMtimeKey(ctx, path);
   const cached = bucket.get(scope);

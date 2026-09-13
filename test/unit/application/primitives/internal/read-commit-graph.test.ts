@@ -6,6 +6,7 @@ import {
   insertBounded,
   isGraphKnownAbsent,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
+import { assertOperationalRepository } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
   commitGraphChainPath,
   commitGraphPath,
@@ -1277,6 +1278,30 @@ describe('commitHeader / correctedCommitDatesEnabled — repo-settings class bou
 
         // Assert
         expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
+  describe('Given the operational gate has already opened an epoch for this command', () => {
+    describe('When the first commitHeader follows', () => {
+      it('Then it issues zero stat of config — the repo-settings check rides the trusted entry', async () => {
+        // Arrange — the gate runs on the UNWRAPPED context; instrumentation
+        // starts only after it, so the count reflects commitHeader alone.
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await emptyTree(base);
+        const commit = await makeCommit(base, tree, [], 1, 'epoch-boundary');
+        await assertOperationalRepository(base);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await commitHeader(ctx, commit.id);
+
+        // Assert
+        const configStats = calls().filter(
+          (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
+        );
+        expect(configStats).toHaveLength(0);
       });
     });
   });

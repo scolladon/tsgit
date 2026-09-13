@@ -29,6 +29,7 @@ import {
 import { remoteAdd } from '../../src/application/commands/remote.js';
 import { readConfig } from '../../src/application/primitives/config-read.js';
 import { getConfigValue } from '../../src/application/primitives/config-scoped-read.js';
+import { assertOperationalRepository } from '../../src/application/primitives/internal/repo-state.js';
 import {
   type ConfigOperation,
   removeConfigSection,
@@ -3028,6 +3029,38 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         expect(ctx.fs.homedir()).toBe(process.env['HOME']);
         expect(existsSync(`${ctx.fs.homedir()}/.gitconfig`)).toBe(false);
         expect(existsSync(`${ctx.fs.xdgConfigHome()}/git/config`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valid config accepted by a first tsgit command, then an external tool rewrites it to a malformed value', () => {
+    describe('When a second operational tsgit command runs on the same session (no invalidateConfigCache call)', () => {
+      it('Then the second command refuses — the operational gate is the freshness boundary for a raw external edit', async () => {
+        // Arrange — one Context/session reused across both "commands": the
+        // epoch and its verdict memos are session-keyed, so a fresh
+        // createNodeContext per call (this file's usual pattern, chosen to
+        // bypass the cache between UNRELATED assertions) would defeat this
+        // one, which is specifically about freshness WITHIN one session.
+        const configPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(configPath, '[core]\n\tsparseCheckout = true\n', 'utf8');
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await assertOperationalRepository(ctx);
+
+        // Act — canonical git rewrites the file directly, bypassing every
+        // tsgit config writer (and its invalidateConfigCache pairing)
+        await writeFile(configPath, '[core]\n\tsparseCheckout = maybe\n', 'utf8');
+        let caught: unknown;
+        try {
+          await assertOperationalRepository(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('core.sparsecheckout');
       });
     });
   });

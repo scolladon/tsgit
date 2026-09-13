@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
+import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import * as packRegistryMod from '../../../../src/application/primitives/pack-registry.js';
 import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -9,8 +10,12 @@ import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID, serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
-import { buildSeededContext, seedMaxTreeDepth } from './fixtures.js';
+import { buildSeededContext, instrumentedContext, seedMaxTreeDepth } from './fixtures.js';
 import { writeSyntheticPack } from './pack-fixture.js';
+
+const seedHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+};
 
 describe('readObject', () => {
   describe('Given a seeded blob', () => {
@@ -592,6 +597,30 @@ describe('getPackRegistry — repo-settings class boundary', () => {
         // Assert
         expect(spy).not.toHaveBeenCalled();
         spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given the operational gate has already opened an epoch for this command', () => {
+    describe('When the first readObject follows', () => {
+      it('Then it issues zero stat of config — the registry read and the repo-settings check both ride the trusted entry', async () => {
+        // Arrange — the gate runs on the UNWRAPPED context; instrumentation
+        // starts only after it, so the count reflects readObject alone.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([3]), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        await seedHead(base);
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        await assertOperationalRepository(base);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await readObject(ctx, id);
+
+        // Assert
+        const configStats = calls().filter(
+          (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
+        );
+        expect(configStats).toHaveLength(0);
       });
     });
   });
