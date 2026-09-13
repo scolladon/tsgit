@@ -593,19 +593,18 @@ function createFilesRefStore(ctx: Context): RefStore {
    * Every candidate name's resolved entry, EXCEPT a packed-only name never
    * pays the loose-miss probe (`readUtf8` ENOENT) `resolveEntry` would cost
    * it: `looseNames` (from `walkAllLooseRefNames`) resolve through {@link
-   * resolveEntry} as before, and a packed entry not shadowed by one of them
-   * is built straight from `loadPackedRefs`'s own snapshot — byte-for-byte
-   * what `resolveDirect` returns for it today, without the read or the
-   * `byName()` `Map` build. Sorted after, matching {@link listRefs}'s
-   * contract.
+   * resolveEntry} as before — pooled through the `ioBound` bucket, since
+   * each is an independent read — and a packed entry not shadowed by one of
+   * them is built straight from `loadPackedRefs`'s own snapshot —
+   * byte-for-byte what `resolveDirect` returns for it today, without the
+   * read or the `byName()` `Map` build. `boundedMapFor` preserves input
+   * order, so pooling changes completion order only; the result is sorted
+   * after regardless, matching {@link listRefs}'s contract.
    */
   async function listRefs(prefix?: RefName): Promise<readonly RefEntry[]> {
     const looseNames = await walkAllLooseRefNames(prefix);
-    const entries: RefEntry[] = [];
-    for (const name of looseNames) {
-      const entry = await resolveEntry(name);
-      if (entry !== undefined) entries.push(entry);
-    }
+    const resolved = await boundedMapFor(ctx, 'ioBound', looseNames, resolveEntry);
+    const entries = resolved.filter((entry): entry is RefEntry => entry !== undefined);
     const looseSet = new Set(looseNames);
     const packed = await loadPackedRefs();
     for (const entry of packed.entries) {
@@ -927,19 +926,25 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (packable.length === 0) {
       return { packedRefCount: 0, prunedLooseRefCount: 0, removedOrphanCount: 0 };
     }
-    const toPrune: RefName[] = [];
-    for (const entry of packable) {
-      if (await ctx.fs.exists(looseRefPath(refDir(entry.name), entry.name))) {
-        toPrune.push(entry.name);
-      }
-    }
+    // Pooled through the same `ioBound` bucket `buildPackedEntry` uses below
+    // — each probe is an independent read, and `boundedMapFor`'s
+    // input-order result lets `toPrune` stay filtered in packable order.
+    const dupeExists = await boundedMapFor(ctx, 'ioBound', packable, (entry) =>
+      ctx.fs.exists(looseRefPath(refDir(entry.name), entry.name)),
+    );
+    const toPrune = packable
+      .filter((_entry, index) => dupeExists[index] === true)
+      .map((entry) => entry.name);
     const entries = await boundedMapFor(ctx, 'ioBound', packable, buildPackedEntry);
     const content = serializePackedRefs({ entries, peeling: 'fully', sorted: true });
     await ctx.fs.writeUtf8(packedRefsPath(commonGitDir(ctx)), content);
     packedCache = undefined;
-    for (const name of toPrune) {
-      await ctx.fs.rm(looseRefPath(refDir(name), name));
-    }
+    // A mid-way failure here leaves an arbitrary subset of `toPrune` pruned
+    // rather than a prefix — safe because `packed-refs` is already written:
+    // any surviving loose duplicate holds the same value packed-refs does.
+    await boundedMapFor(ctx, 'ioBound', toPrune, (name) =>
+      ctx.fs.rm(looseRefPath(refDir(name), name)),
+    );
     return {
       packedRefCount: packable.length,
       prunedLooseRefCount: toPrune.length,

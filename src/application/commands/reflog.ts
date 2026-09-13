@@ -13,6 +13,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
@@ -237,12 +238,13 @@ const collectReachable = async (ctx: Context): Promise<ReadonlySet<string>> => {
 };
 
 const resolveTips = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
-  const tips = new Set<ObjectId>();
-  for (const ref of await enumerateRefs(ctx)) {
-    const id = await tryResolve(ctx, ref);
-    if (id !== undefined) tips.add(id);
-  }
-  return [...tips];
+  // Pooled through the `ioBound` bucket — each ref's resolution is an
+  // independent read; the dedup moves to a `Set` built over the results
+  // instead of accumulating into one while iterating serially.
+  const refs = await enumerateRefs(ctx);
+  const resolved = await boundedMapFor(ctx, 'ioBound', refs, (ref) => tryResolve(ctx, ref));
+  const ids = resolved.filter((id): id is ObjectId => id !== undefined);
+  return [...new Set(ids)];
 };
 
 const tryResolve = async (ctx: Context, ref: RefName): Promise<ObjectId | undefined> => {

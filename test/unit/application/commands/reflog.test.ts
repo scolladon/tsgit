@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { reflog } from '../../../../src/application/commands/reflog.js';
 import { appendReflog, writeReflog } from '../../../../src/application/primitives/reflog-store.js';
+import * as walkCommitsMod from '../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -1423,6 +1424,96 @@ describe('reflog command', () => {
 
           // Assert — the unreachable stale entry is pruned; no throw on the missing tip.
           expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        });
+      });
+    });
+
+    describe('Given several refs pointing at the same commit', () => {
+      describe('When expire computes the reachable set', () => {
+        it('Then walkCommits starts from one deduplicated tip, not one per ref', async () => {
+          // Arrange — three branches share one tip; `resolveTips`'s dedup
+          // (a `Set` over the resolved ids) must collapse them to a single
+          // walk seed regardless of how the per-ref resolution itself runs.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, {
+            refs: {
+              'refs/heads/main': tip,
+              'refs/heads/alt-a': tip,
+              'refs/heads/alt-b': tip,
+            },
+          });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 2 * DAY), message: 'first recent' }),
+          ]);
+          const fromCalls: Array<ReadonlyArray<ObjectId>> = [];
+          const realWalkCommits = walkCommitsMod.walkCommits;
+          const spy = vi
+            .spyOn(walkCommitsMod, 'walkCommits')
+            .mockImplementation((spyCtx, options) => {
+              fromCalls.push([...options.from]);
+              return realWalkCommits(spyCtx, options);
+            });
+
+          // Act
+          try {
+            await reflog(ctx, { action: 'expire', all: true });
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(fromCalls).toHaveLength(1);
+          expect(fromCalls[0]).toEqual([tip]);
+        });
+      });
+    });
+
+    describe('Given more refs than the ioBound limit, each with its own commit', () => {
+      describe('When expire computes the reachable set', () => {
+        it('Then ref-tip resolution runs more than one at a time', async () => {
+          // Arrange — HEAD is always among the enumerated refs (`seedRepo`
+          // always writes one) and resolves through a separate code path
+          // that never touches `refs/heads/`, so it occupies one concurrent
+          // slot without registering here; the oracle is therefore "more
+          // than one in flight" rather than the exact bound (a
+          // `boundedMapFor` → `for…await` mutant caps this at 1).
+          const ioBound = 3;
+          const width = ioBound + 4;
+          const base = createMemoryContext();
+          const now = wallNow();
+          const refs: Record<string, string> = {};
+          for (let i = 0; i < width; i++) {
+            const tip = await writeCommit(base, [], now - i);
+            refs[`refs/heads/b${String(i).padStart(3, '0')}`] = tip;
+          }
+          await seedRepo(base, { refs });
+          const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+          const headsDir = `${ctx.layout.gitDir}/refs/heads/`;
+          let inFlight = 0;
+          let maxInFlight = 0;
+          const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+          const instrumented: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readUtf8: async (path: string) => {
+                if (!path.startsWith(headsDir)) return originalReadUtf8(path);
+                inFlight += 1;
+                if (inFlight > maxInFlight) maxInFlight = inFlight;
+                await Promise.resolve();
+                inFlight -= 1;
+                return originalReadUtf8(path);
+              },
+            },
+          };
+
+          // Act
+          await reflog(instrumented, { action: 'expire', all: true });
+
+          // Assert
+          expect(maxInFlight).toBeGreaterThan(1);
         });
       });
     });

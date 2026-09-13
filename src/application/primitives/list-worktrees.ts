@@ -12,6 +12,7 @@ import { resolveWorktreePath } from '../../domain/worktree/resolve-path.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
 import { deriveContext } from './derive-context.js';
+import { boundedMapFor } from './internal/concurrency.js';
 import { deriveWorktreeContext, worktreeScopedFs } from './internal/worktree-context.js';
 import { commonGitDir } from './path-layout.js';
 import { getRefStore } from './ref-store.js';
@@ -198,11 +199,13 @@ export const listWorktrees = async (ctx: Context): Promise<ReadonlyArray<Worktre
   const main = await mainEntry(ctx, mainCtx);
   const root = `${commonGitDir(ctx)}/worktrees`;
   if (!(await ctx.fs.exists(root))) return [main];
-  const linked: WorktreeEntry[] = [];
-  for (const dir of await ctx.fs.readdir(root)) {
-    if (!dir.isDirectory) continue;
-    linked.push(await linkedEntry(ctx, mainCtx, dir.name, `${root}/${dir.name}`));
-  }
-  linked.sort(byPath);
-  return [main, ...linked];
+  const admins = (await ctx.fs.readdir(root)).filter((dir) => dir.isDirectory);
+  // Pooled through the `ioBound` bucket — each linked worktree's admin read
+  // is independent; `boundedMapFor` preserves input order, so the explicit
+  // sort below is what makes the result byte-for-byte identical regardless
+  // of completion order.
+  const linked = await boundedMapFor(ctx, 'ioBound', admins, (dir) =>
+    linkedEntry(ctx, mainCtx, dir.name, `${root}/${dir.name}`),
+  );
+  return [main, ...linked.slice().sort(byPath)];
 };

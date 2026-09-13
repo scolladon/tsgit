@@ -1318,6 +1318,145 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given more loose ref names than the ioBound limit', () => {
+    describe('When listRefs runs', () => {
+      it('Then loose-name resolution peaks at exactly the bound, and the result stays sorted', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression fails loudly. A `boundedMapFor` →
+        // `for…await` mutant would read a max in-flight of 1 here.
+        const ioBound = 4;
+        const width = 64;
+        const refs = Array.from({ length: width }, (_, i) => ({
+          name: `refs/heads/b${String(i).padStart(3, '0')}` as RefName,
+          id: (i % 10 === 9 ? 'f' : `${i % 10}`).repeat(40) as ObjectId,
+        }));
+        const base = await buildSeededContext({ refs });
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string) => {
+              inFlight += 1;
+              if (inFlight > maxInFlight) maxInFlight = inFlight;
+              await Promise.resolve();
+              inFlight -= 1;
+              return originalReadUtf8(path);
+            },
+          },
+        };
+        const sut = createRefStore(instrumented);
+
+        // Act
+        const result = await sut.listRefs();
+
+        // Assert
+        expect(maxInFlight).toBe(ioBound);
+        expect(result.map((entry) => entry.name)).toEqual(
+          refs
+            .map((ref) => ref.name)
+            .slice()
+            .sort(),
+        );
+      });
+    });
+  });
+
+  describe('Given more packable loose refs than the ioBound limit', () => {
+    describe('When packRefs probes which packed entries still have a duplicate loose file', () => {
+      it('Then the existence probe peaks at exactly the bound', async () => {
+        // Arrange
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = await buildSeededContext();
+        for (let i = 0; i < width; i++) {
+          const id = await writeObject(base, {
+            type: 'blob',
+            content: new TextEncoder().encode(`prune-probe-${i}`),
+            id: '' as ObjectId,
+          });
+          const name = `refs/heads/b${String(i).padStart(3, '0')}`;
+          await base.fs.writeUtf8(`${base.layout.gitDir}/${name}`, `${id}\n`);
+        }
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        const looseHeadsDir = `${ctx.layout.gitDir}/refs/heads/`;
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const originalExists = ctx.fs.exists.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            exists: async (path: string) => {
+              if (!path.startsWith(looseHeadsDir)) return originalExists(path);
+              inFlight += 1;
+              if (inFlight > maxInFlight) maxInFlight = inFlight;
+              await Promise.resolve();
+              inFlight -= 1;
+              return originalExists(path);
+            },
+          },
+        };
+        const sut = createRefStore(instrumented);
+
+        // Act
+        const result = await sut.packRefs();
+
+        // Assert
+        expect(result.prunedLooseRefCount).toBe(width);
+        expect(maxInFlight).toBe(ioBound);
+      });
+    });
+
+    describe('When packRefs removes the loose files it just packed', () => {
+      it('Then the removal peaks at exactly the bound', async () => {
+        // Arrange
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = await buildSeededContext();
+        for (let i = 0; i < width; i++) {
+          const id = await writeObject(base, {
+            type: 'blob',
+            content: new TextEncoder().encode(`prune-rm-${i}`),
+            id: '' as ObjectId,
+          });
+          const name = `refs/heads/b${String(i).padStart(3, '0')}`;
+          await base.fs.writeUtf8(`${base.layout.gitDir}/${name}`, `${id}\n`);
+        }
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        const looseHeadsDir = `${ctx.layout.gitDir}/refs/heads/`;
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const originalRm = ctx.fs.rm.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rm: async (path: string) => {
+              if (!path.startsWith(looseHeadsDir)) return originalRm(path);
+              inFlight += 1;
+              if (inFlight > maxInFlight) maxInFlight = inFlight;
+              await Promise.resolve();
+              inFlight -= 1;
+              return originalRm(path);
+            },
+          },
+        };
+        const sut = createRefStore(instrumented);
+
+        // Act
+        const result = await sut.packRefs();
+
+        // Assert
+        expect(result.prunedLooseRefCount).toBe(width);
+        expect(maxInFlight).toBe(ioBound);
+      });
+    });
+  });
+
   describe('Given two getRefStore calls on the same Context', () => {
     describe('When invoked', () => {
       it('Then returns the same store instance (per-Context cache)', async () => {
