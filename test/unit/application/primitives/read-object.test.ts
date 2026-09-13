@@ -673,7 +673,7 @@ describe('peekPackRegistry', () => {
 
   describe('Given a warm session whose config is then poisoned (the repo-settings verdict is superseded)', () => {
     describe('When checked', () => {
-      it('Then returns undefined instead of serving the stale registry — F1 must not reopen through the peek', async () => {
+      it('Then returns undefined instead of serving the stale registry', async () => {
         // Arrange
         const blob: Blob = { type: 'blob', content: new Uint8Array([9]), id: '' as ObjectId };
         const ctx = await buildSeededContext({ objects: [blob] });

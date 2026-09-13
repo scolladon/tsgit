@@ -94,7 +94,7 @@ export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
  *
  * Gated on `repoSettingsVerdictSettled`, never on "a registry merely exists":
  * a registry built against a SUPERSEDED config key must not be served as if
- * still current — that is F1's exact shape, reopened one call site later.
+ * still current, which would reopen the stale-verdict hole one call site later.
  * `repoSettingsVerdictSettled` is itself key-aware (see `config-read.ts`), so
  * this peek inherits that protection instead of re-deriving it.
  */
