@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import * as packRegistryMod from '../../../../src/application/primitives/pack-registry.js';
 import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
@@ -8,7 +9,7 @@ import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID, serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, seedMaxTreeDepth } from './fixtures.js';
 import { writeSyntheticPack } from './pack-fixture.js';
 
 describe('readObject', () => {
@@ -517,6 +518,81 @@ describe('Given a fresh session and two concurrent first readObject calls', () =
       // Assert
       expect(spy).toHaveBeenCalledTimes(1);
       spy.mockRestore();
+    });
+  });
+});
+
+describe('getPackRegistry — repo-settings class boundary', () => {
+  describe('Given core.maxTreeDepth = 2.5 and a loose object fixture', () => {
+    describe('When readObject is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE before any registry construction', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await seedMaxTreeDepth(ctx, '2.5');
+        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+        // Act
+        let caught: unknown;
+        try {
+          await readObject(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given core.maxTreeDepth = 2.5 and a packed object fixture', () => {
+    describe('When readObject is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE', async () => {
+        // Arrange
+        const content = new TextEncoder().encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const [id] = await writeSyntheticPack(ctx, 'settings-gate', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Act
+        let caught: unknown;
+        try {
+          await readObject(ctx, id as ObjectId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
+  describe('Given a settled session (a prior readObject already resolved the repo-settings class)', () => {
+    describe('When readObject is called a second time', () => {
+      it('Then no finder re-runs — the settled fast path skips the check', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([2]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await readObject(ctx, id);
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+
+        // Act
+        await readObject(ctx, id);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
+      });
     });
   });
 });

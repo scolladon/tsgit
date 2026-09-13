@@ -301,6 +301,30 @@ describe('fetchMissing', () => {
     });
   });
 
+  describe('Given a repo config with a malformed core.maxTreeDepth', () => {
+    describe('When fetchMissing reaches its private pack-registry construction', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE before any network call', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, `${PARTIAL_CONFIG}[core]\n\tmaxTreeDepth = 2.5\n`);
+        const present = 'c'.repeat(40) as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing(ctx, { oids: [present] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
   describe('Given oids already present locally', () => {
     describe('When fetchMissing', () => {
       it('Then they are skipped with no network call', async () => {

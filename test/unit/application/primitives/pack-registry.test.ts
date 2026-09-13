@@ -867,10 +867,13 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 describe('PackRegistry — lazy pack-index loading', () => {
   describe('Given two healthy packs', () => {
     describe('When createPackRegistry is called and nothing else', () => {
-      it('Then no readdir and no .idx read has happened yet — only the delta-base budget config read', async () => {
-        // Arrange — construction resolves the delta-base cache's byte budget
-        // (a `core.deltaBaseCacheLimit` config read), but the pack directory
-        // itself stays untouched until the registry is actually consulted.
+      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and the delta-base budget config read', async () => {
+        // Arrange — construction validates the repo-settings class first,
+        // then resolves the delta-base cache's byte budget (a
+        // `core.deltaBaseCacheLimit` config read) — both hit the same warm
+        // parse cache, so the content is read once and only the mtime stat
+        // repeats — but the pack directory itself stays untouched until the
+        // registry is actually consulted.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'lazy-cold-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -887,6 +890,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
         expect(calls()).toEqual([
           { method: 'stat', path: '/repo/.git/config' },
           { method: 'readUtf8', path: '/repo/.git/config' },
+          { method: 'stat', path: '/repo/.git/config' },
         ]);
       });
     });
@@ -2662,6 +2666,40 @@ describe('Given core.deltaBaseCacheLimit / cacheBudgets.deltaBaseCacheMaxBytes r
         expect(sut.deltaBaseCache.maxSize).toBe(expected);
       },
     );
+  });
+});
+
+describe('Given a malformed core.maxTreeDepth', () => {
+  describe('When createPackRegistry is called', () => {
+    it('Then throws CONFIG_BAD_NUMERIC_VALUE before scanning the pack directory', async () => {
+      // Arrange
+      const base = await buildSeededContext();
+      await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+      let readdirCalled = false;
+      const ctx: Context = {
+        ...base,
+        fs: {
+          ...base.fs,
+          readdir: async (path: string) => {
+            readdirCalled = true;
+            return base.fs.readdir(path);
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await createPackRegistry(ctx);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      expect(readdirCalled).toBe(false);
+    });
   });
 });
 

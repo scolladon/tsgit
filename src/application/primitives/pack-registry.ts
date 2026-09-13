@@ -57,6 +57,7 @@ import {
   packBaseName,
 } from './internal/pack-shared.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
+import { assertRepoSettingsValid } from './internal/repo-settings-gate.js';
 import { deltaBaseCacheBudgetFor } from './internal/resolve-delta-base-cache-limit.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
@@ -630,6 +631,7 @@ function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
 const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
 
 export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
+  await assertRepoSettingsValid(ctx);
   const storeGate = createStoreGate(ctx);
   // A SEPARATE, ADDITIONAL byte budget from the ordinary delta cache's own —
   // not a share carved out of it. The two caches hold different things (raw

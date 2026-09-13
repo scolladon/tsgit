@@ -286,36 +286,95 @@ let cache: WeakMap<Context['session'], CachedConfigEntry> = new WeakMap();
 let gateVerdictCache: WeakMap<Context['session'], Promise<FilePath>> = new WeakMap();
 
 /**
- * Get-or-populate the per-session gate-verdict memo: a second call sharing
+ * The repo-settings class's own verdict memo (`internal/repo-settings-gate.ts`'s
+ * `assertRepoSettingsValid`) — same shape and same reason for living here as
+ * `gateVerdictCache` above (a shared invalidation domain with the parse
+ * `cache`, and `repo-settings-gate.ts` importing this module rather than the
+ * reverse to avoid a cycle), a separate slot because the two verdicts are
+ * independent classes with independent computations.
+ */
+let repoSettingsVerdictCache: WeakMap<Context['session'], Promise<void>> = new WeakMap();
+
+/**
+ * Sessions whose repo-settings verdict has SETTLED — the memoised promise
+ * resolved, not merely been requested. The synchronous hot-path fast path
+ * `repoSettingsVerdictSettled` (below) reads this set directly so a warm
+ * session's `getPackRegistry` / `commitHeader` touch skips the `await`
+ * entirely rather than paying a microtask hop on every object read / walked
+ * commit. Added by `onResolve` only on a successful resolution — never on a
+ * rejection — and dropped together with the memo by `invalidateConfigCache`
+ * and `__resetConfigCacheForTests`, so it can never report `true` for a
+ * session whose memo no longer holds the verdict that produced it.
+ */
+let settledRepoSettings = new WeakSet<Context['session']>();
+
+/**
+ * Get-or-populate a per-session verdict memo in `slot`: a second call sharing
  * the same, unchanged session joins the promise the first call started
- * rather than re-running `compute`. `invalidateConfigCache` (below) drops
- * this memo alongside its own, so a config write observed through that
- * invalidator — from ANY Context sharing the session, not just the one that
- * first populated the memo — is observed here too.
+ * rather than re-running `compute`. The caller's invalidator drops the
+ * relevant slot, so a config write observed through it — from ANY Context
+ * sharing the session, not just the one that first populated the memo — is
+ * observed here too.
  *
  * A REJECTED verdict is never left cached: `compute` can fail on a transient
  * condition (EACCES/EIO/EMFILE reading the config file) that has nothing to
  * do with the repository's actual state, and caching that failure would
- * permanently poison the session until `invalidateConfigCache` happens to
+ * permanently poison the session until the caller's invalidator happens to
  * run — every later command would refuse for a fault that already cleared.
  * The eviction only removes the entry when it is STILL the one this call
  * populated: a later, successful `compute` may already have replaced it
- * (e.g., a concurrent call after `invalidateConfigCache`), and this handler
- * must not evict that fresh entry out from under it.
+ * (e.g., a concurrent call after invalidation), and this handler must not
+ * evict that fresh entry out from under it.
+ *
+ * `onResolve`, when supplied, runs only on a SUCCESSFUL resolution — the
+ * repo-settings binding uses it to mark the session settled for
+ * `repoSettingsVerdictSettled`'s synchronous fast path; the gate-verdict
+ * binding has no such fast path and passes none.
  */
-export const memoizeGateVerdict = (
+const memoizeSessionVerdict = <T>(
+  slot: WeakMap<Context['session'], Promise<T>>,
   ctx: Context,
-  compute: (ctx: Context) => Promise<FilePath>,
-): Promise<FilePath> => {
-  const existing = gateVerdictCache.get(ctx.session);
+  compute: (ctx: Context) => Promise<T>,
+  onResolve?: () => void,
+): Promise<T> => {
+  const existing = slot.get(ctx.session);
   if (existing !== undefined) return existing;
   const pending = compute(ctx);
-  gateVerdictCache.set(ctx.session, pending);
-  pending.catch(() => {
-    if (gateVerdictCache.get(ctx.session) === pending) gateVerdictCache.delete(ctx.session);
+  slot.set(ctx.session, pending);
+  pending.then(onResolve).catch(() => {
+    if (slot.get(ctx.session) === pending) slot.delete(ctx.session);
   });
   return pending;
 };
+
+export const memoizeGateVerdict = (
+  ctx: Context,
+  compute: (ctx: Context) => Promise<FilePath>,
+): Promise<FilePath> => memoizeSessionVerdict(gateVerdictCache, ctx, compute);
+
+/**
+ * `internal/repo-settings-gate.ts`'s own binding of {@link memoizeSessionVerdict}:
+ * marks the session settled (for {@link repoSettingsVerdictSettled}) the
+ * moment the class's verdict resolves — never on a rejection, so a malformed
+ * class never reports "settled".
+ */
+export const memoizeRepoSettingsVerdict = (
+  ctx: Context,
+  compute: (ctx: Context) => Promise<void>,
+): Promise<void> =>
+  memoizeSessionVerdict(repoSettingsVerdictCache, ctx, compute, () =>
+    settledRepoSettings.add(ctx.session),
+  );
+
+/**
+ * The synchronous hot-path fast path: true once `assertRepoSettingsValid` has
+ * RESOLVED for this session — never merely been called. `getPackRegistry` and
+ * `commitHeader` branch on this to skip the `await` on a warm session; a
+ * `false` here means the caller must await `assertRepoSettingsValid` itself
+ * (first touch this session, or the first touch after an invalidation).
+ */
+export const repoSettingsVerdictSettled = (ctx: Context): boolean =>
+  settledRepoSettings.has(ctx.session);
 
 /**
  * Read and cache the LOCAL config (see `loadConfigEntry`'s own docstring for
@@ -363,24 +422,28 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
 };
 
 /**
- * @internal — test-only cache reset between cases. Replaces every WeakMap
- * this module owns (the parse cache, the gate-verdict memo, and the
- * in-flight stat-coalescing memo), mirroring what `invalidateConfigCache`
- * drops in production plus the transient memo that never survives past its
- * own settling anyway.
+ * @internal — test-only cache reset between cases. Replaces every WeakMap/WeakSet
+ * this module owns (the parse cache, the two verdict memos, the settled-repo-
+ * settings set, and the in-flight stat-coalescing memo), mirroring what
+ * `invalidateConfigCache` drops in production plus the transient memo that
+ * never survives past its own settling anyway.
  */
 export const __resetConfigCacheForTests = (): void => {
   cache = new WeakMap();
   gateVerdictCache = new WeakMap();
+  repoSettingsVerdictCache = new WeakMap();
+  settledRepoSettings = new WeakSet();
   inflightMtimeKey = new WeakMap();
 };
 
 /**
- * Drop the cached `readConfig` entry for the session, AND the gate-verdict
- * memo `internal/repo-state.ts` populates via `memoizeGateVerdict` (owned
- * here — see that export's docstring for why) — both session-keyed, so a
- * call through ANY Context sharing `ctx.session` drops the entry every
- * OTHER Context in that session would otherwise keep serving stale.
+ * Drop the cached `readConfig` entry for the session, AND both verdict
+ * memos — the operational gate's (`memoizeGateVerdict`) and the repo-settings
+ * class's (`memoizeRepoSettingsVerdict`), owned here for the same reason (see
+ * `memoizeGateVerdict`'s docstring) — plus the settled-repo-settings set, all
+ * session-keyed, so a call through ANY Context sharing `ctx.session` drops
+ * the entry every OTHER Context in that session would otherwise keep serving
+ * stale. One invalidation domain for every cache `readConfigEntry` feeds.
  *
  * DELEGATES to `invalidateScopedConfigCache` (`config-scoped-read.ts`) so a
  * caller who invalidates only this cache — an embedder unaware of the
@@ -396,6 +459,8 @@ export const __resetConfigCacheForTests = (): void => {
 export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx.session);
   gateVerdictCache.delete(ctx.session);
+  repoSettingsVerdictCache.delete(ctx.session);
+  settledRepoSettings.delete(ctx.session);
   invalidateScopedConfigCache(ctx);
 };
 

@@ -161,6 +161,53 @@ describe('packRefs — files backend', () => {
     });
   });
 
+  describe('Given a freshly initialised files repository with no refs AND a malformed core.maxTreeDepth', () => {
+    describe('When packRefs runs', () => {
+      it('Then it still succeeds — nothing packable means no object is ever read', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        __resetConfigCacheForTests();
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({
+          packedRefCount: 0,
+          prunedLooseRefCount: 0,
+          removedOrphanCount: 0,
+        });
+      });
+    });
+  });
+
+  describe('Given one loose branch ref AND a malformed core.maxTreeDepth', () => {
+    describe('When packRefs runs', () => {
+      it('Then it refuses — peeling the ref reads an object, reaching the class boundary', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        __resetConfigCacheForTests();
+        const sut = packRefs;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
   describe('Given a files repository with commits', () => {
     describe('When packRefs runs', () => {
       it('Then HEAD stays symbolic and loose, never packed', async () => {

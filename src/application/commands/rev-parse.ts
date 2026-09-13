@@ -15,6 +15,7 @@ import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { peel } from '../primitives/internal/peel.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -34,6 +35,7 @@ import {
 
 export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
   const expr = parseExpression(expression);
   return evaluate(ctx, expr, expression);
 };

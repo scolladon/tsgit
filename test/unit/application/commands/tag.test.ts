@@ -4,7 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { tagCreate, tagDelete, tagList } from '../../../../src/application/commands/tag.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  invalidateConfigCache,
+} from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
@@ -130,6 +133,109 @@ describe('tag', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('TAG_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When tag create targets HEAD (a resolvable target)', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE — checked once the target types', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v2', target: 'nope-unresolved' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the unresolvable target reports FIRST, without the class
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+      });
+    });
+
+    describe('When tag create targets a resolvable object', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE once the target types', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v2', target: commitId });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When tag delete runs on a nonexistent tag', () => {
+      it('Then it throws TAG_NOT_FOUND, not the class — "not found" reports first', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagDelete(ctx, { name: 'ghost' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('TAG_NOT_FOUND');
+      });
+    });
+
+    describe('When tag delete runs on an existing tag', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE, after the refExists check', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tagCreate(ctx, { name: 'v1.0' });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagDelete(ctx, { name: 'v1.0' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When tag list runs', () => {
+      it('Then it still runs — git lists tags without parsing an object', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tagCreate(ctx, { name: 'v1.0' });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await tagList(ctx);
+
+        // Assert
+        expect(result.tags.map((t) => t.name)).toContain('refs/tags/v1.0');
       });
     });
   });

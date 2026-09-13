@@ -14,6 +14,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { errorDataCode } from '../primitives/internal/error-data-code.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -147,6 +148,7 @@ export const branchDelete = async (
   input: BranchDeleteInput,
 ): Promise<BranchDeleteResult> => {
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === name) {

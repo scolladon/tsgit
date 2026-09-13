@@ -10,7 +10,10 @@ import {
 } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  invalidateConfigCache,
+} from '../../../../src/application/primitives/config-read.js';
 import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import {
   appendReflog,
@@ -144,6 +147,50 @@ describe('branch', () => {
         // Assert
         expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
         expect(result.branches.find((b) => b.name === 'refs/heads/main')?.current).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When branch list runs', () => {
+      it('Then it still runs — git lists refs without parsing an object', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await branchList(ctx);
+
+        // Assert
+        expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
+      });
+    });
+
+    describe('When branch rename runs', () => {
+      it('Then it still runs — git renames refs without parsing an object', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert
+        expect(result).toEqual({ from: 'refs/heads/main', to: 'refs/heads/trunk' });
+      });
+    });
+
+    describe('When branch delete runs on a nonexistent branch (unforced)', () => {
+      it('Then it dies on the class, not BRANCH_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act + Assert
+        await expectError(() => branchDelete(ctx, { name: 'nope' }), 'CONFIG_BAD_NUMERIC_VALUE');
       });
     });
   });

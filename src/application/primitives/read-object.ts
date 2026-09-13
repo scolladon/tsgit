@@ -14,6 +14,10 @@ import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import {
+  assertRepoSettingsValid,
+  repoSettingsVerdictSettled,
+} from './internal/repo-settings-gate.js';
+import {
   assertChainDepthWithinCap,
   isBase,
   ofsDeltaBaseOffset,
@@ -58,6 +62,7 @@ const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
 const inflightCache = new WeakMap<Context['session'], Map<string, Promise<boolean>>>();
 
 export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   let memo = registryMemos.get(ctx.session);
   if (memo === undefined) {
     memo = createPromiseMemo(() => createPackRegistry(ctx));

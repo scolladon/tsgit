@@ -15,11 +15,16 @@ import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig, ZLIB_MAX_LEVEL, ZLIB_MIN_LEVEL } from './config-read.js';
 import { invalidateLooseOid } from './internal/loose-oid-cache.js';
+import {
+  assertRepoSettingsValid,
+  repoSettingsVerdictSettled,
+} from './internal/repo-settings-gate.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import { commonGitDir, looseObjectPath, objectsDir } from './path-layout.js';
 import { hasDeclaredId } from './validators.js';
 
 export async function writeObject(ctx: Context, object: GitObject): Promise<ObjectId> {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   if (ctx.signal?.aborted) throw operationAborted();
 
   const { bytes, id: computed } = await serializeAndHash(ctx, object);

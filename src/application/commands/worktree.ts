@@ -30,6 +30,7 @@ import {
 import { resolveWorktreePath, worktreePathBasename } from '../../domain/worktree/resolve-path.js';
 import type { Context } from '../../ports/context.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
   deriveWorktreeContext,
   worktreeScopedFs,
@@ -49,6 +50,16 @@ export type { WorktreeEntry };
 
 const HEAD_REF = 'HEAD' as RefName;
 
+/**
+ * `worktree`'s own `prepare_repo_settings` prologue (git's `worktree.c:1489`,
+ * top of `cmd_worktree`): the gate, then the repo-settings class — `worktree`
+ * carries no work-tree requirement of its own, unlike `stash`/`sparse-checkout`.
+ */
+const gateWorktree = async (ctx: Context): Promise<void> => {
+  await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
+};
+
 export interface WorktreeListResult {
   readonly entries: ReadonlyArray<WorktreeEntry>;
 }
@@ -58,7 +69,7 @@ export interface WorktreeListResult {
  * first, then each linked worktree sorted by path.
  */
 export const worktreeList = async (ctx: Context): Promise<WorktreeListResult> => {
-  await assertOperationalRepository(ctx);
+  await gateWorktree(ctx);
   return { entries: await listWorktrees(ctx) };
 };
 
@@ -217,7 +228,7 @@ export const worktreeAdd = async (
   ctx: Context,
   opts: WorktreeAddOptions,
 ): Promise<WorktreeAddResult> => {
-  await assertOperationalRepository(ctx);
+  await gateWorktree(ctx);
   if (opts.path === '') throw worktreePathExists('');
   const worktreePath = resolveWorktreePath(ctx.cwd, opts.path) as FilePath;
   // Defence in depth: the admin id is the path basename, joined onto
@@ -307,7 +318,7 @@ export const worktreeMove = async (
   to: string,
   opts: WorktreeMoveOptions = {},
 ): Promise<WorktreeMoveResult> => {
-  await assertOperationalRepository(ctx);
+  await gateWorktree(ctx);
   const fromPath = resolveWorktreePath(ctx.cwd, from) as FilePath;
   const toPath = resolveWorktreePath(ctx.cwd, to) as FilePath;
   const entry = await resolveLinked(ctx, fromPath, 'move');
@@ -340,7 +351,7 @@ export const worktreeRemove = async (
   path: string,
   opts: WorktreeRemoveOptions = {},
 ): Promise<WorktreeRemoveResult> => {
-  await assertOperationalRepository(ctx);
+  await gateWorktree(ctx);
   const worktreePath = resolveWorktreePath(ctx.cwd, path) as FilePath;
   const entry = await resolveLinked(ctx, worktreePath, 'remove');
   assertUnlocked(entry, opts.force === true);

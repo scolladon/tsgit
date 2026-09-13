@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
@@ -9,6 +9,7 @@ import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-i
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
+  seedMaxTreeDepth,
   serializeIndexFixture,
   serializeIndexFixtureAsync,
 } from './fixtures.js';
@@ -60,6 +61,30 @@ describe('readIndex', () => {
         expect(result.version).toBe(2);
         expect(result.entries).toEqual([]);
         expect(result.extensions).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth and no index file present', () => {
+    describe('When readIndex is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE before the exists probe', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+        const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+        // Act
+        let caught: unknown;
+        try {
+          await readIndex(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — refuses ahead of even the absent-index fast path
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(existsSpy).not.toHaveBeenCalled();
       });
     });
   });

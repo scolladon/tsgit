@@ -13,6 +13,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -75,6 +76,10 @@ const resolveUserRef = (ref: string): RefName => validateRefName(ref);
 export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<ReflogResult> => {
   await assertOperationalRepository(ctx);
   if (opts.action === 'exists') return runExists(ctx, opts.ref);
+  // `reflog exists` runs on a malformed repo-settings class — git resolves it
+  // by file presence alone, no store/graph touch — so the class is checked
+  // only for the three verbs that actually parse a commit.
+  await assertRepoSettingsValid(ctx);
   if (opts.action === 'delete') return runDelete(ctx, opts);
   if (opts.action === 'expire') return runExpire(ctx, opts);
   return runShow(ctx, opts.ref ?? 'HEAD');

@@ -122,6 +122,29 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given a malformed core.maxTreeDepth, even for an unresolvable argument', () => {
+    describe('When revParse is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE — the class is checked right after the gate', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'nope');
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
   describe('Given a repo with HEAD pointing to a commit ref', () => {
     describe('When revParse(HEAD)', () => {
       it('Then returns the commit oid', async () => {

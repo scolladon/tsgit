@@ -20,6 +20,7 @@ import {
 } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { loadSparseMatcher, readSparsePatternText } from '../primitives/read-sparse-checkout.js';
 import { updateCoreConfig } from '../primitives/update-config.js';
 import { writeSparsePatternText } from '../primitives/write-sparse-checkout.js';
@@ -65,9 +66,16 @@ export interface SparseCheckoutDisableInput {
   readonly force?: boolean;
 }
 
-/** Sparse checkout needs a worktree and a quiet repo — gate every verb. */
+/**
+ * Sparse checkout needs a worktree and a quiet repo — gate every verb. The
+ * repo-settings class is checked right after the gate, BEFORE the work-tree
+ * requirement — git's `sparse-checkout.c` prologue dies on the class before
+ * `setup_work_tree`, so a bare repo's `sparse-checkout list` names the class,
+ * not the missing work tree.
+ */
 const assertSparseReady = async (ctx: Context): Promise<void> => {
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
   requireWorkTree(ctx, 'sparse-checkout');
   await assertNoPendingOperation(ctx);
 };

@@ -20,6 +20,7 @@ import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createTag } from '../primitives/create-tag.js';
 import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -92,6 +93,10 @@ export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<Ta
   const targetId = isOid(target, ctx.hashConfig)
     ? (target as ObjectId)
     : await resolveRef(ctx, target as RefName);
+  // The point where git TYPES the target — for both the annotated and the
+  // lightweight path — so this is where the repo-settings class is checked:
+  // an unresolvable target reports first (above), never the class.
+  await assertRepoSettingsValid(ctx);
   const id = wantsAnnotatedTag(input) ? await createAnnotatedTag(ctx, input, targetId) : targetId;
   await updateTagRef(ctx, name, id, input.force === true, `tag: ${input.name}`);
   return { name, id };
@@ -212,6 +217,7 @@ export const tagDelete = async (ctx: Context, input: TagDeleteInput): Promise<Ta
   if (!(await refExists(ctx, name))) {
     throw tagNotFound(name);
   }
+  await assertRepoSettingsValid(ctx);
   await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true });
   return { name };
 };

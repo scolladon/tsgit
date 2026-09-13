@@ -249,6 +249,87 @@ describe('reflog command', () => {
     });
   });
 
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When reflog exists runs', () => {
+      it('Then it still runs — git runs on "reflog exists" too', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        const result = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
+
+        // Assert
+        expect(result).toEqual({ kind: 'exists', exists: false });
+      });
+    });
+
+    describe('When reflog show runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE — checked after the exists dispatch', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await reflog(ctx, { action: 'show' });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When reflog delete runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await appendReflog(ctx, BRANCH, entry());
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 0 });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When reflog expire runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await reflog(ctx, { action: 'expire', all: true });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
   describe('delete', () => {
     describe('Given a three-entry reflog', () => {
       describe('When delete index 1', () => {

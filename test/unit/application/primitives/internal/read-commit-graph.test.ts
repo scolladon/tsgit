@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import {
   commitHeader,
+  correctedCommitDatesEnabled,
   insertBounded,
   isGraphKnownAbsent,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
@@ -23,7 +24,12 @@ import type {
 } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildCommitGraphBytes } from '../../../domain/commit/arbitraries.js';
-import { buildSeededContext, instrumentedContext, writeCommitGraph } from '../fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  seedMaxTreeDepth,
+  writeCommitGraph,
+} from '../fixtures.js';
 
 const withFsOverride = (ctx: Context, overrides: Partial<Context['fs']>): Context => ({
   ...ctx,
@@ -1196,6 +1202,82 @@ describe('isGraphKnownAbsent', () => {
 
       // Assert
       expect(result).toBe(false);
+    });
+  });
+});
+
+describe('commitHeader / correctedCommitDatesEnabled — repo-settings class boundary', () => {
+  describe('Given core.maxTreeDepth = 2.5 and a fresh session (no graph probed yet)', () => {
+    describe('When commitHeader is called for any oid', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE without ever probing the graph file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+        const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+        // Act
+        let caught: unknown;
+        try {
+          await commitHeader(ctx, oid('bb01'));
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(existsSpy).not.toHaveBeenCalled();
+        expect(isGraphKnownAbsent(ctx)).toBe(false);
+      });
+    });
+
+    describe('When correctedCommitDatesEnabled is called', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE without ever probing the graph file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+        const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+        // Act
+        let caught: unknown;
+        try {
+          await correctedCommitDatesEnabled(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(existsSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a header already cached for an oid, then the config becomes malformed and is invalidated', () => {
+    describe('When commitHeader is called again for the same oid', () => {
+      it('Then it still refuses — the header-cache hit does not bypass the class check', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTree(ctx);
+        const commit = await makeCommit(ctx, tree, [], 1, 'settled');
+        await writeCommitGraph(ctx, [[commit]]);
+        const first = await commitHeader(ctx, commit.id);
+        expect(first).toBeDefined();
+
+        // Act — external rewrite + invalidation, no further probe in between
+        await seedMaxTreeDepth(ctx, '2.5');
+        let caught: unknown;
+        try {
+          await commitHeader(ctx, commit.id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
     });
   });
 });

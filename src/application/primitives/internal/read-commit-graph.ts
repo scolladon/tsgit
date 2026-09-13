@@ -27,6 +27,7 @@ import {
   commitGraphPath,
   commonGitDir,
 } from '../path-layout.js';
+import { assertRepoSettingsValid, repoSettingsVerdictSettled } from './repo-settings-gate.js';
 import { isShallowRepository } from './shallow-set.js';
 
 /** Parents/root-tree/generation/date for one commit, sourced from the commit-graph. */
@@ -255,6 +256,7 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
  * through to the date clause, so the two verdicts are indistinguishable.
  */
 export async function correctedCommitDatesEnabled(ctx: Context): Promise<boolean> {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   const graph = await loadGraph(ctx);
   return graph !== undefined && graph.correctedCommitDates;
 }
@@ -351,6 +353,7 @@ export function isGraphKnownAbsent(ctx: Context): boolean {
 }
 
 export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHeader | undefined> {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   const cache = getHeaderCache(ctx);
   const cached = cache.get(id);
   if (cached !== undefined) return cached;
