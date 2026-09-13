@@ -274,9 +274,21 @@ export function probeDeltaBaseCache(
  */
 const DELTA_BASE_CACHE_ENTRY_OVERHEAD_BYTES = 200;
 
-function deltaBaseCacheEntrySize(content: Uint8Array): number {
+export function deltaBaseCacheEntrySize(content: Uint8Array): number {
   return content.length + DELTA_BASE_CACHE_ENTRY_OVERHEAD_BYTES;
 }
+
+/**
+ * Fraction of the delta-base cache's whole budget one chain read may insert.
+ * Reading a single deeply-deltified object would otherwise push one full
+ * intermediate per chain level through the cache, evicting entries a
+ * shallower, more-repeated read would have kept. Kept as a fraction of
+ * `registry.deltaBaseCache.maxSize` — not an absolute — so the chain budget
+ * scales with whatever the cache itself is configured to hold. Strictly
+ * below 1 so a single insert can never alone reach the whole-cache refusal
+ * `LruCache.set` enforces.
+ */
+export const DELTA_BASE_CHAIN_INSERT_FRACTION = 0.25;
 
 /**
  * Populate one delta-chain level's offset-keyed entry, under an
@@ -294,7 +306,11 @@ export function cacheDeltaBase(
   type: PackEntryHeader['type'],
   content: Uint8Array,
   chainDepth: number,
-): void {
-  if (!deltaBaseCachingEnabled(ctx)) return;
-  registry.deltaBaseCache.set(key, { type, content, chainDepth }, deltaBaseCacheEntrySize(content));
+): boolean {
+  if (!deltaBaseCachingEnabled(ctx)) return false;
+  return registry.deltaBaseCache.set(
+    key,
+    { type, content, chainDepth },
+    deltaBaseCacheEntrySize(content),
+  );
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  cacheDeltaBase,
   forgetParsedObjectMemo,
   memoByteValve,
   memoMaxEntries,
@@ -116,6 +117,82 @@ describe('probeDeltaBaseCache', () => {
           actualSize: 50,
           limit: 10,
         });
+      });
+    });
+  });
+});
+
+describe('cacheDeltaBase', () => {
+  describe('Given a Context with caching enabled', () => {
+    describe('When cacheDeltaBase is called with content that fits the cache', () => {
+      it('Then it returns true and the entry becomes resident', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const registry = await createPackRegistry(ctx);
+        const key = deltaBaseCacheKey('pack-a', 10);
+        const content = new Uint8Array(5);
+
+        // Act
+        const result = cacheDeltaBase(ctx, registry, key, PACK_ENTRY_TYPE.BLOB, content, 0);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(registry.deltaBaseCache.has(key)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given content whose entry size exceeds the whole cache budget', () => {
+    describe('When cacheDeltaBase is called', () => {
+      it("Then it returns false, forwarding LruCache.set's refusal", async () => {
+        // Arrange — a 10-byte cache can never admit a 5-byte content entry
+        // once the fixed 200-byte overhead is added (205 > 10).
+        const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 10 });
+        const registry = await createPackRegistry(ctx);
+        const key = deltaBaseCacheKey('pack-a', 10);
+
+        // Act
+        const result = cacheDeltaBase(
+          ctx,
+          registry,
+          key,
+          PACK_ENTRY_TYPE.BLOB,
+          new Uint8Array(5),
+          0,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(registry.deltaBaseCache.has(key)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a Context with caching disabled (zero deltaCache budget)', () => {
+    describe('When cacheDeltaBase is called', () => {
+      it('Then it returns false and writes nothing', async () => {
+        // Arrange
+        const enabledCtx = createMemoryContext();
+        const registry = await createPackRegistry(enabledCtx);
+        const disabledCtx = {
+          ...enabledCtx,
+          deltaCache: { ...enabledCtx.deltaCache, maxSize: 0 },
+        };
+        const key = deltaBaseCacheKey('pack-a', 10);
+
+        // Act
+        const result = cacheDeltaBase(
+          disabledCtx,
+          registry,
+          key,
+          PACK_ENTRY_TYPE.BLOB,
+          new Uint8Array(5),
+          0,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(registry.deltaBaseCache.has(key)).toBe(false);
       });
     });
   });

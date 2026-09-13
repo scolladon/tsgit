@@ -26,6 +26,8 @@ import type { Context } from '../../ports/context.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import {
   cacheDeltaBase,
+  DELTA_BASE_CHAIN_INSERT_FRACTION,
+  deltaBaseCacheEntrySize,
   enforcePackBaseCap,
   parsedObjectByteSize,
   parsedObjectMemoFor,
@@ -478,6 +480,21 @@ async function resolvePackChainWithDepth(
 ): Promise<{ bytes: Uint8Array; chainDepth: number }> {
   const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes, externalDepth);
 
+  // Bounds how many bytes THIS chain read may insert into the shared
+  // offset-keyed cache — strictly below the cache's whole-budget refusal
+  // (`LruCache.set`'s `byteSize > maxSize`), so `cacheDeltaBase` never
+  // returns `false` from here; see the doc on
+  // `DELTA_BASE_CHAIN_INSERT_FRACTION`. Levels are offered nearest-the-base
+  // first (below), so a chain that would otherwise flush the whole cache
+  // instead keeps the levels most likely to be reused across future reads.
+  const chainBudget = registry.deltaBaseCache.maxSize * DELTA_BASE_CHAIN_INSERT_FRACTION;
+  let inserted = 0;
+  const insertLevel = (key: string, content: Uint8Array, chainDepth: number): void => {
+    const size = deltaBaseCacheEntrySize(content);
+    if (inserted + size > chainBudget) return;
+    if (cacheDeltaBase(ctx, registry, key, phase1.baseType, content, chainDepth)) inserted += size;
+  };
+
   // Apply deltas bottom-up. A REF_DELTA terminator's base was cached (by id)
   // inside `resolveObjectBytesWithDepth`'s own loose/pack arms as it was
   // resolved; every OFS/REF level here is cached too, now by (pack, offset) —
@@ -492,14 +509,7 @@ async function resolvePackChainWithDepth(
   // above (only `DeltaStep`s did), so its key is built fresh here — the one
   // key this function still computes rather than reuses.
   if (phase1.deltas.length > 0 && phase1.baseOffset !== undefined) {
-    cacheDeltaBase(
-      ctx,
-      registry,
-      deltaBaseCacheKey(hit.pack.name, phase1.baseOffset),
-      phase1.baseType,
-      current,
-      0,
-    );
+    insertLevel(deltaBaseCacheKey(hit.pack.name, phase1.baseOffset), current, 0);
   }
   for (let i = phase1.deltas.length - 1; i >= 0; i -= 1) {
     const step = phase1.deltas[i];
@@ -515,7 +525,7 @@ async function resolvePackChainWithDepth(
     // the cache hit skipped — the gap a chain of successive warm reads
     // compounds across.
     const chainDepth = phase1.deltas.length - i + phase1.baseChainDepth;
-    cacheDeltaBase(ctx, registry, step.probeKey, phase1.baseType, current, chainDepth);
+    insertLevel(step.probeKey, current, chainDepth);
   }
   // Post-apply cap on the reconstructed object (delta resolution is the only
   // place a payload can grow beyond what the base entry declared). The check

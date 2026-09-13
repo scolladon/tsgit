@@ -1744,16 +1744,18 @@ describe('object-resolver', () => {
     describe('Given an intermediate larger than the byte cap', () => {
       describe('When resolveObject is called', () => {
         it('Then it is not cached and the read still succeeds', async () => {
-          // Arrange — a deltaBaseCacheMaxBytes sized so the 1-byte base fits
-          // under the cap once the fixed per-entry overhead is added (1 + 200
-          // = 201 <= 205), while BOTH the 64-byte mid intermediate (64 + 200
-          // = 264) AND the tip's own reconstructed entry (11 + 200 = 211,
-          // also cached under its own offset once fully resolved) exceed it —
-          // a cap that fit the tip too would evict the base via normal LRU
-          // eviction, defeating the point of this fixture. Every oversized
-          // entry is silently dropped by LruCache.set rather than thrown
-          // from, and the read still completes correctly.
-          const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 205 });
+          // Arrange — deltaBaseCacheMaxBytes=1200 gives a ¼ chain budget of
+          // 300 bytes. The 1-byte base fits once the fixed per-entry
+          // overhead is added (1 + 200 = 201 <= 300) and is inserted first
+          // (nearest-base-first), leaving only 99 bytes of budget behind it —
+          // both the 64-byte mid intermediate (264) and the tip's own
+          // reconstructed entry (211, also cached under its own offset once
+          // fully resolved) would push the running total past 300 and are
+          // refused. `cacheDeltaBase` never sees a whole-cache-sized entry
+          // here (every candidate is well under the 1200-byte cache); the
+          // refusal is the per-chain budget, and the read still completes
+          // correctly regardless of what got cached.
+          const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 1200 });
           const baseContent = ENC.encode('a');
           const midContent = new Uint8Array(64).fill(0x42);
           const tipContent = ENC.encode('tip content');
@@ -1870,6 +1872,156 @@ describe('object-resolver', () => {
           // Assert
           expect(deltaBaseCacheKeySpy).toHaveBeenCalledTimes(4);
         });
+      });
+    });
+  });
+
+  describe('Given an OFS_DELTA chain whose levels exceed the per-chain insert budget', () => {
+    describe('When resolveObject resolves the tip', () => {
+      it('Then only the base-nearest levels are cached and the returned bytes are unchanged', async () => {
+        // Arrange — deltaBaseCacheMaxBytes=2000 gives a ¼ chain budget of 500
+        // bytes. Each level's cache entry costs content.length + 200 (fixed
+        // overhead), so base (1 byte -> 201) and mid1 (1 byte -> 201) fit
+        // (cumulative 402 <= 500) while mid2 (any size) would push past 500
+        // and is refused, along with the tip after it.
+        const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 2000 });
+        const baseContent = ENC.encode('a');
+        const mid1Content = ENC.encode('b');
+        const mid2Content = ENC.encode('c');
+        const tipContent = ENC.encode('tip content');
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: mid1Content },
+          { kind: 'ofs-delta', baseIndex: 1, targetContent: mid2Content },
+          { kind: 'ofs-delta', baseIndex: 2, targetContent: tipContent },
+        ]);
+        const packBase = `${ctx.layout.gitDir}/objects/pack/pack-budget-chain`;
+        await ctx.fs.write(`${packBase}.pack`, built.packBytes);
+        await ctx.fs.write(`${packBase}.idx`, built.idxBytes);
+        const tipId = built.ids[3]! as ObjectId;
+        const [baseOffset, mid1Offset, mid2Offset, tipOffset] = built.offsets;
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObject(ctx, registry, tipId, true);
+
+        // Assert — bytes identical to an unbudgeted read.
+        expect((result as Blob).content).toEqual(tipContent);
+        // Assert — nearest-base-first: base and mid1 resident, mid2 and the
+        // tip's own delta level pruned.
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', baseOffset!)),
+        ).toBeDefined();
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', mid1Offset!)),
+        ).toBeDefined();
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', mid2Offset!)),
+        ).toBeUndefined();
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', tipOffset!)),
+        ).toBeUndefined();
+        expect(registry.deltaBaseCache.entryCount).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a base larger than the per-chain insert budget feeding a small delta level', () => {
+    describe('When resolveObject resolves the tip', () => {
+      it('Then the oversized base is skipped but the delta level is still cached', async () => {
+        // Arrange — deltaBaseCacheMaxBytes=1000 gives a ¼ chain budget of
+        // 250 bytes. The base alone (60 bytes -> 260) exceeds it and must be
+        // skipped even though it is the FIRST insert attempted (budget = 0
+        // remaining used); the delta level (1 byte -> 201) still fits.
+        const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 1000 });
+        const baseContent = new Uint8Array(60).fill(0x41);
+        const tipContent = ENC.encode('t');
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: tipContent },
+        ]);
+        const packBase = `${ctx.layout.gitDir}/objects/pack/pack-oversized-base`;
+        await ctx.fs.write(`${packBase}.pack`, built.packBytes);
+        await ctx.fs.write(`${packBase}.idx`, built.idxBytes);
+        const tipId = built.ids[1]! as ObjectId;
+        const [baseOffset, tipOffset] = built.offsets;
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObject(ctx, registry, tipId, true);
+
+        // Assert
+        expect((result as Blob).content).toEqual(tipContent);
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversized-base', baseOffset!)),
+        ).toBeUndefined();
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversized-base', tipOffset!)),
+        ).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a single-level chain whose base entry exactly fills the per-chain budget', () => {
+    describe('When resolveObject resolves the tip', () => {
+      it('Then the base is cached — the budget check is not-greater-than, not at-least', async () => {
+        // Arrange — deltaBaseCacheMaxBytes=804 gives a ¼ chain budget of
+        // 201 bytes, exactly the base entry's cost (1-byte content + 200
+        // fixed overhead). A mutant flipping `>` to `>=` would refuse this.
+        const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 804 });
+        const baseContent = ENC.encode('a');
+        const tipContent = ENC.encode('z');
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: tipContent },
+        ]);
+        const packBase = `${ctx.layout.gitDir}/objects/pack/pack-exact-fit`;
+        await ctx.fs.write(`${packBase}.pack`, built.packBytes);
+        await ctx.fs.write(`${packBase}.idx`, built.idxBytes);
+        const tipId = built.ids[1]! as ObjectId;
+        const [baseOffset] = built.offsets;
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        await resolveObject(ctx, registry, tipId, true);
+
+        // Assert
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-exact-fit', baseOffset!)),
+        ).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a single-level chain whose base entry exceeds the per-chain budget by one byte', () => {
+    describe('When resolveObject resolves the tip', () => {
+      it('Then the base is not cached — proving the fraction, not just the comparison', async () => {
+        // Arrange — deltaBaseCacheMaxBytes=800 gives a ¼ chain budget of 200
+        // bytes; the base entry still costs 201 (1-byte content + 200
+        // overhead). A mutant on the 0.25 fraction (e.g. 0.26) would admit
+        // this and make the test above and this one both pass by accident;
+        // only the pair together pins the exact constant.
+        const ctx = createMemoryContext({ deltaBaseCacheMaxBytes: 800 });
+        const baseContent = ENC.encode('a');
+        const tipContent = ENC.encode('z');
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: tipContent },
+        ]);
+        const packBase = `${ctx.layout.gitDir}/objects/pack/pack-exact-miss`;
+        await ctx.fs.write(`${packBase}.pack`, built.packBytes);
+        await ctx.fs.write(`${packBase}.idx`, built.idxBytes);
+        const tipId = built.ids[1]! as ObjectId;
+        const [baseOffset] = built.offsets;
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        await resolveObject(ctx, registry, tipId, true);
+
+        // Assert
+        expect(
+          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-exact-miss', baseOffset!)),
+        ).toBeUndefined();
       });
     });
   });
