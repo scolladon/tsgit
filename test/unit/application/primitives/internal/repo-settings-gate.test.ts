@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { branchCreate } from '../../../../../src/application/commands/branch.js';
-import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
+import {
+  invalidateConfigCache,
+  memoizeRepoSettingsVerdict,
+  readConfig,
+} from '../../../../../src/application/primitives/config-read.js';
 import { commitHeader } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import {
   assertRepoSettingsValid,
@@ -37,6 +41,21 @@ interface BadNumericData {
   readonly value: string;
   readonly reason: string;
 }
+
+const assertRefusesWithBadMaxTreeDepth = async (op: () => Promise<unknown>): Promise<void> => {
+  let caught: unknown;
+  try {
+    await op();
+  } catch (err) {
+    caught = err;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  const data = (caught as TsgitError).data as BadNumericData;
+  expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+  expect(data.key).toBe('core.maxtreedepth');
+  expect(data.value).toBe('2.5');
+  expect(data.reason).toBe('invalid unit');
+};
 
 describe('internal/repo-settings-gate', () => {
   describe('assertRepoSettingsValid', () => {
@@ -446,26 +465,6 @@ describe('internal/repo-settings-gate', () => {
       return { ctx, commitId };
     };
 
-    const assertRefusesWithBadMaxTreeDepth = async (op: () => Promise<unknown>): Promise<void> => {
-      let caught: unknown;
-      try {
-        await op();
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data as {
-        readonly code: string;
-        readonly key: string;
-        readonly value: string;
-        readonly reason: string;
-      };
-      expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-      expect(data.key).toBe('core.maxtreedepth');
-      expect(data.value).toBe('2.5');
-      expect(data.reason).toBe('invalid unit');
-    };
-
     describe('When readObject reads an already-written object', () => {
       it('Then refuses with CONFIG_BAD_NUMERIC_VALUE instead of serving the superseded verdict', async () => {
         // Arrange
@@ -508,6 +507,66 @@ describe('internal/repo-settings-gate', () => {
 
         // Act + Assert
         await assertRefusesWithBadMaxTreeDepth(() => branchCreate(ctx, { name: 'from-warm' }));
+      });
+    });
+  });
+
+  describe('Given a PRIMITIVE-ONLY session — never gated — settled, externally rewritten, then re-read', () => {
+    describe('When the synchronous fast path and a further object read are consulted', () => {
+      it('Then the re-keyed parse entry supersedes the verdict on its own and readObject refuses', async () => {
+        // Arrange — no `assertOperationalRepository` anywhere in this
+        // sequence, so nothing but the verdict's own key comparison can
+        // notice the rewrite: the entry is never dropped, only out-keyed.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[core]\n\tbare = false\n');
+        const blob: Blob = {
+          type: 'blob',
+          content: new TextEncoder().encode('primitive-only'),
+          id: '' as ObjectId,
+        };
+        const blobId = await writeObject(ctx, blob);
+        await readObject(ctx, blobId);
+        expect(repoSettingsVerdictSettled(ctx)).toBe(true);
+
+        // Act — a raw rewrite with NO invalidateConfigCache, followed by the
+        // plain config read that re-keys the parse entry.
+        await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n');
+        await readConfig(ctx);
+
+        // Assert
+        expect(repoSettingsVerdictSettled(ctx)).toBe(false);
+        await assertRefusesWithBadMaxTreeDepth(() => readObject(ctx, blobId));
+      });
+    });
+  });
+
+  describe('Given the parse cache moves to a NEW key while a verdict is still computing', () => {
+    describe('When that verdict resolves', () => {
+      it('Then it keeps the key it actually validated rather than adopting the newer one', async () => {
+        // Arrange — a real (non-sentinel) key is in the parse cache before
+        // the verdict starts, so the call-time snapshot is already valid.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[core]\n\tbare = false\n');
+        await readConfig(ctx);
+
+        // Act — a compute that validates the CURRENT bytes and only then
+        // lets the parse cache move on. Doing the re-key inside `compute`
+        // stands in deterministically for the concurrent read that would
+        // otherwise land its continuation between the resolution and the
+        // memo's own; both leave the same state behind.
+        await memoizeRepoSettingsVerdict(ctx, async () => {
+          await readConfig(ctx);
+          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n');
+          await readConfig(ctx);
+        });
+
+        // Assert — adopting the newer key would advertise this verdict as
+        // current for bytes it never read, and the refusal below would be
+        // skipped for the rest of the session.
+        expect(repoSettingsVerdictSettled(ctx)).toBe(false);
+        await assertRefusesWithBadMaxTreeDepth(() => assertRepoSettingsValid(ctx));
       });
     });
   });
