@@ -33,7 +33,7 @@ import {
   verifyObjectContent,
 } from '../object-resolver.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
-import { getPackRegistry } from '../read-object.js';
+import { getPackRegistry, peekPackRegistry } from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
 
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
@@ -84,7 +84,7 @@ export async function openBlobSource(
   // Same store-setup gate as resolveObjectContentWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
-  await (await getPackRegistry(ctx)).assertLoadable();
+  await (peekPackRegistry(ctx) ?? (await getPackRegistry(ctx))).assertLoadable();
 
   if (gate.maxBufferedBytes > 0) {
     const cached = ctx.deltaCache.get(id);
@@ -100,7 +100,7 @@ export async function openBlobSource(
   }
 
   checkAborted(ctx);
-  const registry = await getPackRegistry(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   const hit = await registry.lookup(id);
   if (hit === undefined) throw objectNotFound(id);
 

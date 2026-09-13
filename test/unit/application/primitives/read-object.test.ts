@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
+import { assertRepoSettingsValid } from '../../../../src/application/primitives/internal/repo-settings-gate.js';
 import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import * as packRegistryMod from '../../../../src/application/primitives/pack-registry.js';
-import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
+import {
+  disposePackRegistry,
+  getPackRegistry,
+  peekPackRegistry,
+  readObject,
+  readRawObject,
+} from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, type TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -621,6 +628,108 @@ describe('getPackRegistry — repo-settings class boundary', () => {
           (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
         );
         expect(configStats).toHaveLength(0);
+      });
+    });
+  });
+});
+
+describe('peekPackRegistry', () => {
+  describe('Given a fresh session that has never constructed a registry', () => {
+    describe('When checked', () => {
+      it('Then returns undefined — nothing to serve synchronously yet', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = peekPackRegistry(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a session warmed by a prior getPackRegistry call', () => {
+    describe('When checked', () => {
+      it('Then returns the SAME registry getPackRegistry resolves to, with zero further construction', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const warm = await getPackRegistry(ctx);
+        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+        // Act
+        const result = peekPackRegistry(ctx);
+
+        // Assert
+        expect(result).toBe(warm);
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a warm session whose config is then poisoned (the repo-settings verdict is superseded)', () => {
+    describe('When checked', () => {
+      it('Then returns undefined instead of serving the stale registry — F1 must not reopen through the peek', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([9]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await readObject(ctx, id);
+        expect(peekPackRegistry(ctx)).toBeDefined();
+
+        // Act — poison drops the repo-settings verdict memo (invalidateConfigCache).
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Assert
+        expect(peekPackRegistry(ctx)).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('disposePackRegistry', () => {
+  describe('Given a construction in flight that then rejects', () => {
+    describe('When disposePackRegistry races the rejection', () => {
+      it('Then dispose resolves without throwing, and the original caller still observes the rejection', async () => {
+        // Arrange — settle the repo-settings verdict WITHOUT ever touching
+        // the pack registry, so getPackRegistry's own check below is
+        // synchronous (the fast path), and the memo it creates is the first
+        // and only one for this session.
+        const ctx = await buildSeededContext();
+        await seedHead(ctx);
+        await assertRepoSettingsValid(ctx);
+        const failure = new Error('construction boom');
+        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry').mockRejectedValue(failure);
+
+        // Act — start the (soon-to-reject) construction, then race dispose
+        // against it before the rejection has settled.
+        const pending = getPackRegistry(ctx);
+        pending.catch(() => {
+          // Expected — asserted below via `.rejects`; this only prevents an
+          // unhandled-rejection warning from the head start above.
+        });
+        const disposal = disposePackRegistry(ctx);
+
+        // Assert
+        await expect(disposal).resolves.toBeUndefined();
+        await expect(pending).rejects.toBe(failure);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given no registry was ever constructed for the session', () => {
+    describe('When disposePackRegistry is called', () => {
+      it('Then resolves without constructing one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+        // Act + Assert
+        await expect(disposePackRegistry(ctx)).resolves.toBeUndefined();
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
       });
     });
   });

@@ -64,13 +64,40 @@ export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
   if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   let memo = registryMemos.get(ctx.session);
   if (memo === undefined) {
-    memo = createPromiseMemo(() => createPackRegistry(ctx));
+    // `resolvedRegistries.set` rides the CONSTRUCTION's own `.then`, not
+    // every call: once per registry build, not once per read. A call that
+    // joins an already-settled memo returns straight from `memo.get()`
+    // without ever re-touching `resolvedRegistries` — `peekPackRegistry`
+    // already served the sync case, and this async path pays a `WeakMap.set`
+    // it does not need to repeat.
+    memo = createPromiseMemo(() =>
+      createPackRegistry(ctx).then((registry) => {
+        resolvedRegistries.set(ctx.session, registry);
+        return registry;
+      }),
+    );
     registryMemos.set(ctx.session, memo);
   }
-  const registry = await memo.get();
-  resolvedRegistries.set(ctx.session, registry);
-  return registry;
+  return memo.get();
 };
+
+/**
+ * The synchronous fast path `getPackRegistry` cannot be: a settled registry
+ * for a session whose repo-settings verdict is CURRENT, at zero promise-hop
+ * cost. `readObject` and its siblings call `peekPackRegistry(ctx) ?? await
+ * getPackRegistry(ctx)` — the settled case pays one `WeakMap.get` (~10ns)
+ * instead of the two microtask hops `await`-ing an already-resolved promise
+ * costs (~135ns measured on this worktree), the same order of saving
+ * `repoSettingsVerdictSettled` already banks for the config check itself.
+ *
+ * Gated on `repoSettingsVerdictSettled`, never on "a registry merely exists":
+ * a registry built against a SUPERSEDED config key must not be served as if
+ * still current — that is F1's exact shape, reopened one call site later.
+ * `repoSettingsVerdictSettled` is itself key-aware (see `config-read.ts`), so
+ * this peek inherits that protection instead of re-deriving it.
+ */
+export const peekPackRegistry = (ctx: Context): PackRegistry | undefined =>
+  repoSettingsVerdictSettled(ctx) ? resolvedRegistries.get(ctx.session) : undefined;
 
 /**
  * Drop the per-session pack-registry's cached `.idx` scan so the next read
@@ -87,9 +114,19 @@ export function refreshPackRegistry(ctx: Context): void {
  * Close every persistent per-pack handle the registry opened for this
  * session. Does NOT create a registry if none exists — a repo that never
  * touched a pack disposes without scanning `objects/pack/`.
+ *
+ * The in-flight construction this awaits can now REJECT (a repo-settings
+ * refusal, or a config read fault) where the old synchronous registry never
+ * could — `dispose` is cleanup, not a place to surface a construction
+ * failure the caller already has its own path to observe. The rejection is
+ * swallowed deliberately and narrowly, at exactly this one `.catch`, not by
+ * silencing the underlying promise: a dispose racing a still-failing
+ * construction has nothing left to close.
  */
 export async function disposePackRegistry(ctx: Context): Promise<void> {
-  await (await registryMemos.get(ctx.session)?.peek())?.dispose();
+  const pending = registryMemos.get(ctx.session)?.peek();
+  const registry = await pending?.catch(() => undefined);
+  await registry?.dispose();
 }
 
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {
@@ -170,7 +207,7 @@ export async function readObject(
   options?: ReadObjectOptions,
 ): Promise<GitObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = await getPackRegistry(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObject(ctx, registry, id, verifyHash, options?.maxBytes),
   );
@@ -182,7 +219,7 @@ export async function readRawObject(
   options?: ReadObjectOptions,
 ): Promise<RawObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = await getPackRegistry(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, async () => {
     const { type, content } = await resolveObjectContentWithDepth(
       ctx,
@@ -244,7 +281,7 @@ export async function readObjectMetadataWithContent(
   ctx: Context,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
-  const registry = await getPackRegistry(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObjectMetadataWithContent(ctx, registry, id),
   );

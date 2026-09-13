@@ -4,7 +4,7 @@ import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import type { RegisteredPack } from './pack-registry.js';
 import { commonGitDir, objectsDir } from './path-layout.js';
-import { getPackRegistry } from './read-object.js';
+import { getPackRegistry, peekPackRegistry } from './read-object.js';
 
 export interface EnumerateObjectsOptions {
   /** Include objects from pack files (default: true). */
@@ -31,7 +31,7 @@ export async function enumerateObjects(
 
   await collectLooseObjectIds(ctx, ids);
   if (includePacks) {
-    const registry = await getPackRegistry(ctx);
+    const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
     const packs = accessiblePacksOnly ? (await registry.health()).accessible : await registry.all();
     await collectPackedObjectIds(packs, ids);
   }

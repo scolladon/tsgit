@@ -13,7 +13,7 @@ import { isOid, type ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { commonGitDir, objectsDir } from './path-layout.js';
-import { getPackRegistry } from './read-object.js';
+import { getPackRegistry, peekPackRegistry } from './read-object.js';
 
 /** Lower bound of an abbreviated-oid prefix — independent of the repository's
  *  hash width (measured against real git: a 4-char prefix resolves under
@@ -51,7 +51,8 @@ const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<Ob
 
 /** Packed objects whose id starts with `prefix`, across every registered pack. */
 const scanPacks = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
-  const packs = await (await getPackRegistry(ctx)).all();
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  const packs = await registry.all();
   const found: ObjectId[] = [];
   for (const pack of packs) {
     const index = await pack.index();
