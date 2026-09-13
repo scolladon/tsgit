@@ -144,7 +144,12 @@ done
 # snapshot path and the pooled loose-ref enumeration, and git's reflog expire model
 # (per-ref mark walk with a date-bounded frontier). None is removable without dropping
 # the behaviour each one exists to provide.
-SIZE_CAP=$((927 * 1024))
+# Raised 927 -> 928 KiB by the review round's own fix commits: the measured tarball
+# landed at 949 335 B, 87 B over. Attribution, all runtime code every distribution form
+# ships: git's leftover-frontier re-walk and gentle peel in the reflog expire model, the
+# repo-settings verdict re-keying, the synchronous pack-registry peek, and the bounded
+# start-point tag walk. None is removable without dropping the behaviour each provides.
+SIZE_CAP=$((928 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
