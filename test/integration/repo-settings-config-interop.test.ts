@@ -424,6 +424,104 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     });
   });
 
+  describe('Given a repo with a malformed core.deltaBaseCacheLimit, poisoned AFTER setup', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-repo-settings-delta-base-'));
+      await buildReadonlyRepo(dir);
+      await writeFile(path.join(dir, '.git', 'config'), '[core]\n\tdeltaBaseCacheLimit = -1\n', {
+        flag: 'a',
+      });
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When rev-parse HEAD runs', () => {
+      it('Then both refuse — C1: a malformed core.deltaBaseCacheLimit dies on the class', async () => {
+        // Arrange + Act
+        const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'HEAD');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("'core.deltabasecachelimit'");
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.deltabasecachelimit',
+        });
+      });
+    });
+
+    describe('When the file value is overridden — git by -c, tsgit by cacheBudgets', () => {
+      it('Then both succeed — C5: an option-overridden file value is never validated', async () => {
+        // Arrange + Act
+        const g = tryRunGitWithExit([
+          '-C',
+          dir,
+          '-c',
+          'core.deltaBaseCacheLimit=1m',
+          'rev-parse',
+          'HEAD',
+        ]);
+        const overridden: Context = { ...ctx, cacheBudgets: { deltaBaseCacheMaxBytes: 1024 } };
+        const result = await revParse(overridden, 'HEAD');
+
+        // Assert
+        expect(g.exitCode).toBe(0);
+        expect(result).toMatch(/^[0-9a-f]{40}$/);
+      });
+    });
+  });
+
+  describe('Given a repo with core.deltaBaseCacheLimit = 4m (line 2) then = -1 (line 3) — valid-then-invalid', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-repo-settings-delta-base-order-'));
+      await buildReadonlyRepo(dir);
+      await writeFile(
+        path.join(dir, '.git', 'config'),
+        '[core]\n\tdeltaBaseCacheLimit = 4m\n\tdeltaBaseCacheLimit = -1\n',
+        { flag: 'a' },
+      );
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When rev-parse HEAD runs', () => {
+      it('Then both refuse — C4: the gate observes the effective (last-wins) value', async () => {
+        // Arrange + Act
+        const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'HEAD');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.deltabasecachelimit',
+          value: '-1',
+        });
+      });
+    });
+  });
+
   describe('Given a repo with a branch to rename', () => {
     // Two independently-built, identical repos — one renamed by real git,
     // one by tsgit — so the two tools never mutate the same on-disk ref.

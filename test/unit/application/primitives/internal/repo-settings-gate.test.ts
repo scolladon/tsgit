@@ -190,6 +190,99 @@ describe('internal/repo-settings-gate', () => {
     });
   });
 
+  describe('assertRepoSettingsValid — core.deltaBaseCacheLimit joins the class', () => {
+    describe('Given core.deltaBaseCacheLimit = -1', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE naming core.deltabasecachelimit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertRepoSettingsValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.deltabasecachelimit');
+          expect(data.value).toBe('-1');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given BOTH core.maxTreeDepth and core.deltaBaseCacheLimit are malformed', () => {
+      describe('When called', () => {
+        it('Then names core.maxtreedepth — the in-function reading order (repo-settings.c:103 before :142)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertRepoSettingsValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.key).toBe('core.maxtreedepth');
+        });
+      });
+    });
+
+    describe('Given a malformed core.deltaBaseCacheLimit AND an explicit cacheBudgets.deltaBaseCacheMaxBytes option', () => {
+      describe('When called', () => {
+        it('Then resolves — an option-overridden file value is never validated', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seedRepo(base);
+          await seedConfig(base, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+          const ctx: Context = { ...base, cacheBudgets: { deltaBaseCacheMaxBytes: 2048 } };
+
+          // Act + Assert — must not throw
+          await assertRepoSettingsValid(ctx);
+        });
+      });
+    });
+
+    describe('Given the same malformed core.deltaBaseCacheLimit WITHOUT the option', () => {
+      describe('When called', () => {
+        it('Then throws — the file value is read and validated when nothing overrides it', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertRepoSettingsValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.deltabasecachelimit');
+        });
+      });
+    });
+  });
+
   describe('repoSettingsVerdictSettled', () => {
     describe('Given a fresh session that has never called assertRepoSettingsValid', () => {
       describe('When checked', () => {

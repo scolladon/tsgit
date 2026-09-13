@@ -15,6 +15,7 @@ import {
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidPushDefault,
+  findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
   type IniSection,
   invalidateConfigCache,
@@ -6062,6 +6063,111 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           // Assert
           expect(result?.key).toBe('core.maxtreedepth');
           expect(result?.value).toBe('2.5');
+        });
+      });
+    });
+  });
+
+  describe('findLastInvalidDeltaBaseCacheLimit', () => {
+    describe('Given core.deltaBaseCacheLimit = -1 (negative)', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it("Then returns an entry with reason 'invalid unit'", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.deltabasecachelimit');
+          expect(result?.value).toBe('-1');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.deltaBaseCacheLimit past the uint64 ceiling', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it("Then returns an entry with reason 'out of range'", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = 18446744073709551616\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.deltabasecachelimit');
+          expect(result?.value).toBe('18446744073709551616');
+          expect(result?.reason).toBe('out of range');
+        });
+      });
+    });
+
+    describe('Given a valueless core.deltaBaseCacheLimit entry (no "=")', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it("Then returns an entry with value '' and reason invalid unit", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.value).toBe('');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a valid core.deltaBaseCacheLimit (e.g. 4m)', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = 4m\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given deltaBaseCacheLimit = -1 (line 2) then deltaBaseCacheLimit = 4m (line 3) — invalid-then-valid', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns undefined (the last, valid entry is the effective one)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n\tdeltaBaseCacheLimit = 4m\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given deltaBaseCacheLimit = 4m (line 2) then deltaBaseCacheLimit = -1 (line 3) — valid-then-invalid', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns the entry for -1 (only the last entry is validated)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = 4m\n\tdeltaBaseCacheLimit = -1\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.deltabasecachelimit');
+          expect(result?.value).toBe('-1');
+          expect(result?.reason).toBe('invalid unit');
         });
       });
     });

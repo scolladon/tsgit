@@ -785,8 +785,13 @@ export const assertValidPackIntConfig = async (ctx: Context): Promise<void> => {
 
 const MAX_TREE_DEPTH_KEY = 'maxtreedepth';
 
-/** One invalid `core.maxTreeDepth` entry returned by `findLastInvalidMaxTreeDepth`. */
-export interface InvalidMaxTreeDepthEntry {
+/**
+ * One invalid entry from either repo-settings-class finder
+ * (`findLastInvalidMaxTreeDepth`, `findLastInvalidDeltaBaseCacheLimit`) —
+ * git validates both keys in the same function (`prepare_repo_settings`),
+ * and both finders share this exact shape.
+ */
+export interface InvalidNumericEntry {
   readonly key: string;
   readonly source: string;
   readonly value: string;
@@ -807,7 +812,7 @@ export interface InvalidMaxTreeDepthEntry {
  */
 export const findLastInvalidMaxTreeDepth = async (
   ctx: Context,
-): Promise<InvalidMaxTreeDepthEntry | undefined> => {
+): Promise<InvalidNumericEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
   let inSection = false;
   let last: { readonly value: string | null } | undefined;
@@ -836,6 +841,38 @@ export const findLastInvalidMaxTreeDepth = async (
     return { key, source: path, value: last.value, reason: 'out of range' };
   }
   return undefined;
+};
+
+/**
+ * Cold-path detection for `core.deltaBaseCacheLimit`: same last-wins model as
+ * {@link findLastInvalidMaxTreeDepth} (git resolves both through its cached
+ * config-set lookup), but git's unsigned-long grammar — reusing
+ * `checkPackWindowMemoryBound`, the same bound `pack.windowMemory` uses — so
+ * a negative value is `'invalid unit'` (this key has no signed
+ * representation to be "out of range" of) and only a magnitude past
+ * `GIT_UINT64_MAX` is `'out of range'`. Runs ONLY on a command's refusal
+ * path — this is the eager twin of the lenient `applyDeltaBaseCacheLimitEntry`.
+ */
+export const findLastInvalidDeltaBaseCacheLimit = async (
+  ctx: Context,
+): Promise<InvalidNumericEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  let last: { readonly value: string | null } | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    if (token.key.toLowerCase() !== DELTA_BASE_CACHE_LIMIT_KEY) continue;
+    last = { value: token.value };
+  }
+  if (last === undefined) return undefined;
+  const key = `core.${DELTA_BASE_CACHE_LIMIT_KEY}`;
+  const checked = checkPackWindowMemoryBound(last.value);
+  if (checked.ok) return undefined;
+  return { key, source: path, value: last.value ?? '', reason: checked.reason };
 };
 
 type MutableGpg = {

@@ -13,18 +13,23 @@
  */
 import { configBadNumericValue } from '../../../domain/commands/error.js';
 import type { Context } from '../../../ports/context.js';
-import { findLastInvalidMaxTreeDepth, memoizeRepoSettingsVerdict } from '../config-read.js';
+import {
+  findLastInvalidDeltaBaseCacheLimit,
+  findLastInvalidMaxTreeDepth,
+  memoizeRepoSettingsVerdict,
+} from '../config-read.js';
 
 /** git's `prepare_repo_settings` (repo-settings.c): the class's keys, in its own reading order. */
 const computeRepoSettingsVerdict = async (ctx: Context): Promise<void> => {
-  const maxTreeDepth = await findLastInvalidMaxTreeDepth(ctx); // repo-settings.c:103
-  if (maxTreeDepth !== undefined) {
-    throw configBadNumericValue(
-      maxTreeDepth.key,
-      maxTreeDepth.source,
-      maxTreeDepth.value,
-      maxTreeDepth.reason,
-    );
+  const [maxTreeDepth, deltaBaseCacheLimit] = await Promise.all([
+    findLastInvalidMaxTreeDepth(ctx), // repo-settings.c:103
+    ctx.cacheBudgets?.deltaBaseCacheMaxBytes === undefined // an option-overridden file value is never validated
+      ? findLastInvalidDeltaBaseCacheLimit(ctx) // repo-settings.c:142
+      : undefined,
+  ]);
+  const invalid = maxTreeDepth ?? deltaBaseCacheLimit; // in-function order
+  if (invalid !== undefined) {
+    throw configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
   }
 };
 
