@@ -702,12 +702,23 @@ export class NodeFileSystem implements FileSystem {
     }, path);
   };
 
+  // Attempts the append before creating the parent: the common case (a
+  // reflog's directory already exists) then costs one syscall instead of
+  // an unconditional `mkdir` on every line. `mkdir` runs only when that
+  // first attempt reports the parent is absent — a SECOND `ENOENT` after
+  // `mkdir` succeeded is a real fault (e.g. a concurrent removal), not a
+  // transient race, so it propagates rather than looping.
   appendUtf8 = async (path: string, content: string): Promise<void> => {
     const real = await this.resolveWrite(path);
     await this.assertWritableLeaf(real, path);
     await runFs(async () => {
-      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await this.fsOps.appendFile(real, content, { encoding: 'utf-8', flag: APPEND_FLAGS });
+      try {
+        await this.fsOps.appendFile(real, content, { encoding: 'utf-8', flag: APPEND_FLAGS });
+      } catch (err) {
+        if (!isErrnoException(err) || err.code !== 'ENOENT') throw err;
+        await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+        await this.fsOps.appendFile(real, content, { encoding: 'utf-8', flag: APPEND_FLAGS });
+      }
     }, path);
   };
 
