@@ -33,6 +33,7 @@ import {
   branchList,
   branchRename,
 } from '../../src/application/commands/branch.js';
+import { log } from '../../src/application/commands/log.js';
 import { notesList } from '../../src/application/commands/notes.js';
 import { packRefs } from '../../src/application/commands/pack-refs.js';
 import { reflog } from '../../src/application/commands/reflog.js';
@@ -418,6 +419,35 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         let caught: unknown;
         try {
           await status(ctx);
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.loosecompression',
+        });
+      });
+    });
+
+    describe('When log runs', () => {
+      it('Then both name the streaming class (loosecompression) — a MAJORITY-set command where git and tsgit agree', async () => {
+        // Arrange + Act — same shared beforeAll repo as the `status` case
+        // above; `status` sits in the 5-of-24 minority where git's own
+        // measured ordering diverges from tsgit's. `log` sits in the 19-of-24
+        // majority: git's `prepare_repo_settings` for `log` runs AFTER its
+        // generic config validation, so git ALSO names the streaming class
+        // first here — this is the majority-set row no prior test measured.
+        const g = tryRunGitWithExit(['-C', dir, 'log']);
+
+        // Assert — git names the streaming class, not the repo-settings one.
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("'core.loosecompression'");
+
+        // Assert — tsgit's eager gate names the SAME streaming class.
+        let caught: unknown;
+        try {
+          await log(ctx);
         } catch (err) {
           caught = err;
         }

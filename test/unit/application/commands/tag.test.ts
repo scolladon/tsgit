@@ -138,8 +138,8 @@ describe('tag', () => {
   });
 
   describe('Given a malformed core.maxTreeDepth', () => {
-    describe('When tag create targets HEAD (a resolvable target)', () => {
-      it('Then it throws CONFIG_BAD_NUMERIC_VALUE — checked once the target types', async () => {
+    describe('When tag create targets an unresolvable name', () => {
+      it('Then it throws REF_NOT_FOUND — the target reports before the class', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
