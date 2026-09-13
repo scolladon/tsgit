@@ -220,24 +220,41 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
     });
   });
 
-  describe('Given the default deltaCacheMaxBytes budget', () => {
+  describe('Given the default deltaCacheMaxBytes budget, and a commit-shaped entry sized through the REAL sizer', () => {
     describe('When resolving the memo entry cap and its byte valve', () => {
-      it('Then maxEntries × typicalEntryBytes never exceeds the valve, and a typical entry is admitted', () => {
-        // Arrange
+      it('Then the real sizer reconciles with PARSED_OBJECT_TYPICAL_ENTRY_BYTES, and maxEntries × that real size never exceeds the valve', () => {
+        // Arrange — one parent (sha1-width oid, 40 hex chars) plus a message
+        // sized so the variable fields (message + parents; no signature, no
+        // extra headers) total 216 bytes: 216 + 40 = 256, matching the "256 B
+        // typical message/parents allowance" PARSED_OBJECT_TYPICAL_ENTRY_BYTES's
+        // own doc comment describes on top of the sizer's fixed overhead.
+        // Unlike a hand-picked literal, this ties the constant to what
+        // `parsedObjectByteSize` — the function that actually sizes every
+        // cached entry — computes for a representative commit.
+        const hexLength = 40;
+        const typicalCommitData = {
+          message: 'x'.repeat(216),
+          extraHeaders: [],
+          parents: ['a'.repeat(hexLength) as ObjectId],
+        };
         const ctx = createMemoryContext();
         const memo = parsedObjectMemoFor(ctx);
         const cap = memoMaxEntries(ctx);
         const valve = memoByteValve(ctx);
+        const realTypicalBytes = parsedObjectByteSize(typicalCommitData, hexLength);
 
         // Act — a future retune that flips the binding constraint back to a
         // fixed entry cap would fail one of the assertions below instead of
         // shipping a dead cache silently.
-        const admitted = memo?.set('typical', {} as never, PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
+        const admitted = memo?.set('typical', {} as never, realTypicalBytes);
 
-        // Assert — literal at the default, decoupled from the production formula.
+        // Assert — reconciles the documented constant with the real sizer's
+        // output (retuning the sizer's own fixed overhead breaks this), then
+        // proves the derived cap still respects the valve at that real size.
+        expect(realTypicalBytes).toBe(PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
         expect(cap).toBe(32_768);
         expect(valve).toBe(16 * 1024 * 1024);
-        expect(cap * PARSED_OBJECT_TYPICAL_ENTRY_BYTES).toBeLessThanOrEqual(valve);
+        expect(cap * realTypicalBytes).toBeLessThanOrEqual(valve);
         expect(admitted).toBe(true);
       });
     });

@@ -3539,9 +3539,15 @@ describe('object-resolver', () => {
     describe('Given a commit larger than the memo byte cap', () => {
       describe('When it is read twice', () => {
         it('Then it is not cached and both reads still succeed', async () => {
-          // Arrange — a 1-byte deltaCache budget floors the memo's own cap
-          // below any real message, so this entry is always over-cap.
-          const ctx = createMemoryContext({ deltaCacheMaxBytes: 1 });
+          // Arrange — a 1-byte deltaCache budget floors the memo's own byte
+          // valve to 1, always below any real message. A generous
+          // `parsedObjectMemoMaxEntries` override keeps the derived entry
+          // cap (which would otherwise ALSO be 0 at this valve) from being
+          // what excludes the fixture, so the byte valve alone is under test.
+          const ctx = createMemoryContext({
+            deltaCacheMaxBytes: 1,
+            parsedObjectMemoMaxEntries: 10,
+          });
           const message = 'a message long enough to exceed a near-zero memo cap';
           const commitId = await writeCommitWithMessage(ctx, message);
           const registry = await createPackRegistry(ctx);

@@ -7,13 +7,12 @@ import * as flattenTreeMod from '../../../../src/application/primitives/flatten-
 import { budgetsFor } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
   FLAT_TREE_CACHE_MAX_ENTRIES,
-  FLAT_TREE_TYPICAL_ENTRY_BYTES,
   flatTreeByteSize,
   readHeadTree,
 } from '../../../../src/application/primitives/read-head-tree.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { FlatTree } from '../../../../src/domain/diff/flat-tree.js';
+import type { FlatTree, FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -471,22 +470,33 @@ describe('readHeadTree', () => {
     });
   });
 
-  describe('Given the default deltaCacheMaxBytes budget', () => {
-    describe('When sizing a medium HEAD tree of 50,000 tracked files against the FlatTree byte valve', () => {
-      it('Then the typical entry size never exceeds the valve, and such an entry is admitted', () => {
-        // Arrange
+  describe('Given the default deltaCacheMaxBytes budget, and a REAL synthetic HEAD tree of 50,000 tracked files (14-char paths)', () => {
+    describe('When sizing it through flatTreeByteSize against the FlatTree byte valve', () => {
+      it('Then the real sizer output never exceeds the valve, and such a tree is admitted', () => {
+        // Arrange — a synthetic tree built from actual Map entries, sized
+        // through the REAL `flatTreeByteSize`, not a declared literal: a
+        // future retune of FLAT_TREE_ENTRY_OVERHEAD_BYTES changes what this
+        // sizer returns for the same tree, so it can actually fail here.
+        const entryCount = 50_000;
+        const pathLength = 14;
+        const entries = new Map<FilePath, FlatTreeEntry>();
+        for (let i = 0; i < entryCount; i += 1) {
+          const path = i.toString().padStart(pathLength, '0') as FilePath;
+          entries.set(path, { id: 'a'.repeat(40) as ObjectId, mode: FILE_MODE.REGULAR });
+        }
+        const syntheticTree: FlatTree = { entries };
         const ctx = createMemoryContext();
         const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
         const cache = storage.createLruCache<FlatTree>(valve, FLAT_TREE_CACHE_MAX_ENTRIES);
-        const typicalTreeBytes = FLAT_TREE_TYPICAL_ENTRY_BYTES * 50_000;
+        const realTreeBytes = flatTreeByteSize(syntheticTree);
 
         // Act — a future retune that flips the binding constraint would fail
         // one of the assertions below instead of shipping a dead cache.
-        const admitted = cache.set('typical', { entries: new Map() }, typicalTreeBytes);
+        const admitted = cache.set('typical', syntheticTree, realTreeBytes);
 
         // Assert — literal at the default, decoupled from the production formula.
         expect(valve).toBe(8 * 1024 * 1024);
-        expect(typicalTreeBytes).toBeLessThanOrEqual(valve);
+        expect(realTreeBytes).toBeLessThanOrEqual(valve);
         expect(admitted).toBe(true);
       });
     });

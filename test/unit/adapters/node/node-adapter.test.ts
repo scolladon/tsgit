@@ -280,6 +280,28 @@ describe('createNodeContext', () => {
     });
   });
 
+  describe.each([
+    ['parsedObjectMemoMaxEntries', 3],
+    ['flatTreeCacheMaxBytes', 4096],
+    ['deltaBaseCacheMaxBytes', 8192],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When creating context', () => {
+      it('Then ctx.cacheBudgets carries exactly that one field', () => {
+        // Arrange / Act — each of the three budget overrides must reach
+        // ctx.cacheBudgets on its own; dropping its `buildCacheBudgets({...})`
+        // literal entry would leave this field absent while every other test
+        // in this suite pins only parsedObjectMemoMaxEntries and stays green.
+        const sut = createNodeContext({
+          workDir: '/tmp/tsgit-cache-budgets',
+          [option]: value,
+        });
+
+        // Assert
+        expect(sut.cacheBudgets).toStrictEqual({ [option]: value });
+      });
+    });
+  });
+
   describe('Given created context', () => {
     describe('When attempting to mutate', () => {
       it('Then properties are frozen', () => {

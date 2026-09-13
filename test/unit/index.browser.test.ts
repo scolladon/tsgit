@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parsedObjectMemoFor } from '../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../src/domain/error.js';
-import { openRepository } from '../../src/index.browser.js';
+import { type OpenBrowserRepositoryOptions, openRepository } from '../../src/index.browser.js';
 import type { FileSystem } from '../../src/ports/file-system.js';
 import { resolveFixedEntryLayout } from '../../src/repository/fixed-entry-layout.js';
 
@@ -175,6 +175,44 @@ describe('browser shim — openRepository', () => {
     });
   });
 
+  describe.each([
+    ['deltaCacheMaxBytes', -1],
+    ['deltaCacheMaxBytes', 1.5],
+    ['deltaCacheMaxEntries', -1],
+    ['deltaCacheMaxEntries', 1.5],
+    ['parsedObjectMemoMaxEntries', -1],
+    ['parsedObjectMemoMaxEntries', 1.5],
+    ['flatTreeCacheMaxBytes', -1],
+    ['flatTreeCacheMaxBytes', 1.5],
+    ['deltaBaseCacheMaxBytes', -1],
+    ['deltaBaseCacheMaxBytes', 1.5],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When openRepository runs', () => {
+      it(`Then it throws INVALID_OPTION{option: "${option}"} — the shim strips this field before the core's own re-check ever sees it`, async () => {
+        // Arrange / Act — the five cache options are stripped from `coreOpts`
+        // before forwarding, so ONLY this shim's eager `validateOptions` call
+        // can catch an invalid value; the core-level re-check never sees it.
+        let caught: unknown;
+        try {
+          await openRepository({
+            rootHandle: fakeHandle,
+            [option]: value,
+          } as OpenBrowserRepositoryOptions);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OPTION');
+        if (data.code === 'INVALID_OPTION') {
+          expect(data.option).toBe(option);
+        }
+      });
+    });
+  });
+
   describe('Given no bare flag', () => {
     describe('When openRepository runs', () => {
       it('Then layout.bare defaults to false', async () => {
@@ -253,6 +291,28 @@ describe('browser shim — openRepository', () => {
 
         // Assert
         expect(memo?.entryCount).toBe(3);
+      });
+    });
+  });
+
+  describe.each([
+    ['parsedObjectMemoMaxEntries', 3],
+    ['flatTreeCacheMaxBytes', 4096],
+    ['deltaBaseCacheMaxBytes', 8192],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.cacheBudgets carries exactly that one field', async () => {
+        // Arrange / Act — each of the three budget overrides must reach
+        // ctx.cacheBudgets on its own; a literal that dropped one of the
+        // other two fields from buildCacheBudgets({...}) would survive every
+        // test that pins only parsedObjectMemoMaxEntries.
+        const sut = await openRepository({
+          rootHandle: fakeHandle,
+          [option]: value,
+        } as OpenBrowserRepositoryOptions);
+
+        // Assert
+        expect(sut.ctx.cacheBudgets).toStrictEqual({ [option]: value });
       });
     });
   });

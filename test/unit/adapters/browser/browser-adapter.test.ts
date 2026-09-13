@@ -87,4 +87,25 @@ describe('createBrowserContext', () => {
       });
     });
   });
+
+  describe.each([
+    ['parsedObjectMemoMaxEntries', 3],
+    ['flatTreeCacheMaxBytes', 4096],
+    ['deltaBaseCacheMaxBytes', 8192],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When creating context', () => {
+      it('Then ctx.cacheBudgets carries exactly that one field', () => {
+        // Arrange
+        const sut = createBrowserContext;
+
+        // Act — each of the three budget overrides must reach
+        // ctx.cacheBudgets on its own; before this test createBrowserContext
+        // had no cacheBudgets coverage at all.
+        const result = sut({ rootHandle, [option]: value });
+
+        // Assert
+        expect(result.cacheBudgets).toStrictEqual({ [option]: value });
+      });
+    });
+  });
 });

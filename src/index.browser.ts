@@ -67,7 +67,11 @@ const resolveGitDirEntry = (gitDirOpt: string | undefined, gitDirName: string): 
     : resolveAgainst(ROOT_WORK_DIR, gitDirOpt, portablePosixPolicy);
 
 export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promise<Repository> => {
-  // Stryker disable next-line CallExpression: equivalent — `openRepositoryCore` (line 99, forwarding the SAME unmodified `opts` fields) runs `validateOptions` again at `repository.ts`; removing this eager call cannot change any thrown error, only where it is thrown from — confirmed empirically (an invalid `gitDir` still throws the identical `INVALID_OPTION` shape via the core's re-check).
+  // This shim strips the five cache-sizing options (deltaCacheMaxBytes,
+  // deltaCacheMaxEntries, parsedObjectMemoMaxEntries, flatTreeCacheMaxBytes,
+  // deltaBaseCacheMaxBytes) from `coreOpts` before forwarding, so the core's
+  // own `validateOptions` re-check in `repository.ts` never sees them — this
+  // eager call is the ONLY guard for those five options.
   validateOptions(opts);
   const gitDirName = opts.gitDirName ?? DEFAULT_GIT_DIR_NAME;
   const fs = new BrowserFileSystem(opts.rootHandle);
