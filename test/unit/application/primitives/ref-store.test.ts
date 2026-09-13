@@ -607,6 +607,60 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given packed-refs is absent', () => {
+    describe('When resolveDirect falls through to loadPackedRefs', () => {
+      it('Then it issues one stat and no exists probe on the packed-refs path', async () => {
+        // Arrange
+        // Kills a mutant that reintroduces the old `exists`-then-`stat` pair:
+        // the packed-refs path must see exactly one `stat` call and zero
+        // `exists` calls.
+        const base = await buildSeededContext();
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+        const packedPath = `${ctx.layout.gitDir}/packed-refs`;
+
+        // Act
+        await sut.resolveDirect('refs/tags/missing' as RefName);
+
+        // Assert
+        expect(calls().filter((c) => c.path === packedPath)).toEqual([
+          { method: 'stat', path: packedPath },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a directory sitting at the packed-refs path', () => {
+    describe('When resolveDirect falls through to loadPackedRefs', () => {
+      it('Then the filesystem fault still propagates instead of reading as absent packed-refs', async () => {
+        // Arrange — the `stat`-based absence check must scope its
+        // FILE_NOT_FOUND swallow to the `stat` call alone: a directory
+        // stats successfully (isDirectory: true) and only fails downstream,
+        // at the read step. A mutant that widens the try/catch to also cover
+        // that read would wrongly resolve this as "no packed refs".
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(`${ctx.layout.gitDir}/packed-refs`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('refs/tags/missing' as RefName);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('FILE_NOT_FOUND');
+        if (data.code === 'FILE_NOT_FOUND') {
+          expect(data.path).toBe(`${ctx.layout.gitDir}/packed-refs`);
+        }
+      });
+    });
+  });
+
   describe('Given packed refs listed in descending name order', () => {
     describe('When listRefNames runs with no prefix', () => {
       it('Then the result is still sorted ascending — the comparator actually swaps', async () => {
@@ -696,6 +750,33 @@ describe('ref-store', () => {
         // Assert
         const tagsDir = `${ctx.layout.gitDir}/refs/tags`;
         expect(calls().some((c) => c.path === tagsDir)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given 64 packed-only tag names and no loose refs', () => {
+    describe('When listRefs runs with the tags prefix', () => {
+      it('Then no packed-only name is probed as a loose file', async () => {
+        // Arrange — before this part, each packed-only name still went
+        // through `resolveEntry`, costing one `readUtf8` ENOENT per name;
+        // the snapshot already carries every packed oid.
+        const packedRefs = Array.from({ length: 64 }, (_, i) => ({
+          name: `refs/tags/t${String(i).padStart(3, '0')}` as RefName,
+          id: (i % 10 === 9 ? 'f' : `${i % 10}`).repeat(40) as ObjectId,
+        }));
+        const base = await buildSeededContext({ packedRefs });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+        const tagsDir = `${ctx.layout.gitDir}/refs/tags/`;
+
+        // Act
+        const result = await sut.listRefs('refs/tags/' as RefName);
+
+        // Assert
+        expect(result).toHaveLength(64);
+        expect(calls().some((c) => c.method === 'readUtf8' && c.path.startsWith(tagsDir))).toBe(
+          false,
+        );
       });
     });
   });

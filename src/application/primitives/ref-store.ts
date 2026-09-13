@@ -377,10 +377,13 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   async function loadPackedRefs(): Promise<LoadedPackedRefs> {
     const path = packedRefsPath(commonGitDir(ctx));
-    if (!(await ctx.fs.exists(path))) {
-      return EMPTY_PACKED_REFS;
+    let stat: FileStat;
+    try {
+      stat = await ctx.fs.stat(path);
+    } catch (err) {
+      if (isFileNotFound(err)) return EMPTY_PACKED_REFS;
+      throw err;
     }
-    const stat = await ctx.fs.stat(path);
     const key = `${stat.mtimeMs}:${stat.size}`;
     if (packedCache !== undefined && packedCache.mtimeKey === key) {
       return packedCache.loaded;
@@ -586,12 +589,29 @@ function createFilesRefStore(ctx: Context): RefStore {
     return value.kind === 'missing' ? undefined : { name, value };
   }
 
+  /**
+   * Every candidate name's resolved entry, EXCEPT a packed-only name never
+   * pays the loose-miss probe (`readUtf8` ENOENT) `resolveEntry` would cost
+   * it: `looseNames` (from `walkAllLooseRefNames`) resolve through {@link
+   * resolveEntry} as before, and a packed entry not shadowed by one of them
+   * is built straight from `loadPackedRefs`'s own snapshot — byte-for-byte
+   * what `resolveDirect` returns for it today, without the read or the
+   * `byName()` `Map` build. Sorted after, matching {@link listRefs}'s
+   * contract.
+   */
   async function listRefs(prefix?: RefName): Promise<readonly RefEntry[]> {
-    const names = await collectCandidateNames(prefix);
+    const looseNames = await walkAllLooseRefNames(prefix);
     const entries: RefEntry[] = [];
-    for (const name of names) {
+    for (const name of looseNames) {
       const entry = await resolveEntry(name);
       if (entry !== undefined) entries.push(entry);
+    }
+    const looseSet = new Set(looseNames);
+    const packed = await loadPackedRefs();
+    for (const entry of packed.entries) {
+      if (matchesPrefix(entry.name, prefix) && !looseSet.has(entry.name)) {
+        entries.push({ name: entry.name, value: { kind: 'direct', id: entry.id } });
+      }
     }
     return entries.sort(byName);
   }
