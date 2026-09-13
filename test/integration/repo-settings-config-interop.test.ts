@@ -20,18 +20,24 @@
  *                    fixtures, and the residual two-class ordering split is
  *                    pinned, not silently divergent
  *   interopSurface: branch, tag, rev-parse, sparse-checkout, stash, reflog,
- *                    notes, pack-refs, status
+ *                    notes, pack-refs, status, show
  */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { branchDelete, branchList, branchRename } from '../../src/application/commands/branch.js';
+import {
+  branchCreate,
+  branchDelete,
+  branchList,
+  branchRename,
+} from '../../src/application/commands/branch.js';
 import { notesList } from '../../src/application/commands/notes.js';
 import { packRefs } from '../../src/application/commands/pack-refs.js';
 import { reflog } from '../../src/application/commands/reflog.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import { show } from '../../src/application/commands/show.js';
 import { sparseCheckoutList } from '../../src/application/commands/sparse-checkout.js';
 import { stashList } from '../../src/application/commands/stash.js';
 import { status } from '../../src/application/commands/status.js';
@@ -553,6 +559,58 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         // Assert
         expect(g.exitCode).toBe(0);
         expect(result).toEqual({ from: 'refs/heads/feature', to: 'refs/heads/trunk' });
+      });
+    });
+  });
+
+  describe('Given ONE tsgit Context reused across two commands, poisoned BETWEEN them', () => {
+    // The repo-settings verdict fast path (`repoSettingsVerdictSettled`) is a
+    // per-SESSION memo that only a persistent Context can observe going
+    // stale — a fresh `git` process reads `.git/config` cold on every
+    // invocation, so this row's tsgit side is the only one that can actually
+    // exercise the fast path's own staleness handling. The first command
+    // settles the verdict against the repo's ORIGINAL, valid config; the
+    // rewrite lands with no `invalidateConfigCache` call in between (an
+    // external edit this Context's own write surface never observes); the
+    // second command — a DIFFERENT verb, so the fix is proven at more than
+    // one fast-pathed call site — must still refuse.
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-repo-settings-warm-session-'));
+      await buildReadonlyRepo(dir);
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When show HEAD runs on the still-valid config, the config is then poisoned, and branch warm-branch runs', () => {
+      it('Then the first command succeeds and the second refuses — the warm session never serves a superseded verdict', async () => {
+        // Arrange — the first command warms the session against the VALID config.
+        const warm = await show(ctx, 'HEAD');
+        expect(warm.kind).toBe('commit');
+
+        // Act — poison AFTER the warm command, with no invalidation call.
+        await poison(dir);
+        const g = tryRunGitWithExit(['-C', dir, 'branch', 'warm-branch']);
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'warm-branch' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — a fresh git process reads the poisoned file cold and dies;
+        // the warm tsgit Context must reach the identical refusal, not the
+        // stale settled verdict from before the poisoning.
+        expect(g.exitCode).toBe(128);
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as BadNumericData;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(data.key).toBe('core.maxtreedepth');
+        expect(data.value).toBe('2.5');
+        expect(data.reason).toBe('invalid unit');
       });
     });
   });

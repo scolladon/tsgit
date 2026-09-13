@@ -294,7 +294,16 @@ let cache: WeakMap<Context['session'], CachedConfigEntry> = new WeakMap();
  */
 interface VerdictEntry<T> {
   readonly promise: Promise<T>;
-  readonly mtimeKey: string;
+  /**
+   * Mutable: seeded with the caller's snapshot at CALL time, then
+   * reconciled to the post-resolution snapshot the instant `promise`
+   * RESOLVES (see `memoizeSessionVerdict`). A session's first-ever touch
+   * calls in before anything has read the file, so the call-time snapshot is
+   * the absent sentinel — reconciling afterward is what lets
+   * `repoSettingsVerdictSettled` recognise a verdict as current for the key
+   * it actually validated, rather than the placeholder key that predated it.
+   */
+  mtimeKey: string;
   /** Flipped by `memoizeSessionVerdict` the instant `promise` RESOLVES — never on a rejection. */
   settled: boolean;
 }
@@ -354,9 +363,13 @@ const snapshotConfigMtimeKey = (ctx: Context): string =>
  * evict that fresh entry out from under it.
  *
  * `settled` lives on the ENTRY, not on a session-keyed side set: replacing
- * the entry (a changed `mtimeKey`) starts a fresh, unsettled one by
- * construction, so `repoSettingsVerdictSettled`'s hot path can never report
- * `true` for a verdict a NEWER key has already superseded.
+ * the entry (a changed `mtimeKey`, reached via THIS function) starts a
+ * fresh, unsettled one by construction. That alone does not protect the
+ * synchronous `repoSettingsVerdictSettled` fast path, which reads whatever
+ * entry currently sits in the slot without ever calling back in here — it
+ * additionally needs `openConfigEpoch` to drop a superseded entry outright,
+ * and its own `mtimeKey` comparison against `snapshotConfigMtimeKey`, so a
+ * verdict a NEWER key has already superseded is never reported `true`.
  */
 const memoizeSessionVerdict = <T>(
   slot: WeakMap<Context['session'], VerdictEntry<T>>,
@@ -372,6 +385,14 @@ const memoizeSessionVerdict = <T>(
   pending
     .then(() => {
       entry.settled = true;
+      // Reconcile against what `compute` actually just populated the parse
+      // cache with — never the call-time snapshot captured above, which is
+      // the absent sentinel on a session's first-ever touch (nothing has
+      // read the file yet at call time). Without this, `entry.mtimeKey`
+      // would stay pinned to that placeholder forever, and the key-aware
+      // `repoSettingsVerdictSettled` fast path would never recognise this
+      // entry as current for the key it just validated.
+      entry.mtimeKey = snapshotConfigMtimeKey(ctx);
     })
     .catch(() => {
       if (slot.get(ctx.session) === entry) slot.delete(ctx.session);
@@ -402,9 +423,19 @@ export const memoizeRepoSettingsVerdict = (
  * a warm session; a `false` here means the caller must await
  * `assertRepoSettingsValid` itself (first touch this session, the first
  * touch after an invalidation, or the first touch after the epoch re-keyed).
+ *
+ * The `mtimeKey` comparison is what makes this safe for a session that never
+ * gates: `openConfigEpoch` only re-keys the memo at a GATED boundary (see its
+ * own docstring), so a primitive-only caller that rewrites `.git/config`
+ * outside any gate would otherwise keep reading `settled === true` from an
+ * entry a fresher read has already superseded. Comparing against
+ * `snapshotConfigMtimeKey` — zero I/O, a plain WeakMap read — closes that gap
+ * without adding a `stat` to the hot path.
  */
-export const repoSettingsVerdictSettled = (ctx: Context): boolean =>
-  repoSettingsVerdictCache.get(ctx.session)?.settled === true;
+export const repoSettingsVerdictSettled = (ctx: Context): boolean => {
+  const entry = repoSettingsVerdictCache.get(ctx.session);
+  return entry?.settled === true && entry.mtimeKey === snapshotConfigMtimeKey(ctx);
+};
 
 /**
  * Read and cache the LOCAL config (see `loadConfigEntry`'s own docstring for
@@ -480,6 +511,16 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
  * never populates the cache for one either, so there is nothing to trust and
  * nothing to stat — the ownership-trust gate (`assertTrusted`, downstream)
  * still refuses on its own.
+ *
+ * A changed key (config rewritten since the last epoch, or a session's very
+ * first gate) also drops both verdict memos. Without this, a verdict settled
+ * against the SUPERSEDED key would still read `settled === true` from
+ * `repoSettingsVerdictSettled`'s synchronous fast path — it never revisits
+ * `memoizeSessionVerdict` on its own — and a fast-pathed boundary would keep
+ * serving a verdict a rewrite has already invalidated. Dropping the entries
+ * here, once per gate, is what lets the next fast-path check see a miss and
+ * fall back to a real `assertRepoSettingsValid`/`assertOperationalRepository`
+ * await instead.
  */
 export const openConfigEpoch = async (ctx: Context): Promise<void> => {
   if (layoutFailsTrustGate(ctx.layout)) return;
@@ -490,6 +531,8 @@ export const openConfigEpoch = async (ctx: Context): Promise<void> => {
     existing.trusted = true;
     return;
   }
+  gateVerdictCache.delete(ctx.session);
+  repoSettingsVerdictCache.delete(ctx.session);
   cache.set(ctx.session, { promise: loadConfigEntry(ctx), mtimeKey, trusted: true });
 };
 

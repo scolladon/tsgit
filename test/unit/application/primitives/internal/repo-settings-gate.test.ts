@@ -1,12 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { branchCreate } from '../../../../../src/application/commands/branch.js';
 import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
+import { commitHeader } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import {
   assertRepoSettingsValid,
   repoSettingsVerdictSettled,
 } from '../../../../../src/application/primitives/internal/repo-settings-gate.js';
 import { assertOperationalRepository } from '../../../../../src/application/primitives/internal/repo-state.js';
+import { readObject } from '../../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
+import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
+import type {
+  AuthorIdentity,
+  Blob,
+  Commit,
+  FilePath,
+  ObjectId,
+} from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const seedRepo = async (ctx: Context, head = 'ref: refs/heads/main\n'): Promise<void> => {
@@ -363,6 +377,137 @@ describe('internal/repo-settings-gate', () => {
           // Assert
           expect(result).toBe(false);
         });
+      });
+    });
+  });
+
+  describe('Given a warm session — gate, an object read, an external config rewrite, then the gate again', () => {
+    const WARM_AUTHOR: AuthorIdentity = {
+      name: 'A U Thor',
+      email: 'author@example.com',
+      timestamp: 0,
+      timezoneOffset: '+0000',
+    };
+
+    /**
+     * Builds the exact sequence F1 was found under: a gate settles the
+     * repo-settings verdict against a VALID config, an object read confirms
+     * the session is warm, an external rewrite (a raw `ctx.fs.writeUtf8` —
+     * no `invalidateConfigCache`, mirroring an editor or another process
+     * touching `.git/config` directly) poisons `core.maxTreeDepth`, and the
+     * operational gate runs again. The eager gate does not validate this
+     * class, so this second gate call itself resolves — the assertion that
+     * matters is what every FAST-PATHED boundary does next.
+     */
+    const buildWarmThenPoisonedSession = async (): Promise<{
+      readonly ctx: Context;
+      readonly commitId: ObjectId;
+    }> => {
+      const ctx = createMemoryContext();
+      await seedRepo(ctx);
+      await seedConfig(ctx, '[core]\n\tbare = false\n');
+
+      const blob: Blob = {
+        type: 'blob',
+        content: new TextEncoder().encode('warm-session'),
+        id: '' as ObjectId,
+      };
+      const blobId = await writeObject(ctx, blob);
+      const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, blobId)]);
+      const commit: Commit = {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree: treeId,
+          parents: [],
+          author: WARM_AUTHOR,
+          committer: WARM_AUTHOR,
+          message: 'c0',
+          extraHeaders: [],
+        },
+      };
+      const commitId = await writeObject(ctx, commit);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // GATE #1 — settles the repo-settings verdict against the valid config.
+      await assertOperationalRepository(ctx);
+
+      // First object read on the warm session — confirms the fast path is live.
+      await readObject(ctx, commitId);
+      expect(repoSettingsVerdictSettled(ctx)).toBe(true);
+
+      // External rewrite: a raw edit this Context's own write surface never
+      // observes — no invalidateConfigCache call.
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+      // GATE #2 — re-keys the epoch; the eager gate itself still passes.
+      await assertOperationalRepository(ctx);
+
+      return { ctx, commitId };
+    };
+
+    const assertRefusesWithBadMaxTreeDepth = async (op: () => Promise<unknown>): Promise<void> => {
+      let caught: unknown;
+      try {
+        await op();
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        readonly code: string;
+        readonly key: string;
+        readonly value: string;
+        readonly reason: string;
+      };
+      expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      expect(data.key).toBe('core.maxtreedepth');
+      expect(data.value).toBe('2.5');
+      expect(data.reason).toBe('invalid unit');
+    };
+
+    describe('When readObject reads an already-written object', () => {
+      it('Then refuses with CONFIG_BAD_NUMERIC_VALUE instead of serving the superseded verdict', async () => {
+        // Arrange
+        const { ctx, commitId } = await buildWarmThenPoisonedSession();
+
+        // Act + Assert
+        await assertRefusesWithBadMaxTreeDepth(() => readObject(ctx, commitId));
+      });
+    });
+
+    describe('When writeObject writes a brand-new object', () => {
+      it('Then refuses with CONFIG_BAD_NUMERIC_VALUE instead of serving the superseded verdict', async () => {
+        // Arrange
+        const { ctx } = await buildWarmThenPoisonedSession();
+        const blob: Blob = {
+          type: 'blob',
+          content: new TextEncoder().encode('post-poison'),
+          id: '' as ObjectId,
+        };
+
+        // Act + Assert
+        await assertRefusesWithBadMaxTreeDepth(() => writeObject(ctx, blob));
+      });
+    });
+
+    describe('When commitHeader is asked for a commit', () => {
+      it('Then refuses with CONFIG_BAD_NUMERIC_VALUE instead of serving the superseded verdict', async () => {
+        // Arrange
+        const { ctx, commitId } = await buildWarmThenPoisonedSession();
+
+        // Act + Assert
+        await assertRefusesWithBadMaxTreeDepth(() => commitHeader(ctx, commitId));
+      });
+    });
+
+    describe('When branchCreate creates a branch from HEAD', () => {
+      it('Then refuses with CONFIG_BAD_NUMERIC_VALUE instead of serving the superseded verdict', async () => {
+        // Arrange
+        const { ctx } = await buildWarmThenPoisonedSession();
+
+        // Act + Assert
+        await assertRefusesWithBadMaxTreeDepth(() => branchCreate(ctx, { name: 'from-warm' }));
       });
     });
   });
