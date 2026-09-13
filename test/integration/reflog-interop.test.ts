@@ -146,6 +146,22 @@ describe.skipIf(!GIT_AVAILABLE)(
      *  whose age is relative to actual "now", not a fixed historical date
      *  that eventually drifts past any cutoff under test. */
     let freshBaseDir = '';
+    /**
+     * A third base repo for the reachability matrix: `main` commits A then
+     * B, `side` branches off B and adds C, then `main` is reset back to A —
+     * so B is reachable only through `side`, matching the history the
+     * reachability rule is pinned against.
+     */
+    let reachabilityBaseDir = '';
+    let reachabilityA = '';
+    /**
+     * A fourth base repo for the same matrix: `main` commits A then B, then
+     * a later commit D is made from B and reset away — D is unreachable
+     * from any current tip.
+     */
+    let reachabilityWithDBaseDir = '';
+    let reachabilityWithDB = '';
+    const REACHABILITY_EPOCH = 1_700_000_000;
     const caseRoots: string[] = [];
 
     beforeAll(async () => {
@@ -181,8 +197,8 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(freshBaseDir, 'config', 'commit.gpgsign', 'false');
       disableAutoMaintenance(freshBaseDir);
       // Anchored a few seconds behind real "now", not AT it: reflog
-      // timestamps are second-precision and `keepEntry`'s cutoff comparison
-      // is inclusive (`>=`), so a commit stamped in the same wall-clock
+      // timestamps are second-precision and the unreachable-cutoff
+      // comparison is inclusive (`>=`), so a commit stamped in the same wall-clock
       // second as a later `--expire=now` call would survive on both tools —
       // a timing race, not a tolerance question. A few seconds of margin
       // keeps the fixture "fresh" for the never/90-days-ago cases while
@@ -195,11 +211,73 @@ describe.skipIf(!GIT_AVAILABLE)(
           env: datedEnv(freshEpoch + i),
         });
       }
+
+      reachabilityBaseDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-interop-reach-'));
+      runGit(['init', '-q', '-b', 'main', reachabilityBaseDir]);
+      git(reachabilityBaseDir, 'config', 'user.name', 'Ada');
+      git(reachabilityBaseDir, 'config', 'user.email', 'ada@example.com');
+      git(reachabilityBaseDir, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(reachabilityBaseDir);
+      await writeFile(path.join(reachabilityBaseDir, 'a.txt'), 'a\n');
+      git(reachabilityBaseDir, 'add', '-A');
+      runGit(['-C', reachabilityBaseDir, 'commit', '-q', '-m', 'a'], {
+        env: datedEnv(REACHABILITY_EPOCH),
+      });
+      reachabilityA = git(reachabilityBaseDir, 'rev-parse', 'HEAD').trim();
+      await writeFile(path.join(reachabilityBaseDir, 'b.txt'), 'b\n');
+      git(reachabilityBaseDir, 'add', '-A');
+      runGit(['-C', reachabilityBaseDir, 'commit', '-q', '-m', 'b'], {
+        env: datedEnv(REACHABILITY_EPOCH + 100),
+      });
+      runGit(['-C', reachabilityBaseDir, 'checkout', '-q', '-b', 'side'], {
+        env: datedEnv(REACHABILITY_EPOCH + 125),
+      });
+      await writeFile(path.join(reachabilityBaseDir, 'c.txt'), 'c\n');
+      git(reachabilityBaseDir, 'add', '-A');
+      runGit(['-C', reachabilityBaseDir, 'commit', '-q', '-m', 'c'], {
+        env: datedEnv(REACHABILITY_EPOCH + 150),
+      });
+      runGit(['-C', reachabilityBaseDir, 'checkout', '-q', 'main'], {
+        env: datedEnv(REACHABILITY_EPOCH + 175),
+      });
+      runGit(['-C', reachabilityBaseDir, 'reset', '-q', '--hard', reachabilityA], {
+        env: datedEnv(REACHABILITY_EPOCH + 200),
+      });
+
+      reachabilityWithDBaseDir = await mkdtemp(
+        path.join(os.tmpdir(), 'tsgit-reflog-interop-reach-d-'),
+      );
+      runGit(['init', '-q', '-b', 'main', reachabilityWithDBaseDir]);
+      git(reachabilityWithDBaseDir, 'config', 'user.name', 'Ada');
+      git(reachabilityWithDBaseDir, 'config', 'user.email', 'ada@example.com');
+      git(reachabilityWithDBaseDir, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(reachabilityWithDBaseDir);
+      await writeFile(path.join(reachabilityWithDBaseDir, 'a.txt'), 'a\n');
+      git(reachabilityWithDBaseDir, 'add', '-A');
+      runGit(['-C', reachabilityWithDBaseDir, 'commit', '-q', '-m', 'a'], {
+        env: datedEnv(REACHABILITY_EPOCH),
+      });
+      await writeFile(path.join(reachabilityWithDBaseDir, 'b.txt'), 'b\n');
+      git(reachabilityWithDBaseDir, 'add', '-A');
+      runGit(['-C', reachabilityWithDBaseDir, 'commit', '-q', '-m', 'b'], {
+        env: datedEnv(REACHABILITY_EPOCH + 100),
+      });
+      reachabilityWithDB = git(reachabilityWithDBaseDir, 'rev-parse', 'HEAD').trim();
+      await writeFile(path.join(reachabilityWithDBaseDir, 'd.txt'), 'd\n');
+      git(reachabilityWithDBaseDir, 'add', '-A');
+      runGit(['-C', reachabilityWithDBaseDir, 'commit', '-q', '-m', 'd'], {
+        env: datedEnv(REACHABILITY_EPOCH + 200),
+      });
+      runGit(['-C', reachabilityWithDBaseDir, 'reset', '-q', '--hard', reachabilityWithDB], {
+        env: datedEnv(REACHABILITY_EPOCH + 200),
+      });
     }, SETUP_TIMEOUT);
 
     afterAll(async () => {
       await rm(baseDir, { recursive: true, force: true });
       await rm(freshBaseDir, { recursive: true, force: true });
+      await rm(reachabilityBaseDir, { recursive: true, force: true });
+      await rm(reachabilityWithDBaseDir, { recursive: true, force: true });
       await Promise.all(
         caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
       );
@@ -1376,6 +1454,327 @@ describe.skipIf(!GIT_AVAILABLE)(
           const peerBytes = await readFile(mainLogPath(peer));
           const oursBytes = await readFile(mainLogPath(ours));
           expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given main reset back behind a side branch that kept a newer commit', () => {
+      describe('When expire runs with --expire=now --expire-unreachable=never on refs/heads/main', () => {
+        it('Then git and tsgit both expire every entry unconditionally, byte-identical', async () => {
+          // Arrange
+          const peer = await cloneRepo(reachabilityBaseDir, 'reach-r1-peer');
+          const ours = await cloneRepo(reachabilityBaseDir, 'reach-r1-ours');
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            '--expire=now',
+            '--expire-unreachable=never',
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'now',
+            expireUnreachable: 'never',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 3, kept: 0 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with --expire=never --expire-unreachable=now on refs/heads/main', () => {
+        it('Then git and tsgit both keep only the entry landing on the tip itself, byte-identical', async () => {
+          // Arrange — reachability is measured from `main`'s own tip (A):
+          // `A→B` and `B→A` both name B, reachable only through `side`.
+          const peer = await cloneRepo(reachabilityBaseDir, 'reach-r2-peer');
+          const ours = await cloneRepo(reachabilityBaseDir, 'reach-r2-ours');
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            '--expire=never',
+            '--expire-unreachable=now',
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 2, kept: 1 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with --expire=never --expire-unreachable=now on HEAD', () => {
+        it('Then git and tsgit both keep every entry, byte-identical', async () => {
+          // Arrange — the same cutoffs as the previous case, but against
+          // HEAD: marking from every current tip (main=A, side=C) reaches
+          // A, B and C, so nothing in this log is unreachable.
+          const peer = await cloneRepo(reachabilityBaseDir, 'reach-r3-peer');
+          const ours = await cloneRepo(reachabilityBaseDir, 'reach-r3-ours');
+
+          // Act
+          git(peer, 'reflog', 'expire', '--expire=never', '--expire-unreachable=now', 'HEAD');
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 6 });
+          const peerBytes = await readFile(headLogPath(peer));
+          const oursBytes = await readFile(headLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with --expire=never --expire-unreachable=never on refs/heads/main', () => {
+        it('Then git and tsgit both keep every entry without a walk, byte-identical', async () => {
+          // Arrange
+          const peer = await cloneRepo(reachabilityBaseDir, 'reach-r4-peer');
+          const ours = await cloneRepo(reachabilityBaseDir, 'reach-r4-ours');
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            '--expire=never',
+            '--expire-unreachable=never',
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'never',
+            expireUnreachable: 'never',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 3 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with explicit numeric cutoffs on refs/heads/main', () => {
+        it('Then git and tsgit judge each entry the same way, byte-identical', async () => {
+          // Arrange — `0→A` is below the total cutoff and expires
+          // unconditionally; `A→B` is between the two cutoffs and expires
+          // because B is unreachable from A; `B→A` is at or above the
+          // unreachable cutoff and is kept without a reachability check.
+          const peer = await cloneRepo(reachabilityBaseDir, 'reach-r5-peer');
+          const ours = await cloneRepo(reachabilityBaseDir, 'reach-r5-ours');
+          const expire = `@${REACHABILITY_EPOCH + 50}`;
+          const expireUnreachable = `@${REACHABILITY_EPOCH + 150}`;
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            `--expire=${expire}`,
+            `--expire-unreachable=${expireUnreachable}`,
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire,
+            expireUnreachable,
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 2, kept: 1 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a later commit created on main then reset away', () => {
+      describe('When expire runs with --expire=now --expire-unreachable=never', () => {
+        it('Then git and tsgit both expire every entry unconditionally, byte-identical', async () => {
+          // Arrange
+          const peer = await cloneRepo(reachabilityWithDBaseDir, 'reach-r6a-peer');
+          const ours = await cloneRepo(reachabilityWithDBaseDir, 'reach-r6a-ours');
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            '--expire=now',
+            '--expire-unreachable=never',
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'now',
+            expireUnreachable: 'never',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 4, kept: 0 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with --expire=never --expire-unreachable=now', () => {
+        it('Then git and tsgit both expire the entries naming the unreachable commit on either side, byte-identical', async () => {
+          // Arrange — D is unreachable from B (main's tip): the entry moving
+          // TO D expires because its new id is unreachable, the entry
+          // moving FROM D expires because its old id is unreachable.
+          const peer = await cloneRepo(reachabilityWithDBaseDir, 'reach-r6b-peer');
+          const ours = await cloneRepo(reachabilityWithDBaseDir, 'reach-r6b-ours');
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            '--expire=never',
+            '--expire-unreachable=now',
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 2, kept: 2 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs with an unreachable cutoff not later than the total cutoff', () => {
+        it('Then git and tsgit both decide by the clock alone, byte-identical', async () => {
+          // Arrange
+          const peer = await cloneRepo(reachabilityWithDBaseDir, 'reach-r6c-peer');
+          const ours = await cloneRepo(reachabilityWithDBaseDir, 'reach-r6c-ours');
+          const expire = `@${REACHABILITY_EPOCH + 150}`;
+          const expireUnreachable = `@${REACHABILITY_EPOCH + 50}`;
+
+          // Act
+          git(
+            peer,
+            'reflog',
+            'expire',
+            `--expire=${expire}`,
+            `--expire-unreachable=${expireUnreachable}`,
+            'refs/heads/main',
+          );
+          const ctx = createNodeContext({ workDir: ours });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire,
+            expireUnreachable,
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 2, kept: 2 });
+          const peerBytes = await readFile(mainLogPath(peer));
+          const oursBytes = await readFile(mainLogPath(ours));
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+    });
+
+    describe('Given a branch ref deleted while its reflog file remains', () => {
+      describe('When expire runs with --all --expire=never --expire-unreachable=now', () => {
+        it('Then git and tsgit both fully expire the orphaned log, byte-identical', async () => {
+          // Arrange — the ref no longer resolves to a commit, so its log
+          // expires by clock alone under `--all`, on both tools.
+          const peer = await caseDir('reach-gone-all-peer');
+          const ours = await caseDir('reach-gone-all-ours');
+          for (const dir of [peer, ours]) {
+            git(dir, 'branch', 'gone');
+            await rm(refPath(dir, 'refs/heads/gone'));
+          }
+
+          // Act
+          git(peer, 'reflog', 'expire', '--all', '--expire=never', '--expire-unreachable=now');
+          const ctx = createNodeContext({ workDir: ours });
+          await reflog(ctx, {
+            action: 'expire',
+            all: true,
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert
+          const peerBytes = await readFile(branchLogPath(peer, 'gone'));
+          const oursBytes = await readFile(branchLogPath(ours, 'gone'));
+          expect(peerBytes).toHaveLength(0);
+          expect(oursBytes).toEqual(peerBytes);
+        });
+      });
+
+      describe('When expire runs directly against the gone ref', () => {
+        it('Then git refuses while tsgit proceeds — a recorded, pre-existing divergence', async () => {
+          // Arrange — tsgit's `hasReflog` answers by file presence alone, so
+          // it never reaches git's own "does the ref resolve" refusal.
+          const dir = await caseDir('reach-gone-single');
+          git(dir, 'branch', 'gone');
+          await rm(refPath(dir, 'refs/heads/gone'));
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            dir,
+            'reflog',
+            'expire',
+            '--expire=never',
+            '--expire-unreachable=now',
+            'refs/heads/gone',
+          ]);
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/gone',
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(255);
+          expect(gitResult.stderr).toContain('reflog could not be found');
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
         });
       });
     });

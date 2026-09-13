@@ -6,7 +6,7 @@
  */
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
-import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import { reflogNotFound } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { validateRefName } from '../../domain/refs/index.js';
@@ -14,11 +14,12 @@ import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
+import { readCommitMeta } from '../primitives/internal/read-commit-meta.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
-import { walkCommits } from '../primitives/walk-commits.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
@@ -171,7 +172,6 @@ const runExpire = async (
   const now = Math.floor(Date.now() / 1000);
   const expireCut = resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now);
   const unreachableCut = resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now);
-  const reachable = await collectReachable(ctx);
   const single = opts.all === true ? undefined : resolveUserRef(opts.ref ?? 'HEAD');
   if (single !== undefined && !(await hasReflog(ctx, single))) {
     // git refuses a single-ref expire when no reflog exists (exit 255) and
@@ -184,10 +184,19 @@ const runExpire = async (
   let kept = 0;
   const updates: RefUpdate[] = [];
   for (const ref of targets) {
+    // Reachability is per-ref: `HEAD` marks from every tip, another ref marks
+    // from its own tip alone, and a ref that does not resolve to a commit (or
+    // a cutoff pair that can never change the verdict) skips the walk
+    // entirely — computed fresh per target, never shared across refs.
+    const kind = await expireKindFor(ctx, ref, expireCut, unreachableCut);
+    const state = kind.kind === 'walk' ? createReachability(kind.tips) : undefined;
     const stored = await readReflogLenient(ctx, ref);
-    const survivors = stored.filter((entry) =>
-      keepEntry(entry, reachable, expireCut, unreachableCut),
-    );
+    const survivors: ReflogEntry[] = [];
+    for (const entry of stored) {
+      if (!(await shouldExpire(ctx, entry, kind, state, expireCut, unreachableCut))) {
+        survivors.push(entry);
+      }
+    }
     removed += stored.length - survivors.length;
     kept += survivors.length;
     // Unconditional: git rewrites the reflog on every `expire` run, even when
@@ -215,32 +224,127 @@ const resolveCutoff = (raw: string, now: number): number => {
   return cutoff;
 };
 
-/** An entry survives on the reachable clock when its tip is reachable, else the shorter clock. */
-const keepEntry = (
-  entry: ReflogEntry,
-  reachable: ReadonlySet<string>,
+/** Whether `ref`'s log marks from every current tip (`HEAD`), from its own
+ *  tip alone, or expires by clock only — no reachability walk at all — because
+ *  it does not resolve to a commit, or because the unreachable cutoff can
+ *  never move the verdict past what the total cutoff already decides. */
+type ExpireKind =
+  | { readonly kind: 'always' }
+  | { readonly kind: 'walk'; readonly tips: ReadonlyArray<ObjectId> };
+
+const expireKindFor = async (
+  ctx: Context,
+  ref: RefName,
   expireCut: number,
   unreachableCut: number,
-): boolean => {
-  const cutoff = reachable.has(entry.newId) ? expireCut : unreachableCut;
-  return entry.identity.timestamp >= cutoff;
+): Promise<ExpireKind> => {
+  if (unreachableCut <= expireCut) return { kind: 'always' };
+  if (ref === 'HEAD') return { kind: 'walk', tips: await resolveTips(ctx) };
+  const direct = await getRefStore(ctx).resolveDirect(ref);
+  if (direct.kind !== 'direct') return { kind: 'always' };
+  const peeled = await peelRefToCommit(ctx, direct.id);
+  return peeled === undefined ? { kind: 'always' } : { kind: 'walk', tips: [peeled.commit.id] };
 };
 
-/** Every commit reachable from any current ref tip. */
-const collectReachable = async (ctx: Context): Promise<ReadonlySet<string>> => {
-  const tips = await resolveTips(ctx);
-  const reachable = new Set<string>();
-  if (tips.length === 0) return reachable;
-  for await (const commit of walkCommits(ctx, { from: tips, ignoreMissing: true })) {
-    reachable.add(commit.id);
+/** Mark-and-sweep state for one ref's walk: `marked` commits are confirmed
+ *  reachable within the total-cutoff bound; `frontier` holds ids reached but
+ *  not yet popped. Mutable by design — the walk is driven incrementally, one
+ *  query at a time, and shared across every entry of the same ref. */
+interface ReachabilityState {
+  readonly marked: Set<ObjectId>;
+  readonly frontier: ObjectId[];
+  head: number;
+}
+
+const createReachability = (tips: ReadonlyArray<ObjectId>): ReachabilityState => ({
+  marked: new Set(),
+  frontier: [...tips],
+  head: 0,
+});
+
+/**
+ * Pop the next unexpanded frontier commit and mark it reachable; only while
+ * it is at or above the total cutoff are its parents themselves enqueued. A
+ * commit older than the cutoff is marked (it WAS reached) but never expanded
+ * past, so anything reachable only through its own ancestry stays unmarked —
+ * git's `leftover` frontier. Returns false once the frontier is exhausted.
+ */
+const expandFrontier = async (
+  ctx: Context,
+  state: ReachabilityState,
+  expireCut: number,
+): Promise<boolean> => {
+  if (state.head >= state.frontier.length) return false;
+  const id = state.frontier[state.head] as ObjectId;
+  state.head += 1;
+  if (state.marked.has(id)) return true;
+  state.marked.add(id);
+  const meta = await readCommitMeta(ctx, id);
+  if (meta !== undefined && meta.committerDate >= expireCut) {
+    for (const parent of meta.parents) {
+      if (!state.marked.has(parent)) state.frontier.push(parent);
+    }
   }
-  return reachable;
+  return true;
+};
+
+/** Whether `id` is reachable within the bound, extending the walk from the
+ *  frontier before answering — as many steps as it takes to find it, or to
+ *  exhaust the frontier trying. */
+const isMarked = async (
+  ctx: Context,
+  state: ReachabilityState,
+  expireCut: number,
+  id: ObjectId,
+): Promise<boolean> => {
+  while (!state.marked.has(id)) {
+    if (!(await expandFrontier(ctx, state, expireCut))) return false;
+  }
+  return true;
+};
+
+/** A null object id or one that does not peel to a commit is never
+ *  unreachable — it is kept, exactly as git's own gentle lookup treats it. */
+const isUnreachable = async (
+  ctx: Context,
+  state: ReachabilityState,
+  expireCut: number,
+  oid: ObjectId,
+): Promise<boolean> => {
+  if (oid === zeroOid(ctx.hashConfig)) return false;
+  const peeled = await peelRefToCommit(ctx, oid);
+  if (peeled === undefined) return false;
+  return !(await isMarked(ctx, state, expireCut, peeled.commit.id));
+};
+
+/**
+ * git's `should_expire_reflog_ent`: below the total cutoff, expire
+ * unconditionally; at or above the unreachable cutoff, always keep;
+ * otherwise expire when the ref's log expires by clock alone, or when
+ * either the old or the new object id is unreachable — checked in that
+ * order, so an unreachable old id alone is enough.
+ */
+const shouldExpire = async (
+  ctx: Context,
+  entry: ReflogEntry,
+  kind: ExpireKind,
+  state: ReachabilityState | undefined,
+  expireCut: number,
+  unreachableCut: number,
+): Promise<boolean> => {
+  if (entry.identity.timestamp < expireCut) return true;
+  if (entry.identity.timestamp >= unreachableCut) return false;
+  if (kind.kind === 'always' || state === undefined) return true;
+  if (await isUnreachable(ctx, state, expireCut, entry.oldId)) return true;
+  return isUnreachable(ctx, state, expireCut, entry.newId);
 };
 
 const resolveTips = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
   // Pooled through the `ioBound` bucket — each ref's resolution is an
   // independent read; the dedup moves to a `Set` built over the results
-  // instead of accumulating into one while iterating serially.
+  // instead of accumulating into one while iterating serially. Survives only
+  // for `HEAD`'s every-tip mark list — a single named ref peels its own tip
+  // directly (`expireKindFor`).
   const refs = await enumerateRefs(ctx);
   const resolved = await boundedMapFor(ctx, 'ioBound', refs, (ref) => tryResolve(ctx, ref));
   const ids = resolved.filter((id): id is ObjectId => id !== undefined);
@@ -249,7 +353,9 @@ const resolveTips = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
 
 const tryResolve = async (ctx: Context, ref: RefName): Promise<ObjectId | undefined> => {
   try {
-    return await resolveRef(ctx, ref);
+    const id = await resolveRef(ctx, ref);
+    const peeled = await peelRefToCommit(ctx, id);
+    return peeled?.commit.id;
   } catch (err) {
     if (err instanceof TsgitError) return undefined;
     throw err;

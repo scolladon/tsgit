@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import type { ReflogResult } from '../../../../src/application/commands/reflog.js';
 import { reflog } from '../../../../src/application/commands/reflog.js';
+import * as readCommitMetaMod from '../../../../src/application/primitives/internal/read-commit-meta.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { appendReflog, writeReflog } from '../../../../src/application/primitives/reflog-store.js';
-import * as walkCommitsMod from '../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -869,16 +871,18 @@ describe('reflog command', () => {
     describe('Given an unreachable entry between the two cutoffs', () => {
       describe('When expire', () => {
         it('Then it is pruned on the shorter unreachable clock', async () => {
-          // Arrange — an entry 45 days old whose newId is NOT a reachable commit.
-          // Reachable cutoff is 90 days (would keep it); unreachable cutoff is 30
-          // days (prunes it). The unreachable clock must win.
+          // Arrange — an entry 45 days old whose newId is a real commit that
+          // exists but sits off every ref's tip. Reachable cutoff is 90 days
+          // (would keep it); unreachable cutoff is 30 days (prunes it). The
+          // unreachable clock must win.
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
+          const island = await writeCommit(ctx, [], now - 1);
           await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
           const middling = now - 45 * DAY;
           await writeReflog(ctx, HEAD, [
-            entry({ newId: OID_X, identity: identityAt(middling), message: 'unreachable' }),
+            entry({ newId: island, identity: identityAt(middling), message: 'unreachable' }),
           ]);
 
           // Act
@@ -1429,11 +1433,12 @@ describe('reflog command', () => {
     });
 
     describe('Given several refs pointing at the same commit', () => {
-      describe('When expire computes the reachable set', () => {
-        it('Then walkCommits starts from one deduplicated tip, not one per ref', async () => {
-          // Arrange — three branches share one tip; `resolveTips`'s dedup
-          // (a `Set` over the resolved ids) must collapse them to a single
-          // walk seed regardless of how the per-ref resolution itself runs.
+      describe('When expire computes the reachable set for HEAD', () => {
+        it('Then the shared tip is expanded exactly once', async () => {
+          // Arrange — three branches share one tip; `resolveTips`'s dedup (a
+          // `Set` over the resolved ids) collapses them to a single walk
+          // seed, so the shared tip's metadata is read exactly once rather
+          // than once per ref that happens to point at it.
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
@@ -1445,27 +1450,24 @@ describe('reflog command', () => {
             },
           });
           await writeReflog(ctx, HEAD, [
-            entry({ newId: tip, identity: identityAt(now - 2 * DAY), message: 'first recent' }),
+            // 45 days old: between the default 90/30-day cutoffs, so the
+            // verdict actually depends on the reachability walk running.
+            entry({ newId: tip, identity: identityAt(now - 45 * DAY), message: 'in range' }),
           ]);
-          const fromCalls: Array<ReadonlyArray<ObjectId>> = [];
-          const realWalkCommits = walkCommitsMod.walkCommits;
-          const spy = vi
-            .spyOn(walkCommitsMod, 'walkCommits')
-            .mockImplementation((spyCtx, options) => {
-              fromCalls.push([...options.from]);
-              return realWalkCommits(spyCtx, options);
-            });
+          const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
 
           // Act
+          let tipCalls: number;
           try {
             await reflog(ctx, { action: 'expire', all: true });
+            // Read the call history before `mockRestore` clears it.
+            tipCalls = spy.mock.calls.filter(([, id]) => id === tip).length;
           } finally {
             spy.mockRestore();
           }
 
           // Assert
-          expect(fromCalls).toHaveLength(1);
-          expect(fromCalls[0]).toEqual([tip]);
+          expect(tipCalls).toBe(1);
         });
       });
     });
@@ -1473,11 +1475,10 @@ describe('reflog command', () => {
     describe('Given more refs than the ioBound limit, each with its own commit', () => {
       describe('When expire computes the reachable set', () => {
         it('Then ref-tip resolution runs more than one at a time', async () => {
-          // Arrange — HEAD is always among the enumerated refs (`seedRepo`
-          // always writes one) and resolves through a separate code path
-          // that never touches `refs/heads/`, so it occupies one concurrent
-          // slot without registering here; the oracle is therefore "more
-          // than one in flight" rather than the exact bound (a
+          // Arrange — `HEAD`'s own reflog is the one target whose expire
+          // kind is `UE_HEAD` (every current tip), so it is what drives the
+          // whole-repo tip resolution under `--all`; the oracle is therefore
+          // "more than one in flight" rather than the exact bound (a
           // `boundedMapFor` → `for…await` mutant caps this at 1).
           const ioBound = 3;
           const width = ioBound + 4;
@@ -1489,6 +1490,9 @@ describe('reflog command', () => {
             refs[`refs/heads/b${String(i).padStart(3, '0')}`] = tip;
           }
           await seedRepo(base, { refs });
+          await writeReflog(base, HEAD, [
+            entry({ newId: refs['refs/heads/b000'] as ObjectId, identity: identityAt(now) }),
+          ]);
           const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
           const headsDir = `${ctx.layout.gitDir}/refs/heads/`;
           let inFlight = 0;
@@ -1514,6 +1518,437 @@ describe('reflog command', () => {
 
           // Assert
           expect(maxInFlight).toBeGreaterThan(1);
+        });
+      });
+    });
+
+    describe('the pinned reachability matrix', () => {
+      const EPOCH = 1_700_000_000;
+
+      /**
+       * `main` committed A then B; `side` branched off B and added C; `main`
+       * was then reset back to A. So `main`'s own tip is A (B is reachable
+       * only through `side`), and `main`'s log records `0→A`, `A→B`, `B→A`.
+       * `HEAD` mirrors that plus the checkout to `side` and back, so its log
+       * never names an object outside {A, B, C}.
+       */
+      const buildMainAndSideFixture = async (): Promise<{
+        readonly ctx: Context;
+      }> => {
+        const ctx = createMemoryContext();
+        const a = await writeCommit(ctx, [], EPOCH);
+        const b = await writeCommit(ctx, [a], EPOCH + 100);
+        const c = await writeCommit(ctx, [b], EPOCH + 200);
+        await seedRepo(ctx, { refs: { 'refs/heads/main': a, 'refs/heads/side': c } });
+        await writeReflog(ctx, BRANCH, [
+          entry({ oldId: ZERO_OID, newId: a, identity: identityAt(EPOCH), message: 'initial' }),
+          entry({ oldId: a, newId: b, identity: identityAt(EPOCH + 100), message: 'advance' }),
+          entry({ oldId: b, newId: a, identity: identityAt(EPOCH + 200), message: 'reset' }),
+        ]);
+        await writeReflog(ctx, HEAD, [
+          entry({ oldId: ZERO_OID, newId: a, identity: identityAt(EPOCH), message: 'initial' }),
+          entry({ oldId: a, newId: b, identity: identityAt(EPOCH + 100), message: 'advance' }),
+          entry({
+            oldId: b,
+            newId: b,
+            identity: identityAt(EPOCH + 125),
+            message: 'checkout side',
+          }),
+          entry({ oldId: b, newId: c, identity: identityAt(EPOCH + 150), message: 'commit c' }),
+          entry({
+            oldId: c,
+            newId: b,
+            identity: identityAt(EPOCH + 175),
+            message: 'checkout main',
+          }),
+          entry({ oldId: b, newId: a, identity: identityAt(EPOCH + 200), message: 'reset' }),
+        ]);
+        return { ctx };
+      };
+
+      describe('Given main reset back behind a side branch that kept a newer commit', () => {
+        describe('When expire runs with --expire=now --expire-unreachable=never on refs/heads/main', () => {
+          it('Then every entry expires unconditionally, without a walk', async () => {
+            // Arrange
+            const { ctx } = await buildMainAndSideFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 3, kept: 0 });
+          });
+        });
+
+        describe('When expire runs with --expire=never --expire-unreachable=now on refs/heads/main', () => {
+          it('Then only the entry landing on the tip itself survives', async () => {
+            // Arrange — reachability is measured from `main`'s own tip (A),
+            // not from every ref: `A→B` and `B→A` both name B, which is
+            // reachable only through `side`, so both expire.
+            const { ctx } = await buildMainAndSideFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: 'never',
+              expireUnreachable: 'now',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 2, kept: 1 });
+          });
+        });
+
+        describe('When expire runs with --expire=never --expire-unreachable=now on HEAD', () => {
+          it('Then every entry survives because HEAD marks from every current tip', async () => {
+            // Arrange — the same cutoffs as the previous case, but against
+            // HEAD: marking from every tip (main=A, side=C) reaches A, B and
+            // C, so nothing in this log is unreachable.
+            const { ctx } = await buildMainAndSideFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: 'never',
+              expireUnreachable: 'now',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 6 });
+          });
+        });
+
+        describe('When expire runs with --expire=never --expire-unreachable=never on refs/heads/main', () => {
+          it('Then every entry survives and reachability is never consulted', async () => {
+            // Arrange
+            const { ctx } = await buildMainAndSideFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: 'never',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 3 });
+          });
+        });
+
+        describe('When expire runs with explicit numeric cutoffs on refs/heads/main', () => {
+          it('Then each entry is judged on its own timestamp and reachability', async () => {
+            // Arrange — `0→A` (ts EPOCH) is below the total cutoff and
+            // expires unconditionally; `A→B` (ts EPOCH+100) is between the
+            // two cutoffs and expires because B is unreachable from A;
+            // `B→A` (ts EPOCH+200) is at or above the unreachable cutoff and
+            // is kept without a reachability check.
+            const { ctx } = await buildMainAndSideFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${EPOCH + 50}`,
+              expireUnreachable: `@${EPOCH + 150}`,
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 2, kept: 1 });
+          });
+        });
+      });
+
+      describe('Given a later commit created on main then reset away', () => {
+        /**
+         * `main`'s tip ends at B; a fourth commit D was made from B and then
+         * reset away, so D is a child of B but unreachable from any current
+         * tip — the log records `0→A`, `A→B`, `B→D`, `D→B`.
+         */
+        const buildMainWithDFixture = async (): Promise<{ readonly ctx: Context }> => {
+          const ctx = createMemoryContext();
+          const a = await writeCommit(ctx, [], EPOCH);
+          const b = await writeCommit(ctx, [a], EPOCH + 100);
+          const d = await writeCommit(ctx, [b], EPOCH + 300);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': b } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: a, identity: identityAt(EPOCH), message: 'initial' }),
+            entry({ oldId: a, newId: b, identity: identityAt(EPOCH + 100), message: 'advance' }),
+            entry({
+              oldId: b,
+              newId: d,
+              identity: identityAt(EPOCH + 200),
+              message: 'advance again',
+            }),
+            entry({ oldId: d, newId: b, identity: identityAt(EPOCH + 200), message: 'reset away' }),
+          ]);
+          return { ctx };
+        };
+
+        describe('When expire runs with --expire=now --expire-unreachable=never', () => {
+          it('Then every entry expires unconditionally', async () => {
+            // Arrange
+            const { ctx } = await buildMainWithDFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 4, kept: 0 });
+          });
+        });
+
+        describe('When expire runs with --expire=never --expire-unreachable=now', () => {
+          it('Then the entries naming the unreachable commit expire on either side', async () => {
+            // Arrange — D is unreachable from B (main's tip): `B→D` expires
+            // because its NEW id is unreachable, `D→B` expires because its
+            // OLD id is unreachable — proving both sides are checked.
+            const { ctx } = await buildMainWithDFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: 'never',
+              expireUnreachable: 'now',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 2, kept: 2 });
+          });
+        });
+
+        describe('When expire runs with an unreachable cutoff not later than the total cutoff', () => {
+          it('Then only the clock decides and reachability is never consulted', async () => {
+            // Arrange — the unreachable cutoff (EPOCH+50) is earlier than
+            // the total cutoff (EPOCH+150), so every entry's fate is decided
+            // by its own timestamp alone.
+            const { ctx } = await buildMainWithDFixture();
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${EPOCH + 150}`,
+              expireUnreachable: `@${EPOCH + 50}`,
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 2, kept: 2 });
+          });
+        });
+      });
+    });
+
+    describe('Given an entry whose old object id alone is unreachable', () => {
+      describe('When expire evaluates it', () => {
+        it('Then it expires even though the new object id is reachable', async () => {
+          // Arrange — todays keep rule consulted `newId` only; here the OLD
+          // id is the unreachable one, proving both sides are checked.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          const island = await writeCommit(ctx, [], now - 1);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({
+              oldId: island,
+              newId: tip,
+              identity: identityAt(now - 45 * DAY),
+              message: 'old unreachable',
+            }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        });
+      });
+    });
+
+    describe('Given an entry whose old object id is the null object id', () => {
+      describe('When expire evaluates it', () => {
+        it('Then the null id never counts as unreachable', async () => {
+          // Arrange — without the null-id guard, peeling `0000…` would throw
+          // rather than keep the entry.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: ZERO_OID, newId: tip, identity: identityAt(now - 45 * DAY) }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+    });
+
+    describe('Given an entry whose new object id is not a commit', () => {
+      describe('When expire evaluates it', () => {
+        it('Then the non-commit id never counts as unreachable', async () => {
+          // Arrange
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          const blobId = await writeObject(ctx, {
+            type: 'blob',
+            id: '' as ObjectId,
+            content: new TextEncoder().encode('x'),
+          });
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: tip, newId: blobId, identity: identityAt(now - 45 * DAY) }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+    });
+
+    describe('Given a named ref whose tip is not a commit', () => {
+      describe('When expire runs on it with a middle-band timestamp', () => {
+        it('Then the entry expires without a reachability check', async () => {
+          // Arrange — a ref resolving straight to a blob peels to nothing,
+          // so it expires by clock alone. Both ids are null (always
+          // "reachable"), so only the clock-alone path explains the expiry.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const blobId = await writeObject(ctx, {
+            type: 'blob',
+            id: '' as ObjectId,
+            content: new TextEncoder().encode('x'),
+          });
+          await seedRepo(ctx, { refs: { 'refs/heads/weird': blobId } });
+          await writeReflog(ctx, 'refs/heads/weird' as RefName, [
+            entry({ oldId: ZERO_OID, newId: ZERO_OID, identity: identityAt(now - 45 * DAY) }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'refs/heads/weird' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        });
+      });
+    });
+
+    describe('Given a named ref that no longer resolves but whose reflog file remains', () => {
+      describe('When expire runs against it directly with a middle-band timestamp', () => {
+        it('Then the entry expires without a reachability check', async () => {
+          // Arrange — the ref file itself is never created, only its log;
+          // `resolveDirect` answers `missing`, so the log expires by clock
+          // alone, same as a ref resolving to a non-commit.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: ZERO_OID, identity: identityAt(now - 45 * DAY) }),
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'refs/heads/main' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        });
+      });
+    });
+
+    describe('Given a cutoff pair where the unreachable clock is not later than the total clock', () => {
+      describe('When expire runs', () => {
+        it('Then it never reads a single object', async () => {
+          // Arrange — `--expire=now --expire-unreachable=never`: reachability
+          // could never change the verdict, so the walk is skipped outright
+          // rather than merely producing an unused result.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 45 * DAY) }),
+          ]);
+          const spy = vi.spyOn(readObjectMod, 'readObject');
+
+          // Act
+          let calls: number;
+          try {
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+            calls = spy.mock.calls.length;
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(calls).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a commit chain crossing the total cutoff', () => {
+      describe('When expire checks reachability of a commit beyond the aged boundary', () => {
+        it('Then the walk does not expand past the aged commit', async () => {
+          // Arrange — tip T is young enough to expand into its parent P; P
+          // is already below the total cutoff, so it is marked but never
+          // expanded, and grandparent G is never visited at all.
+          const epoch = 1_700_000_000;
+          const ctx = createMemoryContext();
+          const g = await writeCommit(ctx, [], epoch);
+          const p = await writeCommit(ctx, [g], epoch + 50);
+          const t = await writeCommit(ctx, [p], epoch + 150);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': t } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: g, identity: identityAt(epoch + 200) }),
+          ]);
+          const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
+
+          // Act
+          let result: ReflogResult;
+          let visited: ReadonlyArray<ObjectId>;
+          try {
+            result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${epoch + 100}`,
+              expireUnreachable: `@${epoch + 300}`,
+            });
+            visited = spy.mock.calls.map(([, id]) => id);
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(visited).toContain(t);
+          expect(visited).toContain(p);
+          expect(visited).not.toContain(g);
         });
       });
     });
