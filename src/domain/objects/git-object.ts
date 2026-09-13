@@ -13,6 +13,11 @@ import { parseTreeContent, serializeTreeContent } from './tree.js';
 
 export type GitObject = Blob | Tree | Commit | Tag;
 
+export interface ObjectContent {
+  readonly type: ObjectType;
+  readonly content: Uint8Array;
+}
+
 export function splitObject(rawBytes: Uint8Array): {
   readonly type: ObjectType;
   readonly content: Uint8Array;
@@ -33,6 +38,15 @@ export function splitObject(rawBytes: Uint8Array): {
 export function parseObject(id: ObjectId, rawBytes: Uint8Array, hash: HashConfig): GitObject {
   const { type, content } = splitObject(rawBytes);
 
+  return parseObjectContent(id, type, content, hash);
+}
+
+export function parseObjectContent(
+  id: ObjectId,
+  type: ObjectType,
+  content: Uint8Array,
+  hash: HashConfig,
+): GitObject {
   switch (type) {
     case 'blob':
       return parseBlobContent(id, content);

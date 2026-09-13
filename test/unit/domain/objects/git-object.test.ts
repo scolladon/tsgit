@@ -5,6 +5,7 @@ import type { Commit } from '../../../../src/domain/objects/commit.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
 import {
   parseObject,
+  parseObjectContent,
   serializeObject,
   splitObject,
 } from '../../../../src/domain/objects/git-object.js';
@@ -174,6 +175,113 @@ describe('git-object', () => {
                 }),
               }),
             );
+          },
+        );
+      });
+    });
+  });
+
+  describe('parseObjectContent', () => {
+    describe('Given a type and content for each ObjectType', () => {
+      describe('When calling parseObjectContent', () => {
+        it.each([
+          { label: 'a blob', raw: () => rawBlob('hello'), type: 'blob' as const },
+          {
+            label: 'a tree',
+            raw: () => rawTree(rawTreeEntry('100644', 'file.txt', new Uint8Array(20).fill(0xab))),
+            type: 'tree' as const,
+          },
+          {
+            label: 'a commit',
+            raw: () =>
+              rawCommit(
+                [
+                  `tree ${'b'.repeat(40)}`,
+                  'author A <a@a.com> 0 +0000',
+                  'committer A <a@a.com> 0 +0000',
+                  '',
+                  'msg',
+                ].join('\n'),
+              ),
+            type: 'commit' as const,
+          },
+          {
+            label: 'a tag',
+            raw: () =>
+              rawTag(
+                [
+                  `object ${'b'.repeat(40)}`,
+                  'type commit',
+                  'tag v1.0',
+                  'tagger A <a@a.com> 0 +0000',
+                  '',
+                  'tag msg',
+                ].join('\n'),
+              ),
+            type: 'tag' as const,
+          },
+        ])('Then returns the parsed $label', ({ raw, type }) => {
+          // Arrange
+          const sut = parseObjectContent;
+          const { content } = splitObject(raw());
+
+          // Act
+          const result = sut(DUMMY_ID, type, content, SHA1_CONFIG);
+
+          // Assert
+          expect(result.type).toBe(type);
+        });
+      });
+    });
+
+    describe('Given raw bytes split into type and content', () => {
+      describe('When calling parseObjectContent through splitObject vs calling parseObject directly', () => {
+        it.each([
+          { label: 'a blob', raw: () => rawBlob('hello') },
+          {
+            label: 'a tree',
+            raw: () => rawTree(rawTreeEntry('100644', 'file.txt', new Uint8Array(20).fill(0xab))),
+          },
+          {
+            label: 'a commit',
+            raw: () =>
+              rawCommit(
+                [
+                  `tree ${'b'.repeat(40)}`,
+                  'author A <a@a.com> 0 +0000',
+                  'committer A <a@a.com> 0 +0000',
+                  '',
+                  'msg',
+                ].join('\n'),
+              ),
+          },
+          {
+            label: 'a tag',
+            raw: () =>
+              rawTag(
+                [
+                  `object ${'b'.repeat(40)}`,
+                  'type commit',
+                  'tag v1.0',
+                  'tagger A <a@a.com> 0 +0000',
+                  '',
+                  'tag msg',
+                ].join('\n'),
+              ),
+          },
+        ])(
+          'Then parseObject($label) deep-equals parseObjectContent(...splitObject($label))',
+          ({ raw }) => {
+            // Arrange
+            const bytes = raw();
+            const { type, content } = splitObject(bytes);
+
+            // Act
+            const viaParseObject = parseObject(DUMMY_ID, bytes, SHA1_CONFIG);
+            const viaParseObjectContent = parseObjectContent(DUMMY_ID, type, content, SHA1_CONFIG);
+
+            // Assert
+            expect(viaParseObjectContent).toEqual(viaParseObject);
           },
         );
       });
