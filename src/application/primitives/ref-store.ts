@@ -26,12 +26,14 @@ import {
   serializeDirectRef,
   serializePackedRefs,
   serializeSymbolicRef,
+  validateRefName,
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { errorDataCode } from './internal/error-data-code.js';
+import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
   commonGitDir,
   logsDir,
@@ -400,7 +402,33 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /**
+   * `HEAD` through the single reader: a symlink whose link text names a ref
+   * is reported symbolic — matching git — WITHOUT ever dereferencing it; a
+   * regular file parses exactly as any other loose ref does; `unusable`
+   * folds to `missing` only for the `FILE_NOT_FOUND` cause, so a permission
+   * or I/O fault on `HEAD` surfaces to the caller instead of masquerading as
+   * an absent ref. `HEAD` is never packed, so this never falls through to
+   * `loadPackedRefs`.
+   */
+  async function resolveHeadDirect(): Promise<ResolveDirectResult> {
+    const head = await readHeadFile(ctx);
+    if (head.kind === 'symlink') {
+      const target = validateRefName(head.linkText.replace(/\\/g, '/'));
+      return { kind: 'symbolic', target };
+    }
+    if (head.kind === 'file') {
+      const parsed = parseLooseRef(head.content);
+      return parsed.type === 'symbolic'
+        ? { kind: 'symbolic', target: parsed.target }
+        : { kind: 'direct', id: parsed.target };
+    }
+    if (isFileNotFound(head.cause)) return { kind: 'missing' };
+    throw head.cause;
+  }
+
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
+    if (name === HEAD_NAME) return resolveHeadDirect();
     const looseContent = await readLooseContent(name);
     if (looseContent !== undefined) {
       const parsed = parseLooseRef(looseContent);
@@ -771,6 +799,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const path = looseRefPath(refDir(update.name), update.name);
     const content = TEXT_ENCODER.encode(serializeDirectRef(update.id));
     await atomicWriteRef(ctx, update.name, path, content);
+    if (update.name === HEAD_NAME) invalidateHeadSlot(ctx);
     await applyReflog(update.name, update.reflog);
   }
 
@@ -781,6 +810,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const path = looseRefPath(refDir(update.name), update.name);
     const content = TEXT_ENCODER.encode(serializeSymbolicRef(update.target));
     await atomicWriteRef(ctx, update.name, path, content);
+    if (update.name === HEAD_NAME) invalidateHeadSlot(ctx);
     await applyReflog(update.name, update.reflog);
   }
 

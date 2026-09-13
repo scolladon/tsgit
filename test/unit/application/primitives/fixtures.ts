@@ -332,6 +332,57 @@ export const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context
 });
 
 /**
+ * Synthesize a Node-shaped `lstat`/`openWithNoFollow` identity for ONE path
+ * on top of the memory adapter's real behaviour — the only way to reach the
+ * `ino !== 0` branch of the HEAD-slot reader under a test harness, since the
+ * memory adapter's own `lstat` always reports `ino: 0`. `identity` is a
+ * mutable handle a test can update between two calls to flip exactly one
+ * field (mtimeNs, ctimeNs, ino, or size) while holding the others fixed;
+ * `size` left `undefined` falls back to the real file's byte length so
+ * content still round-trips correctly by default.
+ */
+export interface NodeIdentityFixture {
+  readonly ctx: Context;
+  readonly identity: {
+    mtimeNs: bigint;
+    ctimeNs: bigint;
+    ino: number;
+    size: number | undefined;
+  };
+}
+
+export function withNodeIdentity(base: Context, path: string): NodeIdentityFixture {
+  const identity = {
+    mtimeNs: 1_000_000n,
+    ctimeNs: 1_000_000n,
+    ino: 7,
+    size: undefined as number | undefined,
+  };
+  const shape = (stat: FileStat): FileStat => ({
+    ...stat,
+    mtimeNs: identity.mtimeNs,
+    ctimeNs: identity.ctimeNs,
+    ino: identity.ino,
+    size: identity.size ?? stat.size,
+  });
+  const ctx: Context = {
+    ...base,
+    fs: {
+      ...base.fs,
+      lstat: async (p: string): Promise<FileStat> => {
+        const stat = await base.fs.lstat(p);
+        return p === path ? shape(stat) : stat;
+      },
+      openWithNoFollow: async (p, mode) => {
+        const handle = await base.fs.openWithNoFollow(p, mode);
+        return p === path ? { ...handle, stat: async () => shape(await handle.stat()) } : handle;
+      },
+    },
+  };
+  return { ctx, identity };
+}
+
+/**
  * Instrument a Context by wrapping its fs with call-tracking. Returns the wrapped
  * context and a `calls()` accessor that returns the ordered list of fs operations.
  */

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { assertRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import {
   assertRenamableTrackingRef,
   createRefStore,
@@ -8,7 +9,7 @@ import {
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -878,6 +879,145 @@ describe('ref-store', () => {
         // Assert
         const head = result.find((entry) => entry.name === 'HEAD');
         expect(head?.value).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+      });
+    });
+  });
+
+  describe('Given a SYMLINKED HEAD whose link text names a ref', () => {
+    describe('When resolveDirect(HEAD) runs', () => {
+      it('Then it reports symbolic, matching git, without dereferencing the link', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink('refs/heads/main', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+      });
+    });
+  });
+
+  describe('Given a DANGLING symlinked HEAD (its target ref does not exist)', () => {
+    describe('When resolveDirect(HEAD) runs', () => {
+      it('Then it still reports symbolic — judged by link text, not target existence', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink('refs/heads/ghost', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/ghost' });
+      });
+    });
+  });
+
+  describe('Given a gate has already validated HEAD on this Context', () => {
+    describe('When resolveDirect(HEAD) runs afterward', () => {
+      it("Then it issues no readUtf8 at all — the store shares the gate's read", async () => {
+        // Arrange — the gate must run against the SAME Context object the
+        // store resolves against: the slot is keyed on Context identity, so
+        // a freshly-derived instrumented Context would never see it.
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+        const { ctx, calls } = instrumentedContext(base);
+        await assertRepository(ctx);
+        const sut = createRefStore(ctx);
+        const before = calls().length;
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+        const duringCall = calls().slice(before);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+        expect(duringCall).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a primitive-only sequence that never calls the gate', () => {
+    describe('When resolveDirect(HEAD) runs twice in a row', () => {
+      it('Then each call re-validates by lstat — neither trusts the other', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.resolveDirect('HEAD' as RefName);
+        const firstLstats = calls().filter(
+          (c) => c.method === 'lstat' && c.path === '/repo/.git/HEAD',
+        ).length;
+        await sut.resolveDirect('HEAD' as RefName);
+        const totalLstats = calls().filter(
+          (c) => c.method === 'lstat' && c.path === '/repo/.git/HEAD',
+        ).length;
+
+        // Assert
+        expect(firstLstats).toBe(1);
+        expect(totalLstats).toBe(2);
+      });
+    });
+  });
+
+  describe('Given HEAD is unreadable (EACCES-equivalent) at the lstat probe', () => {
+    describe('When resolveDirect(HEAD) runs', () => {
+      it('Then it rethrows PERMISSION_DENIED rather than collapsing to missing', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+        const target = '/repo/.git/HEAD';
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            lstat: async (path: string) => {
+              if (path === target) throw permissionDenied(path);
+              return base.fs.lstat(path);
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('HEAD' as RefName);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given a trusted HEAD slot from a prior gate check', () => {
+    describe('When applyRefUpdates sets HEAD symbolically', () => {
+      it('Then the slot is invalidated — a later resolveDirect(HEAD) observes the new target', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+        await assertRepository(ctx);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'setSymbolic', name: 'HEAD' as RefName, target: 'refs/heads/other' as RefName },
+        ]);
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/other' });
       });
     });
   });

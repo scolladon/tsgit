@@ -401,24 +401,30 @@ describe('internal/repo-state', () => {
       });
     });
 
-    describe('Given a repository whose HEAD lives only in the backend, not as a loose file', () => {
+    describe('Given a packed-refs entry for HEAD but no loose HEAD file', () => {
       describe('When readHeadRaw is called', () => {
-        it('Then it returns the backend answer', async () => {
-          // Arrange — no loose HEAD file; only a packed-refs entry answers
-          // for it, proving readHeadRaw defers to the general ref-store
-          // lookup (loose-then-packed) rather than a hardcoded single-file
-          // read of `<gitDir>/HEAD`.
+        it('Then it throws REF_NOT_FOUND — HEAD is never packed, so it is never consulted', async () => {
+          // Arrange — real git never writes HEAD to packed-refs; the single
+          // HEAD reader reads `<gitDir>/HEAD` exclusively and never falls
+          // through to the packed-refs lookup every other ref name uses.
           const ctx = createMemoryContext();
           const oid = '0123456789abcdef0123456789abcdef01234567';
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/packed-refs`, `${oid} HEAD\n`);
 
           // Act
-          const result = await readHeadRaw(ctx);
+          let caught: unknown;
+          try {
+            await readHeadRaw(ctx);
+          } catch (err) {
+            caught = err;
+          }
 
           // Assert
-          expect(result.kind).toBe('direct');
-          if (result.kind === 'direct') {
-            expect(result.id).toBe(oid);
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('REF_NOT_FOUND');
+          if (data.code === 'REF_NOT_FOUND') {
+            expect(data.name).toBe('HEAD');
           }
         });
       });

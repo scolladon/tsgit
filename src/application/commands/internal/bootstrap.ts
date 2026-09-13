@@ -1,6 +1,7 @@
 import type { FilePath, RefName } from '../../../domain/objects/object-id.js';
 import { validateRefName } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
+import { invalidateHeadSlot } from '../../primitives/internal/head-file.js';
 
 interface BootstrapOptions {
   readonly initialBranch: string;
@@ -75,6 +76,7 @@ export const bootstrapRepository = async (
     // no `[extensions]` — tsgit must never create a reftable repository by
     // accident and trip its own backend.
     await ctx.fs.writeUtf8(`${gitDir}/HEAD`, `ref: refs/heads/${branch}\n`);
+    invalidateHeadSlot(ctx);
     await ctx.fs.writeUtf8(`${gitDir}/config`, renderConfig(opts.bare, opts.objectFormat));
     await ctx.fs.mkdir(`${gitDir}/refs/heads`);
     await ctx.fs.mkdir(`${gitDir}/refs/tags`);

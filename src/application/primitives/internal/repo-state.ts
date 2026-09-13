@@ -42,6 +42,7 @@ import {
   type ValuelessEntry,
 } from '../config-read.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
+import { validateHead } from './head-file.js';
 
 const HEAD_REF = RefName.from('HEAD');
 
@@ -117,29 +118,20 @@ const assertDiscoveryAndRoot = async (ctx: Context): Promise<FilePath> => {
  * `HEAD` is judged by its LINK TEXT — `refs/…` qualifies even when dangling —
  * and a regular file by its content. Keeping the two tiers on one rule is
  * what stops a directory from passing discovery and then refusing every
- * command. A single `lstat` discriminates which follow-up read to make —
- * `readlink` for a symlink, `readUtf8` for anything else — so at most ONE
- * content read ever runs, down from the two blind attempts (`readlink`
- * always tried first, `readUtf8` as a fallback) this used to make. The catch
- * arms deliberately collapse EVERY read failure (absent, EACCES, EISDIR,
- * EIO) into "no usable head": git's own `validate_headref` returns the same
- * -1 for a failed `open`, so the refusal outcome matches regardless of the
- * failure class.
+ * command. The read itself is `validateHead`'s job (discovery-tier: this
+ * runs BEFORE a ref backend exists, so it stays a raw files-layout probe; a
+ * reftable repository satisfies it through the stub file exactly as git
+ * intends) — this predicate only interprets the shape it returns, and an
+ * `unusable` result (absent, EACCES, EISDIR, EIO, …) always collapses to
+ * "no usable head": git's own `validate_headref` returns the same -1 for a
+ * failed `open`, so the refusal outcome matches regardless of the failure
+ * class.
  */
 const hasUsableHead = async (ctx: Context): Promise<boolean> => {
-  const headPath = `${ctx.layout.gitDir}/HEAD`;
-  // Verdict: discovery-tier — this runs BEFORE a ref backend exists (it is
-  // what decides whether one can be built at all), so it stays a raw
-  // files-layout probe; a reftable repository satisfies it through the stub
-  // file exactly as git intends.
-  const stat = await ctx.fs.lstat(headPath).catch(() => undefined);
-  if (stat === undefined) return false;
-  if (stat.isSymbolicLink) {
-    const linkText = await ctx.fs.readlink(headPath).catch(() => undefined);
-    return linkText !== undefined && isRefsLinkText(linkText);
-  }
-  const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
-  return head !== undefined && isValidHeadContent(head);
+  const head = await validateHead(ctx);
+  if (head.kind === 'symlink') return isRefsLinkText(head.linkText);
+  if (head.kind === 'file') return isValidHeadContent(head.content);
+  return false;
 };
 
 const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile'];

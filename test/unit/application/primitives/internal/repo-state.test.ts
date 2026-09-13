@@ -14,6 +14,7 @@ import { updateCoreConfig } from '../../../../../src/application/primitives/upda
 import { permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import type { FileStat } from '../../../../../src/ports/file-system.js';
+import { instrumentedContext, withNodeIdentity } from '../fixtures.js';
 
 const headPath = (ctx: Context): string => `${ctx.layout.gitDir}/HEAD`;
 
@@ -338,6 +339,29 @@ describe('primitives/internal/repo-state', () => {
 
           // Assert
           expect(caught.data.code).toBe('NOT_A_REPOSITORY');
+        });
+      });
+    });
+
+    describe('Given a Node-shaped (ino !== 0) HEAD, unchanged since the first gate', () => {
+      describe('When a second assertRepository runs on the same Context', () => {
+        it('Then it resolves using lstat only — no readlink or readUtf8', async () => {
+          // Arrange
+          const base = await seededCtx();
+          const { ctx: proxied } = withNodeIdentity(base, headPath(base));
+          const { ctx, calls } = instrumentedContext(proxied);
+          await assertRepository(ctx);
+          const before = calls().length;
+
+          // Act
+          const result = await assertRepository(ctx);
+          const duringSecondCall = calls().slice(before);
+
+          // Assert
+          expect(result).toBe(ctx.layout.workDir);
+          expect(duringSecondCall.filter((c) => c.path === headPath(ctx))).toEqual([
+            { method: 'lstat', path: headPath(ctx) },
+          ]);
         });
       });
     });

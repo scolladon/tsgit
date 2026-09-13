@@ -956,7 +956,10 @@ describe('maintenance', () => {
         // the main worktree (covered by `collectRetentionRoots`'s own direct
         // calls); without the guard, HEAD would be resolved once more on
         // top of the operational-repository pre-check and `addRefRoots`'s
-        // own resolution (2 reads total on the real code path).
+        // own resolution. The single HEAD reader now serves `addRefRoots`'s
+        // resolution from the pre-check's trusted slot with zero further
+        // I/O, so ONE read total is the real code path's floor — the guard
+        // still exists to stop `addMainWorktreeRoots` adding a second.
         const ctx = await seedOneCommit();
         const headPath = `${ctx.layout.gitDir}/HEAD`;
         const headReadPaths: string[] = [];
@@ -971,7 +974,7 @@ describe('maintenance', () => {
         await sut(ctx, { tasks: ['gc'] });
 
         // Assert
-        expect(headReadPaths.length).toBe(2);
+        expect(headReadPaths.length).toBe(1);
       });
     });
   });
