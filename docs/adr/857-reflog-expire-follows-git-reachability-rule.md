@@ -7,6 +7,17 @@ supersedes:
 ---
 # 857 — `reflog expire` follows git's reachability rule
 
+> **Correction (2026-09-13).** This record's first draft stated that the mark walk is bounded at
+> `expire_total` outright — "an old commit is reachable only if it is itself on the frontier" — and
+> that `HEAD` marks from "every tip". Both misread `reflog.c`. The bound is laziness that git drops
+> on the first miss (`mark_limit = 0`, re-walk to the root), and `HEAD`'s tip set is every ref under
+> `refs/`, never `HEAD` itself. Implemented as first written, tsgit expired reflog entries git keeps
+> (probe: git kept 3, tsgit kept 1) on the default 90/30-day clocks, and `gc` runs this expire — so
+> reflog bytes and subsequently pruned objects both diverged. Two review dimensions caught it
+> independently with real-git probes; the R1-R7 matrix could not, because every case used
+> `never`/`now` or a parentless frontier commit. The Context and Decision above are corrected; the
+> decision itself — follow git's model — is unchanged.
+
 - **Status:** accepted
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D8, DC-7) · **Supersedes/Refines:** supersedes ADR-064 in scope
@@ -23,8 +34,10 @@ ways:
 - Reachability is measured from **the ref's own tip** (`UE_NORMAL`); every tip is used only for
   `HEAD` (`UE_HEAD`), and a log whose ref does not resolve to a commit expires by clock alone
   (`UE_ALWAYS`).
-- The mark walk is **bounded** at `expire_total`: commits older than that are kept as a frontier
-  and never expanded, so an old commit is reachable only if it is itself on the frontier.
+- The mark walk starts **bounded** at `expire_total`, but the bound is an optimisation, not the
+  rule: on the first miss `unreachable()` sets `mark_limit = 0`, clears `REACHABLE` across the
+  mark list and re-walks the leftover frontier down to the root. Git's verdict is therefore exact
+  full-ancestry reachability; the bound only lets it stop early when it already has an answer.
 
 The measured divergence: on `refs/heads/main` at tip A, with `A→B` in its log and B reachable only
 from `side`, `--expire=never --expire-unreachable=now` makes git keep one entry and tsgit keep
@@ -50,13 +63,16 @@ against 30 days — the two are never equal, so the skip alone would buy nothing
 ## Decision
 
 **Option 1.** `reflog expire` implements git's model. The expiry kind is resolved per ref:
-`HEAD` marks from every tip; another ref peels its own tip to a commit and marks from that alone;
+`HEAD` marks from every ref tip under `refs/` — `HEAD` itself is never pushed as a tip; another
+ref peels its own tip to a commit and marks from that alone;
 a ref that does not resolve to a commit, or a run where the unreachable cutoff is not later than
 the total cutoff, expires by clock alone with no walk. An entry expires when its timestamp is
 below the total cutoff, or when it is below the unreachable cutoff and either its old or its new
 object id is unreachable — a null id or a non-commit counting as reachable, so it is kept. The
-mark walk is lazy and date-bounded, expanding a commit only while its committer date is at or
-above the total cutoff and extending from the frontier before answering a query.
+mark walk is lazy: it expands a commit while its committer date is at or above the total cutoff
+and keeps older commits as an unexpanded frontier, but on the first miss it drops the bound,
+un-marks the leftover frontier and expands it to the root — so the answer is exact full-ancestry
+reachability, as git's is, and the date bound only avoids work when the answer arrives early.
 
 tsgit's existing cutoff resolution already maps `never` and `all`/`now` to the infinities that
 make git's `expire_unreachable <= expire_total` comparison behave identically, so no cutoff
