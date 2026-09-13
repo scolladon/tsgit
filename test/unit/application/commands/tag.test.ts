@@ -153,9 +153,15 @@ describe('tag', () => {
           caught = err;
         }
 
-        // Assert — the unresolvable target reports FIRST, without the class
+        // Assert — the unresolvable target reports FIRST, without the class,
+        // and names the target that failed rather than the tag being created.
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+        const data = (caught as TsgitError).data as {
+          readonly code: string;
+          readonly name: string;
+        };
+        expect(data.code).toBe('REF_NOT_FOUND');
+        expect(data.name).toBe('nope-unresolved');
       });
     });
 

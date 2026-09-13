@@ -470,21 +470,25 @@ describe('readHeadTree', () => {
     });
   });
 
-  describe('Given the default deltaCacheMaxBytes budget, and a REAL synthetic HEAD tree of 50,000 tracked files (14-char paths)', () => {
-    describe('When sizing it through flatTreeByteSize against the FlatTree byte valve', () => {
+  describe('Given the default deltaCacheMaxBytes budget, and REAL synthetic HEAD trees of 50,000 tracked files (14-char paths)', () => {
+    /** A tree built from actual Map entries at the given oid hex width, so
+     *  {@link flatTreeByteSize} is exercised for real rather than restated:
+     *  a future retune of its per-entry overhead changes what it returns for
+     *  the same tree, and these rows fail instead of shipping a dead cache. */
+    const syntheticTreeOf = (entryCount: number, hexLength: number): FlatTree => {
+      const pathLength = 14;
+      const entries = new Map<FilePath, FlatTreeEntry>();
+      for (let i = 0; i < entryCount; i += 1) {
+        const path = i.toString().padStart(pathLength, '0') as FilePath;
+        entries.set(path, { id: 'a'.repeat(hexLength) as ObjectId, mode: FILE_MODE.REGULAR });
+      }
+      return { entries };
+    };
+
+    describe('When sizing a sha1 tree through flatTreeByteSize against the FlatTree byte valve', () => {
       it('Then the real sizer output never exceeds the valve, and such a tree is admitted', () => {
-        // Arrange — a synthetic tree built from actual Map entries, sized
-        // through the REAL `flatTreeByteSize`, not a declared literal: a
-        // future retune of FLAT_TREE_ENTRY_OVERHEAD_BYTES changes what this
-        // sizer returns for the same tree, so it can actually fail here.
-        const entryCount = 50_000;
-        const pathLength = 14;
-        const entries = new Map<FilePath, FlatTreeEntry>();
-        for (let i = 0; i < entryCount; i += 1) {
-          const path = i.toString().padStart(pathLength, '0') as FilePath;
-          entries.set(path, { id: 'a'.repeat(40) as ObjectId, mode: FILE_MODE.REGULAR });
-        }
-        const syntheticTree: FlatTree = { entries };
+        // Arrange
+        const syntheticTree = syntheticTreeOf(50_000, 40);
         const ctx = createMemoryContext();
         const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
         const cache = storage.createLruCache<FlatTree>(valve, FLAT_TREE_CACHE_MAX_ENTRIES);
@@ -494,10 +498,34 @@ describe('readHeadTree', () => {
         // one of the assertions below instead of shipping a dead cache.
         const admitted = cache.set('typical', syntheticTree, realTreeBytes);
 
-        // Assert — literal at the default, decoupled from the production formula.
+        // Assert — the valve literal is pinned on purpose; the tree size is
+        // deliberately COUPLED to the production sizer, never restated.
         expect(valve).toBe(8 * 1024 * 1024);
         expect(realTreeBytes).toBeLessThanOrEqual(valve);
         expect(admitted).toBe(true);
+      });
+    });
+
+    describe('When sizing the same tree at sha256 oid width', () => {
+      it('Then it overruns the valve and is refused — the admitted width is narrower at sha256', () => {
+        // Arrange — the ratified default is a sha1 figure. At 64-hex oids
+        // the same file count sizes 24 bytes per entry larger, which the
+        // 8 MiB valve no longer admits; the row below records where the
+        // real sha256 boundary sits so nobody re-derives it from the sha1
+        // claim.
+        const ctx = createMemoryContext();
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+        const cache = storage.createLruCache<FlatTree>(valve, FLAT_TREE_CACHE_MAX_ENTRIES);
+        const overrunBytes = flatTreeByteSize(syntheticTreeOf(50_000, 64));
+        const atBoundaryBytes = flatTreeByteSize(syntheticTreeOf(44_620, 64));
+
+        // Act
+        const admitted = cache.set('sha256', syntheticTreeOf(50_000, 64), overrunBytes);
+
+        // Assert
+        expect(overrunBytes).toBeGreaterThan(valve);
+        expect(admitted).toBe(false);
+        expect(atBoundaryBytes).toBeLessThanOrEqual(valve);
       });
     });
   });

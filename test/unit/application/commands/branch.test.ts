@@ -1156,8 +1156,12 @@ describe('branch', () => {
           },
         };
 
-        // Act + Assert
+        // Act + Assert — the read count is the only thing separating this
+        // from the early-probe test, which refuses with the same code: two
+        // reads means the probe found nothing and the CAS re-read found the
+        // ref, so the catch's positive arm is what answered.
         await expectError(() => branchCreate(racyCtx, { name: 'race' }), 'BRANCH_EXISTS');
+        expect(reads).toBe(2);
       });
     });
   });

@@ -48,9 +48,11 @@ const registryMemos = new WeakMap<Context['session'], PromiseMemo<PackRegistry>>
 
 /**
  * The settled registry for a session that has already resolved once — the
- * synchronous surface `refreshPackRegistry` needs. A registry still under
- * construction has not scanned the pack directory yet, so there is nothing
- * for a concurrent `refresh()` to do; it simply misses.
+ * synchronous surface both `refreshPackRegistry` and `peekPackRegistry`
+ * read, the latter on every warm object read, so this is a hot-path map and
+ * not merely a refresh hook. A registry still under construction has not
+ * scanned the pack directory yet, so there is nothing for a concurrent
+ * `refresh()` to do and nothing for a peek to serve; both simply miss.
  */
 const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
 

@@ -95,9 +95,16 @@ export const memoMaxEntries = (ctx: Context): number =>
 /**
  * Share of `ctx.deltaCache`'s own byte budget the FlatTree cache gets by
  * default when the caller supplies no explicit `flatTreeCacheMaxBytes` — 8
- * MiB at the 16 MiB default, admitting a ~50,000-tracked-file HEAD (the
- * valve-ordering invariant measures that headroom through `flatTreeByteSize`
- * itself, not through a restated constant).
+ * MiB at the 16 MiB default, admitting a ~50,000-tracked-file HEAD **at
+ * sha1** (the valve-ordering invariant measures that headroom through
+ * `flatTreeByteSize` itself, not through a restated constant).
+ *
+ * That figure is hash-width-dependent, and this ratified share does not
+ * vary by width: 64-hex oids cost 24 bytes more per entry, so the same
+ * 8 MiB admits only ~44,600 tracked files on a sha256 repository, and a
+ * 50,000-file sha256 HEAD is refused outright rather than cached. Anyone
+ * resizing this must re-derive the number at the width they care about —
+ * the sha1 figure is not a floor.
  */
 const FLAT_TREE_DEFAULT_SHARE = 0.5;
 

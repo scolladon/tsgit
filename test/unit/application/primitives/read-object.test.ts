@@ -651,18 +651,21 @@ describe('peekPackRegistry', () => {
 
   describe('Given a session warmed by a prior getPackRegistry call', () => {
     describe('When checked', () => {
-      it('Then returns the SAME registry getPackRegistry resolves to, with zero further construction', async () => {
-        // Arrange
+      it('Then returns the SAME registry getPackRegistry resolves to, built exactly once', async () => {
+        // Arrange — the spy is installed BEFORE the warming call, so its
+        // count covers the warm-up too: one construction for the pair pins
+        // single-flight, where a spy installed afterwards could only ever
+        // observe the zero calls a synchronous peek makes by construction.
         const ctx = await buildSeededContext();
-        const warm = await getPackRegistry(ctx);
         const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
 
         // Act
+        const warm = await getPackRegistry(ctx);
         const result = peekPackRegistry(ctx);
 
         // Assert
         expect(result).toBe(warm);
-        expect(spy).not.toHaveBeenCalled();
+        expect(spy).toHaveBeenCalledTimes(1);
         spy.mockRestore();
       });
     });
