@@ -2173,5 +2173,106 @@ describe('reflog command', () => {
         });
       });
     });
+
+    describe('Given more aged commits left unexpanded than a spread call can pass as arguments', () => {
+      describe('When the first miss drops the bound and re-queues every one of them', () => {
+        it('Then the walk resumes without overflowing the call stack and still finds the deeper commit', async () => {
+          // Arrange — one tip fanning out to more aged parents than V8's
+          // spread-call argument cap (~10^5), every one of them below the
+          // total cutoff, so the bounded pass marks all of them and expands
+          // none. Only the first is a child of `deep`, which the entry
+          // names. The aged parents are synthetic and share one meta:
+          // `readCommitMeta` is stubbed, so the whole graph costs three real
+          // objects rather than 125,000.
+          const epoch = 1_700_000_000;
+          const leftoverCount = 125_000;
+          const ctx = createMemoryContext();
+          const deep = await writeCommit(ctx, [], epoch);
+          const tip = await writeCommit(ctx, [], epoch + 150);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: deep, identity: identityAt(epoch + 200) }),
+          ]);
+          const aged = Array.from(
+            { length: leftoverCount },
+            (_unused, index) => index.toString().padStart(40, '0') as ObjectId,
+          );
+          const metaOf = (
+            parents: ReadonlyArray<ObjectId>,
+            committerDate: number,
+          ): readCommitMetaMod.CommitMeta => ({
+            parents,
+            tree: TREE_OID,
+            committerDate,
+            generation: readCommitMetaMod.GENERATION_INFINITY,
+          });
+          const agedMeta = metaOf([], epoch + 50);
+          const special = new Map<ObjectId, readCommitMetaMod.CommitMeta>([
+            [tip, metaOf(aged, epoch + 150)],
+            [aged[0] as ObjectId, metaOf([deep], epoch + 50)],
+            [deep, metaOf([], epoch)],
+          ]);
+          const spy = vi
+            .spyOn(readCommitMetaMod, 'readCommitMeta')
+            .mockImplementation(async (_metaCtx, id) => special.get(id) ?? agedMeta);
+
+          // Act
+          let result: ReflogResult;
+          try {
+            result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${epoch + 100}`,
+              expireUnreachable: `@${epoch + 300}`,
+            });
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert — reaching a verdict at all proves the re-queue survived
+          // the leftover size; keeping the entry proves it re-queued those
+          // aged commits rather than discarding them.
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+    });
+
+    describe('Given a missing ancestor named by two separate parent links', () => {
+      describe('When expire expands both of its children', () => {
+        it('Then the failed lookup is remembered and never retried', async () => {
+          // Arrange — `missing` is a parent of both `a` and `b`, so it is
+          // queued onto the frontier twice; it is never marked (a parse
+          // failure proves nothing about reachability), so only a record of
+          // the failure itself can stop the second pop from re-reading it.
+          // The entry names an island commit, forcing the walk to exhaust.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const missing = 'e'.repeat(40) as ObjectId;
+          const a = await writeCommit(ctx, [missing], now - 10 * DAY);
+          const b = await writeCommit(ctx, [missing], now - 11 * DAY);
+          const tip = await writeCommit(ctx, [a, b], now);
+          const island = await writeCommit(ctx, [], now - 50 * DAY);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: ZERO_OID, newId: island, identity: identityAt(now - 45 * DAY) }),
+          ]);
+          const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
+
+          // Act
+          let result: ReflogResult;
+          let missingReads: number;
+          try {
+            result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            missingReads = spy.mock.calls.filter(([, id]) => id === missing).length;
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(missingReads).toBe(1);
+        });
+      });
+    });
   });
 });

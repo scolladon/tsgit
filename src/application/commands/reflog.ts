@@ -247,15 +247,18 @@ const expireKindFor = async (
 };
 
 /** Mark-and-sweep state for one ref's walk: `marked` commits are confirmed
- *  reachable; `frontier` holds ids reached but not yet popped; `leftover`
- *  holds marked commits whose expansion the total-cutoff bound skipped, kept
- *  so the bound can be dropped and retried on a miss — git's
- *  `mark_reachable`/`unreachable()` pair, where the date bound is laziness
- *  only, never a permanent verdict. Mutable by design — the walk is driven
- *  incrementally, one query at a time, and shared across every entry of the
- *  same ref. */
+ *  reachable; `failed` holds ids a gentle parse could not resolve, so a
+ *  second parent link naming one does not re-read it (never `marked` — a
+ *  parse failure proves nothing about reachability); `frontier` holds ids
+ *  reached but not yet popped; `leftover` holds marked commits whose
+ *  expansion the total-cutoff bound skipped, kept so the bound can be
+ *  dropped and retried on a miss — git's `mark_reachable`/`unreachable()`
+ *  pair, where the date bound is laziness only, never a permanent verdict.
+ *  Mutable by design — the walk is driven incrementally, one query at a
+ *  time, and shared across every entry of the same ref. */
 interface ReachabilityState {
   readonly marked: Set<ObjectId>;
+  readonly failed: Set<ObjectId>;
   readonly frontier: ObjectId[];
   readonly leftover: ObjectId[];
   head: number;
@@ -264,6 +267,7 @@ interface ReachabilityState {
 
 const createReachability = (tips: ReadonlyArray<ObjectId>): ReachabilityState => ({
   marked: new Set(),
+  failed: new Set(),
   frontier: [...tips],
   leftover: [],
   head: 0,
@@ -299,9 +303,12 @@ const expandFrontier = async (
   if (state.head >= state.frontier.length) return false;
   const id = state.frontier[state.head] as ObjectId;
   state.head += 1;
-  if (state.marked.has(id)) return true;
+  if (state.marked.has(id) || state.failed.has(id)) return true;
   const meta = await readAncestorMeta(ctx, id);
-  if (meta === undefined) return true;
+  if (meta === undefined) {
+    state.failed.add(id);
+    return true;
+  }
   state.marked.add(id);
   if (state.boundActive && meta.committerDate < expireCut) {
     state.leftover.push(id);
@@ -323,8 +330,15 @@ const expandFrontier = async (
 const dropBoundAndRetry = (state: ReachabilityState): boolean => {
   if (!state.boundActive || state.leftover.length === 0) return false;
   state.boundActive = false;
-  for (const id of state.leftover) state.marked.delete(id);
-  state.frontier.push(...state.leftover);
+  // Loop form, not `frontier.push(...leftover)` — same reason `ref-store.ts`
+  // spells out for its own ref-name accumulation: V8 caps spread-call
+  // argument counts (~10^5), and `leftover` holds one entry per aged commit
+  // reached from every tip the repository has, which a mirror's unpacked
+  // `refs/pull/*` space alone can push past that cap.
+  for (const id of state.leftover) {
+    state.marked.delete(id);
+    state.frontier.push(id);
+  }
   state.leftover.length = 0;
   return true;
 };
