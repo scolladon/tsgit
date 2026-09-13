@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConcurrencyLimits } from '../../../src/domain/concurrency/derive-limits.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
+import type { ObjectContent } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
 import {
@@ -29,7 +30,7 @@ const sentinelLayout: RepositoryLayout = {
 };
 const sentinelRuntime = 'node' as const;
 const sentinelHashConfig = SHA1_CONFIG;
-const sentinelDeltaCache = createLruCache<Uint8Array>(1024);
+const sentinelDeltaCache = createLruCache<ObjectContent>(1024);
 
 describe('Context', () => {
   describe('Given distinct sentinel ports', () => {

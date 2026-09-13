@@ -19,11 +19,11 @@ import type { DeltaBaseCacheEntry, PackRegistry } from '../pack-registry.js';
 
 /**
  * Parsed-commit-and-tag memo. `resolveObject` re-parses on every read
- * even when `resolveObjectBytesWithDepth` already served the raw bytes from
+ * even when `resolveObjectContentWithDepth` already served the content from
  * `ctx.deltaCache` — the memo skips that redundant re-parse for the two
  * object types whose parse cost is non-trivial (blob/tree already return
- * near-raw data from `parseObject`). It sits strictly AFTER
- * `resolveObjectBytesWithDepth`, so every verifyHash/maxBytes check that call already
+ * near-raw data from `parseObjectContent`). It sits strictly AFTER
+ * `resolveObjectContentWithDepth`, so every verifyHash/maxBytes check that call already
  * performs still fires on every read: the memo only ever skips
  * reconstructing an object the bytes already proved identical, never a
  * safety check.
@@ -299,6 +299,18 @@ export const DELTA_BASE_CHAIN_INSERT_FRACTION = 0.25;
  * (already cached) or a REF_DELTA base (resolved by id, not by this pack's
  * offset).
  */
+/**
+ * Fixed per-entry overhead `ctx.deltaCache`'s own byte accounting adds beyond
+ * the raw content length: the `ObjectId` key, the LRU's own node object, and
+ * the `{ type, content }` wrapper. Deliberately NOT
+ * {@link DELTA_BASE_CACHE_ENTRY_OVERHEAD_BYTES}'s 200 B term —
+ * `deltaCacheMaxBytes` is a public dial whose documented capacity consumers
+ * already tuned against; charging the delta-base cache's heavier per-entry
+ * term here would evict a walk that fits today under a fixture too small to
+ * expose the cliff.
+ */
+export const OBJECT_CACHE_ENTRY_OVERHEAD_BYTES = 32;
+
 export function cacheDeltaBase(
   ctx: Context,
   registry: PackRegistry,

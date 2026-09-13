@@ -199,12 +199,13 @@ describe('readObject', () => {
 
     describe('Given a loose blob whose declared header size differs from its actual content length', () => {
       describe('When readObject is called with maxBytes', () => {
-        it('Then the cap measures ACTUAL content bytes (mutation hardening for)', async () => {
+        it('Then it throws INVALID_OBJECT_HEADER before the cap ever runs (a size lie can never bypass it)', async () => {
           // Arrange — forge a loose object whose <type> <size>\0 header lies
-          // about its payload size. The cap MUST measure the inflated body's
-          // actual length, not the declared header value — otherwise an
-          // adversary can declare 1 byte and ship 10 GiB without tripping the
-          // cap.
+          // about its payload size. `splitObject` validates header size
+          // against actual content length on every loose read, ahead of the
+          // maxBytes cap — so an adversary declaring 1 byte and shipping 8
+          // is refused at header validation, never reaching a cap that could
+          // (wrongly) trust the declared size.
           const ctx = await buildSeededContext();
           const fakeId = 'a'.repeat(40) as ObjectId;
           const { computeLooseObjectPath } = await import(
@@ -217,19 +218,18 @@ describe('readObject', () => {
             compressed,
           );
 
-          // Act + Assert — cap is 4. Declared size (1) ≤ 4 would pass a
-          // declared-size cap; actual content is 8 > 4 → must reject.
+          // Act + Assert — cap is 4 (irrelevant: the header/content
+          // consistency check refuses first regardless of its value).
           try {
             await readObject(ctx, fakeId, { maxBytes: 4, verifyHash: false });
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
-            expect(data.code).toBe('OBJECT_TOO_LARGE');
-            if (data.code !== 'OBJECT_TOO_LARGE') {
-              expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+            expect(data.code).toBe('INVALID_OBJECT_HEADER');
+            if (data.code !== 'INVALID_OBJECT_HEADER') {
+              expect.fail(`expected INVALID_OBJECT_HEADER, got ${data.code}`);
             }
-            expect(data.actualSize).toBe(8);
-            expect(data.limit).toBe(4);
+            expect(data.reason).toBe('size mismatch: header says 1, actual content is 8');
           }
         });
       });
@@ -612,6 +612,23 @@ describe('readRawObject', () => {
         // Assert
         expect(result.type).toBe('blob');
         expect(result.content).toEqual(blob.content);
+      });
+    });
+  });
+
+  describe('Given a seeded blob', () => {
+    describe('When readRawObject is called', () => {
+      it('Then the result carries no bytes key', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+        // Act
+        const result = await readRawObject(ctx, id);
+
+        // Assert
+        expect('bytes' in result).toBe(false);
       });
     });
   });

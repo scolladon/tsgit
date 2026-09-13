@@ -1,6 +1,5 @@
 import { TsgitError } from '../../domain/error.js';
 import { objectNotFound } from '../../domain/objects/error.js';
-import { splitObject } from '../../domain/objects/git-object.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
   type OfsPackEntryHeader,
@@ -23,7 +22,7 @@ import {
   ofsDeltaBaseOffset,
   readEntryHeaderWithChunk,
   resolveObject,
-  resolveObjectBytesWithDepth,
+  resolveObjectContentWithDepth,
 } from './object-resolver.js';
 import {
   createPackRegistry,
@@ -185,7 +184,7 @@ export async function readRawObject(
   const verifyHash = options?.verifyHash ?? false;
   const registry = await getPackRegistry(ctx);
   return withLazyFetchRetry(ctx, id, registry, async () => {
-    const resolved = await resolveObjectBytesWithDepth(
+    const { type, content } = await resolveObjectContentWithDepth(
       ctx,
       registry,
       id,
@@ -193,7 +192,7 @@ export async function readRawObject(
       options?.maxBytes,
       0,
     );
-    return splitObject(resolved.bytes);
+    return { type, content };
   });
 }
 

@@ -249,14 +249,14 @@ describe('createMemoryContext', () => {
         const sut = createMemoryContext({ deltaCacheMaxEntries: 2, deltaCacheMaxBytes: 1_000_000 });
 
         // Act
-        sut.deltaCache.set('a', new Uint8Array([1]), 1);
-        sut.deltaCache.set('b', new Uint8Array([2]), 1);
-        sut.deltaCache.set('c', new Uint8Array([3]), 1);
+        sut.deltaCache.set('a', { type: 'blob', content: new Uint8Array([1]) }, 1);
+        sut.deltaCache.set('b', { type: 'blob', content: new Uint8Array([2]) }, 1);
+        sut.deltaCache.set('c', { type: 'blob', content: new Uint8Array([3]) }, 1);
 
         // Assert — coalescing the cap to the 65_536 default would keep all three.
         expect(sut.deltaCache.entryCount).toBe(2);
         expect(sut.deltaCache.get('a')).toBeUndefined();
-        expect(sut.deltaCache.get('c')).toEqual(new Uint8Array([3]));
+        expect(sut.deltaCache.get('c')).toEqual({ type: 'blob', content: new Uint8Array([3]) });
       });
     });
   });

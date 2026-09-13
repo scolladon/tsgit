@@ -219,7 +219,7 @@ describe('browser shim — openRepository', () => {
         // supplied entry cap would be discarded for DEFAULT_DELTA_CACHE_ENTRIES
         // (65 536), so a 4th tiny entry would NOT evict.
         const sut = await openRepository({ rootHandle: fakeHandle, deltaCacheMaxEntries: 3 });
-        const one = new Uint8Array([1]);
+        const one = { type: 'blob' as const, content: new Uint8Array([1]) };
 
         // Act — insert four single-byte entries (each well under maxSize).
         sut.ctx.deltaCache.set('a', one, 1);

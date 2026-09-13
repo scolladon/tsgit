@@ -1,11 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import {
   buildBlobFilenameMap,
   runContentValidationPass,
 } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
 import type { ObjectId, TreeEntry } from '../../../../../../src/domain/objects/index.js';
-import { FILE_MODE, serializeObject } from '../../../../../../src/domain/objects/index.js';
+import {
+  FILE_MODE,
+  serializeHeader,
+  serializeObject,
+} from '../../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../../src/domain/objects/tree.js';
 import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
 
@@ -111,6 +115,35 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
         const realHash = await ctx.hash.hashHex(realBytes);
         expect(hashMismatchFindings[0].actual).toBe(realHash);
       }
+    });
+  });
+});
+
+describe('Given a packed blob validated for content', () => {
+  describe('When runContentValidationPass computes its hash', () => {
+    it('Then the hasher receives the canonical header then the body, in that order', async () => {
+      // Arrange — the order is the mutant kill: a swapped or dropped update
+      // call would still hash *something*, but not the canonical
+      // `<type> <size>\0<content>` scheme, and no header+body buffer is ever
+      // concatenated to build it.
+      const content = ENCODER.encode('order-sensitive content');
+      const ctx = createMemoryContext();
+      const ids = await writeSyntheticPack(ctx, 'order', [{ kind: 'base', type: 'blob', content }]);
+      const blobId = ids[0] as ObjectId;
+      const updateSpy = vi.fn();
+      vi.spyOn(ctx.hash, 'createHasher').mockReturnValue({
+        update: updateSpy,
+        digest: vi.fn(),
+        digestHex: vi.fn().mockResolvedValue(blobId),
+      });
+
+      // Act
+      await sut(ctx, new Set([blobId]), false, new Map());
+
+      // Assert
+      expect(updateSpy.mock.calls).toHaveLength(2);
+      expect(updateSpy.mock.calls[0]?.[0]).toEqual(serializeHeader('blob', content.length));
+      expect(updateSpy.mock.calls[1]?.[0]).toEqual(content);
     });
   });
 });

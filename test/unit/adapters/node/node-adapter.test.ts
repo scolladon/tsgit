@@ -246,8 +246,8 @@ describe('createNodeContext', () => {
         });
 
         // Act
-        sut.deltaCache.set('a', new Uint8Array([1]), 1);
-        sut.deltaCache.set('b', new Uint8Array([2]), 1);
+        sut.deltaCache.set('a', { type: 'blob', content: new Uint8Array([1]) }, 1);
+        sut.deltaCache.set('b', { type: 'blob', content: new Uint8Array([2]) }, 1);
 
         // Assert — the configured cap of 1 is forwarded, so the LRU keeps only the newest entry.
         expect(sut.deltaCache.entryCount).toBe(1);

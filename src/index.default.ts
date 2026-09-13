@@ -14,6 +14,7 @@ import { MemoryFileSystem } from './adapters/memory/memory-file-system.js';
 import { MemoryHashService } from './adapters/memory/memory-hash-service.js';
 import { MemoryHttpTransport } from './adapters/memory/memory-http-transport.js';
 import { configFor } from './domain/objects/hash-config.js';
+import type { ObjectContent } from './domain/objects/index.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { fileSystemLayoutProbe } from './repository/file-system-layout-probe.js';
 import { portablePosixPolicy } from './repository/portable-posix-policy.js';
@@ -96,7 +97,7 @@ export const openRepository = async (
     runtime: 'memory' as const,
     layout,
     hashConfig: configFor(algorithm),
-    deltaCache: createLruCache<Uint8Array>(DEFAULT_DELTA_CACHE_BYTES),
+    deltaCache: createLruCache<ObjectContent>(DEFAULT_DELTA_CACHE_BYTES),
   };
   // Strip the memory-only `files` option before forwarding. `algorithm` is
   // NOT stripped — it is now part of the core option surface, and the core's

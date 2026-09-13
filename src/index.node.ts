@@ -20,6 +20,7 @@ import { ownedByCallerPredicate } from './adapters/node/owner-predicate.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
 import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
+import type { ObjectContent } from './domain/objects/index.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { buildCacheBudgets } from './ports/context.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
@@ -119,7 +120,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     runtime: 'node' as const,
     layout,
     hashConfig: configFor(algorithm),
-    deltaCache: createLruCache<Uint8Array>(
+    deltaCache: createLruCache<ObjectContent>(
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),

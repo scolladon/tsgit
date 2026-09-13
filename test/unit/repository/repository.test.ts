@@ -15,7 +15,7 @@ import { readIndex } from '../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
-import type { Blob, FilePath, ObjectId } from '../../../src/domain/objects/index.js';
+import type { Blob, FilePath, ObjectContent, ObjectId } from '../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../src/domain/objects/tree.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
@@ -30,7 +30,7 @@ const makeFallback = (): RuntimeFallback => ({
   runtime: 'memory',
   layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, refStorage: 'files' },
   hashConfig: SHA1_CONFIG,
-  deltaCache: createLruCache<Uint8Array>(1024),
+  deltaCache: createLruCache<ObjectContent>(1024),
 });
 
 const open = (opts: Parameters<typeof openRepository>[0] = {}): Promise<Repository> =>
@@ -651,7 +651,7 @@ describe('openRepository — dispose cache hygiene', () => {
         // Arrange — a pooling server disposing an idle repo must reclaim
         // this memory, not keep it pinned while the handle stays reachable.
         const sut = await open();
-        sut.ctx.deltaCache.set('some-key', new Uint8Array([1, 2, 3]), 3);
+        sut.ctx.deltaCache.set('some-key', { type: 'blob', content: new Uint8Array([1, 2, 3]) }, 3);
         expect(sut.ctx.deltaCache.currentSize).toBeGreaterThan(0);
 
         // Act

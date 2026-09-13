@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
+import type { ObjectContent } from '../../domain/objects/index.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import {
   buildCacheBudgets,
@@ -79,7 +80,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     allowInsecureHttp: options.allowInsecureHttp ?? false,
   });
   const layout = buildLayout(workDir, gitDir, options.bare ?? false, safeHomedir());
-  const deltaCache = createLruCache<Uint8Array>(
+  const deltaCache = createLruCache<ObjectContent>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
   );

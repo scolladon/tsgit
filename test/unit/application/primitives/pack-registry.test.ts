@@ -4270,8 +4270,8 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = 'c'.repeat(40) as ObjectId;
-        const cached = new TextEncoder().encode('blob 5\0hello');
-        ctx.deltaCache.set(id, cached, cached.length);
+        const cachedContent = new TextEncoder().encode('hello');
+        ctx.deltaCache.set(id, { type: 'blob', content: cachedContent }, cachedContent.length);
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
         // Act + Assert

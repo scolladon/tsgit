@@ -20,7 +20,7 @@ import {
 } from '../../../domain/objects/error.js';
 import { splitObject } from '../../../domain/objects/git-object.js';
 import { parseHeader } from '../../../domain/objects/header.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectContent, ObjectId } from '../../../domain/objects/index.js';
 import { PACK_ENTRY_TYPE } from '../../../domain/storage/index.js';
 import { readableStreamToAsyncIterable } from '../../../operators/readable-stream.js';
 import type { Context } from '../../../ports/context.js';
@@ -30,6 +30,7 @@ import {
   looseCompressedBytes,
   readEntryHeaderWithChunk,
   resolvePackChain,
+  verifyObjectContent,
 } from '../object-resolver.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import { getPackRegistry } from '../read-object.js';
@@ -80,7 +81,7 @@ export async function openBlobSource(
   const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? false };
 
   checkAborted(ctx);
-  // Same store-setup gate as resolveObjectBytesWithDepth: a structurally
+  // Same store-setup gate as resolveObjectContentWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
   await (await getPackRegistry(ctx)).assertLoadable();
@@ -161,28 +162,14 @@ async function verifyBufferedBytes(
   if (actual !== id) throw objectHashMismatch(id, actual);
 }
 
-async function verifyPackBaseBytes(
-  ctx: Context,
-  id: ObjectId,
-  type: ObjectType,
-  declaredSize: number,
-  content: Uint8Array,
-  verifyHash: boolean,
-): Promise<void> {
-  const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
-  hasher?.update(syntheticObjectHeader(type, declaredSize));
-  hasher?.update(content);
-  await finalizeHash(hasher, id);
-}
-
 async function resolveFromCache(
   ctx: Context,
   id: ObjectId,
-  cached: Uint8Array,
+  cached: ObjectContent,
   gate: BufferGate,
 ): Promise<BlobSource> {
-  await verifyBufferedBytes(ctx, id, cached, gate.verifyHash);
-  return toBytesSource(cached);
+  await verifyObjectContent(ctx, id, cached.type, cached.content, gate.verifyHash);
+  return { kind: 'bytes', ...cached };
 }
 
 async function resolveLoose(
@@ -233,7 +220,7 @@ async function resolvePackBase(
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
   ) {
     const content = await ctx.compressor.inflate(payload);
-    await verifyPackBaseBytes(ctx, id, type, declaredSize, content, gate.verifyHash);
+    await verifyObjectContent(ctx, id, type, content, gate.verifyHash);
     return { kind: 'bytes', type, content };
   }
   const inflated = inflateOneShot(ctx, payload);
@@ -260,9 +247,9 @@ async function resolvePackDelta(
   id: ObjectId,
   gate: BufferGate,
 ): Promise<BlobSource> {
-  const fullBytes = await resolvePackChain(ctx, registry, hit, id, undefined);
-  await verifyBufferedBytes(ctx, id, fullBytes, gate.verifyHash);
-  return toBytesSource(fullBytes);
+  const resolved = await resolvePackChain(ctx, registry, hit, id, undefined);
+  await verifyObjectContent(ctx, id, resolved.type, resolved.content, gate.verifyHash);
+  return { kind: 'bytes', ...resolved };
 }
 
 function packTypeName(type: 1 | 2 | 3 | 4): ObjectType {

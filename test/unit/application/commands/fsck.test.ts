@@ -6053,8 +6053,12 @@ describe('Given a packed object corrupted on disk but warm in the delta cache', 
       // repository.
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(ctx, 'warmed', onePackEntry('warm-content'));
-      const healthy = new TextEncoder().encode('blob 12\u0000warm-content');
-      ctx.deltaCache.set(blobId as string, healthy, healthy.length);
+      const healthyContent = new TextEncoder().encode('warm-content');
+      ctx.deltaCache.set(
+        blobId as string,
+        { type: 'blob', content: healthyContent },
+        healthyContent.length,
+      );
       const packPath = packFilePath(ctx, 'warmed');
       const packBytes = (await ctx.fs.read(packPath)).slice();
       packBytes.fill(0xff, 12, Math.min(packBytes.length - 20, 64));

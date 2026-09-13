@@ -128,7 +128,15 @@ done
 # The closure and history-walk work then added the object-closure prune, the shared
 # commit-graph reader and the not-side marker; its end-of-review measure overran 920 KiB
 # by 65 bytes, so the cap is 921 KiB.
-SIZE_CAP=$((921 * 1024))
+# Raised 921 -> 924 KiB by the loose-object cache type flip: the measured tarball landed
+# at 945 249 B, 2 145 B over the old cap. Attribution: the new `ObjectContent` type and
+# `parseObjectContent` function (public, re-exported from the domain barrel and — as
+# `RawObject` — from the primitives barrel, each carrying its own JSDoc in both `.d.ts`
+# AND `.d.cts`), plus the runtime additions every distribution form ships: the exported
+# `verifyObjectContent` incremental-hash helper that replaces a header-copy-then-hash
+# with hash-and-compare, and the cache-entry-overhead constant its sizer charges. None is
+# removable without reintroducing the per-read header buffer this change exists to drop.
+SIZE_CAP=$((924 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

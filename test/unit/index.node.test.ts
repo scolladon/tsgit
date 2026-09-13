@@ -192,7 +192,7 @@ describe('Node shim — deltaCacheMaxEntries option', () => {
         // the supplied cap (3) would be replaced by DEFAULT_DELTA_CACHE_ENTRIES
         // (65 536), so the 4th entry would NOT trigger eviction.
         const sut = await openRepository({ cwd: tmpdir, deltaCacheMaxEntries: 3 });
-        const one = new Uint8Array([1]);
+        const one = { type: 'blob' as const, content: new Uint8Array([1]) };
 
         try {
           // Act

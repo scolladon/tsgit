@@ -1,5 +1,6 @@
 import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
+import type { ObjectContent } from '../../domain/objects/index.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import {
@@ -75,7 +76,7 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
           refStorage: 'files',
         };
   const hashConfig = configFor(algorithm);
-  const deltaCache = createLruCache<Uint8Array>(
+  const deltaCache = createLruCache<ObjectContent>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
   );

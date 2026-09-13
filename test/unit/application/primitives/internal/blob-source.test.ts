@@ -76,7 +76,7 @@ describe('openBlobSource', () => {
         const full = looseFormatBytes('blob', content);
         const ctx = await buildSeededContext();
         const id = (await ctx.hash.hashHex(full)) as ObjectId;
-        ctx.deltaCache.set(id, full, full.length);
+        ctx.deltaCache.set(id, { type: 'blob', content }, content.length);
 
         // Act
         const result = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
@@ -97,7 +97,7 @@ describe('openBlobSource', () => {
         const full = looseFormatBytes('blob', content);
         const ctx = await buildSeededContext();
         const id = (await ctx.hash.hashHex(full)) as ObjectId;
-        ctx.deltaCache.set(id, full, full.length);
+        ctx.deltaCache.set(id, { type: 'blob', content }, content.length);
 
         // Act + Assert
         try {

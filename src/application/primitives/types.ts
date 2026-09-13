@@ -9,6 +9,7 @@ import type {
   FileMode,
   FilePath,
   GitObject,
+  ObjectContent,
   ObjectId,
   ObjectType,
   RefName,
@@ -81,19 +82,17 @@ export interface ReadObjectOptions {
 /**
  * The pre-parse product of an object read: the header's declared type plus
  * the raw content bytes, before any `parseBlobContent`/`parseTreeContent`/…
- * decode. Internal-only — not re-exported from the primitives barrel and not
- * bound on `repo.primitives` (see `readRawObject`).
+ * decode. Public — bound on `repo.primitives` and re-exported from the
+ * primitives barrel (see `readRawObject`) — an alias of `ObjectContent`
+ * rather than a distinct shape, since a read now produces exactly that.
  *
- * `content` and `bytes` may alias the object cache (`ctx.deltaCache` or a
- * loose-read buffer) — treat both as immutable and copy before mutating.
+ * `content` may alias the object cache (`ctx.deltaCache` or a loose-read
+ * buffer) — treat it as immutable and copy before mutating. A caller that
+ * genuinely needs the header-prefixed loose-format buffer synthesises it
+ * explicitly: `serializeHeader(raw.type, raw.content.length)` followed by
+ * `raw.content`, never carried as a field on this type.
  */
-export interface RawObject {
-  readonly type: ObjectType;
-  /** The object's content, after its `<type> <size>\0` header. */
-  readonly content: Uint8Array;
-  /** The object's full bytes, header included — `content` is a subarray of this. */
-  readonly bytes: Uint8Array;
-}
+export type RawObject = ObjectContent;
 
 export interface ResolveRefOptions {
   readonly peel?: boolean;

@@ -1,4 +1,4 @@
-import type { ObjectId } from '../../domain/objects/index.js';
+import type { ObjectContent, ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { deriveContext } from '../primitives/derive-context.js';
@@ -39,7 +39,7 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
  *  Built fresh per call, never a shared module-level singleton — the
  *  allocation is free enough that a fresh instance every call beats relying
  *  on a shared one staying inert. */
-function createNoDeltaCache(): LruCache<Uint8Array> {
+function createNoDeltaCache(): LruCache<ObjectContent> {
   return {
     get: () => undefined,
     set: () => false,

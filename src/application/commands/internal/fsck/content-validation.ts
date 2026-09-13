@@ -4,7 +4,7 @@ import { validateObject } from '../../../../domain/fsck/index.js';
 import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
-import { parseHeader } from '../../../../domain/objects/index.js';
+import { parseHeader, serializeHeader } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
 import { readRawObject } from '../../../primitives/read-object.js';
@@ -16,8 +16,13 @@ type RawObjectResult =
       readonly ok: true;
       readonly kind: FsckObjectType;
       readonly rawBody: Uint8Array;
-      /** Full bytes (including header) for hash verification. */
-      readonly hashBytes: Uint8Array;
+      /**
+       * Computes this object's hash from its as-stored bytes, for
+       * verification against the indexed id. A closure (not a materialised
+       * buffer) so the packed arm can hash header+body incrementally without
+       * ever concatenating them.
+       */
+      readonly computeHash: () => Promise<string>;
     }
   | { readonly ok: false; readonly msgId: string };
 
@@ -51,7 +56,10 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
         ok: true,
         kind: type,
         rawBody: inflated.subarray(contentOffset),
-        hashBytes: inflated,
+        // The loose arm keeps hashing the inflated on-disk bytes AS STORED —
+        // a malformed on-disk header must still hash as written, never a
+        // canonical reconstruction.
+        computeHash: () => ctx.hash.hashHex(inflated),
       };
     } catch (err) {
       // Header-parse failure: inflated successfully but header is malformed.
@@ -72,12 +80,23 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
   // report (duplicate name, '.', '..', an embedded '/'), collapsing every such
   // packed tree into badType; and re-serializing a parsed Tree re-sorts its
   // entries, so hashing that re-sorted form against an unsorted tree's id
-  // would report a false hash-mismatch. `raw.bytes` is the object's own
-  // header+content bytes — no re-serialisation, no re-allocation — so hashing
-  // it avoids both.
+  // would report a false hash-mismatch. `raw.type`/`raw.content` are the
+  // object's own bytes — no re-serialisation — so hashing them (via the
+  // canonical header, built fresh rather than carried as a field) avoids
+  // both, without ever concatenating header and body into one buffer.
   try {
     const raw = await readRawObject(ctx, id, { verifyHash: false });
-    return { ok: true, kind: raw.type, rawBody: raw.content, hashBytes: raw.bytes };
+    return {
+      ok: true,
+      kind: raw.type,
+      rawBody: raw.content,
+      computeHash: async () => {
+        const hasher = ctx.hash.createHasher();
+        hasher.update(serializeHeader(raw.type, raw.content.length));
+        hasher.update(raw.content);
+        return hasher.digestHex();
+      },
+    };
   } catch {
     return { ok: false, msgId: 'badType' };
   }
@@ -181,7 +200,7 @@ async function validateOneObject(
     return { findings, exitBit: EXIT_CORRUPT };
   }
 
-  const { kind, rawBody, hashBytes } = rawResult;
+  const { kind, rawBody, computeHash } = rawResult;
 
   // For blobs, pass filename when the blob appears under a special name
   // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
@@ -195,12 +214,12 @@ async function validateOneObject(
   }
 
   // Hash check: verify hash from the bytes already read (no second readObject).
-  // For loose objects hashBytes is the full inflated bytes (header + body).
-  // For pack objects hashBytes is the object's original bytes (its own header
-  // plus body), not a re-encoding.
+  // For loose objects this hashes the full inflated bytes (header + body) as
+  // stored. For pack objects it hashes the object's own header (rebuilt from
+  // its type + content) followed by its own body, not a re-encoding.
   // Hash-mismatch does not preclude catalogue checks above.
   try {
-    const computedHash = await ctx.hash.hashHex(hashBytes);
+    const computedHash = await computeHash();
     if (computedHash !== id) {
       findings.push({ type: 'hash-mismatch', id, actual: computedHash as ObjectId });
       exitBit |= EXIT_HASH_MISMATCH;

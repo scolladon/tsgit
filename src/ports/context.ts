@@ -1,5 +1,6 @@
 import type { ConcurrencyLimits } from '../domain/concurrency/derive-limits.js';
 import type { HashConfig } from '../domain/objects/hash-config.js';
+import type { ObjectContent } from '../domain/objects/index.js';
 import type { RefName } from '../domain/objects/object-id.js';
 import type { LruCache } from '../domain/storage/lru-cache.js';
 import type { CommandRunner } from './command-runner.js';
@@ -268,7 +269,7 @@ export interface Context {
   /** Object serialization parameters (sha1 vs sha256 digest+hex sizes). */
   readonly hashConfig: HashConfig;
   /** Shared delta-base LRU cache; consumed by primitives' iterative delta walker. */
-  readonly deltaCache: LruCache<Uint8Array>;
+  readonly deltaCache: LruCache<ObjectContent>;
   /**
    * This Context's cache-identity anchor — internal and opaque, never
    * constructible outside `createContext`/`deriveContext`.
@@ -337,7 +338,7 @@ export interface CreateContextParts {
   readonly cwd?: string;
   readonly runtime: 'node' | 'browser' | 'memory';
   readonly hashConfig: HashConfig;
-  readonly deltaCache: LruCache<Uint8Array>;
+  readonly deltaCache: LruCache<ObjectContent>;
   readonly concurrency?: ConcurrencyLimits;
   readonly cacheBudgets?: CacheBudgets;
   readonly config?: RepositoryConfig;

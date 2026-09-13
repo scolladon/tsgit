@@ -7,6 +7,7 @@ import {
   MemoryHttpTransport,
 } from '../../../src/adapters/memory/index.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
+import type { ObjectContent } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import { openRepository, type RuntimeFallback } from '../../../src/repository.js';
 
@@ -18,7 +19,7 @@ const makeFallback = (): RuntimeFallback => ({
   runtime: 'memory',
   layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, refStorage: 'files' },
   hashConfig: SHA1_CONFIG,
-  deltaCache: createLruCache<Uint8Array>(1024),
+  deltaCache: createLruCache<ObjectContent>(1024),
 });
 
 const open = () => openRepository({ cwd: '/repo' }, makeFallback());

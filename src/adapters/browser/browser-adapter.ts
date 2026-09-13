@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
+import type { ObjectContent } from '../../domain/objects/index.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import {
   buildCacheBudgets,
@@ -46,7 +47,7 @@ const ROOT_WORK_DIR = '/';
 export function createBrowserContext(options: BrowserAdapterOptions): Context {
   const gitDirName = options.gitDirName ?? DEFAULT_GIT_DIR_NAME;
   const algorithm = options.algorithm ?? 'sha1';
-  const deltaCache = createLruCache<Uint8Array>(
+  const deltaCache = createLruCache<ObjectContent>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
   );
