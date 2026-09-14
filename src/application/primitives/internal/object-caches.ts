@@ -70,26 +70,43 @@ const parsedObjectMemos = new WeakMap<Context['session'], LruCache<MemoisedObjec
  * gets `entries × typicalEntryBytes(width) ≤ valve`.
  */
 export const memoByteValve = (ctx: Context): number =>
-  ctx.deltaCache.maxSize + defaultMemoEntries(ctx) * oidWidthSurcharge(ctx);
+  defaultMemoEntries(ctx) * typicalEntryBytes(ctx);
 
 /**
- * Per-entry ceiling {@link memoMaxEntries}'s default derives from: 256 B of
- * {@link PARSED_OBJECT_FIXED_OVERHEAD_BYTES} plus a 256 B typical
- * message/parents allowance. `maxEntries × this` is what the byte valve must
- * admit at every `deltaCacheMaxBytes` dial — the invariant a unit test pins
- * so a future retune that flips the binding constraint fails a test instead
- * of shipping another dead cache.
+ * Measured retained cost of one typical memo entry (one parent, a 216-byte
+ * message), sha1 width: `process.memoryUsage().heapUsed` deltas after six
+ * forced collections, 20,000 parsed commits/tags retained in
+ * `createLruCache`, sampled twice with identical results. `950 (fixed) + 216
+ * (message) + 40 (one sha1 parent) = 1,206` — a message-and-parents-only
+ * sizer under-states this shape 2.34×. `maxEntries × typicalEntryBytes(width)`
+ * is what the byte valve must admit at every `deltaCacheMaxBytes` dial — the
+ * invariant a unit test pins so a future retune that flips the binding
+ * constraint fails a test instead of shipping another dead cache.
  */
-export const PARSED_OBJECT_TYPICAL_ENTRY_BYTES = 512;
+export const PARSED_OBJECT_TYPICAL_ENTRY_BYTES = 1206;
 
 /** A sha256 oid (64 hex chars) costs this many bytes more per entry than sha1's (40). */
 const SHA1_HEX_LENGTH = 40;
 
 const oidWidthSurcharge = (ctx: Context): number => ctx.hashConfig.hexLength - SHA1_HEX_LENGTH;
 
+const typicalEntryBytes = (ctx: Context): number =>
+  PARSED_OBJECT_TYPICAL_ENTRY_BYTES + oidWidthSurcharge(ctx);
+
+/**
+ * Dial bytes charged per default memo entry — deliberately NOT
+ * {@link PARSED_OBJECT_TYPICAL_ENTRY_BYTES}: this fixes the default entry
+ * COUNT at `floor(dial / 512)` (32,768 at the 16 MiB default), the workload
+ * the memo was originally sized for, while the honest per-entry cost above
+ * prices what the valve must admit for that same count. Decoupling the two
+ * is what lets the valve grow to its measured, honest size without
+ * shrinking how many typical commits the default dial admits.
+ */
+export const PARSED_OBJECT_DIAL_BYTES_PER_ENTRY = 512;
+
 /** The dial-derived entry count — the valve's reference, independent of an explicit entry option. */
 const defaultMemoEntries = (ctx: Context): number =>
-  Math.floor(ctx.deltaCache.maxSize / PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
+  Math.floor(ctx.deltaCache.maxSize / PARSED_OBJECT_DIAL_BYTES_PER_ENTRY);
 
 /**
  * Entry-count cap for the parsed-object memo — a caller-supplied
@@ -174,16 +191,15 @@ export function forgetParsedObjectMemo(ctx: Context, id: ObjectId): void {
 
 /**
  * Fixed overhead per cached entry: the `Commit`/`Tag` and `CommitData`/
- * `TagData` wrapper objects, the entry's own oid and tree/target oid, and
- * two identity blocks worth of name/email/timestamp/timezone (a commit's
+ * `TagData` wrapper objects, the entry's own oid and tree/target oid, two
+ * identity blocks worth of name/email/timestamp/timezone (a commit's
  * author+committer; a tag's single tagger fits comfortably inside the same
- * budget). These vary by tens of bytes, not orders of magnitude, so one
- * conservative constant — not per-field measurement — is enough to stop
- * every entry being undercounted regardless of message length, which a
- * message-only sizer did: a short-message, unsigned, parentless commit
- * sized to a handful of bytes despite retaining hundreds.
+ * budget), and the LRU node plus `Map` entry that hold the cached value.
+ * Measured (see {@link PARSED_OBJECT_TYPICAL_ENTRY_BYTES}) rather than
+ * estimated from field widths — an estimate undercounted a short-message,
+ * unsigned, parentless commit by more than 3×.
  */
-const PARSED_OBJECT_FIXED_OVERHEAD_BYTES = 256;
+const PARSED_OBJECT_FIXED_OVERHEAD_BYTES = 950;
 
 /**
  * Approximate retained footprint of a parsed commit/tag: the sum of its

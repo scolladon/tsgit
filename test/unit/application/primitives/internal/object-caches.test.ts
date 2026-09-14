@@ -53,8 +53,8 @@ describe('parsedObjectByteSize', () => {
         // Act
         const size = parsedObjectByteSize(data, 40);
 
-        // Assert — message(3) + key(8) + value(10) + fixed overhead(256)
-        expect(size).toBe(3 + 8 + 10 + 256);
+        // Assert — message(3) + key(8) + value(10) + fixed overhead(950)
+        expect(size).toBe(3 + 8 + 10 + 950);
       });
     });
   });
@@ -223,8 +223,8 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
   describe('Given the default deltaCacheMaxBytes budget, and a commit-shaped entry sized through the REAL sizer', () => {
     describe('When resolving the memo entry cap and its byte valve', () => {
       it.each([
-        { label: 'sha1', algorithm: 'sha1' as const, hexLength: 40, valve: 16 * 1024 * 1024 },
-        { label: 'sha256', algorithm: 'sha256' as const, hexLength: 64, valve: 17_563_648 },
+        { label: 'sha1', algorithm: 'sha1' as const, hexLength: 40, valve: 39_518_208 },
+        { label: 'sha256', algorithm: 'sha256' as const, hexLength: 64, valve: 40_304_640 },
       ])(
         'Then at $label the real sizer reconciles with the typical entry allowance, and maxEntries × that real size never exceeds the valve',
         ({ algorithm, hexLength, valve }) => {
@@ -270,7 +270,7 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
 
   describe('Given a non-default deltaCacheMaxBytes of 4 MiB', () => {
     describe('When resolving the memo entry cap', () => {
-      it('Then the cap derives from the valve — 8,192 entries', () => {
+      it('Then the cap derives from the dial — 8,192 entries', () => {
         // Arrange
         const ctx = createMemoryContext({ deltaCacheMaxBytes: 4 * 1024 * 1024 });
 
@@ -279,6 +279,19 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
 
         // Assert
         expect(cap).toBe(8_192);
+      });
+    });
+
+    describe('When resolving the memo byte valve', () => {
+      it('Then it is entries × the measured typical entry cost, not the untouched dial', () => {
+        // Arrange
+        const ctx = createMemoryContext({ deltaCacheMaxBytes: 4 * 1024 * 1024 });
+
+        // Act
+        const valve = memoByteValve(ctx);
+
+        // Assert
+        expect(valve).toBe(9_879_552);
       });
     });
   });
@@ -296,7 +309,7 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
         const valve = memoByteValve(ctx);
 
         // Assert
-        expect(valve).toBe(4_390_912);
+        expect(valve).toBe(10_076_160);
       });
     });
   });
@@ -313,7 +326,36 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
 
         // Assert
         expect(cap).toBe(100);
-        expect(valve).toBe(17_563_648);
+        expect(valve).toBe(40_304_640);
+      });
+    });
+  });
+
+  describe('Given commits with 4 KiB messages, sized well past the typical-entry allowance', () => {
+    describe('When more entries than the byte valve admits are inserted', () => {
+      it('Then the entry count settles at the honest byte valve, not the untouched dial', () => {
+        // Arrange — a 4 KiB message dwarfs the "typical" allowance, so each
+        // entry costs far more than the constant that used to gate the
+        // valve at the raw dial. Overshooting by 10 inserts proves eviction
+        // actually happened rather than everything merely fitting.
+        const oid40 = 'a'.repeat(40) as ObjectId;
+        const bytes = parsedObjectByteSize(
+          { message: 'x'.repeat(4096), extraHeaders: [], parents: [oid40] },
+          40,
+        );
+        const ctx = createMemoryContext();
+        const memo = parsedObjectMemoFor(ctx);
+        const insertCount = Math.ceil(memoByteValve(ctx) / bytes) + 10;
+
+        // Act
+        for (let i = 0; i < insertCount; i += 1) {
+          memo?.set(`commit-${i}`, {} as never, bytes);
+        }
+
+        // Assert — bound by the honest byte valve, strictly above what the
+        // valve would have admitted had it been left at the raw dial.
+        expect(memo?.entryCount).toBe(Math.floor(memoByteValve(ctx) / bytes));
+        expect(memo?.entryCount).toBeGreaterThan(Math.floor((16 * 1024 * 1024) / bytes));
       });
     });
   });

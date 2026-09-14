@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
+  memoByteValve,
   OBJECT_CACHE_ENTRY_OVERHEAD_BYTES,
-  PARSED_OBJECT_TYPICAL_ENTRY_BYTES,
+  PARSED_OBJECT_DIAL_BYTES_PER_ENTRY,
   parsedObjectByteSize,
 } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
@@ -3879,10 +3880,10 @@ describe('object-resolver', () => {
 
           // Assert
           const memoCall = createLruCacheSpy.mock.calls.find(
-            (call) => call[0] === ctx.deltaCache.maxSize,
+            (call) => call[0] === memoByteValve(ctx),
           );
           expect(memoCall?.[1]).toBe(
-            Math.floor(ctx.deltaCache.maxSize / PARSED_OBJECT_TYPICAL_ENTRY_BYTES),
+            Math.floor(ctx.deltaCache.maxSize / PARSED_OBJECT_DIAL_BYTES_PER_ENTRY),
           );
         });
       });
@@ -3900,7 +3901,7 @@ describe('object-resolver', () => {
           // would be impractical.
           const ctx = createMemoryContext({ deltaCacheMaxBytes: 6_553_600 });
           const derivedEntryCap = Math.floor(
-            ctx.deltaCache.maxSize / PARSED_OBJECT_TYPICAL_ENTRY_BYTES,
+            ctx.deltaCache.maxSize / PARSED_OBJECT_DIAL_BYTES_PER_ENTRY,
           );
           const commitId = await writeCommitWithMessage(ctx, 'entry cap eviction seed');
           const registry = await createPackRegistry(ctx);
@@ -3926,23 +3927,28 @@ describe('object-resolver', () => {
     describe('Given entries exceeding the memo cap', () => {
       describe('When a fourth commit is read after the first is touched again', () => {
         it('Then the least-recently-used entry is evicted, not the oldest-inserted one', async () => {
-          // Arrange — cap fits exactly three same-size, parentless, 10-char
-          // messages: A, B, C fill it exactly (no eviction yet). Re-reading A
-          // promotes it to MRU, leaving B — untouched since its own insert —
-          // as the LRU tail. A plain FIFO would evict A on the next insert
-          // (oldest inserted); an LRU evicts B instead (least recently
-          // touched). Sized via the production sizer itself (default sha1
-          // hexLength=40, matching this Context's unspecified algorithm) so
-          // the cap tracks PARSED_OBJECT_FIXED_OVERHEAD_BYTES automatically.
-          // A generous `parsedObjectMemoMaxEntries` override keeps the
-          // entry-count cap from binding first, so the byte valve (`cap`) is
-          // the constraint under test.
+          // Arrange — a 3-entry dial (1,536 B ÷ 512 B/entry) fits exactly
+          // three same-size, parentless, 10-char messages: A, B, C fill it
+          // exactly (no eviction yet). Re-reading A promotes it to MRU,
+          // leaving B — untouched since its own insert — as the LRU tail. A
+          // plain FIFO would evict A on the next insert (oldest inserted);
+          // an LRU evicts B instead (least recently touched). Sized via the
+          // production sizer itself (default sha1 hexLength=40, matching
+          // this Context's unspecified algorithm) so the cap tracks
+          // PARSED_OBJECT_FIXED_OVERHEAD_BYTES automatically. A generous
+          // `parsedObjectMemoMaxEntries` override keeps the entry-count cap
+          // from binding first, so the byte valve is the constraint under
+          // test.
           const perEntry = parsedObjectByteSize({ message: 'AAAAAAAAAA', extraHeaders: [] }, 40);
-          const cap = perEntry * 3;
+          const dialBytes = 3 * PARSED_OBJECT_DIAL_BYTES_PER_ENTRY;
           const ctx = createMemoryContext({
-            deltaCacheMaxBytes: cap,
+            deltaCacheMaxBytes: dialBytes,
             parsedObjectMemoMaxEntries: 10,
           });
+          // A retune of either the dial divisor or the typical-entry
+          // constants would silently change which entry the valve evicts —
+          // pin the 3-entry relationship those two constants must produce.
+          expect(Math.floor(memoByteValve(ctx) / perEntry)).toBe(3);
           const commitA = await writeCommitWithMessage(ctx, 'AAAAAAAAAA');
           const commitB = await writeCommitWithMessage(ctx, 'BBBBBBBBBB');
           const commitC = await writeCommitWithMessage(ctx, 'CCCCCCCCCC');
