@@ -11,18 +11,20 @@
 > context: whatever a part block omits is paid later as agent rediscovery. `plan-lint.sh` enforces the
 > schema below — the plan phase cannot close without it.
 
-**Six parts (Part 14 – Part 19), thirteen commits.** The dependency order is the design's
+**Six parts (Part 14 – Part 19), fifteen commits.** The dependency order is the design's
 (I → A → H/O → F/M → C/B → K/E/D). The design's seventh part (N, a test-only pin) is folded into
-Part 15 as its second commit, and the parse-acceptance work is its own commit inside Part 18 — both
-explained under [Deviations](#deviations-from-the-design-partition).
+Part 15 as its second commit; the parse-acceptance work is its own commit inside Part 18; and two
+commits were added when the design gaps were resolved — memory-adapter symlink parity (Part 17
+commit 1, gap G1) and the null-id delete (Part 18 commit 1, gap G2). All explained under
+[Deviations](#deviations-from-the-design-partition).
 
 | Part | Design items | Commits | Nature |
 |---|---|---|---|
 | 14 | I | 1 | narrow classification change |
 | 15 | A, N | 2 | behaviour change (A); regression pin (N) |
 | 16 | H, O | 2 | cache tuning, no git-observable change |
-| 17 | F, M | 2 | behaviour change (F); documented epoch + pin (M) |
-| 18 | C, parse acceptance, B | 3 | behaviour change (new refusals, refusal order) |
+| 17 | memory-adapter symlink parity, F, M | 3 | adapter parity fix; behaviour change (F); documented epoch + pin (M) |
+| 18 | null-id delete, C, parse acceptance, B | 4 | behaviour change (delete semantics, new refusals, refusal order) |
 | 19 | K, E, D | 3 | pure refactor (K); behaviour change (E, D) |
 
 Parts run sequentially in one working tree (`/Users/scolladon/workspace/perso/node/tsgit-session-caches-per-command-floor`,
@@ -123,9 +125,10 @@ exact files.
 
 | Part | Extra step | Why |
 |---|---|---|
-| **17** commit 2 (M) | **Characterization sanity.** The epoch pin documents today's behaviour, so it cannot go red first. Prove it is not vacuous: locally change `readHeadFile` (`src/application/primitives/internal/head-file.ts:156-164`) to ignore `trusted`, run the new test, watch it fail, revert with `git checkout -- src/application/primitives/internal/head-file.ts`, confirm `git diff --stat` shows only intended files. | A pin that passes against a broken implementation proves nothing. |
-| **18** commit 1 (C) | **Mandatory wall-clock A/B, idle machine only** — procedure below. Run after the C commit lands; re-run once after commit 2 if the machine is still idle. | Every verified `updateRef` now reads and hashes one object; `commit` pays it once per commit for the object it has just written. Only absolute main-vs-branch numbers can show the cost. |
-| **18** commit 1 (C) | Re-run `test/integration/blob-streaming-interop.test.ts` and `test/integration/blob-streaming-checkout-interop.test.ts` unchanged. | The loose stream arm now reads its header at open; streaming output bytes must not move. |
+| **17** commit 1 (memory adapter) | Run the whole symlink-using test set listed in Part 17 (34 unit files + `test/integration/add-all.test.ts`) in batches, and `test/unit/adapters/node/node-file-system.test.ts` unchanged. | The `FileSystem` contract suite runs against both adapters, so every new contract row is its own Node-parity oracle; the enumerated suites catch production code that relied on the memory adapter never following a link. |
+| **17** commit 3 (M) | **Characterization sanity.** The epoch pin documents today's behaviour, so it cannot go red first. Prove it is not vacuous: locally change `readHeadFile` (`src/application/primitives/internal/head-file.ts:156-164`) to ignore `trusted`, run the new test, watch it fail, revert with `git checkout -- src/application/primitives/internal/head-file.ts`, confirm `git diff --stat` shows only intended files. | A pin that passes against a broken implementation proves nothing. |
+| **18** commit 2 (C) | **Mandatory wall-clock A/B, idle machine only** — procedure below. Run after the C commit lands; re-run once after commit 3 if the machine is still idle. | Every verified `updateRef` now reads and hashes one object; `commit` pays it once per commit for the object it has just written. Only absolute main-vs-branch numbers can show the cost. |
+| **18** commit 2 (C) | Re-run `test/integration/blob-streaming-interop.test.ts` and `test/integration/blob-streaming-checkout-interop.test.ts` unchanged. | The loose stream arm now reads its header at open; streaming output bytes must not move. |
 | **19** commit 1 (K) | `git diff --stat HEAD~1 -- test/` prints nothing after committing. | The refactor's preservation proof is "no test assertion changed". |
 | **19** commit 3 (D) | Clock discipline for the configuration interop file (see Part 19). | git's default cutoffs use its own `time(NULL)`; rows must not depend on wall-clock drift. |
 
@@ -195,11 +198,16 @@ go in the part notes handed back to the session for the PR body — no file is c
    `readObjectWithSize` is a second first-touch reader of the same verdict; the pin covers it too, which
    gives the fold a reason beyond placement. The design allows N "anywhere", so no ordering constraint
    moves. Result: six parts, not seven.
-2. **Parse acceptance is its own commit (Part 18 commit 2)** rather than folded into C's commit. C's
+2. **Parse acceptance is its own commit (Part 18 commit 3)** rather than folded into C's commit. C's
    commit is already the largest in the plan (blob-source stream-arm change, verifier, ref writer, clone,
    ~40 test files of fixture repair); parse acceptance is a separable refusal class layered on the same
    read, with its own pure domain module and property suite, and each commit is independently green.
-   Thirteen commits instead of twelve.
+   Thirteen commits instead of twelve before the gap resolutions below.
+5. **Two commits added by gap resolutions** (fifteen in total). G1 (b): memory-adapter symlink parity
+   lands as **Part 17 commit 1**, before F, so F's unit rows use the real memory adapter. G2 (b): the
+   null-id delete lands as **Part 18 commit 1**, before C, so C's placement simply skips verification on
+   the delete path. Neither is in the design partition; both were decided after it and recorded in
+   ADR-868 and ADR-864.
 3. **`buildExpiryPolicy` splits into two domain functions (Part 19 commit 3).** The design's single
    `buildExpiryPolicy({ entries, explicit, defaults, parse })` takes the explicit flags as already-parsed
    numbers, but git parses configuration **before** flags (D15: a bogus `gc.reflogExpire` plus
@@ -219,18 +227,33 @@ parts: C's "a cache hit is hashed and every cached entry has an honest header" g
 
 ## Design gaps found while planning
 
-Each is resolved in the plan by its first option so the parts stay executable; each needs the user's
-confirmation, not silent acceptance.
+All seven are **resolved** (G1, G2 by the user; G3–G7 by the session, 2026-09-14). The table keeps the
+reason and the options that were weighed; the last column is the decision the parts implement.
+[Open items](#open-items-found-while-resolving-the-gaps) below are not resolved.
 
-| # | Item | Reason | Options (plan default first) |
+| # | Item | Reason | Options weighed | Resolution |
+|---|---|---|---|---|
+| G1 | F's unit rows cannot run on the plain memory adapter | `MemoryFileSystem.read`/`readUtf8` (`src/adapters/memory/memory-file-system.ts:66-91`) never follow a symlink, and `stat` resolves a relative link target against the adapter root, not the link's directory (`:155-178`, `:459-465`). The design's "memory adapter `symlink`; F2 oid → `direct`" row would resolve `missing`. | (a) A test-local Context double that follows the HEAD link. (b) Teach `MemoryFileSystem` POSIX symlink following on read. (c) Pin F2–F5 in Node interop only. | **(b), user.** Part 17 commit 1: the memory adapter's reads follow a symlink leaf (40-hop loop limit, relative link text resolved against the link's directory, `stat` fixed too); write surfaces keep their no-follow refusals. F's unit rows use the real memory adapter. ADR-868 note. |
+| G2 | Null new id (`update-ref <ref> 0{40}`) | Pinned while planning: git **deletes** the ref; tsgit's `updateRef(name, zeroOid, {})` writes a null-id ref (`update-ref.ts:47-48`). The design said only "null ids are unverified". | (a) Keep the write, pin as residual. (b) A null `newId` without `delete: true` deletes, as git does. (c) Refuse it unless `delete: true`. | **(b), user.** Part 18 commit 1: delete path, compare-and-swap honoured, absent ref a no-op success, never verified (git's `!is_null_oid`), reflog outcome matched to the pins below (own log removed; coupled `logs/HEAD` entry). ADR-864 note. |
+| G3 | E13 ("unparseable ref content → could not be found") | The design's `resolveTerminalName` returns `undefined` on `INVALID_REF`, but a loose ref holding neither an oid nor `ref: …` refuses `INVALID_OBJECT_ID` (`parseLooseRef` → `ObjectId.from`, `src/domain/objects/object-id.ts:42-44`). | (a) Both codes mean "does not resolve for reading". (b) `parseLooseRef` raises `INVALID_REF`. (c) Residual. | **(a), session.** `INVALID_OBJECT_ID` and `INVALID_REF` both classified with `errorDataCode` as unresolvable (Part 19 commit 2). |
+| G4 | The shared ref glob's matching engine | `name-rev`'s `matchRefGlob` compiles to a backtracking `RegExp` (`src/domain/name-rev/ref-pattern.ts:13-21`); D feeds it patterns from repository configuration, which a planted `.git/config` controls — the ReDoS class the linear `compileGlob` closed. | (a) Linear byte-wise matcher + perf guard. (b) Extend the regex. (c) Extend `compileGlob`. | **(a), session.** Part 19 commit 3. |
+| G5 | `payloadByteLength`'s public docstring becomes untrue | `src/domain/objects/size.ts:7-17` says it equals git's `cat-file --batch` size; after A, `catFileBatch` reports the stored claim. The docstring is in `reports/api.json`. | (a) Amend in Part 15, regenerate `reports/api.json` once at the phase boundary. (b) Leave it. (c) Amend in the docs phase. | **(a), session.** |
+| G6 | Perf A/B tooling | No `branch.create` bench exists, and `bench:ab` cannot be scoped to two files. | (a) Hand-scoped A/B with an uncommitted scratch `branch-create.bench.ts`. (b) Commit a bench. (c) Full `bench:ab`. | **(a), session.** |
+| G7 | C's clone unit row "nothing written" | `clone` writes `refs/remotes/origin/<b>` before the local HEAD branch (`clone.ts:287-297`), so the type refusal comes after a remote-tracking ref is written. | (a) Assert only the local branch and `HEAD` are absent. (b) Verify every ref before writing any. (c) Remove the failed clone's directory. | **Resolved by existing behaviour, session.** `clone` already removes `ctx.layout.gitDir` on any failure (`src/application/commands/clone.ts:111-118`, mirroring git's `remove_junk` before checkout). The clone rows assert the refusal data **and** that the gitDir is gone — stronger than (a), no new behaviour. |
+
+### Open items found while resolving the gaps
+
+Not decided; each is a pre-existing difference the resolutions touched but did not ask to change. The
+parts pin today's behaviour (residual-titled rows where a git pin exists) and change nothing here.
+
+| # | Item | Reason | Options |
 |---|---|---|---|
-| G1 | F's unit rows cannot run on the plain memory adapter | `MemoryFileSystem.read`/`readUtf8` (`src/adapters/memory/memory-file-system.ts:66-91`) never follow a symlink, and `stat` resolves a relative link target against the adapter root, not the link's directory (`:155-178`, `:459-465`). The design's "memory adapter `symlink`; F2 oid → `direct`" row would resolve `missing`. | (a) A test-local Context double whose `stat`/`readUtf8` for `<gitDir>/HEAD` follow the link text relative to `<gitDir>` (new `followingHeadLink` fixture beside `refuseReadOnSymlink`); Node interop is the real-adapter oracle. (b) Teach `MemoryFileSystem` POSIX symlink following — an adapter behaviour change with parity and browser consequences. (c) Pin F2–F5 in Node interop only; unit rows limited to arms the plain adapter can express. |
-| G2 | Null new id (`update-ref <ref> 0{40}`) | Pinned while planning: git **deletes** the ref (exit 0, ref gone; absent ref: exit 0, no-op). tsgit's `updateRef(name, zeroOid, {})` writes a null-id ref (`update-ref.ts:47-48`, no delete mapping). The design says only "null ids are unverified". | (a) Keep today's write, skip verification for the null id as designed, and pin git's delete against tsgit's write as a residual-titled interop row. (b) Map a null `newId` without `delete: true` to a delete, as git does (behaviour change beyond the ratified scope; needs an ADR note). (c) Refuse a null `newId` unless `delete: true`. |
-| G3 | E13 ("unparseable ref content → could not be found") | The design's `resolveTerminalName` returns `undefined` on `INVALID_REF`, but a loose ref holding neither an oid nor `ref: …` refuses `INVALID_OBJECT_ID` (`parseLooseRef` → `ObjectId.from`, `src/domain/objects/object-id.ts:42-44`). As designed, E13 would surface `INVALID_OBJECT_ID`, not `REFLOG_NOT_FOUND`. | (a) Treat both `INVALID_REF` and `INVALID_OBJECT_ID` (classified with `errorDataCode`) as "does not resolve for reading". (b) Make `parseLooseRef` raise `INVALID_REF` for unparseable direct content (wider change: every loose-ref reader). (c) Record E13 as a residual. |
-| G4 | The shared ref glob's matching engine | `name-rev`'s `matchRefGlob` compiles the pattern to a backtracking `RegExp` (`src/domain/name-rev/ref-pattern.ts:13-21`). D feeds it patterns read from repository configuration, which a planted `.git/config` controls — the ReDoS class the linear `compileGlob` closed for pathspecs (`test/perf/domain/pathspec/compile-glob.perf.test.ts`). The design names the promotion, not the engine. | (a) A linear token matcher over UTF-8 bytes (dynamic programming, `O(tokens × length)`), plus a perf guard. (b) Extend the regex with brackets and escapes (smaller; polynomial backtracking on adversarial patterns stays). (c) Add brackets and a no-pathname mode to `compileGlob` (touches three unrelated consumers). |
-| G5 | `payloadByteLength`'s public docstring becomes untrue | `src/domain/objects/size.ts:7-17` says the value "Equal[s] the `size` field of git's `cat-file --batch` header". After A, `catFileBatch` reports the stored claim, which differs for a size-lying blob. The docstring is part of `reports/api.json`; the design says "api.json: none" for A. | (a) Amend the docstring in Part 15 and regenerate `reports/api.json` once at the phase boundary (Part 19 owes a regeneration anyway). (b) Leave it; the docs phase states the difference on the page. (c) Amend it in the docs phase together with the regeneration. |
-| G6 | Perf A/B tooling | No `branch.create` bench exists, and `bench:ab` cannot be scoped to two files (it runs every shared bench on both refs, which the saturated machine cannot afford). | (a) The hand-scoped A/B above with an uncommitted scratch `branch-create.bench.ts`. (b) Commit a `branch-create.bench.ts` in Part 18 (a new bench series) and still copy it into the `main` worktree for the A/B. (c) Full `bench:ab` when the machine is idle for its whole duration. |
-| G7 | C's clone unit row "nothing written" | `clone` writes `refs/remotes/origin/<b>` (accepts any existing type) before the local HEAD branch (`clone.ts:287-297`), and only the local branch or a detached `HEAD` is typed. An advertisement whose HEAD branch names a tree refuses **after** the remote-tracking ref is written — git's clone does the same (remote refs, then `update_head`), and git then deletes the half-made clone. | (a) Assert the refusal data and that `refs/heads/<b>` and a direct `HEAD` are absent; do not assert the remote-tracking ref is absent. (b) Verify every advertised ref before writing any (stricter ordering than git's). (c) Also remove a failed clone's directory as git does (a separate behaviour, out of scope). |
+| U1 | Memory adapter: a symlinked **intermediate** path component | Part 17 commit 1 follows a symlink **leaf**. A read of `/repo/link-dir/f` where `link-dir → realdir` still misses on the memory adapter (its model never files anything beneath a symlink — `assertAncestorChainFree`, `memory-file-system.ts:492`), where Node's `readFile` follows the component. | (a) Leave as recorded; no caller in tsgit reads beneath a worktree symlink. (b) Resolve every component on memory reads (full POSIX path walk). (c) Refuse reads beneath a symlinked component explicitly. |
+| U2 | Memory adapter refusal codes differ from Node on followed reads | A symlink loop refuses `UNSUPPORTED_OPERATION` on memory (existing `statFollowing`, pinned at `test/unit/adapters/memory/memory-file-system.test.ts:563-590`) but `PERMISSION_DENIED` on Node (`mapErrno` `ELOOP`, `node-file-system.ts:269-271`); reading a directory refuses `FILE_NOT_FOUND` on memory, `PERMISSION_DENIED` on Node (`EISDIR`); `readdir` of a missing path refuses `NOT_A_DIRECTORY` on memory, `FILE_NOT_FOUND` on Node. | (a) Keep memory's codes (Part 17 reuses them for the new follow arms). (b) Align memory's codes with Node's. (c) Align only the loop code. |
+| U3 | `updateRef` delete of an **absent** ref with `delete: true` | Pinned: `git update-ref -d <absent>` exits 0. tsgit's `delete: true` refuses `REF_NOT_FOUND` (`ref-store.ts:842-858`, pinned at `update-ref.test.ts:302-318`). G2 makes the **null-id** path a no-op for an absent ref; `delete: true` keeps refusing. | (a) Keep `delete: true` refusing (callers such as `remote rename` may rely on it). (b) Make both a no-op, as git. (c) Add an option. |
+| U4 | Delete of a **packed-only** ref | Pinned: git deletes it (null id and `-d`) and rewrites `packed-refs`. tsgit's files backend refuses `UNSUPPORTED_OPERATION` (`delete-packed-ref`, `ref-store.ts:851-856`); the null-id path inherits the refusal. | (a) Keep, pin the null-id row as residual. (b) Implement the packed-refs rewrite on delete. |
+| U5 | Delete of a **symbolic** ref | Pinned: `git update-ref refs/heads/sym 0{40}` (sym → x) deletes `x` and keeps `sym`. tsgit's delete path removes the loose `sym` file itself; `updateRef` never dereferences a symref for writes. | (a) Keep, record. (b) Dereference symrefs on `updateRef` writes and deletes (wider change). |
+| U6 | `logs/HEAD` entry on `delete: true` | Pinned: `git update-ref -d <branch HEAD points at>` appends `<old> 0{40}` to `logs/HEAD`, as the null id does. Part 18 commit 1 writes that entry on the **null-id** path only: `delete: true`'s callers log `HEAD` themselves — `branch.rename` (`src/application/commands/branch.ts:228`) deletes the old name while `HEAD` still points at it and writes git's rename entries, so a coupled entry there would break its reflog bytes. | (a) Keep `delete: true` unchanged (ADR-864 says so). (b) Add the entry to `delete: true` and give `branch.rename` a no-log delete. (c) Add an explicit `logHead` option. |
 
 ## Git pins taken while planning
 
@@ -242,11 +265,16 @@ probed" and add rows the parts pin in interop.
 |---|---|---|
 | Empty-tree id as a target in a repository that does not store it | `update-ref refs/tags/et 4b825dc6…` → 0, written; `update-ref refs/heads/et 4b825dc6…` → 128 `trying to write non-commit object … to branch 'refs/heads/et'`; reftable backend identical | Part 18: the verifier takes a virtual empty-tree arm |
 | Empty blob id not stored | `update-ref refs/tags/eb e69de29b…` → 128 `nonexistent object` (only the empty tree is virtual) | Part 18 |
-| Parse acceptance (the design's six rows) | no `tree` line → 128 `error: bogus commit object <id>`; non-hex parent → 128 `error: bad parents in commit <id>`; `type bogus` → 128 `error: unknown tag type 'bogus' in <id>`; tag `object` line cut to 30 hex → 128 (fatal only); commit with `tree`/`parent` but no author/committer on `refs/heads/*` → 0; garbage tree on `refs/tags/*` → 0 | Part 18 commit 2 |
-| Parent id equal to the tree id | not shallow → 128 `error: object <tree> is a tree, not a commit` + `error: bad parent <tree> in commit <id>`; commit id listed in `.git/shallow` → 0 on `refs/tags/*` and on `refs/heads/*` | Part 18 commit 2 |
-| Upper-case tree hex; bad `parent` line after `author`; empty tag name; tag body shorter than h + 24 | 0; 0; 0; 128 (fatal only) | Part 18 commit 2 |
-| Second parent line malformed | 128 `bad parents` | Part 18 commit 2 (unit) |
-| Null new id | `update-ref refs/tags/t 0{40}` → 0 and the ref is deleted; on an absent ref → 0 | Part 18 (G2 residual row) |
+| Parse acceptance (the design's six rows) | no `tree` line → 128 `error: bogus commit object <id>`; non-hex parent → 128 `error: bad parents in commit <id>`; `type bogus` → 128 `error: unknown tag type 'bogus' in <id>`; tag `object` line cut to 30 hex → 128 (fatal only); commit with `tree`/`parent` but no author/committer on `refs/heads/*` → 0; garbage tree on `refs/tags/*` → 0 | Part 18 commit 3 |
+| Parent id equal to the tree id | not shallow → 128 `error: object <tree> is a tree, not a commit` + `error: bad parent <tree> in commit <id>`; commit id listed in `.git/shallow` → 0 on `refs/tags/*` and on `refs/heads/*` | Part 18 commit 3 |
+| Upper-case tree hex; bad `parent` line after `author`; empty tag name; tag body shorter than h + 24 | 0; 0; 0; 128 (fatal only) | Part 18 commit 3 |
+| Second parent line malformed | 128 `bad parents` | Part 18 commit 3 (unit) |
+| Null new id, existing loose branch `b` | `update-ref refs/heads/b 0{40}` → 0; ref gone; `logs/refs/heads/b` removed. `update-ref -d` identical | Part 18 commit 1 |
+| Null new id, absent ref | `update-ref refs/heads/nx 0{40}` → 0; no ref, no log file created. `-d` on an absent ref → 0 too (open item U3) | Part 18 commit 1 |
+| Null new id with an old value | matching old → 0, deleted, log removed; mismatching old → 128 `cannot lock ref 'refs/heads/d': is at <oid> but expected <old>`, ref kept; old value on an absent ref → 128 `unable to resolve reference`; null old on an absent ref → 0; null old on an existing ref → 128 `reference already exists` | Part 18 commit 1 |
+| Null new id on the branch `HEAD` points at | `update-ref -m why refs/heads/main 0{40}` → 0; `logs/refs/heads/main` removed; `logs/HEAD` gains `<old> 0{40} <identity> <ts> <tz>\twhy`. `-d` writes the identical `logs/HEAD` entry | Part 18 commit 1 |
+| Null new id, packed-only ref; symref; tag | packed-only → 0, removed from `packed-refs` (open item U4); `refs/heads/sym → x` → 0, `x` deleted, `sym` kept (open item U5); lightweight tag → 0, deleted | Part 18 commit 1 (packed and symref rows residual-titled) |
+| Null new id, reftable backend | existing ref → 0, ref gone, `reflog exists` → 1 (log gone); absent → 0 | Part 18 commit 1 |
 | Bogus `gc.reflogExpire`, `reflog expire --expire=now` with **no ref** | 128 `error: 'bogus' for 'gc.reflogexpire' is not a valid timestamp` + `fatal: bad config variable 'gc.reflogexpire' in file '.git/config' at line 9` — configuration is parsed before the no-ref no-op | Part 19 commit 3 |
 | Malformed `core.deltaBaseCacheLimit`, `reflog expire --all --expire=now`, zero reflogs | 0 — the repo-settings class is not reached with zero targets | Part 19 commit 2 |
 | `[gc "<pattern>"] reflogExpire = never` against `refs/heads/main`, one 200-day-old entry | `refs/heads/m[a-z]in`, `refs/heads/m[[:lower:]]in`, `refs/heads/m[]a]in`, `refs/heads/m[a-]in` → kept (match); `refs/heads/m[!a]in`, `refs/heads/m[^a]in`, `refs/heads/m[[:digit:]]in`, `refs/heads/M*`, unterminated `refs/heads/m[a` → expired (no match); subsection `"refs/heads/m\\ain"` (pattern `m\ain`) → kept, `"refs/heads/m\\*in"` (pattern `m\*in`) → expired | Part 19 commit 3 (brackets in interop; escapes unit-only, see Part 19) |
@@ -269,15 +297,22 @@ Verified against the tree at `81e727aa` (no `src/` change since the design's anc
   and `:3658-3700` locate the memo's `createLruCache` call by `call[0] === ctx.deltaCache.maxSize` and
   derive the cap from `PARSED_OBJECT_TYPICAL_ENTRY_BYTES`; both assumptions break in Part 16 commit 2.
 - `CONFIG_BAD_DATE_VALUE` has no row in `docs/use/errors.md` today (pre-existing documentation gap).
+- `clone` removes `ctx.layout.gitDir` on any failure (`src/application/commands/clone.ts:111-118`), which
+  the design's "nothing written" wording did not account for (G7).
+- `updateRef`'s `delete: true` path (`src/application/primitives/update-ref.ts:42-45` →
+  `ref-store.ts:842-858` `applyDelete`) removes the loose file and its reflog but writes no coupled
+  `logs/HEAD` entry, refuses a packed-only ref and refuses an absent ref — all relevant to G2.
 
 ## Size budgets — tarball and size-limit
 
 **Tarball** (`tooling/verify-tarball.sh:152`, `SIZE_CAP=$((928 * 1024))` = 950 272 B). Last recorded
 measure 949 335 B → 937 B of headroom (the session's working figure is ~800 B; trust neither without a
-clean rebuild). Runtime added by part, design estimates: Part 15 ≈ +300 B; Part 16 ≈ +80 B; Part 17
-≈ +200 B; Part 18 ≈ +350 B (verifier) + the stream-arm change + the parse scanner (≈ +1 KiB total) +
-≈ +60 B (B); Part 19 ≈ +1.2 KiB (policy + token walk) + ≈ +0.5 KiB (glob). **The cap is crossed in
-Part 18 at the latest, certainly by Part 19.**
+clean rebuild). Runtime added by part, design estimates plus planning estimates for the two resolved
+gaps: Part 15 ≈ +300 B; Part 16 ≈ +80 B; Part 17 ≈ +250 B (memory-adapter follow helper, planning
+estimate) + ≈ +200 B (F); Part 18 ≈ +150 B (null-id delete and coupled `HEAD` entry, planning
+estimate) + ≈ +350 B (verifier) + the stream-arm change + the parse scanner (≈ +1 KiB total) + ≈ +60 B
+(B); Part 19 ≈ +1.2 KiB (policy + token walk) + ≈ +0.5 KiB (glob). **The cap is crossed in Part 18 at
+the latest, certainly by Part 19.**
 
 **size-limit** (`.size-limit.json`, `kB` = 1 000 B, gzip). Approximate headroom measured with
 `gzip -9` on the current `dist/` (built after the last `src/` commit):
@@ -289,6 +324,10 @@ Part 18 at the latest, certainly by Part 19.**
 | `Chunks: primitives` | 65 kB | ≈ 64 237 B | ≈ 0.76 kB | Part 15, Part 18 (verifier, stream arm), Part 19 (token walk) |
 | `Chunks: commands-internal` | 43 kB | ≈ 41 101 B | ≈ 1.9 kB | unlikely |
 | `Command (reflog)` | 3 kB | ≈ 1 551 B | ≈ 1.45 kB | Part 19 |
+| `Memory adapter` `dist/esm/adapters/memory/index.js` | 10 kB | ≈ 3 878 B | ≈ 6.1 kB | Part 17 commit 1 (not a risk) |
+
+`MemoryFileSystem` is not in the no-build browser bundle (its `symlink loop` refusal string appears only in `dist/esm/adapters/memory/index.js`), so Part
+17 commit 1 does not touch that budget; it does enter the tarball and the `Facade (memory shim)` entry.
 
 **Remedy (phase boundary, not in-part).** A red `check:tarball` or `check:size` is believed only after
 `rm -rf dist .wireit` and a fresh build. If still red: raise the tarball cap by the minimum whole KiB that
@@ -305,7 +344,7 @@ message. One `chore(size): …` commit per gate.
    `check:test-pyramid` and `check:write-surfaces` (new interop `@proves` blocks), `check:size`,
    `check:tarball`, `test:coverage` (100 %), `test:integration`, `test:parity`, `test:perf`.
 2. `npm run docs:json` and commit `reports/api.json` — owed by Part 15 (`payloadByteLength` docstring,
-   G5 default) and Part 19 (`CONFIG_BAD_DATE_VALUE` gains optional `key`, `source`, `line`). Suggested
+   G5) and Part 19 (`CONFIG_BAD_DATE_VALUE` gains optional `key`, `source`, `line`). Suggested
    message: `docs(api): regenerate the API report`. `check:doc-typedoc` is a prepush gate, not a validate
    gate.
 3. Size-cap raises per [Size budgets](#size-budgets--tarball-and-size-limit).
@@ -364,6 +403,18 @@ One line each on the 5.0 migration page; every item is observable by a caller.
 14. **Cache ceilings**: at sha256 the FlatTree and parsed-memo default valves admit their full reference
     workload; the memo's valve is charged at measured cost (≈ 37.7 MiB at sha1), so the documented cache
     family ceiling is ≈ 158 MiB, not 136 MiB. No API change. (H, O, ADR-869)
+15. **`MemoryFileSystem` reads follow symlinks like POSIX**: `read`, `readSlice`, `readUtf8`, `stat`,
+    `exists` and `readdir` follow a symlink leaf (40-hop loop limit) and resolve a relative link text
+    against the link's own directory — `stat` used to resolve it against the adapter root. A read through a
+    link now returns the target's bytes instead of `FILE_NOT_FOUND`, and `exists` on a dangling link is
+    `false` instead of `true`, matching the Node adapter. Writes, `lstat`, `readlink`, `rm`, `rename` and
+    `openWithNoFollow` still act on the link itself. The browser adapter is unchanged (OPFS has no
+    symlinks). (G1, ADR-868)
+16. **`updateRef(name, <null id>, …)` deletes the ref**, as `git update-ref <ref> 0{40}` does, instead of
+    writing a ref holding the null id: the compare-and-swap is honoured, an absent ref is a no-op success,
+    the ref's own reflog is removed, and no target is verified. Deleting the branch `HEAD` points at
+    through the null id appends git's `<old> 0{40}` entry to `logs/HEAD`; `delete: true` is unchanged.
+    (G2, ADR-864)
 
 ## Docs-phase debt declared by the parts
 
@@ -374,9 +425,12 @@ One line each on the 5.0 migration page; every item is observable by a caller.
   header hashed) rows.
 - Part 16: `docs/use/primitives/internals.md:98` and `:107` (valves, family total ≈ 158 MiB, sha256
   admission), `docs/understand/performance.md:59` and `:72`.
-- Part 17: `docs/use/primitives/internals.md:66` (read-through rule for a non-refname link text; the
-  HEAD-slot epoch sentence is written in the part itself).
-- Part 18: `docs/use/primitives/update-ref.md`, `docs/use/commands/tag.md`, `docs/use/commands/clone.md`,
+- Part 17: `docs/understand/security.md:31-33` ("Memory — symlink loop cap": reads now follow a symlink
+  leaf, relative to the link's directory, 40 hops, structural containment still refusing targets outside
+  the root; writes never follow); `docs/use/primitives/internals.md:66` (read-through rule for a
+  non-refname link text; the HEAD-slot epoch sentence is written in the part itself).
+- Part 18: `docs/use/primitives/update-ref.md` (null id deletes; coupled `logs/HEAD` entry on delete;
+  verification), `docs/use/commands/tag.md`, `docs/use/commands/clone.md`,
   `docs/use/primitives/stream-blob.md` (refusal at `await`); `docs/use/errors.md` rows
   `OBJECT_NOT_FOUND`, `OBJECT_HASH_MISMATCH`, `INVALID_COMMIT`, `INVALID_TAG`, `UNEXPECTED_OBJECT_TYPE`
   gain `updateRef` / `clone` / `tag.create` throwers and the caller composition of git's two lines.
@@ -396,42 +450,51 @@ cites `refExists`), `src/application/primitives/update-ref.ts` (14 import; 18 ve
 `src/domain/objects/error.ts` (14 `isObjectNotFound`; 18 cites factories),
 `src/application/commands/reflog.ts` (14 lists a call site; 19 edits), `src/application/commands/branch.ts`
 (14 import; 18 suite list), `test/unit/application/primitives/cat-file-batch.test.ts` (14, 15),
-`test/unit/application/primitives/fixtures.ts` (15, 17, 18), `test/unit/application/primitives/update-ref.test.ts`
+`test/unit/application/primitives/fixtures.ts` (15, 18), `src/application/primitives/ref-store.ts` also
+(18 commit 1 `applyDelete`), `src/application/commands/clone.ts` (18 only), `test/unit/application/primitives/update-ref.test.ts`
 (18 only), `docs/use/errors.md` and `reports/api.json` (shared infrastructure). Not a merge signal.
 
 ## Self-review (convergence record)
 
 Three passes against the design, the ADRs and the ratified decisions.
 
-- **Coverage of design changes.** I → Part 14. A → Part 15 c1. N → Part 15 c2. H → Part 16 c1. O (DC-O1 a)
-  → Part 16 c2. F → Part 17 c1. M (DC-M1 a) → Part 17 c2. C (DC-C1 a, DC-C2 c) + stream arm +
-  `withLazyFetchRetry` export + empty-tree arm → Part 18 c1. Parse acceptance → Part 18 c2. B → Part 18 c3.
+- **Coverage of design changes and gap resolutions.** I → Part 14. A → Part 15 c1. N → Part 15 c2. H →
+  Part 16 c1. O (DC-O1 a) → Part 16 c2. G1 (b) memory-adapter symlink parity → Part 17 c1. F → Part 17 c2.
+  M (DC-M1 a) → Part 17 c3. G2 (b) null-id delete → Part 18 c1. C (DC-C1 a, DC-C2 c) + stream arm +
+  `withLazyFetchRetry` export + empty-tree arm + G7 clone assertion → Part 18 c2. Parse acceptance → Part 18
+  c3. B → Part 18 c4. G3 → Part 19 c2; G4 → Part 19 c3; G5 → Part 15 c1; G6 → Part 18 probes.
   K → Part 19 c1. E (DC-E1 a, DC-E2 a) → Part 19 c2. D (DC-D1 a, DC-D2 a, DC-D3 b) → Part 19 c3. ADR
   correction notes: already committed, no part. Docs: declared above.
 - **Interop coverage of pinned rows.** A1 (`cat-file -s`/`-p`/`--batch`, checkout, status, fsck), A2, A3 →
   Part 15 interop; A1's buffered-tier rows (`diff`, `archive`, `grep`, `repack`) and A4 are unit-only by
   design (reproducing them means sizing a buffer from the claim; tsgit's real-bytes behaviour is pinned by
-  unit rows). B1–B8 → Part 18 c3. C1–C9 + empty tree + null-id residual + reftable → Part 18 c1; the six
-  parse rows + PC4 checked/shallow + upper-case hex, late `parent`, empty tag name and short tag rows →
-  Part 18 c2. D0–D10i, D12–D23, D8h (brackets), D14b (no ref) → Part 19 c3; D11 unit-only by default
+  unit rows). Null-id delete (existing, absent, matching old, mismatching old, old on absent, `HEAD`
+  reflog entry, reftable; packed-only and symref residual-titled) → Part 18 c1. B1–B8 → Part 18 c4.
+  C1–C9 + empty tree/blob + reftable → Part 18 c2; the six parse rows + PC4 checked/shallow + upper-case
+  hex, late `parent`, empty tag name and short tag rows → Part 18 c3. Memory-adapter follow arms → the
+  `FileSystem` contract suite, run against Node and memory (Part 17 c1). D0–D10i, D12–D23, D8h (brackets), D14b (no ref) → Part 19 c3; D11 unit-only by default
   (lowercase keys are the token walk's own rows; an interop row may be added if cheap); D11c/D11d unit-only
   (local-only configuration scope, ADR-637 residual; the interop environment deliberately has no global
   configuration); `\` escapes in patterns unit-only (config subsection quoting is a separate grammar). E1,
   E2, E4, E5, E6, E6b, E7, E8, E10, E12, E13,
   E14, E15, O-a–O-e, zero-reflog `--all` → Part 19 c2; E3, E16, O-f unit-only (unchanged agreement, same
-  code path as a pinned row); E9, E1c–e out of scope (one ref per call; other verbs). F1–F8 → Part 17 c1.
+  code path as a pinned row); E9, E1c–e out of scope (one ref per call; other verbs). F1–F8 → Part 17 c2.
 - **Every part has a gate that fails without its change**, with inert-change risks named in each part's
   traps: Part 14 (a foreign error must reach `readOne` — it does, `readLooseCompressed` only swallows
   `FILE_NOT_FOUND`); Part 15 (lying rows must use a claim ≠ body length on a **loose** object, and assert
   `ctx.deltaCache.has(id) === false`); Part 16 (sha256 rows must build the Context with
-  `algorithm: 'sha256'` and assert the valve number itself); Part 17 (the F1 `missing` row passes on any
-  adapter, so F2 on the same double carries the proof; M's pin needs the characterization sanity step);
-  Part 18 (above-the-gate rows must prove the object exceeds 65 536 compressed bytes, or the buffered arm
-  answers); Part 19 (K asserts nothing new by design — its proof is an empty test diff; E's gone-ref
+  `algorithm: 'sha256'` and assert the valve number itself); Part 17 (a follow row whose link text is
+  absolute passes under the old root-relative `stat`, so every new contract row uses a **relative** link
+  text in a subdirectory; the F1 `missing` row passes on any adapter, so F2 carries the proof; M's pin
+  needs the characterization sanity step); Part 18 (the null-id rows must start from an existing loose ref
+  with a reflog, or "log removed" passes vacuously; above-the-gate rows must prove the object exceeds
+  65 536 compressed bytes, or the buffered arm answers); Part 19 (K asserts nothing new by design — its proof is an empty test diff; E's gone-ref
   interop row must be flipped, not duplicated).
 - **Surface decisions** are made per new export in each part; the only public shape changes are
-  `payloadByteLength`'s docstring (Part 15, G5) and `CONFIG_BAD_DATE_VALUE`'s data (Part 19). No barrel,
-  facade, exhaustiveness switch, Tier-1 command or doc-coverage page is added.
+  `payloadByteLength`'s docstring (Part 15, G5) and `CONFIG_BAD_DATE_VALUE`'s data (Part 19). The public
+  `MemoryFileSystem` class (`src/adapters/memory/index.ts`) and `updateRef` change behaviour without a type
+  change (migration notes 15, 16). No barrel, facade, exhaustiveness switch, Tier-1 command or
+  doc-coverage page is added.
 
 ---
 
@@ -679,7 +742,7 @@ Observable today (live, per the design): `catFile`, `readObject`, `readObject { 
 - `src/domain/objects/size.ts:7-17` — `payloadByteLength`'s docstring: replace "Equal to the `size` field
   of git's `cat-file --batch` header" with a sentence saying it is the canonical body length, equal to
   the stored size git's `cat-file --batch` prints for every object whose stored header is honest and whose
-  body re-serialises byte-exactly (G5 default). The function body is unchanged.
+  body re-serialises byte-exactly (G5). The function body is unchanged.
 
 **Public or internal — decided.** `splitLooseObject`, `assertLooseSizeConsistent`, `LooseObjectSplit`:
 internal (`src/domain/objects/index.ts:37-38` exports only `GitObject`, `ObjectContent`, `parseObject`,
@@ -1066,13 +1129,134 @@ Commit 1: `fix(cache): widen the FlatTree and parsed-memo default valves by hash
 
 Commit 2: `fix(cache): charge the parsed-object memo at its measured per-entry cost`
 
-## Part 17 — A symlinked `HEAD` whose link text is not a valid refname is read through; the HEAD slot's gate-to-gate epoch (design F + M, DC-M1, ADR-868, ADR-855 correction) — 2 commits
+## Part 17 — Memory-adapter symlink parity; a symlinked `HEAD` whose link text is not a valid refname is read through; the HEAD slot's gate-to-gate epoch (gap G1 b, design F + M, DC-M1, ADR-868, ADR-855 correction) — 3 commits
 
 ### Context
 
-**Depends on Part 14** (`ref-store.ts:35` already imports `errorDataCode` from the domain).
+**Depends on Part 14** (`ref-store.ts:35` already imports `errorDataCode` from the domain). Commit 1 must
+land before commit 2: F's unit rows run on the real memory adapter.
 
-#### Commit 1 — read-through (F)
+#### Commit 1 — the memory adapter follows symlinks on read (gap G1, option b, user decision)
+
+**Decision.** `MemoryFileSystem`'s content and metadata readers follow a symlink **leaf** with the existing
+40-hop loop limit (`SYMLINK_FOLLOW_LIMIT`, `src/adapters/memory/memory-file-system.ts:153-154`), and a
+relative link text resolves against the **link's own directory**, as POSIX does — which also fixes `stat`,
+whose follower resolves relative text against the adapter root today (`statFollowing:164-179` →
+`resolve(target)` → `normalizePath(rootDir, …)`, `:601-604`). Write paths keep their no-follow refusals.
+Recorded in ADR-868.
+
+**Per-method behaviour (verified in the source of both adapters).**
+
+| Method (memory anchor) | Memory today | Node adapter (`src/adapters/node/node-file-system.ts`) | Memory after |
+|---|---|---|---|
+| `read` (`:66-73`) | `files.get` only → `FILE_NOT_FOUND` for a link | `readFile(real)` follows (`:631-635`) | follows |
+| `readSlice` (`:75-86`) | `FILE_NOT_FOUND` for a link | `open(real, 'r')` follows (`:637-657`) | follows |
+| `readUtf8` (`:88-91`) | via `read` | `readFile(real, 'utf-8')` follows (`:659-663`) | follows (via `read`) |
+| `stat` (`:156-179`) | follows, relative text against the root | `fsOps.stat` follows, relative to the link's directory (`:743-747`) | follows, relative to the link's directory |
+| `exists` (`:144-151`) | `true` for any symlink key, dangling included | `fsOps.stat` (follows): dangling → `false`; any other errno rethrown mapped (`:730-741`) | follows: dangling → `false`; a loop refuses as `stat` does |
+| `readdir` (`:196-221`) | a link → `NOT_A_DIRECTORY` | `fsOps.readdir(real)` follows a link to a directory (`:755-766`) | follows, then today's directory logic |
+| `lstat` (`:181-194`), `readlink` (`:354-361`) | act on the link | act on the link (`:749-753`, `:939-943`) | unchanged |
+| `openWithNoFollow` (`:421-431`) | refuses a link `PERMISSION_DENIED` | `O_NOFOLLOW` → `ELOOP` → `PERMISSION_DENIED` | unchanged |
+| `write`, `writeExclusive`, `writeStream`, `writeUtf8`, `appendUtf8` (`:93-135`) | refuse a link leaf | no-follow refusals (`resolveWrite` + leaf checks) | unchanged |
+| `rm`, `rmRecursive`, `rename`, `atomicRename` | act on the link | act on the link (`:774-785`, `:787-…`) | unchanged |
+| `chmod` (`:381-383`) | resolves the path, no-op | refuses a link leaf (`:958-965`) | unchanged (a write surface; not in scope) |
+
+Pre-existing code differences the follow arms inherit, not changed here (open item U2): a loop refuses
+`UNSUPPORTED_OPERATION` on memory, `PERMISSION_DENIED` on Node; reading a directory refuses `FILE_NOT_FOUND`
+on memory, `PERMISSION_DENIED` on Node; `readdir` of a missing path refuses `NOT_A_DIRECTORY` on memory,
+`FILE_NOT_FOUND` on Node. A symlinked **intermediate** component (`/repo/link-dir/f`) is not followed (open
+item U1). A link whose target leaves the root still refuses `PERMISSION_DENIED` through `resolve`
+(`:459-465`), the posture the contract's escape row declares (`test/unit/adapters/memory/memory-file-system.test.ts:14-21`,
+`expected: 'refused'`).
+
+**Target shape.**
+```ts
+/** The node a read lands on: `normalized` itself, or the end of its symlink chain — a relative link text
+ *  resolved against the link's own directory, as POSIX does. */
+private followLinks(normalized: string, originalPath: string, operation: string): string {
+  let current = normalized;
+  for (let hops = 0; ; hops += 1) {
+    const target = this.symlinks.get(current);
+    if (target === undefined) return current;
+    if (hops >= MemoryFileSystem.SYMLINK_FOLLOW_LIMIT) {
+      throw unsupportedOperation(operation, `symlink loop: ${originalPath}`);
+    }
+    current = this.resolve(target.startsWith('/') ? target : `${parentOf(current)}/${target}`);
+  }
+}
+```
+`read`, `readSlice`, `stat`, `exists` (for a symlink key) and `readdir` call it after `this.resolve(path)`;
+`statFollowing` is deleted (`stat` becomes `buildStat(this.followLinks(...), path)`, keeping the `return
+await` shape its workerd comment explains, `:157-161`). Preserve the existing hop boundary exactly:
+`test/unit/adapters/memory/memory-file-system.test.ts:591-635` ("chain of exactly 40 valid symlinks ending at
+a file") and `:563-590` (mutual loop → `UNSUPPORTED_OPERATION`, `operation: 'stat'`, reason naming the loop)
+must stay green unchanged — adjust the loop form, not the tests. `parentOf` is `:610-612`.
+
+**Public or internal.** `MemoryFileSystem` is public (`src/adapters/memory/index.ts:4`); no type or JSDoc
+changes (a JSDoc edit would move `reports/api.json`). `followLinks` is private. **Surface gates tripped:**
+none mechanical; migration note 15; docs debt `docs/understand/security.md:31-33`.
+
+**Browser (OPFS) impact: none — confirmed.** `src/adapters/browser/browser-file-system.ts:168-173`:
+`readlink` and `symlink` refuse `UNSUPPORTED_OPERATION` ("OPFS does not support symbolic links"), and its
+`lstat` never reports a link (`:112`). The memory adapter's code is not in the no-build browser bundle (its
+`symlink loop` string appears only in `dist/esm/adapters/memory/index.js`).
+
+**Node-parity oracle for each changed arm.** `test/unit/ports/file-system.contract.ts` runs against
+`MemoryFileSystem` (`test/unit/adapters/memory/memory-file-system.test.ts:6-25`) and `NodeFileSystem`
+(`test/unit/adapters/node/node-file-system.test.ts`, which declares `symlinkReadEscape` `'allowed'`,
+`:81`). Add contract rows beside `:791` ("Given symlink, When stat, Then follows symlink"), each with a
+**relative** link text inside a subdirectory (an absolute text would pass under the old root-relative
+follower and prove nothing):
+- `write(<root>/sub/target.txt)`, `symlink('target.txt', <root>/sub/link)` → `read`, `readUtf8`,
+  `readSlice(link, 1, 2)` return the target's bytes; `stat(link).size` is the target's; `exists(link)` is
+  `true`; `lstat(link).isSymbolicLink` stays `true`;
+- `symlink('../top.txt', <root>/sub/up)` → `read(up)` returns `<root>/top.txt`'s bytes;
+- a two-hop relative chain → `read` returns the final target's bytes;
+- `symlink('missing.txt', <root>/sub/dangling)` → `exists` is `false`; `read` refuses `FILE_NOT_FOUND`
+  (assert `data.code`);
+- `mkdir(<root>/sub/dir)`, a file inside, `symlink('dir', <root>/sub/dir-link)` → `readdir(dir-link)` lists the
+  file's name; `stat(dir-link).isDirectory` is `true`.
+The Node run of each row is its parity oracle; the head-symlink interop rows in commit 2 are the end-to-end
+one on Node.
+
+**Existing tests and fixtures that touch the old behaviour** (`rg -l '\.symlink\(' test --glob '!test/integration/**'`
+plus integration users of the memory adapter). None asserts a non-following memory read (the only link
+reads in the memory suite read a path a file has replaced, `:1612`, or a target, `:1716`); every `exists`
+on a link in that suite has a live target (`:245`, `:364`, `:558`, `:960`, `:1643`, `:2206`), so it stays
+`true`/`false` as asserted. The set below must still pass because production code could have relied on a
+memory read of a worktree link failing:
+- Adapter and port suites: `test/unit/adapters/memory/memory-file-system.test.ts`,
+  `test/unit/adapters/node/node-file-system.test.ts`, `test/unit/adapters/node/node-file-system-injected.test.ts`,
+  `test/unit/ports/file-system.contract.ts` (via the two adapter suites),
+  `test/unit/adapters/snapshot-resolvers/fs-workdir-enumerator.test.ts`,
+  `test/unit/repository/wrap-fs-validator.test.ts`, `test/unit/repository/file-system-layout-probe.test.ts`.
+- Commands: `test/unit/application/commands/add.test.ts`, `blame.test.ts`, `cherry-pick.test.ts`,
+  `grep.test.ts`, `merge.test.ts`, `rebase.test.ts`, `revert.test.ts`, `rm.test.ts`, `stash.test.ts`,
+  `status.test.ts`, `internal/repo-state.test.ts`, `internal/resolve-pathspec.test.ts`,
+  `internal/working-tree.test.ts`.
+- Primitives: `test/unit/application/primitives/apply-changeset.test.ts`, `apply-merge-to-worktree.test.ts`,
+  `compare-working-tree-entry.test.ts`, `internal/head-file.test.ts`, `internal/repo-state.test.ts`,
+  `internal/symlinked-leading-path.test.ts`, `internal/write-working-tree-file.test.ts`, `ref-store.test.ts`,
+  `snapshot/workdir-entry.mutation.test.ts`, `snapshot/workdir-entry.test.ts`,
+  `update-config-sections.test.ts`, `walk-working-tree.properties.test.ts`, `walk-working-tree.test.ts`.
+- Integration: `test/integration/add-all.test.ts`.
+- **`refuseReadOnSymlink` users** (`test/unit/application/primitives/fixtures.ts:322-332`):
+  `stash.test.ts:182`, `blame.test.ts:1191`, `grep.test.ts:577`, `compare-working-tree-entry.test.ts:265`,
+  `snapshot/workdir-entry.test.ts:229`, `internal/head-file.test.ts:43`. They assert production code never
+  calls `read` on a worktree link (the double throws). They stay valid and matter more now: without them a
+  regression that reads through a worktree link would silently return target bytes on the memory adapter
+  instead of failing.
+
+**Traps**
+- No references to this plan, the design, ADRs, gap numbers or the backlog in source or test code.
+- **Inert-change risk:** absolute link texts pass before and after; the new rows must use relative text in a
+  subdirectory.
+- Do not follow links in any write path, in `lstat`, `readlink`, `rm`, `rename` or `openWithNoFollow`.
+- Do not change the loop refusal's code or `operation` for `stat` (pinned at `:563-590`).
+- Symlink creation in the Node contract run needs OS symlink support; the existing `:791` row already
+  requires it, so the new rows add no new platform requirement.
+
+#### Commit 2 — read-through (F)
 
 **Design excerpt.** git's `read_ref_internal` (`refs/files-backend.c:516-570`): a symlinked `HEAD` whose
 link text starts with `refs/` **and** passes `check_refname_format` is a symref; any other text falls through
@@ -1154,36 +1338,31 @@ the link; a `symbolic` result advances the branch and keeps the link). Applies t
 **Public or internal — decided.** `fromLooseContent`, `resolveHeadSymlink`, `resolveFollowedHead`: module
 private. **Surface gates tripped:** none. Docs debt: `docs/use/primitives/internals.md:66`.
 
-**Fixture (design gap G1).** `MemoryFileSystem.read`/`readUtf8` (`src/adapters/memory/memory-file-system.ts:66-91`)
-never follow a symlink, and its `stat` resolves a relative link target against the adapter root
-(`:155-178`, `:459-465`). Add to `test/unit/application/primitives/fixtures.ts`, beside
-`refuseReadOnSymlink` (`:322`), a Node-shaped double:
-```ts
-/** A Context whose `stat`/`readUtf8` of `<gitDir>/HEAD` follow the link text relative to `<gitDir>`, as
- *  POSIX does; a directory target makes `readUtf8` refuse PERMISSION_DENIED, as Node's EISDIR mapping does. */
-export const followingHeadLink = (base: Context): Context => { … };
-```
-It resolves `${base.layout.gitDir}/${await base.fs.readlink(headPath)}` for exactly that path, delegates
-every other path, and throws `permissionDenied(path)` (`src/domain/error.ts`) from `readUtf8` when the
-target is a directory.
+**Adapter (gap G1 resolved by commit 1).** After commit 1 the memory adapter's `stat` and `readUtf8`
+follow the link relative to `<gitDir>` exactly as Node does, so the rows below use the real adapter — no
+test double.
 
 **Tests (unit)** — `test/unit/application/primitives/ref-store.test.ts` after `:989-1022` (the two existing
-symlink rows stay: a valid refname link text is symbolic, dangling or not). New rows through
-`followingHeadLink(await buildSeededContext())`, symlink written with `ctx.fs.symlink(linkText,
-'/repo/.git/HEAD')`, `sut = createRefStore(ctx)`, `result = await sut.resolveDirect('HEAD')`:
+symlink rows stay: a valid refname link text is symbolic, dangling or not). New rows on
+`await buildSeededContext()` (the real memory adapter), symlink written with `ctx.fs.symlink(linkText,
+'/repo/.git/HEAD')`, targets written under `/repo/.git/`, `sut = createRefStore(ctx)`,
+`result = await sut.resolveDirect('HEAD')`:
 - link `refs/heads/a..b`, target absent → `{ kind: 'missing' }`;
 - link `refs/heads/a..b`, target holds an oid → `{ kind: 'direct', id }` (the row that proves the
   read-through; F1's `missing` alone would pass on any adapter);
 - target holds `ref: refs/heads/side` → `{ kind: 'symbolic', target: 'refs/heads/side' }`;
 - link `refs/heads/../heads/side` → `direct` with `side`'s oid;
 - link `refs/heads/x.lock` → `direct`; link `refs/heads/sp ace` → `direct`;
-- target is a directory → `missing` (kills dropping the `isDirectory` check: the double's `readUtf8` would
-  refuse `PERMISSION_DENIED`);
+- target is a directory → `missing`. On the memory adapter reading a directory already refuses
+  `FILE_NOT_FOUND` (open item U2), so this row alone cannot prove the `isDirectory` check; add one row whose
+  Context spreads the seeded one with a `readUtf8` that refuses `permissionDenied(path)`
+  (`src/domain/error.ts`) for a directory, as Node's `EISDIR` mapping does — that row fails if the check is
+  dropped. Node interop F6 is the end-to-end oracle;
 - link text `refs\heads\main` (backslashes) → `symbolic` `refs/heads/main` (normalisation kept);
 - target content malformed (`garbage`) → refuses `INVALID_OBJECT_ID` (the `parseLooseRef` mapping; assert
   `data.code`);
-- the double's `stat` rejects `permissionDenied` → `resolveDirect` rejects `PERMISSION_DENIED` (not
-  `missing`);
+- a Context whose `stat` rejects `permissionDenied` for the HEAD path → `resolveDirect` rejects
+  `PERMISSION_DENIED` (not `missing`);
 - "Given a gate already validated HEAD on this Context": `await validateHead(ctx)`
   (`src/application/primitives/internal/head-file.ts:128`) on the **same** Context object, `resolveDirect`
   → `direct` X; rewrite the target file to oid Y (the link is untouched); `resolveDirect` again → `direct`
@@ -1224,7 +1403,7 @@ in the other). tsgit reads through `createNodeContext({ workDir })`, `revParse`/
 - A primitive-only session with a non-`refs/` link text now reads through instead of refusing — the gate
   (`hasUsableHead`) still refuses such a repository before any command.
 
-#### Commit 2 — the HEAD slot's gate-to-gate epoch (M)
+#### Commit 3 — the HEAD slot's gate-to-gate epoch (M)
 
 **Design excerpt (DC-M1 a).** `validateHead` (`head-file.ts:128-146`, every gate) marks the slot
 `trusted`; `readHeadFile` (`:156-164`) serves a trusted slot with zero I/O; nothing clears it at command end
@@ -1265,36 +1444,60 @@ epoch). No code change.
 
 ### TDD steps
 
-**Commit 1 (F)**
-1. **RED** — `ref-store.test.ts`: link `refs/heads/a..b` → target oid resolves `direct`. Fails: `INVALID_REF`
-   (`ref name must not contain ..`).
-2. **RED** — target `ref: refs/heads/side` resolves symbolic `side`; target directory → `missing`; absent →
-   `missing`. Fail: `INVALID_REF`.
-3. **GREEN** — `fromLooseContent`, `resolveHeadSymlink`, `resolveFollowedHead`; `resolveDirect` uses
-   `fromLooseContent`.
-4. **RED/GREEN** — `..` path, `.lock`, space, backslash, malformed content, `stat` permission failure, and
-   the post-gate target rewrite rows.
-5. **RED/GREEN** — interop rows F2, F3, F4, F5, F8, F7, then the residual-titled F1 and F6.
-6. **REFACTOR** — `resolveHeadDirect`'s docblock (`:408-416`) states the read-through rule.
+**Commit 1 (memory adapter)**
+1. **RED** — contract row: relative link in a subdirectory, `read(link)` returns the target's bytes. Fails on
+   the memory run (`FILE_NOT_FOUND`); passes on the Node run (the parity oracle).
+2. **RED** — contract row: relative link in a subdirectory, `stat(link).size`. Fails on memory (the root-relative
+   follower lands on a missing path).
+3. **GREEN** — `followLinks`; `read`, `readSlice`, `stat` use it; delete `statFollowing`.
+4. **RED/GREEN** — `readUtf8`, `readSlice`, `../` target, two-hop chain, dangling link (`exists` false, `read`
+   `FILE_NOT_FOUND`), link to a directory (`readdir`, `stat.isDirectory`); `exists` and `readdir` follow.
+5. **Regression** — `memory-file-system.test.ts:563-635` loop and 40-hop rows unchanged and green; run the
+   enumerated suites in batches (see Gate).
 
-**Commit 2 (M)**
-7. **Characterization** — the two epoch rows (pass first time); run the sanity mutation from the probes
-   table, watch them fail, revert.
-8. **Docs** — the two docstrings, ledger L1 + correction point 9, `internals.md:66` epoch wording.
+**Commit 2 (F)**
+6. **RED** — `ref-store.test.ts`: link `refs/heads/a..b` → target oid resolves `direct`. Fails: `INVALID_REF`
+   (`ref name must not contain ..`).
+7. **RED** — target `ref: refs/heads/side` resolves symbolic `side`; target directory → `missing`; absent →
+   `missing`. Fail: `INVALID_REF`.
+8. **GREEN** — `fromLooseContent`, `resolveHeadSymlink`, `resolveFollowedHead`; `resolveDirect` uses
+   `fromLooseContent`.
+9. **RED/GREEN** — `..` path, `.lock`, space, backslash, malformed content, the Node-shaped directory row, `stat`
+   permission failure, and the post-gate target rewrite rows.
+10. **RED/GREEN** — interop rows F2, F3, F4, F5, F8, F7, then the residual-titled F1 and F6.
+11. **REFACTOR** — `resolveHeadDirect`'s docblock (`:408-416`) states the read-through rule.
+
+**Commit 3 (M)**
+12. **Characterization** — the two epoch rows (pass first time); run the sanity mutation from the probes
+    table, watch them fail, revert.
+13. **Docs** — the two docstrings, ledger L1 + correction point 9, `internals.md:66` epoch wording.
 
 ### Gate
 
-Commit 1:
+Commit 1 (memory adapter):
+```
+npx vitest run --maxWorkers=2 test/unit/adapters/memory/memory-file-system.test.ts test/unit/adapters/node/node-file-system.test.ts test/unit/adapters/node/node-file-system-injected.test.ts test/unit/adapters/snapshot-resolvers/fs-workdir-enumerator.test.ts test/unit/repository/wrap-fs-validator.test.ts test/unit/repository/file-system-layout-probe.test.ts
+npx vitest run --maxWorkers=2 test/unit/application/commands/add.test.ts test/unit/application/commands/blame.test.ts test/unit/application/commands/cherry-pick.test.ts test/unit/application/commands/grep.test.ts test/unit/application/commands/merge.test.ts test/unit/application/commands/rebase.test.ts test/unit/application/commands/revert.test.ts test/unit/application/commands/rm.test.ts
+npx vitest run --maxWorkers=2 test/unit/application/commands/stash.test.ts test/unit/application/commands/status.test.ts test/unit/application/commands/internal/repo-state.test.ts test/unit/application/commands/internal/resolve-pathspec.test.ts test/unit/application/commands/internal/working-tree.test.ts test/unit/application/primitives/apply-changeset.test.ts test/unit/application/primitives/apply-merge-to-worktree.test.ts test/unit/application/primitives/compare-working-tree-entry.test.ts
+npx vitest run --maxWorkers=2 test/unit/application/primitives/internal/head-file.test.ts test/unit/application/primitives/internal/repo-state.test.ts test/unit/application/primitives/internal/symlinked-leading-path.test.ts test/unit/application/primitives/internal/write-working-tree-file.test.ts test/unit/application/primitives/ref-store.test.ts test/unit/application/primitives/snapshot/workdir-entry.mutation.test.ts test/unit/application/primitives/snapshot/workdir-entry.test.ts test/unit/application/primitives/update-config-sections.test.ts
+npx vitest run --maxWorkers=2 test/unit/application/primitives/walk-working-tree.properties.test.ts test/unit/application/primitives/walk-working-tree.test.ts
+npx vitest run test/integration/add-all.test.ts
+npx tsc --noEmit -p tsconfig.json
+./node_modules/.bin/biome check src/adapters/memory/memory-file-system.ts test/unit/ports/file-system.contract.ts test/unit/adapters/memory/memory-file-system.test.ts
+npx cspell --no-progress src/adapters/memory/memory-file-system.ts test/unit/ports/file-system.contract.ts test/unit/adapters/memory/memory-file-system.test.ts
+```
+
+Commit 2 (F):
 ```
 npx vitest run --maxWorkers=2 test/unit/application/primitives/ref-store.test.ts test/unit/application/primitives/internal/head-file.test.ts test/unit/application/primitives/internal/repo-state.test.ts test/unit/application/primitives/resolve-ref.test.ts test/unit/application/primitives/update-ref.test.ts
 npx vitest run test/integration/head-symlink-interop.test.ts
 npx vitest run test/integration/head-identity-freshness-interop.test.ts
 npx tsc --noEmit -p tsconfig.json
-./node_modules/.bin/biome check src/application/primitives/ref-store.ts test/unit/application/primitives/fixtures.ts test/unit/application/primitives/ref-store.test.ts test/integration/head-symlink-interop.test.ts
-npx cspell --no-progress src/application/primitives/ref-store.ts test/unit/application/primitives/fixtures.ts test/unit/application/primitives/ref-store.test.ts test/integration/head-symlink-interop.test.ts
+./node_modules/.bin/biome check src/application/primitives/ref-store.ts test/unit/application/primitives/ref-store.test.ts test/integration/head-symlink-interop.test.ts
+npx cspell --no-progress src/application/primitives/ref-store.ts test/unit/application/primitives/ref-store.test.ts test/integration/head-symlink-interop.test.ts
 ```
 
-Commit 2:
+Commit 3 (M):
 ```
 npx vitest run --maxWorkers=2 test/unit/application/primitives/internal/head-file.test.ts
 npx tsc --noEmit -p tsconfig.json
@@ -1306,18 +1509,126 @@ npx cspell --no-progress src/application/primitives/internal/head-file.ts test/u
 
 ### Commit
 
-Commit 1: `fix(refs): read through a symlinked HEAD whose link text is not a valid refname`
+Commit 1: `fix(adapters): follow symlinks on memory adapter reads relative to the link's directory`
 
-Commit 2: `test(refs): pin the HEAD slot's gate-to-gate trust epoch and document it`
+Commit 2: `fix(refs): read through a symlinked HEAD whose link text is not a valid refname`
 
-## Part 18 — Ref updates verify their target: existence, hash, parse acceptance, branch typing; `tag.create`'s order (design C + B, DC-C1 a with its parse-acceptance follow-up, DC-C2 c, ADR-864) — 3 commits
+Commit 3: `test(refs): pin the HEAD slot's gate-to-gate trust epoch and document it`
+
+## Part 18 — The null id deletes; ref updates verify their target: existence, hash, parse acceptance, branch typing; `tag.create`'s order (gap G2 b, design C + B, DC-C1 a with its parse-acceptance follow-up, DC-C2 c, ADR-864) — 4 commits
 
 ### Context
 
 **Depends on Part 14** (`update-ref.ts:6` imports the domain `errorDataCode`) and **Part 15** (no size-lying
 loose object is ever cached, so a cache hit re-derives its stored header from `content.byteLength`).
+Commit 1 lands before commit 2 so C's placement only has to skip verification on a delete.
 
-#### Commit 1 — target verification: existence, hash, branch typing (C)
+#### Commit 1 — a null new id deletes the ref, as git does (gap G2, option b, user decision)
+
+**Decision (ADR-864 note).** git treats a new value equal to the null id as a deletion (the files backend
+marks the update `REF_DELETING`), and `ref_transaction_update`'s `!is_null_oid` guard keeps it out of
+verification. `updateRef(ctx, name, zeroOid, { reflogMessage })` — no `delete: true` — therefore deletes:
+the compare-and-swap is honoured, an absent ref is a no-op success, the ref's own reflog is removed, and
+when `HEAD` symbolically points at the deleted ref a `logs/HEAD` entry `<old> 0{40}` with the message is
+appended. `delete: true` is **not** changed (open items U3, U6).
+
+**Pins (git 2.55.0, taken while resolving the gap).**
+
+| Row | git | tsgit today | tsgit after |
+|---|---|---|---|
+| existing loose branch `b` with a log, `update-ref refs/heads/b 0{40}` | 0; ref gone; `logs/refs/heads/b` removed | writes `0{40}` into `refs/heads/b`; log gains an entry | ref gone; log removed |
+| absent ref | 0; nothing created (no log file) | writes a null-id ref and a log entry | no-op, nothing created |
+| matching old value | 0; deleted; log removed | writes the null ref | deleted; log removed |
+| mismatching old value | 128 `cannot lock ref 'refs/heads/d': is at <oid> but expected <old>`; ref kept | `REF_UPDATE_CONFLICT` | `REF_UPDATE_CONFLICT { ref, expected, actual }`; ref and log kept |
+| old value on an absent ref | 128 `unable to resolve reference 'refs/heads/nx2'` | `REF_UPDATE_CONFLICT` | `REF_UPDATE_CONFLICT` (`actual: 'absent'`) |
+| null old (`expected: 'absent'`) on an absent ref / on an existing ref | 0 / 128 `reference already exists` | no-op write / conflict | no-op / `REF_UPDATE_CONFLICT` |
+| branch `HEAD` points at, `update-ref -m why refs/heads/main 0{40}` | 0; `logs/refs/heads/main` removed; `logs/HEAD` gains `<old> 0{40} <identity> <ts> <tz>\twhy` | null ref written | deleted; `logs/HEAD` gains the same entry |
+| packed-only ref | 0; removed from `packed-refs` | null ref written loose | refuses `UNSUPPORTED_OPERATION` `delete-packed-ref` (**residual**, U4) |
+| symref `refs/heads/sym → x` | 0; `x` deleted, `sym` kept | null written into `sym` | `sym` removed, `x` kept (**residual**, U5) |
+| reftable backend, existing / absent | 0, ref and log gone / 0 | null ref written | deleted, logs tombstoned / no-op |
+
+**Current code (verified).** `src/application/primitives/update-ref.ts:17-49` `updateRef`: `validateRefName`
+`:26`; `current = store.resolveDirect(name)` `:29`; `head = resolveHeadForCoupling(store)` `:33`; the CAS
+`:35-40` (`actual = current.kind === 'direct' ? current.id : 'absent'`, `refUpdateConflict(name, expected,
+actual)`); `delete: true` → `applyRefUpdates([{ kind: 'delete', name }])` `:42-45`; otherwise
+`refUpdatesFor(name, newId, oldId, options.reflogMessage, head)` `:47-48` (`:58-73`, coupled-HEAD
+`reflogOnly` via `coupledHeadTarget` `:79-81`). Files backend delete: `ref-store.ts:842-858` `applyDelete`
+(removes the loose file and `removeReflogFile` `:666-671`; packed-only refuses `delete-packed-ref`; absent
+refuses `REF_NOT_FOUND`). Reftable: `reftable-transaction.ts:490-500` `applyDeleteRecords` (tombstones the
+ref and its logs; absent refuses `REF_NOT_FOUND`). `UpdateRefOptions` (`src/application/primitives/types.ts:109-118`):
+the non-delete arm carries `reflogMessage: string`.
+
+**Target.**
+```ts
+export async function updateRef(ctx: Context, name: RefName, newId: ObjectId, options: UpdateRefOptions): Promise<void> {
+  validateRefName(name);
+  const store = getRefStore(ctx);
+  const current = await store.resolveDirect(name);
+  const head = await resolveHeadForCoupling(store);
+  assertExpected(name, options.expected, current);                    // today's :35-40, extracted
+  if (options.delete === true) return store.applyRefUpdates([{ kind: 'delete', name }]);
+  if (newId === zeroOid(ctx.hashConfig)) return deleteForNullId(store, name, current, head, options.reflogMessage);
+  const oldId = current.kind === 'direct' ? current.id : zeroOid(ctx.hashConfig);
+  await store.applyRefUpdates(refUpdatesFor(name, newId, oldId, options.reflogMessage, head));
+}
+
+/** git's update with a null new value: a deletion; an absent ref is already gone. The branch HEAD points at
+ *  also logs the deletion on HEAD, as git's split HEAD update does. */
+async function deleteForNullId(
+  store: RefStore, name: RefName, current: ResolveDirectResult, head: ResolveDirectResult, message: string,
+): Promise<void> {
+  if (current.kind === 'missing') return;
+  const deletion: RefUpdate = { kind: 'delete', name };
+  if (current.kind !== 'direct' || !coupledHeadTarget(head, name)) return store.applyRefUpdates([deletion]);
+  const reflog = { oldId: current.id, newId: zeroOid(/* hashConfig threaded */), message };
+  await store.applyRefUpdates([deletion, { kind: 'reflogOnly', name: HEAD, reflog }]);
+}
+```
+Thread `ctx.hashConfig` (or the zero id) into `deleteForNullId`; keep every function under 20 lines. The
+existing `delete: true` behaviour, including its `REF_NOT_FOUND` on an absent ref, is untouched.
+
+**Public or internal.** No new export; `updateRef`'s type is unchanged; its behaviour changes (migration note
+16). **Surface gates tripped:** none mechanical; docs debt `docs/use/primitives/update-ref.md`.
+
+**Tests (unit)** — `test/unit/application/primitives/update-ref.test.ts` (delete rows `:261-318` stay as they
+are; the `ID_A`/`ID_B` synthetic ids are fine here — this commit precedes verification):
+- existing loose ref with a reflog, null id → ref file gone, reflog file gone;
+- absent ref, null id → no ref file, no reflog file, no throw; with `expected: 'absent'` → same;
+- matching `expected` → deleted; mismatching `expected` → `REF_UPDATE_CONFLICT` with `ref`, `expected`,
+  `actual` asserted field by field, ref and log unchanged; `expected: ID_A` on an absent ref →
+  `REF_UPDATE_CONFLICT` with `actual: 'absent'`; `expected: 'absent'` on an existing ref → conflict;
+- `HEAD` symbolic to `refs/heads/main`, null id on `main` → `readReflog(ctx, HEAD)` gains exactly one entry
+  `{ oldId: <old>, newId: ZERO, message: REASON }`; a non-`HEAD` branch deletion adds no `HEAD` entry;
+- a symbolic ref, null id → the symref file is removed and its target kept (residual pinned);
+- a packed-only ref, null id → `UNSUPPORTED_OPERATION` `delete-packed-ref` (residual pinned);
+- sha256 Context: the null id is `'0'.repeat(64)`; a 40-zero id on sha256 is not the null id (it goes to the
+  write path) — kills a width-blind comparison;
+- `delete: true` on the branch `HEAD` points at still writes no `HEAD` entry (U6 pinned).
+- `test/unit/application/primitives/reftable-ref-store.test.ts` or an update-ref row on a reftable Context:
+  existing ref, null id → `resolveDirect` `missing`, `hasReflog` `false`; absent → no-op.
+
+**Tests (interop)** — the first rows of the new `test/integration/ref-write-verification-interop.test.ts`
+(created here; commit 2 adds the verification rows). Base: one commit on `main`, branches `b`, `c`, `d` with
+reflogs, a reftable twin. Each row copies the base into `peer`/`ours`; git `update-ref [-m msg] <ref> 0{40}
+[<old>]` in `peer`, `updateRef(ctx, ref, zeroOid, { reflogMessage: msg, expected })` in `ours`; compare exit
+code / refusal data, `git show-ref --verify` presence, the ref's own log file presence, and `logs/HEAD` bytes.
+Rows: existing ref; absent ref; matching old; mismatching old (git's `is at <oid> but expected <old>`
+reconstructed from `data.actual` and `data.expected`); old value on an absent ref; `expected: 'absent'` on
+absent and on existing; the branch `HEAD` points at — pin identity and time as
+`test/integration/reflog-interop.test.ts:1364` does (`vi.spyOn(Date, 'now')` with a `pinnedCommitterEnv`-style
+`GIT_COMMITTER_DATE`, offset `+0000`, `user.name`/`user.email` set in the base) and compare `logs/HEAD`
+bytes; reftable existing and absent; packed-only and symref **residual-titled** (git deletes; tsgit refuses /
+removes the symref).
+
+**Traps**
+- No references to this plan, the design, ADRs, gap numbers or the backlog in source or test code.
+- **Inert-change risk:** a "log removed" row on a ref that never had a log passes vacuously — create the
+  log first and assert it exists in Arrange.
+- `branch.rename` (`src/application/commands/branch.ts:228`) and every other command pass `delete: true`;
+  none may start logging `HEAD` (U6).
+- Compare against the zero id **of the context's width** (`zeroOid(ctx.hashConfig)`, `src/domain/objects/object-id.ts:87`).
+
+#### Commit 2 — target verification: existence, hash, branch typing (C)
 
 **Design excerpt (ratified).** git's `ref_transaction_update` (`refs.c:1425-1445`): an update with a new
 value, not symbolic, not the null id, not `REF_SKIP_OID_VERIFICATION` runs `parse_object`; `NULL` ⇒
@@ -1340,7 +1651,7 @@ is hashed as it inflates and never retained.
 | C6 | `--stdin` `create refs/heads/s <tree>` / `update refs/heads/main <tree>`: 128 non-commit, no `update_ref failed` prefix |
 | C7 | `refs/tags/t <missing> <wrong-old>` and `refs/heads/main <tree> <wrong-old>`: verification reported, not the CAS |
 | C8 | `refs/tags/cb <hash-mismatching blob>`, `refs/heads/cc <hash-mismatching commit>`: 128 `error: hash mismatch <oid>` + nonexistent |
-| C9 | `-d refs/tags/t <wrong-old>` 1 (CAS); `refs/tags/t 0{40}` 0 (deletes — G2); `symbolic-ref refs/heads/s refs/heads/nope` 0; `update-ref refs/heads/s <tree>` (s → nope) 128 typed by the **given** name; reftable: C1/C3 identical |
+| C9 | `-d refs/tags/t <wrong-old>` 1 (CAS); `refs/tags/t 0{40}` 0 (deletes — commit 1); `symbolic-ref refs/heads/s refs/heads/nope` 0; `update-ref refs/heads/s <tree>` (s → nope) 128 typed by the **given** name; reftable: C1/C3 identical |
 | planning | empty-tree id not stored: `refs/tags/*` 0, `refs/heads/*` 128 non-commit; empty blob not stored: 128 nonexistent |
 
 **Supporting change 1 — the loose stream arm reads its header at open.** Today
@@ -1435,9 +1746,11 @@ Helpers: `HEADS_PREFIX` (`src/domain/refs/ref-prefixes.ts:6`), `zeroOid` (`src/d
 `emptyTreeOid` (`:105`), `unexpectedObjectType` (`src/domain/objects/error.ts:85-89`).
 
 **Placement.**
-- `src/application/primitives/update-ref.ts:17-49` — after `validateRefName(name)` (`:26`), before
-  `getRefStore`/`resolveDirect` (`:28-29`): `if (options.delete !== true) await assertRefTargetValid(ctx,
-  name, newId);`.
+- `src/application/primitives/update-ref.ts` (as reshaped by commit 1) — after `validateRefName(name)`, before
+  `getRefStore`/`resolveDirect`: `if (!deletes(options, newId, ctx)) await assertRefTargetValid(ctx, name,
+  newId);` where `deletes` is `options.delete === true || newId === zeroOid(ctx.hashConfig)` — git's
+  `!is_null_oid` guard plus an explicit delete. Verification therefore still precedes the compare-and-swap
+  (C7), and neither delete path is ever verified.
 - `src/application/commands/clone.ts:321-335` `writeRef` — `await assertRefTargetValid(ctx, name, id)` before
   `applyRefUpdates`; `:372-380` `applyRemoteHead`'s detached arm — `await assertRefTargetValid(ctx, HEAD,
   advertisement.head.id)` before its `applyRefUpdates`. The symref arm (`:362-368`) writes a symbolic ref:
@@ -1471,7 +1784,8 @@ ref name the caller passed.
   - missing id + wrong `expected` → `OBJECT_NOT_FOUND` (not `REF_UPDATE_CONFLICT`); tree → `refs/heads/main`
     + wrong `expected` → `UNEXPECTED_OBJECT_TYPE`;
   - `delete: true` with a missing `newId` → the ref is deleted (no verification);
-  - `zeroOid` without `delete` → no verification (today's null-id write, pinned; G2);
+  - `zeroOid` without `delete` → deleted by commit 1's path, and a counted `createHasher` shows no hash (no
+    verification);
   - hash-mismatching loose blob (blob X's loose bytes planted at id Y's path) → `refs/tags/x` →
     `OBJECT_HASH_MISMATCH { expected: Y, actual: X }`, nothing written; the same blob → `refs/heads/x` →
     `OBJECT_HASH_MISMATCH`, not `UNEXPECTED_OBJECT_TYPE` (kills a type-before-hash reordering); a
@@ -1511,10 +1825,12 @@ ref name the caller passed.
   tree entry needed; clone does not check out). Switch every fixture whose advertisement names a local HEAD
   branch (`symref=HEAD:refs/heads/<b>`) or a detached `head` at the pack's object to the commit helper;
   rows that assert only `refs/remotes/origin/*` may keep blobs. New rows: HEAD branch naming a tree the pack
-  carries → rejects `UNEXPECTED_OBJECT_TYPE { expected: 'commit', actual: 'tree', id }` and
-  `refs/heads/main` is absent (do not assert the remote-tracking ref is absent — G7); detached
-  advertisement whose `head` is a tree → rejects the same and `.git/HEAD` holds no direct oid; a tag
-  naming an id the pack does not carry → `OBJECT_NOT_FOUND`.
+  carries → rejects `UNEXPECTED_OBJECT_TYPE { expected: 'commit', actual: 'tree', id }` **and**
+  `ctx.fs.exists(ctx.layout.gitDir)` is `false` afterwards — `clone` removes the gitDir on any failure
+  (`src/application/commands/clone.ts:111-118`, git's `remove_junk`), which is stronger than asserting single
+  refs absent (G7); detached advertisement whose `head` is a tree → rejects the same, gitDir gone; a tag
+  naming an id the pack does not carry → `OBJECT_NOT_FOUND`, gitDir gone. Assert the gitDir exists after
+  bootstrap in a success row of the same fixture, so "gone" cannot pass because it was never created.
 - `test/unit/application/primitives/laws.test.ts:39-62` ("updateRef ∘ resolveRef returns the same id" over
   arbitrary hex) → arbitrary commit messages: `writeObject` a commit, `updateRef` `refs/heads/main`,
   `resolveRef` returns it (`numRuns: 10` unchanged).
@@ -1523,7 +1839,7 @@ ref name the caller passed.
 - Read (not run) `test/bench/fixtures.ts:114-124` `writeManyRefs` callers and `test/bench/name-rev.bench.ts:144`
   to confirm they pass real ids.
 
-**Tests (interop)** — create `test/integration/ref-write-verification-interop.test.ts`. `@proves` surface
+**Tests (interop)** — extend `test/integration/ref-write-verification-interop.test.ts` (created by commit 1). `@proves` surface
 `updateRef, tag.create, clone`; unique "ref updates verify their target as git's ref transaction does";
 interopSurface `updateRef, tag.create`. `beforeAll` (60 000 ms): a files-backend base with one file committed
 (so the empty tree is **not** stored — `git commit --allow-empty` on an empty tree would store it), tree `T`,
@@ -1539,9 +1855,8 @@ C2 (five refs × four types, one `it.each`), C3, C4 (`HEAD`), C5 (`--no-deref HE
 (plant `B`'s loose file at a fabricated id's path — `chmod 0o644` the copy — and `C`'s at another), C9
 (`-d` with a wrong old id → both CAS refusals, tsgit `REF_UPDATE_CONFLICT`; `symbolic-ref refs/heads/s
 refs/heads/nope` vs `writeSymbolicRef` from `src/application/primitives/write-symbolic-ref.ts` → both write;
-`update-ref refs/heads/s T` → both refuse typed by `refs/heads/s`), the null-id row **titled as the recorded
-residual** (git deletes the ref, tsgit writes it — G2), the empty-tree rows, the empty-blob row, and C1/C3
-on the reftable twin.
+`update-ref refs/heads/s T` → both refuse typed by `refs/heads/s`; the null-id rows are commit 1's), the
+empty-tree rows, the empty-blob row, and C1/C3 on the reftable twin.
 
 **Property tests — none in this commit.** Orchestration over reads; each arm is an enumerated example row.
 
@@ -1558,7 +1873,7 @@ on the reftable twin.
 - If biome refuses the comment-only `for await` body, drain with `count` from
   `src/application/primitives/snapshot-operators/terminals.ts:7` instead; commit 2 replaces the loop anyway.
 
-#### Commit 2 — git's commit and tag parse acceptance
+#### Commit 3 — git's commit and tag parse acceptance
 
 **Design excerpt (ratified follow-up).** `parse_object_buffer` (`object.c:261`) refuses a commit or tag that
 `parse_commit_buffer` (`commit.c:516`) or `parse_tag_buffer` (`tag.c:130`) refuses, and the transaction then
@@ -1693,14 +2008,14 @@ non-hex character (`bad parents`); tag type `bogus` (`unknown tag type 'bogus' i
 `refs/heads/x` (accepted); junk `parent` after `author` (accepted); empty tag name (accepted); tag body
 shorter than h + 24 (refused ↔ `tag object too short`).
 
-#### Commit 3 — `tag.create` reports an existing name before verifying the target (B)
+#### Commit 4 — `tag.create` reports an existing name before verifying the target (B)
 
 **Design excerpt.** For a lightweight tag git checks existence only (B1: tree, blob and tag-object targets
 succeed; B2/B5: a missing object refuses in the transaction; B8 reftable identical). An existing name is
 reported before the target is verified (B4), because `builtin/tag.c:658-694` resolves the target, validates
 the name, checks `already exists`, creates the tag object, then runs the transaction. B3 (`0123456`, `nope`)
 fails resolution first; B6 (`bad..name`) fails name validation; B7 annotated to a missing object: git
-`fatal: bad object type.`, tsgit `OBJECT_NOT_FOUND` from `resolveObjectType` — unchanged. After commit 1,
+`fatal: bad object type.`, tsgit `OBJECT_NOT_FOUND` from `resolveObjectType` — unchanged. After commit 2,
 B2/B5 refuse structurally through `updateRef`; tsgit detects an existing name only through `updateRef`'s CAS
 (`updateTagRef`, `src/application/commands/tag.ts:192-212`), which now runs after verification.
 
@@ -1727,7 +2042,7 @@ exist; the CAS in `updateTagRef` stays as the race guard. `branch.create` alread
   written), B8 on the reftable twin (tree written, missing refused). tsgit through `tagCreate` from
   `src/application/commands/tag.ts`.
 
-**Traps (commits 2 and 3)**
+**Traps (commits 3 and 4)**
 - No references to this plan, the design, ADRs, matrix rows (PC1, B4…) or the backlog in source or test code.
 - `feedParseAcceptance` must not throw on any input; record the first failure and keep counting — a throw
   would take precedence over `OBJECT_HASH_MISMATCH`, which git reports first.
@@ -1736,7 +2051,18 @@ exist; the CAS in `updateTagRef` stays as the race guard. `branch.create` alread
 
 ### TDD steps
 
-**Commit 1 (C)**
+**Commit 1 (null-id delete)**
+0a. **RED** — `update-ref.test.ts`: an existing loose ref with a reflog, null id → ref and log gone. Fails: a
+    null-id ref is written and the log gains an entry.
+0b. **RED** — absent ref, null id → nothing created. Fails: a null ref and a log appear.
+0c. **GREEN** — `assertExpected` extracted, `deleteForNullId`, the null-id arm in `updateRef`.
+0d. **RED/GREEN** — matching/mismatching `expected`, `expected: 'absent'` both ways, the coupled `HEAD` entry
+    and its absence for a non-`HEAD` branch, sha256 width, `delete: true` still logging no `HEAD` entry,
+    packed-only and symref residual rows, reftable rows.
+0e. **RED/GREEN** — interop null-id rows (existing, absent, matching old, mismatching old, old on absent,
+    `expected: 'absent'`, `HEAD` entry bytes, reftable; packed-only and symref residual-titled).
+
+**Commit 2 (C)**
 1. **RED** — `blob-source.test.ts`: a streamed loose commit reports `type: 'commit'` at open. Fails:
    `undefined`.
 2. **GREEN** — `readLooseHeader`, `yieldAndVerifyLooseChunks`, `returnIterator`, `BlobSource` narrowing;
@@ -1747,15 +2073,16 @@ exist; the CAS in `updateTagRef` stays as the race guard. `branch.create` alread
 6. **GREEN** — export `withLazyFetchRetry`; `verifyStoredObject`, `hashStoredObject`, the empty-tree arm;
    `ref-target.ts`; `updateRef` placement.
 7. **RED/GREEN** — remaining `update-ref.test.ts` rows (HEAD, non-branch refs, `ORIG_HEAD`, CAS order,
-   delete, null id, cache hit hashed, above-the-gate blob, empty tree/blob, annotated tag not peeled).
+   delete and null id unverified, cache hit hashed, above-the-gate blob, empty tree/blob, annotated tag not
+   peeled).
 8. **RED/GREEN** — `blob-source.test.ts` per-arm verifier rows, including the promisor row.
 9. **RED/GREEN** — `clone.test.ts` refusal rows; then `writeRef` / `applyRemoteHead` placement.
 10. **GREEN** — enumerate and repair fixtures (batches below): `clone.test.ts` commit helper, `laws.test.ts`,
     `reftable-refs.scenario.ts`, every failing command suite.
-11. **RED/GREEN** — interop C1–C9, null-id residual, empty tree/blob, reftable rows.
+11. **RED/GREEN** — interop C1–C9, empty tree/blob, reftable rows.
 12. **Probe** — the wall-clock A/B (addendum probes table), idle machine only.
 
-**Commit 2 (parse acceptance)**
+**Commit 3 (parse acceptance)**
 13. **RED** — `parse-acceptance.test.ts` PC1 row. Fails: module missing.
 14. **GREEN** — commit scan through PC1–PC3; **RED/GREEN** PC4 with `checked`/`skipped` and ordering rows.
 15. **RED/GREEN** — tag scan PT1–PT5 rows.
@@ -1765,7 +2092,7 @@ exist; the CAS in `updateTagRef` stays as the race guard. `branch.create` alread
 19. **RED/GREEN** — remaining unit rows (branch parse-before-type, above-the-gate stream, shallow skip,
     shallow not read), then the interop parse rows.
 
-**Commit 3 (B)**
+**Commit 4 (B)**
 20. **RED** — `tag.test.ts`: existing name + missing target → `TAG_EXISTS`. Fails: `OBJECT_NOT_FOUND`.
 21. **GREEN** — the pre-check. **RED/GREEN** — remaining `tag.test.ts` rows, then interop B1–B8.
 22. **REFACTOR** — `tagCreate`'s comment at `:96-98` states git's order (resolve, class, exists, create,
@@ -1773,7 +2100,20 @@ exist; the CAS in `updateTagRef` stays as the race guard. `branch.create` alread
 
 ### Gate
 
-Commit 1 (unit batches, one invocation each):
+Commit 1 (null-id delete):
+```
+npx vitest run --maxWorkers=2 test/unit/application/primitives/update-ref.test.ts test/unit/application/primitives/reftable-ref-store.test.ts test/unit/application/primitives/ref-store.test.ts test/unit/application/commands/branch.test.ts test/unit/application/commands/remote.test.ts test/unit/application/commands/fetch.test.ts test/unit/application/commands/tag.test.ts
+npx vitest run test/integration/ref-write-verification-interop.test.ts
+npx vitest run test/integration/reflog-interop.test.ts
+npx vitest run test/integration/reftable-ref-storage-interop.test.ts
+npx tsc --noEmit -p tsconfig.json
+./node_modules/.bin/biome check src/application/primitives/update-ref.ts test/unit/application/primitives/update-ref.test.ts test/integration/ref-write-verification-interop.test.ts
+npx cspell --no-progress src/application/primitives/update-ref.ts test/unit/application/primitives/update-ref.test.ts test/integration/ref-write-verification-interop.test.ts
+```
+(`reflog-interop.test.ts` carries the `branch.rename` reflog-byte rows that would catch a coupled `HEAD`
+entry leaking into `delete: true`.)
+
+Commit 2 (C; unit batches, one invocation each):
 ```
 npx vitest run --maxWorkers=2 test/unit/application/primitives/update-ref.test.ts test/unit/application/primitives/internal/blob-source.test.ts test/unit/application/primitives/stream-blob.test.ts test/unit/application/primitives/internal/whitespace-drop-predicate.test.ts test/unit/application/primitives/read-object.test.ts test/unit/application/primitives/laws.test.ts test/unit/application/primitives/commondir-per-worktree-refs.test.ts
 npx vitest run --maxWorkers=2 test/unit/application/commands/clone.test.ts test/unit/application/commands/tag.test.ts test/unit/application/commands/branch.test.ts test/unit/application/commands/commit.test.ts test/unit/application/commands/reset.test.ts test/unit/application/commands/merge.test.ts test/unit/application/commands/internal/commit-ish.test.ts test/unit/application/commands/name-rev.test.ts
@@ -1794,7 +2134,7 @@ npx cspell --no-progress src/application/primitives/internal/blob-source.ts src/
 ```
 Add to both lists every other fixture file the enumeration touched.
 
-Commit 2:
+Commit 3 (parse acceptance):
 ```
 npx vitest run --maxWorkers=2 test/unit/domain/objects/parse-acceptance.test.ts test/unit/domain/objects/parse-acceptance.properties.test.ts test/unit/application/primitives/update-ref.test.ts test/unit/application/primitives/internal/blob-source.test.ts test/unit/application/commands/clone.test.ts test/unit/application/commands/commit.test.ts
 npx vitest run test/integration/ref-write-verification-interop.test.ts
@@ -1803,7 +2143,7 @@ npx tsc --noEmit -p tsconfig.json
 npx cspell --no-progress src/domain/objects/parse-acceptance.ts src/application/primitives/internal/ref-target.ts test/unit/domain/objects/parse-acceptance.test.ts test/unit/domain/objects/parse-acceptance.properties.test.ts test/unit/domain/objects/arbitraries.ts test/integration/ref-write-verification-interop.test.ts
 ```
 
-Commit 3:
+Commit 4 (B):
 ```
 npx vitest run --maxWorkers=2 test/unit/application/commands/tag.test.ts
 npx vitest run test/integration/ref-write-verification-interop.test.ts
@@ -1820,11 +2160,13 @@ scenario. **Surface gates tripped:** none mechanical.
 
 ### Commit
 
-Commit 1: `feat(refs): verify a ref update's target object as git's ref transaction does`
+Commit 1: `fix(refs): delete the ref when updateRef is given the null object id`
 
-Commit 2: `feat(refs): refuse a ref target that git's commit and tag parse acceptance refuses`
+Commit 2: `feat(refs): verify a ref update's target object as git's ref transaction does`
 
-Commit 3: `fix(tag): report an existing tag name before verifying the target`
+Commit 3: `feat(refs): refuse a ref target that git's commit and tag parse acceptance refuses`
+
+Commit 4: `fix(tag): report an existing tag name before verifying the target`
 
 ## Part 19 — `reflog expire`: split, `repo_dwim_log` target resolution, `gc.reflogExpire*` policy (design K + E + D, DC-D1, DC-D2, DC-D3, DC-E1, DC-E2, ADRs 865, 866, 867) — 3 commits
 
