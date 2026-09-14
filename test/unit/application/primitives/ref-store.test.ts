@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { validateHead } from '../../../../src/application/primitives/internal/head-file.js';
 import { assertRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import {
   assertRenamableTrackingRef,
@@ -1017,6 +1018,199 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/ghost' });
+      });
+    });
+  });
+
+  describe('Given a symlinked HEAD whose link text is refs/-prefixed but not a valid refname', () => {
+    describe('When resolveDirect(HEAD) runs', () => {
+      it('Then an absent target reads through to missing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+
+      it('Then a target file holding an oid reads through to a direct result', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = 'a'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a..b', `${id}\n`);
+        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert — proves the read-through: F1's `missing` alone would pass on any adapter
+        expect(result).toEqual({ kind: 'direct', id });
+      });
+
+      it('Then a target file holding a symbolic-ref line reads through to a symbolic result', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a..b', 'ref: refs/heads/side\n');
+        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/side' });
+      });
+
+      it('Then a link text with a `..` segment that resolves to a valid refname still reads through', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = 'b'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/side', `${id}\n`);
+        await ctx.fs.symlink('refs/heads/../heads/side', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id });
+      });
+
+      it('Then a `.lock`-suffixed link text reads through', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = 'c'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/x.lock', `${id}\n`);
+        await ctx.fs.symlink('refs/heads/x.lock', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id });
+      });
+
+      it('Then a link text carrying a space reads through', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = 'd'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/sp ace', `${id}\n`);
+        await ctx.fs.symlink('refs/heads/sp ace', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id });
+      });
+
+      it('Then a directory at the target path reads through to missing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir('/repo/.git/refs/heads/a..b');
+        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert — the directory check runs before the read, so this stays `missing`
+        // rather than surfacing the memory adapter's PERMISSION_DENIED directory-read refusal
+        expect(result).toEqual({ kind: 'missing' });
+      });
+
+      it('Then a backslash-separated link text is normalised before the refname check', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink('refs\\heads\\main', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+      });
+
+      it('Then malformed target content refuses INVALID_OBJECT_ID', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a..b', 'garbage\n');
+        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('HEAD' as RefName);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
+      });
+
+      it('Then a stat fault on the followed target propagates instead of reading as missing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
+        const wrappedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (p: string) =>
+              p === '/repo/.git/HEAD' ? Promise.reject(permissionDenied(p)) : ctx.fs.stat(p),
+          },
+        };
+        const sut = createRefStore(wrappedCtx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('HEAD' as RefName);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given a gate already validated a symlinked, format-invalid HEAD on this Context', () => {
+    describe('When resolveDirect(HEAD) is called again after the target is rewritten', () => {
+      it('Then the freshly-read target is returned — the followed content is never slotted', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idX = 'e'.repeat(40) as ObjectId;
+        const idY = 'f'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a..b', `${idX}\n`);
+        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
+        await validateHead(ctx);
+        const sut = createRefStore(ctx);
+        const first = await sut.resolveDirect('HEAD' as RefName);
+
+        // Act
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a..b', `${idY}\n`);
+        const second = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(first).toEqual({ kind: 'direct', id: idX });
+        expect(second).toEqual({ kind: 'direct', id: idY });
+        expect((await ctx.fs.lstat('/repo/.git/HEAD')).isSymbolicLink).toBe(true);
       });
     });
   });

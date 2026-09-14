@@ -21,14 +21,15 @@ import {
 } from '../../domain/refs/error.js';
 import {
   isPerWorktreeRef,
+  isSafeRefName,
   type PackedRefEntry,
   parseLooseRef,
   parsePackedRefs,
   serializeDirectRef,
   serializePackedRefs,
   serializeSymbolicRef,
-  validateRefName,
 } from '../../domain/refs/index.js';
+import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef } from './atomic-write.js';
@@ -315,6 +316,15 @@ function isFileNotFound(err: unknown): boolean {
   return errorDataCode(err) === 'FILE_NOT_FOUND';
 }
 
+/** The `parseLooseRef` mapping shared by every loose-content reader: `HEAD`'s file arm,
+ *  `HEAD`'s read-through arm, and every other ref's loose file. */
+const fromLooseContent = (content: string): ResolveDirectResult => {
+  const parsed = parseLooseRef(content);
+  return parsed.type === 'symbolic'
+    ? { kind: 'symbolic', target: parsed.target }
+    : { kind: 'direct', id: parsed.target };
+};
+
 /** Byte-wise total order over ref names, matching git's own ref ordering (never `localeCompare`). */
 const compareRefNames = (a: RefName, b: RefName): number => {
   // Stryker disable next-line EqualityOperator: equivalent — every array this sorts is pre-deduplicated (a Set), so a === b never occurs and <= behaves exactly like < on the only reachable inputs.
@@ -406,39 +416,54 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /**
-   * `HEAD` through the single reader: a symlink whose link text names a ref
-   * is reported symbolic — matching git — WITHOUT ever dereferencing it; a
-   * regular file parses exactly as any other loose ref does; `unusable`
-   * folds to `missing` only for the `FILE_NOT_FOUND` cause, so a permission
-   * or I/O fault on `HEAD` surfaces to the caller instead of masquerading as
-   * an absent ref. `HEAD` is never packed, so this never falls through to
-   * `loadPackedRefs`.
+   * `HEAD` through the single reader: a symlink whose link text is a
+   * `refs/`-prefixed valid refname is reported symbolic — matching git —
+   * WITHOUT ever dereferencing it; any other link text is read through
+   * (`resolveHeadSymlink`); a regular file parses exactly as any other
+   * loose ref does; `unusable` folds to `missing` only for the
+   * `FILE_NOT_FOUND` cause, so a permission or I/O fault on `HEAD` surfaces
+   * to the caller instead of masquerading as an absent ref. `HEAD` is never
+   * packed, so this never falls through to `loadPackedRefs`.
    */
   async function resolveHeadDirect(): Promise<ResolveDirectResult> {
     const head = await readHeadFile(ctx);
-    if (head.kind === 'symlink') {
-      const target = validateRefName(head.linkText.replace(/\\/g, '/'));
-      return { kind: 'symbolic', target };
-    }
-    if (head.kind === 'file') {
-      const parsed = parseLooseRef(head.content);
-      return parsed.type === 'symbolic'
-        ? { kind: 'symbolic', target: parsed.target }
-        : { kind: 'direct', id: parsed.target };
-    }
+    if (head.kind === 'symlink') return resolveHeadSymlink(head.linkText);
+    if (head.kind === 'file') return fromLooseContent(head.content);
     if (isFileNotFound(head.cause)) return { kind: 'missing' };
     throw head.cause;
+  }
+
+  /** git's `read_ref_internal` symlink rule: a `refs/`-prefixed VALID refname is a symref;
+   *  any other link text falls through to an ordinary read of the file it names. */
+  async function resolveHeadSymlink(linkText: string): Promise<ResolveDirectResult> {
+    const text = linkText.replace(/\\/g, '/');
+    if (isRefsLinkText(text) && isSafeRefName(text)) {
+      return { kind: 'symbolic', target: text as RefName };
+    }
+    return resolveFollowedHead();
+  }
+
+  /**
+   * The file a non-refname `HEAD` symlink points to, read fresh on every call and never
+   * slotted: the HEAD slot's identity is the link's own `lstat`, which a rewrite of the
+   * followed target does not change.
+   */
+  async function resolveFollowedHead(): Promise<ResolveDirectResult> {
+    const path = `${ctx.layout.gitDir}/HEAD`;
+    try {
+      if ((await ctx.fs.stat(path)).isDirectory) return { kind: 'missing' };
+      return fromLooseContent(await ctx.fs.readUtf8(path));
+    } catch (err) {
+      if (isFileNotFound(err)) return { kind: 'missing' };
+      throw err;
+    }
   }
 
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
     if (name === HEAD_NAME) return resolveHeadDirect();
     const looseContent = await readLooseContent(name);
     if (looseContent !== undefined) {
-      const parsed = parseLooseRef(looseContent);
-      if (parsed.type === 'symbolic') {
-        return { kind: 'symbolic', target: parsed.target };
-      }
-      return { kind: 'direct', id: parsed.target };
+      return fromLooseContent(looseContent);
     }
     const packed = await loadPackedRefs();
     const entry = packed.byName().get(name);

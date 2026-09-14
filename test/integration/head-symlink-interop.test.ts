@@ -22,14 +22,25 @@
  *                    way discovery does
  *   interopSurface: HEAD
  */
-import { symlinkSync, unlinkSync } from 'node:fs';
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { cp, mkdtemp, rm } from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchList } from '../../src/application/commands/branch.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import { status } from '../../src/application/commands/status.js';
 import { currentBranchRef } from '../../src/application/primitives/internal/repo-state.js';
+import { resolveRef } from '../../src/application/primitives/resolve-ref.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import {
@@ -39,6 +50,7 @@ import {
   initBothRepos,
   makePeerPair,
   type PeerPair,
+  runGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
@@ -160,6 +172,341 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
         expect(gitResult.exitCode).toBe(128);
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given HEAD is a symlink whose link text is not a valid refname', () => {
+    const SETUP_TIMEOUT = 60_000;
+    let baseDir: string;
+    let sideOid: string;
+    let mainOid: string;
+    const caseRoots: string[] = [];
+
+    const cloneRepo = async (slug: string): Promise<string> => {
+      const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-head-symlink-format-${slug}-`));
+      caseRoots.push(root);
+      const target = path.join(root, 'repo');
+      await cp(baseDir, target, { recursive: true });
+      return target;
+    };
+
+    /** Twin copies of the base — one for git's own read+commit, one for tsgit's — seeded
+     *  identically and each given the same symlinked HEAD. */
+    const setupTwins = async (
+      slug: string,
+      linkText: string,
+      seed?: (dir: string) => void,
+    ): Promise<{ readonly gitDir: string; readonly tsgitDir: string; readonly ctx: Context }> => {
+      const gitDir = await cloneRepo(`${slug}-git`);
+      const tsgitDir = await cloneRepo(`${slug}-tsgit`);
+      for (const dir of [gitDir, tsgitDir]) {
+        seed?.(dir);
+        replaceHeadWithSymlink(dir, linkText);
+      }
+      return { gitDir, tsgitDir, ctx: createNodeContext({ workDir: tsgitDir }) };
+    };
+
+    const writeLooseRef = (dir: string, name: string, content: string): void => {
+      const refPath = path.join(dir, '.git', 'refs', 'heads', name);
+      mkdirSync(path.dirname(refPath), { recursive: true });
+      writeFileSync(refPath, content);
+    };
+
+    const isHeadSymlink = (dir: string): boolean =>
+      lstatSync(path.join(dir, '.git', 'HEAD')).isSymbolicLink();
+
+    beforeAll(async () => {
+      baseDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-head-symlink-format-base-'));
+      runGit(['init', '-q', '-b', 'main', baseDir]);
+      git(baseDir, 'config', 'user.name', 'Ada');
+      git(baseDir, 'config', 'user.email', 'ada@example.com');
+      git(baseDir, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(baseDir);
+      git(baseDir, 'commit', '-q', '--allow-empty', '-m', 'root');
+      mainOid = git(baseDir, 'rev-parse', 'main').trim();
+      git(baseDir, 'branch', 'side');
+      git(baseDir, 'checkout', '-q', 'side');
+      git(baseDir, 'commit', '-q', '--allow-empty', '-m', 'on side');
+      sideOid = git(baseDir, 'rev-parse', 'side').trim();
+      git(baseDir, 'checkout', '-q', 'main');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+      await Promise.all(
+        caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+      );
+    });
+
+    describe('Given the link text names a file holding another branch’s oid', () => {
+      describe('When HEAD is resolved and then committed through', () => {
+        it('Then it resolves detached to that oid, symbolic-ref refuses, and commit writes a regular HEAD file leaving the target unchanged', async () => {
+          // Arrange
+          const { gitDir, tsgitDir, ctx } = await setupTwins('f2', 'refs/heads/a..b', (dir) =>
+            writeLooseRef(dir, 'a..b', `${sideOid}\n`),
+          );
+
+          // Act
+          const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
+          const gitSymbolicRef = tryRunGitWithExit(['-C', gitDir, 'symbolic-ref', 'HEAD']);
+          const tsgitOid = await revParse(ctx, 'HEAD');
+          const tsgitBranch = await currentBranchRef(ctx);
+          git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
+          await commit(ctx, { message: 'via tsgit', allowEmpty: true });
+
+          // Assert
+          expect(gitRevParse).toBe(sideOid);
+          expect(tsgitOid).toBe(sideOid);
+          expect(gitSymbolicRef.exitCode).toBe(128);
+          expect(tsgitBranch).toBeUndefined();
+          expect(isHeadSymlink(gitDir)).toBe(false);
+          expect(isHeadSymlink(tsgitDir)).toBe(false);
+          expect(git(gitDir, 'rev-parse', 'HEAD^').trim()).toBe(sideOid);
+          expect(git(tsgitDir, 'rev-parse', 'HEAD^').trim()).toBe(sideOid);
+          expect(readFileSync(path.join(gitDir, '.git', 'refs', 'heads', 'a..b'), 'utf8')).toBe(
+            `${sideOid}\n`,
+          );
+          expect(readFileSync(path.join(tsgitDir, '.git', 'refs', 'heads', 'a..b'), 'utf8')).toBe(
+            `${sideOid}\n`,
+          );
+        });
+      });
+    });
+
+    describe('Given the link text names a file holding a symbolic-ref line', () => {
+      describe('When HEAD is resolved and then committed through', () => {
+        it('Then it resolves symbolic to the named branch on both, and commit advances that branch leaving the link in place', async () => {
+          // Arrange
+          const { gitDir, tsgitDir, ctx } = await setupTwins('f3', 'refs/heads/a..b', (dir) =>
+            writeLooseRef(dir, 'a..b', 'ref: refs/heads/side\n'),
+          );
+
+          // Act
+          const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
+          const gitSymbolicRef = git(gitDir, 'symbolic-ref', 'HEAD').trim();
+          const tsgitOid = await revParse(ctx, 'HEAD');
+          const tsgitBranch = await currentBranchRef(ctx);
+          git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
+          await commit(ctx, { message: 'via tsgit', allowEmpty: true });
+
+          // Assert
+          expect(gitRevParse).toBe(sideOid);
+          expect(tsgitOid).toBe(sideOid);
+          expect(gitSymbolicRef).toBe('refs/heads/side');
+          expect(tsgitBranch).toBe('refs/heads/side');
+          expect(isHeadSymlink(gitDir)).toBe(true);
+          expect(isHeadSymlink(tsgitDir)).toBe(true);
+          expect(git(gitDir, 'rev-parse', 'side').trim()).not.toBe(sideOid);
+          expect(git(tsgitDir, 'rev-parse', 'side').trim()).not.toBe(sideOid);
+        });
+      });
+    });
+
+    describe('Given the link text is a `..`-relative path resolving to a valid refname', () => {
+      describe('When HEAD is resolved and then committed through', () => {
+        it('Then it resolves detached to that branch and commit writes a regular HEAD file leaving the branch unchanged', async () => {
+          // Arrange
+          const { gitDir, tsgitDir, ctx } = await setupTwins('f4', 'refs/heads/../heads/side');
+
+          // Act
+          const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
+          const gitSymbolicRef = tryRunGitWithExit(['-C', gitDir, 'symbolic-ref', 'HEAD']);
+          const tsgitOid = await revParse(ctx, 'HEAD');
+          git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
+          await commit(ctx, { message: 'via tsgit', allowEmpty: true });
+
+          // Assert
+          expect(gitRevParse).toBe(sideOid);
+          expect(tsgitOid).toBe(sideOid);
+          expect(gitSymbolicRef.exitCode).toBe(128);
+          expect(isHeadSymlink(gitDir)).toBe(false);
+          expect(isHeadSymlink(tsgitDir)).toBe(false);
+          expect(git(gitDir, 'rev-parse', 'side').trim()).toBe(sideOid);
+          expect(git(tsgitDir, 'rev-parse', 'side').trim()).toBe(sideOid);
+        });
+      });
+    });
+
+    describe.each([
+      { label: 'a `.lock`-suffixed link text', refName: 'x.lock', linkText: 'refs/heads/x.lock' },
+      { label: 'a link text carrying a space', refName: 'sp ace', linkText: 'refs/heads/sp ace' },
+    ])('Given $label naming a file holding the main branch’s oid', ({ refName, linkText }) => {
+      describe('When HEAD is resolved and then committed through', () => {
+        it('Then it resolves detached to that oid, symbolic-ref refuses, and commit writes a regular HEAD file', async () => {
+          // Arrange
+          const { gitDir, tsgitDir, ctx } = await setupTwins(refName, linkText, (dir) =>
+            writeLooseRef(dir, refName, `${mainOid}\n`),
+          );
+
+          // Act
+          const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
+          const gitSymbolicRef = tryRunGitWithExit(['-C', gitDir, 'symbolic-ref', 'HEAD']);
+          const tsgitOid = await revParse(ctx, 'HEAD');
+          git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
+          await commit(ctx, { message: 'via tsgit', allowEmpty: true });
+
+          // Assert
+          expect(gitRevParse).toBe(mainOid);
+          expect(tsgitOid).toBe(mainOid);
+          expect(gitSymbolicRef.exitCode).toBe(128);
+          expect(isHeadSymlink(gitDir)).toBe(false);
+          expect(isHeadSymlink(tsgitDir)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the link text names a branch that does not exist yet', () => {
+      describe('When HEAD is resolved and then committed through', () => {
+        it('Then it resolves symbolic on both and commit creates the branch, keeping the link', async () => {
+          // Arrange
+          const { gitDir, tsgitDir, ctx } = await setupTwins('f7', 'refs/heads/valid-dangling');
+
+          // Act
+          const gitSymbolicRef = git(gitDir, 'symbolic-ref', 'HEAD').trim();
+          const tsgitBranch = await currentBranchRef(ctx);
+          git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
+          await commit(ctx, { message: 'via tsgit', allowEmpty: true });
+
+          // Assert
+          expect(gitSymbolicRef).toBe('refs/heads/valid-dangling');
+          expect(tsgitBranch).toBe('refs/heads/valid-dangling');
+          expect(isHeadSymlink(gitDir)).toBe(true);
+          expect(isHeadSymlink(tsgitDir)).toBe(true);
+          expect(git(gitDir, 'rev-parse', 'refs/heads/valid-dangling').trim()).toMatch(
+            /^[0-9a-f]+$/,
+          );
+          expect(git(tsgitDir, 'rev-parse', 'refs/heads/valid-dangling').trim()).toMatch(
+            /^[0-9a-f]+$/,
+          );
+        });
+      });
+    });
+
+    describe('Given the link text names an absent target — a residual (git and tsgit disagree)', () => {
+      describe('When HEAD is resolved, status runs, and commit is attempted', () => {
+        it('Then git reads a detached, unborn HEAD and writes it on commit, while tsgit refuses REF_NOT_FOUND throughout', async () => {
+          // Arrange
+          const { gitDir, tsgitDir, ctx } = await setupTwins('f1', 'refs/heads/a..b');
+
+          // Act
+          const gitRevParse = tryRunGitWithExit(['-C', gitDir, 'rev-parse', 'HEAD']);
+          const gitStatus = tryRunGitWithExit([
+            '-C',
+            gitDir,
+            'status',
+            '--porcelain=v2',
+            '--branch',
+          ]);
+          let tsgitResolveCaught: unknown;
+          try {
+            await resolveRef(ctx, 'HEAD');
+          } catch (err) {
+            tsgitResolveCaught = err;
+          }
+          let tsgitStatusCaught: unknown;
+          try {
+            await status(ctx);
+          } catch (err) {
+            tsgitStatusCaught = err;
+          }
+          const gitCommit = tryRunGitWithExit([
+            '-C',
+            gitDir,
+            'commit',
+            '-q',
+            '--allow-empty',
+            '-m',
+            'via git',
+          ]);
+          let tsgitCommitCaught: unknown;
+          try {
+            await commit(ctx, { message: 'via tsgit', allowEmpty: true });
+          } catch (err) {
+            tsgitCommitCaught = err;
+          }
+
+          // Assert — git: detached, unborn HEAD; a commit writes a regular HEAD file
+          expect(gitRevParse.exitCode).toBe(128);
+          expect(gitStatus.exitCode).toBe(0);
+          expect(gitStatus.stdout).toContain('# branch.oid (initial)');
+          expect(gitStatus.stdout).toContain('# branch.head (detached)');
+          expect(gitCommit.exitCode).toBe(0);
+          expect(isHeadSymlink(gitDir)).toBe(false);
+
+          // Assert — tsgit: every surface refuses REF_NOT_FOUND, the link untouched
+          expect(tsgitResolveCaught).toBeInstanceOf(TsgitError);
+          expect((tsgitResolveCaught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          expect(tsgitStatusCaught).toBeInstanceOf(TsgitError);
+          expect((tsgitStatusCaught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          expect(tsgitCommitCaught).toBeInstanceOf(TsgitError);
+          expect((tsgitCommitCaught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          expect(isHeadSymlink(tsgitDir)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given the link text names a directory — a residual (git and tsgit disagree on status)', () => {
+      describe('When HEAD is resolved, status runs, and commit is attempted', () => {
+        it('Then git reads a detached, unborn HEAD via status while tsgit refuses, and both refuse commit', async () => {
+          // Arrange
+          const { gitDir, tsgitDir, ctx } = await setupTwins('f6', 'refs/heads/a..b', (dir) =>
+            mkdirSync(path.join(dir, '.git', 'refs', 'heads', 'a..b'), { recursive: true }),
+          );
+
+          // Act
+          const gitRevParse = tryRunGitWithExit(['-C', gitDir, 'rev-parse', 'HEAD']);
+          const gitStatus = tryRunGitWithExit([
+            '-C',
+            gitDir,
+            'status',
+            '--porcelain=v2',
+            '--branch',
+          ]);
+          let tsgitResolveCaught: unknown;
+          try {
+            await resolveRef(ctx, 'HEAD');
+          } catch (err) {
+            tsgitResolveCaught = err;
+          }
+          let tsgitStatusCaught: unknown;
+          try {
+            await status(ctx);
+          } catch (err) {
+            tsgitStatusCaught = err;
+          }
+          const gitCommit = tryRunGitWithExit([
+            '-C',
+            gitDir,
+            'commit',
+            '-q',
+            '--allow-empty',
+            '-m',
+            'via git',
+          ]);
+          let tsgitCommitCaught: unknown;
+          try {
+            await commit(ctx, { message: 'via tsgit', allowEmpty: true });
+          } catch (err) {
+            tsgitCommitCaught = err;
+          }
+
+          // Assert — git: detached, unborn HEAD reads fine via status; commit refuses (cannot lock)
+          expect(gitRevParse.exitCode).toBe(128);
+          expect(gitStatus.exitCode).toBe(0);
+          expect(gitStatus.stdout).toContain('# branch.oid (initial)');
+          expect(gitStatus.stdout).toContain('# branch.head (detached)');
+          expect(gitCommit.exitCode).toBe(128);
+
+          // Assert — tsgit: every surface refuses REF_NOT_FOUND, the link untouched
+          expect(tsgitResolveCaught).toBeInstanceOf(TsgitError);
+          expect((tsgitResolveCaught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          expect(tsgitStatusCaught).toBeInstanceOf(TsgitError);
+          expect((tsgitStatusCaught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          expect(tsgitCommitCaught).toBeInstanceOf(TsgitError);
+          expect((tsgitCommitCaught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          expect(isHeadSymlink(tsgitDir)).toBe(true);
+        });
       });
     });
   });
