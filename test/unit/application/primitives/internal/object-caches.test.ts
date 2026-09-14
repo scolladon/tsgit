@@ -222,41 +222,49 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
 
   describe('Given the default deltaCacheMaxBytes budget, and a commit-shaped entry sized through the REAL sizer', () => {
     describe('When resolving the memo entry cap and its byte valve', () => {
-      it('Then the real sizer reconciles with PARSED_OBJECT_TYPICAL_ENTRY_BYTES, and maxEntries × that real size never exceeds the valve', () => {
-        // Arrange — one parent (sha1-width oid, 40 hex chars) plus a message
-        // sized so the variable fields (message + parents; no signature, no
-        // extra headers) total 216 bytes: 216 + 40 = 256, matching the "256 B
-        // typical message/parents allowance" PARSED_OBJECT_TYPICAL_ENTRY_BYTES's
-        // own doc comment describes on top of the sizer's fixed overhead.
-        // Unlike a hand-picked literal, this ties the constant to what
-        // `parsedObjectByteSize` — the function that actually sizes every
-        // cached entry — computes for a representative commit.
-        const hexLength = 40;
-        const typicalCommitData = {
-          message: 'x'.repeat(216),
-          extraHeaders: [],
-          parents: ['a'.repeat(hexLength) as ObjectId],
-        };
-        const ctx = createMemoryContext();
-        const memo = parsedObjectMemoFor(ctx);
-        const cap = memoMaxEntries(ctx);
-        const valve = memoByteValve(ctx);
-        const realTypicalBytes = parsedObjectByteSize(typicalCommitData, hexLength);
+      it.each([
+        { label: 'sha1', algorithm: 'sha1' as const, hexLength: 40, valve: 16 * 1024 * 1024 },
+        { label: 'sha256', algorithm: 'sha256' as const, hexLength: 64, valve: 17_563_648 },
+      ])(
+        'Then at $label the real sizer reconciles with the typical entry allowance, and maxEntries × that real size never exceeds the valve',
+        ({ algorithm, hexLength, valve }) => {
+          // Arrange — one parent (this row's own hex width) plus a message
+          // sized so the variable fields (message + parents; no signature, no
+          // extra headers) total 216 bytes at sha1 width: 216 + 40 = 256,
+          // matching the "256 B typical message/parents allowance"
+          // PARSED_OBJECT_TYPICAL_ENTRY_BYTES's own doc comment describes on
+          // top of the sizer's fixed overhead. Unlike a hand-picked literal,
+          // this ties the constant to what `parsedObjectByteSize` — the
+          // function that actually sizes every cached entry — computes for a
+          // representative commit at that width.
+          const typicalCommitData = {
+            message: 'x'.repeat(216),
+            extraHeaders: [],
+            parents: ['a'.repeat(hexLength) as ObjectId],
+          };
+          const widthSurcharge = hexLength - 40;
+          const ctx = createMemoryContext({ algorithm });
+          const memo = parsedObjectMemoFor(ctx);
+          const cap = memoMaxEntries(ctx);
+          const resolvedValve = memoByteValve(ctx);
+          const realTypicalBytes = parsedObjectByteSize(typicalCommitData, hexLength);
 
-        // Act — a future retune that flips the binding constraint back to a
-        // fixed entry cap would fail one of the assertions below instead of
-        // shipping a dead cache silently.
-        const admitted = memo?.set('typical', {} as never, realTypicalBytes);
+          // Act — a future retune that flips the binding constraint back to a
+          // fixed entry cap would fail one of the assertions below instead of
+          // shipping a dead cache silently.
+          const admitted = memo?.set('typical', {} as never, realTypicalBytes);
 
-        // Assert — reconciles the documented constant with the real sizer's
-        // output (retuning the sizer's own fixed overhead breaks this), then
-        // proves the derived cap still respects the valve at that real size.
-        expect(realTypicalBytes).toBe(PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
-        expect(cap).toBe(32_768);
-        expect(valve).toBe(16 * 1024 * 1024);
-        expect(cap * realTypicalBytes).toBeLessThanOrEqual(valve);
-        expect(admitted).toBe(true);
-      });
+          // Assert — reconciles the documented constant with the real sizer's
+          // output at this width (retuning the sizer's own fixed overhead
+          // breaks this), then proves the derived cap still respects the
+          // valve at that real size.
+          expect(realTypicalBytes).toBe(PARSED_OBJECT_TYPICAL_ENTRY_BYTES + widthSurcharge);
+          expect(cap).toBe(32_768);
+          expect(resolvedValve).toBe(valve);
+          expect(cap * realTypicalBytes).toBeLessThanOrEqual(resolvedValve);
+          expect(admitted).toBe(true);
+        },
+      );
     });
   });
 
@@ -271,6 +279,41 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
 
         // Assert
         expect(cap).toBe(8_192);
+      });
+    });
+  });
+
+  describe('Given a non-default deltaCacheMaxBytes of 4 MiB at sha256', () => {
+    describe('When resolving the memo byte valve', () => {
+      it('Then the width surcharge scales with the smaller dial-derived entry count', () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          algorithm: 'sha256',
+          deltaCacheMaxBytes: 4 * 1024 * 1024,
+        });
+
+        // Act
+        const valve = memoByteValve(ctx);
+
+        // Assert
+        expect(valve).toBe(4_390_912);
+      });
+    });
+  });
+
+  describe('Given an explicit parsedObjectMemoMaxEntries at sha256', () => {
+    describe('When resolving the memo entry cap and its byte valve', () => {
+      it('Then the explicit cap wins for entries, but the byte valve stays dial-derived', () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256', parsedObjectMemoMaxEntries: 100 });
+
+        // Act
+        const cap = memoMaxEntries(ctx);
+        const valve = memoByteValve(ctx);
+
+        // Assert
+        expect(cap).toBe(100);
+        expect(valve).toBe(17_563_648);
       });
     });
   });

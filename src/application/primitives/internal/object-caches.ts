@@ -60,14 +60,17 @@ const parsedObjectMemos = new WeakMap<Context['session'], LruCache<MemoisedObjec
  * `log.bench` for the corrected before/after numbers.
  *
  * The byte cap becomes a *valve* instead: it is `ctx.deltaCache`'s own
- * budget (not a fraction of it), sized so it only ever binds for atypical
- * entries — a signed/mergetag-heavy commit, an octopus merge — never for a
- * typical one. {@link memoMaxEntries} derives the default entry count FROM
- * that valve, which is what keeps the ordering (entries bind, bytes rarely
- * do) structural at every `deltaCacheMaxBytes` dial, not just the default:
- * a 4 MiB browser tab still gets `entries × typicalEntryBytes ≤ valve`.
+ * budget (not a fraction of it) plus a width surcharge, sized so it only
+ * ever binds for atypical entries — a signed/mergetag-heavy commit, an
+ * octopus merge — never for a typical one. This valve and
+ * {@link memoMaxEntries}'s default entry count both derive independently
+ * from the dial (`ctx.deltaCache.maxSize`), which is what keeps the
+ * ordering (entries bind, bytes rarely do) structural at every
+ * `deltaCacheMaxBytes` dial and every hash width: a 4 MiB browser tab still
+ * gets `entries × typicalEntryBytes(width) ≤ valve`.
  */
-export const memoByteValve = (ctx: Context): number => ctx.deltaCache.maxSize;
+export const memoByteValve = (ctx: Context): number =>
+  ctx.deltaCache.maxSize + defaultMemoEntries(ctx) * oidWidthSurcharge(ctx);
 
 /**
  * Per-entry ceiling {@link memoMaxEntries}'s default derives from: 256 B of
@@ -79,34 +82,53 @@ export const memoByteValve = (ctx: Context): number => ctx.deltaCache.maxSize;
  */
 export const PARSED_OBJECT_TYPICAL_ENTRY_BYTES = 512;
 
+/** A sha256 oid (64 hex chars) costs this many bytes more per entry than sha1's (40). */
+const SHA1_HEX_LENGTH = 40;
+
+const oidWidthSurcharge = (ctx: Context): number => ctx.hashConfig.hexLength - SHA1_HEX_LENGTH;
+
+/** The dial-derived entry count — the valve's reference, independent of an explicit entry option. */
+const defaultMemoEntries = (ctx: Context): number =>
+  Math.floor(ctx.deltaCache.maxSize / PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
+
 /**
  * Entry-count cap for the parsed-object memo — a caller-supplied
  * `cacheBudgets.parsedObjectMemoMaxEntries` always wins; otherwise derived
- * from {@link memoByteValve} so it tracks `ctx.deltaCache.maxSize` at every
+ * from the dial (`ctx.deltaCache.maxSize`) so it tracks that budget at every
  * dial (32,768 at the 16 MiB default). A second FIXED cap here (as this
  * module used to carry) would either never bind — once the valve moved off
  * the wrong fraction — or silently re-create the exact cliff this sizing
  * exists to remove, so none is layered on top.
  */
 export const memoMaxEntries = (ctx: Context): number =>
-  ctx.cacheBudgets?.parsedObjectMemoMaxEntries ??
-  Math.floor(memoByteValve(ctx) / PARSED_OBJECT_TYPICAL_ENTRY_BYTES);
+  ctx.cacheBudgets?.parsedObjectMemoMaxEntries ?? defaultMemoEntries(ctx);
 
 /**
- * Share of `ctx.deltaCache`'s own byte budget the FlatTree cache gets by
- * default when the caller supplies no explicit `flatTreeCacheMaxBytes` — 8
- * MiB at the 16 MiB default, admitting a ~50,000-tracked-file HEAD **at
- * sha1** (the valve-ordering invariant measures that headroom through
- * `flatTreeByteSize` itself, not through a restated constant).
- *
- * That figure is hash-width-dependent, and this ratified share does not
- * vary by width: 64-hex oids cost 24 bytes more per entry, so the same
- * 8 MiB admits only ~44,600 tracked files on a sha256 repository, and a
- * 50,000-file sha256 HEAD is refused outright rather than cached. Anyone
- * resizing this must re-derive the number at the width they care about —
- * the sha1 figure is not a floor.
+ * Base share of `ctx.deltaCache`'s own byte budget the FlatTree cache gets
+ * by default — 8 MiB at the 16 MiB default dial. {@link defaultFlatTreeValve}
+ * adds a width surcharge on top of this share so the same
+ * ~50,000-tracked-file reference workload is admitted at every hash width,
+ * not just sha1: a 64-hex oid costs 24 bytes more per entry than a 40-hex
+ * one, and without the surcharge the same share only ever admitted ~44,600
+ * sha256 files.
  */
 const FLAT_TREE_DEFAULT_SHARE = 0.5;
+
+/** Tracked files the FlatTree default admits per 16 MiB of dial, at every hash width. */
+const FLAT_TREE_REFERENCE_FILES = 50_000;
+const REFERENCE_DIAL_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Default FlatTree byte valve: the base share of the dial plus a width
+ * surcharge for the dial-scaled reference file count, so the same
+ * reference workload (proportional to `ctx.deltaCache.maxSize`) is admitted
+ * at every hash width — see {@link FLAT_TREE_DEFAULT_SHARE}.
+ */
+const defaultFlatTreeValve = (ctx: Context): number => {
+  const dial = ctx.deltaCache.maxSize;
+  const files = Math.floor((FLAT_TREE_REFERENCE_FILES * dial) / REFERENCE_DIAL_BYTES);
+  return dial * FLAT_TREE_DEFAULT_SHARE + files * oidWidthSurcharge(ctx);
+};
 
 /**
  * The two synchronous derived-cache budgets, resolved together — the
@@ -123,8 +145,7 @@ export interface ResolvedCacheBudgets {
 
 export const budgetsFor = (ctx: Context): ResolvedCacheBudgets => ({
   parsedObjectMemoMaxEntries: memoMaxEntries(ctx),
-  flatTreeCacheMaxBytes:
-    ctx.cacheBudgets?.flatTreeCacheMaxBytes ?? ctx.deltaCache.maxSize * FLAT_TREE_DEFAULT_SHARE,
+  flatTreeCacheMaxBytes: ctx.cacheBudgets?.flatTreeCacheMaxBytes ?? defaultFlatTreeValve(ctx),
 });
 
 export function parsedObjectMemoFor(ctx: Context): LruCache<MemoisedObject> | undefined {

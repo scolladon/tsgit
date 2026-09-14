@@ -506,26 +506,62 @@ describe('readHeadTree', () => {
       });
     });
 
-    describe('When sizing the same tree at sha256 oid width', () => {
-      it('Then it overruns the valve and is refused — the admitted width is narrower at sha256', () => {
-        // Arrange — the ratified default is a sha1 figure. At 64-hex oids
-        // the same file count sizes 24 bytes per entry larger, which the
-        // 8 MiB valve no longer admits; the row below records where the
-        // real sha256 boundary sits so nobody re-derives it from the sha1
-        // claim.
-        const ctx = createMemoryContext();
+    describe('When sizing a sha256 tree through flatTreeByteSize against the FlatTree byte valve', () => {
+      it('Then the width surcharge keeps the same 50,000-file workload admitted, and pins the real sha256 boundary', () => {
+        // Arrange — 64-hex oids cost 24 bytes more per entry than 40-hex
+        // ones; the width surcharge grows the valve by exactly
+        // 50,000 × 24 so the reference workload still fits. The row below
+        // records where the real sha256 boundary sits (188 B/entry) so
+        // nobody re-derives it from the sha1 figure.
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
         const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
         const cache = storage.createLruCache<FlatTree>(valve, FLAT_TREE_CACHE_MAX_ENTRIES);
-        const overrunBytes = flatTreeByteSize(syntheticTreeOf(50_000, 64));
-        const atBoundaryBytes = flatTreeByteSize(syntheticTreeOf(44_620, 64));
+        const referenceTreeBytes = flatTreeByteSize(syntheticTreeOf(50_000, 64));
+        const atBoundaryBytes = flatTreeByteSize(syntheticTreeOf(51_002, 64));
+        const overBoundaryBytes = flatTreeByteSize(syntheticTreeOf(51_003, 64));
 
         // Act
-        const admitted = cache.set('sha256', syntheticTreeOf(50_000, 64), overrunBytes);
+        const admitted = cache.set('sha256', syntheticTreeOf(50_000, 64), referenceTreeBytes);
 
         // Assert
-        expect(overrunBytes).toBeGreaterThan(valve);
-        expect(admitted).toBe(false);
+        expect(valve).toBe(9_588_608);
+        expect(referenceTreeBytes).toBeLessThanOrEqual(valve);
+        expect(admitted).toBe(true);
         expect(atBoundaryBytes).toBeLessThanOrEqual(valve);
+        expect(overBoundaryBytes).toBeGreaterThan(valve);
+      });
+    });
+  });
+
+  describe('Given a 4 MiB deltaCacheMaxBytes dial at sha256', () => {
+    describe('When resolving the FlatTree byte valve', () => {
+      it('Then the width surcharge scales with the smaller dial-derived reference file count', () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          algorithm: 'sha256',
+          deltaCacheMaxBytes: 4 * 1024 * 1024,
+        });
+
+        // Act
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+
+        // Assert
+        expect(valve).toBe(2_397_152);
+      });
+    });
+  });
+
+  describe('Given an explicit flatTreeCacheMaxBytes at sha256', () => {
+    describe('When resolving the FlatTree byte valve', () => {
+      it('Then the explicit value wins verbatim, unmodified by the width surcharge', () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256', flatTreeCacheMaxBytes: 4096 });
+
+        // Act
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+
+        // Assert
+        expect(valve).toBe(4096);
       });
     });
   });
