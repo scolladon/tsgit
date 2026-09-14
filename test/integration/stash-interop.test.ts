@@ -14,7 +14,7 @@
  *   unique:         stash push/apply index+tree state matches canonical git stash
  *   interopSurface: stash
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -172,6 +172,36 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
           oursCode = err.data.code;
         });
         expect(oursCode).toBe('STASH_APPLY_WOULD_OVERWRITE');
+      });
+    });
+  });
+
+  describe('Given an untracked DANGLING symlink squats a stashed untracked path', () => {
+    describe('When stash pop runs in each', () => {
+      it('Then both refuse to overwrite it, and the stash is kept — matching git exactly', async () => {
+        // Arrange
+        await seed();
+        await writeFile(path.join(pair.peer, 'u.txt'), 'untracked\n');
+        await writeFile(path.join(pair.ours, 'u.txt'), 'untracked\n');
+        git(pair.peer, 'stash', 'push', '-u', '-m', 'untracked test');
+        await repo.stash.push({ includeUntracked: true });
+        await symlink('/nonexistent/dangling-stash-target', path.join(pair.peer, 'u.txt'));
+        await symlink('/nonexistent/dangling-stash-target', path.join(pair.ours, 'u.txt'));
+
+        // Act — canonical git refuses ("<path> already exists, no checkout").
+        const peerResult = tryRunGit(['-C', pair.peer, 'stash', 'pop']);
+
+        // Assert
+        expect(peerResult.ok).toBe(false);
+        expect(peerResult.stderr).toContain('already exists');
+        let oursCode: string | undefined;
+        await repo.stash.pop().catch((err: TsgitError) => {
+          oursCode = err.data.code;
+        });
+        expect(oursCode).toBe('STASH_APPLY_WOULD_OVERWRITE');
+        // The stash is kept on both — a failed pop never drops its entry.
+        expect(tryRunGit(['-C', pair.peer, 'stash', 'list']).stdout).not.toBe('');
+        expect((await repo.stash.list()).entries).toHaveLength(1);
       });
     });
   });
