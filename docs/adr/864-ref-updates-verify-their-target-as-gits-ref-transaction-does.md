@@ -153,27 +153,7 @@ report do not change:
 
 git's lines compose from those fields plus the ref name the caller passed (ADR-249).
 
-**The null id deletes, as git does.** git treats a new value equal to the null id as a deletion
-(the files backend marks such an update `REF_DELETING`), and the `!is_null_oid` guard keeps it out
-of verification. Pinned against git 2.55.0 (decided with the user after the design, 2026-09-14):
-
-- `update-ref refs/heads/b 0{40}` on an existing loose branch exits 0; the ref and its own reflog
-  are removed. `update-ref -d` behaves identically.
-- When `HEAD` symbolically points at the deleted branch, `logs/HEAD` gains one entry
-  `<old> 0{40} <identity>\t<message>`, for the null id and for `-d` alike.
-- An absent ref exits 0 and nothing is created, reflog included.
-- An old value that matches deletes; one that does not refuses with `is at <oid> but expected
-  <old>` and leaves the ref; an old value on an absent ref refuses `unable to resolve reference`;
-  a null old value on an existing ref refuses `reference already exists`.
-- The reftable backend deletes the ref and its reflog the same way.
-
-`updateRef` given the null id without `delete: true` therefore takes the delete path: no target
-verification, the compare-and-swap honoured, an absent ref (with no `expected`, or `expected:
-'absent'`) a no-op success, the ref's own reflog removed, and the coupled `HEAD` reflog entry
-written when `HEAD` points at the deleted ref. The `delete: true` path is not changed: its callers log
-`HEAD` themselves where git does — `branch.rename` deletes the old name while `HEAD` still points at it
-and writes git's rename entries instead — so adding the coupled entry there would break their reflog
-bytes.
+**The null id deletes, as git does** — recorded with the rest of `updateRef`'s delete semantics in ADR-871.
 
 **B follows as a consequence.** Lightweight `tag.create` writes through `updateRef`, so it now
 refuses a nonexistent target and accepts every existing type. To keep git's order (B4), a
@@ -188,12 +168,6 @@ interop test pins C1–C9, B1–B6, and hash-valid objects written with `git has
 commit without a `tree` line, a malformed parent line, an unknown tag type and a truncated tag
 object line refused by both tools; a commit without `author` or `committer` on a branch, and a tree
 with garbage entries on a tag ref, accepted by both.
-
-`updateRef(name, <null id>, …)` stops writing a ref that holds the null id: it deletes the ref, as
-`git update-ref <ref> 0{40}` does, and a caller that passed the null id to create a placeholder ref
-now removes it instead. Deleting the branch `HEAD` points at through the null id appends git's
-`<old> 0{40}` entry to `logs/HEAD`. The interop test pins the existing, absent,
-matching-old, mismatching-old and reftable rows and the reflog outcome of each.
 
 Every verified ref update costs one object read and one hash. A commit-sized target costs one read,
 one inflate and one hash, or a `ctx.deltaCache` hit plus the hash; `commit` pays it once per commit
