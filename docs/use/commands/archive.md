@@ -58,7 +58,7 @@ interface ArchiveEntry {
   when `treeish` is a raw tree oid.
 - **Refusals match git** (thrown before the stream is opened, except where noted):
   - Outside a repository → `NOT_A_REPOSITORY`.
-  - An invalid `[core]` value (`core.maxTreeDepth`, `core.loosecompression` / `core.compression`, or another eager-gate key) → `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE`, matching git's own eager `[core]` validation (see [`errors.md`](../errors.md)).
+  - An invalid `[core]` value → `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE`, matching git's own `[core]` validation (see [`errors.md`](../errors.md)): `core.loosecompression` / `core.compression` and the other streaming classes refuse through the eager operational gate; `core.maxTreeDepth` (and `core.deltaBaseCacheLimit`) refuse through the **repo-settings tier** instead, reached structurally the moment `archive` touches the object store to walk the tree — see [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
   - Unresolvable treeish (unborn HEAD, bad ref) → from `revParse`.
   - Treeish resolves to a blob → `UNEXPECTED_OBJECT_TYPE`.
   - (Not pre-stream — see below.) A tree past `core.maxTreeDepth` → `TREE_DEPTH_EXCEEDED`. `archive` had **no** depth refusal at any input before this change — git caps `archive`'s traversal exactly like every other traversal (`git archive --format=tar` on a tree past the cap exits 128). Its `maxEntries` override is unrelated and stays: git does **not** cap `archive`'s entry count, only its depth, so `archive` passes `walkTree` an effectively-unbounded `maxEntries` while leaving `maxDepth` at `walkTree`'s own `core.maxTreeDepth` default.
@@ -104,7 +104,8 @@ console.log(tagResult.commitTime); // <committer epoch>
 ## Throws
 
 - `NOT_A_REPOSITORY` — `cwd` (or `gitDir`) does not point inside a git repository.
-- `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`.
+- `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid streaming-class `[core]` entry, reached through the eager operational gate every operational command reads (see [`errors.md`](../errors.md)).
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` or `core.deltaBaseCacheLimit`, reached at the repo-settings tier the moment `archive` touches the object store.
 - `OBJECT_NOT_FOUND` — `treeish` is an unresolvable ref name, an unborn HEAD, or an abbreviated oid that matches no object.
 - `REVPARSE_UNRESOLVED` — `treeish` uses a reflog-selector form (`@{n}`, `@{date}`) that cannot be resolved (e.g. empty reflog).
 - `UNEXPECTED_OBJECT_TYPE` — `treeish` resolves to a blob; only tree, commit, and tag are accepted.

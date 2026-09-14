@@ -56,12 +56,23 @@ For context, two other libraries are sometimes weighed against tsgit — but nei
 |---|---|
 | Pack-index lookup | Fanout binary search — O(log n) within fanout buckets of bounded size. |
 | Pack offset table (successor lookup, every packed-object read) | A usable `.rev` gathers the pack's sorted entry-offset order in O(n) instead of sorting it (O(n log n)); absent, unreadable, or refused, it falls back to the sort — same answer, different cost. |
-| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-471](../adr/471-deep-delta-chain-bench-fixture.md). A same-sized offset-keyed delta-base cache for mid-chain intermediates sits alongside it as a separate, additive budget rather than a share of it — see [ADR-736](../adr/736-delta-base-cache-is-additive-not-a-fraction.md) for the full ~34 MiB default total across every cache in this family. |
+| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-471](../adr/471-deep-delta-chain-bench-fixture.md). An offset-keyed delta-base cache for mid-chain intermediates sits alongside it as a separate budget, sized from `core.deltaBaseCacheLimit` (git's own dial for this cache) at git's 96 MiB default rather than from `deltaCacheMaxBytes` — see [ADR-852](../adr/852-the-delta-base-cache-honours-core-delta-base-cache-limit.md) — for the full ~136 MiB default total across every cache in this family (up from ~34 MiB; table below). |
 | Parsing | Zero-copy `DataView` over inflated buffers. No intermediate string allocations on the binary path. |
 | Inflate | `node:zlib` (Node) / `DecompressionStream` (Browser). Streaming where possible. |
 | Working-tree comparison (`status`) | Stat-cache fast path: `mtime/ctime/size/ino` match the index's recorded stat fields → no re-hash. |
 | Hashing | `node:crypto` (Node) / `SubtleCrypto` (Browser). Both natively accelerated. |
 | I/O | Bounded-concurrency parallel reads, width derived from the limiting resource (see Methodology); serial where order matters. |
+
+### Cache-family footprint
+
+Four caches share one `Context`'s lifetime; each is sized independently since [ADR-851](../adr/851-derived-object-caches-are-bound-by-entries-with-explicit-budgets.md) / [ADR-852](../adr/852-the-delta-base-cache-honours-core-delta-base-cache-limit.md), so the combined ceiling a `Context` can retain is larger than `deltaCacheMaxBytes` alone suggests:
+
+| Dial | `ctx.deltaCache` (loose bytes) | parsed-object memo valve | FlatTree cache | delta-base cache | **Total** |
+|---|---|---|---|---|---|
+| defaults (`deltaCacheMaxBytes` 16 MiB, `core.deltaBaseCacheLimit` absent) | 16 MiB | 16 MiB | 8 MiB | 96 MiB | **~136 MiB** (was ~34 MiB) |
+| defaults + `core.deltaBaseCacheLimit = 16m` (or `deltaBaseCacheMaxBytes: 16 * 1024 * 1024`) | 16 MiB | 16 MiB | 8 MiB | 16 MiB | **~56 MiB** |
+
+`deltaCacheMaxBytes` scales the parsed-object memo and the FlatTree cache (each derives its own budget as a share of it); only `core.deltaBaseCacheLimit` or the explicit `deltaBaseCacheMaxBytes` option scales the delta-base cache — it no longer tracks `deltaCacheMaxBytes` at all. The FlatTree cache's 8 MiB default admits a HEAD tree of roughly 50 000 tracked files **at sha1**; at sha256, oids cost 24 bytes more per entry, so the same 8 MiB budget admits only ~44 620 files and a 50 000-file sha256 HEAD is refused outright — `status`/`rm` still work, they simply never get a cache hit for that repository. See [`internals.md`](../use/primitives/internals.md#parsedobjectmemofor--cachedeltabase--probedeltabasecache--deltabasecachingenabled) and [`readHeadTree`](../use/primitives/internals.md#readheadtree) for the mechanics, and [`openRepository`'s cache options](../get-started/node.md#cache-budgets) for how to size each one.
 
 ## Why status:clean / readBlob:cold / delta-chain:cold trailed in the table above
 

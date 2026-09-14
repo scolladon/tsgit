@@ -83,7 +83,7 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-061 — Reflog identity resolution](../adr/061-reflog-identity.md)
 - [ADR-062 — Approxidate parser subset](../adr/062-approxidate-subset.md)
 - [ADR-063 — `core.logAllRefUpdates` gate logic](../adr/063-log-all-ref-updates.md)
-- [ADR-064 — Reflog command shape](../adr/064-reflog-command-shape.md)
+- [ADR-064 — Reflog command shape](../adr/064-reflog-command-shape.md) (command shape only — its reachability claim is superseded by [ADR-857](../adr/857-reflog-expire-follows-git-reachability-rule.md))
 
 ## Hooks (Phase 17.2)
 

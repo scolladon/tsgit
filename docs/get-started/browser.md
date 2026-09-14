@@ -129,6 +129,10 @@ const linked = await openRepository({ rootHandle, gitDir: 'checkout/.git', commo
 
 See [Repository trust](../understand/security.md#repository-trust) for what the gate closes on adapters that do implement it.
 
+## Cache budgets
+
+`OpenBrowserRepositoryOptions` carries the same five cache-sizing overrides Node does — `deltaCacheMaxBytes`, `deltaCacheMaxEntries`, `parsedObjectMemoMaxEntries`, `flatTreeCacheMaxBytes`, `deltaBaseCacheMaxBytes` — with the same defaults and the same `deltaBaseCacheMaxBytes`-suppresses-`core.deltaBaseCacheLimit` rule. See [Node get-started — Cache budgets](node.md#cache-budgets) for the full table and the security note on opening a repository you don't control.
+
 ## What works in the browser
 
 - Every command and primitive that doesn't depend on Node-only APIs
