@@ -648,6 +648,83 @@ describe('getPackRegistry — repo-settings class boundary', () => {
     });
   });
 
+  describe('Given a bare Context with cacheBudgets.deltaBaseCacheMaxBytes supplied and no gate opened', () => {
+    describe('When readObject runs twice', () => {
+      it('Then the first read issues exactly one stat and one readUtf8 of config, and the finder runs once across both reads', async () => {
+        // Arrange — the finder spy is installed BEFORE the first read, so its
+        // count covers the compute that read triggers.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([10]), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const withBudget: Context = { ...base, cacheBudgets: { deltaBaseCacheMaxBytes: 2048 } };
+        const { ctx, calls } = instrumentedContext(withBudget);
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+        const configPath = `${ctx.layout.gitDir}/config`;
+
+        // Act
+        await readObject(ctx, id);
+        const firstReadConfigCalls = calls().filter((c) => c.path === configPath);
+        await readObject(ctx, id);
+
+        // Assert
+        expect(firstReadConfigCalls).toEqual([
+          { method: 'stat', path: configPath },
+          { method: 'readUtf8', path: configPath },
+        ]);
+        expect(spy).toHaveBeenCalledTimes(1);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a bare Context with no cacheBudgets override and no gate opened', () => {
+    describe('When readObject runs twice', () => {
+      it('Then the first read issues stat, readUtf8, stat of config, and the finder runs once across both reads', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([11]), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const { ctx, calls } = instrumentedContext(base);
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+        const configPath = `${ctx.layout.gitDir}/config`;
+
+        // Act
+        await readObject(ctx, id);
+        const firstReadConfigCalls = calls().filter((c) => c.path === configPath);
+        await readObject(ctx, id);
+
+        // Assert
+        expect(firstReadConfigCalls).toEqual([
+          { method: 'stat', path: configPath },
+          { method: 'readUtf8', path: configPath },
+          { method: 'stat', path: configPath },
+        ]);
+        expect(spy).toHaveBeenCalledTimes(1);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given readObjectWithSize as the first touch of a fresh session', () => {
+    describe('When readObjectWithSize is followed by readObject', () => {
+      it('Then the repo-settings finder runs exactly once across both calls', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([12]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+
+        // Act
+        await readObjectWithSize(ctx, id);
+        await readObject(ctx, id);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(1);
+        spy.mockRestore();
+      });
+    });
+  });
+
   describe('Given the operational gate has already opened an epoch for this command', () => {
     describe('When the first readObject follows', () => {
       it('Then it issues zero stat of config — the registry read and the repo-settings check both ride the trusted entry', async () => {

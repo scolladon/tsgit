@@ -896,6 +896,32 @@ describe('PackRegistry — lazy pack-index loading', () => {
     });
   });
 
+  describe('Given two healthy packs and cacheBudgets.deltaBaseCacheMaxBytes supplied', () => {
+    describe('When createPackRegistry is called and nothing else', () => {
+      it('Then only the repo-settings class check reads config — the budget option reads no configuration', async () => {
+        // Arrange — the option overrides the delta-base cache's own
+        // `core.deltaBaseCacheLimit` config read, so construction issues only
+        // the repo-settings verdict's stat + readUtf8, never the extra
+        // mtime-freshness stat the unset case pays.
+        const base = await buildSeededContext();
+        await writeSyntheticPack(base, 'lazy-cold-budget-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        const withBudget: Context = { ...base, cacheBudgets: { deltaBaseCacheMaxBytes: 2048 } };
+        const { ctx: instrumented, calls } = instrumentedContext(withBudget);
+
+        // Act
+        await createPackRegistry(instrumented);
+
+        // Assert
+        expect(calls()).toEqual([
+          { method: 'stat', path: '/repo/.git/config' },
+          { method: 'readUtf8', path: '/repo/.git/config' },
+        ]);
+      });
+    });
+  });
+
   describe('Given two healthy packs', () => {
     describe('When lookup forces the first scan', () => {
       it('Then the readdir precedes every .idx read — the .idx load left scanPacks', async () => {
