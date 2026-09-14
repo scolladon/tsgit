@@ -156,19 +156,16 @@ async function listTempFileCandidatesTolerant(
 }
 
 /** Whether `dir`'s own `readdir` fault means "nothing to enumerate here" —
- *  tolerated the same way git's fanout walk tolerates ENOENT. A real
- *  filesystem (node, browser) reports a missing directory as
- *  `FILE_NOT_FOUND` directly (its `ENOENT` maps there, distinct from
- *  `ENOTDIR`). tsgit's `readdir` port contract, though, only documents
- *  `NOT_A_DIRECTORY`, and the in-memory adapter has no separate "doesn't
- *  exist" outcome for `readdir` at all — it reports both "missing" and "a
- *  plain file sits here instead of a directory" as `NOT_A_DIRECTORY`. A
- *  `NOT_A_DIRECTORY` fault therefore falls back to `exists(dir)` to tell the
- *  two apart: absent still tolerates (matches git's ENOENT tolerance); a
- *  real file blocking the fanout name rethrows, exactly as git's `opendir`
- *  hard-failing on a genuine ENOTDIR would. The fallback only ever runs on
- *  that one fault, so the common 254-miss path (every real adapter's
- *  `FILE_NOT_FOUND`) costs nothing extra. */
+ *  tolerated the same way git's fanout walk tolerates ENOENT. Every adapter
+ *  reports a missing directory as `FILE_NOT_FOUND` directly (its `ENOENT`
+ *  maps there, distinct from `ENOTDIR`) and a plain file blocking the
+ *  fanout name as `NOT_A_DIRECTORY`. The `exists(dir)` fallback on
+ *  `NOT_A_DIRECTORY` stays as a defensive second check: absent still
+ *  tolerates (matches git's ENOENT tolerance); a real file blocking the
+ *  fanout name rethrows, exactly as git's `opendir` hard-failing on a
+ *  genuine ENOTDIR would. The fallback only ever runs on that one fault, so
+ *  the common 254-miss path (every adapter's `FILE_NOT_FOUND`) costs
+ *  nothing extra. */
 async function isFanoutDirAbsent(ctx: Context, dir: string, error: unknown): Promise<boolean> {
   const code = errorDataCode(error);
   if (code === 'FILE_NOT_FOUND') return true;

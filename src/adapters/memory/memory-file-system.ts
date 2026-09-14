@@ -4,6 +4,7 @@ import {
   fileNotFound,
   notADirectory,
   permissionDenied,
+  type TsgitError,
   unsupportedOperation,
 } from '../../domain/index.js';
 import { collapsePosixSegments } from '../../domain/path/collapse-posix-segments.js';
@@ -64,10 +65,10 @@ export class MemoryFileSystem implements FileSystem {
   systemConfigPath = (): string => this.systemPath;
 
   read = async (path: string): Promise<Uint8Array> => {
-    const normalized = this.walk(path, 'follow', 'read');
+    const normalized = this.walk(path, 'follow');
     const stored = this.files.get(normalized);
     if (stored === undefined) {
-      throw fileNotFound(path);
+      throw this.absentFileRefusal(normalized, path);
     }
     return stored.slice();
   };
@@ -76,14 +77,19 @@ export class MemoryFileSystem implements FileSystem {
     if (offset < 0 || length < 0) {
       throw permissionDenied(path);
     }
-    const normalized = this.walk(path, 'follow', 'readSlice');
+    const normalized = this.walk(path, 'follow');
     const stored = this.files.get(normalized);
     if (stored === undefined) {
-      throw fileNotFound(path);
+      throw this.absentFileRefusal(normalized, path);
     }
     const end = Math.min(offset + length, stored.length);
     return stored.slice(offset, end);
   };
+
+  /** A directory where a file read was expected refuses PERMISSION_DENIED, as Node's EISDIR does. */
+  private absentFileRefusal(normalized: string, path: string): TsgitError {
+    return this.directories.has(normalized) ? permissionDenied(path) : fileNotFound(path);
+  }
 
   readUtf8 = async (path: string): Promise<string> => {
     const bytes = await this.read(path);
@@ -91,7 +97,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   write = async (path: string, data: Uint8Array): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow', 'write');
+    const normalized = this.walk(path, 'no-follow');
     // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
     // mapErrno sends both to PERMISSION_DENIED.
     if (this.directories.has(normalized) || this.symlinks.has(normalized)) {
@@ -116,7 +122,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow', 'writeExclusive');
+    const normalized = this.walk(path, 'no-follow');
     if (this.occupied(normalized)) {
       throw fileExists(path);
     }
@@ -135,14 +141,14 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   private async readExistingUtf8(path: string): Promise<string> {
-    const stored = this.files.get(this.walk(path, 'no-follow', 'appendUtf8'));
+    const stored = this.files.get(this.walk(path, 'no-follow'));
     // `TextDecoder().decode(undefined)` is `''`, so a missing file decodes to
     // the empty string without a separate branch.
     return new TextDecoder().decode(stored);
   }
 
   exists = async (path: string): Promise<boolean> => {
-    const normalized = this.walk(path, 'follow', 'exists');
+    const normalized = this.walk(path, 'follow');
     return this.files.has(normalized) || this.directories.has(normalized);
   };
 
@@ -150,12 +156,12 @@ export class MemoryFileSystem implements FileSystem {
   private static readonly SYMLINK_FOLLOW_LIMIT = 40;
 
   stat = async (path: string): Promise<FileStat> => {
-    const normalized = this.walk(path, 'follow', 'stat');
+    const normalized = this.walk(path, 'follow');
     return this.buildStat(normalized, path);
   };
 
   lstat = async (path: string): Promise<FileStat> => {
-    const normalized = this.walk(path, 'no-follow', 'lstat');
+    const normalized = this.walk(path, 'no-follow');
     const target = this.symlinks.get(normalized);
     if (target !== undefined) {
       return this.makeStatRecord({
@@ -170,13 +176,12 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
-    const normalized = this.walk(path, 'follow', 'readdir');
-    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — files and directories are disjoint namespaces, so a file path always fails the `!directories.has` check below, which throws the identical NOT_A_DIRECTORY error.
+    const normalized = this.walk(path, 'follow');
     if (this.files.has(normalized)) {
       throw notADirectory(path);
     }
     if (!this.directories.has(normalized)) {
-      throw notADirectory(path);
+      throw fileNotFound(path);
     }
     // rootDir='/' is rejected at construction by resolve(), so normalized is always a
     // non-root path under the configured rootDir; appending '/' is safe.
@@ -197,7 +202,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   mkdir = async (path: string): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow', 'mkdir');
+    const normalized = this.walk(path, 'no-follow');
     if (this.symlinks.has(normalized)) {
       this.mkdirThroughLeafSymlink(path);
       return;
@@ -216,14 +221,14 @@ export class MemoryFileSystem implements FileSystem {
    * report, and a dangling link refuses without creating its target.
    */
   private mkdirThroughLeafSymlink(path: string): void {
-    const followed = this.walk(path, 'follow', 'mkdir');
+    const followed = this.walk(path, 'follow');
     if (this.directories.has(followed)) return;
     if (this.files.has(followed)) throw notADirectory(path);
     throw fileNotFound(path);
   }
 
   rm = async (path: string): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow', 'rm');
+    const normalized = this.walk(path, 'no-follow');
     if (this.files.has(normalized)) {
       this.files.delete(normalized);
       this.times.delete(normalized);
@@ -249,8 +254,8 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   rename = async (src: string, dst: string): Promise<void> => {
-    const normalizedSrc = this.walk(src, 'no-follow', 'rename');
-    const normalizedDst = this.walk(dst, 'no-follow', 'rename');
+    const normalizedSrc = this.walk(src, 'no-follow');
+    const normalizedDst = this.walk(dst, 'no-follow');
     this.assertRenamable(normalizedSrc, normalizedDst, src);
     if (normalizedSrc === normalizedDst) return;
     if (this.directories.has(normalizedSrc)) {
@@ -344,7 +349,7 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   readlink = async (path: string): Promise<string> => {
-    const normalized = this.walk(path, 'no-follow', 'readlink');
+    const normalized = this.walk(path, 'no-follow');
     const target = this.symlinks.get(normalized);
     if (target === undefined) {
       throw fileNotFound(path);
@@ -353,7 +358,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow', 'symlink');
+    const normalized = this.walk(path, 'no-follow');
     if (this.occupied(normalized)) {
       throw fileExists(path);
     }
@@ -371,11 +376,11 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   chmod = async (path: string, _mode: number): Promise<void> => {
-    this.walk(path, 'no-follow', 'chmod');
+    this.walk(path, 'no-follow');
   };
 
   rmRecursive = async (path: string): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow', 'rmRecursive');
+    const normalized = this.walk(path, 'no-follow');
     if (this.removeLeafEntry(normalized)) return;
     // Idempotent: a missing path returns void with no error.
     // Stryker disable next-line ConditionalExpression: equivalent — when `normalized` is not a directory it is also missing entirely (leaf cases already returned above), so removeSubtree finds no `${normalized}/`-prefixed keys and is a pure no-op whether or not this guard short-circuits.
@@ -411,7 +416,7 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   openWithNoFollow = async (path: string, _mode: 'read' | 'write'): Promise<FileHandle> => {
-    const normalized = this.walk(path, 'no-follow', 'openWithNoFollow');
+    const normalized = this.walk(path, 'no-follow');
     if (this.symlinks.has(normalized)) {
       // O_NOFOLLOW equivalent: refuse to open through a symlink leaf.
       throw permissionDenied(path);
@@ -460,13 +465,18 @@ export class MemoryFileSystem implements FileSystem {
    * POSIX resolution over the in-memory tree: every symlinked path component is followed — a
    * relative link text resolves against the link's own directory — and the leaf too under
    * `'follow'`. Every hop is re-checked by `resolve`'s own containment, so a followed target
-   * outside the root still refuses. More than `SYMLINK_FOLLOW_LIMIT` hops refuse.
+   * outside the root still refuses. A regular file at a non-final component refuses
+   * NOT_A_DIRECTORY, as Node's own path resolution does; more than `SYMLINK_FOLLOW_LIMIT` hops
+   * refuses PERMISSION_DENIED, as Node's ELOOP does.
    */
-  private walk(path: string, leaf: 'follow' | 'no-follow', operation: string): string {
+  private walk(path: string, leaf: 'follow' | 'no-follow'): string {
     let pending = segmentsUnder(this.rootDir, this.resolve(path));
     let current = this.rootDir;
     for (let hops = 0; pending.length > 0; ) {
       const next = `${current}/${pending[0] as string}`;
+      if (pending.length > 1 && this.files.has(next)) {
+        throw notADirectory(path);
+      }
       const target = this.symlinks.get(next);
       if (target === undefined || (pending.length === 1 && leaf === 'no-follow')) {
         current = next;
@@ -476,7 +486,7 @@ export class MemoryFileSystem implements FileSystem {
       hops += 1;
       if (hops >= MemoryFileSystem.SYMLINK_FOLLOW_LIMIT) {
         // POSIX ELOOP: too many levels of symbolic links.
-        throw unsupportedOperation(operation, `symlink loop: ${path}`);
+        throw permissionDenied(path);
       }
       const joined = target.startsWith('/') ? target : `${current}/${target}`;
       pending = [...segmentsUnder(this.rootDir, this.resolve(joined)), ...pending.slice(1)];

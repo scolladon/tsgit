@@ -75,6 +75,49 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'rmRecursive', invoke: (e, p) => e.fs.rmRecursive(p) },
 ];
 
+interface EnvCall {
+  readonly name: string;
+  readonly invoke: (env: FileSystemContractEnv) => Promise<unknown>;
+}
+
+/** Every surface that reaches the mutual symlink loop `refusal-loop-a` / `-b`, as a component
+ *  or as a followed leaf, and `exists` on the leaf. */
+const mutualLoopCalls: ReadonlyArray<EnvCall> = [
+  { name: 'read', invoke: (e) => e.fs.read(`${e.rootDir}/refusal-loop-a`) },
+  { name: 'stat', invoke: (e) => e.fs.stat(`${e.rootDir}/refusal-loop-a`) },
+  { name: 'readdir', invoke: (e) => e.fs.readdir(`${e.rootDir}/refusal-loop-a`) },
+  { name: 'read through it', invoke: (e) => e.fs.read(`${e.rootDir}/refusal-loop-a/x`) },
+  { name: 'lstat through it', invoke: (e) => e.fs.lstat(`${e.rootDir}/refusal-loop-a/x`) },
+  {
+    name: 'write through it',
+    invoke: (e) => e.fs.write(`${e.rootDir}/refusal-loop-a/x`, new Uint8Array()),
+  },
+  { name: 'rm through it', invoke: (e) => e.fs.rm(`${e.rootDir}/refusal-loop-a/x`) },
+  { name: 'exists', invoke: (e) => e.fs.exists(`${e.rootDir}/refusal-loop-a`) },
+];
+
+/** Every read surface that refuses a directory where a file was expected. */
+const directoryReadCalls: ReadonlyArray<EnvCall> = [
+  { name: 'read', invoke: (e) => e.fs.read(`${e.rootDir}/refusal-dir`) },
+  { name: 'readUtf8', invoke: (e) => e.fs.readUtf8(`${e.rootDir}/refusal-dir`) },
+  { name: 'readSlice', invoke: (e) => e.fs.readSlice(`${e.rootDir}/refusal-dir`, 0, 1) },
+];
+
+/** Every surface that refuses a regular file occupying an intermediate path segment. */
+const beneathFileCalls: ReadonlyArray<EnvCall> = [
+  { name: 'read', invoke: (e) => e.fs.read(`${e.rootDir}/refusal-file.bin/x`) },
+  { name: 'stat', invoke: (e) => e.fs.stat(`${e.rootDir}/refusal-file.bin/x`) },
+  { name: 'lstat', invoke: (e) => e.fs.lstat(`${e.rootDir}/refusal-file.bin/x`) },
+  { name: 'readlink', invoke: (e) => e.fs.readlink(`${e.rootDir}/refusal-file.bin/x`) },
+  { name: 'rm', invoke: (e) => e.fs.rm(`${e.rootDir}/refusal-file.bin/x`) },
+  {
+    name: 'rename',
+    invoke: (e) =>
+      e.fs.rename(`${e.rootDir}/refusal-file.bin/x`, `${e.rootDir}/refusal-file-rename-dst`),
+  },
+  { name: 'rmRecursive', invoke: (e) => e.fs.rmRecursive(`${e.rootDir}/refusal-file.bin/x`) },
+];
+
 function assertFileNotFound(err: unknown): void {
   expect(err).toBeInstanceOf(TsgitError);
   expect((err as TsgitError).data.code).toBe('FILE_NOT_FOUND');
@@ -1142,6 +1185,26 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(await env.fs.exists(`${env.rootDir}/sub/missing-dir`)).toBe(false);
     });
 
+    it('Given a mutual symlink loop occupies the mkdir target, When mkdir is called, Then it refuses PERMISSION_DENIED', async () => {
+      // Arrange
+      const linkA = `${env.rootDir}/sub/mkdir-loop-a`;
+      const linkB = `${env.rootDir}/sub/mkdir-loop-b`;
+      await env.fs.symlink('mkdir-loop-b', linkA);
+      await env.fs.symlink('mkdir-loop-a', linkB);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.mkdir(linkA);
+        expect.fail('expected PERMISSION_DENIED');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertPermissionDenied(caught);
+    });
+
     it('Given nested path, When writeUtf8, Then creates parent directories', async () => {
       // Arrange
       const path = `${env.rootDir}/x/y/z.txt`;
@@ -1385,6 +1448,126 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           }
         });
       }
+    });
+
+    describe('symlink and directory refusal parity', () => {
+      describe('Given a mutual symlink loop', () => {
+        for (const { name, invoke } of mutualLoopCalls) {
+          it(`Then ${name} refuses PERMISSION_DENIED`, async () => {
+            // Arrange
+            const linkA = `${env.rootDir}/refusal-loop-a`;
+            const linkB = `${env.rootDir}/refusal-loop-b`;
+            await env.fs.symlink('refusal-loop-b', linkA);
+            await env.fs.symlink('refusal-loop-a', linkB);
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          });
+        }
+      });
+
+      describe('Given a directory', () => {
+        for (const { name, invoke } of directoryReadCalls) {
+          it(`Then ${name} refuses PERMISSION_DENIED`, async () => {
+            // Arrange
+            await env.fs.mkdir(`${env.rootDir}/refusal-dir`);
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          });
+        }
+      });
+
+      describe('Given a missing path', () => {
+        it('Then readdir refuses FILE_NOT_FOUND', async () => {
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.readdir(`${env.rootDir}/refusal-never-existed`);
+            expect.fail('expected FILE_NOT_FOUND');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileNotFound(caught);
+        });
+      });
+
+      describe('Given a dangling symlink', () => {
+        it('Then readdir refuses FILE_NOT_FOUND', async () => {
+          // Arrange
+          await env.fs.symlink('refusal-nope', `${env.rootDir}/refusal-readdir-dangling`);
+
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.readdir(`${env.rootDir}/refusal-readdir-dangling`);
+            expect.fail('expected FILE_NOT_FOUND');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileNotFound(caught);
+        });
+      });
+
+      describe('Given a regular file occupying an intermediate path segment', () => {
+        for (const { name, invoke } of beneathFileCalls) {
+          it(`Then ${name} refuses NOT_A_DIRECTORY`, async () => {
+            // Arrange
+            await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env);
+              expect.fail('expected NOT_A_DIRECTORY');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertNotADirectory(caught);
+          });
+        }
+
+        it('Then exists rejects NOT_A_DIRECTORY', async () => {
+          // Arrange
+          await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.exists(`${env.rootDir}/refusal-file.bin/x`);
+            expect.fail('expected NOT_A_DIRECTORY');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertNotADirectory(caught);
+        });
+      });
     });
 
     describe('Given an in-root symlink whose target escapes every root', () => {

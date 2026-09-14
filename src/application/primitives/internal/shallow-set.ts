@@ -34,10 +34,11 @@ const shallowCache = new WeakMap<Context['session'], Promise<ShallowState>>();
 /**
  * Shared absence predicate for `.git/shallow` — used by this memo AND by
  * `shallow-file.ts`'s `readShallow`, so the two readers of the file agree
- * on what "absent" means. `NOT_A_DIRECTORY` counts as absent for the same
- * reason as `internal/loose-oid-cache.ts`'s fanout probe: a `Context`
- * whose git dir does not exist at all is routine in unit tests and must
- * not make every read throw.
+ * on what "absent" means. `NOT_A_DIRECTORY` counts as absent too: a regular
+ * file occupying an ancestor segment of the path (a bare `.git` file, say)
+ * reads the same as a missing shallow file — a `Context` assembled without
+ * a real `.git` tree is routine in unit tests and must not make every read
+ * throw.
  */
 export function isAbsentShallowFile(error: unknown): boolean {
   const code = errorDataCode(error);

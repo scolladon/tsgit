@@ -651,10 +651,11 @@ describe('ref-store', () => {
           caught = err;
         }
 
-        // Assert
+        // Assert — a directory read refuses PERMISSION_DENIED, as the Node adapter's EISDIR
+        // mapping does
         const data = (caught as TsgitError).data;
-        expect(data.code).toBe('FILE_NOT_FOUND');
-        if (data.code === 'FILE_NOT_FOUND') {
+        expect(data.code).toBe('PERMISSION_DENIED');
+        if (data.code === 'PERMISSION_DENIED') {
           expect(data.path).toBe(`${ctx.layout.gitDir}/packed-refs`);
         }
       });

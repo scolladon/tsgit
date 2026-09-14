@@ -35,6 +35,9 @@ const fanoutCache = new WeakMap<Context['session'], Map<string, Set<string>>>();
 const prefixOf = (id: ObjectId): string => id.slice(0, 2);
 const suffixOf = (id: ObjectId): string => id.slice(2);
 
+/** `readdir` on a missing fanout dir reports `FILE_NOT_FOUND` on every adapter;
+ *  `NOT_A_DIRECTORY` covers the other tolerated shape, a regular file occupying the fanout
+ *  path instead of a directory. Both mean "nothing loose here yet". */
 function isMissingFanoutDir(error: unknown): boolean {
   const code = errorDataCode(error);
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';

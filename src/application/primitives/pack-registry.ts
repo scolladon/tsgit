@@ -584,12 +584,12 @@ const unusableEntry = (
 ): UnusablePack => ({ name, layer, data });
 
 /**
- * Node's `readdir` on a missing directory maps to `FILE_NOT_FOUND`.
- * `NOT_A_DIRECTORY` covers two distinct real shapes: the memory adapter's
- * code for a MISSING directory, and node's `ENOTDIR` when `objects/pack` is
- * itself a regular file. Both mean the same thing here — there are no packs
- * to list — and canonical git agrees, serving a loose read at exit 0 while
- * printing `error: unable to open object pack directory: …: Not a directory`.
+ * `readdir` on a missing directory maps to `FILE_NOT_FOUND` on every
+ * adapter. `NOT_A_DIRECTORY` covers the other real shape this tolerates: a
+ * regular file sitting where `objects/pack` should be a directory (node's
+ * `ENOTDIR`). Both mean the same thing here — there are no packs to list —
+ * and canonical git agrees, serving a loose read at exit 0 while printing
+ * `error: unable to open object pack directory: …: Not a directory`.
  *
  * Structural on `data.code`, never `instanceof`: this classifies an error
  * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph

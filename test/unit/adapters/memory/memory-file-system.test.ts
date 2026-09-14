@@ -330,7 +330,7 @@ describe('MemoryFileSystem', () => {
 
     describe('Given non-existent path', () => {
       describe('When readdir', () => {
-        it('Then throws NOT_A_DIRECTORY', async () => {
+        it('Then throws FILE_NOT_FOUND', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
 
@@ -344,7 +344,7 @@ describe('MemoryFileSystem', () => {
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
         });
       });
     });
@@ -562,7 +562,7 @@ describe('MemoryFileSystem', () => {
 
     describe('Given mutually-recursive symlink pair', () => {
       describe('When stat', () => {
-        it('Then throws UNSUPPORTED_OPERATION with stat operation and symlink-loop reason', async () => {
+        it('Then throws PERMISSION_DENIED, as the Node adapter maps ELOOP', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           await sut.symlink('/repo/b', '/repo/a');
@@ -579,10 +579,9 @@ describe('MemoryFileSystem', () => {
           // Assert — cycle detected; no infinite recursion / stack overflow
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data;
-          expect(data.code).toBe('UNSUPPORTED_OPERATION');
-          if (data.code === 'UNSUPPORTED_OPERATION') {
-            expect(data.operation).toBe('stat');
-            expect(data.reason).toBe('symlink loop: /repo/a');
+          expect(data.code).toBe('PERMISSION_DENIED');
+          if (data.code === 'PERMISSION_DENIED') {
+            expect(data.path).toBe('/repo/a');
           }
         });
       });
@@ -590,7 +589,7 @@ describe('MemoryFileSystem', () => {
 
     describe('Given chain of exactly 40 valid symlinks ending at a file', () => {
       describe('When stat', () => {
-        it('Then throws ELOOP at POSIX threshold', async () => {
+        it('Then throws PERMISSION_DENIED at the POSIX ELOOP threshold', async () => {
           // Arrange — POSIX SYMLOOP_MAX = 40. Kills the mutant that relaxes `>=` to `>`.
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           await sut.write('/repo/target.txt', new Uint8Array([1]));
@@ -608,9 +607,10 @@ describe('MemoryFileSystem', () => {
             caught = err;
           }
 
-          // Assert — the POSIX-defined 40-level limit is reached and throws ELOOP.
+          // Assert — the POSIX-defined 40-level limit is reached and throws ELOOP, mapped
+          // to PERMISSION_DENIED as the Node adapter maps it.
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
         });
       });
     });
@@ -2013,10 +2013,18 @@ describe('MemoryFileSystem', () => {
             caught = err;
           }
 
-          // Assert — refused, and the tree is exactly what it was before the call
+          // Assert — refused, and the tree is exactly what it was before the call. `exists`
+          // beneath a regular file now refuses NOT_A_DIRECTORY itself, so "nothing recorded"
+          // is proven through the root listing instead of an `exists` probe.
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-          expect(await sut.exists('/repo/blocker/mid')).toBe(false);
+          let probeCaught: unknown;
+          try {
+            await sut.exists('/repo/blocker/mid');
+          } catch (err) {
+            probeCaught = err;
+          }
+          expect((probeCaught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
           expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['blocker']);
         });
       });
@@ -2035,11 +2043,17 @@ describe('MemoryFileSystem', () => {
             caught = err;
           }
 
-          // Assert
+          // Assert — `exists` beneath a regular file now refuses NOT_A_DIRECTORY itself, so
+          // "nothing recorded" is proven through the root listing instead of an `exists` probe.
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-          expect(await sut.exists('/repo/blocker/mid/leaf')).toBe(false);
-          expect(await sut.exists('/repo/blocker/mid')).toBe(false);
+          let probeCaught: unknown;
+          try {
+            await sut.exists('/repo/blocker/mid/leaf');
+          } catch (err) {
+            probeCaught = err;
+          }
+          expect((probeCaught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
           expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['blocker']);
         });
       });

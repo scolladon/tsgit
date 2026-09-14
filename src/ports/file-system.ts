@@ -117,7 +117,7 @@ export interface FileSystem {
   /** Get file/directory metadata. Throws FILE_NOT_FOUND if not found. Does NOT follow symlinks. */
   readonly lstat: (path: string) => Promise<FileStat>;
 
-  /** List directory entries. Throws NOT_A_DIRECTORY if not a directory. */
+  /** List directory entries. Throws NOT_A_DIRECTORY if not a directory, FILE_NOT_FOUND if absent. */
   readonly readdir: (path: string) => Promise<ReadonlyArray<DirEntry>>;
 
   /** Create directory and all parents. No-op if already exists. */

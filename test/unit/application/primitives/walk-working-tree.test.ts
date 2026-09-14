@@ -105,17 +105,29 @@ describe('walkWorkingTree', () => {
           content: 'x',
           label: 'a `.GIT` directory is skipped (case-insensitive, matches core.ignorecase=true)',
         },
-        {
-          path: '.git',
-          content: 'gitdir: /elsewhere',
-          label: 'a regular file literally named `.git` is skipped but its siblings are yielded',
-        },
       ])('Then $label', async ({ path, content }) => {
         // Arrange
         const ctx = await seedFs({ 'a.txt': '1', [path]: content });
 
         // Act
         const result = await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(result).toEqual(['a.txt']);
+      });
+
+      it('Then a regular file literally named `.git` is skipped but its siblings are yielded', async () => {
+        // Arrange — the repository's own gitDir lives elsewhere (a linked-worktree shape:
+        // discovery already resolved this `.git` pointer file before the walk ever runs), so
+        // it must not collide with the workdir-root `.git` marker under test.
+        const ctx = await seedFs({ 'a.txt': '1', '.git': 'gitdir: /repo/real-gitdir' });
+        const elsewhereCtx: Context = {
+          ...ctx,
+          layout: { ...ctx.layout, gitDir: '/repo/real-gitdir' },
+        };
+
+        // Act
+        const result = await collect(walkWorkingTree(elsewhereCtx));
 
         // Assert
         expect(result).toEqual(['a.txt']);
