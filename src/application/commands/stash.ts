@@ -26,6 +26,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
@@ -378,23 +379,6 @@ const parseStashCommit = async (ctx: Context, w: ObjectId): Promise<StashParents
     throw invalidCommit(REASON_NOT_A_STASH_COMMIT);
   }
   return { base, indexParent, untrackedParent, wTree: obj.data.tree };
-};
-
-const isFileNotFound = (error: unknown): boolean =>
-  error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
-
-/**
- * Whether anything occupies `absPath` — an `lstat`-based presence probe, so a dangling
- * symlink still counts as occupying the path (a target-following `exists` would not).
- */
-const pathIsOccupied = async (ctx: Context, absPath: string): Promise<boolean> => {
-  try {
-    await ctx.fs.lstat(absPath);
-    return true;
-  } catch (err) {
-    if (isFileNotFound(err)) return false;
-    throw err;
-  }
 };
 
 /** Untracked paths whose restoration would overwrite an existing working file. */

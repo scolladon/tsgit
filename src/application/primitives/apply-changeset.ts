@@ -42,6 +42,7 @@ import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import { pathIsOccupied } from './internal/path-occupied.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
@@ -73,23 +74,6 @@ export interface ApplyChangesetResult {
 const CHECKOUT_OP = 'checkout:materialize';
 
 const LINK_ENCODER = new TextEncoder();
-
-const isFileNotFound = (error: unknown): boolean =>
-  error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
-
-/**
- * Whether anything occupies `absPath` — an `lstat`-based presence probe, so a dangling
- * symlink still counts as occupying the path (a target-following `exists` would not).
- */
-const pathIsOccupied = async (ctx: Context, absPath: string): Promise<boolean> => {
-  try {
-    await ctx.fs.lstat(absPath);
-    return true;
-  } catch (err) {
-    if (isFileNotFound(err)) return false;
-    throw err;
-  }
-};
 
 const blobMatches = async (ctx: Context, absPath: string, expectedId: string): Promise<boolean> => {
   let bytes: Uint8Array;
