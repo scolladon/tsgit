@@ -2,6 +2,7 @@
 subjects:
   - src/application/primitives/ref-store.ts
   - src/application/primitives/internal/repo-state.ts
+  - src/adapters/memory/memory-file-system.ts
 ---
 # 868 — A symlinked `HEAD` whose link text is not a valid refname is read through
 
@@ -54,17 +55,35 @@ is read through: the file the link points to is read fresh on every call and is 
 HEAD slot, because the slot's identity is the link's own `lstat`, which a rewrite of the target
 does not change. A directory target or an absent target resolves `missing`; the content goes through
 the loose-ref parse, so an object id resolves direct, `ref: …` resolves symbolic, and malformed
-content still refuses `INVALID_REF`. Other I/O failures propagate.
+content refuses as that parse does (`INVALID_REF`, or `INVALID_OBJECT_ID` for content that is
+neither an id nor `ref: …`). Other I/O failures propagate.
 
 The HEAD slot and the gate are unchanged. The rule applies to primitive-only sessions too. HEAD
 writes are unchanged: when the read-through reports direct, `commit` writes `HEAD` itself and the
 lock-and-rename replaces the link with a regular file, as git's does; when it reports symbolic, the
 branch advances and the link stays.
 
+**The memory adapter follows symlinks on read** (decided with the user after the design,
+2026-09-14). The read-through goes through `ctx.fs.stat` and `ctx.fs.readUtf8`. The Node adapter
+follows a symlink leaf on both, resolving a relative link text against the link's own directory, as
+POSIX does. The memory adapter did neither: its content reads never followed a link, and its `stat`
+resolved a relative link text against the adapter root. Rather than exercising the read-through
+through a test double, `MemoryFileSystem`'s reads (`read`, `readSlice`, `readUtf8`, `stat`,
+`exists`, `readdir`) now follow a symlink leaf with the existing 40-hop loop limit, a relative link
+text resolved against the link's directory, and its structural containment still refusing a target
+outside its root. Its write surfaces keep their no-follow refusals, and `lstat`, `readlink`, `rm`,
+`rename` and `openWithNoFollow` still act on the link itself. The read-through therefore behaves the
+same on Node and on the memory adapter, and the `FileSystem` contract suite, which runs against both,
+pins each followed read. The browser adapter is unaffected: OPFS has no symbolic links, and its
+`symlink` and `readlink` refuse `UNSUPPORTED_OPERATION`.
+
 ## Consequences
 
 `resolveRef('HEAD')`, `status` and `commit` stop refusing a symlinked `HEAD` git accepts, and match
 git on F2–F5, F7 and F8. The head-symlink interop test gains those rows.
+
+A memory-adapter caller now reads a symlink's target where it used to get `FILE_NOT_FOUND`, and
+`exists` on a dangling link returns `false` where it returned `true` — the Node adapter's answers.
 
 Residuals, recorded:
 
