@@ -1,5 +1,4 @@
-import { TsgitError } from '../../domain/error.js';
-import { objectNotFound } from '../../domain/objects/error.js';
+import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
   type OfsPackEntryHeader,
@@ -141,15 +140,6 @@ function getInflight(ctx: Context): Map<string, Promise<boolean>> {
 }
 
 /**
- * True when `err` is `OBJECT_NOT_FOUND`. tsgit strips `thin-pack`, so every
- * stored pack is self-contained — a resolver miss always means the requested
- * object itself is absent, never a dangling delta base.
- */
-function isObjectNotFound(err: unknown): boolean {
-  return err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND';
-}
-
-/**
  * Fetch `id` from the promisor remote, de-duplicating reads of the same
  * missing object whose fetches overlap in time — they share one promisor
  * call. A read that misses *after* an earlier fetch already completed is not
@@ -190,6 +180,9 @@ async function withLazyFetchRetry<T>(
     return await run();
   } catch (err) {
     const promisor = ctx.promisor;
+    // tsgit strips thin-pack, so every stored pack is self-contained — a
+    // resolver miss always means the requested object itself is absent,
+    // never a dangling delta base.
     if (promisor === undefined || !isObjectNotFound(err)) throw err;
     // Partial-clone lazy-fetch: pull the missing object, refresh the pack
     // registry so the new pack is visible, then retry the resolve exactly once.

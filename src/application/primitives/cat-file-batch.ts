@@ -7,7 +7,8 @@
  *
  * See `docs/design/cat-file-batch.md` and ADRs 087–090.
  */
-import { operationAborted, TsgitError } from '../../domain/error.js';
+import { operationAborted } from '../../domain/error.js';
+import { isObjectNotFound } from '../../domain/objects/error.js';
 import { type GitObject, type ObjectId, payloadByteLength } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
@@ -30,9 +31,6 @@ const buildMissingEntry = (id: ObjectId): CatFileBatchEntry => ({
   id,
   reason: 'missing',
 });
-
-const isObjectNotFound = (err: unknown): boolean =>
-  err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND';
 
 const readOne = async (
   ctx: Context,

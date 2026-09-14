@@ -1,5 +1,5 @@
 import { applyGraft } from '../../../domain/commit/graft.js';
-import { TsgitError } from '../../../domain/error.js';
+import { isObjectNotFound } from '../../../domain/objects/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
@@ -34,6 +34,3 @@ export const readCommit = async (
     throw error;
   }
 };
-
-const isObjectNotFound = (error: unknown): boolean =>
-  error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND';

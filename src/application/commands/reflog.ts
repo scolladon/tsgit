@@ -6,6 +6,7 @@
  */
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
+import { isObjectNotFound } from '../../domain/objects/error.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import { reflogNotFound } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
@@ -273,9 +274,6 @@ const createReachability = (tips: ReadonlyArray<ObjectId>): ReachabilityState =>
   head: 0,
   boundActive: true,
 });
-
-const isObjectNotFound = (err: unknown): boolean =>
-  err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND';
 
 /** git's gentle `repo_parse_commit`: a missing ancestor is skipped rather
  *  than aborting the walk. Left unmarked — a parse failure proves nothing

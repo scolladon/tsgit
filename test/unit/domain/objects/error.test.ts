@@ -8,6 +8,8 @@ import {
   invalidObjectId,
   invalidTag,
   invalidTreeEntry,
+  isObjectNotFound,
+  objectNotFound,
   objectTooLarge,
   type TsgitError,
   treeCycleDetected,
@@ -174,6 +176,54 @@ describe('error', () => {
           expect(result.message).toContain(id);
           expect(result.message).toContain('size=999');
           expect(result.message).toContain('limit=100');
+        });
+      });
+    });
+  });
+
+  describe('isObjectNotFound', () => {
+    describe('Given a TsgitError with code OBJECT_NOT_FOUND', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns true', () => {
+          // Arrange
+          const id = 'd'.repeat(40) as ObjectId;
+          const error = objectNotFound(id);
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a TsgitError with a different code', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const error = invalidObjectId('xyz');
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a non-TsgitError value', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const error = new Error('not a TsgitError');
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(false);
         });
       });
     });

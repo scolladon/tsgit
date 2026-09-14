@@ -71,6 +71,14 @@ export const invalidIdentity = (line: string, reason: string): TsgitError =>
 export const objectNotFound = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_NOT_FOUND', id });
 
+/**
+ * True when `err` is a `TsgitError` carrying the `OBJECT_NOT_FOUND` code —
+ * the shared guard every "was this object missing?" catch clause needs,
+ * rather than each call site re-deriving the `instanceof` + code check.
+ */
+export const isObjectNotFound = (err: unknown): boolean =>
+  err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND';
+
 export const objectHashMismatch = (expected: ObjectId, actual: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_HASH_MISMATCH', expected, actual });
 
