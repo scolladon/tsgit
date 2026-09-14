@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { fileNotFound, permissionDenied } from '../../../../src/domain/error.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -1198,6 +1199,37 @@ describe('reftable-ref-store', () => {
         expect(findings).toEqual([
           { table: 'table1.ref', msgId: 'badReftableTable', check: 'magic' },
         ]);
+      });
+    });
+  });
+
+  describe('Given an existing ref with a reflog on a reftable Context', () => {
+    describe('When updateRef is called with the null object id', () => {
+      it('Then the ref resolves as missing and has no reflog', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const zero = ObjectId.fromRaw(new Uint8Array(20));
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name: ref('refs/heads/main'),
+            id: ObjectId.fromRaw(oid(0x01)),
+            reflog: {
+              oldId: zero,
+              newId: ObjectId.fromRaw(oid(0x01)),
+              message: 'commit (initial): seed',
+              unconditional: true,
+            },
+          },
+        ]);
+
+        // Act
+        await updateRef(ctx, ref('refs/heads/main'), zero, { reflogMessage: 'delete: main' });
+
+        // Assert
+        expect(await sut.resolveDirect(ref('refs/heads/main'))).toEqual({ kind: 'missing' });
+        expect(await sut.hasReflog(ref('refs/heads/main'))).toBe(false);
       });
     });
   });

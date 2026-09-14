@@ -500,7 +500,7 @@ describe('ref-store', () => {
 
   describe('Given a delete update on a ref that exists in neither loose nor packed storage', () => {
     describe('When applyRefUpdates is called', () => {
-      it('Then it throws REF_NOT_FOUND', async () => {
+      it('Then it resolves without creating anything', async () => {
         // Arrange
         // Kills the `if (await ctx.fs.exists(path))` ConditionalExpression `true`
         // mutant: under `true`, rm is always called and would fail on missing path.
@@ -508,16 +508,13 @@ describe('ref-store', () => {
         const sut = createRefStore(ctx);
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/never' as RefName }]);
-          expect.unreachable();
-        } catch (err) {
-          caught = err;
-        }
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/never' as RefName }]);
 
         // Assert
-        expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+        expect(await sut.resolveDirect('refs/heads/never' as RefName)).toEqual({
+          kind: 'missing',
+        });
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/never')).toBe(false);
       });
     });
   });

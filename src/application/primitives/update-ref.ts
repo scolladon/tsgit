@@ -32,20 +32,33 @@ export async function updateRef(
   // thrown call.
   const head = await resolveHeadForCoupling(store);
 
-  if (options.expected !== undefined) {
-    const actual = current.kind === 'direct' ? current.id : 'absent';
-    if (options.expected !== actual) {
-      throw refUpdateConflict(name, options.expected, actual);
-    }
-  }
+  assertExpected(name, options.expected, current);
 
-  if (options.delete === true) {
+  // git marks a null new object id `REF_DELETING` and takes the delete path
+  // unverified, exactly as `delete: true` does — the two are one transaction
+  // shape, not two.
+  if (options.delete === true || newId === zeroOid(ctx.hashConfig)) {
     await store.applyRefUpdates([{ kind: 'delete', name }]);
     return;
   }
 
   const oldId = current.kind === 'direct' ? current.id : zeroOid(ctx.hashConfig);
   await store.applyRefUpdates(refUpdatesFor(name, newId, oldId, options.reflogMessage, head));
+}
+
+/**
+ * git's compare-and-swap: `expected` is checked against the GIVEN ref's own
+ * current value before anything is written — never a symbolic ref's target
+ * (dereferencing the write itself is a later change).
+ */
+function assertExpected(
+  name: RefName,
+  expected: ObjectId | 'absent' | undefined,
+  current: ResolveDirectResult,
+): void {
+  if (expected === undefined) return;
+  const actual = current.kind === 'direct' ? current.id : 'absent';
+  if (expected !== actual) throw refUpdateConflict(name, expected, actual);
 }
 
 /**

@@ -438,7 +438,7 @@ describe('reftable-transaction', () => {
 
   describe('Given a ref that exists in neither an empty nor a populated stack', () => {
     describe('When applyReftableUpdates applies a delete update', () => {
-      it('Then it throws REF_NOT_FOUND naming the ref', async () => {
+      it('Then it resolves and writes no table for the no-op', async () => {
         // Arrange — every other delete test in this file deletes a LIVE
         // ref; `applyDeleteRecords`'s own `stack.lookup(name) === undefined`
         // guard is otherwise never exercised on the reftable path.
@@ -446,22 +446,17 @@ describe('reftable-transaction', () => {
         await applyReftableUpdates(ctx, [
           { kind: 'set', name: ref('refs/heads/present'), id: oid(0x01) },
         ]);
+        const listingBefore = await ctx.fs.readUtf8(tablesListPath(ctx.layout.gitDir));
 
         // Act
-        let caught: unknown;
-        try {
-          await applyReftableUpdates(ctx, [{ kind: 'delete', name: ref('refs/heads/never') }]);
-        } catch (err) {
-          caught = err;
-        }
-        if (caught === undefined) expect.unreachable();
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name: ref('refs/heads/never') }]);
 
-        // Assert
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('REF_NOT_FOUND');
-        if (data.code === 'REF_NOT_FOUND') {
-          expect(data.name).toBe(ref('refs/heads/never'));
-        }
+        // Assert — the absent-ref delete never staged a table: tables.list is
+        // byte-unchanged.
+        const listingAfter = await ctx.fs.readUtf8(tablesListPath(ctx.layout.gitDir));
+        expect(listingAfter).toBe(listingBefore);
+        const store = createReftableRefStore(ctx);
+        expect(await store.resolveDirect(ref('refs/heads/never'))).toEqual({ kind: 'missing' });
       });
     });
   });

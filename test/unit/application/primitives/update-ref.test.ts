@@ -301,17 +301,211 @@ describe('updateRef', () => {
 
   describe('Given delete=true on a ref that exists in neither loose nor packed storage', () => {
     describe('When updateRef is called', () => {
-      it('Then throws REF_NOT_FOUND', async () => {
+      it('Then it resolves and nothing is created', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        await updateRef(ctx, 'refs/heads/never-existed' as RefName, ID_A, { delete: true });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/never-existed')).toBe(false);
+      });
+    });
+
+    describe('When updateRef is called with expected: "absent"', () => {
+      it('Then it resolves the same way', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        await updateRef(ctx, 'refs/heads/never-existed' as RefName, ID_A, {
+          delete: true,
+          expected: 'absent',
+        });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/never-existed')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a null object id as the new value', () => {
+    describe('When updateRef is called on an existing loose ref with a reflog', () => {
+      it('Then the ref file and its reflog file are both gone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await updateRef(ctx, 'refs/heads/tmp' as RefName, ID_A, { reflogMessage: REASON });
+        expect(await ctx.fs.exists('/repo/.git/logs/refs/heads/tmp')).toBe(true);
+
+        // Act
+        await updateRef(ctx, 'refs/heads/tmp' as RefName, ZERO, { reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/tmp')).toBe(false);
+        expect(await ctx.fs.exists('/repo/.git/logs/refs/heads/tmp')).toBe(false);
+      });
+    });
+
+    describe('When updateRef is called on an absent ref', () => {
+      it('Then nothing is created and it does not throw', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        await updateRef(ctx, 'refs/heads/never-existed' as RefName, ZERO, {
+          reflogMessage: REASON,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/never-existed')).toBe(false);
+      });
+    });
+
+    describe('When updateRef is called with a matching expected id', () => {
+      it('Then the ref is deleted', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+
+        // Act
+        await updateRef(ctx, MAIN, ZERO, { expected: ID_A, reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/main')).toBe(false);
+      });
+    });
+
+    describe('When updateRef is called with a mismatching expected id', () => {
+      it('Then it throws REF_UPDATE_CONFLICT and leaves the ref in place', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+
+        // Act + Assert
+        try {
+          await updateRef(ctx, MAIN, ZERO, { expected: ID_B, reflogMessage: REASON });
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('REF_UPDATE_CONFLICT');
+          if (data.code === 'REF_UPDATE_CONFLICT') {
+            expect(data.expected).toBe(ID_B);
+            expect(data.actual).toBe(ID_A);
+          }
+        }
+        expect(await resolveRef(ctx, MAIN)).toBe(ID_A);
+      });
+    });
+
+    describe('When updateRef is called with an expected id on an absent ref', () => {
+      it('Then it throws REF_UPDATE_CONFLICT with actual "absent"', async () => {
         // Arrange
         const ctx = await buildSeededContext();
 
         // Act + Assert
         try {
-          await updateRef(ctx, 'refs/heads/never-existed' as RefName, ID_A, { delete: true });
+          await updateRef(ctx, 'refs/heads/gone' as RefName, ZERO, {
+            expected: ID_A,
+            reflogMessage: REASON,
+          });
           expect.unreachable();
         } catch (error) {
-          expect((error as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('REF_UPDATE_CONFLICT');
+          if (data.code === 'REF_UPDATE_CONFLICT') {
+            expect(data.actual).toBe('absent');
+          }
         }
+      });
+    });
+
+    describe('When updateRef is called with expected: "absent" on an existing ref', () => {
+      it('Then it throws REF_UPDATE_CONFLICT', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+
+        // Act + Assert
+        try {
+          await updateRef(ctx, MAIN, ZERO, { expected: 'absent', reflogMessage: REASON });
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('REF_UPDATE_CONFLICT');
+        }
+      });
+    });
+
+    describe('When updateRef is called against a SHA-256 repository with a 64-zero id', () => {
+      it('Then the ref is deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await updateRef(ctx, MAIN, ID_A_SHA256, { reflogMessage: REASON });
+
+        // Act
+        await updateRef(ctx, MAIN, ZERO_SHA256, { reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/main')).toBe(false);
+      });
+    });
+
+    describe('When updateRef is called against a SHA-256 repository with a 40-zero id', () => {
+      it('Then it is not treated as the null id and builds a "set" update, never a "delete"', async () => {
+        // Arrange — a 40-hex-zero id is not the SHA-256 null id (64 zeros),
+        // so this must take the write path. Captures the update list rather
+        // than letting it commit: a genuinely 40-char id on a 64-char
+        // repository is not a value any real writer would carry through to
+        // the reflog serializer, which has its own, unrelated width guard.
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const fortyZeroes = '0'.repeat(40) as ObjectId;
+        const store = getRefStore(ctx);
+        const calls: unknown[][] = [];
+        store.applyRefUpdates = async (updates) => {
+          calls.push([...updates]);
+        };
+
+        // Act
+        await updateRef(ctx, MAIN, fortyZeroes, { reflogMessage: REASON });
+
+        // Assert
+        expect(calls).toHaveLength(1);
+        const kind = (calls[0]?.[0] as { kind: string } | undefined)?.kind;
+        expect(kind).toBe('set');
+      });
+    });
+
+    describe('When updateRef is called on a packed-only ref', () => {
+      it('Then it still throws UNSUPPORTED_OPERATION (packed-refs rewrite lands in a later change)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          packedRefs: [{ name: 'refs/tags/old' as RefName, id: ID_A }],
+        });
+
+        // Act + Assert
+        try {
+          await updateRef(ctx, 'refs/tags/old' as RefName, ZERO, { reflogMessage: REASON });
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('UNSUPPORTED_OPERATION');
+          if (data.code === 'UNSUPPORTED_OPERATION') {
+            expect(data.operation).toBe('delete-packed-ref');
+          }
+        }
+      });
+    });
+
+    describe('When updateRef is called against a symbolic ref by its own name', () => {
+      it('Then the symbolic ref file itself is removed (dereferencing lands in a later change)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        const sym = 'refs/heads/sym' as RefName;
+        await writeSymbolicRef(ctx, sym, MAIN);
+
+        // Act
+        await updateRef(ctx, sym, ZERO, { reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/sym')).toBe(false);
+        expect(await resolveRef(ctx, MAIN)).toBe(ID_A);
       });
     });
   });

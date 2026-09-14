@@ -61,7 +61,7 @@ import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { sanitizeReflogMessage } from '../../domain/reflog/reflog-format.js';
 import { shouldAutocreateReflog } from '../../domain/reflog/should-log.js';
-import { refNotFound, reftableLocked, refUpdateConflict } from '../../domain/refs/error.js';
+import { reftableLocked, refUpdateConflict } from '../../domain/refs/error.js';
 import {
   compactionMetric,
   createReftableStack,
@@ -486,8 +486,9 @@ function tombstoneExistingLogs(
 
 /** A deletion appends a ref tombstone at the NEW `update_index`, plus one
  *  log tombstone per EXISTING live reflog entry, each at THAT entry's own
- *  `update_index` — never the new one. Refuses `REF_NOT_FOUND` when the ref
- *  is not currently live, matching the files backend. */
+ *  `update_index` — never the new one. A ref that is not currently live is
+ *  already git's desired end state — no record is written at all, matching
+ *  the files backend's no-op. */
 function applyDeleteRecords(
   stack: ReftableStack,
   name: RefName,
@@ -495,7 +496,7 @@ function applyDeleteRecords(
   refs: ReftableRefRecord[],
   logs: ReftableLogRecord[],
 ): void {
-  if (stack.lookup(name) === undefined) throw refNotFound(name);
+  if (stack.lookup(name) === undefined) return;
   refs.push({ name, updateIndex, value: { kind: 'deletion' } });
   tombstoneExistingLogs(stack, name, logs);
 }

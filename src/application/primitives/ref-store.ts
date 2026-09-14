@@ -16,7 +16,6 @@ import {
   type ReftableCheck,
   refChainTooDeep,
   refLocked,
-  refNotFound,
   refUpdateConflict,
 } from '../../domain/refs/error.js';
 import {
@@ -862,7 +861,9 @@ function createFilesRefStore(ctx: Context): RefStore {
    * Remove `name`'s loose file and tombstone its reflog. A packed-only ref
    * refuses (`delete-packed-ref` — deleting it would require a packed-refs
    * rewrite this backend doesn't perform); a ref that is neither loose nor
-   * packed refuses `REF_NOT_FOUND` instead of silently succeeding.
+   * packed is already git's desired end state — the delete succeeds without
+   * writing anything (git's `delete_refs` treats an already-gone ref as a
+   * no-op, not a refusal).
    */
   async function applyDelete(update: Extract<RefUpdate, { kind: 'delete' }>): Promise<void> {
     await checkExpected(update.name, update.expected);
@@ -879,7 +880,6 @@ function createFilesRefStore(ctx: Context): RefStore {
         'deleting packed-only refs requires packed-refs rewrite',
       );
     }
-    throw refNotFound(update.name);
   }
 
   async function applyOne(update: RefUpdate): Promise<void> {
