@@ -600,24 +600,32 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given an update whose target file is reported absent by exists() but readable', () => {
+  describe('Given an update whose target file is reported absent by lstat() but readable', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then treats it as non-dirty and does not throw', async () => {
-        // Arrange — exists() says absent; blobMatches must NOT run for an absent file
+        // Arrange — lstat() says absent; blobMatches must NOT run for an absent file
         const ctx = await buildSeededContext();
         const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
         // Working tree holds content that does NOT match previousId.
         await ctx.fs.write(`${WORKDIR}/phantom.txt`, new TextEncoder().encode('mismatching-bytes'));
+        // Only the pre-write dirty probe reports absence — the post-write index-entry
+        // lstat must see the file applyChangeset itself just wrote.
+        let dirtyProbeAnswered = false;
         const wrappedCtx: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async (p: string): Promise<boolean> =>
-              p === `${WORKDIR}/phantom.txt` ? false : ctx.fs.exists(p),
+            lstat: async (p: string): Promise<FileStat> => {
+              if (p === `${WORKDIR}/phantom.txt` && !dirtyProbeAnswered) {
+                dirtyProbeAnswered = true;
+                throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });
+              }
+              return ctx.fs.lstat(p);
+            },
           },
         };
-        // Act — exists()=false short-circuits to non-dirty; no throw despite mismatching bytes
+        // Act — lstat()=absent short-circuits to non-dirty; no throw despite mismatching bytes
         const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeUpdate('phantom.txt', oldId, newId)]),
           force: false,

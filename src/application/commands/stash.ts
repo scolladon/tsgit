@@ -380,6 +380,23 @@ const parseStashCommit = async (ctx: Context, w: ObjectId): Promise<StashParents
   return { base, indexParent, untrackedParent, wTree: obj.data.tree };
 };
 
+const isFileNotFound = (error: unknown): boolean =>
+  error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
+
+/**
+ * Whether anything occupies `absPath` — an `lstat`-based presence probe, so a dangling
+ * symlink still counts as occupying the path (a target-following `exists` would not).
+ */
+const pathIsOccupied = async (ctx: Context, absPath: string): Promise<boolean> => {
+  try {
+    await ctx.fs.lstat(absPath);
+    return true;
+  } catch (err) {
+    if (isFileNotFound(err)) return false;
+    throw err;
+  }
+};
+
 /** Untracked paths whose restoration would overwrite an existing working file. */
 const untrackedOverwrites = async (
   ctx: Context,
@@ -389,7 +406,7 @@ const untrackedOverwrites = async (
   const flat = await flattenTree(ctx, uTree);
   const clobbered: FilePath[] = [];
   for (const path of flat.entries.keys()) {
-    if (await ctx.fs.exists(joinPath(workDir, path))) clobbered.push(path);
+    if (await pathIsOccupied(ctx, joinPath(workDir, path))) clobbered.push(path);
   }
   return clobbered;
 };

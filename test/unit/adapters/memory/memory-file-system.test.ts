@@ -652,6 +652,53 @@ describe('MemoryFileSystem', () => {
       });
     });
 
+    describe('Given a symlink to an existing file occupies the mkdir target', () => {
+      describe('When mkdir is called', () => {
+        it('Then throws NOT_A_DIRECTORY, the code this adapter keeps for a file where a directory is created', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/mkdir-target.txt', new Uint8Array([1]));
+          await sut.symlink('/repo/mkdir-target.txt', '/repo/mkdir-file-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.mkdir('/repo/mkdir-file-link');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect((await sut.lstat('/repo/mkdir-file-link')).isSymbolicLink).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a symlink whose absolute target leaves the root occupies the mkdir target', () => {
+      describe('When mkdir is called', () => {
+        it('Then throws PERMISSION_DENIED and nothing is recorded', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.symlink('/outside/escape-dir', '/repo/mkdir-escape-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.mkdir('/repo/mkdir-escape-link');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect((await sut.lstat('/repo/mkdir-escape-link')).isSymbolicLink).toBe(true);
+        });
+      });
+    });
+
     describe('Given directory', () => {
       describe('When stat', () => {
         it('Then reports isFile=false, isDirectory=true, isSymbolicLink=false', async () => {
@@ -1618,28 +1665,23 @@ describe('MemoryFileSystem', () => {
 
     describe('Given a symlink at src and an existing regular file at dst', () => {
       describe('When renaming', () => {
-        it('Then the file is replaced by the link, which keeps its target', async () => {
+        it('Then the file is replaced by the link, which keeps and follows through to its target', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
-          await sut.write('/repo/target.bin', new Uint8Array([1]));
+          const targetBytes = new Uint8Array([1]);
+          await sut.write('/repo/target.bin', targetBytes);
           await sut.symlink('/repo/target.bin', '/repo/moved-link');
           await sut.write('/repo/dst-file.bin', new Uint8Array([9]));
 
           // Act
           await sut.rename('/repo/moved-link', '/repo/dst-file.bin');
 
-          // Assert — the destination is the link; the file entry it replaced is gone
-          // (memory `read` never follows a link, so a surviving file entry would read back)
+          // Assert — the destination is the link; the file entry it replaced is gone (a
+          // surviving file entry would shadow the link and read back its own stale bytes)
           const dst = await sut.lstat('/repo/dst-file.bin');
           expect(dst.isSymbolicLink).toBe(true);
           expect(await sut.readlink('/repo/dst-file.bin')).toBe('/repo/target.bin');
-          let caught: unknown;
-          try {
-            await sut.read('/repo/dst-file.bin');
-          } catch (err) {
-            caught = err;
-          }
-          expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+          expect(await sut.read('/repo/dst-file.bin')).toEqual(targetBytes);
           expect(await sut.exists('/repo/moved-link')).toBe(false);
         });
       });

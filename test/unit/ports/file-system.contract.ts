@@ -804,6 +804,344 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(stat.size).toBe(3);
     });
 
+    it('Given a relative symlink to a file in the same directory, When reading through it, Then every read surface returns the target bytes', async () => {
+      // Arrange
+      const target = `${env.rootDir}/sub/target.txt`;
+      const link = `${env.rootDir}/sub/link.txt`;
+      const data = new Uint8Array([10, 20, 30, 40]);
+      await env.fs.write(target, data);
+      await env.fs.symlink('target.txt', link);
+
+      // Act
+      const bytes = await env.fs.read(link);
+      const text = await env.fs.readUtf8(link);
+      const slice = await env.fs.readSlice(link, 1, 2);
+      const stat = await env.fs.stat(link);
+      const exists = await env.fs.exists(link);
+      const lstat = await env.fs.lstat(link);
+
+      // Assert
+      expect(bytes).toEqual(data);
+      expect(text).toBe(new TextDecoder().decode(data));
+      expect(slice).toEqual(new Uint8Array([20, 30]));
+      expect(stat.size).toBe(data.length);
+      expect(exists).toBe(true);
+      expect(lstat.isSymbolicLink).toBe(true);
+    });
+
+    it("Given a relative symlink pointing one directory up, When reading through it, Then it resolves against the link's own directory", async () => {
+      // Arrange
+      const top = `${env.rootDir}/top.txt`;
+      const up = `${env.rootDir}/sub/up.txt`;
+      const data = new Uint8Array([1, 2, 3]);
+      await env.fs.write(top, data);
+      await env.fs.symlink('../top.txt', up);
+
+      // Act
+      const result = await env.fs.read(up);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given a two-hop chain of relative symlinks, When reading through it, Then it reaches the final target', async () => {
+      // Arrange
+      const target = `${env.rootDir}/sub/final.txt`;
+      const firstHop = `${env.rootDir}/sub/first-hop`;
+      const secondHop = `${env.rootDir}/sub/second-hop`;
+      const data = new Uint8Array([9, 9]);
+      await env.fs.write(target, data);
+      await env.fs.symlink('final.txt', firstHop);
+      await env.fs.symlink('first-hop', secondHop);
+
+      // Act
+      const result = await env.fs.read(secondHop);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given a dangling relative symlink, When checking existence or reading, Then it reports absent', async () => {
+      // Arrange
+      const link = `${env.rootDir}/sub/dangling.txt`;
+      await env.fs.symlink('missing.txt', link);
+
+      // Act
+      const exists = await env.fs.exists(link);
+      let caught: unknown;
+      try {
+        await env.fs.read(link);
+        expect.fail('expected FILE_NOT_FOUND');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(exists).toBe(false);
+      assertFileNotFound(caught);
+    });
+
+    it('Given a relative symlink to a directory, When listing it or reading its stat, Then it behaves as the target directory', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/sub/dir`;
+      const link = `${env.rootDir}/sub/dir-link`;
+      await env.fs.mkdir(dir);
+      await env.fs.write(`${dir}/inner.txt`, new Uint8Array([1]));
+      await env.fs.symlink('dir', link);
+
+      // Act
+      const entries = await env.fs.readdir(link);
+      const stat = await env.fs.stat(link);
+
+      // Assert
+      expect(entries.map((entry) => entry.name)).toEqual(['inner.txt']);
+      expect(stat.isDirectory).toBe(true);
+    });
+
+    it('Given a symlinked intermediate directory, When reading through a path beneath it, Then every read surface reaches the real file', async () => {
+      // Arrange
+      const real = `${env.rootDir}/real`;
+      const linkDir = `${env.rootDir}/sub/link-dir`;
+      const data = new Uint8Array([5, 6, 7]);
+      await env.fs.write(`${real}/f.txt`, data);
+      await env.fs.symlink('../real', linkDir);
+      const through = `${linkDir}/f.txt`;
+
+      // Act
+      const bytes = await env.fs.read(through);
+      const text = await env.fs.readUtf8(through);
+      const slice = await env.fs.readSlice(through, 0, 2);
+      const stat = await env.fs.stat(through);
+      const exists = await env.fs.exists(through);
+      const lstat = await env.fs.lstat(through);
+      const entries = await env.fs.readdir(linkDir);
+      const handle = await env.fs.openWithNoFollow(through, 'read');
+
+      // Assert
+      try {
+        expect(bytes).toEqual(data);
+        expect(text).toBe(new TextDecoder().decode(data));
+        expect(slice).toEqual(new Uint8Array([5, 6]));
+        expect(stat.size).toBe(data.length);
+        expect(exists).toBe(true);
+        expect(lstat.isFile).toBe(true);
+        expect(entries.map((entry) => entry.name)).toEqual(['f.txt']);
+      } finally {
+        await handle.close();
+      }
+    });
+
+    it('Given a symlinked intermediate directory, When writing through a path beneath it, Then the bytes land at the real path', async () => {
+      // Arrange
+      const real = `${env.rootDir}/write-real`;
+      const linkDir = `${env.rootDir}/sub/write-link-dir`;
+      await env.fs.mkdir(real);
+      await env.fs.symlink('../write-real', linkDir);
+      const writeData = new Uint8Array([1]);
+      const exclusiveData = new Uint8Array([2]);
+      const streamData = new Uint8Array([3]);
+      async function* source() {
+        yield streamData;
+      }
+
+      // Act
+      await env.fs.write(`${linkDir}/w.bin`, writeData);
+      await env.fs.writeExclusive(`${linkDir}/we.bin`, exclusiveData);
+      await env.fs.writeUtf8(`${linkDir}/wu.txt`, 'utf8');
+      await env.fs.appendUtf8(`${linkDir}/au.txt`, 'appended');
+      await env.fs.writeStream(`${linkDir}/ws.bin`, source());
+
+      // Assert
+      expect(await env.fs.read(`${real}/w.bin`)).toEqual(writeData);
+      expect(await env.fs.read(`${real}/we.bin`)).toEqual(exclusiveData);
+      expect(await env.fs.readUtf8(`${real}/wu.txt`)).toBe('utf8');
+      expect(await env.fs.readUtf8(`${real}/au.txt`)).toBe('appended');
+      expect(await env.fs.read(`${real}/ws.bin`)).toEqual(streamData);
+    });
+
+    it('Given a symlinked intermediate directory, When creating a nested symlink or directory beneath it, Then they land under the real path, missing parents included', async () => {
+      // Arrange
+      const real = `${env.rootDir}/create-real`;
+      const linkDir = `${env.rootDir}/sub/create-link-dir`;
+      await env.fs.mkdir(real);
+      await env.fs.write(`${real}/target.txt`, new Uint8Array([1]));
+      await env.fs.symlink('../create-real', linkDir);
+
+      // Act
+      await env.fs.symlink('target.txt', `${linkDir}/shortcut`);
+      await env.fs.mkdir(`${linkDir}/deep/new`);
+
+      // Assert
+      expect(await env.fs.readlink(`${real}/shortcut`)).toBe('target.txt');
+      expect((await env.fs.stat(`${real}/deep/new`)).isDirectory).toBe(true);
+    });
+
+    it('Given a symlinked intermediate directory, When renaming an entry within it, Then the entry moves under the real path', async () => {
+      // Arrange
+      const real = `${env.rootDir}/rename-real`;
+      const linkDir = `${env.rootDir}/sub/rename-link-dir`;
+      const data = new Uint8Array([8]);
+      await env.fs.write(`${real}/a.bin`, data);
+      await env.fs.symlink('../rename-real', linkDir);
+
+      // Act
+      await env.fs.rename(`${linkDir}/a.bin`, `${linkDir}/b.bin`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/a.bin`)).toBe(false);
+      expect(await env.fs.read(`${real}/b.bin`)).toEqual(data);
+    });
+
+    it('Given a symlinked intermediate directory, When atomicRename moves an entry within it, Then the entry moves under the real path', async () => {
+      // Arrange
+      const real = `${env.rootDir}/atomic-real`;
+      const linkDir = `${env.rootDir}/sub/atomic-link-dir`;
+      const data = new Uint8Array([9]);
+      await env.fs.write(`${real}/a.bin`, data);
+      await env.fs.symlink('../atomic-real', linkDir);
+
+      // Act
+      await env.fs.atomicRename?.(`${linkDir}/a.bin`, `${linkDir}/b.bin`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/a.bin`)).toBe(false);
+      expect(await env.fs.read(`${real}/b.bin`)).toEqual(data);
+    });
+
+    it('Given a symlinked intermediate directory, When removing an entry beneath it, Then the real entry is removed', async () => {
+      // Arrange
+      const real = `${env.rootDir}/rm-real`;
+      const linkDir = `${env.rootDir}/sub/rm-link-dir`;
+      await env.fs.write(`${real}/gone.bin`, new Uint8Array([1]));
+      await env.fs.symlink('../rm-real', linkDir);
+
+      // Act
+      await env.fs.rm(`${linkDir}/gone.bin`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/gone.bin`)).toBe(false);
+    });
+
+    it('Given a symlinked intermediate directory holding a nested tree, When rmRecursive removes a path beneath it, Then the real subtree is removed', async () => {
+      // Arrange
+      const real = `${env.rootDir}/rm-recursive-real`;
+      const linkDir = `${env.rootDir}/sub/rm-recursive-link-dir`;
+      await env.fs.write(`${real}/deep/inner.bin`, new Uint8Array([1]));
+      await env.fs.symlink('../rm-recursive-real', linkDir);
+
+      // Act
+      await env.fs.rmRecursive(`${linkDir}/deep`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/deep`)).toBe(false);
+      expect(await env.fs.exists(real)).toBe(true);
+    });
+
+    it('Given a symlinked intermediate directory, When opening a path beneath it with openWithNoFollow in write mode, Then the real file is updated', async () => {
+      // Arrange
+      const real = `${env.rootDir}/open-write-real`;
+      const linkDir = `${env.rootDir}/sub/open-write-link-dir`;
+      await env.fs.write(`${real}/f.bin`, new Uint8Array([0, 0]));
+      await env.fs.symlink('../open-write-real', linkDir);
+
+      // Act
+      const handle = await env.fs.openWithNoFollow(`${linkDir}/f.bin`, 'write');
+      try {
+        await handle.write(new Uint8Array([7, 7]));
+      } finally {
+        await handle.close();
+      }
+
+      // Assert
+      expect(await env.fs.read(`${real}/f.bin`)).toEqual(new Uint8Array([7, 7]));
+    });
+
+    it('Given a two-hop chain of symlinked intermediate directories, When reading through it, Then it reaches the real file', async () => {
+      // Arrange
+      const real = `${env.rootDir}/chain-real`;
+      const linkDir = `${env.rootDir}/sub/chain-link-dir`;
+      const chainLink = `${env.rootDir}/sub/chain-link2`;
+      const data = new Uint8Array([3, 1, 4]);
+      await env.fs.write(`${real}/f.txt`, data);
+      await env.fs.symlink('../chain-real', linkDir);
+      await env.fs.symlink('chain-link-dir', chainLink);
+
+      // Act
+      const result = await env.fs.read(`${chainLink}/f.txt`);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given a symlink to a directory occupies the write target, When write is called, Then it still refuses PERMISSION_DENIED', async () => {
+      // Arrange
+      const real = `${env.rootDir}/leaf-real`;
+      const linkDir = `${env.rootDir}/sub/leaf-link-dir`;
+      await env.fs.mkdir(real);
+      await env.fs.symlink('../leaf-real', linkDir);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.write(linkDir, new Uint8Array([1]));
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertPermissionDenied(caught);
+    });
+
+    it('Given a symlink to a directory, When rmRecursive removes it, Then the link is removed and the real directory is kept', async () => {
+      // Arrange
+      const real = `${env.rootDir}/leaf-rm-real`;
+      const link = `${env.rootDir}/sub/leaf-rm-link`;
+      await env.fs.mkdir(real);
+      await env.fs.symlink('../leaf-rm-real', link);
+
+      // Act
+      await env.fs.rmRecursive(link);
+
+      // Assert
+      expect(await env.fs.exists(link)).toBe(false);
+      expect(await env.fs.exists(real)).toBe(true);
+    });
+
+    it('Given a symlink to an existing directory occupies the mkdir target, When mkdir is called, Then it resolves without creating anything and the link is kept', async () => {
+      // Arrange
+      const real = `${env.rootDir}/mkdir-real`;
+      const link = `${env.rootDir}/sub/mkdir-link`;
+      await env.fs.mkdir(real);
+      await env.fs.symlink('../mkdir-real', link);
+
+      // Act
+      await env.fs.mkdir(link);
+
+      // Assert
+      expect((await env.fs.lstat(link)).isSymbolicLink).toBe(true);
+      expect(await env.fs.readdir(real)).toEqual([]);
+    });
+
+    it('Given a dangling symlink occupies the mkdir target, When mkdir is called, Then it refuses FILE_NOT_FOUND and creates nothing', async () => {
+      // Arrange
+      const link = `${env.rootDir}/sub/mkdir-dangling`;
+      await env.fs.symlink('missing-dir', link);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.mkdir(link);
+        expect.fail('expected FILE_NOT_FOUND');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertFileNotFound(caught);
+      expect(await env.fs.exists(`${env.rootDir}/sub/missing-dir`)).toBe(false);
+    });
+
     it('Given nested path, When writeUtf8, Then creates parent directories', async () => {
       // Arrange
       const path = `${env.rootDir}/x/y/z.txt`;

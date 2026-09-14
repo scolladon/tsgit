@@ -74,6 +74,23 @@ const CHECKOUT_OP = 'checkout:materialize';
 
 const LINK_ENCODER = new TextEncoder();
 
+const isFileNotFound = (error: unknown): boolean =>
+  error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
+
+/**
+ * Whether anything occupies `absPath` — an `lstat`-based presence probe, so a dangling
+ * symlink still counts as occupying the path (a target-following `exists` would not).
+ */
+const pathIsOccupied = async (ctx: Context, absPath: string): Promise<boolean> => {
+  try {
+    await ctx.fs.lstat(absPath);
+    return true;
+  } catch (err) {
+    if (isFileNotFound(err)) return false;
+    throw err;
+  }
+};
+
 const blobMatches = async (ctx: Context, absPath: string, expectedId: string): Promise<boolean> => {
   let bytes: Uint8Array;
   try {
@@ -108,12 +125,12 @@ export const isWorkingTreeDirty = async (
   absPath: string,
   expectedId: string,
 ): Promise<boolean> => {
-  if (!(await ctx.fs.exists(absPath))) return false;
+  if (!(await pathIsOccupied(ctx, absPath))) return false;
   return !(await blobMatches(ctx, absPath, expectedId));
 };
 
 const isUntrackedClash = async (ctx: Context, absPath: string): Promise<boolean> =>
-  ctx.fs.exists(absPath);
+  pathIsOccupied(ctx, absPath);
 
 interface DirtyClass {
   readonly class: 'local-changes' | 'untracked';
