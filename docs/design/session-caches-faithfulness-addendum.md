@@ -972,7 +972,7 @@ The surcharge multiplies the **dial-derived** count, never a caller's explicit
 `deltaCacheMaxBytes` as the one dial that scales bytes).
 
 - At sha1 every number is byte-identical to ADR-851's (8 MiB, 16 MiB, 32 768); at sha256 the
-  FlatTree admits 51 003 reference files (sha1: 51 149) and the memo admits its full 32 768
+  FlatTree admits 51 002 reference files (sha1: 51 149) and the memo admits its full 32 768
   typical commits with the valve exactly equal to `entries × 536`.
 - `memoMaxEntries` no longer derives from `memoByteValve` (which now depends on it); both derive
   from the dial — the ordering `entries × typical(width) ≤ valve` holds structurally at every dial
