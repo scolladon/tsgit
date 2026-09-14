@@ -1,7 +1,7 @@
 /**
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
-import { TsgitError, unsupportedOperation } from '../../domain/error.js';
+import { dirname, TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -28,10 +28,11 @@ import {
   serializePackedRefs,
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
+import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
-import { atomicWriteFile, atomicWriteRef } from './atomic-write.js';
+import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
@@ -283,26 +284,6 @@ export function getRefStore(ctx: Context): RefStore {
 /** Whether `name` exists in either loose or packed storage — the one seam every existence-probe caller shares. */
 export async function refExists(ctx: Context, name: RefName): Promise<boolean> {
   return (await getRefStore(ctx).resolveDirect(name)).kind !== 'missing';
-}
-
-/**
- * Refuse a rename whose source is a packed-only tracking ref — moving it
- * would require a packed-refs rewrite the files backend doesn't perform. A
- * files-backend limitation (reftable has no packed refs and deletes by
- * tombstone), not a seam-level fact, so it lives here rather than on the
- * `RefStore` interface itself. A no-op when `name` is loose (or absent
- * entirely — the caller's own existence check handles that case).
- */
-export async function assertRenamableTrackingRef(ctx: Context, name: RefName): Promise<void> {
-  const path = looseRefPath(perWorktreeRefDir(ctx, name), name);
-  if (await ctx.fs.exists(path)) return;
-  const resolved = await getRefStore(ctx).resolveDirect(name);
-  if (resolved.kind === 'direct') {
-    throw unsupportedOperation(
-      'rename-packed-tracking-ref',
-      `cannot rename packed-only ref ${name} — run \`git pack-refs --unpack\` and retry`,
-    );
-  }
 }
 
 const HEAD_NAME: RefName = 'HEAD' as RefName;
@@ -857,29 +838,100 @@ function createFilesRefStore(ctx: Context): RefStore {
     await applyReflog(update.name, update.reflog);
   }
 
+  const packedRefsLocked = (path: string): TsgitError =>
+    new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'ref', path });
+
+  /** Whether `loose`'s parent directory exists — a lock file cannot exist
+   *  without it, so contention there is unobservable, and taking the lock
+   *  would create a directory git leaves absent (a nested absent delete
+   *  must leave no `refs/heads/deep/` behind). */
+  async function looseRefDirExists(loose: string): Promise<boolean> {
+    try {
+      return (await ctx.fs.stat(dirname(loose))).isDirectory;
+    } catch (err) {
+      const code = errorDataCode(err);
+      if (code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY') return false;
+      throw err;
+    }
+  }
+
+  /** Takes `<loose>.lock` for `body` — but only when `loose`'s parent
+   *  directory exists (see {@link looseRefDirExists}). A held lock refuses
+   *  `REF_LOCKED { name }`, before the packed-refs lock is ever attempted. */
+  async function withLooseRefLock(
+    loose: string,
+    name: RefName,
+    body: () => Promise<void>,
+  ): Promise<void> {
+    if (!(await looseRefDirExists(loose))) {
+      await body();
+      return;
+    }
+    await withLockFile(
+      ctx,
+      loose,
+      () => refLocked(name),
+      () => body(),
+    );
+  }
+
+  /** `packed-refs`'s raw text, or `undefined` when the file is absent. */
+  async function readPackedRefsTextIfPresent(): Promise<string | undefined> {
+    try {
+      return await ctx.fs.readUtf8(packedRefsPath(commonGitDir(ctx)));
+    } catch (err) {
+      if (isFileNotFound(err)) return undefined;
+      throw err;
+    }
+  }
+
+  /** Removes `path` when present — a no-op otherwise (the delete of an
+   *  absent loose ref, U3). */
+  async function rmIfPresent(path: string): Promise<void> {
+    if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
+  }
+
   /**
-   * Remove `name`'s loose file and tombstone its reflog. A packed-only ref
-   * refuses (`delete-packed-ref` — deleting it would require a packed-refs
-   * rewrite this backend doesn't perform); a ref that is neither loose nor
-   * packed is already git's desired end state — the delete succeeds without
-   * writing anything (git's `delete_refs` treats an already-gone ref as a
-   * no-op, not a refusal).
+   * git's files-backend delete order: rewrite `packed-refs` first (only
+   * when it actually held `name` — a loose-only delete leaves the file
+   * byte-unchanged, Q4), then the loose file, then the reflog. A crash
+   * between them leaves the loose file holding the ref's current value,
+   * never an older packed value resurrected.
+   */
+  async function removeEverywhere(
+    name: RefName,
+    loose: string,
+    commitPacked: (content: Uint8Array) => Promise<void>,
+  ): Promise<void> {
+    const packedText = await readPackedRefsTextIfPresent();
+    if (
+      packedText !== undefined &&
+      parsePackedRefs(packedText).entries.some((e) => e.name === name)
+    ) {
+      await commitPacked(TEXT_ENCODER.encode(packedRefsWithout(packedText, name)));
+      packedCache = undefined;
+    }
+    await rmIfPresent(loose);
+    await removeReflogFile(name);
+    if (name === HEAD_NAME) invalidateHeadSlot(ctx);
+  }
+
+  /**
+   * Deletes `name` as git's files backend does: lock the loose ref (when
+   * its directory exists), lock `packed-refs`, drop the name from
+   * `packed-refs` (rewritten only when it held it), then remove the loose
+   * file and its log. Both locks are taken even for an absent ref (U3, Q5,
+   * X13) — the delete's no-op is proven by nothing changing, not by a
+   * refusal.
    */
   async function applyDelete(update: Extract<RefUpdate, { kind: 'delete' }>): Promise<void> {
     await checkExpected(update.name, update.expected);
-    const path = looseRefPath(refDir(update.name), update.name);
-    if (await ctx.fs.exists(path)) {
-      await ctx.fs.rm(path);
-      await removeReflogFile(update.name);
-      return;
-    }
-    const packed = await resolveDirect(update.name);
-    if (packed.kind === 'direct') {
-      throw unsupportedOperation(
-        'delete-packed-ref',
-        'deleting packed-only refs requires packed-refs rewrite',
-      );
-    }
+    const loose = looseRefPath(refDir(update.name), update.name);
+    await withLooseRefLock(loose, update.name, () =>
+      withLockFile(ctx, packedRefsPath(commonGitDir(ctx)), packedRefsLocked, (commit) =>
+        removeEverywhere(update.name, loose, commit),
+      ),
+    );
   }
 
   async function applyOne(update: RefUpdate): Promise<void> {

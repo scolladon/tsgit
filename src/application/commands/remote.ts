@@ -13,7 +13,7 @@ import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { assertAcceptedRepository } from '../primitives/internal/repo-state.js';
-import { assertRenamableTrackingRef, getRefStore } from '../primitives/ref-store.js';
+import { getRefStore } from '../primitives/ref-store.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { parseRefspec } from './internal/refspec.js';
@@ -214,10 +214,8 @@ const moveTrackingRef = async (
 ): Promise<void> => {
   const direct = await getRefStore(ctx).resolveDirect(source);
   if (direct.kind !== 'direct') return;
-  // Packed-only refs must surface BEFORE the target write — otherwise the
-  // subsequent delete throws and leaves a partial move (target written,
-  // source still packed). Mirrors `remove`'s packed-only error path.
-  await assertRenamableTrackingRef(ctx, source);
+  // A packed-only source now moves like any other: the delete below
+  // rewrites packed-refs to drop it, as `git remote rename` does.
   await updateRef(ctx, target, direct.id, { expected: 'absent', reflogMessage });
   await updateRef(ctx, source, zeroOid(ctx.hashConfig), { delete: true });
 };

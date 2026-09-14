@@ -2,7 +2,11 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
-import { parsePackedRefs, serializePackedRefs } from '../../../../src/domain/refs/packed-refs.js';
+import {
+  packedRefsWithout,
+  parsePackedRefs,
+  serializePackedRefs,
+} from '../../../../src/domain/refs/packed-refs.js';
 import type { PackedRefEntry, PackedRefs } from '../../../../src/domain/refs/ref-types.js';
 import { arbObjectId } from '../objects/arbitraries.js';
 import { arbRefName } from './arbitraries.js';
@@ -565,6 +569,180 @@ describe('roundtrip', () => {
             },
           ),
         );
+      });
+    });
+  });
+});
+
+describe('packedRefsWithout', () => {
+  describe('Given a file with an annotated tag among plain refs', () => {
+    describe('When the annotated tag is removed', () => {
+      it('Then the entry and its peeled line are both gone, the survivor kept', () => {
+        // Arrange
+        const content = [
+          '# pack-refs with: peeled fully-peeled sorted ',
+          `${SHA1} refs/heads/main`,
+          `${SHA2} refs/tags/v1.0`,
+          `^${SHA4}`,
+          '',
+        ].join('\n');
+
+        // Act
+        const result = packedRefsWithout(content, 'refs/tags/v1.0' as RefName);
+
+        // Assert
+        const parsed = parsePackedRefs(result);
+        expect(parsed.entries).toEqual([{ name: 'refs/heads/main', id: SHA1 }]);
+        expect(result).not.toContain(SHA4);
+      });
+    });
+  });
+
+  describe('Given a header-less packed-refs file', () => {
+    describe('When an entry is removed', () => {
+      it('Then the rewrite gains the canonical header', () => {
+        // Arrange
+        const content = [`${SHA1} refs/heads/main`, `${SHA2} refs/heads/other`, ''].join('\n');
+
+        // Act
+        const result = packedRefsWithout(content, 'refs/heads/other' as RefName);
+
+        // Assert
+        expect(result.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
+      });
+    });
+  });
+
+  describe('Given entries in unsorted order', () => {
+    describe('When an unrelated entry is removed', () => {
+      it('Then the survivors come back sorted', () => {
+        // Arrange
+        const content = [
+          `${SHA1} refs/heads/zzz`,
+          `${SHA2} refs/heads/aaa`,
+          `${SHA3} refs/heads/mmm`,
+          '',
+        ].join('\n');
+
+        // Act
+        const result = packedRefsWithout(content, 'refs/heads/mmm' as RefName);
+
+        // Assert
+        const parsed = parsePackedRefs(result);
+        expect(parsed.entries.map((e) => e.name)).toEqual(['refs/heads/aaa', 'refs/heads/zzz']);
+      });
+    });
+  });
+
+  describe('Given a header claiming only the "peeled" trait', () => {
+    describe('When an entry is removed', () => {
+      it("Then the rewrite replaces it with git's canonical header", () => {
+        // Arrange
+        const content = [
+          '# pack-refs with: peeled',
+          `${SHA1} refs/heads/main`,
+          `${SHA2} refs/heads/other`,
+          '',
+        ].join('\n');
+
+        // Act
+        const result = packedRefsWithout(content, 'refs/heads/other' as RefName);
+
+        // Assert
+        expect(result.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
+      });
+    });
+  });
+
+  describe('Given an entry naming a missing object and an annotated tag with no peel line', () => {
+    describe('When an unrelated entry is removed', () => {
+      it('Then both survivors are copied unchanged — no object is read, no peeling happens', () => {
+        // Arrange — a well-formed but unresolvable SHA, and a tag entry that
+        // (unusually) carries no `^` line of its own.
+        const content = [
+          '# pack-refs with: peeled fully-peeled sorted ',
+          `${SHA1} refs/heads/gone-object`,
+          `${SHA2} refs/tags/unpeeled`,
+          `${SHA3} refs/heads/victim`,
+          '',
+        ].join('\n');
+
+        // Act
+        const result = packedRefsWithout(content, 'refs/heads/victim' as RefName);
+
+        // Assert
+        const parsed = parsePackedRefs(result);
+        expect(parsed.entries).toEqual([
+          { name: 'refs/heads/gone-object', id: SHA1 },
+          { name: 'refs/tags/unpeeled', id: SHA2 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given the last remaining ref is removed', () => {
+    describe('When packedRefsWithout runs', () => {
+      it('Then the result is exactly the 46-byte canonical header line', () => {
+        // Arrange
+        const content = [
+          '# pack-refs with: peeled fully-peeled sorted ',
+          `${SHA1} refs/heads/main`,
+          '',
+        ].join('\n');
+
+        // Act
+        const result = packedRefsWithout(content, 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBe('# pack-refs with: peeled fully-peeled sorted \n');
+        expect(new TextEncoder().encode(result)).toHaveLength(46);
+      });
+    });
+  });
+
+  describe('Given a name that is not present in the file', () => {
+    describe('When packedRefsWithout runs', () => {
+      it('Then it returns the canonical rewrite of every surviving entry, unchanged in content', () => {
+        // Arrange
+        const content = [
+          '# pack-refs with: sorted',
+          `${SHA1} refs/heads/main`,
+          `${SHA2} refs/heads/other`,
+          '',
+        ].join('\n');
+
+        // Act
+        const result = packedRefsWithout(content, 'refs/heads/never-existed' as RefName);
+
+        // Assert
+        const parsed = parsePackedRefs(result);
+        expect(parsed.entries).toEqual([
+          { name: 'refs/heads/main', id: SHA1 },
+          { name: 'refs/heads/other', id: SHA2 },
+        ]);
+        expect(result.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
+      });
+    });
+  });
+
+  describe('Given a malformed packed-refs line', () => {
+    describe('When packedRefsWithout runs', () => {
+      it('Then it refuses INVALID_PACKED_REFS with the parse failure reason', () => {
+        // Arrange
+        const content = ['# pack-refs with: sorted', 'not-a-line', ''].join('\n');
+
+        // Act + Assert
+        try {
+          packedRefsWithout(content, 'refs/heads/main' as RefName);
+          expect.unreachable();
+        } catch (err) {
+          expect(err).toBeInstanceOf(TsgitError);
+          const data = (err as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACKED_REFS');
+          if (data.code === 'INVALID_PACKED_REFS') {
+            expect(data.reason).toContain('invalid ref line format');
+          }
+        }
       });
     });
   });

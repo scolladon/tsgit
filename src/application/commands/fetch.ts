@@ -16,7 +16,6 @@
  *
  * Working-tree materialization is out of scope.
  */
-import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
@@ -386,25 +385,10 @@ const prune = async (
   for (const entry of tracked) {
     const branch = entry.name.slice(prefix.length);
     if (advertisedBranches.has(branch)) continue;
-    // `updateRef(..., { delete: true })` throws `UNSUPPORTED_OPERATION` when
-    // the ref is packed-only (packed-refs rewrite is follow-up).
-    try {
-      await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true });
-    } catch (err) {
-      if (isPackedRefDeleteError(err)) {
-        // Skip packed-only refs rather than crashing the whole fetch.
-        ctx.logger?.warn?.('fetch.prune: skipping packed-only ref', { name: entry.name });
-        continue;
-      }
-      throw err;
-    }
+    // A packed-only tracking ref deletes like any other — `updateRef`
+    // rewrites packed-refs to drop it, as `git fetch --prune` does.
+    await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true });
     deleted.push(entry.name);
   }
   return deleted;
 };
-
-const isPackedRefDeleteError = (err: unknown): boolean =>
-  err instanceof TsgitError &&
-  err.data.code === 'UNSUPPORTED_OPERATION' &&
-  // Stryker disable next-line ConditionalExpression: equivalent — `updateRef` only ever raises `UNSUPPORTED_OPERATION` with operation 'delete-packed-ref', so once the code check passes this comparison is always true. The EqualityOperator/StringLiteral mutants here stay live and are killed by the packed-only-ref prune test.
-  err.data.operation === 'delete-packed-ref';

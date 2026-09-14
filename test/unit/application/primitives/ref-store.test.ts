@@ -2,11 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { validateHead } from '../../../../src/application/primitives/internal/head-file.js';
 import { assertRepository } from '../../../../src/application/primitives/internal/repo-state.js';
-import {
-  assertRenamableTrackingRef,
-  createRefStore,
-  getRefStore,
-} from '../../../../src/application/primitives/ref-store.js';
+import { createRefStore, getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -169,10 +165,12 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a delete update on a shadowing loose ref', () => {
-    describe('When applyRefUpdates is called', () => {
-      it('Then resolveDirect falls through to packed', async () => {
-        // Arrange
+  describe('Given a loose-and-packed ref (the loose value shadows the packed one)', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then both the loose file and the packed-refs line are gone — resolveDirect reports it missing', async () => {
+        // Arrange — git's `-d` on a loose-and-packed ref removes both; the
+        // packed value must never resurrect once the loose shadow is gone
+        // (Q2).
         const ctx = await buildSeededContext({
           refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
           packedRefs: [{ name: 'refs/heads/main' as RefName, id: 'c'.repeat(40) as ObjectId }],
@@ -184,8 +182,10 @@ describe('ref-store', () => {
         const result = await sut.resolveDirect('refs/heads/main' as RefName);
 
         // Assert
-        expect(result.kind).toBe('direct');
-        if (result.kind === 'direct') expect(result.id).toBe('c'.repeat(40));
+        expect(result).toEqual({ kind: 'missing' });
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/main')).toBe(false);
+        const packedContent = await ctx.fs.readUtf8('/repo/.git/packed-refs');
+        expect(packedContent).not.toContain('refs/heads/main');
       });
     });
   });
@@ -340,89 +340,211 @@ describe('ref-store', () => {
 
   describe('Given a packed-only ref', () => {
     describe('When applyRefUpdates applies a delete update', () => {
-      it('Then it throws UNSUPPORTED_OPERATION with operation delete-packed-ref', async () => {
+      it('Then packed-refs is rewritten without it and resolveDirect reports it missing', async () => {
         // Arrange
         const ctx = await buildSeededContext({
-          packedRefs: [{ name: 'refs/tags/old' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [
+            { name: 'refs/heads/kept' as RefName, id: 'b'.repeat(40) as ObjectId },
+            { name: 'refs/tags/old' as RefName, id: 'a'.repeat(40) as ObjectId },
+          ],
         });
         const sut = createRefStore(ctx);
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/tags/old' as RefName }]);
-          expect.unreachable();
-        } catch (err) {
-          caught = err;
-        }
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/tags/old' as RefName }]);
 
         // Assert
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('UNSUPPORTED_OPERATION');
-        if (data.code === 'UNSUPPORTED_OPERATION') {
-          expect(data.operation).toBe('delete-packed-ref');
-          expect(data.reason).toMatch(/packed-only refs/);
-        }
+        expect(await sut.resolveDirect('refs/tags/old' as RefName)).toEqual({ kind: 'missing' });
+        expect(await sut.resolveDirect('refs/heads/kept' as RefName)).toEqual({
+          kind: 'direct',
+          id: 'b'.repeat(40),
+        });
+        const packedContent = await ctx.fs.readUtf8('/repo/.git/packed-refs');
+        expect(packedContent).not.toContain('refs/tags/old');
+        expect(packedContent.startsWith('# pack-refs with: peeled fully-peeled sorted ')).toBe(
+          true,
+        );
       });
     });
   });
 
-  describe('Given a packed-only tracking ref', () => {
-    describe('When assertRenamableTrackingRef is called', () => {
-      it('Then it throws UNSUPPORTED_OPERATION with operation rename-packed-tracking-ref', async () => {
+  describe('Given a loose-only ref with packed-refs present', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then packed-refs is byte- and inode-unchanged, but the lock was still taken (Q4)', async () => {
         // Arrange
-        const ctx = await buildSeededContext({
-          packedRefs: [
-            { name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId },
-          ],
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/lo' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [{ name: 'refs/tags/other' as RefName, id: 'b'.repeat(40) as ObjectId }],
         });
+        const packedRefsPath = '/repo/.git/packed-refs';
+        const before = await base.fs.stat(packedRefsPath);
+        const beforeContent = await base.fs.readUtf8(packedRefsPath);
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
 
         // Act
-        let caught: unknown;
-        try {
-          await assertRenamableTrackingRef(ctx, 'refs/remotes/origin/main' as RefName);
-          expect.unreachable();
-        } catch (err) {
-          caught = err;
-        }
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/lo' as RefName }]);
 
-        // Assert
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('UNSUPPORTED_OPERATION');
-        if (data.code === 'UNSUPPORTED_OPERATION') {
-          expect(data.operation).toBe('rename-packed-tracking-ref');
-          expect(data.reason).toContain('packed-only ref refs/remotes/origin/main');
-        }
+        // Assert — the loose ref is gone, packed-refs is byte-for-byte and
+        // inode-for-inode unchanged, and the packed-refs lock was still
+        // taken and released (proven via the writeExclusive call log).
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/lo')).toBe(false);
+        const after = await ctx.fs.stat(packedRefsPath);
+        expect(after.mtimeMs).toBe(before.mtimeMs);
+        expect(await ctx.fs.readUtf8(packedRefsPath)).toBe(beforeContent);
+        expect(
+          calls().some((c) => c.method === 'writeExclusive' && c.path === `${packedRefsPath}.lock`),
+        ).toBe(true);
+        expect(await ctx.fs.exists(`${packedRefsPath}.lock`)).toBe(false);
       });
     });
   });
 
-  describe('Given a loose tracking ref', () => {
-    describe('When assertRenamableTrackingRef is called', () => {
-      it('Then it does not throw', async () => {
+  describe('Given a packed-refs.lock already held', () => {
+    describe('When a delete of a packed-only ref is applied', () => {
+      it('Then it refuses RESOURCE_LOCKED naming the ref resource and packed-refs.lock path', async () => {
         // Arrange
         const ctx = await buildSeededContext({
-          refs: [{ name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [{ name: 'refs/tags/p' as RefName, id: 'a'.repeat(40) as ObjectId }],
         });
+        await ctx.fs.write('/repo/.git/packed-refs.lock', new Uint8Array(0));
+        const sut = createRefStore(ctx);
 
         // Act + Assert
-        await expect(
-          assertRenamableTrackingRef(ctx, 'refs/remotes/origin/main' as RefName),
-        ).resolves.toBeUndefined();
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/tags/p' as RefName }]);
+          expect.unreachable();
+        } catch (err) {
+          const data = (err as TsgitError).data;
+          expect(data.code).toBe('RESOURCE_LOCKED');
+          if (data.code === 'RESOURCE_LOCKED') {
+            expect(data.resource).toBe('ref');
+            expect(data.path).toBe('/repo/.git/packed-refs.lock');
+          }
+        }
+      });
+    });
+
+    describe('When a delete of a loose-only ref is applied', () => {
+      it('Then it refuses RESOURCE_LOCKED and the loose file stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/lo' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await ctx.fs.write('/repo/.git/packed-refs.lock', new Uint8Array(0));
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/lo' as RefName }]);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('RESOURCE_LOCKED');
+        }
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/lo')).toBe(true);
+      });
+    });
+
+    describe('When a delete of an absent ref is applied', () => {
+      it('Then it refuses RESOURCE_LOCKED too — the no-op delete is still gated by the lock', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write('/repo/.git/packed-refs.lock', new Uint8Array(0));
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/never' as RefName }]);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('RESOURCE_LOCKED');
+        }
       });
     });
   });
 
-  describe('Given a tracking ref that exists in neither loose nor packed storage', () => {
-    describe('When assertRenamableTrackingRef is called', () => {
-      it('Then it does not throw — a missing ref is the caller’s own concern', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
+  describe('Given a <ref>.lock already held', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then it refuses REF_LOCKED naming the ref, winning over a held packed-refs.lock', async () => {
+        // Arrange — both locks are held; REF_LOCKED must win since the
+        // loose-ref lock is acquired before the packed-refs lock is ever
+        // attempted.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/busy' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await ctx.fs.write('/repo/.git/refs/heads/busy.lock', new Uint8Array(0));
+        await ctx.fs.write('/repo/.git/packed-refs.lock', new Uint8Array(0));
+        const sut = createRefStore(ctx);
 
         // Act + Assert
-        await expect(
-          assertRenamableTrackingRef(ctx, 'refs/remotes/origin/ghost' as RefName),
-        ).resolves.toBeUndefined();
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/busy' as RefName }]);
+          expect.unreachable();
+        } catch (err) {
+          const data = (err as TsgitError).data;
+          expect(data.code).toBe('REF_LOCKED');
+          if (data.code === 'REF_LOCKED') expect(data.name).toBe('refs/heads/busy');
+        }
+      });
+    });
+  });
+
+  describe('Given an absent ref under a directory that does not exist', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then it resolves without creating the intermediate directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'delete', name: 'refs/heads/deep/er/absent' as RefName },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/deep')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a malformed packed-refs file', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then it refuses INVALID_PACKED_REFS, leaves the loose file intact and removes the lock', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/lo' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await ctx.fs.writeUtf8('/repo/.git/packed-refs', 'not-a-line\n');
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/lo' as RefName }]);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_PACKED_REFS');
+        }
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/lo')).toBe(true);
+        expect(await ctx.fs.exists('/repo/.git/packed-refs.lock')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD deleted through the store', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then the HEAD slot is invalidated — a later resolveDirect(HEAD) observes it missing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', `${'a'.repeat(40)}\n`);
+        await assertRepository(ctx);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'HEAD' as RefName }]);
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
       });
     });
   });

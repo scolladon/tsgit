@@ -1956,13 +1956,11 @@ describe('fetch', () => {
   describe('prune packed-only ref handling', () => {
     describe('Given a prune walk reaching a packed-only ref', () => {
       describe('When fetch', () => {
-        it('Then updateRef raises UNSUPPORTED_OPERATION and the ref is skipped with a warn naming the ref', async () => {
-          // Arrange — kills the catch-block mutants, the isPackedRefDeleteError
-          // checks, and the warn-call `{ name: refName }` ObjectLiteral mutant.
-          // `ghost` exists ONLY in packed-refs (no loose file); `listRefs`
-          // surfaces it as a prune candidate, and `updateRef`'s delete path
-          // then throws UNSUPPORTED_OPERATION/delete-packed-ref, which
-          // isPackedRefDeleteError must recognise so the loop continues.
+        it('Then the packed-only ref is pruned and its packed-refs line removed, no warn logged', async () => {
+          // Arrange — `ghost` exists ONLY in packed-refs (no loose file);
+          // `listRefs` surfaces it as a prune candidate, and `updateRef`'s
+          // delete path now rewrites packed-refs to drop it instead of
+          // refusing.
           const ctx = createMemoryContext();
           await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
           const packedOnly = 'c'.repeat(40);
@@ -1990,13 +1988,11 @@ describe('fetch', () => {
           // Act
           const result = await fetch({ ...ctx, transport, logger }, { prune: true });
 
-          // Assert — packed-only ref skipped, not crashed, and not listed as pruned.
-          expect(result.prunedRefs).toEqual([]);
-          const packedWarn = warnings.find(
-            (w) => w.message === 'fetch.prune: skipping packed-only ref',
-          );
-          expect(packedWarn).toBeDefined();
-          expect(packedWarn?.context).toEqual({ name: 'refs/remotes/origin/ghost' });
+          // Assert — packed-only ref pruned, listed, and no warn logged.
+          expect(result.prunedRefs).toEqual(['refs/remotes/origin/ghost']);
+          expect(warnings).toEqual([]);
+          const packedContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/packed-refs`);
+          expect(packedContent).not.toContain('refs/remotes/origin/ghost');
         });
       });
     });

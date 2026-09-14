@@ -804,10 +804,11 @@ describe('application/commands/remote', () => {
 
     describe('Given a packed-only tracking ref under the old name', () => {
       describe('When remoteRename runs', () => {
-        it('Then it throws UNSUPPORTED_OPERATION before touching anything', async () => {
+        it('Then the new name is written loose with the packed id and the old name is gone from packed-refs', async () => {
           // Arrange — write a `packed-refs` file that names
           // refs/remotes/origin/main; no loose file exists. `enumerateRefs`
-          // surfaces the packed entry, and the move must reject early.
+          // surfaces the packed entry, and the move now rewrites
+          // packed-refs to drop it, as `git remote rename` does.
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = u\n');
           const oid = 'a'.repeat(40);
@@ -817,22 +818,16 @@ describe('application/commands/remote', () => {
           );
 
           // Act
-          let caught: unknown;
-          try {
-            await remoteRename(ctx, { from: 'origin', to: 'upstream' });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
-          // Assert — the new ref must NOT exist (no partial move).
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('UNSUPPORTED_OPERATION');
-          if (data.code !== 'UNSUPPORTED_OPERATION') throw new Error('unreachable');
-          expect(data.operation).toBe('rename-packed-tracking-ref');
-          expect(data.reason).toContain('packed-only ref refs/remotes/origin/main');
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)).toBe(
-            false,
-          );
+          // Assert
+          expect(result.movedTrackingRefs).toEqual(['refs/remotes/upstream/main']);
+          const moved = (
+            await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)
+          ).trim();
+          expect(moved).toBe(oid);
+          const packedContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/packed-refs`);
+          expect(packedContent).not.toContain('refs/remotes/origin/main');
         });
       });
     });

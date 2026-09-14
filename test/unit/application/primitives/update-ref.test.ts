@@ -277,24 +277,18 @@ describe('updateRef', () => {
 
   describe('Given delete=true on a packed-only ref', () => {
     describe('When updateRef is called', () => {
-      it('Then throws UNSUPPORTED_OPERATION with operation and reason set', async () => {
+      it('Then the packed-refs line is removed and the ref resolves as missing', async () => {
         // Arrange
         const ctx = await buildSeededContext({
           packedRefs: [{ name: 'refs/tags/old' as RefName, id: ID_A }],
         });
 
-        // Act + Assert
-        try {
-          await updateRef(ctx, 'refs/tags/old' as RefName, ID_A, { delete: true });
-          expect.unreachable();
-        } catch (error) {
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('UNSUPPORTED_OPERATION');
-          if (data.code === 'UNSUPPORTED_OPERATION') {
-            expect(data.operation).toBe('delete-packed-ref');
-            expect(data.reason).toMatch(/packed-only refs/);
-          }
-        }
+        // Act
+        await updateRef(ctx, 'refs/tags/old' as RefName, ID_A, { delete: true });
+
+        // Assert
+        const packedContent = await ctx.fs.readUtf8('/repo/.git/packed-refs');
+        expect(packedContent).not.toContain('refs/tags/old');
       });
     });
   });
@@ -472,24 +466,19 @@ describe('updateRef', () => {
       });
     });
 
-    describe('When updateRef is called on a packed-only ref', () => {
-      it('Then it still throws UNSUPPORTED_OPERATION (packed-refs rewrite lands in a later change)', async () => {
+    describe('When updateRef is called on a packed-only ref with the null id', () => {
+      it('Then the packed-refs line is removed', async () => {
         // Arrange
         const ctx = await buildSeededContext({
           packedRefs: [{ name: 'refs/tags/old' as RefName, id: ID_A }],
         });
 
-        // Act + Assert
-        try {
-          await updateRef(ctx, 'refs/tags/old' as RefName, ZERO, { reflogMessage: REASON });
-          expect.unreachable();
-        } catch (error) {
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('UNSUPPORTED_OPERATION');
-          if (data.code === 'UNSUPPORTED_OPERATION') {
-            expect(data.operation).toBe('delete-packed-ref');
-          }
-        }
+        // Act
+        await updateRef(ctx, 'refs/tags/old' as RefName, ZERO, { reflogMessage: REASON });
+
+        // Assert
+        const packedContent = await ctx.fs.readUtf8('/repo/.git/packed-refs');
+        expect(packedContent).not.toContain('refs/tags/old');
       });
     });
 
