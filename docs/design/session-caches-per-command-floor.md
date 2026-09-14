@@ -54,6 +54,14 @@
 > 8. **`resolveObjectContentWithDepth` stays inline.** A refactor splitting it into named tiers was
 >    reverted: each extracted `async` tier added a microtask to every object read (1–3 hops, ~67–200 ns),
 >    spending the saving point 7 bought. It is a deliberate exception to the 20-line guideline.
+> 9. **The HEAD slot's epoch is gate to gate, not "the rest of one command" (D4).** A gate marks the
+>    slot trusted; a trusted slot is served with no I/O until the next gate, tsgit's own `HEAD` write,
+>    or an `lstat` failure at a gate drops it. Nothing clears it when a command ends — there is no
+>    command-end hook, and command functions called directly bypass the facade — so primitive reads
+>    between commands are served from it too: after a gated command, a raw rewrite of `HEAD` is
+>    invisible to a primitive `resolveDirect('HEAD')` until the next gate. The `ino !== 0` rule is
+>    unchanged; it decides whether the next gate re-reads the content, not whether reads before that
+>    gate trust the slot. Pinned by a unit test rather than changed.
 
 ---
 
@@ -1304,7 +1312,7 @@ verified against the current code.
 
 | # | State | Today | After | Window that changes |
 |---|---|---|---|---|
-| L1 | `${gitDir}/HEAD` content | read on every `resolveDirect('HEAD')` and at every gate | Node: `lstat`-identity check at every gate; trusted for the rest of that command. Memory/browser (`ino === 0`): re-read at every gate, reused within the command | **Within one command** after its gate. Same-identity rewrite (same `mtimeNs`, `ctimeNs`, `ino`, `size`) on Node — requires an in-place write within one ns tick; git-style lock-and-rename always changes `ino` |
+| L1 | `${gitDir}/HEAD` content | read on every `resolveDirect('HEAD')` and at every gate | Node: `lstat`-identity check at every gate; trusted gate to gate. Memory/browser (`ino === 0`): re-read at every gate, reused until the next gate | **Gate to gate**, on every adapter: trusted from a gate until the next gate, tsgit's own `HEAD` write, or an `lstat` failure at a gate — including primitive reads between commands, not only within one command. Same-identity rewrite (same `mtimeNs`, `ctimeNs`, `ino`, `size`) on Node — requires an in-place write within one ns tick; git-style lock-and-rename always changes `ino` |
 | L2 | `.git/config` for `readConfig` consumers | `stat` on every sequential read (same-ms same-size rewrites undetectable) | one `stat` at every operational gate; trusted within the command; per-read `stat` when no gate ran (primitive-only sessions) | **Within one command** after its gate |
 | L3 | `.git/config` for the **gate verdict** (discovery booleans, ownership, format, the five streaming classes) | session-memoised; external edits never re-validated until `invalidateConfigCache` | re-validated by the gate's `stat` every command (ADR-850) | **Improves** (closes correction 8) |
 | L4 | `packed-refs` | `exists` + `stat` per load, `mtimeMs:size` key | one `stat` per load, same key | none |

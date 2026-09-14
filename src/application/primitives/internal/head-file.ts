@@ -121,9 +121,12 @@ async function readFresh(
  * The gate's read: ALWAYS `lstat`s (freshness cannot be skipped), but skips
  * the CONTENT read when the fresh identity matches the slot's — the 5-hop
  * miss collapses to the 1-hop `lstat` alone on a repeat call. A read here
- * always marks the slot trusted, whether or not the identity was
- * comparable: that is the same-command sharing `readHeadFile` relies on;
- * only cross-command reuse needs `identity !== undefined`.
+ * always marks the slot trusted, gate to gate: the slot stays trusted from
+ * THIS gate until the next gate, our own write to `HEAD`, or an `lstat`
+ * failure at a gate — not merely for the rest of one command, so primitive
+ * reads between commands are served from it too. `identity !== undefined`
+ * decides whether the NEXT gate can skip the content re-read; it does not
+ * decide whether reads before that gate trust the slot.
  */
 export const validateHead = async (ctx: Context): Promise<HeadFile> => {
   const path = headPath(ctx);
@@ -146,12 +149,15 @@ export const validateHead = async (ctx: Context): Promise<HeadFile> => {
 };
 
 /**
- * The store's read: a trusted slot (one `validateHead` already populated in
- * THIS command) is returned with zero I/O. Otherwise this runs the same
- * miss path `validateHead` does, but never marks the result trusted — only
- * the gate's own read is allowed to promise "this is fresh enough to
- * reuse", so a primitive-only sequence that never calls the gate
- * re-validates by `lstat` on every call.
+ * The store's read: a trusted slot — one `validateHead` populated, and
+ * still trusted because no later gate, `HEAD` write, or `lstat` failure has
+ * run since — is returned with zero I/O; that trust spans gate to gate, so
+ * a primitive read between commands is served from it exactly like a
+ * gate's own reuse would be. Otherwise this runs the same miss path
+ * `validateHead` does, but never marks the result trusted — only a gate's
+ * own read is allowed to promise "this is fresh enough to reuse", so a
+ * primitive-only sequence that never calls a gate re-validates by `lstat`
+ * on every call.
  */
 export const readHeadFile = async (ctx: Context): Promise<HeadFile> => {
   const existing = slots.get(ctx);

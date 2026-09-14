@@ -259,6 +259,57 @@ describe('internal/head-file', () => {
         });
       });
     });
+
+    describe('Given a gate validated HEAD on the memory adapter and HEAD was rewritten raw afterwards', () => {
+      describe('When readHeadFile runs before the next gate', () => {
+        it('Then it still serves the pre-rewrite content — the next validateHead sees the rewrite', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seedRegularHead(base, 'ref: refs/heads/main\n');
+          const { ctx, calls } = instrumentedContext(base);
+          await validateHead(ctx);
+          await ctx.fs.writeUtf8(headPath(ctx), 'ref: refs/heads/other\n');
+          const before = calls().length;
+
+          // Act
+          const stale = await readHeadFile(ctx);
+          const duringStaleRead = calls().slice(before);
+          const fresh = await validateHead(ctx);
+
+          // Assert — gate to gate: the raw rewrite is invisible until the next gate
+          expect(stale).toEqual({ kind: 'file', content: 'ref: refs/heads/main\n' });
+          expect(duringStaleRead).toEqual([]);
+          expect(fresh).toEqual({ kind: 'file', content: 'ref: refs/heads/other\n' });
+        });
+      });
+    });
+
+    describe('Given a gate validated a Node-identity HEAD and HEAD was rewritten raw with a new inode afterwards', () => {
+      describe('When readHeadFile runs before the next gate', () => {
+        it('Then it still serves the pre-rewrite content — the next validateHead sees the rewrite', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seedRegularHead(base, 'ref: refs/heads/main\n');
+          const { ctx: proxied, identity } = withNodeIdentity(base, headPath(base));
+          const { ctx, calls } = instrumentedContext(proxied);
+          await validateHead(ctx);
+          await ctx.fs.writeUtf8(headPath(ctx), 'ref: refs/heads/other\n');
+          // A lock-and-rename changes the inode — the same identity the gate would observe.
+          identity.ino += 1;
+          const before = calls().length;
+
+          // Act
+          const stale = await readHeadFile(ctx);
+          const duringStaleRead = calls().slice(before);
+          const fresh = await validateHead(ctx);
+
+          // Assert — gate to gate: the raw rewrite is invisible until the next gate
+          expect(stale).toEqual({ kind: 'file', content: 'ref: refs/heads/main\n' });
+          expect(duringStaleRead).toEqual([]);
+          expect(fresh).toEqual({ kind: 'file', content: 'ref: refs/heads/other\n' });
+        });
+      });
+    });
   });
 
   describe('invalidateHeadSlot', () => {
