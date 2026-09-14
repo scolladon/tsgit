@@ -12,11 +12,11 @@
 > context: whatever a part block omits is paid later as agent rediscovery. `plan-lint.sh` enforces the
 > schema below — the plan phase cannot close without it.
 
-**Seven parts (Part 14 – Part 20), nineteen commits.** The dependency order is the design's
+**Seven parts (Part 14 – Part 20), twenty commits.** The dependency order is the design's
 (I → A → H/O → F/M → C/B → K/E/D), with the ref-transaction semantics decided after it (U3–U6) placed before C.
 The design's seventh part (N, a test-only pin) is folded into Part 15 as its second commit; the parse-acceptance
 work is its own commit inside Part 19; memory-adapter parity (gap G1, widened by U1 and U2) is Part 17's first two
-commits; and the ref delete and dereference semantics (gap G2, U3, U4, U6, U5) are Part 18. All explained under
+commits; and the ref delete and dereference semantics (gap G2, U3, U4, U6, U5, with O1, O3, O5, O6) are Part 18. All explained under
 [Deviations](#deviations-from-the-design-partition).
 
 | Part | Design items | Commits | Nature |
@@ -25,14 +25,13 @@ commits; and the ref delete and dereference semantics (gap G2, U3, U4, U6, U5) a
 | 15 | A, N | 2 | behaviour change (A); regression pin (N) |
 | 16 | H, O | 2 | cache tuning, no git-observable change |
 | 17 | G1 + U1 memory-adapter resolution, U2 refusal codes, F, M | 4 | adapter parity fixes; behaviour change (F); documented epoch + pin (M) |
-| 18 | G2 null id + U3 absent no-op, U4 packed refs, U6 coupled `HEAD` entry, U5 dereference | 4 | behaviour change (delete and write semantics, lock refusals, caller changes) |
+| 18 | G2 null id + U3 absent no-op, U4 packed refs (+ O3), U6 coupled `HEAD` entry (+ O1, O5 rename logs), U5 dereference, O6 `remote.rename` | 5 | behaviour change (delete and write semantics, lock refusals, caller changes, rename log bytes) |
 | 19 | C, parse acceptance, B | 3 | behaviour change (new refusals, refusal order) |
 | 20 | K, E, D | 3 | pure refactor (K); behaviour change (E, D) |
 
 **Open items** (design "Open items raised by the U1–U6 pins", repeated
-[below](#open-items-raised-by-the-u1u6-pins)): O1–O4 are resolved (all (a), 2026-09-14) and implemented as decided
-— O2, O4 in Part 17; O1, O3 in Part 18. O5 and O6 are open; Part 18 implements their option (b) — residual-titled
-interop rows — and lists the delta option (a) would add, so neither blocks a part.
+[below](#open-items-raised-by-the-u1u6-pins)): O1–O6 are resolved (all (a), 2026-09-14) and implemented as decided
+— O2, O4 in Part 17; O3 in Part 18 commit 2, O1 and O5 in commit 3, O6 in commit 5. None blocks a part.
 
 Parts run sequentially in one working tree (`/Users/scolladon/workspace/perso/node/tsgit-session-caches-per-command-floor`,
 branch `feat/session-caches-per-command-floor`); each part starts from the previous part's last commit.
@@ -212,10 +211,11 @@ go in the part notes handed back to the session for the PR body — no file is c
    ~40 test files of fixture repair); parse acceptance is a separable refusal class layered on the same
    read, with its own pure domain module and property suite, and each commit is independently green.
    Thirteen commits instead of twelve before the gap resolutions below.
-5. **Commits and a part added by gap resolutions and U1–U6** (nineteen commits in total). G1 (b), widened by
+5. **Commits and a part added by gap resolutions, U1–U6 and O1–O6** (twenty commits in total). G1 (b), widened by
    U1: the memory adapter resolves every symlinked component — **Part 17 commit 1** — and U2 aligns its refusal
    codes — **Part 17 commit 2** — both before F, so F's unit rows use the real memory adapter. G2 (b), U3, U4, U6
-   and U5 are one subject — `updateRef`'s transaction semantics — and become **Part 18** (four commits), before C:
+   and U5 are one subject — `updateRef`'s transaction semantics — and become **Part 18** (five commits with O6's
+   `remote.rename` rework, which needs U5's `noDeref` and so follows it), before C:
    C's placement skips the delete forms Part 18 defines and sits before its chain. Old Part 18's null-id commit
    moves into Part 18 commit 1; old Part 18 commits 2–4 become **Part 19** commits 1–3; the reflog part becomes
    **Part 20**. None is in the design partition; all were decided after it (ADR-871, ADR-872).
@@ -264,7 +264,7 @@ and delete semantics, and memory-adapter parity"); the pins that decision raised
 
 U1–U6 (the open items the gap resolutions raised) are **decided** — all six folded into this PR by the user,
 2026-09-14 (ADR-871, ADR-872). The four questions their pins raised were **resolved** the same day; two found while
-pinning those resolutions are **open**.
+pinning those resolutions were **resolved (a)** too (O5, O6).
 
 | # | Item | Resolution / status | Part |
 |---|---|---|---|
@@ -272,11 +272,8 @@ pinning those resolutions are **open**.
 | O2 | `MemoryFileSystem.mkdir` on a symlink leaf | **(a)** — follows its leaf as the Node adapter does (design Y17), keeping ADR-811's file code and containment | 17 commit 1 |
 | O3 | `remote.rename`'s packed-only refusal | **(a)** — removed with U4; git's rename of packed-only tracking refs pinned (design R18) | 18 commit 2 |
 | O4 | Memory create-surface codes | **(a)** — ADR-811 kept; U2 covers read-side and loop codes only | 17 commit 2 |
-
-| # | Item | Reason | Options | Part default |
-|---|---|---|---|---|
-| O5 | reftable `branch.rename` branch-log bytes | git's reftable backend writes the renamed branch's log as the moved history + `<id> 0{40}` + `0{40} <id>`, and a forced rename keeps the destination's own history (design R16, R17); tsgit writes the files shape (`<id> <id>`, destination replaced) on both backends. | (a) Transcribe the reftable shape in Part 18 commit 3. (b) Residual. (c) Follow-up. | (b): a residual-titled reftable row in Part 18 commit 3 |
-| O6 | `remote.rename` reflog outcome and `<remote>/HEAD` re-point | git moves each tracking ref's log and appends `<id> <id> remote: renamed <full old> to <full new>` only where a log exists, creates none otherwise, and re-points `<remote>/HEAD` (design R18; reftable R19 differs); tsgit writes `0{40} <id> remote: renamed <from> to <to>` on every target, deletes the source log, skips symrefs. | (a) Fold into Part 18 commit 2. (b) Residual. (c) Follow-up. | (b): R18's reflog comparison residual-titled in Part 18 commit 2 |
+| O5 | reftable `branch.rename` branch-log bytes | **(a)** — reftable writes git's reftable shape (history merged by update index + `<id> 0{40}` + `0{40} <id>`; a forced rename keeps the destination's history), files keeps the files shape (design R16, R17) | 18 commit 3 |
+| O6 | `remote.rename` reflog outcome and `<remote>/HEAD` | **(a)** — tracking refs, their logs and the symbolic `<remote>/HEAD` move as git does per backend (design R18, R19) | 18 commit 5 |
 
 ## Git pins taken while planning
 
@@ -346,10 +343,11 @@ measure 949 335 B → 937 B of headroom (the session's working figure is ~800 B;
 clean rebuild). Runtime added by part, design estimates plus planning estimates for the gap and U1–U6
 resolutions: Part 15 ≈ +300 B; Part 16 ≈ +80 B; Part 17 ≈ +500 B (memory-adapter walk and codes, U1/U2) + ≈
 +200 B (F); Part 18 ≈ +50 B (null id, absent no-op) + ≈ +450 B (lock helper, `packedRefsWithout`, locked delete) +
-≈ +100 B (coupled entry, backend table) + ≈ +700 B (write chain, update tables, callers); Part 19 ≈ +350 B
+≈ +100 B (coupled entry, backend table) + ≈ +250 B (O1/O5 rename logs, `reflogMerge`) + ≈ +700 B (write chain,
+update tables, callers) + ≈ +300 B (O6 `remote.rename`, `reflogCopy`); Part 19 ≈ +350 B
 (verifier) + the stream-arm change + the parse scanner (≈ +1 KiB total) + ≈ +60 B (B); Part 20 ≈ +1.2 KiB
 (policy + token walk) + ≈ +0.5 KiB (glob). **The cap is crossed by Part 17 or Part 18 — U4 and U5 alone
-(≈ +1.15 KiB) exceed the 937 B headroom — and by several KiB at Part 20.**
+(≈ +1.15 KiB) exceed the 937 B headroom, and Part 18 in all adds ≈ +1.8 KiB — and by several KiB at Part 20.**
 
 **size-limit** (`.size-limit.json`, `kB` = 1 000 B, gzip). Approximate headroom measured with
 `gzip -9` on the current `dist/` (built after the last `src/` commit):
@@ -388,8 +386,6 @@ message. One `chore(size): …` commit per gate.
 3. Size-cap raises per [Size budgets](#size-budgets--tarball-and-size-limit).
 4. Browser e2e is not run by any part: `test/parity/scenarios/reftable-refs.scenario.ts` changes in
    Part 19 and runs under Playwright in CI too; Part 18's `updateRef` changes reach it unchanged.
-5. Open items O5 and O6: if the user picks (a) for either before Part 18 is spawned, add the delta its commit lists;
-   otherwise the residual-titled rows stand and the items stay recorded.
 
 ## v5 migration notes (for the docs phase)
 
@@ -487,6 +483,13 @@ One line each on the 5.0 migration page; every item is observable by a caller.
 25. **`remote.rename` renames packed-only tracking refs** instead of refusing `UNSUPPORTED_OPERATION`
     (`rename-packed-tracking-ref`): the new names are written loose and the old lines leave `packed-refs`, as
     `git remote rename` does. (O3, U4, ADR-871)
+26. **On the reftable backend, `branch.rename` writes git's reftable branch-log shape**: the renamed branch's log is
+    its history + `<id> 0{40}` + `0{40} <id>` (was one `<id> <id>` entry), and a forced rename keeps the destination's
+    history merged by update index (was replaced). The files backend is unchanged. (O5, ADR-871)
+27. **`remote.rename` carries reflogs as git does**: a logged tracking ref keeps its history and gains `<id> <id>
+    remote: renamed <old ref> to <new ref>` (was a new `0{40} <id> remote: renamed <from> to <to>` entry with the
+    history dropped); an unlogged one stays unlogged on the files backend; `refs/remotes/<from>/HEAD` is re-pointed to
+    `refs/remotes/<to>/…` (was left behind), its log per backend. (O6, ADR-871)
 
 ## Docs-phase debt declared by the parts
 
@@ -505,8 +508,8 @@ One line each on the 5.0 migration page; every item is observable by a caller.
   `UpdateRefOptions`; dereferencing, `noDeref`, reflog entries per symref, null id and `delete: true` as deletes,
   absent no-op, coupled `logs/HEAD` entry, packed rewrite, the two lock refusals, the backend differences);
   `docs/use/commands/fetch.md` (prune), `docs/use/commands/branch.md`, `docs/use/commands/tag.md`,
-  `docs/use/commands/remote.md` (symrefs deleted as themselves; `rename` of packed-only tracking refs, its reflog
-  residual), `branch.md` (`rename` logs `HEAD`); `docs/use/errors.md` rows `REF_UPDATE_CONFLICT`,
+  `docs/use/commands/remote.md` (symrefs deleted as themselves; `rename` of packed-only tracking refs, its reflogs
+  and `<remote>/HEAD` per backend), `branch.md` (`rename` logs `HEAD`; the per-backend branch-log shape); `docs/use/errors.md` rows `REF_UPDATE_CONFLICT`,
   `REF_CYCLE_DETECTED`, `RESOURCE_LOCKED`, `REF_LOCKED`, `REF_NOT_FOUND`, `UNSUPPORTED_OPERATION`.
 - Part 19: `docs/use/primitives/update-ref.md` (verification, typed by the given name),
   `docs/use/commands/tag.md`, `docs/use/commands/clone.md`, `docs/use/primitives/stream-blob.md` (refusal at
@@ -527,7 +530,8 @@ or a citation: `src/application/primitives/read-object.ts` (15 `readObjectWithSi
 `verifyObjectContent`), `src/application/primitives/ref-store.ts` (14 import; 17 `resolveHeadDirect`; 18
 `applyDelete`, locks; 19 cites `refExists`), `src/application/primitives/update-ref.ts` (14 import; 18 delete
 forms and chain; 19 verification line), `src/application/primitives/types.ts` (18 `UpdateRefOptions` only),
-`src/application/primitives/reftable-transaction.ts` (18 only),
+`src/application/primitives/reftable-transaction.ts` (18 only), `src/application/primitives/reftable-ref-store.ts` (18
+only), `src/application/commands/remote.ts` (18 commits 2, 4, 5),
 `src/domain/objects/error.ts` (14 `isObjectNotFound`; 19 cites factories), `src/domain/refs/packed-refs.ts` (18
 only), `src/application/commands/reflog.ts` (14 lists a call site; 20 edits), `src/application/commands/branch.ts`
 (14 import; 18 `noDeref`, rename; 19 suite list), `src/application/commands/tag.ts` (18 `noDeref`; 19 pre-check),
@@ -547,22 +551,24 @@ after the U1–U6 fold.
   Part 16 c1. O (DC-O1 a) → Part 16 c2. G1 (b) + U1 memory-adapter resolution → Part 17 c1. U2 codes → Part 17 c2.
   F → Part 17 c3. M (DC-M1 a) → Part 17 c4. G2 (b) null id + U3 absent no-op → Part 18 c1. U4 packed refs and
   locks, prune catch removal, O3 (a) → Part 18 c2. U6 coupled entry, delete-arm `reflogMessage` →
-  Part 18 c3 with O1 (a). U5 chain, `noDeref`, backend table, caller classes C/D/E → Part 18 c4. C (DC-C1 a,
+  Part 18 c3 with O1 (a) and O5 (a) (`reflogMerge`). U5 chain, `noDeref`, backend table, caller classes C/D/E →
+  Part 18 c4. O6 (a) `remote.rename` per backend (`reflogCopy`) → Part 18 c5. C (DC-C1 a,
   DC-C2 c) + stream arm + `withLazyFetchRetry` export + empty-tree arm + G7 clone assertion + typing by the
   given name → Part 19 c1. Parse acceptance → Part 19 c2. B → Part 19 c3. G3 → Part 20 c2; G4 → Part 20 c3; G5
   → Part 15 c1; G6 → Part 19 probes. K → Part 20 c1. E (DC-E1 a, DC-E2 a) → Part 20 c2. D (DC-D1 a, DC-D2 a,
   DC-D3 b) → Part 20 c3. ADR correction notes: already committed, no part; ADR-864's and ADR-868's notes point to
-  ADR-871 and ADR-872. Docs: declared above. O1–O4 resolved and placed (O2 → Part 17 c1, O4 → Part 17 c2); O5, O6
-  open with residual-titled defaults.
+  ADR-871 and ADR-872. Docs: declared above. O1–O6 resolved (a) and placed (O2 → Part 17 c1, O4 → Part 17 c2, O3 → Part 18
+  c2, O1 and O5 → Part 18 c3, O6 → Part 18 c5); nothing open.
 - **Interop coverage of pinned rows.** A1 (`cat-file -s`/`-p`/`--batch`, checkout, status, fsck), A2, A3 →
   Part 15 interop; A1's buffered-tier rows (`diff`, `archive`, `grep`, `repack`) and A4 are unit-only by
   design (reproducing them means sizing a buffer from the claim; tsgit's real-bytes behaviour is pinned by
   unit rows). Null-id and absent deletes (existing, absent, matching old, mismatching old, old on absent,
   `expected: 'absent'`, reftable) → Part 18 c1; Q1–Q12, Q14, X13, prune of a packed-only ref (R8) → Part 18 c2; X2,
   X3, X16 and Q14's `logs/HEAD` → Part 18 c3; S1, S3–S5, S7, S8, S11, S12, S14–S17, S19–S25, S27, S28, X4–X12, X14,
-  X15, X17, R5, R6, R8 (`origin/HEAD` kept), R10, R14 → Part 18 c4. Q13 (a lying `sorted` trait), R9 and R18 (O3 (a), Part 18 c2; R18's reflog comparison residual-titled, O6), R11–R13 and R17's `logs/HEAD`
-  (O1 (a), Part 18 c3; R16/R17 branch logs residual-titled, O5), R19 (O6, unit-free residual), S2/S6/S9/S10 (C's typing) and R15 (push, covered by the class-B unit row) are placed with their owner or
-  recorded as residuals. S13 (a 6-link chain) is unit-only (a chain row per length adds nothing over S11 in
+  X15, X17, R5, R6, R8 (`origin/HEAD` kept), R10, R14 → Part 18 c4. R11–R13, R16, R17 (`logs/HEAD` and the renamed branch's log, per backend)
+  → Part 18 c3; R9 and R18's `packed-refs` and loose refs → Part 18 c2; R18's reflogs and `up2/HEAD`, and R19 → Part 18
+  c5. Q13 (a lying `sorted` trait), S2/S6/S9/S10 (C's typing) and R15 (push, covered by the class-B unit row) are
+  placed with their owner or recorded as residuals. S13 (a 6-link chain) is unit-only (a chain row per length adds nothing over S11 in
   interop). B1–B8 → Part 19 c3. C1–C9 + S9/S10 + empty tree/blob + reftable → Part 19 c1; the six parse rows + PC4
   checked/shallow + upper-case hex, late `parent`, empty tag name and short tag rows → Part 19 c2. Memory-adapter
   arms Y1–Y8 → the `FileSystem` contract suite, run against Node and memory (Part 17 c1, c2); Y9–Y16 are the
@@ -583,7 +589,9 @@ after the U1–U6 fold.
   on any adapter, so F2 carries the proof; M's pin needs the characterization sanity step); Part 18 (the null-id
   rows must start from an existing loose ref with a reflog, or "log removed" passes vacuously; a lock row must
   assert the refusal data, and Q4 must prove the lock was taken; backend-twin rows kill an inverted table field;
-  a chain row must assert a single `applyRefUpdates` call); Part 19 (above-the-gate rows must prove the object
+  a chain row must assert a single `applyRefUpdates` call; the forced reftable rename row must create the destination
+  between the source's commits, or an append-source-first merge passes; R18's unlogged refs must be asserted absent,
+  or a created log passes); Part 19 (above-the-gate rows must prove the object
   exceeds 65 536 compressed bytes, or the buffered arm answers); Part 20 (K asserts nothing new by design — its
   proof is an empty test diff; E's gone-ref interop row must be flipped, not duplicated).
 - **Surface decisions** are made per new export in each part; the public shape changes are
@@ -1718,7 +1726,7 @@ Commit 3: `fix(refs): read through a symlinked HEAD whose link text is not a val
 
 Commit 4: `test(refs): pin the HEAD slot's gate-to-gate trust epoch and document it`
 
-## Part 18 — `updateRef` deletes and dereferences as git's ref transaction does: the null id and absent refs, packed refs under git's locks, the coupled `HEAD` entry, symbolic refs (gap G2 b, U3, U4, U6, U5; ADR-871) — 4 commits
+## Part 18 — `updateRef` deletes and dereferences as git's ref transaction does: the null id and absent refs, packed refs under git's locks, the coupled `HEAD` entry, symbolic refs, rename logs (gap G2 b, U3, U4, U6, U5, O1, O3, O5, O6; ADR-871) — 5 commits
 
 ### Context
 
@@ -1730,10 +1738,11 @@ coupled entry, then the chain).
 
 Design: "Ref write and delete semantics, and memory-adapter parity (U1–U6)" — matrices S (symrefs), X
 (deletes), R (commands), Q (`packed-refs`); "Change — U3/U4/U5/U6"; the two caller audits. Decisions: ADR-871.
-**Resolved open items:** **O3 (a)** — `remote.rename`'s packed-only refusal goes in commit 2; **O1 (a)** —
-`branch.rename` writes git's two `logs/HEAD` entries in commit 3 (tsgit writes none today: a fix). **Open, with
-defaults:** O6 (`remote.rename`'s reflog outcome, commit 2) and O5 (reftable rename branch-log shape, commit 3) are
-implemented as option (b) — residual-titled interop rows — and each commit lists the delta option (a) would add.
+**Resolved open items (all (a)):** **O3** — `remote.rename`'s packed-only refusal goes in commit 2; **O1** —
+`branch.rename` writes git's two `logs/HEAD` entries, and **O5** — the renamed branch's own log takes each backend's
+shape, both in commit 3 (tsgit writes no `HEAD` entry and the files branch-log shape on both backends today: fixes);
+**O6** — `remote.rename` moves tracking refs, their logs and `<remote>/HEAD` per backend, commit 5 (after commit 4's
+`noDeref`).
 
 **Shared interop file, created by commit 1:** `test/integration/ref-transaction-interop.test.ts`. `@proves`:
 surface `updateRef, fetch, branch.delete, tag.delete, remote.remove`; bucket `cross-tool-interop`; unique
@@ -1909,20 +1918,16 @@ through this commit's locked rewrite. Flip `test/unit/application/commands/remot
 `packed-refs`) and delete `test/unit/application/primitives/ref-store.test.ts:369-427` (the three
 `assertRenamableTrackingRef` rows). Migration note 25.
 
-**Interop R18** — a files base built with git in `beforeAll`: a bare upstream with branches `keep`, `lp`, `pl`,
-`main`; a clone; a second upstream commit fetched so `lp` and `pl` move (their logs gain `fetch … : fast-forward`);
-`git pack-refs --all`, so every `refs/remotes/origin/*` is packed-only and `keep`, `main` have no log. Copies:
-`git remote rename origin up2` in `peer`, `remoteRename(ctx, { from: 'origin', to: 'up2' })` in `ours`. Compare
-exactly: exit status; `packed-refs` bytes (git's: `# pack-refs with: peeled fully-peeled sorted \n` + the
-`refs/heads/main` line — every `refs/remotes/origin/*` line gone); the set and content of loose files under
-`refs/remotes/` (`up2/{keep,lp,main,pl}` holding their ids); `git show-ref` output. **Reflog comparison
-residual-titled (O6 (b))**: git leaves `keep`/`main` unlogged, moves `lp`/`pl` history and appends `<id> <id> remote:
-renamed refs/remotes/origin/lp to refs/remotes/up2/lp`, and re-points `up2/HEAD` with its moved log plus a
-`0{40} 0{40}` rename entry; tsgit writes `0{40} <id> remote: renamed origin to up2` on every new name, removes the old
-logs and leaves `origin/HEAD` — assert tsgit's own outcome in the residual row so a later fix flips it.
-**If O6 becomes (a):** move each logged ref's log (`store.moveReflog`), append `<id> <id> remote: renamed <old ref>
-to <new ref>` only where a log exists, write no entry for an unlogged ref, re-point `<remote>/HEAD` with git's
-entry, and un-title the reflog comparison (files; reftable R19 needs its own shape).
+**Interop R18, first half** — a files base built with git in `beforeAll` (identity `A <a@x>` through
+`GIT_COMMITTER_NAME`/`EMAIL` for every git call — `git remote rename` does not read `user.name`/`user.email`): a
+bare upstream with `main`, `keep`, `lp`, `pl` at C1; a clone; upstream `lp`, `pl` → C2 and `fetch`; `git pack-refs
+--all`; upstream `pl` → C3 and `fetch` — so `keep`, `main` are packed-only unlogged, `lp` packed-only logged, `pl`
+loose-over-packed logged, `origin/HEAD` a logged symref. Copies: `git remote rename origin up2` in `peer`,
+`remoteRename(ctx, { from: 'origin', to: 'up2' })` in `ours`. Compare exactly: exit status; `packed-refs` bytes
+(`# pack-refs with: peeled fully-peeled sorted \n` + `<C1> refs/heads/main\n`); the set and content of the loose
+direct refs under `refs/remotes/` (`up2/keep` C1, `up2/lp` C2, `up2/main` C1, `up2/pl` C3, nothing under
+`origin/`). The reflog bytes and `up2/HEAD` are asserted by commit 5, which completes the row; until then the row
+asserts nothing about logs or symrefs.
 
 **Public or internal.** `withLockFile` and `packedRefsWithout` are internal (not barrelled). No type changes.
 Migration notes 20, 21.
@@ -1974,7 +1979,7 @@ and `fetch --prune` of a packed-only tracking ref against the `packed-refs-inter
   nested delete from leaving directories — test it on the memory adapter and in interop.
 - Do not add a lock to `packRefs` here (recorded residual).
 
-#### Commit 3 — every delete path writes the coupled `logs/HEAD` entry (U6)
+#### Commit 3 — every delete path writes the coupled `logs/HEAD` entry; `branch.rename` logs as git does per backend (U6, O1, O5)
 
 **Decision.** Deleting the ref `HEAD` symbolically names — through `delete: true` or the null id — appends
 `<old> 0{40} <message>` to `logs/HEAD` in the same `applyRefUpdates` call (X2, X3, Q14). The `delete: true` arm
@@ -2027,19 +2032,31 @@ refs/heads/<to>\n`, then `0{40} <id> … \tBranch: renamed …\n`. tsgit writes 
   `writeSymbolicRef` (drop the import if unused) — git's second line; the old id is null because `from` is gone;
 - a rename of a branch `HEAD` does not name writes no `HEAD` entry (R13); the self-rename arm (`:174-187`) is
   unchanged (it neither deletes nor re-points).
-The branch's own log keeps today's files shape (moved history + `<id> <id>`). **O5 (b):** the reftable branch-log
-shape (moved history + `<id> 0{40}` + `0{40} <id>`; a forced rename keeping the destination's history, R16, R17) is
-a residual-titled reftable row. **If O5 becomes (a):** add a `renameLog: 'moved-plus-same-id' |
-'moved-plus-delete-and-create'` field to `TransactionLogging`, write the reftable shape on the new name, keep the
-destination's live records on a forced rename (`reftable-ref-store.ts:315-326` `moveReflog` stops replacing), and
-un-title the row.
+**O5 (a) — the renamed branch's own log, per backend** (design R16, R17):
+- **files** (`renamedBranchLog: 'replace-then-same-id'`) — today's sequence: a forced rename drops the destination's
+  log (`branch.ts:216-218`), `moveReflog` renames the file (`:219`), one `reflogOnly` `<id> <id>` entry (`:220-227`);
+- **reftable** (`'merge-then-delete-and-create'`) — no destination drop; `moveReflog` becomes an index-preserving
+  merge; then two `reflogOnly` entries on the new name, `{ oldId: id, newId: zero, message }` and
+  `{ oldId: zero, newId: id, message }`.
+- `src/application/primitives/reftable-transaction.ts` gains `{ kind: 'reflogMerge'; name: RefName; from: RefName }`
+  (internal to the reftable store, not a `RefStore` caller kind): for each live `from` log record, one record under
+  `name` at the **same** `updateIndex` and one tombstone for the `from` record at its own index — the shape
+  `tombstoneExistingLogs` (`:476-484`, just above `applyDeleteRecords`) already writes for tombstones; the reftable
+  store's `moveReflog` (`src/application/primitives/reftable-ref-store.ts:315-326`) emits it instead of its two
+  `reflogReplace` updates. `RefStore.moveReflog`'s docblock (`src/application/primitives/ref-store.ts:124-133`) states
+  both backends' contracts.
+- `TransactionLogging` gains `renamedBranchLog`; `branchRename` reads it (`transactionLogging(ctx)`).
+Migration note 26.
 
 **Interop (O1 (a))** — extend `test/integration/reflog-interop.test.ts:1348-1420` (both rename rows: plain and forced)
 to compare `logs/HEAD` bytes as well as the branch log, with identity and time pinned; add R12 (the old branch log
 absent), R13 (renaming a branch `HEAD` does not name: `logs/HEAD` unchanged, and absent `logs/HEAD` stays absent with
 `core.logAllRefUpdates=false`), and the reftable twin of the plain and forced rename comparing `logs/HEAD` bytes
-(after `git refs migrate --ref-format=files` on a copy of each side) — with the branch-log comparison
-residual-titled (O5 (b)).
+(after `git refs migrate --ref-format=files` on a copy of each side). Every rename row also compares the renamed
+branch's log bytes on its backend (O5 (a)): R16's files and reftable shapes for `-m main renamed` and `-m o o2`
+(`o` created at C1 before main's C2), and R17's for `-M main other` with `other` created **between** main's two
+commits — the row that proves the reftable merge orders by update index rather than appending the source's history
+first.
 
 **Public or internal.** `UpdateRefOptions` gains a field — `reports/api.json` owed at the phase boundary;
 `transactionLogging` is internal. Migration notes 16 (rewritten), 18.
@@ -2057,7 +2074,13 @@ residual-titled (O5 (b)).
 - `test/unit/application/commands/branch.test.ts` — renaming the checked-out branch: `readReflog(ctx, HEAD)` gains
   exactly `{ oldId: <id>, newId: ZERO, message }` then `{ oldId: ZERO, newId: <id>, message }` with `message` =
   `branchRenamed(from, to)`; the forced rename onto a live branch gains the same two; renaming another branch gains
-  none; the self-rename gains none; `HEAD` reads `ref: refs/heads/<to>` afterwards.
+  none; the self-rename gains none; `HEAD` reads `ref: refs/heads/<to>` afterwards. On a reftable Context: the renamed
+  branch's log is the history + `{ id → ZERO }` + `{ ZERO → id }` (messages `branchRenamed`), and a forced rename keeps
+  the destination's own entries in update-index order.
+- `test/unit/application/primitives/reftable-transaction.test.ts`: `reflogMerge` writes each source record under the
+  target at its own update index, tombstones the source's, and leaves the target's own records live.
+- `test/unit/application/primitives/reftable-ref-store.test.ts`: `moveReflog` onto a name with records merges by index
+  (build `other`'s record between two of the source's); onto an empty name equals the source's history.
 
 **Tests (interop)** — append: X2 (`-m why`), X3 (no `-m`, exact bytes), Q14's `logs/HEAD` comparison, X16 on both
 bases. Flip commit 1's `HEAD`-entry residual row. O1 (a)'s rename rows as above.
@@ -2108,6 +2131,7 @@ In `applyDeleteRecords`, tombstone existing logs only when the live record is no
   `:460`. The `branch` values stay in each result; only the `updateRef` name changes. `commit.ts`'s docstring
   (`:229-230`) and `reset.ts`'s comment (`:82-85`) are rewritten to say the write goes through `HEAD`.
 - **Class D → `noDeref: true`**: `branch.ts:161`, `:228` (beside commit 3's O1 (a) message), `tag.ts:221`, `remote.ts:181`.
+  `remote.ts:221-222` (`moveTrackingRef`) is left to commit 5, which rewrites it.
 - **Class E**: `fetch.ts` prune skips `entry.value.kind === 'symbolic'` before the advertised-branch test.
 - **Facade**: `src/repository.ts:999-1002` passes options through; nothing to change beyond the type.
 
@@ -2166,6 +2190,89 @@ terminal is never symbolic, a repeat always refuses) are covered by the enumerat
 - `invalidateHeadSlot` on a `noDeref` delete of `HEAD` (commit 2's store change) — assert it; a stale slot would
   report the deleted `HEAD` as present within the same gate.
 
+#### Commit 5 — `remote.rename` moves tracking refs, their logs and `<remote>/HEAD` as git does (O6 a)
+
+**Why a commit of its own** (the parent plan's sizing rules apply to parts; a commit is split when it would mix
+independently green changes): O6 needs commit 4's `noDeref` delete and the reftable `kept-with-entry` rule, so it
+cannot ride in commit 2 (U4) where O3 lands, and it is a command rewrite with its own interop row pair, separable
+from commit 4's primitive. Part 18 therefore has five commits.
+
+**Decision.** Design "Change — O6", ADR-871. For each name under `refs/remotes/<from>/`, direct refs first, the
+symbolic `<from>/HEAD` last, with `message = remote: renamed <old ref> to <new ref>` (full ref names):
+- **direct, logged** — `store.moveReflog(old, new)` (files: rename; reftable: commit 3's index-preserving merge);
+  `store.applyRefUpdates([{ kind: 'set', name: new, id, expected: 'absent' }, { kind: 'reflogOnly', name: new,
+  reflog: { oldId: id, newId: id, message } }])`; `updateRef(ctx, old, zero, { delete: true, noDeref: true })`;
+- **direct, unlogged** — the same `set` with no `reflogOnly` (no log is created); the same delete;
+- **symbolic** (files, `renamedSymrefLog: 'move-then-null-entry'`) — `moveReflog(old, new)`; delete `old`
+  (`noDeref`, no message); `setSymbolic new → refs/remotes/<to>/<b>` with `reflog: { oldId: zero, newId: zero,
+  message }`;
+- **symbolic** (reftable, `'copy-then-delete-entry'`) — `{ kind: 'reflogCopy', from: old, to: new }` (the merge
+  without tombstones); delete `old` (`noDeref`, no message — commit 4's `kept-with-entry` rule appends `<id> 0{40}`
+  with an empty message to `old`'s kept log); `setSymbolic new → refs/remotes/<to>/<b>` with no reflog.
+`TransactionLogging` gains `renamedSymrefLog`; the reftable transaction gains `reflogCopy` beside commit 3's
+`reflogMerge` (the files store never receives it). `assertRenamableTrackingRef` is already gone (commit 2).
+
+**Pins** (design R18, R19; bytes in the design table): files — `packed-refs` = header + `C1 refs/heads/main`; loose
+`up2/{HEAD,keep,lp,main,pl}`; `up2/lp` log = moved `C1 C2 A⇥fetch -q origin: fast-forward` + `C2 C2
+A⇥remote: renamed refs/remotes/origin/lp to refs/remotes/up2/lp`; `up2/pl` = two fetch lines + `C3 C3 …`;
+`up2/HEAD` = moved `0{40} C1 A⇥clone: from <url>` + `0{40} 0{40} A⇥remote: renamed refs/remotes/origin/HEAD to
+refs/remotes/up2/HEAD`; no `keep`/`main` log; no `origin/*` log. Reftable — every tracking ref's log = its moved
+history + `<id> <id>` rename entry; `up2/HEAD` = the copied history, no entry; `origin/HEAD`'s log kept + `C1 0{40} A`.
+
+**Current code (verified).** `moveTrackingRef` `src/application/commands/remote.ts:209-223` (after commit 2: guard
+`:215-216`, target write `:221`, source delete `:222`); the rename loop `:242-249` (`reflogMessage` `:242`,
+`remote: renamed ${from} to ${to}`); `listTrackingRefs` `:162-166`; `getRefStore(ctx).hasReflog` / `moveReflog`
+(`ref-store.ts:124-142`); commit 3's `reflogMerge` and backend table.
+
+**Target.**
+```ts
+const renameTrackingRefs = async (ctx: Context, from: string, to: string): Promise<readonly RefName[]> => {
+  const names = await listTrackingRefs(ctx, from);
+  const resolved = await readTrackingValues(ctx, names);          // name → direct | symbolic
+  const direct = resolved.filter(isDirectEntry);
+  const symbolic = resolved.filter(isSymbolicEntry);
+  for (const entry of direct) await moveDirectTrackingRef(ctx, entry, renamedName(entry.name, from, to));
+  for (const entry of symbolic) await moveSymbolicTrackingRef(ctx, entry, from, to);
+  return [...direct, ...symbolic].map((entry) => renamedName(entry.name, from, to));
+};
+```
+`moveDirectTrackingRef` and `moveSymbolicTrackingRef` implement the bullets above, each under 20 lines; the symbolic
+target is rewritten only when it starts with `refs/remotes/<from>/` (the pinned shape) — any other target keeps its
+text (unpinned, recorded in the design residuals). `RemoteRenameResult` is unchanged (it lists the moved names).
+
+**Public or internal.** No new export; `remote.rename`'s reflog bytes change (migration note 27).
+
+**Tests (unit)** — `test/unit/application/commands/remote.test.ts`:
+- `:774-778` (`movedLog` contains `remote: renamed origin to upstream`) **flips**: when the fixture's
+  `refs/remotes/origin/main` has a log, the new name's log is that history followed by exactly `{ oldId: id, newId: id,
+  message: 'remote: renamed refs/remotes/origin/main to refs/remotes/upstream/main' }`; when it has none, no log exists
+  under the new name — assert the shape the fixture sets up and add the other as its own row;
+- an unlogged tracking ref → no reflog under the new name (`hasReflog` `false`), and the old name has none either;
+- a logged packed-only tracking ref → history moved, entry appended, `packed-refs` without the old line;
+- `refs/remotes/origin/HEAD → refs/remotes/origin/main` on a files Context → `refs/remotes/upstream/HEAD` symbolic to
+  `refs/remotes/upstream/main`, its log = the old history + `{ oldId: ZERO, newId: ZERO, message }`, no
+  `refs/remotes/origin/HEAD`; on a reftable Context → the new symref's log = the copied history only, and
+  `readReflog(ctx, 'refs/remotes/origin/HEAD')` = the old history + `{ oldId: id, newId: ZERO, message: '' }`;
+- the symref is written after every direct ref (spy `applyRefUpdates`: the `setSymbolic` call is last);
+- `test/unit/application/primitives/reftable-transaction.test.ts`: `reflogCopy` writes the source's records under the
+  target at their own indices and leaves the source's live.
+- `test/unit/application/primitives/internal/ref-transaction-logging.test.ts`: `renamedSymrefLog` per backend.
+
+**Tests (interop)** — complete R18 in `ref-transaction-interop.test.ts` (commit 2 built its base and asserts
+`packed-refs` and loose refs): add the reflog assertions — every `logs/refs/remotes/**` file's bytes on both sides,
+and the absence of `keep`/`main` logs — and add R19 on the reftable base (same sequence built with git; compare
+after `git refs migrate --ref-format=files` on a copy of each side: the logs of `up2/*`, `origin/HEAD`, and the
+`up2/HEAD` symref). The peer runs `git remote rename` with `GIT_COMMITTER_NAME=A`, `GIT_COMMITTER_EMAIL=a@x` in its
+environment — git's `remote rename` does not read `user.name`/`user.email` for these entries — and a pinned date;
+`ours` has `user.name A` / `user.email a@x` in its config.
+
+**Traps**
+- No references to this plan, the design, ADRs, pin rows or open items in source or test code.
+- The new names are written with no reflog attached: going through `updateRef` would autocreate a log under
+  `refs/remotes/` and break the unlogged rows.
+- Symrefs last: git's order, the one the pinned bytes were taken with — assert it rather than rely on it.
+- The reftable symref delete passes **no** `reflogMessage`: the kept log's entry has an empty message.
+
 ### TDD steps
 
 **Commit 1 (null id, absent no-op)**
@@ -2195,7 +2302,10 @@ terminal is never symbolic, a repeat always refuses) are covered by the enumerat
 16. **RED/GREEN** — empty message bytes, null id, non-coupled branch, unborn `HEAD` per backend, single call.
 17. **RED** — `branch.test.ts`: renaming the checked-out branch gains two `HEAD` entries. Fails: none. **GREEN** — the
     rename's delete message and the logged `setSymbolic`; remaining rename rows; interop X2, X3, Q14, X16 and the
-    rename rows (O5 residual-titled); flip the residual.
+    rename rows; flip the residual.
+17b. **RED** — `reftable-transaction.test.ts`: `reflogMerge` keeps each source record's update index. Fails: kind
+    missing. **GREEN** — `reflogMerge`; the reftable `moveReflog`; `renamedBranchLog`; `branchRename`'s per-backend
+    sequence. **RED/GREEN** — the reftable rename unit rows, then R16/R17 branch-log bytes per backend in interop.
 
 **Commit 4 (dereference)**
 18. **RED** — `ref-write-chain.test.ts`: one hop → `links: [s]`, terminal `x`. Fails: module missing.
@@ -2209,6 +2319,15 @@ terminal is never symbolic, a repeat always refuses) are covered by the enumerat
 24. **RED/GREEN** — interop S/X/R rows on both bases; flip the symref residual.
 25. **REFACTOR** — `updateRef`'s docstring states the split rule and names the backend table; `commit.ts:229-230` and
     `reset.ts:82-85` comments.
+
+**Commit 5 (`remote.rename`)**
+26. **RED** — `remote.test.ts`: a logged tracking ref's new log is its history + the full-name entry. Fails: tsgit's
+    `0{40} <id> remote: renamed origin to upstream`.
+27. **GREEN** — `renameTrackingRefs`, `moveDirectTrackingRef` (moved log, store-level `set`, conditional entry,
+    `noDeref` delete).
+28. **RED/GREEN** — the unlogged row, the packed-only logged row, the symref rows per backend (`reflogCopy`,
+    `renamedSymrefLog`), the order row.
+29. **RED/GREEN** — complete interop R18 (reflog bytes, `up2/HEAD`) and add R19 on the reftable base.
 
 ### Gate
 
@@ -2244,6 +2363,12 @@ npx tsc --noEmit -p tsconfig.json
 ./node_modules/.bin/biome check src/application/primitives/update-ref.ts src/application/primitives/types.ts src/application/primitives/internal/ref-transaction-logging.ts src/application/commands/branch.ts test/unit/application/primitives/update-ref.test.ts test/unit/application/primitives/internal/ref-transaction-logging.test.ts test/unit/application/commands/branch.test.ts test/integration/ref-transaction-interop.test.ts test/integration/reflog-interop.test.ts
 npx cspell --no-progress src/application/primitives/update-ref.ts src/application/primitives/types.ts src/application/primitives/internal/ref-transaction-logging.ts src/application/commands/branch.ts test/unit/application/primitives/update-ref.test.ts test/unit/application/primitives/internal/ref-transaction-logging.test.ts test/integration/ref-transaction-interop.test.ts test/integration/reflog-interop.test.ts
 ```
+O5 (a) adds, in the same invocations: `test/unit/application/primitives/reftable-transaction.test.ts` and
+`test/unit/application/primitives/reftable-ref-store.test.ts` to the unit batch;
+`test/integration/reftable-ref-storage-interop.test.ts` as its own interop invocation; and
+`src/application/primitives/reftable-transaction.ts`, `src/application/primitives/reftable-ref-store.ts`,
+`src/application/primitives/ref-store.ts` (the `moveReflog` docblock) and the two unit test files to the biome and
+cspell lists.
 
 Commit 4 (unit batches, one invocation each):
 ```
@@ -2263,8 +2388,20 @@ npx cspell --no-progress src/application/primitives/update-ref.ts src/applicatio
 ```
 Add to both lists every command test file the class C/D/E rows touched.
 
+Commit 5:
+```
+npx vitest run --maxWorkers=2 test/unit/application/commands/remote.test.ts test/unit/application/primitives/reftable-transaction.test.ts test/unit/application/primitives/internal/ref-transaction-logging.test.ts test/unit/application/primitives/update-ref.test.ts test/unit/application/commands/fetch.test.ts
+npx vitest run test/integration/ref-transaction-interop.test.ts
+npx vitest run test/integration/reftable-ref-storage-interop.test.ts
+npx vitest run test/integration/repository-format-acceptance-interop.test.ts
+npx tsc --noEmit -p tsconfig.json
+./node_modules/.bin/biome check src/application/commands/remote.ts src/application/primitives/reftable-transaction.ts src/application/primitives/internal/ref-transaction-logging.ts test/unit/application/commands/remote.test.ts test/unit/application/primitives/reftable-transaction.test.ts test/unit/application/primitives/internal/ref-transaction-logging.test.ts test/integration/ref-transaction-interop.test.ts
+npx cspell --no-progress src/application/commands/remote.ts src/application/primitives/reftable-transaction.ts src/application/primitives/internal/ref-transaction-logging.ts test/unit/application/commands/remote.test.ts test/unit/application/primitives/reftable-transaction.test.ts test/unit/application/primitives/internal/ref-transaction-logging.test.ts test/integration/ref-transaction-interop.test.ts
+```
+(`repository-format-acceptance-interop.test.ts:1145` drives `remoteRename`; re-run it unchanged.)
+
 **Owed at the phase boundary:** `npm run docs:json` + `reports/api.json` (`UpdateRefOptions`); `check:size` and
-`check:tarball` (≈ +1.25 KiB runtime, see Size budgets); `check:write-surfaces` and `check:test-pyramid` (new interop
+`check:tarball` (≈ +1.8 KiB runtime, see Size budgets); `check:write-surfaces` and `check:test-pyramid` (new interop
 `@proves`); `test:parity` (the reftable scenario writes through `updateRef`). **Surface gates tripped:** the public
 `UpdateRefOptions` type (api report only; no barrel, facade shape or doc-coverage page added).
 
@@ -2274,9 +2411,11 @@ Commit 1: `fix(refs): delete the ref when updateRef is given the null object id 
 
 Commit 2: `fix(refs): delete packed refs by rewriting packed-refs under git's locks`
 
-Commit 3: `fix(refs): log the deletion of the branch HEAD points at on every delete path`
+Commit 3: `fix(refs): log branch deletions and renames on HEAD and the renamed branch as git does`
 
 Commit 4: `feat(refs): dereference symbolic refs in updateRef as git's ref transaction does`
+
+Commit 5: `fix(remote): rename tracking refs, their reflogs and the remote HEAD as git does`
 
 ## Part 19 — Ref updates verify their target: existence, hash, parse acceptance, branch typing; `tag.create`'s order (design C + B, DC-C1 a with its parse-acceptance follow-up, DC-C2 c, ADR-864) — 3 commits
 
