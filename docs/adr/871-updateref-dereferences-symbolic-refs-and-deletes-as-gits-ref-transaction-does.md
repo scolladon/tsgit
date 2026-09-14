@@ -4,6 +4,7 @@ subjects:
   - src/application/primitives/types.ts
   - src/application/primitives/ref-store.ts
   - src/application/primitives/reftable-transaction.ts
+  - src/application/primitives/reftable-ref-store.ts
   - src/application/primitives/atomic-write.ts
   - src/domain/refs/packed-refs.ts
   - src/application/commands/fetch.ts
@@ -22,7 +23,7 @@ subjects:
 
 - **Status:** accepted
 - **Date:** 2026-09-14
-- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref write and delete semantics, and memory-adapter parity: U3, U4, U5, U6, O1, O3; gap G2) · **Supersedes/Refines:** refines ADR-226 and ADR-864 (its null-id delete note moves here)
+- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref write and delete semantics, and memory-adapter parity: U3, U4, U5, U6, O1, O3, O5, O6; gap G2) · **Supersedes/Refines:** refines ADR-226 and ADR-864 (its null-id delete note moves here)
 
 ## Context
 
@@ -63,6 +64,16 @@ git's ref transaction, pinned against git 2.55.0 (design matrices S, X, R, Q):
 - Renaming the branch `HEAD` names writes two `logs/HEAD` entries on both backends —
   `<id> 0{40} Branch: renamed <from> to <to>`, then `0{40} <id> Branch: renamed …` (R11, R12, R17).
   tsgit's `branch.rename` writes none today.
+- The renamed branch's own log differs by backend (R16, R17): files — the moved history + `<id> <id>
+  Branch: renamed …`, a forced rename replacing the destination's log; reftable — the moved history merged
+  **by update index** with the destination's kept records + `<id> 0{40}` + `0{40} <id>`. tsgit writes the
+  files shape on both.
+- `remote rename` moves each tracking ref and its log per backend (R18, R19): a logged ref keeps its
+  history and gains `<id> <id> remote: renamed <old ref> to <new ref>`; an unlogged one (files) gains no
+  log; the symbolic `<remote>/HEAD` is re-pointed at the new remote — on files its log moves and gains
+  `0{40} 0{40} remote: renamed …`, on reftable the old symref's log is kept with an `<id> 0{40}`
+  empty-message entry and the new one holds a copy of the history with no entry. tsgit writes `0{40} <id>
+  remote: renamed <from> to <to>` on every new name, drops the old logs and skips the symref.
 
 ## Options considered
 
@@ -102,7 +113,8 @@ Decided within the design, with the choice recorded here:
 
 - **Backend differences** — transcribe each backend's shape (chosen) · take one shape on both, recording
   the other as a residual. Pros of the choice: both backends match their git counterpart byte for byte.
-  Cons: a three-field table keyed on `ctx.layout.refStorage` inside `updateRef`.
+  Cons: a five-field table keyed on `ctx.layout.refStorage`, read by `updateRef`, `branch.rename` and
+  `remote.rename`, and an index-preserving reflog merge in the reftable store.
 - **Chain bound** — none but repetition, as git (chosen) · reuse `MAX_SYMBOLIC_REF_DEPTH` · a larger
   constant. A cap would refuse chains git writes through.
 - **The loose ref's lock on delete** — taken with `packed-refs.lock` (chosen) · packed lock only. Same
@@ -113,6 +125,11 @@ Decided within the design, with the choice recorded here:
   Cons: rename's `HEAD` re-point stops going through `writeSymbolicRef`.
 - **`remote.rename`'s packed-only refusal** (design O3, chosen by the user: option a) — remove it with U4 ·
   keep it as a residual · a follow-up. The refusal's only stated reason was the missing packed rewrite.
+- **The reftable renamed-branch log** (design O5, chosen by the user: option a) — reproduce reftable's shape
+  on reftable · keep the files shape on both as a residual · a follow-up.
+- **`remote.rename`'s reflog outcome and `<remote>/HEAD`** (design O6, chosen by the user: option a) — move
+  refs, logs and the symref per backend · residual · follow-up. Pros of both choices: rename bytes match git
+  on each backend. Cons: two more table fields and two internal reftable update kinds.
 - **Callers that pass `HEAD`'s symbolic target** (`commit`, `merge`, `reset`, `merge --abort`,
   `cherry-pick`, `revert`, the sequencer's abort) — switch to `HEAD`, as git writes (chosen) · keep the
   target. The entries are identical for a direct target; only `HEAD` reproduces git's coupled old id
@@ -142,7 +159,7 @@ the write chain, reads `HEAD` for coupling, checks `expected`, and applies every
   the first link itself.
 - **A delete** — `delete: true` or the null id — deletes the terminal, appends `<old> 0{40}` to every
   walked symref and the coupled `HEAD` entry, applying the backend table
-  (`internal/ref-transaction-logging.ts`) for the three differences above, and on reftable a
+  (`internal/ref-transaction-logging.ts`, five fields in all) for the differences above, and on reftable a
   `noDeref` symref delete keeps its log and gains the deletion entry.
 - **Both stores' deletes** are no-ops for an absent ref. The files backend's delete takes
   `<ref>.lock` (`REF_LOCKED { name }`) when the ref's directory exists — a lock cannot exist without
@@ -153,19 +170,25 @@ the write chain, reads `HEAD` for coupling, checks `expected`, and applies every
   committed. The reftable backend's delete keeps a symbolic record's logs.
 - **Callers**: the ten call sites that pass `HEAD`'s symbolic target, in seven files, pass `HEAD`; `branch.delete`, `branch.rename`'s delete,
   `tag.delete` and `remote.remove` pass `noDeref: true`; `fetch --prune` skips symbolic tracking refs
-  and loses its packed-only catch. Every other caller is unchanged (design caller audit: A 5, B 7,
-  C 10, D 4, E 1).
+  and loses its packed-only catch. Every other caller is unchanged (design caller audit: A 4, B 7,
+  C 10, D 5, E 1).
 
 - **`branch.rename`** of the branch `HEAD` names deletes the old name with `noDeref` and
   `reflogMessage: branchRenamed(from, to)` — U6's coupled entry is git's first `logs/HEAD` line — and
   re-points `HEAD` with one `setSymbolic` update carrying the `0{40} <id>` entry, git's second line. A
   rename of any other branch writes no `HEAD` entry.
-- **`remote.rename`** drops `assertRenamableTrackingRef` (`rename-packed-tracking-ref`): a packed-only
-  tracking ref is written under its new name and deleted from `packed-refs` through U4's locked
-  rewrite.
-
-**Still open (design O5, O6):** the reftable backend's renamed-branch log shape (R16, R17), and
-`remote.rename`'s reflog outcome and `<remote>/HEAD` re-point (R18, R19).
+- **The renamed branch's own log**: files keeps `moveReflog`'s rename (a forced rename first drops the
+  destination's log) and one `<id> <id>` entry; reftable merges the source's records into the destination
+  at their own update indices (a new internal `reflogMerge` update kind; the destination's records are
+  never dropped), tombstones the source's, and appends `<id> 0{40}` then `0{40} <id>`.
+- **`remote.rename`** drops `assertRenamableTrackingRef` (`rename-packed-tracking-ref`), and moves each
+  tracking ref as git does: a direct ref's log moves (when it has one), the new name is written without a
+  reflog, `<id> <id> remote: renamed <old ref> to <new ref>` is appended only where a log moved, and the old
+  name is deleted with `noDeref` — through U4's locked rewrite when packed. The symbolic `<remote>/HEAD`
+  is handled last, re-pointed at `refs/remotes/<to>/<b>`: files moves its log, deletes it and appends
+  `0{40} 0{40} remote: renamed …` to the new symref; reftable copies its log (a `reflogCopy` update kind),
+  deletes it with `noDeref` and no message — the kept-with-entry rule adds `<id> 0{40}` — and writes the new
+  symref with no entry.
 
 ## Consequences
 
@@ -177,7 +200,10 @@ has nothing to catch. `fetch --prune` deletes packed-only stale tracking refs an
 with `name: 'HEAD'`. `branch.rename` of the checked-out branch starts writing git's two `logs/HEAD`
 entries where it wrote none. `remote.rename` stops refusing `UNSUPPORTED_OPERATION`
 (`rename-packed-tracking-ref`) for a packed-only tracking ref: it renames it, leaving `packed-refs`
-without the old line and the new name loose, as git does (R18).
+without the old line and the new name loose, as git does (R18). Its reflog bytes change: a renamed tracking
+ref keeps its history and carries git's full-ref-name rename entry, an unlogged one stays unlogged (files),
+and `<remote>/HEAD` follows the rename. On reftable, `branch.rename` writes the reftable branch-log shape and
+a forced rename keeps the destination's history.
 
 Every files-backend delete costs two lock files and, for a packed name, one rewrite of
 `packed-refs`. A symref write costs one read and one reflog append per hop.
@@ -189,9 +215,10 @@ Residuals, recorded: empty `refs/…` and `logs/…` directories are not removed
 removes them; the port has no directory removal that works on Node); `fetch --prune` and
 `remote.remove` delete one ref per transaction, so a batch rewrites `packed-refs` once per packed name
 and is not atomic; `packRefs` still writes `packed-refs` without its lock; a `sorted` trait over
-unsorted lines makes git miss the ref where tsgit finds it; `remote.rename` still leaves
-`refs/remotes/<old>/HEAD` where git re-points it, and still writes a `0{40} <id> remote: renamed <from> to <to>`
-entry on each new name instead of moving the old log (open item O6); the reftable backend's rename
-branch-log shape is open item O5.
+unsorted lines makes git miss the ref where tsgit finds it; a reftable merge of two logs holding records
+at one shared update index (two refs written in one transaction) is unpinned; a `<remote>/HEAD` naming a ref
+outside the renamed remote, or without a log, is unpinned; `git remote rename` reads no `user.name` /
+`user.email` for its entries (it fell back to the system identity while pinning), where tsgit uses the
+configured identity.
 
 ADR-864's closing note on the null id now points here.
