@@ -1376,6 +1376,12 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(oursBytes).toEqual(peerBytes);
           expect(await pathExists(mainLogPath(peer))).toBe(false);
           expect(await pathExists(mainLogPath(ours))).toBe(false);
+
+          // Assert — O1 (a): HEAD names `main` here, so logs/HEAD gains
+          // git's two rename entries, byte-identical on both sides.
+          const peerHeadBytes = await readFile(headLogPath(peer));
+          const oursHeadBytes = await readFile(headLogPath(ours));
+          expect(oursHeadBytes).toEqual(peerHeadBytes);
         });
       });
     });
@@ -1405,6 +1411,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           const ours = await cloneRepo(root, 'branch-rename-force-ours');
           const renameEpoch = BASE_EPOCH + 300;
           const ctx = createNodeContext({ workDir: ours });
+          const headLogBefore = await readFile(headLogPath(peer));
 
           // Act
           runGit(['-C', peer, 'branch', '-M', 'left', 'right'], {
@@ -1424,6 +1431,69 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(oursBytes).toEqual(peerBytes);
           expect(await pathExists(branchLogPath(peer, 'left'))).toBe(false);
           expect(await pathExists(branchLogPath(ours, 'left'))).toBe(false);
+
+          // Assert — R13: HEAD names `main` here, not `left`/`right`, so
+          // renaming neither names it; logs/HEAD is byte-unchanged on both
+          // sides (it already existed from the base commit).
+          expect(await readFile(headLogPath(peer))).toEqual(headLogBefore);
+          expect(await readFile(headLogPath(ours))).toEqual(headLogBefore);
+        });
+      });
+    });
+
+    describe('Given a reftable-backed checked-out branch with two commits', () => {
+      describe('When it is renamed', () => {
+        it("Then, after migrating each side to the files format, logs/HEAD and the renamed branch's own log are byte-identical — R16 (reftable)", async () => {
+          // Arrange — build a reftable repo with git, copy it twice, rename
+          // on each side (git's CLI, tsgit's `branchRename`), then migrate
+          // BOTH copies to the files format so their raw log bytes can be
+          // compared directly (reftable has no per-ref log file of its own).
+          const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-interop-rt-rename-'));
+          caseRoots.push(root);
+          runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', root]);
+          git(root, 'config', 'user.name', 'Ada');
+          git(root, 'config', 'user.email', 'ada@example.com');
+          git(root, 'config', 'commit.gpgsign', 'false');
+          disableAutoMaintenance(root);
+          await writeFile(path.join(root, 'f.txt'), 'c1\n');
+          git(root, 'add', '-A');
+          runGit(['-C', root, 'commit', '-q', '-m', 'c1'], { env: pinnedCommitterEnv(BASE_EPOCH) });
+          await writeFile(path.join(root, 'f.txt'), 'c2\n');
+          git(root, 'add', '-A');
+          runGit(['-C', root, 'commit', '-q', '-m', 'c2'], {
+            env: pinnedCommitterEnv(BASE_EPOCH + 1),
+          });
+          const peer = await cloneRepo(root, 'rt-rename-peer');
+          const ours = await cloneRepo(root, 'rt-rename-ours');
+          const renameEpoch = BASE_EPOCH + 500;
+          const baseCtx = createNodeContext({ workDir: ours });
+          const oursCtx: Context = {
+            ...baseCtx,
+            layout: { ...baseCtx.layout, refStorage: 'reftable' },
+          };
+
+          // Act
+          runGit(['-C', peer, 'branch', '-m', 'main', 'renamed'], {
+            env: pinnedCommitterEnv(renameEpoch),
+          });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(renameEpoch * 1000);
+          try {
+            await branchRename(oursCtx, { from: 'main', to: 'renamed' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+          runGit(['-C', peer, 'refs', 'migrate', '--ref-format=files']);
+          runGit(['-C', ours, 'refs', 'migrate', '--ref-format=files']);
+
+          // Assert
+          const peerHeadBytes = await readFile(headLogPath(peer));
+          const oursHeadBytes = await readFile(headLogPath(ours));
+          expect(oursHeadBytes).toEqual(peerHeadBytes);
+          const peerBranchBytes = await readFile(branchLogPath(peer, 'renamed'));
+          const oursBranchBytes = await readFile(branchLogPath(ours, 'renamed'));
+          expect(oursBranchBytes).toEqual(peerBranchBytes);
+          expect(await pathExists(branchLogPath(peer, 'main'))).toBe(false);
+          expect(await pathExists(branchLogPath(ours, 'main'))).toBe(false);
         });
       });
     });

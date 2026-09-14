@@ -15,12 +15,12 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
+import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
-import { getRefStore, refExists } from '../primitives/ref-store.js';
+import { getRefStore, type RefStore, refExists } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
@@ -209,28 +209,95 @@ export const branchRename = async (
     }
     throw err;
   }
-  // Move the log byte-preserving (never parsed), then log the rename —
-  // git's own order (`rename(2)` the log, then log the rename). A rename
-  // entry notes the rename without moving the ref's value, so old/new are
-  // both the resolved tip.
+  await writeRenamedBranchLog(ctx, store, { from, to, id, replacesLiveRef });
+  // The delete update drops `from`'s log; step 2 already moved it away. HEAD
+  // is still coupled to `from` here (unmoved), so this delete carries git's
+  // FIRST `logs/HEAD` rename line when HEAD names the branch being renamed.
+  await updateRef(ctx, from, zeroOid(ctx.hashConfig), {
+    delete: true,
+    reflogMessage: branchRenamed(from, to),
+  });
+  const head = await readHeadRaw(ctx);
+  if (head.kind === 'symbolic' && head.target === from) {
+    // The re-point is git's SECOND `logs/HEAD` line: the old id is null
+    // because `from` is already gone.
+    await store.applyRefUpdates([
+      {
+        kind: 'setSymbolic',
+        name: 'HEAD' as RefName,
+        target: to,
+        reflog: {
+          oldId: zeroOid(ctx.hashConfig),
+          newId: id,
+          message: branchRenamed(from, to),
+        },
+      },
+    ]);
+  }
+  return { from, to };
+};
+
+interface RenamedBranchLogInput {
+  readonly from: RefName;
+  readonly to: RefName;
+  readonly id: ObjectId;
+  readonly replacesLiveRef: boolean;
+}
+
+/**
+ * Writes the RENAMED branch's own log — shaped per backend (O5 (a), design
+ * R16/R17).
+ */
+const writeRenamedBranchLog = async (
+  ctx: Context,
+  store: RefStore,
+  input: RenamedBranchLogInput,
+): Promise<void> =>
+  transactionLogging(ctx).renamedBranchLog === 'merge-then-delete-and-create'
+    ? writeRenamedBranchLogReftable(ctx, store, input)
+    : writeRenamedBranchLogFiles(store, input);
+
+/**
+ * Files backend: a forced rename replaces the destination's history first
+ * (dropping its log), the source's log moves in byte-preserving (never
+ * parsed), then one `<id> <id>` rename entry is appended.
+ */
+const writeRenamedBranchLogFiles = async (
+  store: RefStore,
+  { from, to, id, replacesLiveRef }: RenamedBranchLogInput,
+): Promise<void> => {
   if (replacesLiveRef) {
     await store.applyRefUpdates([{ kind: 'reflogReplace', name: to, entries: [] }]);
   }
   await store.moveReflog(from, to);
+  const message = branchRenamed(from, to);
   await store.applyRefUpdates([
-    {
-      kind: 'reflogOnly',
-      name: to,
-      reflog: { oldId: id, newId: id, message: branchRenamed(from, to) },
-    },
+    { kind: 'reflogOnly', name: to, reflog: { oldId: id, newId: id, message } },
   ]);
-  // The delete update drops `from`'s log; step 2 already moved it away.
-  await updateRef(ctx, from, zeroOid(ctx.hashConfig), { delete: true });
-  const head = await readHeadRaw(ctx);
-  if (head.kind === 'symbolic' && head.target === from) {
-    await writeSymbolicRef(ctx, 'HEAD' as RefName, to);
-  }
-  return { from, to };
+};
+
+/**
+ * Reftable backend: the destination is never dropped — `moveReflog` merges
+ * the source's live records under `to` at their own update indices — then
+ * git's own reftable delete-then-create shape appends `<id> 0{40}` followed
+ * by `0{40} <id>`, each its OWN transaction: two `reflogOnly` entries for
+ * the SAME name in one `applyRefUpdates` call would share one update
+ * index, and the second would silently shadow the first at that key.
+ */
+const writeRenamedBranchLogReftable = async (
+  ctx: Context,
+  store: RefStore,
+  { from, to, id }: RenamedBranchLogInput,
+): Promise<void> => {
+  await store.moveReflog(from, to);
+  const message = branchRenamed(from, to);
+  const zero = zeroOid(ctx.hashConfig);
+  await store.applyRefUpdates([
+    { kind: 'reflogOnly', name: to, reflog: { oldId: id, newId: zero, message } },
+  ]);
+  await store.applyRefUpdates([
+    { kind: 'reflogOnly', name: to, reflog: { oldId: zero, newId: id, message } },
+  ]);
 };
 
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {

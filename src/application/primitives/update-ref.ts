@@ -4,6 +4,7 @@ import { zeroOid } from '../../domain/objects/index.js';
 import { refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
+import { transactionLogging } from './internal/ref-transaction-logging.js';
 import {
   getRefStore,
   type RefStore,
@@ -38,12 +39,37 @@ export async function updateRef(
   // unverified, exactly as `delete: true` does — the two are one transaction
   // shape, not two.
   if (options.delete === true || newId === zeroOid(ctx.hashConfig)) {
-    await store.applyRefUpdates([{ kind: 'delete', name }]);
+    const message = options.reflogMessage ?? '';
+    await store.applyRefUpdates(deleteUpdates(ctx, name, current, head, message));
     return;
   }
 
   const oldId = current.kind === 'direct' ? current.id : zeroOid(ctx.hashConfig);
   await store.applyRefUpdates(refUpdatesFor(name, newId, oldId, options.reflogMessage, head));
+}
+
+/**
+ * The one or two updates a delete produces: the store-level `delete` plus,
+ * when `HEAD` symbolically names the ref being deleted, a coupled
+ * `logs/HEAD` entry (`<old> 0{40} <message>`, X2/X3/X9). For an ABSENT
+ * target the split entry is backend-specific (`TransactionLogging.noOpDeleteLogs`,
+ * X5/X14/X16): the files backend still writes `0{40} 0{40}`, the reftable
+ * backend writes nothing.
+ */
+function deleteUpdates(
+  ctx: Context,
+  name: RefName,
+  current: ResolveDirectResult,
+  head: ResolveDirectResult,
+  message: string,
+): readonly RefUpdate[] {
+  const deletion: RefUpdate = { kind: 'delete', name };
+  if (!coupledHeadTarget(head, name)) return [deletion];
+  const zero = zeroOid(ctx.hashConfig);
+  const absent = current.kind !== 'direct';
+  if (absent && transactionLogging(ctx).noOpDeleteLogs === 'skipped') return [deletion];
+  const reflog = { oldId: absent ? zero : current.id, newId: zero, message };
+  return [deletion, { kind: 'reflogOnly', name: HEAD, reflog }];
 }
 
 /**

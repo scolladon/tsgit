@@ -611,6 +611,66 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a source ref with two live reflog entries and a target with one of its own', () => {
+    describe('When reflogMerge moves the source under the target', () => {
+      it("Then each source record lands under the target at its OWN update index, the source's are tombstoned, and the target's own record stays live", async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const from = ref('refs/heads/main');
+        const to = ref('refs/heads/renamed');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: to,
+            id: oid(9),
+            reflog: {
+              oldId: oid(0),
+              newId: oid(9),
+              message: 'target created',
+              unconditional: true,
+            },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: from,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'source c1', unconditional: true },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: from,
+            id: oid(2),
+            reflog: { oldId: oid(1), newId: oid(2), message: 'source c2', unconditional: true },
+          },
+        ]);
+        const store = createReftableRefStore(ctx);
+        const sourceBefore = await store.readReflog(from);
+        expect(sourceBefore).toHaveLength(2);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'reflogMerge', name: to, from }]);
+
+        // Assert — the target's log is its own history followed by the
+        // source's two entries, in the source's own order; the source has
+        // no reflog left.
+        const targetAfter = await store.readReflog(to);
+        expect(targetAfter.map((e) => e.message)).toEqual([
+          'target created',
+          'source c1',
+          'source c2',
+        ]);
+        expect(await store.readReflog(from)).toEqual([]);
+        // The ref VALUES are untouched — only log records moved.
+        expect(await store.resolveDirect(to)).toEqual({ kind: 'direct', id: oid(9) });
+        expect(await store.resolveDirect(from)).toEqual({ kind: 'direct', id: oid(2) });
+      });
+    });
+  });
+
   describe('Given a ref with two live reflog entries', () => {
     describe('When one applyReftableUpdates call both repoints the ref and replaces its reflog', () => {
       it('Then the ref moves to the new tip and the reflog carries only the survivor', async () => {

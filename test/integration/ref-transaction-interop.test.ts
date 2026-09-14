@@ -1020,10 +1020,10 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given HEAD symbolically points at the branch being deleted', () => {
-      describe('When it is deleted', () => {
-        it('Then git logs the delete to logs/HEAD, but tsgit today writes no HEAD entry (lands in a later change)', async () => {
+      describe('When it is deleted with -m why', () => {
+        it('Then logs/HEAD gains the identical appended entry on both sides — X2', async () => {
           // Arrange — main is HEAD's target in the shared base.
-          const { peer, ours, ctx } = await filesCasePair('head-entry-residual');
+          const { peer, ours, ctx } = await filesCasePair('head-entry-x2');
           const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 10) * 1000);
 
           // Act
@@ -1031,18 +1031,178 @@ describe.skipIf(!GIT_AVAILABLE)(
             runGit(['-C', peer, 'update-ref', '-d', '-m', 'why', 'refs/heads/main'], {
               env: pinnedEnv(COMMITTER_EPOCH + 10),
             });
-            await updateRef(ctx, branchRef('main'), ZERO, { reflogMessage: 'why' });
+            await updateRef(ctx, branchRef('main'), ZERO, { delete: true, reflogMessage: 'why' });
           } finally {
             dateSpy.mockRestore();
           }
 
-          // Assert — git's logs/HEAD gains an entry (`<old> 0{40} why`);
-          // tsgit's does not yet — assert the divergence rather than a shared
-          // shape.
+          // Assert — git's logs/HEAD gains `<old> 0{40} why`; both sides
+          // byte-identical.
           const gitHeadLog = await readFile(path.join(peer, '.git', 'logs', 'HEAD'), 'utf8');
-          expect(gitHeadLog).toContain('why');
           const oursHeadLog = await readFile(path.join(ours, '.git', 'logs', 'HEAD'), 'utf8');
-          expect(oursHeadLog).not.toContain('why');
+          expect(gitHeadLog).toContain('why');
+          expect(oursHeadLog).toBe(gitHeadLog);
+        });
+      });
+
+      describe('When it is deleted with no -m', () => {
+        it('Then logs/HEAD gains an identical entry with no tab (empty message) — X3', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('head-entry-x3');
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 11) * 1000);
+
+          // Act
+          try {
+            runGit(['-C', peer, 'update-ref', '-d', 'refs/heads/main'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 11),
+            });
+            await updateRef(ctx, branchRef('main'), ZERO, { delete: true });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          const gitHeadLog = await readFile(path.join(peer, '.git', 'logs', 'HEAD'), 'utf8');
+          const oursHeadLog = await readFile(path.join(ours, '.git', 'logs', 'HEAD'), 'utf8');
+          expect(oursHeadLog).toBe(gitHeadLog);
+        });
+      });
+    });
+
+    describe('Given a fresh repository whose HEAD points at an unborn branch', () => {
+      describe('When that branch is deleted', () => {
+        it('Then git and tsgit both create logs/HEAD with an identical 0{40} 0{40} entry — X16 (files)', async () => {
+          // Arrange
+          const peerRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-peer-'));
+          runGit(['init', '-q', '-b', 'main', peerRoot]);
+          git(peerRoot, 'config', 'user.name', 'A');
+          git(peerRoot, 'config', 'user.email', 'a@x');
+          disableAutoMaintenance(peerRoot);
+          const oursRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-ours-'));
+          runGit(['init', '-q', '-b', 'main', oursRoot]);
+          git(oursRoot, 'config', 'user.name', 'A');
+          git(oursRoot, 'config', 'user.email', 'a@x');
+          disableAutoMaintenance(oursRoot);
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 12) * 1000);
+
+          // Act
+          try {
+            runGit(['-C', peerRoot, 'update-ref', '-d', '-m', 'unborn', 'refs/heads/main'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 12),
+            });
+            await updateRef(nodeCtx(oursRoot), branchRef('main'), ZERO, {
+              delete: true,
+              reflogMessage: 'unborn',
+            });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          const gitHeadLog = await readFile(path.join(peerRoot, '.git', 'logs', 'HEAD'), 'utf8');
+          const oursHeadLog = await readFile(path.join(oursRoot, '.git', 'logs', 'HEAD'), 'utf8');
+          expect(gitHeadLog).toContain(`${ZERO} ${ZERO}`);
+          expect(oursHeadLog).toBe(gitHeadLog);
+          await Promise.all([
+            rm(peerRoot, { recursive: true, force: true }),
+            rm(oursRoot, { recursive: true, force: true }),
+          ]);
+        });
+      });
+    });
+
+    describe('Given a fresh reftable repository whose HEAD points at an unborn branch', () => {
+      describe('When that branch is deleted', () => {
+        it('Then neither git nor tsgit write a HEAD entry — the reftable backend skips the no-op delete log (X16)', async () => {
+          // Arrange — git's own reftable repository proves it writes NO
+          // `log -g HEAD` history at all; tsgit's primitive is proven
+          // separately on an equivalent fresh reftable repo, since there is
+          // no `git refs migrate` shortcut for reading a reftable HEAD log
+          // directly.
+          const peerRoot = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-rt-peer-'),
+          );
+          runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', peerRoot]);
+          git(peerRoot, 'config', 'user.name', 'A');
+          git(peerRoot, 'config', 'user.email', 'a@x');
+          disableAutoMaintenance(peerRoot);
+          const oursRoot = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-rt-ours-'),
+          );
+          runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', oursRoot]);
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peerRoot,
+            'update-ref',
+            '-d',
+            '-m',
+            'unborn',
+            'refs/heads/main',
+          ]);
+          const oursCtx = withReftableStorage(createNodeContext({ workDir: oursRoot }));
+          await updateRef(oursCtx, branchRef('main'), ZERO, {
+            delete: true,
+            reflogMessage: 'unborn',
+          });
+
+          // Assert — git's own `log -g HEAD` refuses (no history at all);
+          // tsgit's primitive reads the same emptiness through its own API.
+          expect(gitResult.exitCode).toBe(0);
+          const peerLog = tryRunGitWithExit(['-C', peerRoot, 'log', '-g', '--format=%H', 'HEAD']);
+          expect(peerLog.exitCode).not.toBe(0);
+          expect(await getRefStore(oursCtx).readReflog('HEAD' as RefName)).toEqual([]);
+          await Promise.all([
+            rm(peerRoot, { recursive: true, force: true }),
+            rm(oursRoot, { recursive: true, force: true }),
+          ]);
+        });
+      });
+    });
+
+    describe('Given a packed-only branch that HEAD points at (Q14)', () => {
+      describe('When it is deleted', () => {
+        it('Then packed-refs collapses to the header alone and logs/HEAD gains the identical entry on both sides', async () => {
+          // Arrange — a dedicated small repo: `main` is HEAD's target and
+          // the ONLY packed ref, so its delete leaves packed-refs header-only.
+          const peerRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-q14-peer-'));
+          runGit(['init', '-q', '-b', 'main', peerRoot]);
+          git(peerRoot, 'config', 'user.name', 'A');
+          git(peerRoot, 'config', 'user.email', 'a@x');
+          disableAutoMaintenance(peerRoot);
+          await writeFile(path.join(peerRoot, 'f.txt'), 'c1\n');
+          git(peerRoot, 'add', '-A');
+          runGit(['-C', peerRoot, 'commit', '-q', '-m', 'c1'], {
+            env: pinnedEnv(COMMITTER_EPOCH + 20),
+          });
+          git(peerRoot, 'pack-refs', '--all');
+          const oursRoot = await cloneRepo(peerRoot, 'q14-ours');
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 21) * 1000);
+
+          // Act
+          try {
+            runGit(['-C', peerRoot, 'update-ref', '-d', '-m', 'pack-del', 'refs/heads/main'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 21),
+            });
+            await updateRef(nodeCtx(oursRoot), branchRef('main'), ZERO, {
+              delete: true,
+              reflogMessage: 'pack-del',
+            });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          const gitPacked = await readFile(path.join(peerRoot, '.git', 'packed-refs'), 'utf8');
+          const oursPacked = await readFile(path.join(oursRoot, '.git', 'packed-refs'), 'utf8');
+          expect(gitPacked).toBe('# pack-refs with: peeled fully-peeled sorted \n');
+          expect(oursPacked).toBe(gitPacked);
+          const gitHeadLog = await readFile(path.join(peerRoot, '.git', 'logs', 'HEAD'), 'utf8');
+          const oursHeadLog = await readFile(path.join(oursRoot, '.git', 'logs', 'HEAD'), 'utf8');
+          expect(gitHeadLog).toContain('pack-del');
+          expect(oursHeadLog).toBe(gitHeadLog);
+          await rm(peerRoot, { recursive: true, force: true });
         });
       });
     });

@@ -754,6 +754,59 @@ describe('reftable-ref-store', () => {
     });
   });
 
+  describe('Given a source with two live entries and a destination whose own record was written BETWEEN them', () => {
+    describe('When moveReflog moves the source onto the destination', () => {
+      it('Then the merge orders by update index — the destination record lands between the two source ones', async () => {
+        // Arrange — three separate applyRefUpdates calls, each its own
+        // update index: source c1, then destination's own record, then
+        // source c2 — so a naive "append source after destination" merge
+        // would reorder them incorrectly.
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const sourceFirst = reflogEntry({ message: 'source c1' });
+        await sut.applyRefUpdates([
+          { kind: 'set', name: ref('refs/heads/main'), id: sourceFirst.newId, reflog: sourceFirst },
+        ]);
+        const destinationOwn = reflogEntry({ message: 'destination created' });
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name: ref('refs/heads/other'),
+            id: destinationOwn.newId,
+            reflog: destinationOwn,
+          },
+        ]);
+        const sourceSecond = reflogEntry({
+          oldId: sourceFirst.newId,
+          newId: ObjectId.fromRaw(oid(0x03)),
+          message: 'source c2',
+        });
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name: ref('refs/heads/main'),
+            id: sourceSecond.newId,
+            reflog: sourceSecond,
+          },
+        ]);
+
+        // Act
+        await sut.moveReflog(ref('refs/heads/main'), ref('refs/heads/other'));
+
+        // Assert — destination's own history stays where it was created
+        // (by update index), never with the whole source history dumped
+        // ahead of or behind it in creation order.
+        const merged = await sut.readReflog(ref('refs/heads/other'));
+        expect(merged.map((e) => e.message)).toEqual([
+          'source c1',
+          'destination created',
+          'source c2',
+        ]);
+        expect(await sut.readReflog(ref('refs/heads/main'))).toEqual([]);
+      });
+    });
+  });
+
   describe('Given the reftable backend', () => {
     describe('When verifyIntegrity runs', () => {
       it('Then it reports no findings', async () => {

@@ -9,6 +9,7 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
+import { withReftableStorage } from './reftable-fixtures.js';
 
 const ID_A = 'a'.repeat(40) as ObjectId;
 const ID_B = 'b'.repeat(40) as ObjectId;
@@ -675,6 +676,148 @@ describe('updateRef', () => {
           // Assert
           expect(result).toEqual([]);
           expect(await ctx.fs.exists('/repo/.git/logs/refs/heads/tmp')).toBe(false);
+        });
+      });
+    });
+  });
+
+  describe('coupled HEAD entry on delete', () => {
+    describe('Given HEAD symbolically points at the branch being deleted', () => {
+      describe('When updateRef deletes it with delete: true and a reflogMessage', () => {
+        it('Then logs/HEAD gains exactly one oldId -> ZERO entry with the message', async () => {
+          // Arrange
+          const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+
+          // Act
+          await updateRef(ctx, MAIN, ZERO, { delete: true, reflogMessage: 'why' });
+          const result = await readReflog(ctx, HEAD);
+
+          // Assert
+          expect(result).toHaveLength(1);
+          expect(result[0]?.oldId).toBe(ID_A);
+          expect(result[0]?.newId).toBe(ZERO);
+          expect(result[0]?.message).toBe('why');
+        });
+      });
+
+      describe('When updateRef deletes it with delete: true and no reflogMessage', () => {
+        it('Then the entry message is empty and the raw line carries no tab', async () => {
+          // Arrange
+          const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+
+          // Act
+          await updateRef(ctx, MAIN, ZERO, { delete: true });
+          const result = await readReflog(ctx, HEAD);
+          const raw = await ctx.fs.readUtf8('/repo/.git/logs/HEAD');
+
+          // Assert
+          expect(result).toHaveLength(1);
+          expect(result[0]?.message).toBe('');
+          expect(raw.includes('\t')).toBe(false);
+        });
+      });
+
+      describe('When updateRef deletes it through the null object id', () => {
+        it('Then the same coupled HEAD entry is written', async () => {
+          // Arrange
+          const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+
+          // Act
+          await updateRef(ctx, MAIN, ZERO, { reflogMessage: 'via null id' });
+          const result = await readReflog(ctx, HEAD);
+
+          // Assert
+          expect(result).toHaveLength(1);
+          expect(result[0]?.oldId).toBe(ID_A);
+          expect(result[0]?.newId).toBe(ZERO);
+          expect(result[0]?.message).toBe('via null id');
+        });
+      });
+    });
+
+    describe('Given HEAD does not name the branch being deleted', () => {
+      describe('When updateRef deletes it', () => {
+        it('Then no HEAD entry is written', async () => {
+          // Arrange
+          const ctx = await buildSeededContext({
+            refs: [
+              { name: MAIN, id: ID_A },
+              { name: 'refs/heads/other' as RefName, id: ID_B },
+            ],
+          });
+          await writeSymbolicRef(ctx, HEAD, 'refs/heads/other' as RefName);
+
+          // Act
+          await updateRef(ctx, MAIN, ZERO, { delete: true });
+          const result = await readReflog(ctx, HEAD);
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a files-backend Context, HEAD points at an unborn branch', () => {
+      describe('When that branch is deleted (absent target)', () => {
+        it('Then logs/HEAD is created with a 0{40} 0{40} entry', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+          expect(await ctx.fs.exists('/repo/.git/logs/HEAD')).toBe(false);
+
+          // Act
+          await updateRef(ctx, MAIN, ZERO, { delete: true, reflogMessage: 'gone' });
+          const result = await readReflog(ctx, HEAD);
+
+          // Assert
+          expect(result).toHaveLength(1);
+          expect(result[0]?.oldId).toBe(ZERO);
+          expect(result[0]?.newId).toBe(ZERO);
+        });
+      });
+    });
+
+    describe('Given a reftable-backend Context, HEAD points at an unborn branch', () => {
+      describe('When that branch is deleted (absent target)', () => {
+        it('Then no HEAD entry is written — the reftable backend skips no-op delete logs', async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([{ kind: 'setSymbolic', name: HEAD, target: MAIN }]);
+
+          // Act
+          await updateRef(ctx, MAIN, ZERO, { delete: true, reflogMessage: 'gone' });
+          const result = await readReflog(ctx, HEAD);
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given HEAD symbolically points at the branch being deleted', () => {
+      describe('When updateRef deletes it', () => {
+        it('Then the deletion and the coupled HEAD entry land in one applyRefUpdates call', async () => {
+          // Arrange
+          const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+          const store = getRefStore(ctx);
+          const calls: unknown[][] = [];
+          const originalApply = store.applyRefUpdates.bind(store);
+          store.applyRefUpdates = async (updates) => {
+            calls.push([...updates]);
+            return originalApply(updates);
+          };
+
+          // Act
+          await updateRef(ctx, MAIN, ZERO, { delete: true, reflogMessage: 'why' });
+
+          // Assert
+          expect(calls).toHaveLength(1);
+          expect(calls[0]).toHaveLength(2);
         });
       });
     });

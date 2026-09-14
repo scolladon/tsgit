@@ -99,6 +99,25 @@ import {
   tablesListPath,
 } from './path-layout.js';
 import type { ReflogAppend, RefUpdate } from './ref-store.js';
+
+/**
+ * `moveReflog`'s reftable decomposition (O5, `renamedBranchLog:
+ * 'merge-then-delete-and-create'`): re-key `from`'s log under `to`, one
+ * record at a time, without disturbing either ref's OWN value or any log
+ * record `to` already carries. Never part of the public `RefUpdate` union
+ * the files backend's `applyRefUpdates` accepts — the reftable store's own
+ * `moveReflog` is the only emitter.
+ */
+export interface ReflogMergeUpdate {
+  readonly kind: 'reflogMerge';
+  readonly name: RefName;
+  readonly from: RefName;
+}
+
+/** Every update `applyReftableUpdates` accepts: the public `RefUpdate`
+ *  union plus reftable-only internal kinds no other backend ever sees. */
+export type ReftableInternalUpdate = RefUpdate | ReflogMergeUpdate;
+
 import { resolveReflogIdentity } from './reflog-identity.js';
 
 const TEXT_ENCODER = new TextEncoder();
@@ -264,7 +283,7 @@ async function probeStackSizes(ctx: Context, gitDir: string): Promise<StackSizeP
   return { existingNames, sizes };
 }
 
-function expectedOf(update: RefUpdate): ObjectId | 'absent' | undefined {
+function expectedOf(update: ReftableInternalUpdate): ObjectId | 'absent' | undefined {
   return update.kind === 'set' || update.kind === 'setSymbolic' || update.kind === 'delete'
     ? update.expected
     : undefined;
@@ -330,7 +349,10 @@ function sortLogRecords(logs: readonly ReftableLogRecord[]): readonly ReftableLo
 
 /** Step 3 — every `expected` against the freshly loaded stack, before ANY
  *  write happens for ANY stack in this transaction. */
-function verifyExpectations(updates: readonly RefUpdate[], stack: ReftableStack): void {
+function verifyExpectations(
+  updates: readonly ReftableInternalUpdate[],
+  stack: ReftableStack,
+): void {
   for (const update of updates) {
     const expected = expectedOf(update);
     if (expected === undefined) continue;
@@ -383,7 +405,7 @@ function hasLiveLogRecord(stack: ReftableStack, name: RefName): boolean {
  * which strategy is worth its own cost — a pure, synchronous, in-memory
  * pass over the batch itself, never the stack.
  */
-function loggableCandidateNames(updates: readonly RefUpdate[]): ReadonlySet<RefName> {
+function loggableCandidateNames(updates: readonly ReftableInternalUpdate[]): ReadonlySet<RefName> {
   const names = new Set<RefName>();
   for (const update of updates) {
     if (update.kind !== 'set' && update.kind !== 'setSymbolic' && update.kind !== 'reflogOnly') {
@@ -537,11 +559,31 @@ function applyReflogReplaceRecords(
   });
 }
 
+/**
+ * `moveReflog`'s reftable decomposition (`renamedBranchLog:
+ * 'merge-then-delete-and-create'`): every LIVE record under `from` is
+ * re-emitted under `to` at that SAME record's own `update_index` (never a
+ * freshly assigned one — this merges into whatever live history `to`
+ * already has, rather than replacing it), and the `from` record at that
+ * index is tombstoned. Neither ref's own value is touched.
+ */
+function applyReflogMergeRecords(
+  stack: ReftableStack,
+  update: ReflogMergeUpdate,
+  logs: ReftableLogRecord[],
+): void {
+  for (const record of stack.logs(update.from)) {
+    if (record.entry.kind !== 'entry') continue;
+    logs.push({ name: update.name, updateIndex: record.updateIndex, entry: record.entry });
+    logs.push({ name: update.from, updateIndex: record.updateIndex, entry: { kind: 'deletion' } });
+  }
+}
+
 async function applyOneUpdate(
   ctx: Context,
   stack: ReftableStack,
   loggable: (name: RefName) => boolean,
-  update: RefUpdate,
+  update: ReftableInternalUpdate,
   updateIndex: bigint,
   identity: AuthorIdentity,
   refs: ReftableRefRecord[],
@@ -593,6 +635,9 @@ async function applyOneUpdate(
     case 'reflogReplace':
       applyReflogReplaceRecords(stack, update, updateIndex, logs);
       return;
+    case 'reflogMerge':
+      applyReflogMergeRecords(stack, update, logs);
+      return;
   }
 }
 
@@ -631,7 +676,7 @@ async function prepareStackWrite(
   ctx: Context,
   gitDir: string,
   lockPath: string,
-  updates: readonly RefUpdate[],
+  updates: readonly ReftableInternalUpdate[],
   identity: AuthorIdentity,
 ): Promise<PreparedStackWrite> {
   const { stack, existingNames } = await readFreshStack(ctx, gitDir);
@@ -1187,15 +1232,18 @@ export async function packReftableStack(
 
 interface StackBucket {
   readonly gitDir: string;
-  readonly updates: readonly RefUpdate[];
+  readonly updates: readonly ReftableInternalUpdate[];
 }
 
 /** Fixed order: common dir first, then a linked worktree's own — the
  *  deadlock-avoidance rule the module JSDoc documents. */
-function partitionByStack(ctx: Context, updates: readonly RefUpdate[]): readonly StackBucket[] {
+function partitionByStack(
+  ctx: Context,
+  updates: readonly ReftableInternalUpdate[],
+): readonly StackBucket[] {
   const commonDir = commonGitDir(ctx);
   const ownDir = ctx.layout.gitDir;
-  const buckets = new Map<string, RefUpdate[]>([[commonDir, []]]);
+  const buckets = new Map<string, ReftableInternalUpdate[]>([[commonDir, []]]);
   // Stryker disable next-line ConditionalExpression: equivalent — forcing this branch
   // when ownDir === commonDir re-`set`s the SAME map key back to a fresh `[]` before
   // anything has been pushed to it, a harmless no-op indistinguishable from skipping it.
@@ -1241,7 +1289,7 @@ async function releaseLocksReverse(
  */
 export async function applyReftableUpdates(
   ctx: Context,
-  updates: readonly RefUpdate[],
+  updates: readonly ReftableInternalUpdate[],
 ): Promise<void> {
   const buckets = partitionByStack(ctx, updates);
   if (buckets.length === 0) return;

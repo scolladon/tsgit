@@ -318,6 +318,93 @@ describe('branch', () => {
     });
   });
 
+  describe('Given the checked-out branch', () => {
+    describe('When branch rename runs', () => {
+      it('Then logs/HEAD gains exactly two new entries: the delete then the re-point', async () => {
+        // Arrange — `seedWithCommit` already made one commit through HEAD,
+        // which itself appended one `logs/HEAD` entry; only the entries
+        // APPENDED by the rename are under test here.
+        const { ctx } = await seedWithCommit();
+        const before = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
+        if (before.kind !== 'direct') throw new Error('unreachable');
+        const id = before.id;
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+        const appended = result.slice(baseline.length);
+
+        // Assert
+        expect(appended).toHaveLength(2);
+        expect(appended[0]?.oldId).toBe(id);
+        expect(appended[0]?.newId).toBe(zeroOid(ctx.hashConfig));
+        expect(appended[0]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(appended[1]?.oldId).toBe(zeroOid(ctx.hashConfig));
+        expect(appended[1]?.newId).toBe(id);
+        expect(appended[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
+      });
+    });
+
+    describe('When branch rename force-renames onto a live branch', () => {
+      it('Then logs/HEAD still gains exactly the same two new entries', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'other' });
+        const before = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
+        if (before.kind !== 'direct') throw new Error('unreachable');
+        const id = before.id;
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'other', force: true });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+        const appended = result.slice(baseline.length);
+
+        // Assert
+        expect(appended).toHaveLength(2);
+        expect(appended[0]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/other');
+        expect(appended[1]?.oldId).toBe(zeroOid(ctx.hashConfig));
+        expect(appended[1]?.newId).toBe(id);
+      });
+    });
+  });
+
+  describe('Given a branch other than the checked-out one', () => {
+    describe('When branch rename runs', () => {
+      it('Then logs/HEAD gains no new entry', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'other' });
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'other', to: 'renamed2' });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual(baseline);
+      });
+    });
+  });
+
+  describe('Given a self-rename of the checked-out branch', () => {
+    describe('When branch rename runs', () => {
+      it('Then logs/HEAD gains no new entry — the self-rename arm neither deletes nor re-points', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'main', force: true });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual(baseline);
+      });
+    });
+  });
+
   describe('Given a branch whose reflog contains a malformed line', () => {
     describe('When branch rename', () => {
       it('Then the malformed line survives verbatim under the new name, followed by the rename entry', async () => {
@@ -388,10 +475,8 @@ describe('branch', () => {
 
   describe('Given a reftable-backed branch with reflog history', () => {
     describe('When branch rename runs', () => {
-      it('Then the old branch is gone, the new branch exists, and history moved — never a half-applied rename', async () => {
-        // Arrange — the reftable reflogReplace decomposition used to throw
-        // UNSUPPORTED_OPERATION here, after `to` had already been created
-        // and before `from` was deleted, leaving both branches on disk.
+      it("Then the old branch is gone, the new branch exists, and history moved with git's reftable delete-then-create shape — never a half-applied rename", async () => {
+        // Arrange
         const { ctx } = await seedReftableWithCommit();
         const before = await readReflog(ctx, 'refs/heads/main' as RefName);
         expect(before).toHaveLength(1);
@@ -405,14 +490,71 @@ describe('branch', () => {
         expect(names).not.toContain('refs/heads/main');
         expect(names).toContain('refs/heads/trunk');
 
-        // Assert — moved history precedes the rename entry, matching the
-        // files backend's own contract; the source reflog is gone entirely.
+        // Assert — moved history, then TWO rename entries (git's reftable
+        // shape, O5 (a)): a delete-shaped `<id> 0{40}` then a create-shaped
+        // `0{40} <id>`, unlike the files backend's single `<id> <id>` entry.
         const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
-        expect(movedLog).toHaveLength(2);
+        expect(movedLog).toHaveLength(3);
         expect(movedLog[0]).toEqual(before[0]);
+        expect(movedLog[1]?.oldId).toBe(before[0]?.newId);
+        expect(movedLog[1]?.newId).toBe(zeroOid(ctx.hashConfig));
         expect(movedLog[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(movedLog[2]?.oldId).toBe(zeroOid(ctx.hashConfig));
+        expect(movedLog[2]?.newId).toBe(before[0]?.newId);
+        expect(movedLog[2]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
         expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([]);
         expect(await listReflogs(ctx)).not.toContain('refs/heads/main');
+      });
+    });
+
+    describe('When branch rename force-renames onto a live branch whose own record sits between the source history', () => {
+      it("Then the destination's own entries stay in update-index order — never dropped, never reordered", async () => {
+        // Arrange — three separate writes, each its own update index: the
+        // source's own commit, then the destination branch's creation, then
+        // a second move on the source — so a naive merge that appends the
+        // whole source history after the destination's would reorder them incorrectly.
+        const { ctx, tip } = await seedReftableWithCommit();
+        const store = getRefStore(ctx);
+        const secondTip = ObjectId.fromRaw(new Uint8Array(20).fill(0x02));
+        await store.applyRefUpdates([
+          {
+            kind: 'set',
+            name: 'refs/heads/other' as RefName,
+            id: tip,
+            reflog: {
+              oldId: zeroOid(ctx.hashConfig),
+              newId: tip,
+              message: 'branch: Created from main',
+              unconditional: true,
+            },
+          },
+        ]);
+        await store.applyRefUpdates([
+          {
+            kind: 'set',
+            name: 'refs/heads/main' as RefName,
+            id: secondTip,
+            reflog: {
+              oldId: tip,
+              newId: secondTip,
+              message: 'commit: second',
+              unconditional: true,
+            },
+          },
+        ]);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'other', force: true });
+
+        // Assert
+        const merged = await readReflog(ctx, 'refs/heads/other' as RefName);
+        expect(merged.map((e) => e.message)).toEqual([
+          'commit (initial): first',
+          'branch: Created from main',
+          'commit: second',
+          'Branch: renamed refs/heads/main to refs/heads/other',
+          'Branch: renamed refs/heads/main to refs/heads/other',
+        ]);
       });
     });
   });

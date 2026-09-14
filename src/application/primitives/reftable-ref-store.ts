@@ -303,14 +303,13 @@ export function createReftableRefStore(ctx: Context): RefStore {
 
   /**
    * `RefStore.moveReflog`'s reftable implementation: there is no file to
-   * `rename(2)`, so `from`'s decoded entries are re-keyed onto `to` through
-   * the ordinary transaction machinery — `reflogReplace` tombstones every
-   * existing record for a name and re-emits `entries` at fresh indices, so
-   * this doubles as `to`'s replace (git's forced-rename semantics) and
-   * `from`'s own tombstone (an empty `entries` list) in one call. Log
-   * records are structured, so re-emitting the decoded entries IS the
-   * byte-preserving move for this backend — there is no malformed-line
-   * analogue to lose.
+   * `rename(2)`, so `from`'s live records are re-keyed onto `to` — each at
+   * ITS OWN update index, merged into whatever live history `to` already
+   * has, rather than replacing it (`renamedBranchLog:
+   * 'merge-then-delete-and-create'`; the files backend replaces instead,
+   * see that implementation's own docblock). `from`'s records are
+   * tombstoned at those same indices, so `readReflog(from)` reads empty
+   * afterward.
    */
   async function moveReflog(from: RefName, to: RefName): Promise<void> {
     // Pure move, mirroring the files backend: an absent source leaves `to`'s
@@ -318,11 +317,7 @@ export function createReftableRefStore(ctx: Context): RefStore {
     // caller's decision, not the move's. Same seam verb as the files
     // backend's guard, so both backends answer "has a reflog" one way.
     if (!(await hasReflog(from))) return;
-    const entries = await readReflog(from);
-    await applyReftableUpdates(ctx, [
-      { kind: 'reflogReplace', name: to, entries },
-      { kind: 'reflogReplace', name: from, entries: [] },
-    ]);
+    await applyReftableUpdates(ctx, [{ kind: 'reflogMerge', name: to, from }]);
   }
 
   /** Whether `stack.logs(name)` — already tombstone-shadowed — yields at
