@@ -22,7 +22,7 @@ subjects:
 
 - **Status:** accepted
 - **Date:** 2026-09-14
-- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref write and delete semantics, and memory-adapter parity: U3, U4, U5, U6; gap G2) · **Supersedes/Refines:** refines ADR-226 and ADR-864 (its null-id delete note moves here)
+- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref write and delete semantics, and memory-adapter parity: U3, U4, U5, U6, O1, O3; gap G2) · **Supersedes/Refines:** refines ADR-226 and ADR-864 (its null-id delete note moves here)
 
 ## Context
 
@@ -58,7 +58,11 @@ git's ref transaction, pinned against git 2.55.0 (design matrices S, X, R, Q):
 - Commands keep their own refusals before deleting (R1–R4); `branch -D`, `tag -d` and `remote remove`
   delete a symref as itself (R5, R6, R10); `branch -f`, `tag -f`, `notes` and `push`'s tracking
   update write through one (R7, R14, R15); `fetch --prune` never deletes a symref and deletes
-  packed-only tracking refs (R8).
+  packed-only tracking refs (R8); `remote rename` moves packed-only tracking refs, rewriting
+  `packed-refs` without them and writing the new names loose (R9, R18).
+- Renaming the branch `HEAD` names writes two `logs/HEAD` entries on both backends —
+  `<id> 0{40} Branch: renamed <from> to <to>`, then `0{40} <id> Branch: renamed …` (R11, R12, R17).
+  tsgit's `branch.rename` writes none today.
 
 ## Options considered
 
@@ -103,6 +107,12 @@ Decided within the design, with the choice recorded here:
   constant. A cap would refuse chains git writes through.
 - **The loose ref's lock on delete** — taken with `packed-refs.lock` (chosen) · packed lock only. Same
   transaction step and refusal class; without it a held `<ref>.lock` is ignored.
+- **`branch.rename`'s `logs/HEAD` entries** (design O1, chosen by the user: option a) — write git's two
+  entries · a rename delete that logs nothing, leaving today's zero entries · the delete's entry only. Pros of
+  the choice: rename's `logs/HEAD` bytes match git on both backends; it is a fix, not a preserved behaviour.
+  Cons: rename's `HEAD` re-point stops going through `writeSymbolicRef`.
+- **`remote.rename`'s packed-only refusal** (design O3, chosen by the user: option a) — remove it with U4 ·
+  keep it as a residual · a follow-up. The refusal's only stated reason was the missing packed rewrite.
 - **Callers that pass `HEAD`'s symbolic target** (`commit`, `merge`, `reset`, `merge --abort`,
   `cherry-pick`, `revert`, the sequencer's abort) — switch to `HEAD`, as git writes (chosen) · keep the
   target. The entries are identical for a direct target; only `HEAD` reproduces git's coupled old id
@@ -146,9 +156,16 @@ the write chain, reads `HEAD` for coupling, checks `expected`, and applies every
   and loses its packed-only catch. Every other caller is unchanged (design caller audit: A 5, B 7,
   C 10, D 4, E 1).
 
-**Pending the user, not decided here:** `branch.rename`'s `logs/HEAD` entries (design O1 — git writes
-two where U6's clause assumed none) and `remote.rename`'s packed-only refusal, whose stated cause U4
-removes (design O3).
+- **`branch.rename`** of the branch `HEAD` names deletes the old name with `noDeref` and
+  `reflogMessage: branchRenamed(from, to)` — U6's coupled entry is git's first `logs/HEAD` line — and
+  re-points `HEAD` with one `setSymbolic` update carrying the `0{40} <id>` entry, git's second line. A
+  rename of any other branch writes no `HEAD` entry.
+- **`remote.rename`** drops `assertRenamableTrackingRef` (`rename-packed-tracking-ref`): a packed-only
+  tracking ref is written under its new name and deleted from `packed-refs` through U4's locked
+  rewrite.
+
+**Still open (design O5, O6):** the reftable backend's renamed-branch log shape (R16, R17), and
+`remote.rename`'s reflog outcome and `<remote>/HEAD` re-point (R18, R19).
 
 ## Consequences
 
@@ -157,7 +174,10 @@ the branch `HEAD` points at. A caller that passed a symref name to replace it mu
 that relied on `REF_NOT_FOUND` from a delete must check first; one that caught `delete-packed-ref`
 has nothing to catch. `fetch --prune` deletes packed-only stale tracking refs and stops pruning
 `refs/remotes/<remote>/HEAD`. A raced `commit`, `merge`, `reset`, `cherry-pick` or `revert` refuses
-with `name: 'HEAD'`.
+with `name: 'HEAD'`. `branch.rename` of the checked-out branch starts writing git's two `logs/HEAD`
+entries where it wrote none. `remote.rename` stops refusing `UNSUPPORTED_OPERATION`
+(`rename-packed-tracking-ref`) for a packed-only tracking ref: it renames it, leaving `packed-refs`
+without the old line and the new name loose, as git does (R18).
 
 Every files-backend delete costs two lock files and, for a packed name, one rewrite of
 `packed-refs`. A symref write costs one read and one reflog append per hop.
@@ -170,6 +190,8 @@ removes them; the port has no directory removal that works on Node); `fetch --pr
 `remote.remove` delete one ref per transaction, so a batch rewrites `packed-refs` once per packed name
 and is not atomic; `packRefs` still writes `packed-refs` without its lock; a `sorted` trait over
 unsorted lines makes git miss the ref where tsgit finds it; `remote.rename` still leaves
-`refs/remotes/<old>/HEAD` where git re-points it.
+`refs/remotes/<old>/HEAD` where git re-points it, and still writes a `0{40} <id> remote: renamed <from> to <to>`
+entry on each new name instead of moving the old log (open item O6); the reftable backend's rename
+branch-log shape is open item O5.
 
 ADR-864's closing note on the null id now points here.
