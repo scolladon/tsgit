@@ -1,6 +1,7 @@
 ---
 subjects:
   - src/application/primitives/internal/ref-target.ts
+  - src/domain/objects/parse-acceptance.ts
   - src/application/primitives/internal/blob-source.ts
   - src/application/primitives/update-ref.ts
   - src/application/primitives/read-object.ts
@@ -12,7 +13,7 @@ subjects:
 
 - **Status:** accepted
 - **Date:** 2026-09-14
-- **Design:** docs/design/session-caches-faithfulness-addendum.md (B, C, DC-C1, DC-C2) · **Supersedes/Refines:** refines ADR-226, ADR-860 and ADR-861
+- **Design:** docs/design/session-caches-faithfulness-addendum.md (B, C, DC-C1 with its parse-acceptance follow-up, DC-C2) · **Supersedes/Refines:** refines ADR-226, ADR-860 and ADR-861
 
 ## Context
 
@@ -41,7 +42,12 @@ against git 2.55.0 (design matrix C1–C9):
 
 `parse_object` (`object.c`, `parse_object_with_flags`) looks the type up from the header first,
 streams a blob's hash (`stream_object_signature`), and hashes every other type from a whole buffer
-(`check_object_signature`).
+(`check_object_signature`). `parse_object_buffer` (`object.c:261`) then parses that buffer and
+returns `NULL` — reported as a nonexistent object — when `parse_commit_buffer` (`commit.c:516`) or
+`parse_tag_buffer` (`tag.c:130`) refuses it. Those two check far less than a full parse: a commit's
+`tree` line and its leading `parent` lines, nothing about `author`, `committer` or the message; a
+tag's `object`, `type` and `tag` lines, nothing about `tagger` or the message. `parse_tree_buffer`
+validates nothing, and a blob is not parsed.
 
 For a lightweight tag git checks existence only: tree, blob and tag-object targets all succeed (B1),
 a nonexistent target is refused by the transaction (B2, B5), identically on the reftable backend
@@ -72,6 +78,21 @@ over the cost. The design was then revised so the check hashes a body above the 
 it inflates instead of materialising it: the memory objection no longer holds, the hashing cost
 does.
 
+Structural acceptance of a hash-valid commit or tag, which option 1 implies but its first
+statement left open:
+
+1. **Transcribe git's own acceptance conditions** from `parse_commit_buffer` and
+   `parse_tag_buffer` (chosen by the user) — pros: refuses exactly what git refuses, including a
+   commit without a `tree` line, a malformed parent line and an unknown tag type, and accepts
+   exactly what git accepts. Cons: a second, deliberately minimal grammar next to tsgit's parsers,
+   kept in step with git's by reading its source.
+2. **Keep it as a residual** — pros: no new code. Cons: accepts objects git refuses, a divergence on
+   a refusal condition the rest of option 1 was chosen to close.
+3. **Run tsgit's full commit and tag parsers** — pros: reuses existing code. Cons: their strictness
+   has not been probed against git and, read against git's source, they refuse objects git accepts —
+   a commit without `author` or `committer`, a tag with an empty name, ids written in upper-case
+   hex — so a ref update git performs would be refused.
+
 Placement (DC-C2):
 
 1. **`updateRef` plus `clone`'s two direct writers of remote-sourced ids** (recommended, chosen) —
@@ -85,15 +106,31 @@ Placement (DC-C2):
 
 ## Decision
 
-**DC-C1 option 1 and DC-C2 option 1.**
+**DC-C1 option 1, structural acceptance option 1, and DC-C2 option 1.**
 
 An internal `assertRefTargetValid(ctx, name, id)` returns at once for the null id. Otherwise it
 calls `verifyStoredObject`, which reads the object through the verified blob source at the 64 KiB
 buffer gate: a buffered object is inflated once and hashed; a larger loose object or packed base
 entry is hashed as it inflates and never retained; a packed delta is reconstructed and hashed; a
 `ctx.deltaCache` hit is hashed, not trusted. The parsed-object memo is not on that path. A promised
-object is lazy-fetched before it is refused. Only after the hash passes is the stored type tested,
-and a non-commit on `HEAD` or `refs/heads/*` is refused.
+object is lazy-fetched before it is refused.
+
+For a commit or tag, the bytes that read delivers are also scanned for git's parse acceptance, by a
+pure domain function beside the object grammar (`domain/objects/parse-acceptance.ts`). It
+transcribes git's refusal conditions and nothing else — for a commit, a `tree ` line of exactly the
+hex length followed by a newline and more bytes (`bogus commit object`), hex digits of either case
+in it (`bad tree pointer`), and each leading `parent ` line well formed and not the last bytes of
+the body (`bad parents`); for a tag, a minimum length of the hex length plus 24, an `object ` line,
+a `type ` line whose name is shorter than 20 bytes and is `blob`, `tree`, `commit` or `tag` compared
+up to its first NUL (`unknown tag type`), and a `tag ` line ending in a newline. Git's in-process
+type conflicts are transcribed only where a fresh process reaches them from the object's own bytes:
+a parent id equal to the tree id refuses (`bad parent`), unless the commit is a shallow boundary,
+for which git skips the lookup. Below the buffer gate the scan reads the buffered bytes; above it, it
+consumes the stream as the hash does and retains at most one partial line and the tree id, so no
+body is materialised for it. Its verdict is read only after the hash passed.
+
+Only after the hash and the parse acceptance pass is the stored type tested, and a non-commit on
+`HEAD` or `refs/heads/*` is refused.
 
 `updateRef` calls it after `validateRefName` and before it resolves the current value, so
 verification precedes the compare-and-swap; a delete skips it. `clone`'s `writeRef` and
@@ -107,6 +144,10 @@ report do not change:
 
 - an absent object: `OBJECT_NOT_FOUND { id }`;
 - a hash mismatch: the verified read's own `OBJECT_HASH_MISMATCH { expected, actual }`;
+- a commit or tag git's parse acceptance refuses: `INVALID_COMMIT { reason }` or
+  `INVALID_TAG { reason }`, the codes tsgit's commit and tag parsers already raise, with `reason`
+  naming git's condition; the parent id and the tag type name git prints travel inside `reason`, as
+  the tag parser's existing reasons already carry their values;
 - a non-commit on a branch: `UNEXPECTED_OBJECT_TYPE { expected: 'commit', actual, id }`
   (ADR-861).
 
@@ -120,8 +161,11 @@ forced create skips the pre-check and reaches verification.
 
 ## Consequences
 
-`updateRef`, `tag.create` and `clone` gain refusals, each matching a pinned git refusal. A new
-cross-tool interop test pins C1–C9 and B1–B6.
+`updateRef`, `tag.create` and `clone` gain refusals, each matching a git refusal. A new cross-tool
+interop test pins C1–C9, B1–B6, and hash-valid objects written with `git hash-object --literally`: a
+commit without a `tree` line, a malformed parent line, an unknown tag type and a truncated tag
+object line refused by both tools; a commit without `author` or `committer` on a branch, and a tree
+with garbage entries on a tag ref, accepted by both.
 
 Every verified ref update costs one object read and one hash. A commit-sized target costs one read,
 one inflate and one hash, or a `ctx.deltaCache` hit plus the hash; `commit` pays it once per commit
@@ -140,9 +184,12 @@ verified update. A fresh git process — what every pin measures — reaches the
 
 Residuals, recorded:
 
-- **No structural parse.** `parse_object_buffer` (`object.c`) also returns `NULL` when
-  `parse_commit_buffer`, `parse_tag_buffer` or `parse_tree_buffer` fails on a hash-valid object;
-  tsgit's check hashes without parsing, so such an object is accepted. Not probed.
+- **In-process type conflicts from earlier parses.** git also refuses when an id was already
+  parsed as another type earlier in the same process — another update in one
+  `update-ref --stdin` transaction, for instance. tsgit keeps no process-wide object table, so only
+  the conflict a commit's own bytes produce is transcribed.
+- **`info/grafts`.** tsgit reads no grafts file, so for a commit listed there the parent-equals-tree
+  refusal applies where git skips the lookup; shallow boundaries match.
 - **Writers outside DC-C2's set** — internal writers of ids the same command produced (`commit`,
   `stash`, `rebase`, `checkout`, `worktree`, `submodule`) — remain unverified, where git verifies
   every writer.
