@@ -7,7 +7,7 @@
 > link text), one sizing fix (H FlatTree default at sha256), two structural items (I structural
 > `isObjectNotFound`, K `runExpire` length) and three LOW review findings (M HEAD-slot epoch, N
 > repo-settings verdict double compute, O parsed-memo accounting).
-> Status: draft → self-reviewed ×3
+> Status: draft → self-reviewed ×3 → decisions ratified (2026-09-14)
 
 ---
 
@@ -139,7 +139,7 @@ Claims in the brief that the pins or measurements did not bear out:
 |---|---|---|
 | R-A | A loose **blob** whose header size differs from its body is served with its inflated bytes by every tsgit read (`readObject`, `readBlob`, `catFile`, `streamBlob`, checkout) — git's streaming tier; a loose **commit/tree/tag** with the same defect is refused `INVALID_OBJECT_HEADER`; `verifyHash: true` refuses both with `OBJECT_HASH_MISMATCH` (git hashes the stored header); a size-lying object is never admitted to `ctx.deltaCache`; no allocation is sized from a header claim; `catFile`'s entry `size` is the header claim for such a blob (git `--batch`, `-s`) — per DC-A1/DC-A2 as ratified | new `loose-header-size-interop.test.ts` (A1–A4); unit on `object-resolver`, `blob-source`, `cat-file-batch`, `git-object` |
 | R-B | Lightweight `tag.create` refuses a target object that does not exist; any existing type is accepted; an existing tag name is refused `TAG_EXISTS` before the target is verified | `ref-write-verification-interop.test.ts` (B1–B6); `tag.test.ts` |
-| R-C | `updateRef` (and the ref writers ratified in DC-C2) refuses a nonexistent new object `OBJECT_NOT_FOUND` and a non-commit written to `HEAD` or `refs/heads/*` `UNEXPECTED_OBJECT_TYPE { expected: 'commit' }`, before the CAS; deletes and symbolic writes are unverified | same interop file (C1–C9); `update-ref.test.ts`, `clone.test.ts` |
+| R-C | `updateRef` (and the ref writers ratified in DC-C2) refuses a nonexistent new object `OBJECT_NOT_FOUND`, an object whose stored bytes do not hash to its id `OBJECT_HASH_MISMATCH`, and a non-commit written to `HEAD` or `refs/heads/*` `UNEXPECTED_OBJECT_TYPE { expected: 'commit' }` (after the hash), all before the CAS; the hash is computed on every such update (no cache answers for it) and a blob body above the buffer gate is hashed without being materialised; deletes, null ids and symbolic writes are unverified — per DC-C1 (a) as ratified | same interop file (C1–C9); `update-ref.test.ts`, `clone.test.ts` |
 | R-D | `reflog expire` resolves per-target cutoffs from `gc.reflogExpire`, `gc.reflogExpireUnreachable` and `gc.<pattern>.*` exactly as matrix D pins (explicit flags per slot, first matching pattern, unset pattern slot = never, `refs/stash` never, defaults per DC-D1); an invalid value refuses on any line before the flags, the target and the class | `reflog-expire-config-interop.test.ts` (D0–D23); pure unit on the policy module |
 | R-E | A single-ref `expire` resolves its target as `repo_dwim_log` does and refuses `REFLOG_NOT_FOUND` when no candidate both resolves and has a log (own or symref target's); a tip that does not resolve to an existing commit expires by clock; no-ref-no-`all` behaves per DC-E2; the repo-settings class is reached after the target resolves | `reflog-interop.test.ts` extended (E1–E16, O-a…O-f) |
 | R-F | A symlinked `HEAD` whose link text is `refs/`-prefixed **and** a valid refname resolves symbolic (unchanged); any other link text falls through to the file the link points to (missing or a directory ⇒ `missing`); the followed content is never held in the HEAD slot | `head-symlink-interop.test.ts` extended (F1–F8); `ref-store.test.ts` |
@@ -373,26 +373,119 @@ nonexistent; `o->type != OBJ_COMMIT && is_branch(refname)` ⇒ non-commit. The o
 `REF_SKIP_OID_VERIFICATION` user in v2.55.0 is ref-storage migration (`refs.c:3200`); `fetch`,
 `clone`, `receive-pack`, `stash`, `notes`, `sequencer` all verify.
 
-#### Change (as recommended in DC-C1 (b) and DC-C2 (c))
+#### Change (DC-C1 (a) full `parse_object` parity and DC-C2 (c), as ratified)
+
+DC-C1 was ratified as **(a)**, not the (b) this design recommended: every verified ref update
+checks its target the way `parse_object` does. The rule is: the object exists **and** its stored
+bytes hash to the id; `HEAD` and `refs/heads/*` additionally require type `commit`, with an
+annotated tag object refused rather than peeled (C1). The C8 residual (b) carried is gone. (a) as
+tabled read every target through `readObject { verifyHash: true }`, which materialises every body;
+the shape below keeps the rule and does not materialise a large body.
+
+**git's shape** (`object.c` `parse_object_with_flags`, v2.55.0). An object already parsed in the
+running process is returned without hashing (`lookup_object` … `obj->parsed`). Otherwise a
+header-only `odb_read_object_info` that answers `OBJ_BLOB` sends the object to
+`stream_object_signature`; every other type is read whole (`odb_read_object`) and hashed by
+`check_object_signature`. Any failure returns `NULL`, which `ref_transaction_update` reports as
+nonexistent; the type test runs only on a parsed object (C8: `hash mismatch` precedes
+`nonexistent object`).
+
+**Which existing read the check builds on** (anchors on `b80d85f9`):
+
+| Read | Hashes on every arm under `verifyHash`? | Large body materialised? | Type known at open? |
+|---|---|---|---|
+| `readObjectMetadata` (`read-object.ts:263`) | never hashes | loose: yes (`:295` → `readRawObject`) | packed: header walk, zero inflate |
+| `readObject` / `readRawObject` → `resolveObjectContentWithDepth` (`object-resolver.ts:68`) | yes: cache hit `:88`, loose `:97`, pack `:109`; the virtual empty tree `:82` returns without a hash | yes, every arm | after the body |
+| `openBlobSource(…, NEVER_BUFFER, …)` (`streamBlob`) | yes, while the stream drains | loose and packed base: no; packed delta: yes (`resolvePackDelta:243`) | packed: yes; loose: no, and a non-blob refuses at the header (`stripHeader:320`) |
+| `openBlobSource(…, MAX_BUFFERED_BLOB_BYTES, …)` | yes: cache hit `resolveFromCache:171`, buffered loose `verifyBufferedBytes:183` (the stored bytes, stored header included), packed base `:223` or its stream tail `:400`, packed delta `:251` | only below the 64 KiB compressed gate, and packed deltas | cache hit, buffered arms, packed: yes; loose above the gate: no, and a non-blob refuses at the header |
+
+The last row already has the property the rule needs — buffered below the gate, hashed as it
+inflates above it, on every storage form — and lacks only the loose stream arm's type. The check
+is built on it:
 
 ```ts
+// src/application/primitives/internal/blob-source.ts — beside openBlobSource
+/** git's parse_object hash check, without its parse: `id` exists and its stored bytes hash to it;
+ *  the stored type is returned. Every arm hashes; a body above the buffer gate is hashed as it
+ *  inflates and never retained. */
+export async function verifyStoredObject(ctx: Context, id: ObjectId): Promise<ObjectType> {
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () => hashStoredObject(ctx, id));
+}
+async function hashStoredObject(ctx: Context, id: ObjectId): Promise<ObjectType> {
+  const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, { verifyHash: true });
+  if (source.kind === 'stream') await drain(source.stream);   // the arm's hasher refuses OBJECT_HASH_MISMATCH at the end
+  return source.type;                                         // known on every arm once (1) below lands
+}
+
 // src/application/primitives/internal/ref-target.ts (new)
 /** git's `is_branch` (refs.c:1072). */
 const isBranchRef = (name: RefName): boolean => name === 'HEAD' || name.startsWith(HEADS_PREFIX);
 
-/** git's ref_transaction_update verification: the object must exist; a branch needs a commit.
- *  Header-only for packed branch targets; presence-only for every other ref (no inflate). */
+/** git's ref_transaction_update verification (refs.c:1425-1445): parse_object must succeed, then a
+ *  branch needs a commit. */
 export const assertRefTargetValid = async (ctx: Context, name: RefName, id: ObjectId): Promise<void> => {
   if (id === zeroOid(ctx.hashConfig)) return;                                   // git: !is_null_oid
-  if (isBranchRef(name)) return assertCommitTarget(ctx, id);
-  if (await hasObject(ctx, id)) return;
-  await readObjectMetadata(ctx, id);                                            // promisor lazy-fetch, else OBJECT_NOT_FOUND
-};
-const assertCommitTarget = async (ctx: Context, id: ObjectId): Promise<void> => {
-  const { type } = await readObjectMetadata(ctx, id);                           // OBJECT_NOT_FOUND when absent
-  if (type !== 'commit') throw unexpectedObjectType('commit', type, id);        // ADR-861's shape
+  const type = await verifyStoredObject(ctx, id);                               // OBJECT_NOT_FOUND, OBJECT_HASH_MISMATCH
+  if (type !== 'commit' && isBranchRef(name)) throw unexpectedObjectType('commit', type, id);   // after the hash (C8 order)
 };
 ```
+
+`drain` iterates the stream to its end and discards the chunks; the hash lives in the arm's own
+tail (`yieldAndVerifyChunks`, `yieldAndVerifyPackedBaseChunks`), which is why the type is returned
+only after the drain.
+
+Two supporting changes, both in P17 commit 1:
+
+1. **The loose stream arm parses its header at open.** `stripHeader` returns `{ type, headerBytes,
+   content }` and stops refusing; `resolveLoose`'s stream arm pulls inflate chunks up to the NUL
+   before it returns and reports that `type`; the tail hashes `headerBytes` and the remainder
+   exactly as today. `BlobSource`'s stream arm narrows `type` to `ObjectType`, the module
+   docstring's one exception is deleted, and the `source.type !== undefined` half of the two
+   consumers' refusals (`stream-blob.ts:21`, `whitespace-drop-predicate.ts:46`) becomes dead and is
+   removed — their existing open-time blob test now covers the loose arm too. Observable in tsgit
+   only: `streamBlob` on a loose non-blob raises the same `UNEXPECTED_OBJECT_TYPE { expected:
+   'blob', actual, id }` at its `await` instead of at the first chunk; `release()` cancels through
+   the iterator that read the header. Preferred over a verifier-private loose tail because both
+   callers then share one storage order (cache, loose, pack, behind `assertLoadable`) and an
+   asymmetry is removed rather than a mode added.
+2. **`withLazyFetchRetry` (`read-object.ts:173`) is exported for internal use,** so a promised
+   object is fetched before it is refused — the lazy-fetch (b)'s `readObjectMetadata` sketch
+   carried. `verifyStoredObject` lives in `blob-source.ts` because that module already imports
+   `read-object.ts`; the reverse placement would cycle.
+
+**Guarantee — the hash is always computed.**
+
+- Every arm of `openBlobSource` hashes under `verifyHash: true` (table above); stream arms hash
+  only when drained, and `hashStoredObject` drains before it returns.
+- A `ctx.deltaCache` hit is hashed, not trusted (`resolveFromCache:171` →
+  `verifyObjectContent:254`). The cache is written only with bytes read from the store for that id
+  (loose arm `object-resolver.ts:96`, pack chain `:554`; `writeObject` does not write it), and
+  after A no size-lying loose object is admitted, so `serializeHeader(type, content.byteLength)`
+  reproduces the stored header for every cached entry.
+- The parsed-object memo is not on this path: its only reader is `resolveObject`
+  (`object-resolver.ts:128-130`), and even there it is consulted after
+  `resolveObjectContentWithDepth` has run the hash.
+- Stricter than git inside one process: git skips the hash for an object the process already
+  parsed. tsgit's caches outlive a command and are filled by unverified reads, so they cannot
+  stand in for git's object table; tsgit hashes on every verified update. For a fresh git
+  process — what every pin measures — the verdicts agree.
+
+**Guarantee — a large blob is not materialised.** A loose object whose compressed file exceeds the
+gate, and a packed base entry whose payload or declared size exceeds it, are hashed as they
+inflate; no chunk is retained. What memory still holds: the compressed loose file
+(`looseCompressedBytes` reads it whole) or the compressed pack entry slice, and one inflate chunk.
+The gate counts compressed bytes: a buffered packed base is also held to its declared size
+(`resolvePackBase:218-221`), a buffered loose body is not, so a loose file under 64 KiB can still
+inflate to deflate's ratio limit (≈ 64 MiB) — the bound `openBlobSource`'s existing callers already
+accept, under the compressor port's 2 GiB cap. A packed **delta** is reconstructed in memory, bounded by the compressor port's 2 GiB cap, as every
+tsgit read of a deltified object is — tsgit has no streaming delta path; recorded, not changed.
+
+**Guarantee — branch typing.** The type comes from the stored header on every arm and is tested
+only after the hash passed, so a hash-mismatching commit on `refs/heads/*` reports the hash (C8)
+and an annotated tag object on a branch is `tag`, refused (C1).
+
+**Placement.**
 
 - `updateRef` (`update-ref.ts:17`): after `validateRefName`, **before** `resolveDirect`/CAS
   (C7), skipped on `options.delete === true` (C9).
@@ -400,32 +493,55 @@ const assertCommitTarget = async (ctx: Context, id: ObjectId): Promise<void> => 
   before `applyRefUpdates` — the two direct store writers whose ids arrive from a remote
   advertisement. Internal writers of ids the same command just produced (`commit`, `stash`,
   `rebase`, `checkout`, `worktree`, `submodule`) are not touched (DC-C2).
-- Refusal data: `OBJECT_NOT_FOUND { id }` and `UNEXPECTED_OBJECT_TYPE { expected: 'commit',
-  actual, id }` — both existing. git's two messages compose from `{ id, actual }` plus the ref
-  name the caller passed. No error-union, `api.json` or exhaustiveness change.
 
-**Cost.** Every `updateRef` now pays one probe. Its callers are `commit`, `reset`, `merge`,
-`cherry-pick`, `revert`, `rebase`, `abort-merge`, the sequencer abort, `fetch`, `push`, `notes`,
-`remote`, `branch`, `tag` and the facade. A branch update reads the target's metadata: a
-`ctx.deltaCache` hit when the command already read the commit (`branch.create`'s `requireCommit`),
-otherwise one pack entry header or one loose read of a commit-sized object (`commit` writes the
-commit, then updates the branch — one extra loose read + inflate per commit, tens of µs). A
-non-branch update (`fetch`'s remote-tracking refs, tags, notes) costs a pack-index lookup and at
-most one `exists`. `commit.bench` and the parent design's `branch.create` floor (R2) are
-re-measured main-vs-branch in P17's gate and the numbers recorded in the PR; git performs the same
-`parse_object` per ref update.
+**Refusal data** — all existing codes; no error-union, `api.json` or exhaustiveness change.
 
-**Residuals recorded (ADR).** A hash-mismatching object passes (C8) — tsgit's default read
-contract does not hash (`verifyHash` defaults `false` everywhere; a verified read would inflate
-whole blobs for a presence question). Writers outside DC-C2's set remain unverified.
+- Absent: `OBJECT_NOT_FOUND { id }`.
+- Hash mismatch: `OBJECT_HASH_MISMATCH { expected: id, actual }`. git's `error: hash mismatch
+  <oid>` and `fatal: trying to write ref '<ref>' with nonexistent object <oid>` both compose from
+  `expected` plus the ref name the caller passed.
+- Non-commit on a branch: `UNEXPECTED_OBJECT_TYPE { expected: 'commit', actual, id }` (ADR-861).
+- A size-lying loose object (A) of any type refuses `OBJECT_HASH_MISMATCH`: the buffered arm hashes
+  the stored bytes before it splits them, the stream arm hashes the stored header. That git refuses
+  such a target follows from `parse_object`; its exact lines for a size-lying target are not among
+  C1–C9 and are not claimed here.
+
+**Pin to add in P17.** `openBlobSource` has no virtual empty-tree arm, `resolveObjectContentWithDepth`
+has one (`:82`). C1–C9 do not probe the empty-tree id as a target in a repository that does not
+store it; P17's interop file adds that row, and `hashStoredObject` takes a virtual arm only if git
+accepts the write.
+
+**Cost.** Every verified ref update now reads and hashes one object, where (b) read one pack
+header for a branch and probed presence for every other ref. `updateRef`'s callers are `commit`,
+`reset`, `merge`, `cherry-pick`, `revert`, `rebase`, `abort-merge`, the sequencer abort, `fetch`,
+`push`, `notes`, `remote`, `branch`, `tag` and the facade.
+
+- Commit-sized target: one loose read, one inflate and one hash of the stored bytes; or one pack
+  entry slice read, one inflate (a delta chain reconstruction for a deltified entry) and one hash.
+  A `ctx.deltaCache` hit removes the read and the inflate, never the hash. `commit` writes its
+  commit loose and then updates the branch: one extra read, inflate and hash of that commit per
+  commit. `branch.create`'s `requireCommit` reads the start point through `readObject` first, so
+  its update is normally a cache hit plus one hash.
+- Blob target (tags, notes, remote-tracking refs; a branch update to a blob, which then refuses on
+  type): a hash over the whole body, streamed above the gate.
+- A `clone` or `fetch` writing N refs hashes N targets, as git's transaction does.
+- `commit.bench` and the parent design's `branch.create` floor (R2) are re-measured main-vs-branch
+  in P17's part gate and recorded in the PR; no figure is claimed here.
+
+**Residuals recorded (ADR).** `parse_object_buffer` (`object.c`) also returns `NULL` when
+`parse_commit_buffer`, `parse_tag_buffer` or `parse_tree_buffer` fails on a hash-valid object; the
+check hashes without parsing, so a hash-valid object git's parsers refuse is accepted. Not probed.
+Writers outside DC-C2's set remain unverified.
 
 **Threat model.** `newId` is caller- or network-controlled (a Tier-2 caller, a fetch/clone
-advertisement). The check reads at most one pack entry header, or one loose object bounded by
-the 2 GiB inflate cap, for branch refs; presence only (pack-index lookup + one `exists`) for every
-other ref — no content is materialised for a tag or remote-tracking ref pointing at a large blob.
-It narrows what an advertisement can plant: a `refs/heads/*` or detached `HEAD` pointing at a
-tree or blob, or a ref to an object that does not exist, both of which git refuses and later
-tsgit commands would choke on.
+advertisement). The check hashes the target's stored bytes, so what an advertisement can plant
+narrows to objects that are both present and intact: a ref to a missing object, a ref to an
+object whose bytes do not hash to its name, and a `refs/heads/*` or detached `HEAD` pointing at a
+non-commit are all refused, as git refuses them. Memory: no allocation is sized from the target
+beyond what every tsgit read already allows — a blob body above the gate is hashed chunk by chunk,
+a commit-sized body is inflated once under the compressor port's 2 GiB cap, and a packed delta is
+reconstructed under that same cap. CPU: an attacker who can name a large existing blob as a ref
+target makes the check hash that blob once per update, which is also what git does.
 
 ---
 
@@ -928,11 +1044,11 @@ paths) and 239 B/entry (39-char paths) against the sizer's 163 / 189 B — 1.32�
 | Function / file | Owner (commit order) | Notes |
 |---|---|---|
 | `domain/error-data-code.ts` (new), 15 importers | P13 (I) | P16 edits `ref-store.ts`, P17 `update-ref.ts` after P13 re-pointed their import |
-| `domain/objects/git-object.ts`, `object-resolver.ts` loose arm + `verifyObjectContent`, `blob-source.ts` `toBytesSource`, `cat-file-batch.ts`, `read-object.ts` (`readObjectWithSize`) | P14 (A) | `read-object.ts` also gains nothing else this addendum |
+| `domain/objects/git-object.ts`, `object-resolver.ts` loose arm + `verifyObjectContent`, `blob-source.ts` `toBytesSource`, `cat-file-batch.ts`, `read-object.ts` (`readObjectWithSize`) | P14 (A) | `read-object.ts` otherwise gains only P17's `withLazyFetchRetry` export |
 | `internal/object-caches.ts` | P15 commit 1 (H), commit 2 (O) | `read-head-tree.ts` sizer constants only if DC-O1 extends to the FlatTree |
 | `ref-store.ts` `resolveHeadDirect` | P16 commit 1 (F) | |
 | `internal/head-file.ts` docstrings (+ code under DC-M1 (b)) | P16 commit 2 (M) | |
-| `internal/ref-target.ts` (new), `update-ref.ts`, `clone.ts` | P17 commit 1 (C) | |
+| `internal/ref-target.ts` (new), `update-ref.ts`, `clone.ts`, `internal/blob-source.ts` (`verifyStoredObject`, loose stream arm), `stream-blob.ts`, `internal/whitespace-drop-predicate.ts`, `read-object.ts` (`withLazyFetchRetry` export) | P17 commit 1 (C) | `read-object.ts` is P14's file too; P17 only adds the export |
 | `commands/tag.ts` `tagCreate` | P17 commit 2 (B) | |
 | `commands/reflog.ts` | P18 commits 1 (K) → 2 (E) → 3 (D) | `resolve-ref.ts` `ChainOutcome` (E); `config-read.ts` token walk + `domain/reflog/expire-policy.ts` + shared ref glob (D) |
 | `read-object.test.ts`, `pack-registry.test.ts` pins | P19 (N) | test-only |
@@ -1075,23 +1191,36 @@ P16, P17 two each; P18 three).
   - **Files:** new `src/application/primitives/internal/ref-target.ts`; `primitives/update-ref.ts:17`
     (`updateRef(ctx, name, newId, options: UpdateRefOptions): Promise<void>`, call after
     `validateRefName`, skipped when `options.delete === true`); `commands/clone.ts:321`
-    `writeRef`, `:353` `applyRemoteHead` detached arm. Helpers: `hasObject`
-    (`has-object.ts:13`), `readObjectMetadata` (`read-object.ts:263`), `unexpectedObjectType`
-    (`domain/objects/error.ts`), `objectNotFound`, `HEADS_PREFIX`
-    (`domain/refs/ref-prefixes.ts`), `zeroOid`.
+    `writeRef`, `:353` `applyRemoteHead` detached arm; `primitives/internal/blob-source.ts` — new
+    `verifyStoredObject` / `hashStoredObject` beside `openBlobSource:75`, `resolveLoose:175`
+    stream arm parses its header at open, `stripHeader:310` reports instead of refusing,
+    `BlobSource` stream arm `type: ObjectType`; `primitives/stream-blob.ts:21` and
+    `primitives/internal/whitespace-drop-predicate.ts:46` drop the `!== undefined` half;
+    `primitives/read-object.ts:173` exports `withLazyFetchRetry`. Helpers: `openBlobSource`,
+    `MAX_BUFFERED_BLOB_BYTES` (`blob-source.ts:40`), `peekPackRegistry` / `getPackRegistry`,
+    `unexpectedObjectType` (`domain/objects/error.ts:85`), `HEADS_PREFIX`
+    (`domain/refs/ref-prefixes.ts:6`), `zeroOid` (`domain/objects/object-id.ts:87`).
   - **Tests:** `update-ref.test.ts` (tree/blob/tag-object to `refs/heads/x` and `HEAD` → refuse
     with `{ expected, actual, id }`; nonexistent to `refs/tags/x` → `OBJECT_NOT_FOUND { id }`;
     tree to `refs/tags/x`, `refs/remotes/o/x`, `ORIG_HEAD` → written; wrong `expected` +
-    nonexistent → `OBJECT_NOT_FOUND`, not `REF_UPDATE_CONFLICT` (C7); delete unverified; packed
-    target → no content read (`instrumentedContext`: no inflate of the pack payload, header
-    only); loose non-branch target → `exists` only, no `read`); `clone.test.ts` (an
-    advertisement whose `refs/heads/x` names a tree the pack carries → refused, nothing written).
+    nonexistent → `OBJECT_NOT_FOUND`, not `REF_UPDATE_CONFLICT` (C7); delete unverified;
+    hash-mismatching loose blob to `refs/tags/x` and hash-mismatching commit to `refs/heads/x` →
+    `OBJECT_HASH_MISMATCH { expected, actual }`, nothing written, and the commit reports the hash
+    not the type (C8); a target warmed into `ctx.deltaCache` and the parsed memo by `readObject`
+    → the hasher double still records the `update` calls for it (a cache hit never answers); a
+    loose blob above the gate → written, `ctx.compressor.inflate` never called on its bytes
+    (streamed); an annotated tag object to `refs/heads/x` → `actual: 'tag'`, not peeled);
+    `blob-source.test.ts` (`verifyStoredObject` per arm: cache hit, buffered loose, streamed loose
+    commit and blob, packed base buffered and streamed, packed delta; a promised object fetched
+    once through `ctx.promisor`); `stream-blob.test.ts:200` and `whitespace-drop-predicate.test.ts`
+    loose non-blob rows (same refusal data, raised at open); `clone.test.ts` (an advertisement whose
+    `refs/heads/x` names a tree the pack carries → refused, nothing written).
     **Enumeration:** tests that write refs to synthetic oids through `updateRef` (60 calls in
     18 files) — run those 18 files, give each failing fixture a real object (`writeObject`) or a
     non-branch ref; `applyRefUpdates` fixtures are untouched under DC-C2 (c).
     New `test/integration/ref-write-verification-interop.test.ts` (`@proves bucket:
-    cross-tool-interop, interopSurface: updateRef, tag.create`): C1–C7, C9 (C8 pinned as the
-    recorded residual).
+    cross-tool-interop, interopSurface: updateRef, tag.create`): C1–C9, plus the empty-tree-id
+    target row named in C.
   - **Surface:** `docs/use/primitives/update-ref.md`; `docs/use/errors.md` `OBJECT_NOT_FOUND`
     and `UNEXPECTED_OBJECT_TYPE` rows gain `updateRef` / `clone` throwers and the caller
     composition of git's two lines. **Runtime:** ≈ +350 B.
@@ -1185,11 +1314,51 @@ ADRs, not by the docs phase.
 
 ## Decision candidates
 
+### Ratified decisions (2026-09-14)
+
+The user decided every candidate below. One deviates from this design's recommendation: **DC-C1**.
+
+- **DC-A1 (b)** — type-directed: a size-lying loose blob takes git's streaming contract (real bytes
+  served, never cached, `verifyHash` hashes the stored header); commit/tree/tag keep the refusal.
+  ADR-863.
+- **DC-A2 (a)** — `catFile`'s `size` reports the stored header claim; `readObjectMetadata` stays
+  content-derived. ADR-863.
+- **DC-C1 (a)** — full `parse_object` parity, **deviating from the recommended (b)**: the target
+  exists and its hash verifies; `HEAD` and `refs/heads/*` also need a commit, a tag object not
+  peeled; verification precedes the CAS; the C8 residual is removed. Section C is rewritten for it.
+  ADR-864.
+- **DC-C2 (c)** — `updateRef` plus `clone`'s `writeRef` and `applyRemoteHead`'s detached arm.
+  ADR-864.
+- **DC-D1 (a)** — follow the binary: git ≥ 2.50's effective defaults, total 30 days, unreachable
+  90 days. Verified in git's source: v2.49.0 `builtin/reflog.c:311-312` set unreachable = now − 30 d
+  and total = now − 90 d; v2.50.0, v2.55.0 and `master` `reflog.h:25-28` `REFLOG_EXPIRE_OPTIONS_INIT`
+  set total = now − 30 d and unreachable = now − 90 d; `Documentation/config/gc.adoc` on `master`
+  still documents 90/30. An upstream regression; faithfulness binds to the binary (ADR-226).
+  ADR-865.
+- **DC-D2 (a)** — `CONFIG_BAD_DATE_VALUE` gains optional `key`, `source`, `line`. ADR-866.
+- **DC-D3 (b)** — `name-rev`'s matcher promoted to a shared `domain/refs/ref-glob.ts` with bracket
+  expressions and backslash escapes; `name-rev` re-pointed. ADR-866.
+- **DC-E1 (a)** — full `repo_dwim_log` transcription. ADR-867.
+- **DC-E2 (a)** — `expire` with no ref and no `all` is a no-op `{ removed: 0, kept: 0 }`; the
+  repo-settings class is not reached. ADR-867.
+- **DC-H1 (a)** — width surcharge. ADR-869.
+- **DC-I1 (a)** — `errorDataCode` moves to `src/domain/`; `isObjectNotFound` becomes structural.
+  ADR-870.
+- **DC-M1 (a)** — document the gate-to-gate epoch and pin it by test; correction note on ADR-855.
+- **DC-N1 (a)** — regression pin only, no runtime change.
+- **DC-O1 (a)** — parsed-memo constants corrected to the measured overhead, the 32 768
+  dial-derived entry count kept, valve = entries × honest typical bytes (≈ 37.7 MiB at sha1),
+  documented cache family total 136 → ≈ 158 MiB. ADR-869.
+
+F (symlinked `HEAD` fall-through) carried no candidate; it is recorded as ADR-868.
+
+### Candidates as tabled
+
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
 | DC-A1 | What tsgit's read does with a loose object whose header size ≠ body length | (a) Refuse on every read, `streamBlob` included (count bytes, refuse at stream end), ADR records git's permissive tiers · (b) Type-directed: blobs take git's streaming contract (body served, never cached, `verifyHash` hashes the stored header); commit/tree/tag keep today's refusal · (c) Serve the body for every type; refuse only under `verifyHash`/`fsck` | **(b)** | (b) matches every user-facing git blob read (`cat-file -p`, `show`, `checkout`, `--batch`) and every git commit/tree parse (`corrupt` / `hash mismatch`), removes tsgit's own `streamBlob`-vs-`readObject` disagreement, and allocates nothing from the claim. (a) diverges from git's most common blob paths; (c) diverges on nearly every commit/tree command. Residuals: no truncation/padding on buffered consumers, `gc` repairs where `repack` corrupts, `log` on an under-running commit |
 | DC-A2 | What `catFile`'s entry `size` reports for a size-lying blob | (a) The stored header claim (git `--batch`, `-s`, `ls-tree -l`); `readObjectMetadata` stays content-derived · (b) The body length (today's derivation), residual recorded · (c) The claim on both `catFile` and `readObjectMetadata` | **(a)** | `size.ts`'s own contract is "the `size` field of git's `cat-file --batch` header"; (c) feeds an untrusted number to `deltify` and the pack writer, whose sizes must equal the bytes they write; (b) is lossy data. Cost: one internal read variant and a `declaredSize` slot on the resolver's return literal |
-| DC-C1 | Strength of the ref-target check | (a) `readObject { verifyHash: true }` for every target (`parse_object` parity, corrupt objects refused) · (b) Presence for non-branch refs, header-only type probe for `HEAD`/`refs/heads/*`, no hash · (c) Full `readObject` (no hash) for every target | **(b)** | (b) never inflates a blob for a presence question and reads one pack header for a branch; (a) fully inflates and hashes large blobs on every tag/remote write and is the only way to catch C8; (c) pays (a)'s inflate without its benefit. Residual: C8 |
+| DC-C1 | Strength of the ref-target check | (a) `readObject { verifyHash: true }` for every target (`parse_object` parity, corrupt objects refused) · (b) Presence for non-branch refs, header-only type probe for `HEAD`/`refs/heads/*`, no hash · (c) Full `readObject` (no hash) for every target | **(b)** — **ratified: (a)** | Designer's case: (b) never inflates a blob for a presence question and reads one pack header for a branch; (a) as tabled fully inflates and hashes large blobs on every tag/remote write and is the only way to catch C8; (c) pays (a)'s inflate without its benefit. **Ratified (a)** — full parity, C8 refused. C builds it on the verified blob source instead of `readObject`, so bodies above the buffer gate are hashed without being materialised: (a)'s memory objection no longer holds, its hashing cost per update does |
 | DC-C2 | Where the check lives | (a) `updateRef` only · (b) The `RefStore.applyRefUpdates` seam on both backends (git's transaction-layer placement; every writer) · (c) `updateRef` plus the two direct writers of remote-sourced ids (`clone` `writeRef`, `applyRemoteHead`'s detached arm) | **(c)** | (c) covers every surface whose ids arrive from outside the process; the other direct writers set ids the same command just wrote. (b) is structurally faithful but verifies internal writes git also verifies, touches every store unit test that seeds a synthetic oid (heuristic upper bound: 711 `'x'.repeat(40|64)` literals across 172 test files) and adds a probe to the direct writers too; (a) leaves `clone` planting a tree at `refs/heads/*` |
 | DC-D1 | `reflog expire`'s defaults when nothing is configured | (a) git 2.55's effective defaults — total 30 days, unreachable 90 days (the v2.50.0 `REFLOG_EXPIRE_OPTIONS_INIT` swap, still on `master`), pinned D0/D1 · (b) The documented 90/30 (today's constants; git ≤ 2.49; `git-reflog(1)`), recorded as a divergence from the pinned binary · (c) (b) now, plus an upstream report, switching to whatever upstream ships | **(a)** | ADR-226 pins against the binary; the behaviour is present in every release since 2.50.0. Cold truth for the user: (a) makes tsgit expire reachable entries 30–90 days old that git's documentation promises to keep — exactly what git 2.55 does. (b) keeps the documented contract and diverges from real git on every default expire. This is an upstream regression; the choice is whether faithfulness binds to it |
 | DC-D2 | Refusal data for an unparseable `gc.reflogExpire*` value | (a) Extend `CONFIG_BAD_DATE_VALUE` with optional `key`, `source`, `line` (present for config-file sources; `gc.pruneExpire` keeps `{ value }`) · (b) Reuse `CONFIG_BAD_DATE_VALUE { value }` as is · (c) New `CONFIG_INVALID_DATE_VALUE { key, source, value, line }` | **(a)** | git's two lines need key, file and line (D10); (b) cannot reconstruct them; (c) adds a code for the same refusal class. (a) is additive — `api.json` and the errors row change, no exhaustiveness switch does |
@@ -1219,7 +1388,7 @@ coverage, error assertions on `data` field by field, guard clauses isolated, no 
 | O (a) | the invariant row with the new constant; a 4 KiB-message row kills a valve left at the dial |
 | F | F1/F2/F3/F4/F6 each isolate one arm (`startsWith`, `isSafeRefName`, directory, ENOENT, parse); the post-gate target rewrite kills slotting the followed content |
 | M (a) | gate → rewrite → stale read → next gate fresh |
-| C | branch/non-branch pair kills `isBranchRef`; `HEAD` isolated from `refs/heads/`; `ORIG_HEAD` kills a `name.includes('HEAD')` mutant; wrong-`expected` + nonexistent kills a reordering; delete isolation kills an unconditional call; `instrumentedContext` read counts kill a presence check that inflates |
+| C | branch/non-branch pair kills `isBranchRef`; `HEAD` isolated from `refs/heads/`; `ORIG_HEAD` kills a `name.includes('HEAD')` mutant; wrong-`expected` + nonexistent kills a reordering; delete isolation kills an unconditional call; a hash-mismatching commit on a branch reporting `OBJECT_HASH_MISMATCH` kills a type-before-hash reordering; the hasher `update` record on a cache-warmed target kills a cache or memo short-circuit; `inflate` never called on a streamed loose blob kills a buffered fallback |
 | B | existing name + nonexistent (`TAG_EXISTS`) vs force + nonexistent (`OBJECT_NOT_FOUND`) |
 | K | no assertion change; the existing R-matrix and single-transaction spy (`applyRefUpdates` called once with N updates, including a zero-prune target) |
 | E | each `logForCandidate` arm isolated (invalid name, unresolvable, own log, target log, neither); DWIM order via a name present as both `refs/tags/x` and `refs/heads/x` logs (tags first); class-ordering trio |
@@ -1231,7 +1400,7 @@ coverage, error assertions on `data` field by field, guard clauses isolated, no 
 | Test | Pins |
 |---|---|
 | new `loose-header-size-interop.test.ts` | A1 `-s`/`-p`/`--batch` rows vs `catFile`/`readObject`/`streamBlob`; A2 commit rows; `fsck` vs `verifyHash`; the `log` under-run residual titled as such |
-| new `ref-write-verification-interop.test.ts` | C1–C7, C9; B1–B6; C8 titled as the residual |
+| new `ref-write-verification-interop.test.ts` | C1–C9; B1–B6; the empty-tree-id target row |
 | new `reflog-expire-config-interop.test.ts` | D0–D13b, D10–D10g, D14, D15, D20 |
 | `reflog-interop.test.ts` (extend) | E1, E4, E6b, E7, E8, E10, E15, O-a, O-d |
 | `head-symlink-interop.test.ts` (extend) | F2–F5, F8; F1 with its `status`/`commit` residual titled |
@@ -1253,7 +1422,9 @@ six-GC settle) and the config-stat counter behind N, re-run on the branch tip af
   did; D only makes the command honour the keys.
 - **The other 72 `instanceof TsgitError` classifications** — same defect class as I; a sweep of
   its own (reflog `tryResolve` included).
-- **`updateRef` hash verification (C8) and verification of internal writers** — per DC-C1/DC-C2.
+- **Verification of internal ref writers** — per DC-C2. **Structural parsing of a hash-valid ref
+  target** (`parse_object_buffer`'s commit/tag/tree parse) — the ratified DC-C1 rule is existence
+  plus hash plus branch typing; recorded as a residual in C.
 - **Header claims in `(2^53, 2^64)`** (A3) — `number` cannot carry them; git's header tier prints
   them.
 - **Buffered-tier truncation/padding and `repack` persisting a size-lying blob** (A1) — the
