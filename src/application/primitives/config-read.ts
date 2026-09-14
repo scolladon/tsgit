@@ -344,6 +344,28 @@ const snapshotConfigMtimeKey = (ctx: Context): string =>
   cache.get(ctx.session)?.mtimeKey ?? CONFIG_ABSENT_MTIME_KEY;
 
 /**
+ * Reconciles the placeholder {@link CONFIG_ABSENT_MTIME_KEY} `entry.mtimeKey`
+ * was seeded with, ONLY when it is still that sentinel — a session's
+ * first-ever touch, where nothing had read the file at call time, so the key
+ * captured then is a placeholder rather than a validated one. Without this
+ * the placeholder would stay pinned forever and the key-aware
+ * `repoSettingsVerdictSettled` fast path would never recognise this entry as
+ * current for the key it just validated.
+ *
+ * A REAL key is never overwritten: the snapshot read here is whatever the
+ * parse cache holds at `.then` time, which a concurrent read that re-keyed
+ * the cache mid-`compute` may already have moved on to. Stamping that on
+ * would advertise the verdict as current for a key it never validated, and
+ * the boundaries branching on `settled` would then skip the refusal
+ * `assertRepoSettingsValid` owes the new bytes.
+ */
+const reconcileAbsentKey = <T>(entry: VerdictEntry<T>, ctx: Context): void => {
+  if (entry.mtimeKey === CONFIG_ABSENT_MTIME_KEY) {
+    entry.mtimeKey = snapshotConfigMtimeKey(ctx);
+  }
+};
+
+/**
  * Get-or-populate a per-session verdict memo in `slot`, re-keyed on
  * `mtimeKey`: a second call sharing the same, unchanged session AND the same
  * `mtimeKey` joins the promise the first call started rather than re-running
@@ -388,21 +410,7 @@ const memoizeSessionVerdict = <T>(
   pending
     .then(() => {
       entry.settled = true;
-      // ONLY the absent sentinel is reconciled — a session's first-ever
-      // touch, where nothing had read the file at call time, so the key
-      // captured above is a placeholder rather than a validated one.
-      // Without this the placeholder would stay pinned forever and the
-      // key-aware `repoSettingsVerdictSettled` fast path would never
-      // recognise this entry as current for the key it just validated.
-      // A REAL key is never overwritten: the snapshot read here is whatever
-      // the parse cache holds at `.then` time, which a concurrent read that
-      // re-keyed the cache mid-`compute` may already have moved on to.
-      // Stamping that on would advertise the verdict as current for a key it
-      // never validated, and the boundaries branching on `settled` would
-      // then skip the refusal `assertRepoSettingsValid` owes the new bytes.
-      if (entry.mtimeKey === CONFIG_ABSENT_MTIME_KEY) {
-        entry.mtimeKey = snapshotConfigMtimeKey(ctx);
-      }
+      reconcileAbsentKey(entry, ctx);
     })
     .catch(() => {
       if (slot.get(ctx.session) === entry) slot.delete(ctx.session);
