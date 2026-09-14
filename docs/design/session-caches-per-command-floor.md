@@ -21,6 +21,40 @@
 > (ADR-859; the write entry by ADR-862), which also corrects this doc's own C2 pin (spike §5.3)
 > and moves `core.maxTreeDepth` off the gate.
 
+> **Post-review corrections (2026-09-14).** Implementation and two review cycles changed the
+> following after this document was last revised. The body below is kept as designed; where it
+> disagrees with these points, **the code and these points are authoritative**.
+>
+> 1. **`reflog expire`'s mark walk (D8).** The date bound is laziness, not the rule: on the first
+>    miss the walk drops the bound, un-marks the leftover frontier and expands it to the root, so
+>    the verdict is exact full-ancestry reachability — as git's `unreachable()` does with
+>    `mark_limit = 0`. `HEAD` marks from every ref tip under `refs/`, never `HEAD` itself. A reflog
+>    entry naming a never-written object is **kept**, as git's gentle lookup keeps it. ADR-857 was
+>    corrected to match; the R1–R7 matrix could not catch this because every case used `never`/`now`
+>    cutoffs or a parentless frontier commit.
+> 2. **The repo-settings verdict (D2-iii, D5).** A superseded verdict is detected by comparing the
+>    entry's config key in the fast path; `openConfigEpoch` does **not** delete verdict caches (the
+>    deletes proved redundant with the key comparison and were removed). Only the absent-sentinel key
+>    is ever reconciled after a compute resolves.
+> 3. **`grep` carries a transcribed repo-settings call.** The transcription table below names nine
+>    command files; there are ten — `grep` must report a malformed config before its own argument
+>    guard, as `git grep` does.
+> 4. **The memory adapter does not expose the cache options.** The five options exist on the Node and
+>    browser option types only; `OpenMemoryRepositoryOptions` exposes none, and the default entry
+>    keeps its fixed 16 MiB delta cache.
+> 5. **The FlatTree default admits a ~50 000-file HEAD at sha1 only.** At sha256 that tree sizes to
+>    9 400 048 B against the 8 MiB valve and the cache is a no-op; 44 620 entries fit exactly.
+>    `FLAT_TREE_TYPICAL_ENTRY_BYTES` was removed — the valve invariant is measured through the real
+>    sizer.
+> 6. **`branch.create`'s tag walk is bounded** at the repo-wide `MAX_PEEL_DEPTH` (5) via `peelChain`,
+>    closing an unbounded walk a planted `.git` could hang. A legitimate 6-deep annotated-tag chain
+>    that git accepts is therefore refused — a recorded divergence with no ADR of its own.
+> 7. **A synchronous `peekPackRegistry`** serves a settled registry without a promise hop on the hot
+>    read paths; it is gated on the same key-aware predicate as point 2.
+> 8. **`resolveObjectContentWithDepth` stays inline.** A refactor splitting it into named tiers was
+>    reverted: each extracted `async` tier added a microtask to every object read (1–3 hops, ~67–200 ns),
+>    spending the saving point 7 bought. It is a deliberate exception to the 20-line guideline.
+
 ---
 
 ## Context
