@@ -1048,7 +1048,8 @@ describe('ref-store', () => {
         // Act
         const result = await sut.resolveDirect('HEAD' as RefName);
 
-        // Assert — proves the read-through: F1's `missing` alone would pass on any adapter
+        // Assert — proves the read-through: a dangling link's `missing` alone would pass
+        // on any adapter without ever reading the target
         expect(result).toEqual({ kind: 'direct', id });
       });
 
