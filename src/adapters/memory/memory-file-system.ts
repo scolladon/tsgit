@@ -505,8 +505,10 @@ export class MemoryFileSystem implements FileSystem {
     // on every reachable state — so there is nothing to refuse and nothing to add.
     // Stryker disable next-line ConditionalExpression: equivalent — without this early return the walk below runs over a chain that is already recorded and holds no file or symlink at any level (prefix closure and disjointness hold on every reachable state: the constructor refuses a seeded collision and a stale handle never re-files a removed path), so the check refuses nothing and the add loop re-adds keys that are already present; the forced-true variant is killable (every parent auto-create test) and is suppressed only because the mutator cannot be narrowed.
     if (this.directories.has(normalizedPath)) return;
-    // Refuse before recording anything: a file or symlink anywhere on the ancestor chain
-    // must leave the tree untouched — the all-or-nothing shape of `mkdir -p`.
+    // Refuse before recording anything: a file anywhere on the ancestor chain must leave
+    // the tree untouched — the all-or-nothing shape of `mkdir -p`. A symlinked ancestor
+    // cannot reach here: every caller's own `walk` has already resolved one away, and the
+    // constructor's seed path (the one caller that skips `walk`) never has one to find.
     this.assertAncestorChainFree(normalizedPath);
     let current = normalizedPath;
     // The `>=` bound reaches rootDir on purpose: after `rmRecursive(rootDir)` the root is
@@ -527,7 +529,7 @@ export class MemoryFileSystem implements FileSystem {
     // beneath it must refuse. Dropping the `return` alone is harmless — `parentOf(rootDir)`
     // is '' and fails the bound on the next test.
     while (current.length >= this.rootDir.length) {
-      if (this.files.has(current) || this.symlinks.has(current)) {
+      if (this.files.has(current)) {
         throw notADirectory(current);
       }
       // Stryker disable next-line ConditionalExpression: equivalent — forcing this false only lets the loop step to parentOf(rootDir), which is strictly shorter than rootDir and fails the `>=` bound before anything is checked; the forced-true variant is killable (it stops after the first segment) and rides along only because the mutator cannot be narrowed.
