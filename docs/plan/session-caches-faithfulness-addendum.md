@@ -29,9 +29,10 @@ commits; and the ref delete and dereference semantics (gap G2, U3, U4, U6, U5) a
 | 19 | C, parse acceptance, B | 3 | behaviour change (new refusals, refusal order) |
 | 20 | K, E, D | 3 | pure refactor (K); behaviour change (E, D) |
 
-**Undecided open items bind two parts** (design "Open items raised by the U1–U6 pins", repeated
-[below](#open-items-raised-by-the-u1u6-pins)): O1 and O3 in Part 18, O2 and O4 in Part 17. The parts carry each
-outcome's delta; the session names the outcome when it spawns the part.
+**Open items** (design "Open items raised by the U1–U6 pins", repeated
+[below](#open-items-raised-by-the-u1u6-pins)): O1–O4 are resolved (all (a), 2026-09-14) and implemented as decided
+— O2, O4 in Part 17; O1, O3 in Part 18. O5 and O6 are open; Part 18 implements their option (b) — residual-titled
+interop rows — and lists the delta option (a) would add, so neither blocks a part.
 
 Parts run sequentially in one working tree (`/Users/scolladon/workspace/perso/node/tsgit-session-caches-per-command-floor`,
 branch `feat/session-caches-per-command-floor`); each part starts from the previous part's last commit.
@@ -251,7 +252,7 @@ and delete semantics, and memory-adapter parity"); the pins that decision raised
 
 | # | Item | Reason | Options weighed | Resolution |
 |---|---|---|---|---|
-| G1 | F's unit rows cannot run on the plain memory adapter | `MemoryFileSystem.read`/`readUtf8` (`src/adapters/memory/memory-file-system.ts:66-91`) never follow a symlink, and `stat` resolves a relative link target against the adapter root, not the link's directory (`:155-178`, `:459-465`). The design's "memory adapter `symlink`; F2 oid → `direct`" row would resolve `missing`. | (a) A test-local Context double that follows the HEAD link. (b) Teach `MemoryFileSystem` POSIX symlink following on read. (c) Pin F2–F5 in Node interop only. | **(b), user; widened by U1 and U2.** Part 17 commits 1–2: the memory adapter resolves a symlink in every component (reads follow the leaf too; write leaves never), a relative link text against the link's directory, 40 hops; its refusal codes follow the Node adapter's explicit errno arms. F's unit rows use the real memory adapter. ADR-872. |
+| G1 | F's unit rows cannot run on the plain memory adapter | `MemoryFileSystem.read`/`readUtf8` (`src/adapters/memory/memory-file-system.ts:66-91`) never follow a symlink, and `stat` resolves a relative link target against the adapter root, not the link's directory (`:155-178`, `:459-465`). The design's "memory adapter `symlink`; F2 oid → `direct`" row would resolve `missing`. | (a) A test-local Context double that follows the HEAD link. (b) Teach `MemoryFileSystem` POSIX symlink following on read. (c) Pin F2–F5 in Node interop only. | **(b), user; widened by U1 and U2.** Part 17 commits 1–2: the memory adapter resolves a symlink in every component (reads follow the leaf too, and so does `mkdir` (O2 (a)); other write leaves never), a relative link text against the link's directory, 40 hops; its refusal codes follow the Node adapter's explicit errno arms. F's unit rows use the real memory adapter. ADR-872. |
 | G2 | Null new id (`update-ref <ref> 0{40}`) | Pinned while planning: git **deletes** the ref; tsgit's `updateRef(name, zeroOid, {})` writes a null-id ref (`update-ref.ts:47-48`). The design said only "null ids are unverified". | (a) Keep the write, pin as residual. (b) A null `newId` without `delete: true` deletes, as git does. (c) Refuse it unless `delete: true`. | **(b), user.** Part 18 commit 1: delete path, compare-and-swap honoured, absent ref a no-op success (U3, both paths), never verified (git's `!is_null_oid`), own log removed; the coupled `logs/HEAD` entry on every delete path is commit 3 (U6). ADR-871. |
 | G3 | E13 ("unparseable ref content → could not be found") | The design's `resolveTerminalName` returns `undefined` on `INVALID_REF`, but a loose ref holding neither an oid nor `ref: …` refuses `INVALID_OBJECT_ID` (`parseLooseRef` → `ObjectId.from`, `src/domain/objects/object-id.ts:42-44`). | (a) Both codes mean "does not resolve for reading". (b) `parseLooseRef` raises `INVALID_REF`. (c) Residual. | **(a), session.** `INVALID_OBJECT_ID` and `INVALID_REF` both classified with `errorDataCode` as unresolvable (Part 20 commit 2). |
 | G4 | The shared ref glob's matching engine | `name-rev`'s `matchRefGlob` compiles to a backtracking `RegExp` (`src/domain/name-rev/ref-pattern.ts:13-21`); D feeds it patterns from repository configuration, which a planted `.git/config` controls — the ReDoS class the linear `compileGlob` closed. | (a) Linear byte-wise matcher + perf guard. (b) Extend the regex. (c) Extend `compileGlob`. | **(a), session.** Part 20 commit 3. |
@@ -262,15 +263,20 @@ and delete semantics, and memory-adapter parity"); the pins that decision raised
 ### Open items raised by the U1–U6 pins
 
 U1–U6 (the open items the gap resolutions raised) are **decided** — all six folded into this PR by the user,
-2026-09-14 (ADR-871, ADR-872). Their pins raised four items that are **not** decided; each stops the part that
-meets it until the session names an outcome (design "Open items raised by the U1–U6 pins").
+2026-09-14 (ADR-871, ADR-872). The four questions their pins raised were **resolved** the same day; two found while
+pinning those resolutions are **open**.
 
-| # | Item | Reason | Options | Part |
+| # | Item | Resolution / status | Part |
+|---|---|---|---|
+| O1 | `branch.rename`'s `logs/HEAD` entries | **(a)** — rename writes git's two entries on each backend (design R11, R12, R17); tsgit writes none today, so it is a fix | 18 commit 3 |
+| O2 | `MemoryFileSystem.mkdir` on a symlink leaf | **(a)** — follows its leaf as the Node adapter does (design Y17), keeping ADR-811's file code and containment | 17 commit 1 |
+| O3 | `remote.rename`'s packed-only refusal | **(a)** — removed with U4; git's rename of packed-only tracking refs pinned (design R18) | 18 commit 2 |
+| O4 | Memory create-surface codes | **(a)** — ADR-811 kept; U2 covers read-side and loop codes only | 17 commit 2 |
+
+| # | Item | Reason | Options | Part default |
 |---|---|---|---|---|
-| O1 | `branch.rename`'s `logs/HEAD` entries | U6 gave rename a non-logging delete "so its reflog bytes stay git's"; git writes two `logs/HEAD` entries when renaming the branch `HEAD` names, on both backends (design R11, R12), and tsgit writes none today. | (a) Log both (delete with the rename message, `HEAD` re-point logged `0{40} → id`), git's bytes — recommended. (b) Non-logging delete as decided, residual recorded. (c) Logging delete only. | 18 commit 3 |
-| O2 | `MemoryFileSystem.mkdir` on a symlink leaf | Node's `mkdir -p` follows its leaf (a link to a directory succeeds; dangling `FILE_NOT_FOUND`; loop `PERMISSION_DENIED`); the decision keeps write leaves no-follow; memory refuses `NOT_A_DIRECTORY` (design Y12). | (a) Follow on `mkdir` only. (b) Keep `NOT_A_DIRECTORY` — the part's default. (c) Refuse `PERMISSION_DENIED`. | 17 commit 1 |
-| O3 | `remote.rename`'s packed-only refusal (`assertRenamableTrackingRef`) | Its stated cause (no packed rewrite) is removed by U4; git renames packed-only tracking refs (design R9); not among U1–U6. | (a) Remove it in U4's commit. (b) Keep, residual. (c) Separate follow-up. | 18 commit 2 |
-| O4 | Depth-one non-directory and dangling-component codes on memory create surfaces | Node's explicit arms give `FILE_EXISTS` / `FILE_NOT_FOUND` (design Y10, Y11), but ADR-811 ratified keeping memory's `NOT_A_DIRECTORY`. | (a) Keep ADR-811 — the part's default. (b) Reopen ADR-811 and mirror Node. | 17 commit 2 |
+| O5 | reftable `branch.rename` branch-log bytes | git's reftable backend writes the renamed branch's log as the moved history + `<id> 0{40}` + `0{40} <id>`, and a forced rename keeps the destination's own history (design R16, R17); tsgit writes the files shape (`<id> <id>`, destination replaced) on both backends. | (a) Transcribe the reftable shape in Part 18 commit 3. (b) Residual. (c) Follow-up. | (b): a residual-titled reftable row in Part 18 commit 3 |
+| O6 | `remote.rename` reflog outcome and `<remote>/HEAD` re-point | git moves each tracking ref's log and appends `<id> <id> remote: renamed <full old> to <full new>` only where a log exists, creates none otherwise, and re-points `<remote>/HEAD` (design R18; reftable R19 differs); tsgit writes `0{40} <id> remote: renamed <from> to <to>` on every target, deletes the source log, skips symrefs. | (a) Fold into Part 18 commit 2. (b) Residual. (c) Follow-up. | (b): R18's reflog comparison residual-titled in Part 18 commit 2 |
 
 ## Git pins taken while planning
 
@@ -382,7 +388,8 @@ message. One `chore(size): …` commit per gate.
 3. Size-cap raises per [Size budgets](#size-budgets--tarball-and-size-limit).
 4. Browser e2e is not run by any part: `test/parity/scenarios/reftable-refs.scenario.ts` changes in
    Part 19 and runs under Playwright in CI too; Part 18's `updateRef` changes reach it unchanged.
-5. Open items O1–O4 must each be named before its part is spawned; a part spawned without one stops.
+5. Open items O5 and O6: if the user picks (a) for either before Part 18 is spawned, add the delta its commit lists;
+   otherwise the residual-titled rows stand and the items stay recorded.
 
 ## v5 migration notes (for the docs phase)
 
@@ -442,8 +449,9 @@ One line each on the 5.0 migration page; every item is observable by a caller.
     read through a link returns the target's bytes instead of `FILE_NOT_FOUND`, a write through a symlinked
     directory lands in the target directory instead of refusing `NOT_A_DIRECTORY`, and `exists` on a dangling
     link is `false` instead of `true` — the Node adapter's answers. Write leaves, `lstat`, `readlink`, `rm`,
-    `rename` and `openWithNoFollow` still act on the link itself. The browser adapter is unchanged (OPFS has no
-    symlinks). (G1, U1, ADR-872)
+    `rename` and `openWithNoFollow` still act on the link itself; `mkdir` follows its leaf as the Node adapter does
+    (a link to a directory is a no-op, a dangling link refuses `FILE_NOT_FOUND`). The browser adapter is unchanged
+    (OPFS has no symlinks). (G1, U1, O2, ADR-872)
 16. **`updateRef(name, <null id>, …)` deletes the ref**, as `git update-ref <ref> 0{40}` does, instead of
     writing a ref holding the null id: the same delete as `delete: true` — compare-and-swap honoured, own reflog
     removed, no target verified. (G2, ADR-871)
@@ -467,12 +475,18 @@ One line each on the 5.0 migration page; every item is observable by a caller.
 22. **`MemoryFileSystem` refuses with the Node adapter's codes**: a symlink loop `PERMISSION_DENIED` (was
     `UNSUPPORTED_OPERATION` from `stat`; `exists` now throws it), reading a directory `PERMISSION_DENIED` (was
     `FILE_NOT_FOUND`), `readdir` of a missing path `FILE_NOT_FOUND` (was `NOT_A_DIRECTORY`), any path beneath a
-    regular file `NOT_A_DIRECTORY` (was `FILE_NOT_FOUND`; `exists` now throws it). (U2, ADR-872)
+    regular file `NOT_A_DIRECTORY` (was `FILE_NOT_FOUND`; `exists` now throws it). Create-surface codes are unchanged
+    (ADR-811). (U2, O4, ADR-872)
 23. **Commands write refs as git does through symrefs**: `commit`, `merge`, `reset`, `merge --abort`,
     `cherry-pick`, `revert` and their aborts write through `HEAD`, so a raced update refuses
     `REF_UPDATE_CONFLICT { name: 'HEAD' }`; `branch.create({ force })`, `tag.create({ force })`, `notes` and
     `push`'s tracking update move a symref's target instead of replacing the symref; `branch.delete`,
     `tag.delete` and `remote.remove` still delete a symref itself. (U5, ADR-871)
+24. **`branch.rename` of the checked-out branch writes git's two `logs/HEAD` entries** — `<id> 0{40}` then `0{40}
+    <id>`, both `Branch: renamed refs/heads/<from> to refs/heads/<to>` — where it wrote none. (O1, ADR-871)
+25. **`remote.rename` renames packed-only tracking refs** instead of refusing `UNSUPPORTED_OPERATION`
+    (`rename-packed-tracking-ref`): the new names are written loose and the old lines leave `packed-refs`, as
+    `git remote rename` does. (O3, U4, ADR-871)
 
 ## Docs-phase debt declared by the parts
 
@@ -491,7 +505,8 @@ One line each on the 5.0 migration page; every item is observable by a caller.
   `UpdateRefOptions`; dereferencing, `noDeref`, reflog entries per symref, null id and `delete: true` as deletes,
   absent no-op, coupled `logs/HEAD` entry, packed rewrite, the two lock refusals, the backend differences);
   `docs/use/commands/fetch.md` (prune), `docs/use/commands/branch.md`, `docs/use/commands/tag.md`,
-  `docs/use/commands/remote.md` (symrefs deleted as themselves); `docs/use/errors.md` rows `REF_UPDATE_CONFLICT`,
+  `docs/use/commands/remote.md` (symrefs deleted as themselves; `rename` of packed-only tracking refs, its reflog
+  residual), `branch.md` (`rename` logs `HEAD`); `docs/use/errors.md` rows `REF_UPDATE_CONFLICT`,
   `REF_CYCLE_DETECTED`, `RESOURCE_LOCKED`, `REF_LOCKED`, `REF_NOT_FOUND`, `UNSUPPORTED_OPERATION`.
 - Part 19: `docs/use/primitives/update-ref.md` (verification, typed by the given name),
   `docs/use/commands/tag.md`, `docs/use/commands/clone.md`, `docs/use/primitives/stream-blob.md` (refusal at
@@ -531,21 +546,22 @@ after the U1–U6 fold.
 - **Coverage of design changes and gap resolutions.** I → Part 14. A → Part 15 c1. N → Part 15 c2. H →
   Part 16 c1. O (DC-O1 a) → Part 16 c2. G1 (b) + U1 memory-adapter resolution → Part 17 c1. U2 codes → Part 17 c2.
   F → Part 17 c3. M (DC-M1 a) → Part 17 c4. G2 (b) null id + U3 absent no-op → Part 18 c1. U4 packed refs and
-  locks, prune catch removal → Part 18 c2 (O3 either way). U6 coupled entry, delete-arm `reflogMessage` →
-  Part 18 c3 (O1 either way). U5 chain, `noDeref`, backend table, caller classes C/D/E → Part 18 c4. C (DC-C1 a,
+  locks, prune catch removal, O3 (a) → Part 18 c2. U6 coupled entry, delete-arm `reflogMessage` →
+  Part 18 c3 with O1 (a). U5 chain, `noDeref`, backend table, caller classes C/D/E → Part 18 c4. C (DC-C1 a,
   DC-C2 c) + stream arm + `withLazyFetchRetry` export + empty-tree arm + G7 clone assertion + typing by the
   given name → Part 19 c1. Parse acceptance → Part 19 c2. B → Part 19 c3. G3 → Part 20 c2; G4 → Part 20 c3; G5
   → Part 15 c1; G6 → Part 19 probes. K → Part 20 c1. E (DC-E1 a, DC-E2 a) → Part 20 c2. D (DC-D1 a, DC-D2 a,
   DC-D3 b) → Part 20 c3. ADR correction notes: already committed, no part; ADR-864's and ADR-868's notes point to
-  ADR-871 and ADR-872. Docs: declared above. O1–O4: tabled, each part carries both outcomes or the default.
+  ADR-871 and ADR-872. Docs: declared above. O1–O4 resolved and placed (O2 → Part 17 c1, O4 → Part 17 c2); O5, O6
+  open with residual-titled defaults.
 - **Interop coverage of pinned rows.** A1 (`cat-file -s`/`-p`/`--batch`, checkout, status, fsck), A2, A3 →
   Part 15 interop; A1's buffered-tier rows (`diff`, `archive`, `grep`, `repack`) and A4 are unit-only by
   design (reproducing them means sizing a buffer from the claim; tsgit's real-bytes behaviour is pinned by
   unit rows). Null-id and absent deletes (existing, absent, matching old, mismatching old, old on absent,
   `expected: 'absent'`, reftable) → Part 18 c1; Q1–Q12, Q14, X13, prune of a packed-only ref (R8) → Part 18 c2; X2,
   X3, X16 and Q14's `logs/HEAD` → Part 18 c3; S1, S3–S5, S7, S8, S11, S12, S14–S17, S19–S25, S27, S28, X4–X12, X14,
-  X15, X17, R5, R6, R8 (`origin/HEAD` kept), R10, R14 → Part 18 c4. Q13 (a lying `sorted` trait), R9 (O3), R11–R13
-  (O1), S2/S6/S9/S10 (C's typing) and R15 (push, covered by the class-B unit row) are placed with their owner or
+  X15, X17, R5, R6, R8 (`origin/HEAD` kept), R10, R14 → Part 18 c4. Q13 (a lying `sorted` trait), R9 and R18 (O3 (a), Part 18 c2; R18's reflog comparison residual-titled, O6), R11–R13 and R17's `logs/HEAD`
+  (O1 (a), Part 18 c3; R16/R17 branch logs residual-titled, O5), R19 (O6, unit-free residual), S2/S6/S9/S10 (C's typing) and R15 (push, covered by the class-B unit row) are placed with their owner or
   recorded as residuals. S13 (a 6-link chain) is unit-only (a chain row per length adds nothing over S11 in
   interop). B1–B8 → Part 19 c3. C1–C9 + S9/S10 + empty tree/blob + reftable → Part 19 c1; the six parse rows + PC4
   checked/shallow + upper-case hex, late `parent`, empty tag name and short tag rows → Part 19 c2. Memory-adapter
@@ -1216,17 +1232,17 @@ Commit 2: `fix(cache): charge the parsed-object memo at its measured per-entry c
 
 **Depends on Part 14** (`ref-store.ts:35` already imports `errorDataCode` from the domain). Commits 1 and 2
 must land before commit 3: F's unit rows run on the real memory adapter, and its directory row relies on commit 2's
-`PERMISSION_DENIED` for a directory read. Open items O2 and O4 (design) are undecided; this part implements
-their defaults (memory keeps `NOT_A_DIRECTORY` for `mkdir` on a link leaf and for a create surface's depth-one
-non-directory or dangling parent) and must not change them.
+`PERMISSION_DENIED` for a directory read. Resolved open items: **O2 (a)** — `mkdir` follows a symlink leaf as the
+Node adapter does (commit 1); **O4 (a)** — ADR-811 stays, so every create surface keeps the memory adapter's own
+codes and U2 (commit 2) is scoped to read-side and loop codes.
 
 #### Commit 1 — the memory adapter resolves every path component (gap G1 b, widened by U1; ADR-872)
 
 **Decision.** `MemoryFileSystem` resolves a symlink in **every** path component, as the Node adapter's
 syscalls do: reads (`read`, `readSlice`, `readUtf8`, `stat`, `exists`, `readdir`) follow the leaf too;
-every other surface (`lstat`, `readlink`, `openWithNoFollow`, `rm`, `rename`, `atomicRename`,
-`rmRecursive`, `chmod`, `write`, `writeStream`, `writeUtf8`, `appendUtf8`, `writeExclusive`, `symlink`,
-`mkdir`) resolves intermediates only and keeps its leaf behaviour. A relative link text resolves against
+`mkdir` follows the leaf too (O2 (a)); every other surface (`lstat`, `readlink`, `openWithNoFollow`, `rm`,
+`rename`, `atomicRename`, `rmRecursive`, `chmod`, `write`, `writeStream`, `writeUtf8`, `appendUtf8`,
+`writeExclusive`, `symlink`) resolves intermediates only and keeps its leaf behaviour. A relative link text resolves against
 the link's own directory. The hop bound is the existing `SYMLINK_FOLLOW_LIMIT` (40,
 `src/adapters/memory/memory-file-system.ts:154`) with the existing boundary. This commit aligns **no
 refusal code** — commit 2 does (U2); the walk's loop refusal reuses `stat`'s existing
@@ -1241,15 +1257,15 @@ refusal code** — commit 2 does (U2); the walk's loop refusal reuses `stat`'s e
 | `exists` (`:144-151`) | `true` for any link key, dangling included; `false` through a link | `fsOps.stat`: dangling → `false` (`:730-741`) | walk `follow`; absent → `false` |
 | `readdir` (`:196-221`) | a link → `NOT_A_DIRECTORY` | follows (`:755-766`) | walk `follow`, then today's directory logic |
 | `lstat` (`:181-194`), `readlink` (`:354-361`), `openWithNoFollow` (`:421-431`) | lexical path | lexical `resolveRead`, OS follows intermediates, not the leaf | walk `no-follow` |
-| `write` (`:93-103`), `writeStream` (`:105-116`), `writeExclusive` (`:118-126`), `writeUtf8` (`:128-130`), `appendUtf8` (`:132-142`), `symlink` (`:363-371`), `mkdir` (`:223-231`) | `ensureParentDirs` → `assertAncestorChainFree` (`:492-505`) refuses any link on the chain `NOT_A_DIRECTORY` | `resolveWrite` realpaths the parent, then `O_NOFOLLOW` / leaf checks (`:1228-1278`) | walk `no-follow`, then today's leaf refusals and parent creation on the walked path |
+| `write` (`:93-103`), `writeStream` (`:105-116`), `writeExclusive` (`:118-126`), `writeUtf8` (`:128-130`), `appendUtf8` (`:132-142`), `symlink` (`:363-371`), `mkdir`'s intermediates | `ensureParentDirs` → `assertAncestorChainFree` (`:492-505`) refuses any link on the chain `NOT_A_DIRECTORY` | `resolveWrite` realpaths the parent, then `O_NOFOLLOW` / leaf checks (`:1228-1278`) | walk `no-follow`, then today's leaf refusals and parent creation on the walked path |
 | `rm` (`:233-256`), `rename`/`atomicRename` (`:259-276`), `rmRecursive` (`:385-392`), `chmod` (`:381-383`) | lexical path | `resolveWrite` (parent realpath, leaf not followed) | walk `no-follow` (both `rename` paths) |
+| `mkdir` (`:223-231`) — O2 (a) | a link leaf → `NOT_A_DIRECTORY` (`:226-228`) | always `{ recursive: true }` (`:769-772`): a link to a directory → success, nothing created; dangling → `FILE_NOT_FOUND`, target not created; a link to a file → `FILE_EXISTS`; a loop → `PERMISSION_DENIED`; a link to a directory outside the root → success (design Y17) | walk `follow`: a link to a directory → no-op; dangling → `fileNotFound(path)`, nothing created; a link to a file → `notADirectory(path)` (ADR-811's code, O4); a loop → the walk's refusal; a link leaving the root → `PERMISSION_DENIED` (containment) |
 
 Unchanged in this commit, changed by commit 2: every refusal code (a loop still reports `stat`'s
 `UNSUPPORTED_OPERATION` — now from the walk, with `operation` = the calling surface — a directory read
 `FILE_NOT_FOUND`, a missing `readdir` `NOT_A_DIRECTORY`). Kept for good (ADR-811, ADR-815, ADR-818,
 design Y10–Y12): a non-directory or a dangling link at a create surface's immediate parent refuses
-`NOT_A_DIRECTORY`; `mkdir` on a symlink leaf refuses `NOT_A_DIRECTORY` (open item O2); write leaves never
-follow. A followed target outside the root refuses `PERMISSION_DENIED` through `resolve` (`:459-465`), the
+`NOT_A_DIRECTORY` (O4 (a)); write leaves other than `mkdir`'s never follow. A followed target outside the root refuses `PERMISSION_DENIED` through `resolve` (`:459-465`), the
 posture `test/unit/adapters/memory/memory-file-system.test.ts:14-21` declares (`symlinkReadEscape:
 'refused'`).
 
@@ -1314,7 +1330,13 @@ subdirectory (an absolute text passes the old root-relative follower and proves 
   of `link-dir/a` to `link-dir/b`; `rm(link-dir/b)`; `rmRecursive(link-dir/deep)`;
   `openWithNoFollow(link-dir/f.txt, 'write')`; a two-hop directory chain (`link2 → link-dir → ../real`);
 - leaf rules unchanged: `write(<root>/sub/link-dir)` still refuses `PERMISSION_DENIED`,
-  `rmRecursive(<root>/sub/link2)` removes the link and keeps `real/`.
+  `rmRecursive(<root>/sub/link2)` removes the link and keeps `real/`;
+- **`mkdir` on a link leaf** (O2 (a)), contract rows: `mkdir(<root>/sub/link-dir)` resolves, `lstat` still reports
+  the link and `readdir(<root>/real)` is unchanged; `symlink('missing-dir', <root>/sub/dangling-dir)` →
+  `mkdir(dangling-dir)` refuses `FILE_NOT_FOUND` and `exists(<root>/sub/missing-dir)` is `false`. Memory-only rows
+  in `memory-file-system.test.ts` (the codes differ by design): a link to a file → `NOT_A_DIRECTORY` (Node:
+  `FILE_EXISTS`, ADR-811); a link whose absolute text leaves the root → `PERMISSION_DENIED`, nothing recorded.
+  The loop row lands in commit 2 with the loop code.
 The Node run of each row is its parity oracle; the head-symlink interop rows in commit 3 are the end-to-end
 one on Node.
 
@@ -1353,7 +1375,9 @@ failing:
 - **Inert-change risk:** absolute link texts pass before and after; every new row uses relative text in a
   subdirectory, and every write-through row asserts the bytes at the real path (a write that silently created
   a directory at the link's name would otherwise pass a read-back through the same link).
-- Do not follow the leaf in any non-read surface; do not change any refusal code here (commit 2).
+- Do not follow the leaf in any non-read surface except `mkdir`; do not change any refusal code here (commit 2) —
+  `mkdir`'s dangling `FILE_NOT_FOUND` is the follow's own outcome, not a code change.
+- `mkdir` on a dangling link must not create the link's target (the Node adapter does not): assert it.
 - Symlink creation in the Node contract run needs OS symlink support; the existing `:791` row already
   requires it.
 
@@ -1373,10 +1397,10 @@ Implementation: the walk's hop refusal becomes `permissionDenied(path)` (drop th
 the walk refuses `notADirectory(path)` when a non-final component resolves to a file
 (`assertTraversable`); `read`'s absent-key branch checks `directories.has` first; `readdir`'s
 `!directories.has` branch refuses `fileNotFound(path)` unless a file occupies the key (`notADirectory`);
-`exists` lets the two walk refusals propagate. Not changed (design Y10–Y16, ADR-811, O2, O4): create
-surfaces' immediate-parent and dangling-component codes, `mkdir` on a link leaf, `rm` of a directory,
-`readlink` of a non-link (`FILE_NOT_FOUND`, the port's documented answer), `openWithNoFollow(dir, 'read')`,
-the hop limit.
+`exists` lets the two walk refusals propagate. Not changed: every create surface's codes (O4 (a), ADR-811 —
+immediate-parent non-directory, dangling component, `mkdir` onto a file); and the residuals ADR-872 records with
+the port-doc reason — `rm` of a directory (the port says "Remove file or empty directory"), `readlink` of a
+non-link (`FILE_NOT_FOUND`, the port's documented answer), `openWithNoFollow(dir, 'read')` — and the hop limit.
 
 **Public or internal.** `src/ports/file-system.ts:120`'s `readdir` JSDoc ("Throws NOT_A_DIRECTORY if not a
 directory") gains "FILE_NOT_FOUND if absent" — a `reports/api.json` change, owed at the phase boundary.
@@ -1398,7 +1422,9 @@ refuse `PERMISSION_DENIED`, `exists(la)` rejects `PERMISSION_DENIED`; `read(dir)
 - `test/unit/adapters/memory/memory-file-system.test.ts`: `:331-350` (readdir of a missing path →
   `NOT_A_DIRECTORY` → **flips** to `FILE_NOT_FOUND`), `:563-590` (mutual loop → `UNSUPPORTED_OPERATION`
   `operation: 'stat'` → **flips** to `PERMISSION_DENIED`), `:591-635` (40-hop row → **flips** its code, keeps its
-  boundary), any row reading a directory or a path beneath a file (`rg -n "readdir|When read" …`).
+  boundary), any row reading a directory or a path beneath a file (`rg -n "readdir|When read" …`), and `:1977`,
+  `:1999-2000` (`exists` beneath a regular file asserted `false` → now refuses `NOT_A_DIRECTORY`; assert "nothing
+  recorded" through `readdir` of the root, as `:1978` already does).
 - `test/unit/ports/file-system.contract.ts:702` ("Given non-directory path, When readdir, Then throws
   NOT_A_DIRECTORY") uses a regular file (`not-a-dir.txt`) and stays green.
 - Suites that assert memory-produced `NOT_A_DIRECTORY` for absence (run them; keep production code accepting
@@ -1412,7 +1438,8 @@ refuse `PERMISSION_DENIED`, `exists(la)` rejects `PERMISSION_DENIED`; `read(dir)
 **Traps**
 - No references to this plan, the design, ADRs or open items in source or test code.
 - Assert the exact code in every new row (ADR-824's shape); one condition per row.
-- Do not change create surfaces' parent codes or `mkdir`'s leaf (ADR-811; O2, O4 undecided).
+- Do not change create surfaces' codes (ADR-811, O4 (a)); the only create-surface change in this part is commit 1's
+  `mkdir` leaf follow.
 
 #### Commit 3 — read-through (F)
 
@@ -1610,13 +1637,15 @@ epoch). No code change.
 5. **RED** — contract row: `write(<root>/sub/link-dir/w.txt)` lands at `real/w.txt`. Fails on memory
    (`NOT_A_DIRECTORY` from `assertAncestorChainFree`).
 6. **GREEN** — every create, `rm`, `rename`, `atomicRename`, `rmRecursive`, `chmod` surface walks `no-follow`; remaining
-   write-through rows, leaf rules unchanged.
+   write-through rows, leaf rules unchanged. **RED/GREEN** — `mkdir` on a link leaf (O2 (a)): link to a directory
+   resolves, dangling refuses `FILE_NOT_FOUND` without creating the target, the memory-only file and out-of-root rows.
 7. **Regression** — `memory-file-system.test.ts:563-635` unchanged and green; the enumerated suites in batches (Gate).
 
 **Commit 2 (refusal codes)**
 8. **RED** — contract row: mutual loop, `read(la)` → `PERMISSION_DENIED`. Fails on memory.
 9. **GREEN** — the walk's hop refusal becomes `permissionDenied(path)`; flip `:563-635`'s code assertions.
-10. **RED/GREEN** — directory read, missing and dangling `readdir`, each beneath-a-file row, `exists` throwing twice.
+10. **RED/GREEN** — directory read, missing and dangling `readdir`, each beneath-a-file row, `exists` throwing twice,
+    `mkdir` on a looping link leaf → `PERMISSION_DENIED`; repair `memory-file-system.test.ts:1977`, `:1999-2000`.
 11. **REFACTOR** — the port's `readdir` JSDoc and the five stale comments.
 12. **Regression** — the absence-code suites listed under commit 2, then the commit-1 batches again.
 
@@ -1701,8 +1730,10 @@ coupled entry, then the chain).
 
 Design: "Ref write and delete semantics, and memory-adapter parity (U1–U6)" — matrices S (symrefs), X
 (deletes), R (commands), Q (`packed-refs`); "Change — U3/U4/U5/U6"; the two caller audits. Decisions: ADR-871.
-**Open items O1 and O3 are undecided** — the commits carry both outcomes where they apply; implement the one
-the session names when it spawns this part, and stop if none is named.
+**Resolved open items:** **O3 (a)** — `remote.rename`'s packed-only refusal goes in commit 2; **O1 (a)** —
+`branch.rename` writes git's two `logs/HEAD` entries in commit 3 (tsgit writes none today: a fix). **Open, with
+defaults:** O6 (`remote.rename`'s reflog outcome, commit 2) and O5 (reftable rename branch-log shape, commit 3) are
+implemented as option (b) — residual-titled interop rows — and each commit lists the delta option (a) would add.
 
 **Shared interop file, created by commit 1:** `test/integration/ref-transaction-interop.test.ts`. `@proves`:
 surface `updateRef, fetch, branch.delete, tag.delete, remote.remove`; bucket `cross-tool-interop`; unique
@@ -1869,11 +1900,29 @@ async function applyDelete(update: Extract<RefUpdate, { kind: 'delete' }>): Prom
   `Stryker disable` line at `:409` goes with the function. Keep the loop body a plain `await updateRef(…)`.
 - `TsgitError` / `unsupportedOperation` imports in `ref-store.ts` and `fetch.ts`: drop what becomes unused.
 
-**Open item O3 (undecided).** If the session names **(a)**: also delete `assertRenamableTrackingRef`
-(`ref-store.ts:288-307`) and its call (`src/application/commands/remote.ts:220`), flip
-`test/unit/application/commands/remote.test.ts:~820-840` (`rename-packed-tracking-ref` → the packed-only tracking
-ref is renamed: new loose ref, packed line gone) and delete `test/unit/application/primitives/ref-store.test.ts:369-427`
-(the three `assertRenamableTrackingRef` rows), and add interop R9. If **(b)** or **(c)**: leave both untouched.
+**O3 (a) — `remote.rename` renames packed-only tracking refs.** Delete `assertRenamableTrackingRef`
+(`ref-store.ts:288-307`, with its docstring) and its call and comment in `moveTrackingRef`
+(`src/application/commands/remote.ts:217-220`); drop the now-unused imports. `moveTrackingRef` keeps its
+`resolveDirect` guard (`:215-216`), the target write and the source delete — the delete now removes the packed line
+through this commit's locked rewrite. Flip `test/unit/application/commands/remote.test.ts:~820-840`
+(`rename-packed-tracking-ref` → renamed: the new name loose with the packed id, the old name gone from
+`packed-refs`) and delete `test/unit/application/primitives/ref-store.test.ts:369-427` (the three
+`assertRenamableTrackingRef` rows). Migration note 25.
+
+**Interop R18** — a files base built with git in `beforeAll`: a bare upstream with branches `keep`, `lp`, `pl`,
+`main`; a clone; a second upstream commit fetched so `lp` and `pl` move (their logs gain `fetch … : fast-forward`);
+`git pack-refs --all`, so every `refs/remotes/origin/*` is packed-only and `keep`, `main` have no log. Copies:
+`git remote rename origin up2` in `peer`, `remoteRename(ctx, { from: 'origin', to: 'up2' })` in `ours`. Compare
+exactly: exit status; `packed-refs` bytes (git's: `# pack-refs with: peeled fully-peeled sorted \n` + the
+`refs/heads/main` line — every `refs/remotes/origin/*` line gone); the set and content of loose files under
+`refs/remotes/` (`up2/{keep,lp,main,pl}` holding their ids); `git show-ref` output. **Reflog comparison
+residual-titled (O6 (b))**: git leaves `keep`/`main` unlogged, moves `lp`/`pl` history and appends `<id> <id> remote:
+renamed refs/remotes/origin/lp to refs/remotes/up2/lp`, and re-points `up2/HEAD` with its moved log plus a
+`0{40} 0{40}` rename entry; tsgit writes `0{40} <id> remote: renamed origin to up2` on every new name, removes the old
+logs and leaves `origin/HEAD` — assert tsgit's own outcome in the residual row so a later fix flips it.
+**If O6 becomes (a):** move each logged ref's log (`store.moveReflog`), append `<id> <id> remote: renamed <old ref>
+to <new ref>` only where a log exists, write no entry for an unlogged ref, re-point `<remote>/HEAD` with git's
+entry, and un-title the reflog comparison (files; reftable R19 needs its own shape).
 
 **Public or internal.** `withLockFile` and `packedRefsWithout` are internal (not barrelled). No type changes.
 Migration notes 20, 21.
@@ -1931,7 +1980,7 @@ and `fetch --prune` of a packed-only tracking ref against the `packed-refs-inter
 `<old> 0{40} <message>` to `logs/HEAD` in the same `applyRefUpdates` call (X2, X3, Q14). The `delete: true` arm
 of `UpdateRefOptions` gains `reflogMessage?: string` (empty when omitted: the line ends at the zone, X3). A delete
 of an **absent** ref `HEAD` names writes `0{40} 0{40} <message>` on the files backend and nothing on reftable
-(X16) — the first field of the backend table. `branch.rename` per open item O1.
+(X16) — the first field of the backend table. `branch.rename` writes git's two `logs/HEAD` entries (O1 (a)).
 
 **Current code (verified).** `coupledHeadTarget` `src/application/primitives/update-ref.ts:79-81`;
 `resolveHeadForCoupling` `:88-95`; `refUpdatesFor` `:58-73`. `UpdateRefOptions` `src/application/primitives/types.ts:103-118`.
@@ -1968,18 +2017,29 @@ function deleteUpdates(ctx: Context, name: RefName, current: ResolveDirectResult
 The `reflogOnly` HEAD entry goes through `recordRefUpdate`'s gate, which creates `logs/HEAD` when absent under
 `core.logAllRefUpdates` (X16's "created"); the files backend's delete already removed the branch's own log.
 
-**Open item O1 (undecided) — `branch.rename`.** git writes two `logs/HEAD` entries when renaming the branch
-`HEAD` names (R11, R12). If the session names:
-- **(a)** — rename's delete passes `{ delete: true, noDeref: true, reflogMessage: branchRenamed(from, to) }`
-  (`noDeref` lands in commit 4; in this commit omit it — `from` is direct, `resolveRef` at `:172`) and the `HEAD`
-  re-point at `:229-232` becomes `store.applyRefUpdates([{ kind: 'setSymbolic', name: HEAD, target: to, reflog: {
-  oldId: zeroOid(ctx.hashConfig), newId: id, message: branchRenamed(from, to) } }])` instead of
-  `writeSymbolicRef`. Interop: extend `test/integration/reflog-interop.test.ts:1348-1420` (both rename rows) to
-  compare `logs/HEAD` bytes too, and add R12 (the old log absent) and R13 (a branch `HEAD` does not name: no entry).
-- **(b)** — rename's delete becomes a store-level `getRefStore(ctx).applyRefUpdates([{ kind: 'delete', name: from }])`
-  (no coupled entry); add an interop row pinning git's two entries against tsgit's none, residual-titled.
-- **(c)** — as (a) for the delete; keep `writeSymbolicRef`; the second entry residual-titled.
-Stop if the session names none.
+**O1 (a) — `branch.rename` writes git's two `logs/HEAD` entries.** Renaming the branch `HEAD` names writes, on
+both backends (design R11, R12, R17): `<id> 0{40} A <a@x> <ts> <tz>\tBranch: renamed refs/heads/<from> to
+refs/heads/<to>\n`, then `0{40} <id> … \tBranch: renamed …\n`. tsgit writes **none** today — this is a fix:
+- the delete at `branch.ts:228` passes `{ delete: true, reflogMessage: branchRenamed(from, to) }` (commit 4 adds
+  `noDeref: true`; `from` is direct here) — U6's coupled entry is git's first line;
+- the `HEAD` re-point at `:229-232` becomes `store.applyRefUpdates([{ kind: 'setSymbolic', name: HEAD, target: to,
+  reflog: { oldId: zeroOid(ctx.hashConfig), newId: id, message: branchRenamed(from, to) } }])` instead of
+  `writeSymbolicRef` (drop the import if unused) — git's second line; the old id is null because `from` is gone;
+- a rename of a branch `HEAD` does not name writes no `HEAD` entry (R13); the self-rename arm (`:174-187`) is
+  unchanged (it neither deletes nor re-points).
+The branch's own log keeps today's files shape (moved history + `<id> <id>`). **O5 (b):** the reftable branch-log
+shape (moved history + `<id> 0{40}` + `0{40} <id>`; a forced rename keeping the destination's history, R16, R17) is
+a residual-titled reftable row. **If O5 becomes (a):** add a `renameLog: 'moved-plus-same-id' |
+'moved-plus-delete-and-create'` field to `TransactionLogging`, write the reftable shape on the new name, keep the
+destination's live records on a forced rename (`reftable-ref-store.ts:315-326` `moveReflog` stops replacing), and
+un-title the row.
+
+**Interop (O1 (a))** — extend `test/integration/reflog-interop.test.ts:1348-1420` (both rename rows: plain and forced)
+to compare `logs/HEAD` bytes as well as the branch log, with identity and time pinned; add R12 (the old branch log
+absent), R13 (renaming a branch `HEAD` does not name: `logs/HEAD` unchanged, and absent `logs/HEAD` stays absent with
+`core.logAllRefUpdates=false`), and the reftable twin of the plain and forced rename comparing `logs/HEAD` bytes
+(after `git refs migrate --ref-format=files` on a copy of each side) — with the branch-log comparison
+residual-titled (O5 (b)).
 
 **Public or internal.** `UpdateRefOptions` gains a field — `reports/api.json` owed at the phase boundary;
 `transactionLogging` is internal. Migration notes 16 (rewritten), 18.
@@ -1994,11 +2054,13 @@ Stop if the session names none.
 - `:208-222` (malformed `HEAD`, delete) stays green: an unreadable `HEAD` reads as uncoupled;
 - `test/unit/application/primitives/internal/ref-transaction-logging.test.ts` (new): `refStorage: 'files'` →
   `written`; `'reftable'` → `skipped`.
-- `test/unit/application/commands/branch.test.ts` rename rows: run; under O1 (a) assert the two `HEAD` entries on a
-  memory Context, under (b) assert none.
+- `test/unit/application/commands/branch.test.ts` — renaming the checked-out branch: `readReflog(ctx, HEAD)` gains
+  exactly `{ oldId: <id>, newId: ZERO, message }` then `{ oldId: ZERO, newId: <id>, message }` with `message` =
+  `branchRenamed(from, to)`; the forced rename onto a live branch gains the same two; renaming another branch gains
+  none; the self-rename gains none; `HEAD` reads `ref: refs/heads/<to>` afterwards.
 
 **Tests (interop)** — append: X2 (`-m why`), X3 (no `-m`, exact bytes), Q14's `logs/HEAD` comparison, X16 on both
-bases. Flip commit 1's `HEAD`-entry residual row. O1's rows as above.
+bases. Flip commit 1's `HEAD`-entry residual row. O1 (a)'s rename rows as above.
 
 **Traps**
 - No references to this plan, the design, ADRs or open items in source or test code.
@@ -2045,7 +2107,7 @@ In `applyDeleteRecords`, tombstone existing logs only when the live record is no
   `cherry-pick.ts:347`, `:483`, `commit.ts:236`, `merge.ts:182`, `:298`, `reset.ts:87` (always `HEAD`), `revert.ts:183`,
   `:460`. The `branch` values stay in each result; only the `updateRef` name changes. `commit.ts`'s docstring
   (`:229-230`) and `reset.ts`'s comment (`:82-85`) are rewritten to say the write goes through `HEAD`.
-- **Class D → `noDeref: true`**: `branch.ts:161`, `:228` (plus O1's message), `tag.ts:221`, `remote.ts:181`.
+- **Class D → `noDeref: true`**: `branch.ts:161`, `:228` (beside commit 3's O1 (a) message), `tag.ts:221`, `remote.ts:181`.
 - **Class E**: `fetch.ts` prune skips `entry.value.kind === 'symbolic'` before the advertised-branch test.
 - **Facade**: `src/repository.ts:999-1002` passes options through; nothing to change beyond the type.
 
@@ -2123,14 +2185,17 @@ terminal is never symbolic, a repeat always refuses) are covered by the enumerat
 10. **GREEN** — `applyDelete` with both locks and `removeEverywhere`.
 11. **RED/GREEN** — loose-and-packed, loose-only (lock taken, file untouched), contention rows (packed, loose, both), nested
     absent name, malformed file, `HEAD` slot invalidation.
-12. **RED/GREEN** — `fetch.test.ts:1955-2000` flipped; delete the catch. Then O3 per the session's choice.
+12. **RED/GREEN** — `fetch.test.ts:1955-2000` flipped; delete the catch. Then O3 (a): flip `remote.test.ts`, delete
+    `assertRenamableTrackingRef` and its rows; interop R18 (reflog comparison residual-titled).
 13. **RED/GREEN** — interop Q/X13/prune rows; flip the packed-only residual.
 
 **Commit 3 (coupled HEAD entry)**
 14. **RED** — `update-ref.test.ts`: `delete: true` on the branch `HEAD` names → one `HEAD` entry. Fails: none.
 15. **GREEN** — `deleteUpdates`, the delete arm's `reflogMessage`, `transactionLogging` with `noOpDeleteLogs`.
 16. **RED/GREEN** — empty message bytes, null id, non-coupled branch, unborn `HEAD` per backend, single call.
-17. **RED/GREEN** — O1 per the session's choice; interop X2, X3, Q14, X16; flip the residual.
+17. **RED** — `branch.test.ts`: renaming the checked-out branch gains two `HEAD` entries. Fails: none. **GREEN** — the
+    rename's delete message and the logged `setSymbolic`; remaining rename rows; interop X2, X3, Q14, X16 and the
+    rename rows (O5 residual-titled); flip the residual.
 
 **Commit 4 (dereference)**
 18. **RED** — `ref-write-chain.test.ts`: one hop → `links: [s]`, terminal `x`. Fails: module missing.
@@ -2167,7 +2232,8 @@ npx tsc --noEmit -p tsconfig.json
 ./node_modules/.bin/biome check src/domain/refs/packed-refs.ts src/application/primitives/atomic-write.ts src/application/primitives/ref-store.ts src/application/commands/fetch.ts test/unit/domain/refs/packed-refs.test.ts test/unit/domain/refs/packed-refs.properties.test.ts test/unit/domain/refs/arbitraries.ts test/unit/application/primitives/atomic-write.test.ts test/unit/application/primitives/ref-store.test.ts test/unit/application/primitives/update-ref.test.ts test/unit/application/commands/fetch.test.ts test/integration/ref-transaction-interop.test.ts
 npx cspell --no-progress src/domain/refs/packed-refs.ts src/application/primitives/atomic-write.ts src/application/primitives/ref-store.ts src/application/commands/fetch.ts test/unit/domain/refs/packed-refs.test.ts test/unit/domain/refs/packed-refs.properties.test.ts test/unit/domain/refs/arbitraries.ts test/unit/application/primitives/atomic-write.test.ts test/integration/ref-transaction-interop.test.ts
 ```
-(O3 (a) adds `src/application/commands/remote.ts` and `test/unit/application/commands/remote.test.ts` to both lists.)
+(Add `src/application/commands/remote.ts` and `test/unit/application/commands/remote.test.ts` to the biome and cspell
+lists for O3 (a).)
 
 Commit 3:
 ```
