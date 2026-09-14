@@ -37,6 +37,32 @@ function looseFormatBytes(type: string, content: Uint8Array): Uint8Array {
   return out;
 }
 
+/** Like `looseFormatBytes`, but the header's size claim is given explicitly
+ *  instead of derived from `content` — a size-lying loose-format buffer. */
+function looseFormatBytesWithClaim(
+  type: string,
+  declaredSize: number,
+  content: Uint8Array,
+): Uint8Array {
+  const header = ENC.encode(`${type} ${declaredSize}\0`);
+  const out = new Uint8Array(header.length + content.length);
+  out.set(header, 0);
+  out.set(content, header.length);
+  return out;
+}
+
+/** Overwrite an already-written loose object's on-disk file with `bytes` —
+ *  used to plant a size-lying header at an id whose file already exists. */
+async function overwriteLoose(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+  id: ObjectId,
+  bytes: Uint8Array,
+): Promise<void> {
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+  const compressed = await ctx.compressor.deflate(bytes);
+  await ctx.fs.write(loosePath, compressed);
+}
+
 async function buildLooseCommit(): Promise<{
   ctx: Awaited<ReturnType<typeof buildSeededContext>>;
   id: ObjectId;
@@ -162,6 +188,93 @@ describe('openBlobSource', () => {
           expect(result.materialised).toBe(false);
           const drained = await collect(result.stream);
           expect(drained).toEqual(blob.content);
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When openBlobSource is called with the gate at the compressed length', () => {
+      it('Then resolves as a bytes source with the real content', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('lying loose blob content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('blob', 3, blob.content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        const result = await openBlobSource(ctx, id, compressedLen);
+
+        // Assert
+        expect(result.kind).toBe('bytes');
+        if (result.kind === 'bytes') {
+          expect(result.type).toBe('blob');
+          expect(result.content).toEqual(blob.content);
+        }
+      });
+    });
+  });
+
+  describe('Given a loose commit whose header size claim disagrees with its body length', () => {
+    describe('When openBlobSource is called with the gate at the compressed length', () => {
+      it('Then throws INVALID_OBJECT_HEADER with the verbatim size-mismatch reason', async () => {
+        // Arrange
+        const { ctx, id } = await buildLooseCommit();
+        const content = ENC.encode('short commit body');
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('commit', 999, content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        try {
+          await openBlobSource(ctx, id, compressedLen);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(
+              `size mismatch: header says 999, actual content is ${content.byteLength}`,
+            );
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length, opened with verifyHash true', () => {
+    describe('When openBlobSource is called with the gate at the compressed length', () => {
+      it('Then throws OBJECT_HASH_MISMATCH hashing the stored (lying) bytes', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('lying loose blob content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const lyingBytes = looseFormatBytesWithClaim('blob', 3, blob.content);
+        await overwriteLoose(ctx, id, lyingBytes);
+        const compressedLen = await looseCompressedLength(ctx, id);
+        const expectedActual = (await ctx.hash.hashHex(lyingBytes)) as ObjectId;
+
+        // Act
+        try {
+          await openBlobSource(ctx, id, compressedLen, { verifyHash: true });
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code === 'OBJECT_HASH_MISMATCH') {
+            expect(data.expected).toBe(id);
+            expect(data.actual).toBe(expectedActual);
+          }
         }
       });
     });

@@ -4,7 +4,7 @@
  */
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
-import { splitObject } from '../../domain/objects/git-object.js';
+import { assertLooseSizeConsistent, splitLooseObject } from '../../domain/objects/git-object.js';
 import {
   emptyTreeOid,
   type GitObject,
@@ -72,7 +72,7 @@ export async function resolveObjectContentWithDepth(
   verifyHash: boolean,
   maxBytes: number | undefined,
   externalDepth: number,
-): Promise<ObjectContent & { chainDepth: number }> {
+): Promise<ObjectContent & { chainDepth: number; declaredSize: number }> {
   // An already-aborted read honours the abort before paying any scan I/O.
   checkAborted(ctx);
   // Git dies during object-store setup, ahead of every read — a structurally
@@ -80,22 +80,35 @@ export async function resolveObjectContentWithDepth(
   // gate sits before the empty-tree short-circuit and the deltaCache probe.
   await registry.assertLoadable();
   if (id === emptyTreeOid(ctx.hashConfig)) {
-    return { type: 'tree', content: EMPTY_TREE_CONTENT, chainDepth: 0 };
+    return { type: 'tree', content: EMPTY_TREE_CONTENT, chainDepth: 0, declaredSize: 0 };
   }
   const cached = ctx.deltaCache.get(id);
   if (cached !== undefined) {
     enforceCachedCap(id, cached, maxBytes);
     await verifyObjectContent(ctx, id, cached.type, cached.content, verifyHash);
-    return { type: cached.type, content: cached.content, chainDepth: 0 };
+    return {
+      type: cached.type,
+      content: cached.content,
+      chainDepth: 0,
+      declaredSize: cached.content.byteLength,
+    };
   }
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);
-    const split = splitObject(loose);
+    const split = splitLooseObject(loose);
+    assertLooseSizeConsistent(split);
     enforceLooseCap(id, split.content, maxBytes);
-    cacheEntry(ctx.deltaCache, id, split);
-    await verifyObjectContent(ctx, id, split.type, split.content, verifyHash);
-    return { type: split.type, content: split.content, chainDepth: 0 };
+    if (split.declaredSize === split.content.byteLength) {
+      cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
+    }
+    await verifyObjectContent(ctx, id, split.type, split.content, verifyHash, split.declaredSize);
+    return {
+      type: split.type,
+      content: split.content,
+      chainDepth: 0,
+      declaredSize: split.declaredSize,
+    };
   }
 
   checkAborted(ctx);
@@ -107,7 +120,30 @@ export async function resolveObjectContentWithDepth(
   const resolved = await resolvePackChainWithDepth(ctx, registry, hit, id, maxBytes, externalDepth);
   checkAborted(ctx);
   await verifyObjectContent(ctx, id, resolved.type, resolved.content, verifyHash);
-  return { type: resolved.type, content: resolved.content, chainDepth: resolved.chainDepth };
+  return {
+    type: resolved.type,
+    content: resolved.content,
+    chainDepth: resolved.chainDepth,
+    declaredSize: resolved.content.byteLength,
+  };
+}
+
+/** Memoised parse for a resolved object's type+content — synchronous, so
+ *  neither caller below pays an extra microtask hop for it. */
+function parseMemoised(
+  ctx: Context,
+  id: ObjectId,
+  type: ObjectType,
+  content: Uint8Array,
+): GitObject {
+  const memo = parsedObjectMemoFor(ctx);
+  const memoised = memo?.get(id);
+  if (memoised !== undefined) return memoised;
+  const parsed = parseObjectContent(id, type, content, ctx.hashConfig);
+  if (parsed.type === 'commit' || parsed.type === 'tag') {
+    memo?.set(id, parsed, parsedObjectByteSize(parsed.data, ctx.hashConfig.hexLength));
+  }
+  return parsed;
 }
 
 export async function resolveObject(
@@ -125,14 +161,28 @@ export async function resolveObject(
     maxBytes,
     0,
   );
-  const memo = parsedObjectMemoFor(ctx);
-  const memoised = memo?.get(id);
-  if (memoised !== undefined) return memoised;
-  const parsed = parseObjectContent(id, type, content, ctx.hashConfig);
-  if (parsed.type === 'commit' || parsed.type === 'tag') {
-    memo?.set(id, parsed, parsedObjectByteSize(parsed.data, ctx.hashConfig.hexLength));
-  }
-  return parsed;
+  return parseMemoised(ctx, id, type, content);
+}
+
+/** Like `resolveObject`, but also surfaces the resolved content's declared
+ *  size — the stored header claim for a loose object, the content length for
+ *  every other storage form (see `resolveObjectContentWithDepth`). */
+export async function resolveObjectWithSize(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes?: number,
+): Promise<{ readonly object: GitObject; readonly size: number }> {
+  const { type, content, declaredSize } = await resolveObjectContentWithDepth(
+    ctx,
+    registry,
+    id,
+    verifyHash,
+    maxBytes,
+    0,
+  );
+  return { object: parseMemoised(ctx, id, type, content), size: declaredSize };
 }
 
 /**
@@ -257,13 +307,14 @@ export async function verifyObjectContent(
   type: ObjectType,
   content: Uint8Array,
   verifyHash: boolean,
+  declaredSize: number = content.byteLength,
 ): Promise<void> {
   if (!verifyHash) {
     checkAborted(ctx);
     return;
   }
   const hasher = ctx.hash.createHasher();
-  hasher.update(serializeHeader(type, content.length));
+  hasher.update(serializeHeader(type, declaredSize));
   hasher.update(content);
   const actual = (await hasher.digestHex()) as ObjectId;
   checkAborted(ctx);

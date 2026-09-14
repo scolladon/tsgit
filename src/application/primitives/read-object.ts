@@ -22,6 +22,7 @@ import {
   readEntryHeaderWithChunk,
   resolveObject,
   resolveObjectContentWithDepth,
+  resolveObjectWithSize,
 } from './object-resolver.js';
 import {
   createPackRegistry,
@@ -205,6 +206,21 @@ export async function readObject(
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObject(ctx, registry, id, verifyHash, options?.maxBytes),
+  );
+}
+
+/** Like `readObject`, but also surfaces the resolved object's declared size
+ *  — `cat-file-batch.ts`'s reader, sharing the same lazy-fetch retry and
+ *  parsed memo. */
+export async function readObjectWithSize(
+  ctx: Context,
+  id: ObjectId,
+  options?: ReadObjectOptions,
+): Promise<{ readonly object: GitObject; readonly size: number }> {
+  const verifyHash = options?.verifyHash ?? false;
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () =>
+    resolveObjectWithSize(ctx, registry, id, verifyHash, options?.maxBytes),
   );
 }
 

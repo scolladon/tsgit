@@ -14,7 +14,7 @@ import {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
 
 const IDENTITY = {
   name: 'Test',
@@ -182,6 +182,31 @@ describe('catFileBatch', () => {
         if (entry?.ok !== true) throw new Error('expected ok');
         expect(entry.type).toBe(label);
         expect(entry.size).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When iterated', () => {
+      it('Then yields an ok entry whose size is the stored claim and whose object content is the real body', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('hello world!'); // 12 bytes
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const sut = catFileBatch(ctx, [id]);
+
+        // Act
+        const [entry] = await collect(sut);
+
+        // Assert
+        if (entry?.ok !== true) throw new Error('expected ok');
+        expect(entry.type).toBe('blob');
+        expect(entry.size).toBe(5);
+        expect(entry.object.type).toBe('blob');
+        if (entry.object.type === 'blob') {
+          expect(entry.object.content).toEqual(content);
+        }
       });
     });
   });

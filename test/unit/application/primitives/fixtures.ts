@@ -315,6 +315,30 @@ export async function writeRawObjectBytes(
 }
 
 /**
+ * Overwrite an already-hashed loose object's on-disk file with a header
+ * whose size claim disagrees with `content`'s real length — a size-lying
+ * loose object at the id's real (honest) path. `id` is the hash of the
+ * HONEST bytes (from `writeRawObjectBytes` or an equivalent hash), so a
+ * reader that looks the id up still finds the file; only the stored header
+ * lies about the body it precedes.
+ */
+export async function writeLooseWithDeclaredSize(
+  ctx: Context,
+  id: ObjectId,
+  type: ObjectType,
+  declaredSize: number,
+  content: Uint8Array,
+): Promise<void> {
+  const header = serializeHeader(type, declaredSize);
+  const bytes = new Uint8Array(header.length + content.length);
+  bytes.set(header, 0);
+  bytes.set(content, header.length);
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+  const compressed = await ctx.compressor.deflate(bytes);
+  await ctx.fs.write(loosePath, compressed);
+}
+
+/**
  * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
  * `symlinkPath` — the no-dereference discipline made a hard failure instead
  * of a passive spy assertion.

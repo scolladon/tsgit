@@ -18,7 +18,7 @@ import {
   objectNotFound,
   unexpectedObjectType,
 } from '../../../domain/objects/error.js';
-import { splitObject } from '../../../domain/objects/git-object.js';
+import { assertLooseSizeConsistent, splitLooseObject } from '../../../domain/objects/git-object.js';
 import { parseHeader } from '../../../domain/objects/header.js';
 import type { ObjectContent, ObjectId } from '../../../domain/objects/index.js';
 import { PACK_ENTRY_TYPE } from '../../../domain/storage/index.js';
@@ -139,8 +139,9 @@ function fitsBuffer(byteLength: number, maxBufferedBytes: number): boolean {
 }
 
 function toBytesSource(looseFormatBytes: Uint8Array): BlobSource {
-  const { type, content } = splitObject(looseFormatBytes);
-  return { kind: 'bytes', type, content };
+  const split = splitLooseObject(looseFormatBytes);
+  assertLooseSizeConsistent(split);
+  return { kind: 'bytes', type: split.type, content: split.content };
 }
 
 // The canonical loose-format header a pack entry's inflated bytes are missing.

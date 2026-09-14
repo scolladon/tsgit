@@ -7,7 +7,12 @@ import type { Blob, Commit, ObjectId } from '../../../../src/domain/objects/inde
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  writeLooseWithDeclaredSize,
+  writeRawObjectBytes,
+} from './fixtures.js';
 import { buildSyntheticPack, writeSyntheticPack } from './pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
@@ -132,6 +137,25 @@ describe('streamBlob', () => {
         // Assert
         expect(spy).toHaveBeenCalledOnce();
         spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When drained', () => {
+      it('Then yields the real 12 body bytes (pins the agreement with readObject)', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!'); // 12 bytes
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+
+        // Act
+        const sut = await streamBlob(ctx, id);
+        const result = await collect(sut);
+
+        // Assert
+        expect(result).toEqual(content);
       });
     });
   });

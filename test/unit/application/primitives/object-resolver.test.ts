@@ -9,6 +9,7 @@ import {
   readEntryHeaderWithChunk,
   resolveObject,
   resolveObjectContentWithDepth,
+  resolveObjectWithSize,
 } from '../../../../src/application/primitives/object-resolver.js';
 import {
   createPackRegistry,
@@ -31,7 +32,12 @@ import {
 import type { LruCache } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  writeLooseWithDeclaredSize,
+  writeRawObjectBytes,
+} from './fixtures.js';
 import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
 
 vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
@@ -1302,6 +1308,233 @@ describe('object-resolver', () => {
           expect((second as Blob).content).toEqual((first as Blob).content);
           expect(inflateSpy.mock.calls.length).toBe(1);
         });
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When resolveObjectContentWithDepth is called', () => {
+      it('Then it returns the real content and the claim as declaredSize, and never caches the object', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!'); // 12 bytes
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+
+        // Assert
+        expect(result.content).toEqual(content);
+        expect(result.declaredSize).toBe(5);
+        expect(ctx.deltaCache.has(id)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an honest loose blob (no size-lying header)', () => {
+    describe('When resolveObjectContentWithDepth is called', () => {
+      it('Then it caches the object under its id', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+
+        // Assert
+        expect(ctx.deltaCache.has(id)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a loose commit whose header size claim disagrees with its body length', () => {
+    describe('When resolveObjectContentWithDepth is called', () => {
+      it('Then it throws INVALID_OBJECT_HEADER with the verbatim size-mismatch reason', async () => {
+        // Arrange
+        const content = ENC.encode('commit body');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'commit', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'commit', 400, content);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(
+              `size mismatch: header says 400, actual content is ${content.byteLength}`,
+            );
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length, read with verifyHash true', () => {
+    describe('When resolveObjectContentWithDepth is called', () => {
+      it('Then it throws OBJECT_HASH_MISMATCH hashing the stored (lying) header', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const registry = await createPackRegistry(ctx);
+        const storedLyingBytes = new Uint8Array(
+          serializeHeader('blob', 5).length + content.byteLength,
+        );
+        storedLyingBytes.set(serializeHeader('blob', 5), 0);
+        storedLyingBytes.set(content, serializeHeader('blob', 5).length);
+        const expectedActual = (await ctx.hash.hashHex(storedLyingBytes)) as ObjectId;
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(ctx, registry, id, true, undefined, 0);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code === 'OBJECT_HASH_MISMATCH') {
+            expect(data.expected).toBe(id);
+            expect(data.actual).toBe(expectedActual);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a lying loose blob read once without verifyHash, then read again with verifyHash true', () => {
+    describe('When the second resolveObjectContentWithDepth call runs', () => {
+      it('Then it still refuses OBJECT_HASH_MISMATCH — the unverified read never cached it', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const registry = await createPackRegistry(ctx);
+        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(ctx, registry, id, true, undefined, 0);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
+        }
+      });
+    });
+  });
+
+  describe('Given the empty tree oid', () => {
+    describe('When resolveObjectContentWithDepth is called', () => {
+      it('Then declaredSize equals the (zero) content length', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObjectContentWithDepth(
+          ctx,
+          registry,
+          EMPTY_TREE_OID,
+          false,
+          undefined,
+          0,
+        );
+
+        // Assert
+        expect(result.declaredSize).toBe(0);
+        expect(result.content.byteLength).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a delta-cache hit', () => {
+    describe('When resolveObjectContentWithDepth resolves it', () => {
+      it('Then declaredSize equals the cached content length', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fakeId = 'e'.repeat(40) as ObjectId;
+        const content = ENC.encode('cached content');
+        ctx.deltaCache.set(fakeId, { type: 'blob', content }, content.length);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObjectContentWithDepth(
+          ctx,
+          registry,
+          fakeId,
+          false,
+          undefined,
+          0,
+        );
+
+        // Assert
+        expect(result.declaredSize).toBe(content.byteLength);
+      });
+    });
+  });
+
+  describe('Given a synthetic pack with a base blob', () => {
+    describe('When resolveObjectContentWithDepth resolves it', () => {
+      it('Then declaredSize equals the reconstructed content length', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = ENC.encode('hello packed blob');
+        const [id] = await writeSyntheticPack(ctx, 'base-only-declared-size', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObjectContentWithDepth(
+          ctx,
+          registry,
+          id as ObjectId,
+          false,
+          undefined,
+          0,
+        );
+
+        // Assert
+        expect(result.declaredSize).toBe(content.byteLength);
+      });
+    });
+  });
+
+  describe('Given a commit resolved once', () => {
+    describe('When resolveObjectWithSize is called', () => {
+      it('Then it returns the memoised parse alongside its size', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commitText = [
+          `tree ${'b'.repeat(40)}`,
+          'author A <a@a.com> 0 +0000',
+          'committer A <a@a.com> 0 +0000',
+          '',
+          'msg',
+        ].join('\n');
+        const id = await writeRawObjectBytes(ctx, 'commit', ENC.encode(commitText));
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const first = await resolveObjectWithSize(ctx, registry, id, false);
+        const second = await resolveObjectWithSize(ctx, registry, id, false);
+
+        // Assert
+        expect(first.object.type).toBe('commit');
+        expect(first.size).toBe(ENC.encode(commitText).byteLength);
+        expect(second.object).toBe(first.object);
       });
     });
   });

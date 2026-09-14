@@ -9,21 +9,24 @@
  */
 import { operationAborted } from '../../domain/error.js';
 import { isObjectNotFound } from '../../domain/objects/error.js';
-import { type GitObject, type ObjectId, payloadByteLength } from '../../domain/objects/index.js';
+import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { readObject } from './read-object.js';
+import { readObjectWithSize } from './read-object.js';
 import type { CatFileBatchEntry, CatFileBatchOptions, ReadObjectOptions } from './types.js';
 
 const throwIfAborted = (ctx: Context): void => {
   if (ctx.signal?.aborted) throw operationAborted();
 };
 
-const buildOkEntry = (ctx: Context, id: ObjectId, object: GitObject): CatFileBatchEntry => ({
+const buildOkEntry = (
+  id: ObjectId,
+  resolved: { readonly object: GitObject; readonly size: number },
+): CatFileBatchEntry => ({
   ok: true,
   id,
-  type: object.type,
-  size: payloadByteLength(object, ctx.hashConfig),
-  object,
+  type: resolved.object.type,
+  size: resolved.size,
+  object: resolved.object,
 });
 
 const buildMissingEntry = (id: ObjectId): CatFileBatchEntry => ({
@@ -38,8 +41,8 @@ const readOne = async (
   readOptions: ReadObjectOptions | undefined,
 ): Promise<CatFileBatchEntry> => {
   try {
-    const object = await readObject(ctx, id, readOptions);
-    return buildOkEntry(ctx, id, object);
+    const resolved = await readObjectWithSize(ctx, id, readOptions);
+    return buildOkEntry(id, resolved);
   } catch (err) {
     if (isObjectNotFound(err)) return buildMissingEntry(id);
     throw err;

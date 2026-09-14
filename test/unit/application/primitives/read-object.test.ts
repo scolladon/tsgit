@@ -9,6 +9,7 @@ import {
   getPackRegistry,
   peekPackRegistry,
   readObject,
+  readObjectWithSize,
   readRawObject,
 } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -17,7 +18,13 @@ import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID, serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
-import { buildSeededContext, instrumentedContext, seedMaxTreeDepth } from './fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  seedMaxTreeDepth,
+  writeLooseWithDeclaredSize,
+  writeRawObjectBytes,
+} from './fixtures.js';
 import { writeSyntheticPack } from './pack-fixture.js';
 
 const seedHead = async (ctx: Context): Promise<void> => {
@@ -209,15 +216,14 @@ describe('readObject', () => {
       });
     });
 
-    describe('Given a loose blob whose declared header size differs from its actual content length', () => {
-      describe('When readObject is called with maxBytes', () => {
-        it('Then it throws INVALID_OBJECT_HEADER before the cap ever runs (a size lie can never bypass it)', async () => {
-          // Arrange — forge a loose object whose <type> <size>\0 header lies
-          // about its payload size. `splitObject` validates header size
-          // against actual content length on every loose read, ahead of the
-          // maxBytes cap — so an adversary declaring 1 byte and shipping 8
-          // is refused at header validation, never reaching a cap that could
-          // (wrongly) trust the declared size.
+    describe('Given a loose blob whose header claims 1 byte and whose body is 8', () => {
+      describe('When readObject is called with maxBytes 4', () => {
+        it('Then the cap measures the actual 8 bytes and refuses OBJECT_TOO_LARGE', async () => {
+          // Arrange — forge a loose blob whose <type> <size>\0 header lies
+          // about its payload size. A lying blob is served by its real
+          // bytes (git's streaming contract), so a cap that trusted the
+          // declared size would wrongly admit it — this pins that the cap
+          // measures the ACTUAL 8 bytes instead.
           const ctx = await buildSeededContext();
           const fakeId = 'a'.repeat(40) as ObjectId;
           const { computeLooseObjectPath } = await import(
@@ -230,18 +236,52 @@ describe('readObject', () => {
             compressed,
           );
 
-          // Act + Assert — cap is 4 (irrelevant: the header/content
-          // consistency check refuses first regardless of its value).
+          // Act
           try {
             await readObject(ctx, fakeId, { maxBytes: 4, verifyHash: false });
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_TOO_LARGE');
+            if (data.code !== 'OBJECT_TOO_LARGE') {
+              expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+            }
+            expect(data.id).toBe(fakeId);
+            expect(data.actualSize).toBe(8);
+            expect(data.limit).toBe(4);
+          }
+        });
+      });
+    });
+
+    describe('Given a loose commit whose header size claim disagrees with its body length', () => {
+      describe('When readObject is called', () => {
+        it('Then it still throws INVALID_OBJECT_HEADER (only a blob takes the streaming contract)', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fakeId = 'b'.repeat(40) as ObjectId;
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          const forged = new TextEncoder().encode('commit 400\0short body'); // declares 400, actual 10
+          const compressed = await ctx.compressor.deflate(forged);
+          await ctx.fs.write(
+            `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+            compressed,
+          );
+
+          // Act
+          try {
+            await readObject(ctx, fakeId);
+            // Assert
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
             expect(data.code).toBe('INVALID_OBJECT_HEADER');
-            if (data.code !== 'INVALID_OBJECT_HEADER') {
-              expect.fail(`expected INVALID_OBJECT_HEADER, got ${data.code}`);
+            if (data.code === 'INVALID_OBJECT_HEADER') {
+              expect(data.reason).toBe('size mismatch: header says 400, actual content is 10');
             }
-            expect(data.reason).toBe('size mismatch: header says 1, actual content is 8');
           }
         });
       });
@@ -733,6 +773,68 @@ describe('disposePackRegistry', () => {
         await expect(disposePackRegistry(ctx)).resolves.toBeUndefined();
         expect(spy).not.toHaveBeenCalled();
         spy.mockRestore();
+      });
+    });
+  });
+});
+
+describe('readObjectWithSize', () => {
+  describe('Given an honest loose blob', () => {
+    describe('When readObjectWithSize is called', () => {
+      it('Then size equals the content byte length', async () => {
+        // Arrange
+        const content = new TextEncoder().encode('hello world');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+
+        // Act
+        const result = await readObjectWithSize(ctx, id);
+
+        // Assert
+        expect(result.object.type).toBe('blob');
+        expect(result.size).toBe(content.byteLength);
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When readObjectWithSize is called', () => {
+      it('Then size equals the stored claim, not the body length', async () => {
+        // Arrange
+        const content = new TextEncoder().encode('hello world!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+
+        // Act
+        const result = await readObjectWithSize(ctx, id);
+
+        // Assert
+        expect(result.object.type).toBe('blob');
+        expect(result.size).toBe(5);
+      });
+    });
+  });
+
+  describe('Given a missing id with no promisor attached', () => {
+    describe('When readObjectWithSize is called', () => {
+      it('Then it throws OBJECT_NOT_FOUND with the requested id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const missingId = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        try {
+          await readObjectWithSize(ctx, missingId);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(missingId);
+          }
+        }
       });
     });
   });

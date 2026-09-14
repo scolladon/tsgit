@@ -4,9 +4,11 @@ import type { Blob } from '../../../../src/domain/objects/blob.js';
 import type { Commit } from '../../../../src/domain/objects/commit.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
 import {
+  assertLooseSizeConsistent,
   parseObject,
   parseObjectContent,
   serializeObject,
+  splitLooseObject,
   splitObject,
 } from '../../../../src/domain/objects/git-object.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
@@ -385,6 +387,175 @@ describe('git-object', () => {
               expect(data.reason).toBe('size mismatch: header says 999, actual content is 5');
             }
           }
+        });
+      });
+    });
+  });
+
+  describe('splitLooseObject', () => {
+    describe('Given a loose-format buffer for each object type whose header size matches its content', () => {
+      describe('When calling splitLooseObject', () => {
+        it.each([
+          { label: 'a blob', raw: () => rawBlob('hello'), type: 'blob' },
+          {
+            label: 'a tree',
+            raw: () => rawTree(rawTreeEntry('100644', 'file.txt', new Uint8Array(20).fill(0xab))),
+            type: 'tree',
+          },
+          {
+            label: 'a commit',
+            raw: () =>
+              rawCommit(
+                [
+                  `tree ${'b'.repeat(40)}`,
+                  'author A <a@a.com> 0 +0000',
+                  'committer A <a@a.com> 0 +0000',
+                  '',
+                  'msg',
+                ].join('\n'),
+              ),
+            type: 'commit',
+          },
+          {
+            label: 'a tag',
+            raw: () =>
+              rawTag(
+                [
+                  `object ${'b'.repeat(40)}`,
+                  'type commit',
+                  'tag v1.0',
+                  'tagger A <a@a.com> 0 +0000',
+                  '',
+                  'tag msg',
+                ].join('\n'),
+              ),
+            type: 'tag',
+          },
+        ])('Then returns { type: $type, content, declaredSize } for $label', ({ raw, type }) => {
+          // Arrange
+          const sut = splitLooseObject;
+          const bytes = raw();
+
+          // Act
+          const result = sut(bytes);
+
+          // Assert
+          expect(result.type).toBe(type);
+          expect(result.content).toEqual(bytes.subarray(bytes.indexOf(0) + 1));
+          expect(result.declaredSize).toBe(result.content.byteLength);
+        });
+      });
+    });
+
+    describe('Given a blob whose header size claim disagrees with its actual content length', () => {
+      describe('When calling splitLooseObject', () => {
+        it('Then returns the claim as declaredSize without throwing', () => {
+          // Arrange
+          const sut = splitLooseObject;
+          const bytes = encode('blob 999\0short');
+
+          // Act
+          const result = sut(bytes);
+
+          // Assert
+          expect(result.type).toBe('blob');
+          expect(result.declaredSize).toBe(999);
+          expect(result.content).toEqual(encode('short'));
+        });
+      });
+    });
+
+    describe('Given a header whose size claim is not a canonical non-negative integer', () => {
+      describe('When calling splitLooseObject', () => {
+        it('Then throws INVALID_OBJECT_HEADER with the exact reason', () => {
+          // Arrange
+          const sut = splitLooseObject;
+          const bytes = encode('blob 07\0x');
+
+          // Act
+          try {
+            sut(bytes);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_OBJECT_HEADER');
+            if (data.code === 'INVALID_OBJECT_HEADER') {
+              expect(data.reason).toBe('invalid size: 07');
+            }
+          }
+        });
+      });
+    });
+  });
+
+  describe('assertLooseSizeConsistent', () => {
+    describe('Given a blob split whose declaredSize disagrees with its content length', () => {
+      describe('When calling assertLooseSizeConsistent', () => {
+        it('Then returns without throwing', () => {
+          // Arrange
+          const sut = assertLooseSizeConsistent;
+          const split = splitLooseObject(encode('blob 999\0short'));
+
+          // Act + Assert
+          expect(() => sut(split)).not.toThrow();
+        });
+      });
+    });
+
+    describe('Given a non-blob split whose declaredSize disagrees with its content length', () => {
+      describe('When calling assertLooseSizeConsistent', () => {
+        it.each([
+          { label: 'a commit', type: 'commit', body: 'msg body' },
+          { label: 'a tree', type: 'tree', body: 'tree entry bytes' },
+          { label: 'a tag', type: 'tag', body: 'tag body' },
+        ])(
+          'Then throws INVALID_OBJECT_HEADER with the size-mismatch reason for $label',
+          ({ type, body }) => {
+            // Arrange
+            const sut = assertLooseSizeConsistent;
+            const content = encode(body);
+            const lyingHeader = encode(`${type} 999\0`);
+            const bytes = new Uint8Array(lyingHeader.length + content.length);
+            bytes.set(lyingHeader, 0);
+            bytes.set(content, lyingHeader.length);
+            const split = splitLooseObject(bytes);
+
+            // Act
+            try {
+              sut(split);
+              // Assert
+              expect.unreachable();
+            } catch (error) {
+              const data = (error as TsgitError).data;
+              expect(data.code).toBe('INVALID_OBJECT_HEADER');
+              if (data.code === 'INVALID_OBJECT_HEADER') {
+                expect(data.reason).toBe(
+                  `size mismatch: header says 999, actual content is ${content.byteLength}`,
+                );
+              }
+            }
+          },
+        );
+      });
+    });
+
+    describe('Given a commit split whose declaredSize equals its content length', () => {
+      describe('When calling assertLooseSizeConsistent', () => {
+        it('Then returns without throwing', () => {
+          // Arrange
+          const sut = assertLooseSizeConsistent;
+          const commitText = [
+            `tree ${'b'.repeat(40)}`,
+            'author A <a@a.com> 0 +0000',
+            'committer A <a@a.com> 0 +0000',
+            '',
+            'msg',
+          ].join('\n');
+          const split = splitLooseObject(rawCommit(commitText));
+
+          // Act + Assert
+          expect(() => sut(split)).not.toThrow();
         });
       });
     });

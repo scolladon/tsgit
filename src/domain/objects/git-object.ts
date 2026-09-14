@@ -18,18 +18,37 @@ export interface ObjectContent {
   readonly content: Uint8Array;
 }
 
+function sizeMismatch(declaredSize: number, actualSize: number) {
+  return invalidObjectHeader(
+    `size mismatch: header says ${declaredSize}, actual content is ${actualSize}`,
+  );
+}
+
+export interface LooseObjectSplit extends ObjectContent {
+  readonly declaredSize: number;
+}
+
+/** The loose-object split with the header's size claim kept as data, never enforced. */
+export function splitLooseObject(rawBytes: Uint8Array): LooseObjectSplit {
+  const { type, size, contentOffset } = parseHeader(rawBytes);
+  return { type, content: rawBytes.subarray(contentOffset), declaredSize: size };
+}
+
+/** git's buffered tier refuses a size-lying commit, tree or tag; a blob takes the streaming contract. */
+export function assertLooseSizeConsistent(split: LooseObjectSplit): void {
+  if (split.type === 'blob' || split.declaredSize === split.content.byteLength) return;
+  throw sizeMismatch(split.declaredSize, split.content.byteLength);
+}
+
 export function splitObject(rawBytes: Uint8Array): {
   readonly type: ObjectType;
   readonly content: Uint8Array;
   readonly bytes: Uint8Array;
 } {
-  const { type, size, contentOffset } = parseHeader(rawBytes);
-  const content = rawBytes.subarray(contentOffset);
+  const { type, content, declaredSize } = splitLooseObject(rawBytes);
 
-  if (content.length !== size) {
-    throw invalidObjectHeader(
-      `size mismatch: header says ${size}, actual content is ${content.length}`,
-    );
+  if (content.length !== declaredSize) {
+    throw sizeMismatch(declaredSize, content.length);
   }
 
   return { type, content, bytes: rawBytes };
