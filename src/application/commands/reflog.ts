@@ -173,37 +173,15 @@ const runExpire = async (
   const now = Math.floor(Date.now() / 1000);
   const expireCut = resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now);
   const unreachableCut = resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now);
-  const single = opts.all === true ? undefined : resolveUserRef(opts.ref ?? 'HEAD');
-  if (single !== undefined && !(await hasReflog(ctx, single))) {
-    // git refuses a single-ref expire when no reflog exists (exit 255) and
-    // creates nothing; without this guard the unconditional rewrite below
-    // would manufacture an empty log file and its parent directories.
-    throw reflogNotFound(single);
-  }
-  const targets = single === undefined ? await listReflogs(ctx) : [single];
+  const targets = await resolveExpireTargets(ctx, opts);
   let removed = 0;
   let kept = 0;
   const updates: RefUpdate[] = [];
   for (const ref of targets) {
-    // Reachability is per-ref: `HEAD` marks from every tip, another ref marks
-    // from its own tip alone, and a ref that does not resolve to a commit (or
-    // a cutoff pair that can never change the verdict) skips the walk
-    // entirely — computed fresh per target, never shared across refs.
-    const kind = await expireKindFor(ctx, ref, expireCut, unreachableCut);
-    const state = kind.kind === 'walk' ? createReachability(kind.tips) : undefined;
-    const stored = await readReflogLenient(ctx, ref);
-    const survivors: ReflogEntry[] = [];
-    for (const entry of stored) {
-      if (!(await shouldExpire(ctx, entry, kind, state, expireCut, unreachableCut))) {
-        survivors.push(entry);
-      }
-    }
-    removed += stored.length - survivors.length;
-    kept += survivors.length;
-    // Unconditional: git rewrites the reflog on every `expire` run, even when
-    // nothing is pruned — the only way a malformed line (which a lenient read
-    // silently drops, leaving parsed counts equal) still gets purged from disk.
-    updates.push({ kind: 'reflogReplace', name: ref, entries: survivors });
+    const outcome = await expireReflog(ctx, ref, expireCut, unreachableCut);
+    removed += outcome.removed;
+    kept += outcome.kept;
+    updates.push(outcome.update);
   }
   // One transaction for every target: on the reftable backend each
   // applyRefUpdates call is a full stack transaction plus a compaction
@@ -213,6 +191,59 @@ const runExpire = async (
   // zero targets need no guard.
   await getRefStore(ctx).applyRefUpdates(updates);
   return { kind: 'expire', removed, kept };
+};
+
+/**
+ * Resolves `expire`'s target ref set: a single ref under its own name (or
+ * `HEAD` by default), or — under `--all` — every ref that currently carries
+ * a reflog.
+ */
+const resolveExpireTargets = async (
+  ctx: Context,
+  opts: { readonly ref?: string; readonly all?: boolean },
+): Promise<ReadonlyArray<RefName>> => {
+  const single = opts.all === true ? undefined : resolveUserRef(opts.ref ?? 'HEAD');
+  if (single !== undefined && !(await hasReflog(ctx, single))) {
+    // git refuses a single-ref expire when no reflog exists (exit 255) and
+    // creates nothing; without this guard the unconditional rewrite below
+    // would manufacture an empty log file and its parent directories.
+    throw reflogNotFound(single);
+  }
+  return single === undefined ? await listReflogs(ctx) : [single];
+};
+
+/**
+ * One ref's expiry: computes its reachability kind, filters the stored
+ * reflog for survivors, and returns the counts plus the rewrite update for
+ * the caller to batch into the single `applyRefUpdates` transaction.
+ */
+const expireReflog = async (
+  ctx: Context,
+  ref: RefName,
+  expireCut: number,
+  unreachableCut: number,
+): Promise<{ readonly removed: number; readonly kept: number; readonly update: RefUpdate }> => {
+  // Reachability is per-ref: `HEAD` marks from every tip, another ref marks
+  // from its own tip alone, and a ref that does not resolve to a commit (or
+  // a cutoff pair that can never change the verdict) skips the walk
+  // entirely — computed fresh per target, never shared across refs.
+  const kind = await expireKindFor(ctx, ref, expireCut, unreachableCut);
+  const state = kind.kind === 'walk' ? createReachability(kind.tips) : undefined;
+  const stored = await readReflogLenient(ctx, ref);
+  const survivors: ReflogEntry[] = [];
+  for (const entry of stored) {
+    if (!(await shouldExpire(ctx, entry, kind, state, expireCut, unreachableCut))) {
+      survivors.push(entry);
+    }
+  }
+  return {
+    removed: stored.length - survivors.length,
+    kept: survivors.length,
+    // Unconditional: git rewrites the reflog on every `expire` run, even when
+    // nothing is pruned — the only way a malformed line (which a lenient read
+    // silently drops, leaving parsed counts equal) still gets purged from disk.
+    update: { kind: 'reflogReplace', name: ref, entries: survivors },
+  };
 };
 
 const resolveCutoff = (raw: string, now: number): number => {
