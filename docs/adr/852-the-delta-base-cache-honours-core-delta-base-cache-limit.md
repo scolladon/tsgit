@@ -12,6 +12,13 @@ supersedes:
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D2, DC-2) · **Supersedes/Refines:** supersedes ADR-736 in scope
 
+> **Correction (2026-09-14).** ADR-869 amends the family total stated in the Consequences. The
+> parsed memo's valve is now charged at its measured cost, about 37.7 MiB at the 32 768-entry default
+> instead of 16 MiB, so the documented worst-case additive footprint at the defaults is about
+> **158 MiB** at sha1 — 16 MiB loose-object bytes, about 37.7 MiB parsed memo, 8 MiB FlatTree and
+> 96 MiB delta bases — not 136 MiB. The delta-base cache's own sizing, the decision of this record,
+> is unchanged.
+
 ## Context
 
 `createPackRegistry` sizes the delta-base cache at `ctx.deltaCache.maxSize` — 16 MiB at the

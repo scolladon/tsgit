@@ -9,6 +9,20 @@ subjects:
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D4, DC-5) · **Supersedes/Refines:** none
 
+> **Correction (2026-09-14).** The Decision says the slot is "shared only within the command", and
+> the Consequences place the epoch "within a single command, after its gate". The code's epoch is
+> gate to gate, on every adapter: each gate marks the slot trusted, and a trusted slot is served
+> with no I/O until the next gate, tsgit's own `HEAD` write, or an `lstat` failure at a gate drops
+> it. Nothing clears it when a command ends — there is no command-end hook, and command functions
+> called directly bypass the facade — so primitive reads between commands are served from it too:
+> after a gated command, a raw rewrite of `HEAD` is invisible to a primitive `resolveRef('HEAD')`
+> until the next gate (reproduced on the memory adapter). The `ino !== 0` rule is unchanged; it
+> decides whether the next gate re-reads the content, not whether reads before that gate trust the
+> slot. The statement that no test rewriting `HEAD` raw between commands can go stale holds only
+> when the next read passes a gate. This is the shape of ADR-850's config epoch; it is documented
+> and pinned by a unit test rather than changed (docs/design/session-caches-faithfulness-addendum.md,
+> M, DC-M1).
+
 ## Context
 
 `HEAD` is read twice per command: the operational gate does an `lstat` and a `readUtf8` to decide

@@ -15,6 +15,17 @@ supersedes:
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D2, DC-2) · **Supersedes/Refines:** supersedes ADR-726 and ADR-727 in scope
 
+> **Correction (2026-09-14).** ADR-869 amends this record's numbers. The default memo valve is no
+> longer 16 MiB: it is the dial-derived 32 768 entries times the measured typical entry size at the
+> context's hash width — about 37.7 MiB at sha1 — and the 256 B fixed-overhead charge becomes the
+> measured value of about 950 B, because a memoised commit was measured to retain about 947 B of
+> fixed overhead (the old charge under-stated a typical commit 2.34×). The FlatTree valve gains a
+> width surcharge: 8 MiB at sha1, unchanged, and 9 588 608 B at sha256, so both caches admit their
+> reference workload at both widths; the stated defaults admitted it at sha1 only. The worst-case
+> additive footprint of the memo and FlatTree is therefore about 45.7 MiB at sha1, not 24 MiB. The
+> principle — budgets in the consumer's unit, valves that bind only for atypical entries, the
+> ordering pinned by a test (now at both widths) — is unchanged.
+
 ## Context
 
 Two derived caches each take `1/16 × deltaCacheMaxBytes` — 1 MiB at the default — plus a 65 536

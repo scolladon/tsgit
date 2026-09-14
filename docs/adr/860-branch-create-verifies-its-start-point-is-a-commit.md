@@ -8,6 +8,14 @@ subjects:
 - **Date:** 2026-09-12
 - **Design:** docs/spike/config-validation-tier.md · **Supersedes/Refines:** refines ADR-226
 
+> **Correction (2026-09-14).** The closing paragraph states that git types lightweight `tag.create`
+> targets. It does not. For a lightweight tag git checks existence only: tree, blob and tag-object
+> targets are written, a nonexistent target is refused by the ref transaction, and an existing tag
+> name is reported before the target is verified (pins B1–B8 in
+> docs/design/session-caches-faithfulness-addendum.md). Commit typing applies to `HEAD` and
+> `refs/heads/*` only. The gap left standing was existence, not type; ADR-864 closes it through the
+> target verification every ref update now performs.
+
 ## Context
 
 Surfaced incidentally while tracing which verbs reach the object store: `git branch x <tree-oid>`

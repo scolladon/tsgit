@@ -22,6 +22,20 @@ supersedes:
 - **Date:** 2026-09-11
 - **Design:** docs/design/session-caches-per-command-floor.md (D8, DC-7) · **Supersedes/Refines:** supersedes ADR-064 in scope
 
+> **Correction (2026-09-14).** This record gives the default clocks as 90 days total and 30 days
+> unreachable — in the correction note above, in the Context's paragraph on the walk skip, and in
+> the defaults carried forward from ADR-064. Those are git's documented values and the values of git
+> up to v2.49.0. Since v2.50.0 git's binary runs with total = 30 days and unreachable = 90 days
+> (`reflog.h:25-28`), and ADR-865 moves tsgit to them. Under those clocks the Context's argument that
+> the skip "would buy nothing" because the default clocks "are never equal" does not hold: git's test
+> is `expire_unreachable <= expire_total`, not equality, and with the unreachable cutoff 90 days back
+> and the total cutoff 30 days back it is true, so a default expire skips the walk and expires by
+> clock alone. The Decision already implements that case (a run whose unreachable cutoff is not later
+> than its total cutoff expires by clock), and the skip remains a consequence of git's rule rather than
+> a substitute for it. The note above is also inaccurate in saying `gc` runs this expire: git's `gc`
+> runs a reflog expire, tsgit's does not — tsgit's `gc` reads reflogs as retention roots. The
+> decision itself — follow git's model — is unchanged.
+
 ## Context
 
 `reflog expire` was recorded as fully faithful, with the keep rule
