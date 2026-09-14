@@ -82,67 +82,23 @@ export async function resolveObjectContentWithDepth(
   if (id === emptyTreeOid(ctx.hashConfig)) {
     return { type: 'tree', content: EMPTY_TREE_CONTENT, chainDepth: 0 };
   }
-  const cached = await tryCachedTier(ctx, id, verifyHash, maxBytes);
-  if (cached !== undefined) return cached;
-  const loose = await tryLooseTier(ctx, id, verifyHash, maxBytes);
-  if (loose !== undefined) return loose;
-  checkAborted(ctx);
-  return resolvePackTier(ctx, registry, id, verifyHash, maxBytes, externalDepth);
-}
-
-/**
- * The deltaCache tier: `id` resolved earlier in this call (empty-tree and
- * loose-read misses excluded — neither ever populates it here), reported at
- * depth 0. `undefined` falls through to the loose tier.
- */
-async function tryCachedTier(
-  ctx: Context,
-  id: ObjectId,
-  verifyHash: boolean,
-  maxBytes: number | undefined,
-): Promise<(ObjectContent & { chainDepth: number }) | undefined> {
   const cached = ctx.deltaCache.get(id);
-  if (cached === undefined) return undefined;
-  enforceCachedCap(id, cached, maxBytes);
-  await verifyObjectContent(ctx, id, cached.type, cached.content, verifyHash);
-  return { type: cached.type, content: cached.content, chainDepth: 0 };
-}
-
-/**
- * The loose-object tier, reported at depth 0 (a loose read never walks a
- * delta chain). `undefined` falls through to the pack tier; `checkAborted`
- * only guards this tier's own processing once `tryLoose` has actually found
- * something to process.
- */
-async function tryLooseTier(
-  ctx: Context,
-  id: ObjectId,
-  verifyHash: boolean,
-  maxBytes: number | undefined,
-): Promise<(ObjectContent & { chainDepth: number }) | undefined> {
+  if (cached !== undefined) {
+    enforceCachedCap(id, cached, maxBytes);
+    await verifyObjectContent(ctx, id, cached.type, cached.content, verifyHash);
+    return { type: cached.type, content: cached.content, chainDepth: 0 };
+  }
   const loose = await tryLoose(ctx, id);
-  if (loose === undefined) return undefined;
-  checkAborted(ctx);
-  const split = splitObject(loose);
-  enforceLooseCap(id, split.content, maxBytes);
-  cacheEntry(ctx.deltaCache, id, split);
-  await verifyObjectContent(ctx, id, split.type, split.content, verifyHash);
-  return { type: split.type, content: split.content, chainDepth: 0 };
-}
+  if (loose !== undefined) {
+    checkAborted(ctx);
+    const split = splitObject(loose);
+    enforceLooseCap(id, split.content, maxBytes);
+    cacheEntry(ctx.deltaCache, id, split);
+    await verifyObjectContent(ctx, id, split.type, split.content, verifyHash);
+    return { type: split.type, content: split.content, chainDepth: 0 };
+  }
 
-/**
- * The pack tier — the last one, with nowhere further to fall through to:
- * a registry miss is a genuine `OBJECT_NOT_FOUND`, not a signal to try
- * another tier.
- */
-async function resolvePackTier(
-  ctx: Context,
-  registry: PackRegistry,
-  id: ObjectId,
-  verifyHash: boolean,
-  maxBytes: number | undefined,
-  externalDepth: number,
-): Promise<ObjectContent & { chainDepth: number }> {
+  checkAborted(ctx);
   const hit = await registry.lookup(id);
   if (hit === undefined) {
     throw objectNotFound(id);
