@@ -8,7 +8,7 @@
 > `isObjectNotFound`, K `runExpire` length) and three LOW review findings (M HEAD-slot epoch, N
 > repo-settings verdict double compute, O parsed-memo accounting).
 > Status: draft → self-reviewed ×3 → decisions ratified (2026-09-14) → ref write/delete semantics and
-> memory-adapter parity folded (U1–U6, 2026-09-14; open items O1–O4)
+> memory-adapter parity folded (U1–U6, 2026-09-14); open items O1–O4 resolved (2026-09-14); O5, O6 open
 
 ---
 
@@ -1507,15 +1507,20 @@ Decided with the user after this design (2026-09-14), specified in
 - **G1 (b)** — the memory adapter follows symlinks on read. Widened by U1. ADR-872.
 - **G2 (b)** — a null new id deletes the ref. ADR-871.
 - **U1** — the memory adapter resolves every path component; write leaves stay no-follow. ADR-872.
-- **U2** — memory refusal codes match the Node adapter's explicit errno mapping (Y4–Y8); Y10/Y11 stay
-  under ADR-811 (O4). ADR-872.
+- **U2** — memory read-side and loop refusal codes match the Node adapter's explicit errno mapping (Y4–Y8);
+  create-surface codes stay under ADR-811 (O4 (a)). ADR-872.
 - **U3** — a delete of an absent ref is a no-op; commands keep their own refusals. ADR-871.
 - **U4** — a packed ref's delete rewrites `packed-refs` under `packed-refs.lock` (and the loose ref's
   lock); `fetch --prune`'s special case removed. ADR-871.
 - **U5** — `updateRef` dereferences symbolic refs as git's transaction splits them, `noDeref` added;
   callers classified (A 5, B 7, C 10, D 4, E 1). ADR-871.
-- **U6** — every delete path writes the coupled `logs/HEAD` entry. ADR-871. Its `branch.rename` clause
-  is contradicted by R11/R12 and waits on **O1**; O2–O4 are open as well.
+- **U6** — every delete path writes the coupled `logs/HEAD` entry. ADR-871.
+- **O1 (a)** — `branch.rename` writes git's two `logs/HEAD` entries (a fix; tsgit writes none). ADR-871.
+- **O2 (a)** — memory `mkdir` follows a symlink leaf as the Node adapter does. ADR-872.
+- **O3 (a)** — `remote.rename`'s packed-only refusal removed with U4. ADR-871.
+- **O4 (a)** — ADR-811 kept; memory create-surface codes unchanged. ADR-872.
+
+Open: **O5** (reftable `branch.rename` branch-log bytes) and **O6** (`remote.rename` reflog outcome).
 
 ### Candidates as tabled
 
@@ -1622,18 +1627,20 @@ folded them into this PR:
   `--no-deref`).
 - **U3** — a delete of an absent ref is a no-op success.
 - **U6** — deleting the ref `HEAD` points at appends `<old> 0{40} <message>` to `logs/HEAD` on every
-  delete path; `branch.rename` gets a non-logging delete so its reflog bytes stay git's.
+  delete path. (Its first wording gave `branch.rename` a delete that logs nothing; the pins contradicted that,
+  and O1 (a) resolved it: rename writes git's two `logs/HEAD` entries.)
 - **U4** — a delete of a packed-only (or loose-and-packed) ref rewrites `packed-refs` under
   `packed-refs.lock`; `fetch --prune`'s `delete-packed-ref` special case goes.
 - **U1** — the memory adapter resolves symlinks in every path component with the 40-hop limit;
   write surfaces keep their leaf no-follow semantics but resolve intermediate components as Node does.
 - **U2** — the memory adapter's refusal codes match the Node adapter's for a symlink loop, a read of a
   directory, `readdir` of a missing path, and every other mismatch in the contract suite's scope that
-  the Node adapter's errno mapping defines.
+  the Node adapter's errno mapping defines — scoped by O4 (a) to read-side and loop codes (ADR-811 keeps the
+  create-surface codes).
 
-This section pins git and Node, then specifies each change. Two parts of the decisions meet a pin
-that contradicts their premise or an earlier ratified record; they are stopped and tabled under
-[Open items](#open-items-raised-by-the-u1u6-pins), not substituted.
+This section pins git and Node, then specifies each change. Four questions the pins raised were tabled as
+O1–O4 and resolved by the user the same day (all option (a)); two more found while pinning those
+resolutions are open (O5, O6) — see [Open items](#open-items-raised-by-the-u1u6-pins).
 
 ### Pins — symbolic refs on the write path (git 2.55.0)
 
@@ -1729,6 +1736,15 @@ writes every log-only entry it splits (the symrefs walked and the coupled `HEAD`
 | R13 | `branch -m o o2` (HEAD not on `o`); `branch -m main r3` with `core.logAllRefUpdates=false` and no `logs/HEAD` | no `logs/HEAD` entry; `logs/HEAD` stays absent |
 | R14 | `notes add -m first HEAD` with `refs/notes/commits → refs/notes/other` (absent) | 0; `refs/notes/other` written, the symref kept — dereferenced |
 | R15 | `push origin main` with `refs/remotes/origin/main → refs/remotes/origin/real` | 0; `origin/real` moves, the symref kept — the tracking update dereferences |
+| R16 | reftable, `branch -m main renamed` (HEAD → main = C2) and `branch -m o o2` (not checked out) | `logs/refs/heads/renamed` = the moved history + `C2 0{40} Branch: renamed …` + `0{40} C2 Branch: renamed …` (files: the moved history + one `C2 C2 Branch: renamed …`); `o2` the same two-entry shape; `logs/HEAD` as R11 |
+| R17 | `branch -M main other` (HEAD → main = C2, `other` exists at C1) | `logs/HEAD` gains R11's two entries on both backends. `logs/refs/heads/other`: **files** = `main`'s history + `C2 C2 Branch: renamed …` (`other`'s own history dropped); **reftable** = both histories, interleaved by update index, + the two-entry shape |
+| R18 | files: clone, `fetch` moving `lp` and `pl` (logged), `pack-refs --all` (every tracking ref packed-only; `keep`, `main` unlogged), `remote rename origin up2` | 0. `packed-refs` = `# pack-refs with: peeled fully-peeled sorted \n` + `<id> refs/heads/main\n` — every `refs/remotes/origin/*` line removed; `refs/remotes/up2/{keep,lp,main,pl}` written **loose**; `refs/remotes/up2/HEAD` = `ref: refs/remotes/up2/main`. Logs: `logs/refs/remotes/up2/lp` = the moved history + `<id> <id> remote: renamed refs/remotes/origin/lp to refs/remotes/up2/lp` (full ref names); **no log created** for `keep`, `main`; `logs/refs/remotes/up2/HEAD` = the moved history + `0{40} 0{40} remote: renamed refs/remotes/origin/HEAD to refs/remotes/up2/HEAD`; no `logs/refs/remotes/origin/*` remains |
+| R19 | reftable, same sequence (clone already logs every tracking ref, `0{40} <id>` empty message) | every renamed ref keeps its moved history and gains the full-name rename entry; `logs/refs/remotes/origin/HEAD` stays, gaining `<id> 0{40}` (empty message), and `logs/refs/remotes/up2/HEAD` holds the moved history with no rename entry |
+
+R18/R19 against tsgit today: `moveTrackingRef` (`remote.ts:209-223`) writes each target through `updateRef` with
+`remote: renamed <from> to <to>` (remote names, not ref names), so the target's log gains `0{40} <id>` with that
+message — created even for a ref git leaves unlogged — and the source's log is deleted, not moved; symrefs are
+skipped. Only the packed-only refusal is in scope (O3); the reflog outcome is open item O6.
 
 ### Pins — `packed-refs` on delete (git 2.55.0, files backend)
 
@@ -1772,16 +1788,19 @@ Both adapters driven through their built `dist/esm` entries over the same tree: 
 | Y9 | `exists(dang)` (dangling leaf) | `false` | `true` | G1 (Part 17, unchanged by U2) |
 | Y10 | create surfaces whose **immediate parent** is a non-directory: `write(file/x)`, `writeExclusive(file/x)`, `symlink(t, file/l)`, `rename(…, file/x)`, `write(filelink/x)`; `mkdir(file)` | `FILE_EXISTS` (`mkdir -p` sees `EEXIST`); deeper ancestors `NOT_A_DIRECTORY` on both | `NOT_A_DIRECTORY` | **no** — ADR-811 ratified keeping memory's report at depth one |
 | Y11 | create surfaces through a **dangling** component: `write(dang/x)`, `writeExclusive(dang/x)` vs `mkdir(dang/x)` | `FILE_NOT_FOUND` vs `NOT_A_DIRECTORY` — the same fault, two codes, decided by `mkdir -p` | `NOT_A_DIRECTORY` | **no** — ADR-811's reasoning (an artefact of `mkdir -p`, no single code to converge on) |
-| Y12 | `mkdir(linkdir)` (a link to a directory); `mkdir(dang)` | success (`mkdir -p` follows its leaf); `FILE_NOT_FOUND` | `NOT_A_DIRECTORY` | **no** — the leaf no-follow rule; tabled as open item O2 |
+| Y12 | `mkdir(linkdir)` (a link to a directory); `mkdir(dang)` | success (`mkdir -p` follows its leaf); `FILE_NOT_FOUND` | `NOT_A_DIRECTORY` | **O2 (a)** — `mkdir` follows its leaf (Y17) |
 | Y13 | `rm` of an empty and of a non-empty directory | `UNSUPPORTED_OPERATION { operation: 'filesystem', reason: 'ERR_FS_EISDIR' }` (default arm; not an errno) | removes the empty one; `DIRECTORY_NOT_EMPTY` | **no** — default arm, and the port documents "Remove file or empty directory" |
 | Y14 | `readlink(file)` (not a link) | `UNSUPPORTED_OPERATION { reason: 'EINVAL' }` (default arm) | `FILE_NOT_FOUND` | **no** — default arm; the port documents `FILE_NOT_FOUND` |
 | Y15 | `openWithNoFollow(dir, 'read')` | opens a handle (no errno) | `FILE_NOT_FOUND` | **no** — operating-system behaviour, not a mapping |
 | Y16 | a chain of 32 / 33 links, `stat` | macOS: 32 ok, 33 `ELOOP`; Linux: 40 | 40 (`SYMLINK_FOLLOW_LIMIT`) | **no** — the limit is the platform's; memory keeps Linux's 40 |
+| Y17 | `mkdir` of a symlink **leaf** (the Node adapter always passes `recursive: true`): to a directory; dangling (target `nope`, and a nested `sub/deeper`); to a file; a loop; to an existing directory outside the root; `mkdir(link-to-dir/child)`; `mkdir(dangling/child)` | success, nothing created, the link kept; `FILE_NOT_FOUND`, the target **not** created; `FILE_EXISTS`; `PERMISSION_DENIED`; success (no-op); creates `dir/child`; `NOT_A_DIRECTORY`. Raw `fs.mkdir` without `recursive` refuses `EEXIST` on every link leaf — not a port surface | `NOT_A_DIRECTORY` for every link leaf | **O2 (a)** — follows as Node does, except the file case keeps ADR-811's `NOT_A_DIRECTORY` (O4) and the out-of-root case keeps structural containment (`PERMISSION_DENIED`) |
 
 "Folded" rule (the user's): the memory adapter takes the Node adapter's code where an explicit
 `mapErrno` arm produces it (`ENOENT`, `EEXIST`, `ENOTDIR`, `ENOTEMPTY`, `EACCES`/`EPERM`, `ELOOP`,
-`EISDIR`), unless a ratified record decides otherwise (Y10, Y11) or the instruction's own leaf rule
-does (Y12). Default-arm pass-throughs (Y13, Y14) and non-errno outcomes (Y15) are listed, not folded.
+`EISDIR`), unless a ratified record decides otherwise (Y10, Y11 — ADR-811, kept by O4 (a)). `mkdir` is the one
+write surface whose leaf Node follows, and O2 (a) mirrors it (Y12, Y17). U2 is therefore scoped to read-side codes
+and the loop code; create-surface codes are unchanged. Default-arm pass-throughs (Y13, Y14) and non-errno
+outcomes (Y15) are recorded residuals, not folded.
 
 ### What the pins change in the decisions
 
@@ -1798,12 +1817,12 @@ does (Y12). Default-arm pass-throughs (Y13, Y14) and non-errno outcomes (Y15) ar
 - **Every delete takes `packed-refs.lock`, and the loose ref's lock** (Q5, X13) — even a delete of an
   absent ref (so U3's no-op still refuses under contention). The loose lock is folded into U4 with the
   packed lock: same transaction step, same refusal class.
-- **`branch.rename`'s `logs/HEAD` bytes are two entries** (R11, R12), not none. U6's "non-logging
-  delete keeps git's bytes" premise does not hold; stopped as open item O1.
+- **`branch.rename`'s `logs/HEAD` bytes are two entries** (R11, R12, R17), on both backends; tsgit writes none
+  today. O1 (a): rename writes both — a fix.
 - **`fetch --prune` never deletes a symref** (R8); with U5, tsgit's prune would otherwise delete
   `origin/HEAD`'s target through it. Folded into U5's caller audit.
 - **`remote rename` moves packed-only tracking refs** (R9); tsgit's refusal
-  (`assertRenamableTrackingRef`) existed only because no packed rewrite existed. Tabled as open item O3.
+  (`assertRenamableTrackingRef`) existed only because no packed rewrite existed. O3 (a): removed with U4.
 
 ### Change — U5: `updateRef` dereferences as git's ref transaction splits
 
@@ -1980,9 +1999,15 @@ The `delete: true` arm and the null id share `deleteUpdates` (U5), so the couple
 written on both (X2, X3, X9, X15) with `options.reflogMessage ?? ''`. G2's null-id-only entry (ADR-864's
 note, Part 18 commit 1 as first planned) becomes the general rule; no path writes it separately.
 
-`branch.rename` (`branch.ts:165-234`) deletes the old name while `HEAD` still points at it (`:228`), then
-re-points `HEAD` (`:229-232`). git writes two `logs/HEAD` entries there (R11, R12), not none, so U6's
-"non-logging delete" does not keep git's bytes — tabled as **O1**; the plan carries both outcomes.
+**`branch.rename` (O1 (a)).** Renaming the branch `HEAD` names writes two `logs/HEAD` entries in git, on both
+backends (R11, R12, R17): `<id> 0{40} Branch: renamed <from> to <to>`, then `0{40} <id> Branch: renamed …`. tsgit
+writes **none** today (`branch.ts:165-234` deletes `from` at `:228` with no message and re-points `HEAD` through
+`writeSymbolicRef` at `:229-232`, which never logs). The fix: the delete passes `{ delete: true, noDeref: true,
+reflogMessage: branchRenamed(from, to) }`, so U6's coupled entry is the first line; the re-point becomes one
+`setSymbolic` update carrying `reflog: { oldId: 0{40}, newId: <id>, message }` — the second line, whose old id is
+the null id because `from` is already gone when `HEAD` moves. A rename of a branch `HEAD` does not name writes no
+`HEAD` entry (R13). The branch's own log is unchanged by this fix (files: moved history + `<id> <id>`); the
+reftable branch-log shape (R16, R17) is open item O5.
 
 ### Change — U4: a packed ref's delete rewrites `packed-refs` under git's locks
 
@@ -2091,7 +2116,7 @@ Linux's 40 (Y16), kept so the existing 40-hop rows stay meaningful.
 | `lstat`, `readlink`, `openWithNoFollow` | `no-follow` | as today on the leaf (`openWithNoFollow` refuses a link leaf `PERMISSION_DENIED`); **beneath a file → `NOT_A_DIRECTORY`** |
 | `rm`, `rename`, `atomicRename`, `rmRecursive`, `chmod` | `no-follow` (both `rename` paths) | as today on the leaf; **a source beneath a file → `NOT_A_DIRECTORY`; `rmRecursive` beneath a file stops resolving silently and refuses `NOT_A_DIRECTORY`** |
 | `write`, `writeStream`, `writeUtf8`, `appendUtf8`, `writeExclusive`, `symlink` | `no-follow` | leaf refusals unchanged (ADR-815, ADR-818); parent creation on the walked path, so nothing is ever filed beneath a symlink key; a non-directory at the immediate parent keeps `NOT_A_DIRECTORY` (Y10, ADR-811) and so does a dangling component (Y11) |
-| `mkdir` | `no-follow` for the leaf pending O2; intermediates walked | a link at the leaf keeps `NOT_A_DIRECTORY` (Y12, O2) |
+| `mkdir` | `follow` (O2 (a), Y17) | a link to a directory → no-op; a dangling link → `FILE_NOT_FOUND`, nothing created; a link to a file → `NOT_A_DIRECTORY` (ADR-811's code for a file there, O4 (a)); a loop → `PERMISSION_DENIED`; a link leaving the root → `PERMISSION_DENIED` (containment; Node succeeds as a no-op) |
 
 Consumers that name the memory adapter's old `readdir` code in comments keep working (they accept both
 codes) but their words go stale: `src/application/commands/internal/gc-pipeline.ts:157-170`
@@ -2126,7 +2151,7 @@ with `rg '\bupdateRef\('`: 27 internal call sites in 14 command files plus the f
 | 2 | `internal/abort-sequencer-reset.ts:32` | `options.branch` (from `cherry-pick.ts:631`, `revert.ts:572`) | sequencer rollback resets `HEAD` | C | `HEAD` |
 | 3 | `branch.ts:132` | `refs/heads/<name>` (create / force) | `branch -f` through a symref moves the target (R7) | B | none |
 | 4 | `branch.ts:161` | `refs/heads/<name>`, `delete: true` | `branch -D` deletes the symref itself (R5) | D | `noDeref: true` |
-| 5 | `branch.ts:228` | `from`, `delete: true` | rename deletes the old name with `REF_NO_DEREF` | D | `noDeref: true`; logging per O1 |
+| 5 | `branch.ts:228` | `from`, `delete: true` | rename deletes the old name with `REF_NO_DEREF` and logs `HEAD` (R11) | D | `noDeref: true` and `reflogMessage: branchRenamed(from, to)` (O1 (a)) |
 | 6 | `cherry-pick.ts:347` | `branch` (= `head.target`, `:433-446`) | sequencer commits through `HEAD` | C | `HEAD` |
 | 7 | `cherry-pick.ts:483` | `branch` | same | C | `HEAD` |
 | 8 | `commit.ts:236` | `branch` (= `head.target`, `:171`) | `commit` updates `HEAD` | C | `HEAD` |
@@ -2241,18 +2266,32 @@ Count: **0** callers change behaviour; the tests that pin the old refusal flip:
 - **A `sorted` trait over unsorted lines** (Q13): git's binary search misses the ref and changes nothing;
   tsgit's name-indexed lookup finds and deletes it.
 - **`remote.rename` leaves `refs/remotes/<old>/HEAD`** in place (`moveTrackingRef` returns for a
-  non-direct source, `remote.ts:215-216`); git re-points it to the new remote (R9). Not changed here.
-- **Memory adapter**: Y10–Y16 as listed; a `..` inside a link text after a symlinked component is collapsed
-  lexically (the adapter joins before it walks), where POSIX resolves it physically.
+  non-direct source, `remote.ts:215-216`), and its reflog outcome differs from git's (R18, R19) — open item O6.
+- **Memory adapter**: Y10, Y11 (ADR-811, O4 (a)); Y13 `rm` of a directory, Y14 `readlink` of a non-link and Y15
+  `openWithNoFollow(dir, 'read')` — default-arm or non-errno outcomes where the port documents the memory
+  adapter's answer (`src/ports/file-system.ts`: `rm` "Remove file or empty directory", `readlink` "Throws
+  FILE_NOT_FOUND if not a symlink"), so the Node adapter is the one that departs from the port; Y16 the hop
+  limit; Y17's out-of-root `mkdir` (memory refuses where Node's is a no-op); a `..` inside a link text after a
+  symlinked component is collapsed lexically (the adapter joins before it walks), where POSIX resolves it
+  physically.
 
 ### Open items raised by the U1–U6 pins
 
+Resolved by the user, 2026-09-14:
+
+| # | Item | Resolution |
+|---|---|---|
+| O1 | `branch.rename`'s `logs/HEAD` entries (U6) | **(a)** — rename writes git's two entries on each backend (R11, R12, R17); tsgit writes none today, so this is a fix (Change — U6). |
+| O2 | `MemoryFileSystem.mkdir` on a symlink leaf | **(a)** — follows its leaf as the Node adapter does (Y17), keeping ADR-811's file code and structural containment. |
+| O3 | `remote.rename`'s packed-only refusal (`assertRenamableTrackingRef`, `ref-store.ts:288-307`) | **(a)** — removed with U4; packed-only tracking refs rename as git's do (R18). |
+| O4 | Depth-one non-directory parent and dangling component on memory create surfaces | **(a)** — ADR-811 kept; create-surface codes unchanged; U2 covers read-side and loop codes only. |
+
+Open, found while pinning the resolutions:
+
 | # | Item | Reason | Options |
 |---|---|---|---|
-| O1 | `branch.rename`'s `logs/HEAD` entries (U6) | The decision gives rename a non-logging delete "so its reflog bytes stay git's". git writes **two** `logs/HEAD` entries when renaming the branch `HEAD` points at, on both backends (R11, R12); tsgit writes none today, so a non-logging delete keeps a divergence rather than git's bytes. | (a) Rename logs both: its `noDeref` delete carries `reflogMessage: branchRenamed(from, to)` (U6's coupled entry, `<old> 0{40}`), and the `HEAD` re-point becomes a `setSymbolic` update carrying `reflog: { oldId: 0{40}, newId: <id>, message }` — git's bytes, recommended. (b) Non-logging delete as decided (a store-level `delete` bypassing `updateRef`), today's zero entries recorded as a residual. (c) The logging delete only (first entry), the second recorded. |
-| O2 | `MemoryFileSystem.mkdir` on a symlink leaf (U1/U2) | The Node adapter's `mkdir -p` follows its leaf: a link to a directory is a no-op success, a dangling link `FILE_NOT_FOUND`, a loop `PERMISSION_DENIED` (Y12). The decision keeps write surfaces' leaf no-follow semantics, and memory refuses `NOT_A_DIRECTORY`. | (a) Follow the leaf on `mkdir` only, as Node does. (b) Keep `NOT_A_DIRECTORY`, record Y12 (the plan's default until decided). (c) Refuse `PERMISSION_DENIED`, as the other write leaves do. |
-| O3 | `remote.rename` refuses a packed-only tracking ref (`assertRenamableTrackingRef`, `ref-store.ts:288-307`, `rename-packed-tracking-ref`) | Its only stated reason is "would require a packed-refs rewrite the files backend doesn't perform", which U4 removes; git renames packed-only tracking refs (R9). Not among U1–U6. | (a) Remove the refusal in U4's commit (`moveTrackingRef` then writes the new loose ref and deletes the packed one). (b) Keep it, recorded as a residual. (c) A separate follow-up. |
-| O4 | Depth-one non-directory parent and dangling component on memory create surfaces (U2) | Explicit `mapErrno` arms give `FILE_EXISTS` / `FILE_NOT_FOUND` on Node (Y10, Y11), but ADR-811 ratified keeping the memory adapter's `NOT_A_DIRECTORY` because `mkdir -p` makes Node inconsistent. | (a) Keep ADR-811 (not folded; the design's default). (b) Reopen ADR-811 and mirror Node, depth-one `FILE_EXISTS` included. |
+| O5 | reftable `branch.rename` branch-log bytes | git's reftable backend writes the renamed branch's log as the moved history + `<id> 0{40}` + `0{40} <id>` (R16), and on a forced rename keeps the destination's own history (R17); tsgit's reftable `moveReflog` (`reftable-ref-store.ts:315-326`) replaces the destination log and `branch.rename` appends one `<id> <id>` entry — the files shape on both backends. | (a) Transcribe the reftable shape in Part 18 commit 3 beside O1 (a third field of the backend table). (b) Record as a residual. (c) Separate follow-up. |
+| O6 | `remote.rename` reflog outcome and `<remote>/HEAD` re-point | git moves each tracking ref's log and appends `<id> <id> remote: renamed <full old> to <full new>` only where a log exists (files), creates none for an unlogged ref, and re-points `<remote>/HEAD` with its own log entry (R18; reftable R19 differs again); tsgit creates `0{40} <id> remote: renamed <from> to <to>` on every target, deletes the source log, and skips symrefs. O3 (a) removes only the refusal. | (a) Fold into Part 18 commit 2 with O3: move logs, git's full-name message and existence rule per backend, re-point `<remote>/HEAD`. (b) Record as a residual; the O3 interop row pins `packed-refs` and loose refs exactly and titles the reflog comparison residual. (c) Separate follow-up. |
 
 ### Docs consequences
 
