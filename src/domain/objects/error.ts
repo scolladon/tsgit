@@ -1,4 +1,5 @@
 import { TsgitError } from '../error.js';
+import { errorDataCode } from '../error-data-code.js';
 import type { ObjectId } from './object-id.js';
 
 export { TsgitError } from '../error.js';
@@ -72,12 +73,15 @@ export const objectNotFound = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_NOT_FOUND', id });
 
 /**
- * True when `err` is a `TsgitError` carrying the `OBJECT_NOT_FOUND` code —
- * the shared guard every "was this object missing?" catch clause needs,
- * rather than each call site re-deriving the `instanceof` + code check.
+ * True when `err` carries the `OBJECT_NOT_FOUND` code in `data.code` — the
+ * shared guard every "was this object missing?" catch clause needs, rather
+ * than each call site re-deriving the structural check. Classifies by data
+ * shape, not class identity, so a value re-thrown verbatim through a Context
+ * port (a dist-bundle adapter in a mixed module graph, a dual-package
+ * consumer) still folds as a miss.
  */
 export const isObjectNotFound = (err: unknown): boolean =>
-  err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND';
+  errorDataCode(err) === 'OBJECT_NOT_FOUND';
 
 export const objectHashMismatch = (expected: ObjectId, actual: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_HASH_MISMATCH', expected, actual });

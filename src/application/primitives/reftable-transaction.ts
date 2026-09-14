@@ -54,6 +54,8 @@
  * `REFTABLE_LOCKED`. git never reads a lock body and never runs on OPFS, so
  * this non-empty body can never confuse it.
  */
+
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { AuthorIdentity } from '../../domain/objects/author-identity.js';
 import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -82,7 +84,6 @@ import {
 } from '../../domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
 import {
   invalidateReftableStack,

@@ -290,6 +290,39 @@ describe('catFileBatch', () => {
     });
   });
 
+  describe('Given a foreign-shaped OBJECT_NOT_FOUND thrown by the read', () => {
+    describe('When iterated', () => {
+      it('Then yields a missing entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const stored = await writeBlobBytes(ctx, new Uint8Array([1]));
+        const path = `${ctx.layout.gitDir}/objects/${stored.slice(0, 2)}/${stored.slice(2)}`;
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const probe: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (p: string) => {
+              if (p === path) {
+                throw Object.assign(new Error('foreign graph'), {
+                  data: { code: 'OBJECT_NOT_FOUND', id: stored },
+                });
+              }
+              return originalRead(p);
+            },
+          },
+        } as Context;
+        const sut = catFileBatch(probe, [stored]);
+
+        // Act
+        const entries = await collect(sut);
+
+        // Assert
+        expect(entries).toEqual([{ ok: false, id: stored, reason: 'missing' }]);
+      });
+    });
+  });
+
   describe('Given maxBytes smaller than the stored blob', () => {
     describe('When iterated', () => {
       it('Then propagates OBJECT_TOO_LARGE (cap forwarded to readObject)', async () => {

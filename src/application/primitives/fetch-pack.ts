@@ -15,12 +15,12 @@
  * negotiation, ref-update propagation.
  */
 import { fileExists, packArtifactMismatch, TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { bytesEqual, bytesToHex } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import { invalidPackHeader, type PackIndexEntries } from '../../domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import { indexQuarantinedPack } from './internal/index-pack.js';
 import {
   packFilePath,

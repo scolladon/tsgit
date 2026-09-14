@@ -227,6 +227,40 @@ describe('error', () => {
         });
       });
     });
+
+    describe('Given a foreign-shaped error that is not a TsgitError instance', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns true', () => {
+          // Arrange
+          const id = 'f'.repeat(40) as ObjectId;
+          const error = Object.assign(new Error('foreign graph'), {
+            name: 'TsgitError',
+            data: { code: 'OBJECT_NOT_FOUND', id },
+          });
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    });
+
+    describe('Given an error whose data.code is not a string', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const error = Object.assign(new Error('x'), { data: { code: 404 } });
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
   });
 
   describe('TsgitError class', () => {

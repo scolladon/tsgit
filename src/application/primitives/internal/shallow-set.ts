@@ -15,10 +15,11 @@
  * The promise itself (not its resolved value) is memoised, so concurrent
  * grafted reads racing the first probe share one `readUtf8` call.
  */
+
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir, shallowFilePath } from '../path-layout.js';
-import { errorDataCode } from './error-data-code.js';
 import { parseShallowFile } from './parse-shallow.js';
 
 interface ShallowState {

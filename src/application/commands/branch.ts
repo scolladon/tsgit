@@ -5,6 +5,7 @@
  * `internal/branch-namespace.ts`.
  */
 import { TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -13,7 +14,6 @@ import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-mes
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
-import { errorDataCode } from '../primitives/internal/error-data-code.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';

@@ -13,6 +13,7 @@
  * value leaves the pack directory untouched — see `writeReverseIndex`.
  */
 import { packArtifactMismatch } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { bytesEqual, hexToBytes } from '../../../domain/objects/encoding.js';
 import {
   type PackIndexEntries,
@@ -25,7 +26,6 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { assertValidBooleanConfig } from './boolean-config-guard.js';
-import { errorDataCode } from './error-data-code.js';
 
 export const buildIdx = async (
   ctx: Context,

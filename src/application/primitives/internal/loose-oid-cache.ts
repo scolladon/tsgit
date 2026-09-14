@@ -24,10 +24,11 @@
  * EXTERNAL pruner (a concurrent `git gc`) removing a loose file out from
  * under a cached HIT.
  */
+
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir, objectsDir } from '../path-layout.js';
-import { errorDataCode } from './error-data-code.js';
 
 const fanoutCache = new WeakMap<Context['session'], Map<string, Set<string>>>();
 

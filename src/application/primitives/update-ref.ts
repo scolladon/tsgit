@@ -1,9 +1,9 @@
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
 import { refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import {
   getRefStore,
   type RefStore,

@@ -6,10 +6,6 @@
  * `TsgitError` is a different class identity than the importing module's — so an
  * `instanceof` test fails and the error is rethrown where it should have been
  * folded. The `data.code` shape is the stable contract; class identity is not.
- *
- * Consumers: `midx-source`'s Tier-B and file-not-found probes,
- * `pack-registry`'s pack-directory absence probe, `loose-oid-cache`'s fanout
- * absence probe, and `shallow-set`'s shallow-file absence probe.
  */
 export function errorDataCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined;

@@ -3,6 +3,7 @@
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
@@ -21,7 +22,6 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import {
   bindMidx,
   computeMidxHealth,
@@ -595,7 +595,7 @@ const unusableEntry = (
  * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
  * registry over a dist-bundle Context) the adapter's `TsgitError` is a
  * different class identity than this module's — the hazard
- * `internal/error-data-code.ts` documents, and the reason every `ctx.fs`
+ * `domain/error-data-code.ts` documents, and the reason every `ctx.fs`
  * absence probe shares `errorDataCode`.
  */
 function isMissingPackDir(error: unknown): boolean {

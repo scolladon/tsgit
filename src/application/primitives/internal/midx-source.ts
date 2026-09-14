@@ -12,6 +12,7 @@
  * hashing the whole file on every open.
  */
 import type { TsgitError, TsgitErrorData } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import {
   invalidMultiPackIndex,
   type MidxCheck,
@@ -32,7 +33,6 @@ import {
   REASON_MIDX_CHAIN_TOO_LONG,
   REASON_MIDX_EXCEEDS_MAX,
 } from '../validators.js';
-import { errorDataCode } from './error-data-code.js';
 
 const FLAT_ARTEFACT = 'multi-pack-index';
 const CHAIN_ARTEFACT = 'multi-pack-index-chain';

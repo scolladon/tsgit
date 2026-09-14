@@ -2,6 +2,7 @@
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
@@ -32,7 +33,6 @@ import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
   commonGitDir,

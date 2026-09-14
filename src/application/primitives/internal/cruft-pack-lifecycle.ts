@@ -10,6 +10,8 @@
  * carries that pack's mtime, not the run's clock) — combined by `Math.max`,
  * never a lookup with a fallback.
  */
+
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import { type PackIndexEntries, parseCruftMtimes } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
@@ -17,7 +19,6 @@ import type { Context } from '../../../ports/context.js';
 import type { RegisteredPack } from '../pack-registry.js';
 import { commonGitDir, looseObjectPath, packsDir } from '../path-layout.js';
 import { boundedMapFor } from './concurrency.js';
-import { errorDataCode } from './error-data-code.js';
 import {
   buildCruftMtimes,
   cruftMtimesFilePath,

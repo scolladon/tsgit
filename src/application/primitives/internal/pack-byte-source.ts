@@ -11,6 +11,7 @@
  * behaviour changes here.
  */
 
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { PackEntryHeader, PackHeader } from '../../../domain/storage/index.js';
 import {
   crc32,
@@ -21,7 +22,6 @@ import {
 import { PACK_HEADER_SIZE } from '../../../domain/storage/pack-entry.js';
 import type { InflateStreamResult } from '../../../ports/compressor.js';
 import type { Context } from '../../../ports/context.js';
-import { errorDataCode } from './error-data-code.js';
 
 /**
  * `TCrcContext` lets a source thread whatever it needs from `inflateEntry`
@@ -110,7 +110,7 @@ interface DiskWindow {
 
 /**
  * Reads an error's `data.reason` structurally, mirroring `errorDataCode`
- * (`./error-data-code.js`) — a mixed-module-graph harness gives the
+ * (`domain/error-data-code.js`) — a mixed-module-graph harness gives the
  * adapter's `TsgitError` a different class identity than this module's, so
  * `instanceof` can't be trusted; the `data` shape is the stable contract.
  */

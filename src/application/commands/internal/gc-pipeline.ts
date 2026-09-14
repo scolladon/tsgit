@@ -6,6 +6,8 @@
  * detection, and superseded-pack retirement. See `maintenance.ts`'s module
  * doc for the task's observable contract.
  */
+
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import { PACK_NAME_HASH_PATHLESS, parseMultiPackIndex } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
@@ -31,7 +33,6 @@ import {
   retireCruftPack,
   writeCruftPack,
 } from '../../primitives/internal/cruft-pack-lifecycle.js';
-import { errorDataCode } from '../../primitives/internal/error-data-code.js';
 import { forgetLooseOidPrefix } from '../../primitives/internal/loose-oid-cache.js';
 import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
 import {
