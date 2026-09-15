@@ -15,7 +15,7 @@
  *   unique:         packRefs packs every ref exactly as git pack-refs --all does, on both backends
  *   interopSurface: packRefs
  */
-import { access, cp, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -23,9 +23,12 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchCreate } from '../../src/application/commands/branch.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { packRefs } from '../../src/application/commands/pack-refs.js';
+import { revParse } from '../../src/application/commands/rev-parse.js';
 import { loadReftableStack } from '../../src/application/primitives/load-reftable-stack.js';
 import { reftableDir } from '../../src/application/primitives/path-layout.js';
+import { getRefStore } from '../../src/application/primitives/ref-store.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../src/domain/objects/index.js';
 import {
   compactionMetric,
@@ -42,6 +45,7 @@ import {
   type PeerPair,
   runGit,
   runGitEnv,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -238,6 +242,80 @@ describe.skipIf(!GIT_AVAILABLE)('packRefs interop — files backend', () => {
         expect(oursPacked).toBe(peerPacked);
         expect(peerPacked).toContain(`^${commitId}`);
       });
+    });
+  });
+
+  describe('Given a ref and a ref under its name split across loose and packed storage on both sides', () => {
+    /** Seeds the commit, packs `packedName` through a placeholder line git
+     *  writes itself, then plants `looseName` as a loose file. */
+    const seedSplit = async (dir: string, packedName: string, looseName: string): Promise<void> => {
+      runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: commitEnv });
+      runGit(['-C', dir, 'update-ref', 'refs/remotes/placeholder', 'HEAD']);
+      git(dir, 'pack-refs', '--include', 'refs/remotes/placeholder');
+      const packedPath = path.join(dir, '.git', 'packed-refs');
+      const packed = await readFile(packedPath, 'utf8');
+      await writeFile(packedPath, packed.replace('refs/remotes/placeholder\n', `${packedName}\n`));
+      const loosePath = path.join(dir, '.git', looseName);
+      await mkdir(path.dirname(loosePath), { recursive: true });
+      await writeFile(loosePath, `${git(dir, 'rev-parse', 'HEAD').trim()}\n`);
+    };
+    const forEachRefNames = (dir: string): readonly string[] =>
+      git(dir, 'for-each-ref', '--format=%(refname)')
+        .split('\n')
+        .filter((line) => line.length > 0);
+
+    describe('When both tools list, resolve and pack the refs', () => {
+      it.each([
+        {
+          label: 'a packed refs/remotes/q/z under a loose file refs/remotes/q',
+          packedName: 'refs/remotes/q/z',
+          looseName: 'refs/remotes/q',
+          gitResolves: false,
+        },
+        {
+          label: 'a packed refs/remotes/d over a loose refs/remotes/d/x',
+          packedName: 'refs/remotes/d',
+          looseName: 'refs/remotes/d/x',
+          gitResolves: true,
+        },
+      ])(
+        'Then listings and packed-refs match git, and the packed name resolves only where git resolves it — $label',
+        async ({ packedName, looseName, gitResolves }) => {
+          // Arrange
+          await seedSplit(pair.peer, packedName, looseName);
+          await seedSplit(pair.ours, packedName, looseName);
+          const ours = createNodeContext({ workDir: pair.ours });
+          const sut = packRefs;
+
+          // Act
+          const listed = (await getRefStore(ours).listRefNames()).filter((name) => name !== 'HEAD');
+          const gitRevParse = tryRunGitWithExit(
+            ['-C', pair.peer, 'rev-parse', '--verify', packedName],
+            {
+              env: runGitEnv(),
+            },
+          );
+          let resolved: unknown;
+          try {
+            resolved = await revParse(ours, packedName);
+          } catch (err) {
+            resolved = (err as TsgitError).data.code;
+          }
+          runGit(['-C', pair.peer, 'pack-refs', '--all']);
+          const result = await sut(ours);
+
+          // Assert
+          expect(listed).toEqual(forEachRefNames(pair.peer));
+          expect(gitRevParse.exitCode === 0).toBe(gitResolves);
+          expect(resolved).toBe(gitResolves ? gitRevParse.stdout.trim() : 'OBJECT_NOT_FOUND');
+          expect(result.packedRefCount).toBe(3);
+          expect(await readFile(path.join(pair.ours, '.git/packed-refs'), 'utf8')).toBe(
+            await readFile(path.join(pair.peer, '.git/packed-refs'), 'utf8'),
+          );
+          expect(await pathExists(path.join(pair.ours, '.git', looseName))).toBe(false);
+          expect(await pathExists(path.join(pair.peer, '.git', looseName))).toBe(false);
+        },
+      );
     });
   });
 });

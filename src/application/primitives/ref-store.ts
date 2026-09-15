@@ -864,14 +864,20 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  a directory — git's unlink leaves a directory in place, even an empty
    *  one. */
   async function rmUnlessDirectory(path: string): Promise<void> {
-    let stat: FileStat;
+    if (await hasLooseFile(path)) await ctx.fs.rm(path);
+  }
+
+  /** Whether a file or link — never a directory — sits at `path`: `false`
+   *  when the path, or a component above it, is absent or a regular file.
+   *  git's loose-ref readers treat a directory there (`EISDIR`) and a file
+   *  in its path (`ENOTDIR`) as no loose ref. */
+  async function hasLooseFile(path: string): Promise<boolean> {
     try {
-      stat = await ctx.fs.lstat(path);
+      return !(await ctx.fs.lstat(path)).isDirectory;
     } catch (err) {
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return;
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return false;
       throw err;
     }
-    if (!stat.isDirectory) await ctx.fs.rm(path);
   }
 
   /**
@@ -1351,7 +1357,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     // — each probe is an independent read, and `boundedMapFor`'s
     // input-order result lets `toPrune` stay filtered in packable order.
     const dupeExists = await boundedMapFor(ctx, 'ioBound', packable, (entry) =>
-      ctx.fs.exists(looseRefPath(refDir(entry.name), entry.name)),
+      hasLooseFile(looseRefPath(refDir(entry.name), entry.name)),
     );
     const toPrune = packable
       .filter((_entry, index) => dupeExists[index] === true)

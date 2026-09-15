@@ -2684,6 +2684,100 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a ref and refs under its name coexisting across loose and packed storage', () => {
+    const header = '# pack-refs with: peeled fully-peeled sorted ';
+    const blob = (ctx: Context, text: string): Promise<ObjectId> =>
+      writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode(text),
+      });
+
+    describe('When packRefs packs a loose file refs/remotes/q with a packed refs/remotes/q/z', () => {
+      it('Then both are packed and the loose file is pruned, as git pack-refs --all does', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const idQ = await blob(base, 'q');
+        const idZ = await blob(base, 'q/z');
+        await base.fs.writeUtf8('/repo/.git/refs/remotes/q', `${idQ}\n`);
+        await base.fs.writeUtf8('/repo/.git/packed-refs', `${header}\n${idZ} refs/remotes/q/z\n`);
+        const sut = createRefStore(base);
+
+        // Act
+        const result = await sut.packRefs();
+
+        // Assert
+        expect(result).toEqual({
+          packedRefCount: 2,
+          prunedLooseRefCount: 1,
+          removedOrphanCount: 0,
+        });
+        expect(await base.fs.readUtf8('/repo/.git/packed-refs')).toBe(
+          `${header}\n${idQ} refs/remotes/q\n${idZ} refs/remotes/q/z\n`,
+        );
+        expect(await base.fs.exists('/repo/.git/refs/remotes/q')).toBe(false);
+      });
+    });
+
+    describe('When packRefs packs a packed refs/remotes/d with a loose refs/remotes/d/x', () => {
+      it('Then both are packed and only the loose file under it is pruned', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const idD = await blob(base, 'd');
+        const idX = await blob(base, 'd/x');
+        await base.fs.writeUtf8('/repo/.git/refs/remotes/d/x', `${idX}\n`);
+        await base.fs.writeUtf8('/repo/.git/packed-refs', `${header}\n${idD} refs/remotes/d\n`);
+        const sut = createRefStore(base);
+
+        // Act
+        const result = await sut.packRefs();
+
+        // Assert
+        expect(result).toEqual({
+          packedRefCount: 2,
+          prunedLooseRefCount: 1,
+          removedOrphanCount: 0,
+        });
+        expect(await base.fs.readUtf8('/repo/.git/packed-refs')).toBe(
+          `${header}\n${idD} refs/remotes/d\n${idX} refs/remotes/d/x\n`,
+        );
+        expect(await base.fs.exists('/repo/.git/refs/remotes/d/x')).toBe(false);
+      });
+    });
+
+    describe('When the refs are listed and the one under a loose file is resolved', () => {
+      it('Then both are listed, as git for-each-ref lists them, while the blocked name refuses', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const id = 'a'.repeat(40) as ObjectId;
+        await base.fs.writeUtf8('/repo/.git/refs/remotes/q', `${id}\n`);
+        await base.fs.writeUtf8('/repo/.git/packed-refs', `${header}\n${id} refs/remotes/q/z\n`);
+        const sut = createRefStore(base);
+
+        // Act
+        const names = await sut.listRefNames();
+        const entries = await sut.listRefs();
+
+        // Assert
+        expect(names).toEqual(['refs/remotes/q', 'refs/remotes/q/z']);
+        expect(entries).toEqual([
+          { name: 'refs/remotes/q', value: { kind: 'direct', id } },
+          { name: 'refs/remotes/q/z', value: { kind: 'direct', id } },
+        ]);
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('refs/remotes/q/z' as RefName);
+        } catch (err) {
+          caught = err;
+        }
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NOT_A_DIRECTORY',
+          path: '/repo/.git/refs/remotes/q',
+        });
+      });
+    });
+  });
+
   describe('Given more packable loose refs than the ioBound limit', () => {
     describe('When packRefs probes which packed entries still have a duplicate loose file', () => {
       it('Then the existence probe peaks at exactly the bound', async () => {
@@ -2704,18 +2798,18 @@ describe('ref-store', () => {
         const looseHeadsDir = `${ctx.layout.gitDir}/refs/heads/`;
         let inFlight = 0;
         let maxInFlight = 0;
-        const originalExists = ctx.fs.exists.bind(ctx.fs);
+        const originalLstat = ctx.fs.lstat.bind(ctx.fs);
         const instrumented: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async (path: string) => {
-              if (!path.startsWith(looseHeadsDir)) return originalExists(path);
+            lstat: async (path: string) => {
+              if (!path.startsWith(looseHeadsDir)) return originalLstat(path);
               inFlight += 1;
               if (inFlight > maxInFlight) maxInFlight = inFlight;
               await Promise.resolve();
               inFlight -= 1;
-              return originalExists(path);
+              return originalLstat(path);
             },
           },
         };
