@@ -155,23 +155,12 @@ async function listTempFileCandidatesTolerant(
     .map((entry) => `${dir}/${entry.name}`);
 }
 
-/** Whether `dir`'s own `readdir` fault means "nothing to enumerate here" —
- *  tolerated the same way git's fanout walk tolerates ENOENT. Every adapter
- *  reports a missing directory as `FILE_NOT_FOUND` directly (its `ENOENT`
- *  maps there, distinct from `ENOTDIR`) and a plain file blocking the
- *  fanout name as `NOT_A_DIRECTORY`. The `exists(dir)` fallback on
- *  `NOT_A_DIRECTORY` stays as a defensive second check: absent still
- *  tolerates (matches git's ENOENT tolerance); a real file blocking the
- *  fanout name rethrows, exactly as git's `opendir` hard-failing on a
- *  genuine ENOTDIR would. The fallback only ever runs on that one fault, so
- *  the common 254-miss path (every adapter's `FILE_NOT_FOUND`) costs
- *  nothing extra. */
-async function isFanoutDirAbsent(ctx: Context, dir: string, error: unknown): Promise<boolean> {
-  const code = errorDataCode(error);
-  if (code === 'FILE_NOT_FOUND') return true;
-  if (code !== 'NOT_A_DIRECTORY') return false;
-  return !(await ctx.fs.exists(dir));
-}
+/** Whether a fanout `dir`'s own `readdir` fault means "nothing to enumerate
+ *  here" — git's fanout walk tolerates ENOENT alone. Every adapter reports a
+ *  missing directory as `FILE_NOT_FOUND`; `NOT_A_DIRECTORY` means a file sits
+ *  at the name or above it, which git's `opendir` refuses, so it rethrows
+ *  without re-probing the name. */
+const isFanoutDirAbsent = (error: unknown): boolean => errorDataCode(error) === 'FILE_NOT_FOUND';
 
 /** `prefix`-matching file paths sitting directly inside a FANOUT `dir` —
  *  tolerant only of `dir` itself being absent (254 of the 256
@@ -188,7 +177,7 @@ async function listTempFileCandidatesStrict(
   try {
     entries = await ctx.fs.readdir(dir);
   } catch (error) {
-    if (!(await isFanoutDirAbsent(ctx, dir, error))) throw error;
+    if (!isFanoutDirAbsent(error)) throw error;
     return [];
   }
   return entries

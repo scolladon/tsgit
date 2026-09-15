@@ -57,7 +57,7 @@ import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.j
 import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
 import * as writeObjectMod from '../../../../src/application/primitives/write-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { fileNotFound, TsgitError } from '../../../../src/domain/error.js';
+import { fileNotFound, notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -3371,16 +3371,65 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given a regular file sitting at a fanout directory name', () => {
+    describe('When gc runs', () => {
+      it("Then it rethrows the fanout readdir's NOT_A_DIRECTORY, as git's own opendir failure refuses", async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const fanoutPath = `${ctx.layout.gitDir}/objects/cd`;
+        await ctx.fs.write(fanoutPath, new Uint8Array([0x78]));
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'NOT_A_DIRECTORY', path: fanoutPath });
+      });
+    });
+  });
+
+  describe('Given a fanout dir readdir fails with NOT_A_DIRECTORY and nothing exists at that name afterwards', () => {
+    describe('When gc runs', () => {
+      it('Then it rethrows the fault rather than re-probing the name and tolerating it as absence', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const fanoutDir = `${ctx.layout.gitDir}/objects/cd`;
+        const fault = notADirectory(fanoutDir);
+        const original = ctx.fs.readdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          if (path === fanoutDir) throw fault;
+          return original(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(fault);
+        expect(await ctx.fs.exists(fanoutDir)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a fanout dir readdir fails with a fault that is neither FILE_NOT_FOUND nor NOT_A_DIRECTORY, and the dir never existed', () => {
     describe('When gc runs', () => {
       it('Then it rethrows rather than tolerating the fault as absence', async () => {
-        // Arrange — `errorDataCode` reads `.data.code` structurally, so a
-        // plain `Error` with a bare `.code` property (not `.data.code`)
-        // classifies as neither known fault: `isFanoutDirAbsent` must fall
-        // through to its `!(await ctx.fs.exists(dir))` fallback. The dir is
-        // never created, so that fallback alone can't be trusted to save a
-        // wrongly-skipped early return — pinning the early `return false`
-        // still fires for this fault BEFORE the exists() fallback ever runs.
+        // Arrange — a fault carrying neither code: only an absent directory
+        // is tolerated, so it rethrows even though nothing exists at the name.
         const ctx = await seedOneCommit();
         const fanoutDir = `${ctx.layout.gitDir}/objects/cd`;
         const genericFault = Object.assign(new Error('EACCES: permission denied'), {
