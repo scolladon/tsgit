@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import {
@@ -40,6 +40,10 @@ const author: AuthorIdentity = {
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
 };
+
+const ZERO_OID = '0'.repeat(40);
+const FROZEN_NOW_S = 1_700_000_000;
+const FROZEN_NOW_MS = FROZEN_NOW_S * 1000;
 
 /**
  * Extends the base commit fixture with non-commit branch-point candidates:
@@ -152,6 +156,10 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
 };
 
 describe('branch', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   describe('Given a repo with main + one commit', () => {
     describe('When branch list', () => {
       it('Then returns main as current', async () => {
@@ -253,6 +261,54 @@ describe('branch', () => {
 
         // Act + Assert
         await expectError(() => branchCreate(ctx, { name: 'feature' }), 'BRANCH_EXISTS');
+      });
+    });
+  });
+
+  describe('Given refs/heads/x is a symbolic ref to an absent refs/heads/nope', () => {
+    describe('When branch x is created without force', () => {
+      it('Then the branch is written through the dangling symref and both names log the creation', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(FROZEN_NOW_MS);
+        const { ctx, commitId } = await seedWithCommit();
+        await writeSymbolicRef(ctx, 'refs/heads/x' as RefName, 'refs/heads/nope' as RefName);
+        const sut = branchCreate;
+
+        // Act
+        const result = await sut(ctx, { name: 'x' });
+
+        // Assert
+        const store = getRefStore(ctx);
+        const line = `${ZERO_OID} ${commitId} tsgit <tsgit@localhost> ${FROZEN_NOW_S} +0000\tbranch: Created from HEAD\n`;
+        expect(result).toEqual({ name: 'refs/heads/x', id: commitId });
+        expect(await store.resolveDirect('refs/heads/x' as RefName)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/heads/nope',
+        });
+        expect(await store.resolveDirect('refs/heads/nope' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/nope`)).toBe(line);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/x`)).toBe(line);
+      });
+    });
+  });
+
+  describe('Given refs/heads/y is a symbolic ref to the existing refs/heads/main', () => {
+    describe('When branch y is created without force', () => {
+      it('Then it refuses BRANCH_EXISTS naming y', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await writeSymbolicRef(ctx, 'refs/heads/y' as RefName, 'refs/heads/main' as RefName);
+        const sut = branchCreate;
+
+        // Act
+        const caught = await expectError(() => sut(ctx, { name: 'y' }), 'BRANCH_EXISTS');
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_EXISTS', name: 'refs/heads/y' });
       });
     });
   });

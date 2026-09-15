@@ -23,7 +23,7 @@ import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { refResolvesForReading, resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
@@ -103,7 +103,7 @@ export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<Ta
   // report the target, not TAG_EXISTS — `updateRef`'s own compare-and-swap
   // runs after its target verification now, too late to be the first word.
   await assertRepoSettingsValid(ctx);
-  if (input.force !== true && (await refExists(ctx, name))) throw tagExists(name);
+  if (input.force !== true && (await refResolvesForReading(ctx, name))) throw tagExists(name);
   const id = wantsAnnotatedTag(input) ? await createAnnotatedTag(ctx, input, targetId) : targetId;
   await updateTagRef(ctx, name, id, input.force === true, `tag: ${input.name}`);
   return { name, id };

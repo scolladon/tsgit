@@ -54,6 +54,19 @@ export async function resolveTerminalName(
   }
 }
 
+/**
+ * git's `refs_ref_exists` / `refs_read_ref`: whether `name` resolves for
+ * READING. A dangling symref does not — so a creation guarded by this check
+ * (`tag`, `branch`) writes through it rather than refusing an "existing"
+ * name.
+ */
+export async function refResolvesForReading(
+  ctx: Context,
+  name: RefName | 'HEAD',
+): Promise<boolean> {
+  return (await resolveTerminalName(ctx, name)) !== undefined;
+}
+
 export async function resolveRef(
   ctx: Context,
   name: RefName | 'HEAD',

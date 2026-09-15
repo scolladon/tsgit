@@ -19,7 +19,7 @@ import { transactionLogging } from '../primitives/internal/ref-transaction-loggi
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, type RefStore, refExists } from '../primitives/ref-store.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { refResolvesForReading, resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import {
   assertOperationalRepository,
@@ -121,7 +121,7 @@ export const branchCreate = async (
 ): Promise<BranchCreateResult> => {
   await assertOperationalRepository(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
-  if (input.force !== true && (await refExists(ctx, name))) {
+  if (input.force !== true && (await refResolvesForReading(ctx, name))) {
     throw branchExists(name);
   }
   const startPoint = input.startPoint ?? 'HEAD';

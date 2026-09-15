@@ -156,6 +156,88 @@ describe('tag', () => {
     });
   });
 
+  describe('Given refs/tags/dx is a symbolic ref to an absent refs/tags/nope', () => {
+    describe('When a lightweight tag dx is created without force', () => {
+      it('Then the tag is written through the dangling symref, which stays symbolic', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await writeSymbolicRef(ctx, 'refs/tags/dx' as RefName, 'refs/tags/nope' as RefName);
+        const sut = tagCreate;
+
+        // Act
+        const result = await sut(ctx, { name: 'dx' });
+
+        // Assert
+        const store = getRefStore(ctx);
+        expect(result).toEqual({ name: 'refs/tags/dx', id: commitId });
+        expect(await store.resolveDirect('refs/tags/dx' as RefName)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/tags/nope',
+        });
+        expect(await store.resolveDirect('refs/tags/nope' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+      });
+    });
+
+    describe('When an annotated tag dx is created without force', () => {
+      it('Then the tag object id is written through the dangling symref', async () => {
+        // Arrange
+        const { ctx } = await seedWithConfiguredUser();
+        await writeSymbolicRef(ctx, 'refs/tags/dx' as RefName, 'refs/tags/nope' as RefName);
+        const sut = tagCreate;
+
+        // Act
+        const result = await sut(ctx, { name: 'dx', message: 'm' });
+
+        // Assert
+        const store = getRefStore(ctx);
+        expect((await readObject(ctx, result.id)).type).toBe('tag');
+        expect(await store.resolveDirect('refs/tags/dx' as RefName)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/tags/nope',
+        });
+        expect(await store.resolveDirect('refs/tags/nope' as RefName)).toEqual({
+          kind: 'direct',
+          id: result.id,
+        });
+      });
+    });
+  });
+
+  describe('Given refs/tags/sz is a symbolic ref to an existing refs/tags/dz', () => {
+    describe('When a tag sz is created without force', () => {
+      it('Then it refuses TAG_EXISTS naming sz and leaves both refs unchanged', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await tagCreate(ctx, { name: 'dz' });
+        await writeSymbolicRef(ctx, 'refs/tags/sz' as RefName, 'refs/tags/dz' as RefName);
+        const sut = tagCreate;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { name: 'sz' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const store = getRefStore(ctx);
+        expect((caught as TsgitError).data).toEqual({ code: 'TAG_EXISTS', name: 'refs/tags/sz' });
+        expect(await store.resolveDirect('refs/tags/sz' as RefName)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/tags/dz',
+        });
+        expect(await store.resolveDirect('refs/tags/dz' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+      });
+    });
+  });
+
   describe('Given a missing full-oid target', () => {
     describe('When tag create', () => {
       it('Then it throws OBJECT_NOT_FOUND and writes no ref', async () => {

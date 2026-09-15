@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  refResolvesForReading,
   resolveRef,
   resolveRefOrMissing,
   resolveTerminalName,
@@ -589,6 +590,34 @@ describe('resolveTerminalName', () => {
 
         // Act
         const result = await sut(ctx, 'refs/heads/link1' as RefName);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('refResolvesForReading', () => {
+  describe('Given a direct ref and a dangling symbolic ref', () => {
+    describe('When refResolvesForReading probes each', () => {
+      it.each([
+        { label: 'the direct ref resolves', ref: 'refs/heads/main', expected: true },
+        {
+          label: 'the dangling symbolic ref does not',
+          ref: 'refs/heads/dangling',
+          expected: false,
+        },
+      ])('Then $label', async ({ ref, expected }) => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/dangling', 'ref: refs/heads/nope\n');
+        const sut = refResolvesForReading;
+
+        // Act
+        const result = await sut(ctx, ref as RefName);
 
         // Assert
         expect(result).toBe(expected);
