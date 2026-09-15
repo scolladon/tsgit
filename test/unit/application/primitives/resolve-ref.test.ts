@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   resolveRef,
   resolveRefOrMissing,
+  resolveTerminalName,
 } from '../../../../src/application/primitives/resolve-ref.js';
 import type { ResolveRefOptions } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -454,6 +455,110 @@ describe('resolveRefOrMissing', () => {
         // Act + Assert
         try {
           await resolveRefOrMissing(ctx, 'HEAD');
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('REF_CYCLE_DETECTED');
+        }
+      });
+    });
+  });
+});
+
+describe('resolveTerminalName', () => {
+  describe('Given a direct ref', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to its own name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBe('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a two-hop symbolic ref chain', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to the terminal name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a', 'ref: refs/heads/b\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/b', 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/a' as RefName);
+
+        // Assert
+        expect(result).toBe('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a chain ending on a missing terminal ref', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/gone' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a loose ref whose content is unparseable', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-an-oid\n');
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/garbage' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a symbolic ref whose target name fails the refname format', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/bad', 'ref: refs/heads/..broken\n');
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/bad' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a symbolic ref cycle', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then still throws REF_CYCLE_DETECTED', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/loop\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop', 'ref: HEAD\n');
+
+        // Act + Assert
+        try {
+          await resolveTerminalName(ctx, 'HEAD');
           expect.unreachable();
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CYCLE_DETECTED');

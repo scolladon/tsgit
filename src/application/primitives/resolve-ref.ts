@@ -1,3 +1,4 @@
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
 import { refChainTooDeep, refCycleDetected, refNotFound } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
@@ -10,10 +11,38 @@ import { exceedsMaxPeelDepth, exceedsMaxSymbolicDepth } from './validators.js';
 /** {@link resolveDirectChain}'s result: the resolved id, or the ref name the
  *  chain ended on when no candidate exists — never a thrown `REF_NOT_FOUND`,
  *  so a caller sweeping several candidates (rev-parse, resolveCommitIsh)
- *  pays no stack-capturing throw per miss. */
+ *  pays no stack-capturing throw per miss. `found.name` is the chain's
+ *  TERMINAL name — the name asked for when it resolves directly, or the last
+ *  symref hop's name when it does not. */
 export type ChainOutcome =
-  | { readonly kind: 'found'; readonly id: ObjectId }
+  | { readonly kind: 'found'; readonly id: ObjectId; readonly name: RefName }
   | { readonly kind: 'missing'; readonly name: RefName };
+
+/** Error codes `refs_resolve_ref_unsafe(RESOLVE_REF_READING)` folds into "does
+ *  not resolve for reading": a chain ending on a name that formats invalid,
+ *  and a loose file whose content is neither an oid nor `ref: …` — both mean
+ *  the same thing to a reading resolve. */
+const UNREADABLE_REF_CODES = new Set(['INVALID_REF', 'INVALID_OBJECT_ID']);
+
+/**
+ * git's `repo_dwim_log` target-name resolution: the name `name`'s chain
+ * resolves to for READING — following every symref hop — or `undefined`
+ * when the chain ends missing, or a link's content or name fails to parse.
+ * A cycle or an over-deep chain still propagates: those are not "does not
+ * resolve", they are refusals of their own.
+ */
+export async function resolveTerminalName(
+  ctx: Context,
+  name: RefName | 'HEAD',
+): Promise<RefName | undefined> {
+  try {
+    const outcome = await resolveChainOutcome(ctx, name, undefined);
+    return outcome.kind === 'found' ? outcome.name : undefined;
+  } catch (err) {
+    if (UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '')) return undefined;
+    throw err;
+  }
+}
 
 export async function resolveRef(
   ctx: Context,
@@ -101,7 +130,7 @@ export async function resolveDirectChain(
       return { kind: 'missing', name: current };
     }
     if (result.kind === 'direct') {
-      return { kind: 'found', id: result.id };
+      return { kind: 'found', id: result.id, name: current };
     }
     // symbolic → follow target
     depth += 1;

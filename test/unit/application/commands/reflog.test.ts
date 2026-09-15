@@ -17,6 +17,7 @@ import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import { parseApproxidate, serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { instrumentedContext } from '../primitives/fixtures.js';
 import { seedRepo } from './fixtures.js';
 
 interface BadNumericData {
@@ -328,11 +329,27 @@ describe('reflog command', () => {
       });
     });
 
-    describe('When reflog expire runs', () => {
+    describe('When reflog expire runs with --all and zero reflogs exist', () => {
+      it('Then it is a no-op — the repo-settings class is never reached with zero targets', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        const result = await reflog(ctx, { action: 'expire', all: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+      });
+    });
+
+    describe('When reflog expire runs on a ref that resolves', () => {
       it('Then it throws CONFIG_BAD_NUMERIC_VALUE', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
+        await appendReflog(ctx, HEAD, entry());
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
 
         // Act
@@ -785,10 +802,14 @@ describe('reflog command', () => {
         });
       });
       describe('When reflog expire', () => {
-        it('Then throws INVALID_REF', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+        it('Then throws REFLOG_NOT_FOUND with the argument as passed, touching no path under it', async () => {
+          // Arrange — `expire` resolves its target as git's `repo_dwim_log`
+          // does: every DWIM candidate built from an invalid name fails the
+          // ref-name grammar before any I/O, so the whole sweep folds into
+          // "could not be found" rather than a format refusal.
+          const base = createMemoryContext();
+          await seedRepo(base, {});
+          const { ctx, calls } = instrumentedContext(base);
 
           // Act
           let caught: unknown;
@@ -799,7 +820,11 @@ describe('reflog command', () => {
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_REF');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: '../../etc/passwd',
+          });
+          expect(calls().some((call) => call.path.includes('etc/passwd'))).toBe(false);
         });
       });
     });
@@ -1016,11 +1041,12 @@ describe('reflog command', () => {
       });
     });
 
-    describe('Given expire defaults to HEAD', () => {
-      describe('When expire with no ref and no all', () => {
-        it('Then only the HEAD log is touched', async () => {
-          // Arrange — a stale HEAD entry and a stale branch entry; without `ref` or
-          // `all`, only HEAD is expired.
+    describe('Given expire with no ref and no --all', () => {
+      describe('When expire runs', () => {
+        it('Then nothing is expired and neither log is rewritten', async () => {
+          // Arrange — a stale HEAD entry and a stale branch entry; git's own
+          // `reflog expire` with neither a ref nor `--all` does nothing (it
+          // used to default the target to HEAD).
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
@@ -1032,14 +1058,443 @@ describe('reflog command', () => {
           await writeReflog(ctx, BRANCH, [
             entry({ newId: OID_Y, identity: identityAt(stale), message: 'branch stale' }),
           ]);
+          const headBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`);
+          const branchBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+          const renameDestinations: string[] = [];
+          const spiedCtx: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              rename: (source: string, destination: string): Promise<void> => {
+                renameDestinations.push(destination);
+                return ctx.fs.rename(source, destination);
+              },
+            },
+          };
 
           // Act
-          const result = await reflog(ctx, { action: 'expire' });
+          const result = await reflog(spiedCtx, { action: 'expire' });
 
-          // Assert — only HEAD's single entry pruned; the branch log untouched.
-          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
-          const branchAfter = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
-          expect(branchAfter.kind === 'show' && branchAfter.entries).toHaveLength(1);
+          // Assert — no-op result, no rewrite transaction, both logs byte-identical.
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          expect(renameDestinations).toHaveLength(0);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(headBefore);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(
+            branchBefore,
+          );
+        });
+      });
+    });
+
+    describe('target resolution (repo_dwim_log)', () => {
+      describe('Given an invalid ref name', () => {
+        describe('When expire runs', () => {
+          it('Then it refuses REFLOG_NOT_FOUND without reading any candidate from disk', async () => {
+            // Arrange — every DWIM candidate built from an invalid base fails
+            // the ref-name grammar, so `logForCandidate` never performs I/O
+            // against a path built from the offending segment.
+            const base = createMemoryContext();
+            await seedRepo(base, {});
+            const { ctx, calls } = instrumentedContext(base);
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/..bad' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/..bad',
+            });
+            expect(calls().some((call) => call.path.includes('..bad'))).toBe(false);
+          });
+        });
+      });
+
+      describe('Given a ref name that does not resolve at all', () => {
+        describe('When expire runs', () => {
+          it('Then it refuses REFLOG_NOT_FOUND', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/gone' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/gone',
+            });
+          });
+        });
+      });
+
+      describe('Given a short name resolving under refs/heads', () => {
+        describe('When expire runs on the short name', () => {
+          it('Then the branch under refs/heads is the one expired (DWIM)', async () => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/side': tip } });
+            await writeReflog(ctx, 'refs/heads/side' as RefName, [
+              entry({ newId: tip, identity: identityAt(now - 1 * DAY), message: 'kept' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, { action: 'expire', ref: 'side' });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          });
+        });
+      });
+
+      describe('Given a name present as both a tag and a branch, both with logs', () => {
+        describe('When expire runs on the short name', () => {
+          it('Then the tag DWIM rule wins — tags precede heads', async () => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/tags/x': tip, 'refs/heads/x': tip } });
+            await writeReflog(ctx, 'refs/tags/x' as RefName, [
+              entry({ newId: tip, identity: identityAt(now), message: 'tag log' }),
+            ]);
+            await writeReflog(ctx, 'refs/heads/x' as RefName, [
+              entry({ newId: tip, identity: identityAt(now), message: 'branch log' }),
+            ]);
+
+            // Act — an exact-match `now` cutoff prunes whichever log DWIM selects.
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'x',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert — the tag's log was rewritten to empty; the branch untouched.
+            const tagAfter = await reflog(ctx, { action: 'show', ref: 'refs/tags/x' });
+            const branchAfter = await reflog(ctx, { action: 'show', ref: 'refs/heads/x' });
+            expect(tagAfter.kind === 'show' && tagAfter.entries).toHaveLength(0);
+            expect(branchAfter.kind === 'show' && branchAfter.entries).toHaveLength(1);
+          });
+        });
+      });
+
+      describe('Given a dangling symref with its own log', () => {
+        describe('When expire runs on its name', () => {
+          it('Then it refuses REFLOG_NOT_FOUND', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/sym`, 'ref: refs/heads/nope\n');
+            await writeReflog(ctx, 'refs/heads/sym' as RefName, [entry()]);
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/sym' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/sym',
+            });
+          });
+        });
+      });
+
+      describe('Given a symref with its own log, pointing at a branch that also has one', () => {
+        describe('When expire runs on the symref name', () => {
+          it("Then the symref's own log is the one expired", async () => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/refs/heads/sym2`,
+              'ref: refs/heads/main\n',
+            );
+            await writeReflog(ctx, 'refs/heads/sym2' as RefName, [
+              entry({ newId: tip, identity: identityAt(now), message: 'own' }),
+            ]);
+            await writeReflog(ctx, BRANCH, [
+              entry({ newId: tip, identity: identityAt(now), message: 'main own' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/sym2',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert — the symref's own log pruned; main's untouched.
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+            const mainAfter = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
+            expect(mainAfter.kind === 'show' && mainAfter.entries).toHaveLength(1);
+          });
+        });
+      });
+
+      describe('Given a symref with no own log, pointing at a branch that has one', () => {
+        describe('When expire runs on the symref name', () => {
+          it("Then the target branch's log is the one expired", async () => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/refs/heads/sym2`,
+              'ref: refs/heads/main\n',
+            );
+            await writeReflog(ctx, BRANCH, [
+              entry({ newId: tip, identity: identityAt(now), message: 'main own' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/sym2',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          });
+        });
+      });
+
+      describe('Given HEAD with no own log, pointing at a branch that has one', () => {
+        describe('When expire runs on HEAD', () => {
+          it("Then the branch's log is the one expired", async () => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, BRANCH, [
+              entry({ newId: tip, identity: identityAt(now), message: 'main own' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          });
+        });
+      });
+
+      describe('Given an unborn HEAD with its own log present', () => {
+        describe('When expire runs on HEAD', () => {
+          it('Then it refuses REFLOG_NOT_FOUND and the log is untouched', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, { head: 'refs/heads/unborn' });
+            await writeReflog(ctx, HEAD, [entry()]);
+            const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`);
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({ code: 'REFLOG_NOT_FOUND', ref: 'HEAD' });
+            expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(before);
+          });
+        });
+      });
+
+      describe('Given an invalid or selector-suffixed argument', () => {
+        describe('When expire runs', () => {
+          it.each([
+            { label: 'a ref name containing ..', ref: 'refs/heads/bad..name' },
+            { label: 'HEAD with a reflog selector suffix', ref: 'HEAD@{0}' },
+          ])(
+            'Then $label refuses REFLOG_NOT_FOUND, not an invalid-name refusal',
+            async ({ ref }) => {
+              // Arrange
+              const ctx = createMemoryContext();
+              await seedRepo(ctx, {});
+
+              // Act
+              let caught: unknown;
+              try {
+                await reflog(ctx, { action: 'expire', ref });
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert
+              expect((caught as TsgitError).data).toEqual({ code: 'REFLOG_NOT_FOUND', ref });
+            },
+          );
+        });
+      });
+
+      describe('Given a loose ref whose content is unparseable, with its own log present', () => {
+        describe('When expire runs on its name', () => {
+          it('Then it refuses REFLOG_NOT_FOUND', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-an-oid\n');
+            await writeReflog(ctx, 'refs/heads/garbage' as RefName, [entry()]);
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/garbage' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/garbage',
+            });
+          });
+        });
+      });
+
+      describe('Given a named ref whose tip names an object that was never written', () => {
+        describe('When expire runs with --expire=now', () => {
+          it('Then the entry expires by clock rather than throwing OBJECT_NOT_FOUND', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, { refs: { 'refs/heads/ghost': OID_X } });
+            await writeReflog(ctx, 'refs/heads/ghost' as RefName, [
+              entry({ newId: OID_X, identity: identityAt(wallNow()), message: 'ghost' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/ghost',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          });
+        });
+
+        describe('When expire runs with --expire=never --expire-unreachable=now', () => {
+          it('Then every entry expires — a tip that does not peel is always unreachable', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, { refs: { 'refs/heads/ghost': OID_X } });
+            await writeReflog(ctx, 'refs/heads/ghost' as RefName, [
+              entry({ newId: OID_X, identity: identityAt(wallNow()), message: 'ghost' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/ghost',
+              expire: 'never',
+              expireUnreachable: 'now',
+            });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          });
+        });
+      });
+
+      describe('Given a malformed core.deltaBaseCacheLimit', () => {
+        const seedConfig = async (ctx: Context, content: string): Promise<void> => {
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
+        };
+
+        describe('When expire runs on a ref that does not resolve', () => {
+          it('Then target resolution refuses before the repo-settings class is ever reached', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/gone' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/gone',
+            });
+          });
+        });
+
+        describe('When expire runs with no ref and no --all', () => {
+          it('Then it is a no-op and the class is never reached', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+
+            // Act
+            const result = await reflog(ctx, { action: 'expire' });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          });
+        });
+
+        describe('When expire runs on a ref that resolves', () => {
+          it('Then the repo-settings class refuses once a target is found', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], wallNow());
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [entry({ newId: tip })]);
+            await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          });
         });
       });
     });
@@ -2031,23 +2486,34 @@ describe('reflog command', () => {
     });
 
     describe('Given a named ref that no longer resolves but whose reflog file remains', () => {
-      describe('When expire runs against it directly with a middle-band timestamp', () => {
-        it('Then the entry expires without a reachability check', async () => {
+      describe('When expire runs against it directly', () => {
+        it('Then it refuses REFLOG_NOT_FOUND and the log is untouched', async () => {
           // Arrange — the ref file itself is never created, only its log;
-          // `resolveDirect` answers `missing`, so the log expires by clock
-          // alone, same as a ref resolving to a non-commit.
+          // `repo_dwim_log` requires the name to resolve for reading before
+          // its log is even consulted, so a name with no ref at all could
+          // not be found — it no longer expires by clock alone.
           const now = wallNow();
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeReflog(ctx, BRANCH, [
             entry({ oldId: ZERO_OID, newId: ZERO_OID, identity: identityAt(now - 45 * DAY) }),
           ]);
+          const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
 
           // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'refs/heads/main' });
+          let caught: unknown;
+          try {
+            await reflog(ctx, { action: 'expire', ref: 'refs/heads/main' });
+          } catch (err) {
+            caught = err;
+          }
 
           // Assert
-          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: 'refs/heads/main',
+          });
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(before);
         });
       });
     });

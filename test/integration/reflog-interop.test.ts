@@ -1994,36 +1994,272 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('When expire runs directly against the gone ref', () => {
-        it('Then git refuses while tsgit proceeds — a recorded, pre-existing divergence', async () => {
-          // Arrange — tsgit's `hasReflog` answers by file presence alone, so
-          // it never reaches git's own "does the ref resolve" refusal.
-          const dir = await caseDir('reach-gone-single');
-          git(dir, 'branch', 'gone');
-          await rm(refPath(dir, 'refs/heads/gone'));
-          const ctx = createNodeContext({ workDir: dir });
+      describe('When expire runs directly against the gone ref (full and short name)', () => {
+        it.each([
+          { label: 'the full name', arg: 'refs/heads/gone' },
+          { label: 'the short name', arg: 'gone' },
+        ])(
+          'Then $label both refuse REFLOG_NOT_FOUND, and the log survives on both',
+          async ({ arg }) => {
+            // Arrange — `repo_dwim_log` requires the name to resolve for
+            // reading before its log is even consulted; a deleted ref never
+            // resolves, so this is now an agreement row, not a divergence.
+            const dir = await caseDir(`reach-gone-single-${arg.replace(/\W/g, '')}`);
+            git(dir, 'branch', 'gone');
+            await rm(refPath(dir, 'refs/heads/gone'));
+            const before = await readFile(branchLogPath(dir, 'gone'), 'utf8');
+            const ctx = createNodeContext({ workDir: dir });
 
-          // Act
-          const gitResult = tryRunGitWithExit([
-            '-C',
-            dir,
-            'reflog',
-            'expire',
-            '--expire=never',
-            '--expire-unreachable=now',
-            'refs/heads/gone',
-          ]);
-          const result = await reflog(ctx, {
-            action: 'expire',
-            ref: 'refs/heads/gone',
-            expire: 'never',
-            expireUnreachable: 'now',
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              dir,
+              'reflog',
+              'expire',
+              '--expire=never',
+              '--expire-unreachable=now',
+              arg,
+            ]);
+            let caught: unknown;
+            try {
+              await reflog(ctx, {
+                action: 'expire',
+                ref: arg,
+                expire: 'never',
+                expireUnreachable: 'now',
+              });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(255);
+            expect(gitResult.stderr).toContain(`reflog could not be found: '${arg}'`);
+            expect((caught as TsgitError).data).toEqual({ code: 'REFLOG_NOT_FOUND', ref: arg });
+            expect(await readFile(branchLogPath(dir, 'gone'), 'utf8')).toBe(before);
+          },
+        );
+      });
+    });
+
+    describe('target resolution (repo_dwim_log)', () => {
+      describe('Given a packed-only ref with a reflog', () => {
+        describe('When expire runs on its full name with --expire=now', () => {
+          it('Then both tools fully expire it, byte-identical', async () => {
+            // Arrange
+            const peer = await caseDir('dwim-packed-peer');
+            const ours = await caseDir('dwim-packed-ours');
+            for (const dir of [peer, ours]) {
+              git(dir, 'pack-refs', '--all');
+              const before = await readFile(mainLogPath(dir), 'utf8');
+              expect(before.length).toBeGreaterThan(0);
+            }
+
+            // Act
+            git(peer, 'reflog', 'expire', '--expire=now', '--expire-unreachable=never', 'main');
+            const ctx = createNodeContext({ workDir: ours });
+            const result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'main',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert — both tools accept the packed-only ref as a target,
+            // and the DWIMed log is fully expired on both.
+            const peerBytes = await readFile(mainLogPath(peer), 'utf8');
+            const oursBytes = await readFile(mainLogPath(ours), 'utf8');
+            expect(peerBytes).toHaveLength(0);
+            expect(oursBytes).toBe(peerBytes);
+            expect(result).toEqual({ kind: 'expire', removed: 4, kept: 0 });
           });
+        });
+      });
 
-          // Assert
-          expect(gitResult.exitCode).toBe(255);
-          expect(gitResult.stderr).toContain('reflog could not be found');
-          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+      describe('Given a short name resolving under refs/heads', () => {
+        describe('When expire runs on the short name with --expire=now', () => {
+          it('Then both tools fully expire the DWIMed branch log', async () => {
+            // Arrange
+            const peer = await caseDir('dwim-short-peer');
+            const ours = await caseDir('dwim-short-ours');
+            for (const dir of [peer, ours]) {
+              runGit(['-C', dir, 'branch', 'side'], { env: runGitEnv() });
+            }
+
+            // Act
+            git(peer, 'reflog', 'expire', '--expire=now', '--expire-unreachable=never', 'side');
+            const ctx = createNodeContext({ workDir: ours });
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'side',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            const peerBytes = await readFile(branchLogPath(peer, 'side'), 'utf8');
+            const oursBytes = await readFile(branchLogPath(ours, 'side'), 'utf8');
+            expect(peerBytes).toHaveLength(0);
+            expect(oursBytes).toBe(peerBytes);
+          });
+        });
+      });
+
+      describe('Given a symbolic ref with its own log, pointing at a branch that also has one', () => {
+        describe('When expire runs on the symbolic ref name', () => {
+          it("Then both tools expire only the symref's own log", async () => {
+            // Arrange
+            const peer = await caseDir('dwim-symref-own-peer');
+            const ours = await caseDir('dwim-symref-own-ours');
+            for (const dir of [peer, ours]) {
+              runGit(['-C', dir, 'symbolic-ref', 'refs/heads/sym2', 'refs/heads/main'], {
+                env: runGitEnv(),
+              });
+              runGit(['-C', dir, 'update-ref', '-m', 'seed', 'refs/heads/sym2', 'HEAD'], {
+                env: runGitEnv(),
+              });
+            }
+
+            // Act
+            git(peer, 'reflog', 'expire', '--expire=now', '--expire-unreachable=never', 'sym2');
+            const ctx = createNodeContext({ workDir: ours });
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'sym2',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert — the symref's own log emptied on both; main's untouched.
+            const peerSym = await readFile(branchLogPath(peer, 'sym2'), 'utf8');
+            const oursSym = await readFile(branchLogPath(ours, 'sym2'), 'utf8');
+            expect(peerSym).toHaveLength(0);
+            expect(oursSym).toBe(peerSym);
+            const mainAfter = await readFile(mainLogPath(ours), 'utf8');
+            expect(mainAfter).toBe(await readFile(mainLogPath(peer), 'utf8'));
+          });
+        });
+      });
+
+      describe('Given a symbolic ref with no own log, pointing at a branch that has one', () => {
+        describe('When expire runs on the symbolic ref name', () => {
+          it("Then both tools expire the target branch's log", async () => {
+            // Arrange — the symref is planted directly as a loose file
+            // (never through `git symbolic-ref`, which writes its OWN
+            // creation entry to `logs/refs/heads/sym2` and would defeat the
+            // "no own log" premise this row pins).
+            const peer = await caseDir('dwim-symref-target-peer');
+            const ours = await caseDir('dwim-symref-target-ours');
+            for (const dir of [peer, ours]) {
+              await writeFile(refPath(dir, 'refs/heads/sym2'), 'ref: refs/heads/main\n');
+            }
+
+            // Act
+            git(peer, 'reflog', 'expire', '--expire=now', '--expire-unreachable=never', 'sym2');
+            const ctx = createNodeContext({ workDir: ours });
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'sym2',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            const peerMain = await readFile(mainLogPath(peer), 'utf8');
+            const oursMain = await readFile(mainLogPath(ours), 'utf8');
+            expect(peerMain).toHaveLength(0);
+            expect(oursMain).toBe(peerMain);
+          });
+        });
+      });
+
+      describe('Given HEAD with no own log, pointing at a branch that has one', () => {
+        describe('When expire runs on HEAD', () => {
+          it("Then both tools expire the branch's log", async () => {
+            // Arrange
+            const peer = await caseDir('dwim-head-target-peer');
+            const ours = await caseDir('dwim-head-target-ours');
+            for (const dir of [peer, ours]) {
+              await rm(headLogPath(dir));
+            }
+
+            // Act
+            git(peer, 'reflog', 'expire', '--expire=now', '--expire-unreachable=never', 'HEAD');
+            const ctx = createNodeContext({ workDir: ours });
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: 'now',
+              expireUnreachable: 'never',
+            });
+
+            // Assert
+            const peerMain = await readFile(mainLogPath(peer), 'utf8');
+            const oursMain = await readFile(mainLogPath(ours), 'utf8');
+            expect(peerMain).toHaveLength(0);
+            expect(oursMain).toBe(peerMain);
+          });
+        });
+      });
+
+      describe('Given an invalid or selector-suffixed argument', () => {
+        describe('When expire runs', () => {
+          it.each([
+            { label: 'a ref name containing ..', arg: 'refs/heads/bad..name' },
+            { label: 'HEAD with a reflog selector suffix', arg: 'HEAD@{0}' },
+          ])('Then $label both refuse REFLOG_NOT_FOUND', async ({ arg }) => {
+            // Arrange
+            const dir = await caseDir(`dwim-invalid-${arg.replace(/\W/g, '')}`);
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'expire', arg]);
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: arg });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(255);
+            expect(gitResult.stderr).toContain(`reflog could not be found: '${arg}'`);
+            expect((caught as TsgitError).data).toEqual({ code: 'REFLOG_NOT_FOUND', ref: arg });
+          });
+        });
+      });
+
+      describe('Given zero reflogs and a malformed core.deltaBaseCacheLimit', () => {
+        describe('When expire runs with --all --expire=now', () => {
+          it('Then both tools are a no-op — the repo-settings class is never reached', async () => {
+            // Arrange — every reflog the base repo wrote is removed first.
+            const peer = await caseDir('dwim-zero-all-peer');
+            const ours = await caseDir('dwim-zero-all-ours');
+            for (const dir of [peer, ours]) {
+              await rm(headLogPath(dir));
+              await rm(mainLogPath(dir));
+              await appendFile(
+                path.join(dir, '.git', 'config'),
+                '[core]\n\tdeltaBaseCacheLimit = -1\n',
+              );
+            }
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              peer,
+              'reflog',
+              'expire',
+              '--all',
+              '--expire=now',
+            ]);
+            const ctx = createNodeContext({ workDir: ours });
+            const result = await reflog(ctx, { action: 'expire', all: true, expire: 'now' });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(0);
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+          });
         });
       });
     });

@@ -10,7 +10,7 @@ import { isObjectNotFound } from '../../domain/objects/error.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import { reflogNotFound } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
-import { validateRefName } from '../../domain/refs/index.js';
+import { isSafeRefName, refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
@@ -20,7 +20,7 @@ import { type CommitMeta, readCommitMeta } from '../primitives/internal/read-com
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { resolveRef, resolveTerminalName } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
@@ -79,12 +79,13 @@ const resolveUserRef = (ref: string): RefName => validateRefName(ref);
 export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<ReflogResult> => {
   await assertOperationalRepository(ctx);
   if (opts.action === 'exists') return runExists(ctx, opts.ref);
-  // `reflog exists` runs on a malformed repo-settings class — git resolves it
-  // by file presence alone, no store/graph touch — so the class is checked
-  // only for the three verbs that actually parse a commit.
+  if (opts.action === 'expire') return runExpire(ctx, opts);
+  // `exists` and `expire` reach the repo-settings class on their own terms
+  // (`exists` never — file presence alone; `expire` only once its target
+  // resolves, and never with zero targets) — the other two verbs check it
+  // unconditionally, before doing anything else.
   await assertRepoSettingsValid(ctx);
   if (opts.action === 'delete') return runDelete(ctx, opts);
-  if (opts.action === 'expire') return runExpire(ctx, opts);
   return runShow(ctx, opts.ref ?? 'HEAD');
 };
 
@@ -214,6 +215,10 @@ const expireTargets = async (
 const runExpire = async (ctx: Context, opts: ExpireOptions): Promise<ReflogResult> => {
   const policy = resolveExpiryPolicy(Math.floor(Date.now() / 1000), opts);
   const targets = await resolveExpireTargets(ctx, opts);
+  // The repo-settings class is reached only once a target has resolved, and
+  // never with zero targets (git's `builtin/reflog.c` parses options and
+  // resolves `repo_dwim_log` before the settings the walk itself needs).
+  if (targets.length > 0) await assertRepoSettingsValid(ctx);
   const outcome = await expireTargets(ctx, targets, policy);
   // One transaction for every target: on the reftable backend each
   // applyRefUpdates call is a full stack transaction plus a compaction
@@ -226,22 +231,42 @@ const runExpire = async (ctx: Context, opts: ExpireOptions): Promise<ReflogResul
 };
 
 /**
- * Resolves `expire`'s target ref set: a single ref under its own name (or
- * `HEAD` by default), or — under `--all` — every ref that currently carries
- * a reflog.
+ * Resolves `expire`'s target ref set: under `--all`, every ref that
+ * currently carries a reflog; with neither a ref nor `--all`, nothing (git
+ * does not default the target to `HEAD`); otherwise the single ref DWIM
+ * selects via {@link dwimReflog}.
  */
 const resolveExpireTargets = async (
   ctx: Context,
-  opts: { readonly ref?: string; readonly all?: boolean },
+  opts: ExpireOptions,
 ): Promise<ReadonlyArray<RefName>> => {
-  const single = opts.all === true ? undefined : resolveUserRef(opts.ref ?? 'HEAD');
-  if (single !== undefined && !(await hasReflog(ctx, single))) {
-    // git refuses a single-ref expire when no reflog exists (exit 255) and
-    // creates nothing; without this guard the unconditional rewrite below
-    // would manufacture an empty log file and its parent directories.
-    throw reflogNotFound(single);
+  if (opts.all === true) return listReflogs(ctx);
+  if (opts.ref === undefined) return [];
+  return [await dwimReflog(ctx, opts.ref)];
+};
+
+/**
+ * git's `repo_dwim_log`: the first `refCandidates` entry that both resolves
+ * for reading AND carries a log — its own, else (for a symref) its target's
+ * — wins; none found refuses `REFLOG_NOT_FOUND` with the argument as typed.
+ */
+const dwimReflog = async (ctx: Context, arg: string): Promise<RefName> => {
+  for (const candidate of refCandidates(arg)) {
+    const found = await logForCandidate(ctx, candidate);
+    if (found !== undefined) return found;
   }
-  return single === undefined ? await listReflogs(ctx) : [single];
+  throw reflogNotFound(arg as RefName);
+};
+
+const logForCandidate = async (
+  ctx: Context,
+  candidate: RefName | 'HEAD',
+): Promise<RefName | undefined> => {
+  if (!isSafeRefName(candidate)) return undefined; // no I/O for an invalid name
+  const terminal = await resolveTerminalName(ctx, candidate);
+  if (terminal === undefined) return undefined;
+  if (await hasReflog(ctx, candidate as RefName)) return candidate as RefName;
+  return terminal !== candidate && (await hasReflog(ctx, terminal)) ? terminal : undefined;
 };
 
 /**
@@ -306,7 +331,9 @@ const expireKindFor = async (
   if (ref === 'HEAD') return { kind: 'walk', tips: await resolveTips(ctx) };
   const direct = await getRefStore(ctx).resolveDirect(ref);
   if (direct.kind !== 'direct') return { kind: 'always' };
-  const peeled = await peelRefToCommit(ctx, direct.id);
+  // git's `lookup_commit_reference_gently`: a tip naming a missing object
+  // never blocks expiry, it just never resolves to a commit — `always`.
+  const peeled = await peelGently(ctx, direct.id);
   return peeled === undefined ? { kind: 'always' } : { kind: 'walk', tips: [peeled.commit.id] };
 };
 
