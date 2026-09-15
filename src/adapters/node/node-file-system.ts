@@ -485,9 +485,12 @@ export class NodeFileSystem implements FileSystem {
    *   cached realpath shares one root set.
    * - Only EXISTING parents are cached. ENOENT walks fall back to
    *   `realpathNearestExisting` and are never recorded.
-   * - `rmRecursive` and `rename` clear the cache, which is cheap relative to
-   *   a re-walk. `rm` clears nothing — a leaf removal does not change the
-   *   parent's realpath. `rename` in particular cannot narrow this to just
+   * - `rmRecursive`, `rename` and `rm` of a directory clear the cache, which
+   *   is cheap relative to a re-walk. `rm` of a leaf clears nothing — a leaf
+   *   removal does not change the parent's realpath, while a removed
+   *   directory's path can come back as a symlink leaving the root, and a
+   *   stale entry for it would pass the write containment check on the old
+   *   real parent. `rename` in particular cannot narrow this to just
    *   `dirname(src)`/`dirname(dst)`: `src` is a legitimate `rename` argument
    *   for a whole directory (`worktree move`, `git mv` on a directory), and
    *   every cached entry keyed AT `src`/`dst` or NESTED under either (a
@@ -787,7 +790,7 @@ export class NodeFileSystem implements FileSystem {
       // empty and throws `ENOTEMPTY` (mapped to `directoryNotEmpty`)
       // otherwise — never silently recursing into a non-empty one.
       if (isErrnoException(err) && err.code === 'ERR_FS_EISDIR') {
-        await runFs(() => this.fsOps.rmdir(real), path);
+        await this.removeDirectoryEntry(real, path);
         return;
       }
       if (isErrnoException(err)) throw mapErrno(err, path);
@@ -796,8 +799,20 @@ export class NodeFileSystem implements FileSystem {
     // Node's `fs.rm` without `recursive` only removes leaves — a regular
     // file or symlink. The parent directory and its realpath are
     // unchanged, so the parent-realpath cache entry for `dirname(real)`
-    // remains valid. No invalidation needed.
+    // remains valid; only the directory arm above invalidates.
   };
+
+  /**
+   * `rm`'s directory arm. The removed directory may itself be a cached parent
+   * (or hold nested ones), and its path may be re-created as a symlink leaving
+   * the root, so the cache is cleared in full — see `parentRealpathCache`'s
+   * field doc for why no narrower eviction is sound. A failed `rmdir` left the
+   * directory in place, so its entries stay valid.
+   */
+  private async removeDirectoryEntry(real: string, path: string): Promise<void> {
+    await runFs(() => this.fsOps.rmdir(real), path);
+    this.parentRealpathCache.clear();
+  }
 
   rename = async (src: string, dst: string): Promise<void> => {
     // Neither arm follows its leaf: `rename(2)` itself acts on the link

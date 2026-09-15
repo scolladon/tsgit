@@ -664,6 +664,39 @@ describe('NodeFileSystem', () => {
       });
     });
 
+    describe('Given a directory cached as a parent, removed by rm and re-created as a symlink leaving the root', () => {
+      describe('When writing beneath the re-created path', () => {
+        it('Then throws PERMISSION_DENIED and nothing lands outside the root', async () => {
+          // Arrange — the first write caches `swapped-dir` as a parent; removing
+          // its only child leaves that entry in place, as a leaf removal should.
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dir = nodePath.join(rootDir, 'swapped-dir');
+          await fs.write(nodePath.join(dir, 'seed.txt'), new Uint8Array([1]));
+          await fs.rm(nodePath.join(dir, 'seed.txt'));
+          await fs.rm(dir);
+          await fsPromises.symlink(siblingDir, dir);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.write(nodePath.join(dir, 'escaped.txt'), new Uint8Array([2]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const landedOutside = await fsPromises
+            .access(nodePath.join(siblingDir, 'escaped.txt'))
+            .then(() => true)
+            .catch(() => false);
+          await cleanup();
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(landedOutside).toBe(false);
+        });
+      });
+    });
+
     describe('Given fs.rm throws a non-errno error', () => {
       describe('When rm', () => {
         it('Then rethrows the original error untouched', async () => {
