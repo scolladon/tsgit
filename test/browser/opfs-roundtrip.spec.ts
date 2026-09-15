@@ -57,6 +57,8 @@ interface OpfsFs {
   stat(path: string): Promise<{ isDirectory: boolean }>;
   exists(path: string): Promise<boolean>;
   lexists(path: string): Promise<boolean>;
+  rm(path: string): Promise<void>;
+  rmRecursive(path: string): Promise<void>;
 }
 
 test.describe('OPFS directory-occupant refusals', () => {
@@ -135,8 +137,8 @@ test.describe('OPFS directory-occupant refusals', () => {
       const dirStat = await sut.stat('occupant-2');
       const dirExists = await sut.exists('occupant-2');
 
-      // The ancestor-fault mapping must not move: a regular file blocking an
-      // ancestor segment still reports FILE_NOT_FOUND, not PERMISSION_DENIED.
+      // The ancestor-fault mapping is distinct from the leaf one: a regular file
+      // blocking an ancestor segment reports NOT_A_DIRECTORY, not PERMISSION_DENIED.
       await sut.write('ancestor-file.txt', new Uint8Array([7]));
       let ancestorCode: string | undefined;
       try {
@@ -172,8 +174,8 @@ test.describe('OPFS directory-occupant refusals', () => {
       expect(result.dirExists).toBe(true);
     });
 
-    await test.step('a regular file blocking an ancestor segment still reports FILE_NOT_FOUND', () => {
-      expect(result.ancestorCode).toBe('FILE_NOT_FOUND');
+    await test.step('a regular file blocking an ancestor segment reports NOT_A_DIRECTORY', () => {
+      expect(result.ancestorCode).toBe('NOT_A_DIRECTORY');
     });
   });
 
@@ -346,6 +348,65 @@ test.describe('OPFS presence probe', () => {
     await test.step('a missing entry and an entry beneath a missing directory are absent', () => {
       expect(result.missing).toBe(false);
       expect(result.beneathMissing).toBe(false);
+    });
+  });
+});
+
+test.describe('OPFS refusals beneath a regular file', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  test('Given a regular file standing where a directory is needed, When each surface addresses a path beneath it, Then it throws NOT_A_DIRECTORY against real OPFS', async ({
+    readyPage,
+  }) => {
+    const result = await readyPage.evaluate(async () => {
+      const MODULE_PATH = '/dist/esm/adapters/browser/index.js';
+      const mod = (await import(MODULE_PATH)) as {
+        BrowserFileSystem: new (rootHandle: FileSystemDirectoryHandle) => OpfsFs;
+      };
+      const sut = new mod.BrowserFileSystem(await navigator.storage.getDirectory());
+      await sut.write('blocking-file.txt', new Uint8Array([3]));
+      const beneath = 'blocking-file.txt/x';
+
+      const codeOf = async (call: () => Promise<unknown>) => {
+        try {
+          await call();
+          return 'resolved';
+        } catch (err) {
+          return (err as { data?: { code?: string } }).data?.code;
+        }
+      };
+      const codes = {
+        read: await codeOf(() => sut.read(beneath)),
+        writeExclusive: await codeOf(() => sut.writeExclusive(beneath, new Uint8Array([4]))),
+        stat: await codeOf(() => sut.stat(beneath)),
+        exists: await codeOf(() => sut.exists(beneath)),
+        lexists: await codeOf(() => sut.lexists(beneath)),
+        readdir: await codeOf(() => sut.readdir(beneath)),
+        mkdir: await codeOf(() => sut.mkdir(beneath)),
+        rm: await codeOf(() => sut.rm(beneath)),
+        rmRecursive: await codeOf(() => sut.rmRecursive(beneath)),
+      };
+      const fileBytes = Array.from(await sut.read('blocking-file.txt'));
+
+      return { codes, fileBytes };
+    });
+
+    await test.step('every surface reports NOT_A_DIRECTORY', () => {
+      expect(result.codes).toEqual({
+        read: 'NOT_A_DIRECTORY',
+        writeExclusive: 'NOT_A_DIRECTORY',
+        stat: 'NOT_A_DIRECTORY',
+        exists: 'NOT_A_DIRECTORY',
+        lexists: 'NOT_A_DIRECTORY',
+        readdir: 'NOT_A_DIRECTORY',
+        mkdir: 'NOT_A_DIRECTORY',
+        rm: 'NOT_A_DIRECTORY',
+        rmRecursive: 'NOT_A_DIRECTORY',
+      });
+    });
+
+    await test.step('the blocking file is unchanged', () => {
+      expect(result.fileBytes).toEqual([3]);
     });
   });
 });

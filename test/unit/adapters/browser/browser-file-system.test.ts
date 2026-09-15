@@ -180,34 +180,119 @@ describe('BrowserFileSystem readdir rejection classification', () => {
   });
 });
 
-describe('BrowserFileSystem lexists', () => {
-  const rejectionNamed = (name: string): { readonly name: string } => ({ name });
+const rejectionNamed = (name: string): { readonly name: string } => ({ name });
 
-  // A directory handle whose child lookups answer from `children`: a `'file'` child resolves a
-  // file lookup and rejects a directory lookup with TypeMismatchError, a directory child the
-  // reverse, and a missing child rejects both with NotFoundError.
-  const directory = (
-    children: Readonly<Record<string, 'file' | FileSystemDirectoryHandle>>,
-  ): FileSystemDirectoryHandle => {
-    const lookup = (name: string, kind: 'file' | 'directory'): Promise<unknown> => {
-      const child = children[name];
-      if (child === undefined) return Promise.reject(rejectionNamed('NotFoundError'));
-      const isFile = child === 'file';
-      if (isFile !== (kind === 'file')) return Promise.reject(rejectionNamed('TypeMismatchError'));
-      return Promise.resolve(isFile ? {} : child);
-    };
-    return {
-      getFileHandle: vi.fn((name: string) => lookup(name, 'file')),
-      getDirectoryHandle: vi.fn((name: string) => lookup(name, 'directory')),
-    } as unknown as FileSystemDirectoryHandle;
+// A file handle holding one byte, enough for a read to succeed.
+const fileHandle = { getFile: async () => new Blob([new Uint8Array([1])]) };
+
+// A directory handle whose child lookups answer from `children`, as OPFS does whatever `create`
+// asks: a `'file'` child resolves a file lookup and rejects a directory lookup with
+// TypeMismatchError, a directory child the reverse, and a missing child rejects both with
+// NotFoundError.
+const directory = (
+  children: Readonly<Record<string, 'file' | FileSystemDirectoryHandle>>,
+): FileSystemDirectoryHandle => {
+  const lookup = (name: string, kind: 'file' | 'directory'): Promise<unknown> => {
+    const child = children[name];
+    if (child === undefined) return Promise.reject(rejectionNamed('NotFoundError'));
+    const isFile = child === 'file';
+    if (isFile !== (kind === 'file')) return Promise.reject(rejectionNamed('TypeMismatchError'));
+    return Promise.resolve(isFile ? fileHandle : child);
   };
+  return {
+    getFileHandle: vi.fn((name: string) => lookup(name, 'file')),
+    getDirectoryHandle: vi.fn((name: string) => lookup(name, 'directory')),
+  } as unknown as FileSystemDirectoryHandle;
+};
 
+describe('BrowserFileSystem beneath a regular file', () => {
+  const beneath = 'file.txt/x';
+
+  describe.each([
+    { name: 'read', invoke: (sut: BrowserFileSystem) => sut.read(beneath) },
+    { name: 'readSlice', invoke: (sut: BrowserFileSystem) => sut.readSlice(beneath, 0, 1) },
+    { name: 'readUtf8', invoke: (sut: BrowserFileSystem) => sut.readUtf8(beneath) },
+    { name: 'write', invoke: (sut: BrowserFileSystem) => sut.write(beneath, new Uint8Array([1])) },
+    {
+      name: 'writeStream',
+      invoke: (sut: BrowserFileSystem) =>
+        sut.writeStream(
+          beneath,
+          (async function* () {
+            yield new Uint8Array([1]);
+          })(),
+        ),
+    },
+    {
+      name: 'writeExclusive',
+      invoke: (sut: BrowserFileSystem) => sut.writeExclusive(beneath, new Uint8Array([1])),
+    },
+    { name: 'writeUtf8', invoke: (sut: BrowserFileSystem) => sut.writeUtf8(beneath, 'x') },
+    { name: 'appendUtf8', invoke: (sut: BrowserFileSystem) => sut.appendUtf8(beneath, 'x') },
+    { name: 'exists', invoke: (sut: BrowserFileSystem) => sut.exists(beneath) },
+    { name: 'stat', invoke: (sut: BrowserFileSystem) => sut.stat(beneath) },
+    { name: 'lstat', invoke: (sut: BrowserFileSystem) => sut.lstat(beneath) },
+    { name: 'lexists', invoke: (sut: BrowserFileSystem) => sut.lexists(beneath) },
+    { name: 'readdir', invoke: (sut: BrowserFileSystem) => sut.readdir(beneath) },
+    { name: 'mkdir', invoke: (sut: BrowserFileSystem) => sut.mkdir(beneath) },
+    { name: 'rm', invoke: (sut: BrowserFileSystem) => sut.rm(beneath) },
+    { name: 'rename source', invoke: (sut: BrowserFileSystem) => sut.rename(beneath, 'moved.txt') },
+    {
+      name: 'rename destination',
+      invoke: (sut: BrowserFileSystem) => sut.rename('file.txt', beneath),
+    },
+    { name: 'chmod', invoke: (sut: BrowserFileSystem) => sut.chmod(beneath, 0o644) },
+    { name: 'rmRecursive', invoke: (sut: BrowserFileSystem) => sut.rmRecursive(beneath) },
+  ])(
+    'Given a regular file standing where a directory is needed, When $name addresses a path beneath it',
+    ({ invoke }) => {
+      it('Then it throws NOT_A_DIRECTORY carrying the requested path', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(directory({ 'file.txt': 'file' }));
+
+        // Act
+        let caught: unknown;
+        try {
+          await invoke(sut);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('NOT_A_DIRECTORY');
+        if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe(beneath);
+      });
+    },
+  );
+
+  describe('Given a directory lookup that rejects with anything but TypeMismatchError, When read addresses a path beneath it', () => {
+    it('Then it still throws FILE_NOT_FOUND', async () => {
+      // Arrange
+      const sut = new BrowserFileSystem(directory({}));
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.read('gone/x');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+    });
+  });
+});
+
+describe('BrowserFileSystem lexists', () => {
   describe.each([
     { label: 'a file', path: 'sub/file.txt', expected: true },
     { label: 'a directory', path: 'sub/nested', expected: true },
     { label: 'a missing entry in an existing directory', path: 'sub/missing.txt', expected: false },
     { label: 'an entry beneath a missing directory', path: 'gone/file.txt', expected: false },
-    { label: 'an entry beneath a regular file', path: 'sub/file.txt/x', expected: false },
     { label: 'the root', path: '/', expected: true },
   ])('Given $label', ({ path, expected }) => {
     describe('When lexists probes it', () => {
