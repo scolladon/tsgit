@@ -988,6 +988,42 @@ describe('fetch', () => {
         });
       });
     });
+
+    describe('Given prune=true and origin/HEAD naming a branch the server no longer advertises', () => {
+      describe('When fetch', () => {
+        it('Then only the stale branch is pruned and origin/HEAD is left dangling on it', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/main': FAKE_OID('a'),
+              'refs/remotes/origin/dev': FAKE_OID('b'),
+            },
+          });
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/HEAD`,
+            'ref: refs/remotes/origin/dev\n',
+          );
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'dangling symref\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const result = await fetch({ ...ctx, transport }, { prune: true });
+
+          // Assert
+          expect(result.prunedRefs).toEqual(['refs/remotes/origin/dev']);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).toBe(
+            'ref: refs/remotes/origin/dev\n',
+          );
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/dev`)).toBe(false);
+        });
+      });
+    });
   });
 
   describe('advertisement filtering (mutation kills for remoteTargetForRef)', () => {
