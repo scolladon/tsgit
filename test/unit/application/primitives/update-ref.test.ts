@@ -1620,6 +1620,67 @@ describe('updateRef', () => {
       readonly conflict: { readonly expected: Slot | 'absent'; readonly actual: Slot | 'absent' };
     }
 
+    describe('Given a symref whose referent holds content that is not a ref', () => {
+      const seedBroken = async (): Promise<Fixture> => {
+        const fixture = await symrefFixture('files', {
+          symbolic: { 'refs/heads/s': 'refs/heads/g' },
+        });
+        await fixture.ctx.fs.writeUtf8(`${fixture.ctx.layout.gitDir}/refs/heads/g`, 'garbage\n');
+        return fixture;
+      };
+
+      describe('When updateRef writes the symref itself with noDeref and no expected value', () => {
+        it('Then it becomes direct and logs a null old id, in one applyRefUpdates call', async () => {
+          // Arrange
+          const fixture = await seedBroken();
+          const sut = updateRef;
+
+          // Act
+          await sut(fixture.ctx, 'refs/heads/s' as RefName, fixture.ids.c2, {
+            noDeref: true,
+            reflogMessage: 'm',
+          });
+
+          // Assert
+          expect(fixture.calls).toHaveLength(1);
+          expect(await getRefStore(fixture.ctx).resolveDirect('refs/heads/s' as RefName)).toEqual({
+            kind: 'direct',
+            id: fixture.ids.c2,
+          });
+          expect(await logLines(fixture, 'refs/heads/s')).toEqual([
+            expectedLine(fixture.ids, ['zero', 'c2', 'm']),
+          ]);
+        });
+      });
+
+      describe('When updateRef writes the symref itself with noDeref against an expected value', () => {
+        it("Then the referent's read refusal propagates and nothing is applied", async () => {
+          // Arrange
+          const fixture = await seedBroken();
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(fixture.ctx, 'refs/heads/s' as RefName, fixture.ids.c2, {
+              noDeref: true,
+              expected: fixture.ids.c1,
+              reflogMessage: 'm',
+            });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: 'garbage',
+          });
+          expect(fixture.calls).toEqual([]);
+        });
+      });
+    });
+
     describe('Given a seeded symbolic ref and an expected value it does not match', () => {
       describe('When updateRef checks the compare-and-swap', () => {
         it.each<ConflictRow>([

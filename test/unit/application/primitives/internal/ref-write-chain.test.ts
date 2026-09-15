@@ -387,6 +387,89 @@ describe('resolveWriteChain', () => {
     });
   });
 
+  describe('Given noDeref on a symref whose referent holds content that is not a ref', () => {
+    const seedBrokenReferent = async (content: string): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/g`, content);
+      await writeSymbolicRef(ctx, ref('refs/heads/s'), ref('refs/heads/g'));
+      return ctx;
+    };
+
+    describe('When resolveWriteChain reads the old value without an expected value', () => {
+      it.each([
+        { label: 'neither an id nor a ref line', content: 'garbage\n' },
+        { label: 'a ref line naming an invalid refname', content: 'ref: refs/heads/..bad\n' },
+      ])('Then a referent holding $label reads as absent', async ({ content }) => {
+        // Arrange
+        const ctx = await seedBrokenReferent(content);
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(getRefStore(ctx), ref('refs/heads/s'), NO_DEREF_OPTS);
+
+        // Assert
+        expect(result).toEqual({
+          links: [],
+          terminal: 'refs/heads/s',
+          old: 'absent',
+          danglingSymref: true,
+          terminalIsSymbolic: true,
+        });
+      });
+    });
+
+    describe('When resolveWriteChain reads the old value against an expected value', () => {
+      it("Then the referent's own read refusal propagates", async () => {
+        // Arrange
+        const ctx = await seedBrokenReferent('garbage\n');
+        const sut = resolveWriteChain;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(getRefStore(ctx), ref('refs/heads/s'), noDerefWithExpected(ID_A));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_OBJECT_ID',
+          value: 'garbage',
+        });
+      });
+    });
+
+    describe('When the referent read fails for an I/O reason', () => {
+      it('Then that failure propagates even without an expected value', async () => {
+        // Arrange
+        const ctx = await seedBrokenReferent('garbage\n');
+        const store = getRefStore(ctx);
+        const denied = new TsgitError({ code: 'PERMISSION_DENIED', path: 'refs/heads/g' });
+        const original = store.resolveDirect.bind(store);
+        const failingStore = {
+          ...store,
+          resolveDirect: async (name: RefName) => {
+            if (name === 'refs/heads/g') throw denied;
+            return original(name);
+          },
+        };
+        const sut = resolveWriteChain;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(failingStore, ref('refs/heads/s'), NO_DEREF_OPTS);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(denied);
+      });
+    });
+  });
+
   describe('Given a symbolic ref whose link target is not a valid ref name', () => {
     describe('When resolveWriteChain runs', () => {
       it('Then it throws INVALID_REF before reading a second time', async () => {

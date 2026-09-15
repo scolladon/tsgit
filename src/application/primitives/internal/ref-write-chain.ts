@@ -62,10 +62,21 @@ async function walkSymbolicChain(store: RefStore, name: RefName): Promise<RefWri
   }
 }
 
+/** The referent read failures git's `refs_read_ref_full` folds into "does
+ *  not resolve": a cycle, an over-deep chain, and content that is not a ref
+ *  (neither an id nor a valid `ref: …` line). */
+const UNREADABLE_REFERENT_CODES: ReadonlySet<string> = new Set([
+  'REF_CYCLE_DETECTED',
+  'REF_CHAIN_TOO_DEEP',
+  'INVALID_OBJECT_ID',
+  'INVALID_REF',
+]);
+
 /** `noDeref`'s referent read: reuses the read chain's own depth cap and
- *  cycle detection, mapping a cycle or over-depth chain to `'absent'` only
- *  when no old value is being checked (succeeds without one; refuses when
- *  one is checked). Every other failure propagates. */
+ *  cycle detection, mapping an unreadable referent to `'absent'` only when
+ *  no old value is being checked — git writes then, logging a null old id —
+ *  and letting the read's own refusal propagate when one is checked (git's
+ *  "error reading reference"). Every I/O failure propagates. */
 async function readReferentValue(
   store: RefStore,
   target: RefName,
@@ -75,9 +86,8 @@ async function readReferentValue(
     const outcome = await resolveDirectChain(store, target, MAX_SYMBOLIC_REF_DEPTH);
     return outcome.kind === 'found' ? outcome.id : 'absent';
   } catch (err) {
-    const code = errorDataCode(err);
-    const isChainFault = code === 'REF_CYCLE_DETECTED' || code === 'REF_CHAIN_TOO_DEEP';
-    if (expected === undefined && isChainFault) return 'absent';
+    const unreadable = UNREADABLE_REFERENT_CODES.has(errorDataCode(err) ?? '');
+    if (expected === undefined && unreadable) return 'absent';
     throw err;
   }
 }
