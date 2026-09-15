@@ -550,19 +550,48 @@ describe('resolveTerminalName', () => {
 
   describe('Given a symbolic ref cycle', () => {
     describe('When resolveTerminalName is called', () => {
-      it('Then still throws REF_CYCLE_DETECTED', async () => {
+      it('Then resolves to undefined — a reading resolve never resolves a cycle', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/loop\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop', 'ref: HEAD\n');
+        const sut = resolveTerminalName;
 
-        // Act + Assert
-        try {
-          await resolveTerminalName(ctx, 'HEAD');
-          expect.unreachable();
-        } catch (error) {
-          expect((error as TsgitError).data.code).toBe('REF_CYCLE_DETECTED');
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a chain of symbolic refs ending on a direct ref', () => {
+    describe('When resolveTerminalName walks it', () => {
+      it.each([
+        {
+          label: 'four symbolic hops resolve to the terminal',
+          hops: 4,
+          expected: 'refs/heads/main',
+        },
+        { label: 'five symbolic hops do not resolve for reading', hops: 5, expected: undefined },
+        { label: 'six symbolic hops do not resolve for reading', hops: 6, expected: undefined },
+      ])('Then $label', async ({ hops, expected }) => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        for (let hop = 1; hop <= hops; hop += 1) {
+          const target = hop === hops ? 'refs/heads/main' : `refs/heads/link${hop + 1}`;
+          await ctx.fs.writeUtf8(`/repo/.git/refs/heads/link${hop}`, `ref: ${target}\n`);
         }
+        const sut = resolveTerminalName;
+
+        // Act
+        const result = await sut(ctx, 'refs/heads/link1' as RefName);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

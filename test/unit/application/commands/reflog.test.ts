@@ -1221,6 +1221,54 @@ describe('reflog command', () => {
         });
       });
 
+      describe('Given a chain that does not resolve for reading, every link logged', () => {
+        describe('When expire runs on its first link', () => {
+          it.each([
+            {
+              label: 'a two-link cycle',
+              links: [
+                ['refs/heads/p', 'refs/heads/q'],
+                ['refs/heads/q', 'refs/heads/p'],
+              ],
+            },
+            {
+              label: 'five symbolic hops before the branch',
+              links: [
+                ['refs/heads/p', 'refs/heads/l2'],
+                ['refs/heads/l2', 'refs/heads/l3'],
+                ['refs/heads/l3', 'refs/heads/l4'],
+                ['refs/heads/l4', 'refs/heads/l5'],
+                ['refs/heads/l5', 'refs/heads/main'],
+              ],
+            },
+          ])('Then $label refuses REFLOG_NOT_FOUND', async ({ links }) => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            for (const [link, target] of links) {
+              await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${link}`, `ref: ${target}\n`);
+              await writeReflog(ctx, link as RefName, [entry({ newId: tip })]);
+            }
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/p' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/p',
+            });
+          });
+        });
+      });
+
       describe('Given a symref with its own log, pointing at a branch that also has one', () => {
         describe('When expire runs on the symref name', () => {
           it("Then the symref's own log is the one expired", async () => {

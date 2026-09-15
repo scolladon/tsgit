@@ -19,24 +19,34 @@ export type ChainOutcome =
   | { readonly kind: 'missing'; readonly name: RefName };
 
 /** Error codes `refs_resolve_ref_unsafe(RESOLVE_REF_READING)` folds into "does
- *  not resolve for reading": a chain ending on a name that formats invalid,
- *  and a loose file whose content is neither an oid nor `ref: …` — both mean
- *  the same thing to a reading resolve. */
-const UNREADABLE_REF_CODES = new Set(['INVALID_REF', 'INVALID_OBJECT_ID']);
+ *  not resolve for reading": a chain ending on a name that formats invalid, a
+ *  loose file whose content is neither an oid nor `ref: …`, a cycle, and a
+ *  chain longer than the reading walk's cap — git returns NULL for all four. */
+const UNREADABLE_REF_CODES = new Set([
+  'INVALID_REF',
+  'INVALID_OBJECT_ID',
+  'REF_CYCLE_DETECTED',
+  'REF_CHAIN_TOO_DEEP',
+]);
+
+/** git's `SYMREF_MAXDEPTH` (5) bounds the refs a reading resolve READS, the
+ *  terminal included — so a chain resolves through at most four symbolic
+ *  hops. */
+const READING_RESOLVE_MAX_SYMBOLIC_HOPS = 4;
 
 /**
  * git's `repo_dwim_log` target-name resolution: the name `name`'s chain
  * resolves to for READING — following every symref hop — or `undefined`
- * when the chain ends missing, or a link's content or name fails to parse.
- * A cycle or an over-deep chain still propagates: those are not "does not
- * resolve", they are refusals of their own.
+ * when the chain ends missing, a link's content or name fails to parse,
+ * the chain loops, or it needs more hops than git's reading walk takes.
  */
 export async function resolveTerminalName(
   ctx: Context,
   name: RefName | 'HEAD',
 ): Promise<RefName | undefined> {
   try {
-    const outcome = await resolveChainOutcome(ctx, name, undefined);
+    const store = getRefStore(ctx);
+    const outcome = await resolveDirectChain(store, name, READING_RESOLVE_MAX_SYMBOLIC_HOPS);
     return outcome.kind === 'found' ? outcome.name : undefined;
   } catch (err) {
     if (UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '')) return undefined;
