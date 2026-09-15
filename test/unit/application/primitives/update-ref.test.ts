@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
+import {
+  commonGitDir,
+  shallowFilePath,
+} from '../../../../src/application/primitives/path-layout.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -9,9 +14,39 @@ import { writeSymbolicRef } from '../../../../src/application/primitives/write-s
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from './fixtures.js';
 import { withReftableStorage } from './reftable-fixtures.js';
+
+const ENC = new TextEncoder();
+
+/** A long, deflate-resistant byte stream (never `Math.random` — a failure
+ *  reproduces exactly) — pushes a loose object's COMPRESSED size past the
+ *  buffered gate. NUL-free so it stays a valid trailing message. */
+function pseudoRandomBytes(length: number, seed: number): Uint8Array {
+  const bytes = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) {
+    let h = (seed * 1_000_003 + i) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+    h = (h ^ (h >>> 16)) >>> 0;
+    const byte = h & 0xff;
+    bytes[i] = byte === 0x00 ? 0x01 : byte;
+  }
+  return bytes;
+}
+
+function concatUint8(...parts: ReadonlyArray<Uint8Array>): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
 
 const ZERO = '0'.repeat(40) as ObjectId;
 const ZERO_SHA256 = '0'.repeat(64) as ObjectId;
@@ -1049,6 +1084,218 @@ describe('updateRef', () => {
           expect(symLog).toHaveLength(1);
           expect(symLog[0]).toEqual(
             expect.objectContaining({ oldId: unverified, newId: ZERO, message: 'bye' }),
+          );
+        });
+      });
+    });
+  });
+
+  describe('parse acceptance', () => {
+    describe('Given a hash-valid but too-short commit body', () => {
+      describe('When updateRef writes it to a non-branch ref', () => {
+        it('Then it refuses INVALID_COMMIT and writes nothing', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const malformed = await writeRawObjectBytes(ctx, 'commit', ENC.encode('short'));
+
+          // Act + Assert
+          try {
+            await updateRef(ctx, 'refs/tags/x' as RefName, malformed, { reflogMessage: REASON });
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_COMMIT');
+            if (data.code === 'INVALID_COMMIT') expect(data.reason).toBe('bogus commit object');
+          }
+          expect(await ctx.fs.exists('/repo/.git/refs/tags/x')).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a hash-valid commit with a non-hex tree pointer', () => {
+      describe('When updateRef writes it to a branch', () => {
+        it('Then it refuses via the parse refusal, not UNEXPECTED_OBJECT_TYPE', async () => {
+          // Arrange — the stored type is genuinely 'commit' (read from the
+          // loose header, never from the malformed body), so a mutant that
+          // ran the branch-type check first would still see type 'commit'
+          // and pass it — proving this reason can only come from the parse
+          // check actually running.
+          const ctx = await buildSeededContext();
+          const badTree = ENC.encode(`tree ${'g'.repeat(40)}\nx`);
+          const malformed = await writeRawObjectBytes(ctx, 'commit', badTree);
+
+          // Act + Assert
+          try {
+            await updateRef(ctx, 'refs/heads/x' as RefName, malformed, { reflogMessage: REASON });
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_COMMIT');
+            if (data.code === 'INVALID_COMMIT') expect(data.reason).toBe('bad tree pointer');
+          }
+        });
+      });
+    });
+
+    describe('Given a hash-valid but too-short tag body', () => {
+      describe('When updateRef writes it', () => {
+        it('Then it refuses INVALID_TAG', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const malformed = await writeRawObjectBytes(ctx, 'tag', ENC.encode('short'));
+
+          // Act + Assert
+          try {
+            await updateRef(ctx, 'refs/tags/x' as RefName, malformed, { reflogMessage: REASON });
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_TAG');
+            if (data.code === 'INVALID_TAG') expect(data.reason).toBe('tag object too short');
+          }
+        });
+      });
+    });
+
+    describe('Given a tree with garbage entries', () => {
+      describe('When updateRef writes it to a non-branch ref', () => {
+        it('Then it is written — git never parses a tree', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const garbage = await writeRawObjectBytes(
+            ctx,
+            'tree',
+            ENC.encode('not a tree body at all'),
+          );
+
+          // Act
+          await updateRef(ctx, 'refs/tags/x' as RefName, garbage, { reflogMessage: REASON });
+
+          // Assert
+          expect(await resolveRef(ctx, 'refs/tags/x' as RefName)).toBe(garbage);
+        });
+      });
+    });
+
+    describe('Given a commit with no author or committer line', () => {
+      describe('When updateRef writes it to a branch', () => {
+        it('Then it is written — git does not require them', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const treeHex = emptyTreeOid(ctx.hashConfig);
+          const body = ENC.encode(`tree ${treeHex}\n\nmessage only, no author or committer\n`);
+          const commit = await writeRawObjectBytes(ctx, 'commit', body);
+
+          // Act
+          await updateRef(ctx, 'refs/heads/x' as RefName, commit, { reflogMessage: REASON });
+
+          // Assert
+          expect(await resolveRef(ctx, 'refs/heads/x' as RefName)).toBe(commit);
+        });
+      });
+    });
+
+    describe('Given a loose commit above the buffered gate with a malformed parent line', () => {
+      describe('When updateRef writes it', () => {
+        it('Then it refuses via parse acceptance, and the buffered inflate path is never used', async () => {
+          // Arrange — incompressible padding pushes the loose file's
+          // COMPRESSED size past the 64 KiB gate; the malformed parent line
+          // sits right after the (valid) tree line, so the streamed scan
+          // refuses long before the padding is even reached.
+          const base = await buildSeededContext();
+          const treeHex = emptyTreeOid(base.hashConfig);
+          const prefix = ENC.encode(`tree ${treeHex}\nparent ${'g'.repeat(40)}\n`);
+          const padding = pseudoRandomBytes(70_000, 1);
+          const body = concatUint8(prefix, padding);
+          const id = await writeRawObjectBytes(base, 'commit', body);
+          const loosePath = `${base.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+          const compressedLength = (await base.fs.read(loosePath)).length;
+          expect(compressedLength).toBeGreaterThan(65_536);
+          let sawBufferedInflate = false;
+          const ctx: Context = {
+            ...base,
+            compressor: {
+              ...base.compressor,
+              inflate: async (...args) => {
+                sawBufferedInflate = true;
+                return base.compressor.inflate(...args);
+              },
+            },
+          };
+
+          // Act + Assert
+          try {
+            await updateRef(ctx, 'refs/tags/big' as RefName, id, { reflogMessage: REASON });
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_COMMIT');
+          }
+          expect(sawBufferedInflate).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a commit whose parent equals its own tree', () => {
+      describe('When updateRef writes it, and the commit is not a recorded shallow boundary', () => {
+        it('Then it refuses bad parent', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const treeHex = emptyTreeOid(ctx.hashConfig);
+          const body = ENC.encode(`tree ${treeHex}\nparent ${treeHex}\nx`);
+          const id = await writeRawObjectBytes(ctx, 'commit', body);
+
+          // Act + Assert
+          try {
+            await updateRef(ctx, 'refs/tags/self-parent' as RefName, id, {
+              reflogMessage: REASON,
+            });
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_COMMIT');
+            if (data.code === 'INVALID_COMMIT') {
+              expect(data.reason).toBe(`bad parent ${treeHex}`);
+            }
+          }
+        });
+      });
+
+      describe('When updateRef writes it, and the commit IS listed in .git/shallow', () => {
+        it('Then it is written — the shallow boundary skips the parent lookup', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const treeHex = emptyTreeOid(ctx.hashConfig);
+          const body = ENC.encode(`tree ${treeHex}\nparent ${treeHex}\nx`);
+          const id = await writeRawObjectBytes(ctx, 'commit', body);
+          await ctx.fs.writeUtf8(shallowFilePath(commonGitDir(ctx)), `${id}\n`);
+          invalidateShallowSet(ctx);
+
+          // Act
+          await updateRef(ctx, 'refs/tags/shallow' as RefName, id, { reflogMessage: REASON });
+
+          // Assert
+          expect(await resolveRef(ctx, 'refs/tags/shallow' as RefName)).toBe(id);
+        });
+      });
+    });
+
+    describe('Given a commit whose parent differs from its own tree', () => {
+      describe('When updateRef writes it', () => {
+        it('Then .git/shallow is never read — the lookup is skipped, not merely answered no', async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          const treeHex = emptyTreeOid(base.hashConfig);
+          const body = ENC.encode(`tree ${treeHex}\nparent ${'b'.repeat(40)}\nx`);
+          const id = await writeRawObjectBytes(base, 'commit', body);
+          const { ctx, calls } = instrumentedContext(base);
+
+          // Act
+          await updateRef(ctx, 'refs/tags/no-shallow' as RefName, id, { reflogMessage: REASON });
+
+          // Assert
+          expect(calls().some((entry) => entry.path === `${base.layout.gitDir}/shallow`)).toBe(
+            false,
           );
         });
       });

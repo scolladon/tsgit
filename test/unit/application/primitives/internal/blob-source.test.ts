@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_BUFFERED_BLOB_BYTES,
   openBlobSource,
+  verifyStoredObject,
 } from '../../../../../src/application/primitives/internal/blob-source.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { serializeObject } from '../../../../../src/domain/objects/git-object.js';
-import type { Blob, Commit, ObjectId } from '../../../../../src/domain/objects/index.js';
+import type { Blob, Commit, ObjectId, Tag } from '../../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
+import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext } from '../fixtures.js';
 import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from '../pack-fixture.js';
 
@@ -847,6 +849,278 @@ describe('openBlobSource', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('OPERATION_ABORTED');
         }
+      });
+    });
+  });
+});
+
+const IDENTITY = { name: 'A', email: 'a@a.com', timestamp: 1, timezoneOffset: '+0000' as const };
+
+/** A long, deflate-resistant printable-ASCII string — pushes a loose
+ *  object's COMPRESSED size past the buffered gate without any non-UTF-8
+ *  byte concerns (`Commit`/`Tag` messages are plain strings). */
+function pseudoRandomAsciiMessage(length: number, seed: number): string {
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    let h = (seed * 1_000_003 + i) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+    h = (h ^ (h >>> 16)) >>> 0;
+    out += String.fromCharCode(32 + (h % 95));
+  }
+  return out;
+}
+
+describe('verifyStoredObject', () => {
+  describe('Given a delta-cache entry whose content does NOT hash to its own key', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it refuses OBJECT_HASH_MISMATCH — a cache hit is hashed, never trusted', async () => {
+        // Arrange — the id names one (real) blob; the cache is poisoned
+        // with a DIFFERENT blob's content under that same id.
+        const ctx = await buildSeededContext();
+        const realId = (await ctx.hash.hashHex(
+          looseFormatBytes('blob', ENC.encode('real')),
+        )) as ObjectId;
+        const poisoned = ENC.encode('an entirely different body');
+        ctx.deltaCache.set(realId, { type: 'blob', content: poisoned }, poisoned.length);
+
+        // Act + Assert
+        try {
+          await verifyStoredObject(ctx, realId);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code === 'OBJECT_HASH_MISMATCH') {
+            expect(data.expected).toBe(realId);
+            expect(data.actual).not.toBe(realId);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a delta-cache entry that genuinely hashes to its key', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with the cached type and no acceptance scan (a blob)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = ENC.encode('cached content');
+        const id = (await ctx.hash.hashHex(looseFormatBytes('blob', content))) as ObjectId;
+        ctx.deltaCache.set(id, { type: 'blob', content }, content.length);
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.acceptance).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a buffered loose blob', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with no acceptance scan', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: ENC.encode('hello'), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.acceptance).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a streamed loose commit above the buffered gate', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with a defined acceptance scan', async () => {
+        // Arrange
+        const commit: Commit = {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: ZERO_ID,
+            parents: [],
+            author: IDENTITY,
+            committer: IDENTITY,
+            message: pseudoRandomAsciiMessage(150_000, 1),
+            extraHeaders: [],
+          },
+        };
+        const ctx = await buildSeededContext({ objects: [commit] });
+        const id = await writeObject(ctx, commit);
+        expect(await looseCompressedLength(ctx, id)).toBeGreaterThan(MAX_BUFFERED_BLOB_BYTES);
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('commit');
+        expect(result.acceptance).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a buffered loose tag', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with a defined acceptance scan', async () => {
+        // Arrange
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: ZERO_ID,
+            objectType: 'commit',
+            tagName: 't',
+            message: 'msg',
+            extraHeaders: [],
+          },
+        };
+        const ctx = await buildSeededContext({ objects: [tag] });
+        const id = await writeObject(ctx, tag);
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('tag');
+        expect(result.acceptance).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a buffered loose tree', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with no acceptance scan (git never parses a tree)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'verify-tree', [
+          { kind: 'base', type: 'tree', content: ENC.encode('not really a tree body') },
+        ]);
+        const id = ids[0] as ObjectId;
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('tree');
+        expect(result.acceptance).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given the virtual empty tree', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves type tree with no acceptance scan, without a store read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = await verifyStoredObject(ctx, EMPTY_TREE_OID);
+
+        // Assert
+        expect(result.type).toBe('tree');
+        expect(result.acceptance).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a packed base commit', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with a defined acceptance scan', async () => {
+        // Arrange
+        const content = ENC.encode(`tree ${ZERO_ID}\n\nmsg\n`);
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'verify-packed-commit', [
+          { kind: 'base', type: 'commit', content },
+        ]);
+        const id = ids[0] as ObjectId;
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('commit');
+        expect(result.acceptance).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a packed delta blob', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with no acceptance scan', async () => {
+        // Arrange
+        const baseContent = ENC.encode('base blob content');
+        const targetContent = ENC.encode('base blob content, delta-modified');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'verify-packed-delta', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent },
+        ]);
+        const id = ids[1] as ObjectId;
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.acceptance).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an id absent from every storage form', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it refuses OBJECT_NOT_FOUND', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const missing = 'f'.repeat(40) as ObjectId;
+
+        // Act + Assert
+        try {
+          await verifyStoredObject(ctx, missing);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') expect(data.id).toBe(missing);
+        }
+      });
+    });
+  });
+
+  describe('Given a missing object and a promisor that supplies it', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it is lazy-fetched exactly once and then verified', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: ENC.encode('fetched'), id: '' as ObjectId };
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const calls = { count: 0 };
+        let ctx!: Context;
+        ctx = {
+          ...base,
+          promisor: {
+            fetch: async (oids) => {
+              calls.count += 1;
+              await writeObject(ctx, blob);
+              return { attempted: true, requested: oids.length, fetched: oids.length };
+            },
+          },
+        };
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(calls.count).toBe(1);
       });
     });
   });

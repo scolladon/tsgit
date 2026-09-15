@@ -19,6 +19,11 @@ import {
 import { assertLooseSizeConsistent, splitLooseObject } from '../../../domain/objects/git-object.js';
 import { parseHeader } from '../../../domain/objects/header.js';
 import { emptyTreeOid, type ObjectContent, type ObjectId } from '../../../domain/objects/index.js';
+import {
+  feedParseAcceptance,
+  type ParseAcceptanceScan,
+  startParseAcceptance,
+} from '../../../domain/objects/parse-acceptance.js';
 import { PACK_ENTRY_TYPE } from '../../../domain/storage/index.js';
 import { readableStreamToAsyncIterable } from '../../../operators/readable-stream.js';
 import type { Context } from '../../../ports/context.js';
@@ -32,7 +37,6 @@ import {
 } from '../object-resolver.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
-import { count } from '../snapshot-operators/terminals.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
 
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
@@ -128,14 +132,17 @@ export async function openBlobSource(
 }
 
 /** The result of `verifyStoredObject`: the stored type of an object git's
- *  `parse_object` accepted — it exists and its stored bytes hash to it. */
+ *  `parse_object` accepted — it exists and its stored bytes hash to it —
+ *  and, for a commit or tag, the parse-acceptance scan over its bytes (git
+ *  parses no blob or tree, so `acceptance` is `undefined` for those). */
 export interface VerifiedObject {
   readonly type: ObjectType;
+  readonly acceptance: ParseAcceptanceScan | undefined;
 }
 
 /** git models the empty tree as never stored; `openBlobSource` has no arm
  *  for it, so the verifier reports it directly, ahead of the store read. */
-const VIRTUAL_EMPTY_TREE: VerifiedObject = { type: 'tree' };
+const VIRTUAL_EMPTY_TREE: VerifiedObject = { type: 'tree', acceptance: undefined };
 
 /**
  * git's `parse_object` read for one ref-update target: the object exists and
@@ -147,6 +154,12 @@ const VIRTUAL_EMPTY_TREE: VerifiedObject = { type: 'tree' };
 export async function verifyStoredObject(ctx: Context, id: ObjectId): Promise<VerifiedObject> {
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () => hashStoredObject(ctx, registry, id));
+}
+
+/** A commit or tag target starts a parse-acceptance scan alongside the hash;
+ *  git parses neither a blob nor a tree, so those get no scan at all. */
+function startScanFor(type: ObjectType, hexLength: 40 | 64): ParseAcceptanceScan | undefined {
+  return type === 'commit' || type === 'tag' ? startParseAcceptance(type, hexLength) : undefined;
 }
 
 async function hashStoredObject(
@@ -161,10 +174,17 @@ async function hashStoredObject(
     return VIRTUAL_EMPTY_TREE;
   }
   const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, { verifyHash: true });
-  // Draining is the hash: a stream arm's own tail throws OBJECT_HASH_MISMATCH
-  // after the last chunk, before `count` can resolve.
-  if (source.kind === 'stream') await count(source.stream);
-  return { type: source.type };
+  const scan = startScanFor(source.type, ctx.hashConfig.hexLength);
+  if (source.kind === 'bytes') {
+    return { type: source.type, acceptance: scan && feedParseAcceptance(scan, source.content) };
+  }
+  // Draining is the hash: the arm's own tail throws OBJECT_HASH_MISMATCH
+  // after the last chunk, before the verdict is ever read from `acceptance`.
+  let acceptance = scan;
+  for await (const chunk of source.stream) {
+    acceptance = acceptance && feedParseAcceptance(acceptance, chunk);
+  }
+  return { type: source.type, acceptance };
 }
 
 function checkAborted(ctx: Context): void {

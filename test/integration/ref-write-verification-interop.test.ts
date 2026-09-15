@@ -130,8 +130,29 @@ describe.skipIf(!GIT_AVAILABLE)(
     let blobId = '';
     let annotatedTagId = '';
     let reftableMainId = '';
+    let noTreeLineCommitId = '';
+    let nonHexParentCommitId = '';
+    let bogusTypeTagId = '';
+    let shortObjectLineTagId = '';
+    let noAuthorCommitId = '';
+    let garbageTreeId = '';
+    let selfParentCommitId = '';
+    let upperCaseTreeCommitId = '';
+    let junkAfterAuthorCommitId = '';
+    let emptyTagNameId = '';
+    let tooShortTagId = '';
     const NX = '1'.repeat(40);
     const caseRoots: string[] = [];
+
+    /** `git hash-object --literally -w -t <type> --stdin` against the files
+     *  base — plants an object both twins hold without validating it, the
+     *  same way a hostile advertisement or a hand-crafted object would
+     *  arrive. Every row below only WRITES a ref to one of these, through
+     *  git in `peer` and `updateRef` in `ours`. */
+    const plantObject = (type: string, body: string): string =>
+      runGit(['-C', filesBase, 'hash-object', '--literally', '-w', '-t', type, '--stdin'], {
+        input: body,
+      }).trim();
 
     beforeAll(async () => {
       filesBase = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-write-verify-files-'));
@@ -151,6 +172,29 @@ describe.skipIf(!GIT_AVAILABLE)(
         env: pinnedEnv(COMMITTER_EPOCH + 1),
       });
       annotatedTagId = git(filesBase, 'rev-parse', 'at1').trim();
+
+      // Parse-acceptance fixtures — every object below is planted once, in
+      // the base, before any peer/ours copy is made.
+      noTreeLineCommitId = plantObject('commit', `parent ${mainId}\n\nmsg\n`);
+      nonHexParentCommitId = plantObject(
+        'commit',
+        `tree ${treeId}\nparent ${treeId.slice(0, 39)}z\n\nmsg\n`,
+      );
+      bogusTypeTagId = plantObject('tag', `object ${mainId}\ntype bogus\ntag t\n\nmsg\n`);
+      shortObjectLineTagId = plantObject(
+        'tag',
+        `object ${treeId.slice(0, 30)}\ntype commit\ntag t\n\nmsg\n`,
+      );
+      noAuthorCommitId = plantObject('commit', `tree ${treeId}\nparent ${mainId}\n\nmsg\n`);
+      garbageTreeId = plantObject('tree', 'not a real tree body');
+      selfParentCommitId = plantObject('commit', `tree ${treeId}\nparent ${treeId}\n\nmsg\n`);
+      upperCaseTreeCommitId = plantObject('commit', `tree ${treeId.toUpperCase()}\n\nmsg\n`);
+      junkAfterAuthorCommitId = plantObject(
+        'commit',
+        `tree ${treeId}\nauthor A <a@x> 0 +0000\nparent ${mainId}\n\nmsg\n`,
+      );
+      emptyTagNameId = plantObject('tag', `object ${mainId}\ntype commit\ntag \n\nmsg\n`);
+      tooShortTagId = plantObject('tag', `object ${mainId}\ntype commit\n`);
 
       reftableBase = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-write-verify-reftable-'));
       runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', reftableBase]);
@@ -628,6 +672,260 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(gitResult.stderr.trim()).toBe(nonexistentFatal('refs/tags/eb', EMPTY_BLOB));
         expect(oursResult.ok).toBe(false);
         expect(oursResult.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+
+    describe('Given commit and tag targets git’s own parser accepts or refuses', () => {
+      it('Then a commit with no tree line refuses bogus commit object', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('no-tree-line');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          noTreeLineCommitId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', noTreeLineCommitId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr.trim()).toBe(
+          `error: bogus commit object ${noTreeLineCommitId}\n${nonexistentFatal('refs/tags/x', noTreeLineCommitId)}`,
+        );
+        expect(oursResult.ok).toBe(false);
+        expect(oursResult.code).toBe('INVALID_COMMIT');
+      });
+
+      it('Then a parent line with a non-hex character refuses', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('non-hex-parent');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          nonHexParentCommitId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', nonHexParentCommitId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(oursResult.ok).toBe(false);
+        expect(oursResult.code).toBe('INVALID_COMMIT');
+      });
+
+      it('Then an unknown tag type refuses, reporting the type name', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('bogus-tag-type');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          bogusTypeTagId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', bogusTypeTagId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(`unknown tag type 'bogus' in ${bogusTypeTagId}`);
+        expect(oursResult.ok).toBe(false);
+        expect(oursResult.code).toBe('INVALID_TAG');
+      });
+
+      it('Then a tag whose object line is cut short refuses (fatal only, no error: line)', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('short-object-line');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          shortObjectLineTagId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', shortObjectLineTagId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).not.toContain('error:');
+        expect(oursResult.ok).toBe(false);
+        expect(oursResult.code).toBe('INVALID_TAG');
+      });
+
+      it('Then a commit with a tree and a parent but no author or committer is accepted on a branch', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('no-author');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/heads/x',
+          noAuthorCommitId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/heads/x', noAuthorCommitId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(oursResult.ok).toBe(true);
+      });
+
+      it('Then a garbage tree body is accepted on a non-branch ref', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('garbage-tree');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          garbageTreeId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', garbageTreeId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(oursResult.ok).toBe(true);
+      });
+
+      it('Then a parent equal to the tree refuses bad parent, naming the tree in both tools', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('self-parent');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          selfParentCommitId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', selfParentCommitId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(`bad parent ${treeId} in commit ${selfParentCommitId}`);
+        expect(oursResult.ok).toBe(false);
+        expect(oursResult.code).toBe('INVALID_COMMIT');
+      });
+
+      it('Then the same commit listed in .git/shallow in both twins is accepted on a tag and a branch', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('self-parent-shallow');
+        await writeFile(path.join(peer, '.git', 'shallow'), `${selfParentCommitId}\n`);
+        await writeFile(path.join(ours, '.git', 'shallow'), `${selfParentCommitId}\n`);
+
+        // Act
+        const gitTag = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          selfParentCommitId,
+        ]);
+        const oursTag = await runOurs(ours, 'refs/tags/x', selfParentCommitId);
+        const gitBranch = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/heads/x',
+          selfParentCommitId,
+        ]);
+        const oursBranch = await runOurs(ours, 'refs/heads/x', selfParentCommitId);
+
+        // Assert
+        expect(gitTag.exitCode).toBe(0);
+        expect(oursTag.ok).toBe(true);
+        expect(gitBranch.exitCode).toBe(0);
+        expect(oursBranch.ok).toBe(true);
+      });
+
+      it('Then an upper-case tree hex is accepted', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('upper-case-tree');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/heads/x',
+          upperCaseTreeCommitId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/heads/x', upperCaseTreeCommitId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(oursResult.ok).toBe(true);
+      });
+
+      it('Then a junk "parent"-looking line after author is accepted', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('junk-after-author');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/heads/x',
+          junkAfterAuthorCommitId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/heads/x', junkAfterAuthorCommitId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(oursResult.ok).toBe(true);
+      });
+
+      it('Then an empty tag name is accepted', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('empty-tag-name');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          emptyTagNameId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', emptyTagNameId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(oursResult.ok).toBe(true);
+      });
+
+      it('Then a tag body shorter than h + 24 refuses tag object too short', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('too-short-tag');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          tooShortTagId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', tooShortTagId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(oursResult.ok).toBe(false);
+        expect(oursResult.code).toBe('INVALID_TAG');
       });
     });
 

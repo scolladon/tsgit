@@ -495,10 +495,13 @@ describe('nameRev', () => {
   describe('Given a commit whose recorded parent is not a commit', () => {
     describe('When name-rev runs', () => {
       it('Then the non-commit parent is not traversed', async () => {
-        // Arrange — a hand-built commit whose parent oid points at a tree.
+        // Arrange — a hand-built commit whose parent oid points at a tree
+        // (a different one from its own, so this exercises "the parent is a
+        // tree", not the separate "parent equals the commit's own tree" case).
         const ctx = await seed();
         const tree = await treeOf(ctx, await commitFile(ctx, 'c1'));
-        const corrupt = await writeCommit(ctx, tree, [tree]);
+        const otherTree = await treeOf(ctx, await commitFile(ctx, 'c2'));
+        const corrupt = await writeCommit(ctx, tree, [otherTree]);
         await pointBranch(ctx, 'corrupt', corrupt);
 
         // Act

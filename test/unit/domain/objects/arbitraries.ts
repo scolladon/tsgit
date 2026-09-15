@@ -287,3 +287,126 @@ export function arbNonBlankLine(): fc.Arbitrary<string> {
     .tuple(fill, fc.constantFrom('a', 'b', 'x', '.', '#'), fill)
     .map(([pre, anchor, post]) => pre + anchor + post);
 }
+
+// ---------------------------------------------------------------------------
+// parse-acceptance grammar generators
+// ---------------------------------------------------------------------------
+
+const ENC = new TextEncoder();
+
+// A hex digit drawn from all three case-insensitive ranges `isHexByte`
+// accepts ('0'-'9', 'a'-'f', 'A'-'F') — `arbHexDigit` above is lower-case
+// only, which would never probe the upper-case-accepted grammar rule.
+function arbHexDigitAnyCase(): fc.Arbitrary<string> {
+  return fc
+    .oneof(
+      fc.integer({ min: 0x30, max: 0x39 }),
+      fc.integer({ min: 0x61, max: 0x66 }),
+      fc.integer({ min: 0x41, max: 0x46 }),
+    )
+    .map((code) => String.fromCharCode(code));
+}
+
+/** An exact-width hex id string, either case, for `tree`/`parent`/`object` lines. */
+export function arbHexStringExact(hexLength: 40 | 64): fc.Arbitrary<string> {
+  return fc
+    .array(arbHexDigitAnyCase(), { minLength: hexLength, maxLength: hexLength })
+    .map((chars) => chars.join(''));
+}
+
+/** A well-formed `tree <hex>\n` line followed by 0–3 `parent <hex>\n` lines
+ *  (some deliberately repeating the tree id, to exercise the parent-equals-
+ *  tree lookup path) and a junk tail standing in for author/committer/message. */
+function arbCommitGrammarBody(hexLength: 40 | 64): fc.Arbitrary<Uint8Array> {
+  return arbHexStringExact(hexLength).chain((treeHex) => {
+    const parentHex = fc.oneof(fc.constant(treeHex), arbHexStringExact(hexLength));
+    return fc
+      .tuple(fc.array(parentHex, { maxLength: 3 }), fc.string({ maxLength: 24 }))
+      .map(([parents, junk]) => {
+        const lines = [`tree ${treeHex}\n`, ...parents.map((p) => `parent ${p}\n`), junk];
+        return ENC.encode(lines.join(''));
+      });
+  });
+}
+
+/** A well-formed `object <hex>\ntype <name>\ntag <name>\n` prefix followed
+ *  by a junk tail standing in for the tagger/message/signature. `type`
+ *  sometimes names an unknown type, to exercise the unknown-tag-type
+ *  refusal path. */
+function arbTagGrammarBody(hexLength: 40 | 64): fc.Arbitrary<Uint8Array> {
+  return fc
+    .tuple(
+      arbHexStringExact(hexLength),
+      fc.constantFrom('blob', 'tree', 'commit', 'tag', 'bogus'),
+      fc.string({ maxLength: 12 }),
+      fc.string({ maxLength: 24 }),
+    )
+    .map(([objectHex, type, name, junk]) =>
+      ENC.encode(`object ${objectHex}\ntype ${type}\ntag ${name}\n\n${junk}`),
+    );
+}
+
+/** `body` with at most one byte replaced by an arbitrary value — a
+ *  single-byte mutation over an otherwise grammar-shaped body, generated
+ *  half the time so both well-formed and corrupted samples occur. */
+function withOptionalMutation(body: Uint8Array): fc.Arbitrary<Uint8Array> {
+  if (body.length === 0) return fc.constant(body);
+  return fc
+    .option(fc.tuple(fc.nat({ max: body.length - 1 }), fc.integer({ min: 0, max: 255 })))
+    .map((mutation) => {
+      if (mutation === null) return body;
+      const [index, value] = mutation;
+      const mutated = body.slice();
+      mutated[index] = value;
+      return mutated;
+    });
+}
+
+export interface ParseAcceptanceCase {
+  readonly objectType: 'commit' | 'tag';
+  readonly hexLength: 40 | 64;
+  readonly body: Uint8Array;
+}
+
+/** One grammar-shaped commit or tag body, either hex width, with an
+ *  optional single-byte mutation — the metamorphic property's input. */
+export function arbParseAcceptanceCase(): fc.Arbitrary<ParseAcceptanceCase> {
+  return fc
+    .tuple(fc.constantFrom<'commit' | 'tag'>('commit', 'tag'), fc.constantFrom<40 | 64>(40, 64))
+    .chain(([objectType, hexLength]) =>
+      (objectType === 'commit' ? arbCommitGrammarBody(hexLength) : arbTagGrammarBody(hexLength))
+        .chain(withOptionalMutation)
+        .map((body) => ({ objectType, hexLength, body })),
+    );
+}
+
+/** Arbitrary bytes with no grammar shape at all — for the "never throws"
+ *  property, which must hold over any input, not just plausible objects. */
+export function arbParseAcceptanceRawCase(): fc.Arbitrary<ParseAcceptanceCase> {
+  return fc
+    .tuple(
+      fc.constantFrom<'commit' | 'tag'>('commit', 'tag'),
+      fc.constantFrom<40 | 64>(40, 64),
+      fc.uint8Array({ maxLength: 300 }),
+    )
+    .map(([objectType, hexLength, body]) => ({ objectType, hexLength, body }));
+}
+
+/** Sorted cut points in `[0, totalLength]`, for partitioning a byte array
+ *  into an arbitrary sequence of (possibly empty) chunks. */
+export function arbCutPoints(totalLength: number): fc.Arbitrary<ReadonlyArray<number>> {
+  return fc
+    .array(fc.integer({ min: 0, max: totalLength }), { maxLength: 8 })
+    .map((points) => [...points].sort((a, b) => a - b));
+}
+
+/** Splits `bytes` at `cuts` (as produced by `arbCutPoints`) into the
+ *  corresponding ordered slices, first through last. */
+export function splitAtCuts(bytes: Uint8Array, cuts: ReadonlyArray<number>): Uint8Array[] {
+  const points = [0, ...cuts, bytes.length];
+  const chunks: Uint8Array[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    chunks.push(bytes.subarray(points[i] as number, points[i + 1] as number));
+  }
+  return chunks;
+}

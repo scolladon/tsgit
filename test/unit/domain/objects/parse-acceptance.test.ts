@@ -1,0 +1,709 @@
+// cspell:ignore xree xfiller xbject
+import { describe, expect, it } from 'vitest';
+import {
+  feedParseAcceptance,
+  needsParentLookups,
+  parseAcceptanceVerdict,
+  startParseAcceptance,
+} from '../../../../src/domain/objects/parse-acceptance.js';
+
+const ENC = new TextEncoder();
+
+const scanCommit = (hexLength: 40 | 64, body: string | Uint8Array) =>
+  feedParseAcceptance(
+    startParseAcceptance('commit', hexLength),
+    typeof body === 'string' ? ENC.encode(body) : body,
+  );
+
+const scanTag = (hexLength: 40 | 64, body: string | Uint8Array) =>
+  feedParseAcceptance(
+    startParseAcceptance('tag', hexLength),
+    typeof body === 'string' ? ENC.encode(body) : body,
+  );
+
+const verdict = (
+  scan: ReturnType<typeof scanCommit>,
+  parentLookups: 'checked' | 'skipped' = 'checked',
+) => parseAcceptanceVerdict(scan, { parentLookups });
+
+// Alternating digit/letter by default so the ordinary "accepted" rows cover
+// both `isHexByte` ranges without a dedicated test for either; a single-char
+// `fill` (used where a row just needs a SECOND, distinct id) still repeats
+// as before.
+const T = (hexLength: 40 | 64, fill = '1a'): string =>
+  fill.repeat(Math.ceil(hexLength / fill.length)).slice(0, hexLength);
+
+describe('parse-acceptance', () => {
+  describe('commit — bogus commit object', () => {
+    describe('Given a body of exactly h + 6 bytes', () => {
+      describe('When the verdict is read', () => {
+        it.each([{ h: 40 as const }, { h: 64 as const }])(
+          'Then it refuses bogus commit object (h=$h)',
+          ({ h }) => {
+            // Arrange
+            const sut = scanCommit(h, `tree ${T(h)}\n`);
+
+            // Act
+            const result = verdict(sut);
+
+            // Assert
+            expect(result).toEqual({ type: 'commit', reason: 'bogus commit object' });
+          },
+        );
+      });
+    });
+
+    describe('Given a body of exactly h + 7 bytes (one byte past the tree line)', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40)}\nx`);
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the tree prefix is wrong', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bogus commit object', () => {
+          // Arrange
+          const sut = scanCommit(40, `xree ${T(40)}\nfiller`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bogus commit object' });
+        });
+      });
+    });
+
+    describe('Given the LF at h + 5 is missing', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bogus commit object', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40)}xfiller`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bogus commit object' });
+        });
+      });
+    });
+  });
+
+  describe('commit — bad tree pointer', () => {
+    describe('Given a non-hex tree id', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad tree pointer', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${'g'.repeat(40)}\nfiller`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad tree pointer' });
+        });
+      });
+    });
+
+    describe('Given an upper-case tree id', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40).toUpperCase()}\nfiller`);
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('commit — bad parents', () => {
+    describe('Given a parent line that is the last h + 8 bytes of the body', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad parents', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+        });
+      });
+    });
+
+    describe('Given a parent prefix with exactly h + 7 bytes left after the tree line', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted (the loop is not entered)', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40)}\nparent `);
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a non-hex parent id', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad parents', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40)}\nparent ${'g'.repeat(40)}\nx`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+        });
+      });
+    });
+
+    describe('Given the LF at p + h + 7 is missing', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad parents', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}x`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+        });
+      });
+    });
+
+    describe('Given a well-formed first parent line and a malformed second one', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad parents', () => {
+          // Arrange
+          const sut = scanCommit(
+            40,
+            `tree ${T(40)}\nparent ${T(40, 'b')}\nparent ${'g'.repeat(40)}\nx`,
+          );
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+        });
+      });
+    });
+
+    describe('Given a "parent"-prefixed line appearing after the parent lines have ended', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted — the scan never re-enters the parent loop', () => {
+          // Arrange — the scan stops re-checking for "parent " lines the
+          // moment one line's prefix does not match; this line's "parent "
+          // text lives in what the scan already treats as unchecked tail.
+          const sut = scanCommit(
+            40,
+            `tree ${T(40)}\nauthor A <a@x> 0 +0000\nparent ${T(40, 'b')}\n`,
+          );
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('commit — bad parent (parent equals tree)', () => {
+    describe('Given a parent id equal to the tree id', () => {
+      describe('When parentLookups is "checked"', () => {
+        it('Then it refuses bad parent, with the lower-cased id in the reason', () => {
+          // Arrange
+          const treeHex = T(40);
+          const sut = scanCommit(40, `tree ${treeHex}\nparent ${treeHex.toUpperCase()}\nx`);
+
+          // Act + Assert
+          expect(verdict(sut, 'checked')).toEqual({
+            type: 'commit',
+            reason: `bad parent ${treeHex}`,
+          });
+        });
+      });
+
+      describe('When parentLookups is "skipped" (a shallow boundary)', () => {
+        it('Then it is accepted', () => {
+          // Arrange
+          const treeHex = T(40);
+          const sut = scanCommit(40, `tree ${treeHex}\nparent ${treeHex}\nx`);
+
+          // Act + Assert
+          expect(verdict(sut, 'skipped')).toBeUndefined();
+          expect(needsParentLookups(sut)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a matching parent on the first line and a grammar failure on the second', () => {
+      describe('When parentLookups is "checked"', () => {
+        it('Then it refuses via the earlier match', () => {
+          // Arrange
+          const treeHex = T(40);
+          const sut = scanCommit(
+            40,
+            `tree ${treeHex}\nparent ${treeHex}\nparent ${'g'.repeat(40)}\nx`,
+          );
+
+          // Act + Assert
+          expect(verdict(sut, 'checked')).toEqual({
+            type: 'commit',
+            reason: `bad parent ${treeHex}`,
+          });
+        });
+      });
+
+      describe('When parentLookups is "skipped"', () => {
+        it('Then it refuses via the later grammar failure instead', () => {
+          // Arrange
+          const treeHex = T(40);
+          const sut = scanCommit(
+            40,
+            `tree ${treeHex}\nparent ${treeHex}\nparent ${'g'.repeat(40)}\nx`,
+          );
+
+          // Act + Assert
+          expect(verdict(sut, 'skipped')).toEqual({ type: 'commit', reason: 'bad parents' });
+        });
+      });
+    });
+
+    describe('Given a matching parent already found on an earlier line, and a later well-formed non-matching parent', () => {
+      describe('When the verdict is read', () => {
+        it('Then the first candidate is kept, not overwritten', () => {
+          // Arrange — three parents: line 1 matches the tree (sets the
+          // candidate), line 2 does not (the candidate is already set, so
+          // this line's own equality is never even evaluated), line 3 is
+          // just well-formed filler.
+          const treeHex = T(40);
+          const sut = scanCommit(
+            40,
+            `tree ${treeHex}\nparent ${treeHex}\nparent ${T(40, 'b')}\nparent ${T(40, 'c')}\nx`,
+          );
+
+          // Act + Assert
+          expect(verdict(sut, 'checked')).toEqual({
+            type: 'commit',
+            reason: `bad parent ${treeHex}`,
+          });
+        });
+      });
+    });
+
+    describe('Given a grammar failure on the first parent line and a would-be match on the second', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses via the grammar failure, and needsParentLookups is false', () => {
+          // Arrange — the scan stops at the first malformed line, so the
+          // second line's match against the tree id is never even examined.
+          const treeHex = T(40);
+          const sut = scanCommit(
+            40,
+            `tree ${treeHex}\nparent ${'g'.repeat(40)}\nparent ${treeHex}\n`,
+          );
+
+          // Act + Assert
+          expect(verdict(sut, 'checked')).toEqual({ type: 'commit', reason: 'bad parents' });
+          expect(needsParentLookups(sut)).toBe(false);
+        });
+      });
+    });
+  });
+
+  describe('commit — accepted shapes git accepts', () => {
+    describe('Given a commit with no author or committer line at all', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted', () => {
+          // Arrange
+          const sut = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}\n\nmessage only\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('tag — tag object too short', () => {
+    describe('Given a body of exactly h + 23 bytes', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses tag object too short', () => {
+          // Arrange — pad a short, otherwise-plausible prefix out to h + 23.
+          const base = `object ${T(40)}\ntype `;
+          const body = base + 'x'.repeat(40 + 23 - base.length);
+          const sut = scanTag(40, body);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'tag object too short' });
+        });
+      });
+    });
+
+    describe('Given a body of exactly h + 24 bytes with no valid tag structure', () => {
+      describe('When the verdict is read', () => {
+        it('Then the too-short check does not fire (it still refuses, but for a different reason)', () => {
+          // Arrange
+          const base = `object ${T(40)}\ntype commit\n`;
+          const body = base + 'x'.repeat(40 + 24 - base.length);
+          const sut = scanTag(40, body);
+
+          // Act + Assert
+          const result = verdict(sut);
+          expect(result?.reason).not.toBe('tag object too short');
+        });
+      });
+    });
+  });
+
+  describe('tag — bad object line', () => {
+    describe('Given the object prefix is wrong', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad object line', () => {
+          // Arrange
+          const sut = scanTag(40, `xbject ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad object line' });
+        });
+      });
+    });
+
+    describe('Given a non-hex object id', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad object line', () => {
+          // Arrange
+          const sut = scanTag(40, `object ${'g'.repeat(40)}\ntype commit\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad object line' });
+        });
+      });
+    });
+
+    describe('Given a short (non-hex-length) object id', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad object line', () => {
+          // Arrange — one hex char short, so byte h+7 is not the expected LF.
+          const sut = scanTag(40, `object ${T(40).slice(0, 39)}\ntype commit\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad object line' });
+        });
+      });
+    });
+  });
+
+  describe('tag — bad type line', () => {
+    describe('Given the type prefix is missing entirely', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad type line', () => {
+          // Arrange
+          const sut = scanTag(40, `object ${T(40)}\nnope commit\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad type line' });
+        });
+      });
+    });
+
+    describe('Given a type name of exactly 19 bytes', () => {
+      describe('When the name is a known type padded to fit', () => {
+        it('Then it is accepted (accepted if valid; here it refuses only on the type, not the length)', () => {
+          // Arrange — 19-byte unknown name: the type-line grammar passes (an
+          // LF is found in time), and the UNKNOWN-TYPE check refuses on the
+          // name itself, proving the 19-byte line reached that check rather
+          // than being cut off by the type-line grammar.
+          const name19 = `commit${'x'.repeat(13)}`;
+          expect(name19.length).toBe(19);
+          const sut = scanTag(40, `object ${T(40)}\ntype ${name19}\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({
+            type: 'tag',
+            reason: `unknown tag type '${name19}'`,
+          });
+        });
+      });
+    });
+
+    describe('Given a type name of exactly 20 bytes with no LF within the cap', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad type line', () => {
+          // Arrange
+          const name20 = 'x'.repeat(20);
+          const sut = scanTag(40, `object ${T(40)}\ntype ${name20}\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad type line' });
+        });
+      });
+    });
+
+    describe('Given no LF ever follows the type name', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad type line', () => {
+          // Arrange — padded past h + 24 so the too-short check does not
+          // preempt this row;
+          // the name itself stays under the 20-byte cap, so this is decided
+          // only once no more input is coming (not by the cap).
+          const sut = scanTag(40, `object ${T(40)}\ntype commit${'x'.repeat(8)}`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad type line' });
+        });
+      });
+    });
+  });
+
+  describe('tag — unknown tag type', () => {
+    describe('Given an unknown type name', () => {
+      describe('When the verdict is read', () => {
+        it("Then it refuses unknown tag type 'bogus'", () => {
+          // Arrange
+          const sut = scanTag(40, `object ${T(40)}\ntype bogus\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: "unknown tag type 'bogus'" });
+        });
+      });
+    });
+
+    describe('Given an unknown type name containing a control character', () => {
+      describe('When the verdict is read', () => {
+        it('Then the reason sanitises it', () => {
+          // Arrange
+          const sut = scanTag(40, `object ${T(40)}\ntype bogus\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({
+            type: 'tag',
+            reason: "unknown tag type 'bo\\x07gus'",
+          });
+        });
+      });
+    });
+
+    describe('Given a type name with an embedded NUL before a known type name', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted as the type before the NUL', () => {
+          // Arrange
+          const sut = scanTag(40, `object ${T(40)}\ntype commit x\ntag t\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+          // A tag scan never needs a parent lookup - that concept is
+          // commit-only.
+          expect(needsParentLookups(sut)).toBe(false);
+        });
+      });
+    });
+  });
+
+  describe('tag — bad tag line', () => {
+    describe('Given the tag prefix is confirmed but no LF ever follows it', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad tag line', () => {
+          // Arrange — `object` + `type` line total h + 20 bytes, always
+          // under h + 24 for any known type name, so the too-short check
+          // would otherwise preempt this row; a confirmed `tag ` with no
+          // trailing LF closes the gap without adding a byte beyond the
+          // tag-line prefix itself.
+          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntag `);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad tag line' });
+        });
+      });
+    });
+
+    describe('Given "tag " followed immediately by an LF (an empty name)', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted', () => {
+          // Arrange
+          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntag \n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given "tag" with no trailing space and no LF after it', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad tag line', () => {
+          // Arrange
+          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntagX`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad tag line' });
+        });
+      });
+    });
+
+    describe('Given "tag " confirmed and a name with no LF anywhere after it', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad tag line', () => {
+          // Arrange — long enough that the LF search discards a non-empty,
+          // still-unresolved carry rather than an already-empty one.
+          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntag good-name-no-newline`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad tag line' });
+        });
+      });
+    });
+  });
+
+  describe('the 64-hex-width object format', () => {
+    describe('Given a commit body of exactly h + 6 bytes at h = 64', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bogus commit object', () => {
+          // Arrange
+          const sut = scanCommit(64, `tree ${T(64)}\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bogus commit object' });
+        });
+      });
+    });
+
+    describe('Given a well-formed commit at h = 64', () => {
+      describe('When the verdict is read', () => {
+        it('Then it is accepted', () => {
+          // Arrange
+          const sut = scanCommit(64, `tree ${T(64)}\nparent ${T(64, 'b')}\n\nmsg\n`);
+
+          // Act + Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('streaming: a body arriving in more than one feed call', () => {
+    describe('Given a commit whose tree line arrives split across two chunks', () => {
+      describe('When each half is fed in turn', () => {
+        it('Then the result is identical to feeding it whole', () => {
+          // Arrange — the first chunk stops mid tree-line window, so the
+          // scan must wait rather than decide anything yet.
+          const body = ENC.encode(`tree ${T(40)}\nparent ${T(40, 'b')}\n\nmsg\n`);
+          const first = body.subarray(0, 10);
+          const second = body.subarray(10);
+
+          // Act
+          let sut = feedParseAcceptance(startParseAcceptance('commit', 40), first);
+          sut = feedParseAcceptance(sut, second);
+
+          // Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a commit whose parent-line prefix itself arrives split', () => {
+      describe('When each half is fed in turn', () => {
+        it('Then the result is identical to feeding it whole', () => {
+          // Arrange — the first chunk ends 3 bytes into "parent ", too few
+          // even to test the 7-byte prefix.
+          const body = ENC.encode(`tree ${T(40)}\nparent ${T(40, 'b')}\n\nmsg\n`);
+          const first = body.subarray(0, 46 + 3);
+          const second = body.subarray(46 + 3);
+
+          // Act
+          let sut = feedParseAcceptance(startParseAcceptance('commit', 40), first);
+          sut = feedParseAcceptance(sut, second);
+
+          // Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a commit whose parent line arrives split before its lookahead byte', () => {
+      describe('When each half is fed in turn', () => {
+        it('Then a hash-fixed-point-free parent line is still accepted', () => {
+          // Arrange — split right after the tree line, so the whole parent
+          // line (h + 8 bytes) arrives with nothing left over, forcing the
+          // scan to wait for the lookahead byte in a later chunk.
+          const treeHex = T(40);
+          const body = ENC.encode(`tree ${treeHex}\nparent ${T(40, 'b')}\nx`);
+          const first = body.subarray(0, 46 + 48);
+          const second = body.subarray(46 + 48);
+
+          // Act
+          let sut = feedParseAcceptance(startParseAcceptance('commit', 40), first);
+          sut = feedParseAcceptance(sut, second);
+
+          // Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a tag whose object line arrives split across two chunks', () => {
+      describe('When each half is fed in turn', () => {
+        it('Then the result is identical to feeding it whole', () => {
+          // Arrange
+          const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
+          const first = body.subarray(0, 5);
+          const second = body.subarray(5);
+
+          // Act
+          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
+          sut = feedParseAcceptance(sut, second);
+
+          // Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a tag whose type-line prefix itself arrives split', () => {
+      describe('When each half is fed in turn', () => {
+        it('Then the result is identical to feeding it whole', () => {
+          // Arrange — the first chunk ends exactly at the object line, too
+          // few bytes even to test the 5-byte "type " prefix.
+          const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
+          const first = body.subarray(0, 40 + 8);
+          const second = body.subarray(40 + 8);
+
+          // Act
+          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
+          sut = feedParseAcceptance(sut, second);
+
+          // Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a tag whose tag-line prefix itself arrives split', () => {
+      describe('When each half is fed in turn', () => {
+        it('Then the result is identical to feeding it whole', () => {
+          // Arrange — the first chunk ends exactly at the type line, too few
+          // bytes even to test the 4-byte "tag " prefix.
+          const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
+          const first = body.subarray(0, 40 + 8 + 12);
+          const second = body.subarray(40 + 8 + 12);
+
+          // Act
+          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
+          sut = feedParseAcceptance(sut, second);
+
+          // Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a tag whose type name arrives split before its terminating LF', () => {
+      describe('When each half is fed in turn', () => {
+        it('Then the result is identical to feeding it whole', () => {
+          // Arrange — the first chunk ends mid type-name, under the 20-byte
+          // cap, so the scan must wait for the LF rather than deciding early.
+          const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
+          const first = body.subarray(0, 40 + 8 + 8);
+          const second = body.subarray(40 + 8 + 8);
+
+          // Act
+          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
+          sut = feedParseAcceptance(sut, second);
+
+          // Assert
+          expect(verdict(sut)).toBeUndefined();
+        });
+      });
+    });
+  });
+});
