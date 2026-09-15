@@ -169,8 +169,7 @@ describe('ref-store', () => {
     describe('When applyRefUpdates applies a delete update', () => {
       it('Then both the loose file and the packed-refs line are gone — resolveDirect reports it missing', async () => {
         // Arrange — git's `-d` on a loose-and-packed ref removes both; the
-        // packed value must never resurrect once the loose shadow is gone
-        // (Q2).
+        // packed value must never resurrect once the loose shadow is gone.
         const ctx = await buildSeededContext({
           refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
           packedRefs: [{ name: 'refs/heads/main' as RefName, id: 'c'.repeat(40) as ObjectId }],
@@ -370,7 +369,7 @@ describe('ref-store', () => {
 
   describe('Given a loose-only ref with packed-refs present', () => {
     describe('When applyRefUpdates applies a delete update', () => {
-      it('Then packed-refs is byte- and inode-unchanged, but the lock was still taken (Q4)', async () => {
+      it('Then packed-refs is byte- and inode-unchanged, but the lock was still taken', async () => {
         // Arrange
         const base = await buildSeededContext({
           refs: [{ name: 'refs/heads/lo' as RefName, id: 'a'.repeat(40) as ObjectId }],

@@ -79,9 +79,9 @@ describe.skipIf(!GIT_AVAILABLE)(
     let reftableBase = '';
     let filesC1 = '';
     let filesC2 = '';
-    let r18Base = '';
-    let r18Upstream = '';
-    let r18Src = '';
+    let remoteRenameBase = '';
+    let remoteRenameUpstream = '';
+    let remoteRenameSrc = '';
     const caseRoots: string[] = [];
 
     beforeAll(async () => {
@@ -108,74 +108,85 @@ describe.skipIf(!GIT_AVAILABLE)(
       runGit(['-C', filesBase, 'branch', 'p1', 'main'], { env: pinnedEnv(COMMITTER_EPOCH + 4) });
       // Packs ONLY p1 — main/b/x/sym must stay loose for the other rows.
       git(filesBase, 'pack-refs', '--include', 'refs/heads/p1');
-      // lp: packed at C1, then a loose write shadows it with C2 (Q2).
+      // lp: packed at C1, then a loose write shadows it with C2.
       runGit(['-C', filesBase, 'branch', 'lp', filesC1]);
       git(filesBase, 'pack-refs', '--include', 'refs/heads/lp');
       runGit(['-C', filesBase, 'update-ref', 'refs/heads/lp', filesC2]);
-      // at1: an annotated tag, packed so packed-refs carries its peel line (Q3).
+      // at1: an annotated tag, packed so packed-refs carries its peel line.
       runGit(['-C', filesBase, 'tag', '-a', 'at1', '-m', 'tag at1', filesC2], {
         env: pinnedEnv(COMMITTER_EPOCH + 6),
       });
       git(filesBase, 'pack-refs', '--include', 'refs/tags/at1');
 
-      // R18: a bare upstream and a clone carrying every tracking-ref shape
+      // A bare upstream and a clone carrying every tracking-ref shape
       // `remote.rename` must move — packed-only unlogged (keep, main),
       // packed-only logged (lp), loose-over-packed logged (pl), and a
       // logged `origin/HEAD` symref.
-      r18Upstream = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-r18-up-'));
-      runGit(['init', '-q', '--bare', '-b', 'main', r18Upstream]);
-      r18Src = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-r18-src-'));
-      runGit(['init', '-q', '-b', 'main', r18Src]);
-      git(r18Src, 'config', 'user.name', 'A');
-      git(r18Src, 'config', 'user.email', 'a@x');
-      git(r18Src, 'config', 'commit.gpgsign', 'false');
-      disableAutoMaintenance(r18Src);
-      await writeFile(path.join(r18Src, 'f.txt'), 'r18-c1\n');
-      git(r18Src, 'add', '-A');
-      runGit(['-C', r18Src, 'commit', '-q', '-m', 'c1'], {
+      remoteRenameUpstream = await mkdtemp(
+        path.join(os.tmpdir(), 'tsgit-ref-transaction-rename-up-'),
+      );
+      runGit(['init', '-q', '--bare', '-b', 'main', remoteRenameUpstream]);
+      remoteRenameSrc = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-rename-src-'));
+      runGit(['init', '-q', '-b', 'main', remoteRenameSrc]);
+      git(remoteRenameSrc, 'config', 'user.name', 'A');
+      git(remoteRenameSrc, 'config', 'user.email', 'a@x');
+      git(remoteRenameSrc, 'config', 'commit.gpgsign', 'false');
+      disableAutoMaintenance(remoteRenameSrc);
+      await writeFile(path.join(remoteRenameSrc, 'f.txt'), 'rename-c1\n');
+      git(remoteRenameSrc, 'add', '-A');
+      runGit(['-C', remoteRenameSrc, 'commit', '-q', '-m', 'c1'], {
         env: pinnedEnv(COMMITTER_EPOCH + 100),
       });
-      for (const name of ['keep', 'lp', 'pl']) runGit(['-C', r18Src, 'branch', name, 'main']);
-      runGit(['-C', r18Src, 'remote', 'add', 'origin', r18Upstream]);
-      runGit(['-C', r18Src, 'push', '-q', 'origin', 'main', 'keep', 'lp', 'pl'], {
+      for (const name of ['keep', 'lp', 'pl'])
+        runGit(['-C', remoteRenameSrc, 'branch', name, 'main']);
+      runGit(['-C', remoteRenameSrc, 'remote', 'add', 'origin', remoteRenameUpstream]);
+      runGit(['-C', remoteRenameSrc, 'push', '-q', 'origin', 'main', 'keep', 'lp', 'pl'], {
         env: pinnedEnv(COMMITTER_EPOCH + 100),
       });
-      r18Base = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-r18-base-'));
-      runGit(['clone', '-q', r18Upstream, r18Base], { env: pinnedEnv(COMMITTER_EPOCH + 100) });
-      git(r18Base, 'config', 'user.name', 'A');
-      git(r18Base, 'config', 'user.email', 'a@x');
-      disableAutoMaintenance(r18Base);
-      await writeFile(path.join(r18Src, 'f.txt'), 'r18-c2\n');
-      git(r18Src, 'add', '-A');
-      runGit(['-C', r18Src, 'commit', '-q', '-m', 'c2'], {
+      remoteRenameBase = await mkdtemp(
+        path.join(os.tmpdir(), 'tsgit-ref-transaction-rename-base-'),
+      );
+      runGit(['clone', '-q', remoteRenameUpstream, remoteRenameBase], {
+        env: pinnedEnv(COMMITTER_EPOCH + 100),
+      });
+      git(remoteRenameBase, 'config', 'user.name', 'A');
+      git(remoteRenameBase, 'config', 'user.email', 'a@x');
+      disableAutoMaintenance(remoteRenameBase);
+      await writeFile(path.join(remoteRenameSrc, 'f.txt'), 'rename-c2\n');
+      git(remoteRenameSrc, 'add', '-A');
+      runGit(['-C', remoteRenameSrc, 'commit', '-q', '-m', 'c2'], {
         env: pinnedEnv(COMMITTER_EPOCH + 101),
       });
       for (const name of ['lp', 'pl']) {
-        runGit(['-C', r18Src, 'checkout', '-q', name]);
-        runGit(['-C', r18Src, 'reset', '-q', '--hard', 'main']);
+        runGit(['-C', remoteRenameSrc, 'checkout', '-q', name]);
+        runGit(['-C', remoteRenameSrc, 'reset', '-q', '--hard', 'main']);
       }
-      runGit(['-C', r18Src, 'checkout', '-q', 'main']);
-      runGit(['-C', r18Src, 'push', '-q', 'origin', 'lp', 'pl'], {
+      runGit(['-C', remoteRenameSrc, 'checkout', '-q', 'main']);
+      runGit(['-C', remoteRenameSrc, 'push', '-q', 'origin', 'lp', 'pl'], {
         env: pinnedEnv(COMMITTER_EPOCH + 101),
       });
-      runGit(['-C', r18Base, 'fetch', '-q', 'origin'], { env: pinnedEnv(COMMITTER_EPOCH + 101) });
+      runGit(['-C', remoteRenameBase, 'fetch', '-q', 'origin'], {
+        env: pinnedEnv(COMMITTER_EPOCH + 101),
+      });
       // Packs every tracking ref (keep/lp/main/pl) — origin/HEAD is
       // symbolic and never packs.
-      git(r18Base, 'pack-refs', '--include', 'refs/remotes/origin/*');
-      await writeFile(path.join(r18Src, 'f.txt'), 'r18-c3\n');
-      git(r18Src, 'add', '-A');
-      runGit(['-C', r18Src, 'commit', '-q', '-m', 'c3'], {
+      git(remoteRenameBase, 'pack-refs', '--include', 'refs/remotes/origin/*');
+      await writeFile(path.join(remoteRenameSrc, 'f.txt'), 'rename-c3\n');
+      git(remoteRenameSrc, 'add', '-A');
+      runGit(['-C', remoteRenameSrc, 'commit', '-q', '-m', 'c3'], {
         env: pinnedEnv(COMMITTER_EPOCH + 102),
       });
-      runGit(['-C', r18Src, 'checkout', '-q', 'pl']);
-      runGit(['-C', r18Src, 'reset', '-q', '--hard', 'main']);
-      runGit(['-C', r18Src, 'checkout', '-q', 'main']);
-      runGit(['-C', r18Src, 'push', '-q', 'origin', 'pl'], {
+      runGit(['-C', remoteRenameSrc, 'checkout', '-q', 'pl']);
+      runGit(['-C', remoteRenameSrc, 'reset', '-q', '--hard', 'main']);
+      runGit(['-C', remoteRenameSrc, 'checkout', '-q', 'main']);
+      runGit(['-C', remoteRenameSrc, 'push', '-q', 'origin', 'pl'], {
         env: pinnedEnv(COMMITTER_EPOCH + 102),
       });
       // pl is now loose-over-packed, logged twice; keep/main stay
       // packed-only unlogged; lp stays packed-only, logged once.
-      runGit(['-C', r18Base, 'fetch', '-q', 'origin'], { env: pinnedEnv(COMMITTER_EPOCH + 102) });
+      runGit(['-C', remoteRenameBase, 'fetch', '-q', 'origin'], {
+        env: pinnedEnv(COMMITTER_EPOCH + 102),
+      });
 
       reftableBase = await mkdtemp(
         path.join(os.tmpdir(), 'tsgit-ref-transaction-interop-reftable-'),
@@ -194,9 +205,9 @@ describe.skipIf(!GIT_AVAILABLE)(
     afterAll(async () => {
       await rm(filesBase, { recursive: true, force: true });
       await rm(reftableBase, { recursive: true, force: true });
-      await rm(r18Base, { recursive: true, force: true });
-      await rm(r18Upstream, { recursive: true, force: true });
-      await rm(r18Src, { recursive: true, force: true });
+      await rm(remoteRenameBase, { recursive: true, force: true });
+      await rm(remoteRenameUpstream, { recursive: true, force: true });
+      await rm(remoteRenameSrc, { recursive: true, force: true });
       await Promise.all(
         caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
       );
@@ -229,11 +240,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       return { peer, ours, ctx: withReftableStorage(nodeCtx(ours)) };
     };
 
-    const r18CasePair = async (
+    const remoteRenameCasePair = async (
       slug: string,
     ): Promise<{ readonly peer: string; readonly ours: string; readonly ctx: Context }> => {
-      const peer = await cloneRepo(r18Base, `${slug}-peer`);
-      const ours = await cloneRepo(r18Base, `${slug}-ours`);
+      const peer = await cloneRepo(remoteRenameBase, `${slug}-peer`);
+      const ours = await cloneRepo(remoteRenameBase, `${slug}-ours`);
       return { peer, ours, ctx: nodeCtx(ours) };
     };
 
@@ -516,9 +527,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a packed-only ref', () => {
       describe('When it is deleted', () => {
-        it('Then git and tsgit both remove the packed-refs line (new inode) — Q1', async () => {
+        it('Then git and tsgit both remove the packed-refs line (new inode)', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('packed-only-q1');
+          const { peer, ours, ctx } = await filesCasePair('packed-only-delete');
           const oursPackedRefsPath = path.join(ours, '.git', 'packed-refs');
           const inodeBefore = (await stat(oursPackedRefsPath)).ino;
 
@@ -544,9 +555,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a loose-and-packed ref (lp: packed at C1, loose override at C2)', () => {
       describe('When it is deleted', () => {
-        it('Then git and tsgit both remove the loose file and the packed-refs line — Q2', async () => {
+        it('Then git and tsgit both remove the loose file and the packed-refs line', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('loose-and-packed-q2');
+          const { peer, ours, ctx } = await filesCasePair('loose-and-packed-delete');
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/lp']);
@@ -574,9 +585,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given an annotated tag packed with its own peel line', () => {
       describe('When it is deleted', () => {
-        it('Then git and tsgit both drop the entry and its ^ line together — Q3', async () => {
+        it('Then git and tsgit both drop the entry and its ^ line together', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('annotated-tag-q3');
+          const { peer, ours, ctx } = await filesCasePair('annotated-tag-delete');
           const tagRef = 'refs/tags/at1' as RefName;
 
           // Act
@@ -596,9 +607,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a loose-only ref with packed-refs present', () => {
       describe('When it is deleted', () => {
-        it('Then packed-refs is byte- and inode-unchanged on both sides — Q4', async () => {
+        it('Then packed-refs is byte- and inode-unchanged on both sides', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('loose-only-q4');
+          const { peer, ours, ctx } = await filesCasePair('loose-only-delete');
           const peerPackedPath = path.join(peer, '.git', 'packed-refs');
           const oursPackedPath = path.join(ours, '.git', 'packed-refs');
           const peerInodeBefore = (await stat(peerPackedPath)).ino;
@@ -618,9 +629,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a held packed-refs.lock', () => {
       describe('When a packed-only, a loose-only and an absent delete are each attempted', () => {
-        it('Then git and tsgit both refuse every one, and the loose file stays put — Q5', async () => {
+        it('Then git and tsgit both refuse every one, and the loose file stays put', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('packed-refs-lock-q5');
+          const { peer, ours, ctx } = await filesCasePair('packed-refs-lock-delete');
           await writeFile(path.join(peer, '.git', 'packed-refs.lock'), '');
           await writeFile(path.join(ours, '.git', 'packed-refs.lock'), '');
 
@@ -664,9 +675,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a held packed-refs.lock', () => {
       describe('When a non-delete write is attempted', () => {
-        it('Then it never takes packed-refs.lock and succeeds on both sides — Q6', async () => {
+        it('Then it never takes packed-refs.lock and succeeds on both sides', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('packed-refs-lock-q6');
+          const { peer, ours, ctx } = await filesCasePair('packed-refs-lock-write');
           await writeFile(path.join(peer, '.git', 'packed-refs.lock'), '');
           await writeFile(path.join(ours, '.git', 'packed-refs.lock'), '');
 
@@ -694,9 +705,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a header-less packed-refs file written into both copies', () => {
       describe('When an entry is deleted', () => {
-        it("Then both rewrites gain git's canonical header — Q8", async () => {
+        it("Then both rewrites gain git's canonical header", async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('header-less-q8');
+          const { peer, ours, ctx } = await filesCasePair('header-less');
           const headerLess = `${filesC1} refs/heads/aaa\n${filesC2} refs/heads/zzz\n`;
           await writeFile(path.join(peer, '.git', 'packed-refs'), headerLess);
           await writeFile(path.join(ours, '.git', 'packed-refs'), headerLess);
@@ -717,9 +728,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a header-less, unsorted packed-refs file', () => {
       describe('When a middle entry is deleted', () => {
-        it('Then both rewrites come back sorted — Q9', async () => {
+        it('Then both rewrites come back sorted', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('unsorted-q9');
+          const { peer, ours, ctx } = await filesCasePair('unsorted');
           const unsorted = `${filesC1} refs/heads/zz\n${filesC1} refs/heads/mm\n${filesC1} refs/heads/aa\n`;
           await writeFile(path.join(peer, '.git', 'packed-refs'), unsorted);
           await writeFile(path.join(ours, '.git', 'packed-refs'), unsorted);
@@ -744,9 +755,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a packed line naming a missing object, alongside an unrelated entry', () => {
       describe('When the unrelated entry is deleted', () => {
-        it('Then the missing-object line is copied verbatim — never peeled, never read — Q10', async () => {
+        it('Then the missing-object line is copied verbatim — never peeled, never read', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('missing-object-q10');
+          const { peer, ours, ctx } = await filesCasePair('missing-object');
           const missing = 'f'.repeat(40);
           const content = `# pack-refs with: peeled fully-peeled sorted \n${missing} refs/heads/ghost\n${filesC1} refs/heads/victim\n`;
           await writeFile(path.join(peer, '.git', 'packed-refs'), content);
@@ -774,10 +785,10 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given the last packed ref', () => {
       describe('When it is deleted', () => {
-        it('Then both sides keep packed-refs as the 46-byte header alone — Q11', async () => {
+        it('Then both sides keep packed-refs as the 46-byte header alone', async () => {
           // Arrange — the shared base packs three refs (p1, lp, at1); drop
           // the other two first so p1's own delete is genuinely the LAST one.
-          const { peer, ours, ctx } = await filesCasePair('last-ref-q11');
+          const { peer, ours, ctx } = await filesCasePair('last-packed-ref');
           runGit(['-C', peer, 'update-ref', '-d', 'refs/heads/lp']);
           runGit(['-C', peer, 'update-ref', '-d', 'refs/tags/at1']);
           await updateRef(ctx, branchRef('lp'), ZERO, { delete: true });
@@ -799,9 +810,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a packed-refs file with a malformed line', () => {
       describe('When a delete is attempted', () => {
-        it('Then both refuse and neither file changes — Q12', async () => {
+        it('Then both refuse and neither file changes', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('malformed-q12');
+          const { peer, ours, ctx } = await filesCasePair('malformed-packed-refs');
           const malformed = `# pack-refs with: peeled fully-peeled sorted \nnot-a-line\n`;
           await writeFile(path.join(peer, '.git', 'packed-refs'), malformed);
           await writeFile(path.join(ours, '.git', 'packed-refs'), malformed);
@@ -829,9 +840,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given both an existing-ref lock and an absent-ref lock', () => {
       describe('When a delete is attempted on each', () => {
-        it('Then git and tsgit both refuse cannot-lock-ref — X13', async () => {
+        it('Then git and tsgit both refuse cannot-lock-ref', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('lock-shapes-x13');
+          const { peer, ours, ctx } = await filesCasePair('lock-shapes');
           await writeFile(path.join(peer, '.git', 'refs', 'heads', 'b.lock'), '');
           await writeFile(path.join(ours, '.git', 'refs', 'heads', 'b.lock'), '');
           await writeFile(path.join(peer, '.git', 'refs', 'heads', 'ab.lock'), '');
@@ -924,14 +935,14 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given packed-only, fetch-logged and loose-over-packed tracking refs (R18)', () => {
+    describe('Given packed-only, fetch-logged and loose-over-packed tracking refs', () => {
       describe('When the remote is renamed', () => {
         it('Then packed-refs, every moved ref, and every reflog match git exactly, including the symbolic HEAD', async () => {
           // Arrange — GIT_COMMITTER_NAME/EMAIL, not repository config: git's
           // own `remote rename` does not read `user.name`/`user.email` for
           // its rename entries — `ours` carries the same identity via its
           // config's `[user]` instead, so both sides produce the same bytes.
-          const { peer, ours, ctx } = await r18CasePair('r18-rename');
+          const { peer, ours, ctx } = await remoteRenameCasePair('remote-rename');
           const renameEnv: NodeJS.ProcessEnv = {
             ...runGitEnv(),
             GIT_COMMITTER_NAME: 'A',
@@ -1067,9 +1078,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given HEAD symbolically points at the branch being deleted', () => {
       describe('When it is deleted with -m why', () => {
-        it('Then logs/HEAD gains the identical appended entry on both sides — X2', async () => {
+        it('Then logs/HEAD gains the identical appended entry on both sides', async () => {
           // Arrange — main is HEAD's target in the shared base.
-          const { peer, ours, ctx } = await filesCasePair('head-entry-x2');
+          const { peer, ours, ctx } = await filesCasePair('head-entry-with-message');
           const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 10) * 1000);
 
           // Act
@@ -1092,9 +1103,9 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
 
       describe('When it is deleted with no -m', () => {
-        it('Then logs/HEAD gains an identical entry with no tab (empty message) — X3', async () => {
+        it('Then logs/HEAD gains an identical entry with no tab (empty message)', async () => {
           // Arrange
-          const { peer, ours, ctx } = await filesCasePair('head-entry-x3');
+          const { peer, ours, ctx } = await filesCasePair('head-entry-no-message');
           const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 11) * 1000);
 
           // Act
@@ -1117,14 +1128,18 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a fresh repository whose HEAD points at an unborn branch', () => {
       describe('When that branch is deleted', () => {
-        it('Then git and tsgit both create logs/HEAD with an identical 0{40} 0{40} entry — X16 (files)', async () => {
+        it('Then git and tsgit both create logs/HEAD with an identical 0{40} 0{40} entry', async () => {
           // Arrange
-          const peerRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-peer-'));
+          const peerRoot = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-unborn-peer-'),
+          );
           runGit(['init', '-q', '-b', 'main', peerRoot]);
           git(peerRoot, 'config', 'user.name', 'A');
           git(peerRoot, 'config', 'user.email', 'a@x');
           disableAutoMaintenance(peerRoot);
-          const oursRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-ours-'));
+          const oursRoot = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-unborn-ours-'),
+          );
           runGit(['init', '-q', '-b', 'main', oursRoot]);
           git(oursRoot, 'config', 'user.name', 'A');
           git(oursRoot, 'config', 'user.email', 'a@x');
@@ -1159,21 +1174,21 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a fresh reftable repository whose HEAD points at an unborn branch', () => {
       describe('When that branch is deleted', () => {
-        it('Then neither git nor tsgit write a HEAD entry — the reftable backend skips the no-op delete log (X16)', async () => {
+        it('Then neither git nor tsgit write a HEAD entry — the reftable backend skips the no-op delete log', async () => {
           // Arrange — git's own reftable repository proves it writes NO
           // `log -g HEAD` history at all; tsgit's primitive is proven
           // separately on an equivalent fresh reftable repo, since there is
           // no `git refs migrate` shortcut for reading a reftable HEAD log
           // directly.
           const peerRoot = await mkdtemp(
-            path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-rt-peer-'),
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-unborn-reftable-peer-'),
           );
           runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', peerRoot]);
           git(peerRoot, 'config', 'user.name', 'A');
           git(peerRoot, 'config', 'user.email', 'a@x');
           disableAutoMaintenance(peerRoot);
           const oursRoot = await mkdtemp(
-            path.join(os.tmpdir(), 'tsgit-ref-transaction-x16-rt-ours-'),
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-unborn-reftable-ours-'),
           );
           runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', oursRoot]);
 
@@ -1207,12 +1222,14 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a packed-only branch that HEAD points at (Q14)', () => {
+    describe('Given a packed-only branch that HEAD points at', () => {
       describe('When it is deleted', () => {
         it('Then packed-refs collapses to the header alone and logs/HEAD gains the identical entry on both sides', async () => {
           // Arrange — a dedicated small repo: `main` is HEAD's target and
           // the ONLY packed ref, so its delete leaves packed-refs header-only.
-          const peerRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-q14-peer-'));
+          const peerRoot = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-packed-head-peer-'),
+          );
           runGit(['init', '-q', '-b', 'main', peerRoot]);
           git(peerRoot, 'config', 'user.name', 'A');
           git(peerRoot, 'config', 'user.email', 'a@x');
@@ -1223,7 +1240,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             env: pinnedEnv(COMMITTER_EPOCH + 20),
           });
           git(peerRoot, 'pack-refs', '--all');
-          const oursRoot = await cloneRepo(peerRoot, 'q14-ours');
+          const oursRoot = await cloneRepo(peerRoot, 'packed-head-ours');
           const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 21) * 1000);
 
           // Act

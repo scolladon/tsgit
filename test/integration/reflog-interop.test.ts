@@ -1377,8 +1377,8 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(await pathExists(mainLogPath(peer))).toBe(false);
           expect(await pathExists(mainLogPath(ours))).toBe(false);
 
-          // Assert — O1 (a): HEAD names `main` here, so logs/HEAD gains
-          // git's two rename entries, byte-identical on both sides.
+          // Assert — HEAD names `main` here, so logs/HEAD gains git's two
+          // rename entries, byte-identical on both sides.
           const peerHeadBytes = await readFile(headLogPath(peer));
           const oursHeadBytes = await readFile(headLogPath(ours));
           expect(oursHeadBytes).toEqual(peerHeadBytes);
@@ -1432,9 +1432,9 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(await pathExists(branchLogPath(peer, 'left'))).toBe(false);
           expect(await pathExists(branchLogPath(ours, 'left'))).toBe(false);
 
-          // Assert — R13: HEAD names `main` here, not `left`/`right`, so
-          // renaming neither names it; logs/HEAD is byte-unchanged on both
-          // sides (it already existed from the base commit).
+          // Assert — HEAD names `main` here, not `left`/`right`, so renaming
+          // neither names it; logs/HEAD is byte-unchanged on both sides (it
+          // already existed from the base commit).
           expect(await readFile(headLogPath(peer))).toEqual(headLogBefore);
           expect(await readFile(headLogPath(ours))).toEqual(headLogBefore);
         });
@@ -1443,7 +1443,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a reftable-backed checked-out branch with two commits', () => {
       describe('When it is renamed', () => {
-        it("Then, after migrating each side to the files format, logs/HEAD and the renamed branch's own log are byte-identical — R16 (reftable)", async () => {
+        it("Then, after migrating each side to the files format, logs/HEAD and the renamed branch's own log are byte-identical", async () => {
           // Arrange — build a reftable repo with git, copy it twice, rename
           // on each side (git's CLI, tsgit's `branchRename`), then migrate
           // BOTH copies to the files format so their raw log bytes can be

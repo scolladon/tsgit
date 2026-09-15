@@ -513,7 +513,7 @@ describe('branch', () => {
         expect(names).toContain('refs/heads/trunk');
 
         // Assert — moved history, then TWO rename entries (git's reftable
-        // shape, O5 (a)): a delete-shaped `<id> 0{40}` then a create-shaped
+        // shape): a delete-shaped `<id> 0{40}` then a create-shaped
         // `0{40} <id>`, unlike the files backend's single `<id> <id>` entry.
         const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
         expect(movedLog).toHaveLength(3);

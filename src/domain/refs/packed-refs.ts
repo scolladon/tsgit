@@ -118,10 +118,10 @@ export function serializePackedRefs(refs: PackedRefs): string {
  * git's `packed-refs` rewrite without `name` (the files backend's delete
  * path): the entry naming `name` — and its `peeled` value, when it has one
  * — is dropped, the survivors are re-serialized under git's own canonical
- * header (`buildHeaderLine`'s traits, never the file's old header, Q8),
- * sorted (Q9), with every surviving line and `^` value copied verbatim —
- * never re-peeled, never reading an object (Q10). The last entry leaves the
- * header line alone (Q11); `serializePackedRefs` only emits it as part of a
+ * header (`buildHeaderLine`'s traits, never the file's old header),
+ * sorted, with every surviving line and `^` value copied verbatim —
+ * never re-peeled, never reading an object. Dropping the last entry leaves
+ * the header line alone; `serializePackedRefs` only emits it as part of a
  * whole rewrite, so that shape is built directly here.
  */
 export function packedRefsWithout(content: string, name: RefName): string {

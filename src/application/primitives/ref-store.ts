@@ -904,7 +904,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** Removes `path` when present — a no-op otherwise (the delete of an
-   *  absent loose ref, U3). */
+   *  absent loose ref). */
   async function rmIfPresent(path: string): Promise<void> {
     if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
   }
@@ -937,7 +937,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /**
    * git's files-backend delete order: rewrite `packed-refs` first (only
    * when it actually held `name` — a loose-only delete leaves the file
-   * byte-unchanged, Q4), then the loose file, then the reflog. A crash
+   * byte-unchanged), then the loose file, then the reflog. A crash
    * between them leaves the loose file holding the ref's current value,
    * never an older packed value resurrected.
    */
@@ -963,8 +963,8 @@ function createFilesRefStore(ctx: Context): RefStore {
    * Deletes `name` as git's files backend does: lock the loose ref (when
    * its directory exists), lock `packed-refs`, drop the name from
    * `packed-refs` (rewritten only when it held it), then remove the loose
-   * file and its log. Both locks are taken even for an absent ref (U3, Q5,
-   * X13) — the delete's no-op is proven by nothing changing, not by a
+   * file and its log. Both locks are taken even for an absent ref —
+   * the delete's no-op is proven by nothing changing, not by a
    * refusal. Ancestor-directory pruning (both the `refs/` and `logs/refs/`
    * trees) runs AFTER the loose lock is released — the lock file itself
    * lives in the same directory being pruned, so pruning while it still
