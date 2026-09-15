@@ -21,10 +21,8 @@ const scanTag = (hexLength: 40 | 64, body: string | Uint8Array) =>
     typeof body === 'string' ? ENC.encode(body) : body,
   );
 
-const verdict = (
-  scan: ReturnType<typeof scanCommit>,
-  parentLookups: 'checked' | 'skipped' = 'checked',
-) => parseAcceptanceVerdict(scan, { parentLookups });
+const CHECKED = { parentLookups: 'checked' } as const;
+const SKIPPED = { parentLookups: 'skipped' } as const;
 
 // Alternating digit/letter by default so the ordinary "accepted" rows cover
 // both `isHexByte` ranges without a dedicated test for either; a single-char
@@ -41,10 +39,11 @@ describe('parse-acceptance', () => {
           'Then it refuses bogus commit object (h=$h)',
           ({ h }) => {
             // Arrange
-            const sut = scanCommit(h, `tree ${T(h)}\n`);
+            const sut = parseAcceptanceVerdict;
+            const scan = scanCommit(h, `tree ${T(h)}\n`);
 
             // Act
-            const result = verdict(sut);
+            const result = sut(scan, CHECKED);
 
             // Assert
             expect(result).toEqual({ type: 'commit', reason: 'bogus commit object' });
@@ -57,10 +56,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40)}\nx`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}\nx`);
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -69,10 +72,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bogus commit object', () => {
           // Arrange
-          const sut = scanCommit(40, `xree ${T(40)}\nfiller`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `xree ${T(40)}\nfiller`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bogus commit object' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bogus commit object' });
         });
       });
     });
@@ -81,10 +88,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bogus commit object', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40)}xfiller`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}xfiller`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bogus commit object' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bogus commit object' });
         });
       });
     });
@@ -95,10 +106,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad tree pointer', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${'g'.repeat(40)}\nfiller`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${'g'.repeat(40)}\nfiller`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad tree pointer' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad tree pointer' });
         });
       });
     });
@@ -107,10 +122,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40).toUpperCase()}\nfiller`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40).toUpperCase()}\nfiller`);
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -121,10 +140,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad parents', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad parents' });
         });
       });
     });
@@ -133,10 +156,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted (the loop is not entered)', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40)}\nparent `);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}\nparent `);
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -145,10 +172,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad parents', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40)}\nparent ${'g'.repeat(40)}\nx`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}\nparent ${'g'.repeat(40)}\nx`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad parents' });
         });
       });
     });
@@ -157,10 +188,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad parents', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}x`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}x`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad parents' });
         });
       });
     });
@@ -169,13 +204,17 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad parents', () => {
           // Arrange
-          const sut = scanCommit(
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(
             40,
             `tree ${T(40)}\nparent ${T(40, 'b')}\nparent ${'g'.repeat(40)}\nx`,
           );
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bad parents' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad parents' });
         });
       });
     });
@@ -186,13 +225,17 @@ describe('parse-acceptance', () => {
           // Arrange — the scan stops re-checking for "parent " lines the
           // moment one line's prefix does not match; this line's "parent "
           // text lives in what the scan already treats as unchecked tail.
-          const sut = scanCommit(
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(
             40,
             `tree ${T(40)}\nauthor A <a@x> 0 +0000\nparent ${T(40, 'b')}\n`,
           );
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -204,10 +247,14 @@ describe('parse-acceptance', () => {
         it('Then it refuses bad parent, with the lower-cased id in the reason', () => {
           // Arrange
           const treeHex = T(40);
-          const sut = scanCommit(40, `tree ${treeHex}\nparent ${treeHex.toUpperCase()}\nx`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${treeHex}\nparent ${treeHex.toUpperCase()}\nx`);
 
-          // Act + Assert
-          expect(verdict(sut, 'checked')).toEqual({
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({
             type: 'commit',
             reason: `bad parent ${treeHex}`,
           });
@@ -218,11 +265,15 @@ describe('parse-acceptance', () => {
         it('Then it is accepted', () => {
           // Arrange
           const treeHex = T(40);
-          const sut = scanCommit(40, `tree ${treeHex}\nparent ${treeHex}\nx`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${treeHex}\nparent ${treeHex}\nx`);
 
-          // Act + Assert
-          expect(verdict(sut, 'skipped')).toBeUndefined();
-          expect(needsParentLookups(sut)).toBe(true);
+          // Act
+          const result = sut(scan, SKIPPED);
+
+          // Assert
+          expect(result).toBeUndefined();
+          expect(needsParentLookups(scan)).toBe(true);
         });
       });
     });
@@ -232,13 +283,17 @@ describe('parse-acceptance', () => {
         it('Then it refuses via the earlier match', () => {
           // Arrange
           const treeHex = T(40);
-          const sut = scanCommit(
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(
             40,
             `tree ${treeHex}\nparent ${treeHex}\nparent ${'g'.repeat(40)}\nx`,
           );
 
-          // Act + Assert
-          expect(verdict(sut, 'checked')).toEqual({
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({
             type: 'commit',
             reason: `bad parent ${treeHex}`,
           });
@@ -249,13 +304,17 @@ describe('parse-acceptance', () => {
         it('Then it refuses via the later grammar failure instead', () => {
           // Arrange
           const treeHex = T(40);
-          const sut = scanCommit(
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(
             40,
             `tree ${treeHex}\nparent ${treeHex}\nparent ${'g'.repeat(40)}\nx`,
           );
 
-          // Act + Assert
-          expect(verdict(sut, 'skipped')).toEqual({ type: 'commit', reason: 'bad parents' });
+          // Act
+          const result = sut(scan, SKIPPED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad parents' });
         });
       });
     });
@@ -268,13 +327,17 @@ describe('parse-acceptance', () => {
           // this line's own equality is never even evaluated), line 3 is
           // just well-formed filler.
           const treeHex = T(40);
-          const sut = scanCommit(
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(
             40,
             `tree ${treeHex}\nparent ${treeHex}\nparent ${T(40, 'b')}\nparent ${T(40, 'c')}\nx`,
           );
 
-          // Act + Assert
-          expect(verdict(sut, 'checked')).toEqual({
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({
             type: 'commit',
             reason: `bad parent ${treeHex}`,
           });
@@ -288,14 +351,18 @@ describe('parse-acceptance', () => {
           // Arrange — the scan stops at the first malformed line, so the
           // second line's match against the tree id is never even examined.
           const treeHex = T(40);
-          const sut = scanCommit(
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(
             40,
             `tree ${treeHex}\nparent ${'g'.repeat(40)}\nparent ${treeHex}\n`,
           );
 
-          // Act + Assert
-          expect(verdict(sut, 'checked')).toEqual({ type: 'commit', reason: 'bad parents' });
-          expect(needsParentLookups(sut)).toBe(false);
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad parents' });
+          expect(needsParentLookups(scan)).toBe(false);
         });
       });
     });
@@ -306,10 +373,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted', () => {
           // Arrange
-          const sut = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}\n\nmessage only\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}\n\nmessage only\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -322,25 +393,32 @@ describe('parse-acceptance', () => {
           // Arrange — pad a short, otherwise-plausible prefix out to h + 23.
           const base = `object ${T(40)}\ntype `;
           const body = base + 'x'.repeat(40 + 23 - base.length);
-          const sut = scanTag(40, body);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, body);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'tag object too short' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'tag object too short' });
         });
       });
     });
 
     describe('Given a body of exactly h + 24 bytes with no valid tag structure', () => {
       describe('When the verdict is read', () => {
-        it('Then the too-short check does not fire (it still refuses, but for a different reason)', () => {
+        it('Then the too-short check does not fire, and the missing tag line refuses instead', () => {
           // Arrange
           const base = `object ${T(40)}\ntype commit\n`;
           const body = base + 'x'.repeat(40 + 24 - base.length);
-          const sut = scanTag(40, body);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, body);
 
-          // Act + Assert
-          const result = verdict(sut);
-          expect(result?.reason).not.toBe('tag object too short');
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad tag line' });
         });
       });
     });
@@ -351,10 +429,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad object line', () => {
           // Arrange
-          const sut = scanTag(40, `xbject ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `xbject ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad object line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad object line' });
         });
       });
     });
@@ -363,10 +445,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad object line', () => {
           // Arrange
-          const sut = scanTag(40, `object ${'g'.repeat(40)}\ntype commit\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${'g'.repeat(40)}\ntype commit\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad object line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad object line' });
         });
       });
     });
@@ -375,10 +461,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad object line', () => {
           // Arrange — one hex char short, so byte h+7 is not the expected LF.
-          const sut = scanTag(40, `object ${T(40).slice(0, 39)}\ntype commit\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40).slice(0, 39)}\ntype commit\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad object line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad object line' });
         });
       });
     });
@@ -389,27 +479,35 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad type line', () => {
           // Arrange
-          const sut = scanTag(40, `object ${T(40)}\nnope commit\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\nnope commit\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad type line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad type line' });
         });
       });
     });
 
     describe('Given a type name of exactly 19 bytes', () => {
-      describe('When the name is a known type padded to fit', () => {
-        it('Then it is accepted (accepted if valid; here it refuses only on the type, not the length)', () => {
+      describe('When the name is a known type padded with unknown bytes', () => {
+        it('Then the type-line grammar lets it through, and only the unknown-type check refuses it', () => {
           // Arrange — 19-byte unknown name: the type-line grammar passes (an
           // LF is found in time), and the UNKNOWN-TYPE check refuses on the
           // name itself, proving the 19-byte line reached that check rather
           // than being cut off by the type-line grammar.
           const name19 = `commit${'x'.repeat(13)}`;
           expect(name19.length).toBe(19);
-          const sut = scanTag(40, `object ${T(40)}\ntype ${name19}\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype ${name19}\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({
             type: 'tag',
             reason: `unknown tag type '${name19}'`,
           });
@@ -422,10 +520,14 @@ describe('parse-acceptance', () => {
         it('Then it refuses bad type line', () => {
           // Arrange
           const name20 = 'x'.repeat(20);
-          const sut = scanTag(40, `object ${T(40)}\ntype ${name20}\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype ${name20}\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad type line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad type line' });
         });
       });
     });
@@ -437,10 +539,14 @@ describe('parse-acceptance', () => {
           // preempt this row;
           // the name itself stays under the 20-byte cap, so this is decided
           // only once no more input is coming (not by the cap).
-          const sut = scanTag(40, `object ${T(40)}\ntype commit${'x'.repeat(8)}`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype commit${'x'.repeat(8)}`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad type line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad type line' });
         });
       });
     });
@@ -451,10 +557,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it("Then it refuses unknown tag type 'bogus'", () => {
           // Arrange
-          const sut = scanTag(40, `object ${T(40)}\ntype bogus\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype bogus\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: "unknown tag type 'bogus'" });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: "unknown tag type 'bogus'" });
         });
       });
     });
@@ -463,10 +573,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then the reason sanitises it', () => {
           // Arrange
-          const sut = scanTag(40, `object ${T(40)}\ntype bogus\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype bo\x07gus\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({
             type: 'tag',
             reason: "unknown tag type 'bo\\x07gus'",
           });
@@ -478,13 +592,17 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted as the type before the NUL', () => {
           // Arrange
-          const sut = scanTag(40, `object ${T(40)}\ntype commit x\ntag t\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype commit\0x\ntag t\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
           // A tag scan never needs a parent lookup - that concept is
           // commit-only.
-          expect(needsParentLookups(sut)).toBe(false);
+          expect(needsParentLookups(scan)).toBe(false);
         });
       });
     });
@@ -499,10 +617,14 @@ describe('parse-acceptance', () => {
           // would otherwise preempt this row; a confirmed `tag ` with no
           // trailing LF closes the gap without adding a byte beyond the
           // tag-line prefix itself.
-          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntag `);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype commit\ntag `);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad tag line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad tag line' });
         });
       });
     });
@@ -511,10 +633,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted', () => {
           // Arrange
-          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntag \n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype commit\ntag \n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -523,10 +649,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bad tag line', () => {
           // Arrange
-          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntagX`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype commit\ntagX`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad tag line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad tag line' });
         });
       });
     });
@@ -536,10 +666,14 @@ describe('parse-acceptance', () => {
         it('Then it refuses bad tag line', () => {
           // Arrange — long enough that the LF search discards a non-empty,
           // still-unresolved carry rather than an already-empty one.
-          const sut = scanTag(40, `object ${T(40)}\ntype commit\ntag good-name-no-newline`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype commit\ntag good-name-no-newline`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'tag', reason: 'bad tag line' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad tag line' });
         });
       });
     });
@@ -550,10 +684,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it refuses bogus commit object', () => {
           // Arrange
-          const sut = scanCommit(64, `tree ${T(64)}\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(64, `tree ${T(64)}\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toEqual({ type: 'commit', reason: 'bogus commit object' });
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bogus commit object' });
         });
       });
     });
@@ -562,10 +700,14 @@ describe('parse-acceptance', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted', () => {
           // Arrange
-          const sut = scanCommit(64, `tree ${T(64)}\nparent ${T(64, 'b')}\n\nmsg\n`);
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(64, `tree ${T(64)}\nparent ${T(64, 'b')}\n\nmsg\n`);
 
-          // Act + Assert
-          expect(verdict(sut)).toBeUndefined();
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -580,13 +722,13 @@ describe('parse-acceptance', () => {
           const body = ENC.encode(`tree ${T(40)}\nparent ${T(40, 'b')}\n\nmsg\n`);
           const first = body.subarray(0, 10);
           const second = body.subarray(10);
+          const sut = feedParseAcceptance;
 
           // Act
-          let sut = feedParseAcceptance(startParseAcceptance('commit', 40), first);
-          sut = feedParseAcceptance(sut, second);
+          const scan = sut(sut(startParseAcceptance('commit', 40), first), second);
 
           // Assert
-          expect(verdict(sut)).toBeUndefined();
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
         });
       });
     });
@@ -599,13 +741,13 @@ describe('parse-acceptance', () => {
           const body = ENC.encode(`tree ${T(40)}\nparent ${T(40, 'b')}\n\nmsg\n`);
           const first = body.subarray(0, 46 + 3);
           const second = body.subarray(46 + 3);
+          const sut = feedParseAcceptance;
 
           // Act
-          let sut = feedParseAcceptance(startParseAcceptance('commit', 40), first);
-          sut = feedParseAcceptance(sut, second);
+          const scan = sut(sut(startParseAcceptance('commit', 40), first), second);
 
           // Assert
-          expect(verdict(sut)).toBeUndefined();
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
         });
       });
     });
@@ -620,13 +762,13 @@ describe('parse-acceptance', () => {
           const body = ENC.encode(`tree ${treeHex}\nparent ${T(40, 'b')}\nx`);
           const first = body.subarray(0, 46 + 48);
           const second = body.subarray(46 + 48);
+          const sut = feedParseAcceptance;
 
           // Act
-          let sut = feedParseAcceptance(startParseAcceptance('commit', 40), first);
-          sut = feedParseAcceptance(sut, second);
+          const scan = sut(sut(startParseAcceptance('commit', 40), first), second);
 
           // Assert
-          expect(verdict(sut)).toBeUndefined();
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
         });
       });
     });
@@ -638,13 +780,13 @@ describe('parse-acceptance', () => {
           const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
           const first = body.subarray(0, 5);
           const second = body.subarray(5);
+          const sut = feedParseAcceptance;
 
           // Act
-          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
-          sut = feedParseAcceptance(sut, second);
+          const scan = sut(sut(startParseAcceptance('tag', 40), first), second);
 
           // Assert
-          expect(verdict(sut)).toBeUndefined();
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
         });
       });
     });
@@ -657,13 +799,13 @@ describe('parse-acceptance', () => {
           const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
           const first = body.subarray(0, 40 + 8);
           const second = body.subarray(40 + 8);
+          const sut = feedParseAcceptance;
 
           // Act
-          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
-          sut = feedParseAcceptance(sut, second);
+          const scan = sut(sut(startParseAcceptance('tag', 40), first), second);
 
           // Assert
-          expect(verdict(sut)).toBeUndefined();
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
         });
       });
     });
@@ -676,13 +818,13 @@ describe('parse-acceptance', () => {
           const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
           const first = body.subarray(0, 40 + 8 + 12);
           const second = body.subarray(40 + 8 + 12);
+          const sut = feedParseAcceptance;
 
           // Act
-          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
-          sut = feedParseAcceptance(sut, second);
+          const scan = sut(sut(startParseAcceptance('tag', 40), first), second);
 
           // Assert
-          expect(verdict(sut)).toBeUndefined();
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
         });
       });
     });
@@ -695,13 +837,13 @@ describe('parse-acceptance', () => {
           const body = ENC.encode(`object ${T(40)}\ntype commit\ntag t\n\nmsg\n`);
           const first = body.subarray(0, 40 + 8 + 8);
           const second = body.subarray(40 + 8 + 8);
+          const sut = feedParseAcceptance;
 
           // Act
-          let sut = feedParseAcceptance(startParseAcceptance('tag', 40), first);
-          sut = feedParseAcceptance(sut, second);
+          const scan = sut(sut(startParseAcceptance('tag', 40), first), second);
 
           // Assert
-          expect(verdict(sut)).toBeUndefined();
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
         });
       });
     });
