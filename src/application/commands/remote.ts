@@ -8,11 +8,14 @@
  * Design: `docs/design/phase-20-8-crud-porcelain-nested-namespace.md`.
  */
 import { invalidOption, remoteExists, remoteNotConfigured } from '../../domain/commands/error.js';
+import type { TsgitError } from '../../domain/error.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/object-id.js';
+import { refUpdateConflict } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
+import { resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
 import { assertAcceptedRepository } from '../primitives/internal/repo-state.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
@@ -246,6 +249,34 @@ const rewriteSymbolicTarget = (target: RefName, from: string, to: string): RefNa
 };
 
 /**
+ * The refusal a rename's create meets at `target`, if any. git queues every
+ * create with a null old id under `REF_NO_DEREF`, so a name that already
+ * exists refuses — a symbolic ref reporting its referent's value, a
+ * dangling one reporting absent (git's "dangling symref already exists").
+ */
+const existingNameConflict = async (
+  ctx: Context,
+  target: RefName,
+): Promise<TsgitError | undefined> => {
+  const options = { noDeref: true, expected: 'absent' } as const;
+  const chain = await resolveWriteChain(getRefStore(ctx), target, options);
+  if (chain.old !== 'absent') return refUpdateConflict(target, 'absent', chain.old);
+  return chain.danglingSymref ? refUpdateConflict(target, 'absent', 'absent') : undefined;
+};
+
+/**
+ * git's rename is one transaction prepared before anything moves: every
+ * renamed name that already exists refuses the whole rename, reporting the
+ * first in `targets`' byte order, before any ref or log is written.
+ */
+const assertRenamedNamesFree = async (ctx: Context, targets: readonly RefName[]): Promise<void> => {
+  for (const target of targets) {
+    const conflict = await existingNameConflict(ctx, target);
+    if (conflict !== undefined) throw conflict;
+  }
+};
+
+/**
  * Move one direct tracking ref, preserving its own reflog (when it has
  * one) as the new name's history plus a single trailing rename entry — no
  * log is created for a name that never had one. `noDeref` on the delete
@@ -337,6 +368,10 @@ const renameTrackingRefs = async (
 ): Promise<readonly RefName[]> => {
   const names = await listTrackingRefs(ctx, from);
   const resolved = await readTrackingValues(ctx, names);
+  await assertRenamedNamesFree(
+    ctx,
+    resolved.map((entry) => renamedName(entry.name, from, to)),
+  );
   const direct = resolved.filter(isDirectEntry);
   const symbolic = resolved.filter(isSymbolicEntry);
   // Captured before any ref moves: a symbolic tracking ref's own referent

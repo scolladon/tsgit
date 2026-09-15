@@ -26,6 +26,24 @@ const seed = async (ctx: Context, content?: string): Promise<void> => {
   }
 };
 
+const ORIGIN_ID = 'a'.repeat(40) as ObjectId;
+const STALE_ID = 'b'.repeat(40) as ObjectId;
+const ZERO_ID = '0'.repeat(40) as ObjectId;
+const ORIGIN_MAIN = 'refs/remotes/origin/main' as RefName;
+const ORIGIN_HEAD = 'refs/remotes/origin/HEAD' as RefName;
+const UP2_MAIN = 'refs/remotes/up2/main' as RefName;
+const UP2_HEAD = 'refs/remotes/up2/HEAD' as RefName;
+
+/** Renames `origin` to `to`, returning what it threw (or `undefined`). */
+const renameRefusal = async (ctx: Context, to: string): Promise<unknown> => {
+  try {
+    await remoteRename(ctx, { from: 'origin', to });
+  } catch (err) {
+    return err;
+  }
+  return undefined;
+};
+
 /** A repository the format-acceptance gate rejects — every `remote` verb moved onto it. */
 const rejectedCtx = async (content?: string): Promise<Context> => {
   const ctx = createMemoryContext();
@@ -1121,6 +1139,244 @@ describe('application/commands/remote', () => {
           expect(setSymbolicIndex).toBeGreaterThan(-1);
           expect(lastSetIndex).toBeGreaterThan(-1);
           expect(setSymbolicIndex).toBeGreaterThan(lastSetIndex);
+        });
+      });
+    });
+
+    describe('Given a logged tracking ref and a stale logged ref at its renamed name on a files-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then it refuses the existing name before writing any ref or log', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          const originLog = `${ZERO_ID} ${ORIGIN_ID} A <a@x> 1700000000 +0000\tfetch origin\n`;
+          const staleLog = `${ZERO_ID} ${STALE_ID} A <a@x> 1700000000 +0000\tstale up2\n`;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/logs/refs/remotes/origin/main`, originLog);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/up2/main`, `${STALE_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/logs/refs/remotes/up2/main`, staleLog);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/up2/main',
+            expected: 'absent',
+            actual: STALE_ID,
+          });
+          expect(await ctx.fs.readUtf8(`${gitDir}/refs/remotes/origin/main`)).toBe(
+            `${ORIGIN_ID}\n`,
+          );
+          expect(await ctx.fs.readUtf8(`${gitDir}/logs/refs/remotes/origin/main`)).toBe(originLog);
+          expect(await ctx.fs.readUtf8(`${gitDir}/refs/remotes/up2/main`)).toBe(`${STALE_ID}\n`);
+          expect(await ctx.fs.readUtf8(`${gitDir}/logs/refs/remotes/up2/main`)).toBe(staleLog);
+        });
+      });
+    });
+
+    describe('Given a logged tracking ref and a stale logged ref at its renamed name on a reftable-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then it refuses the existing name before writing any ref or log', async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([
+            {
+              kind: 'set',
+              name: ORIGIN_MAIN,
+              id: ORIGIN_ID,
+              reflog: { oldId: ZERO_ID, newId: ORIGIN_ID, message: 'fetch origin' },
+            },
+            {
+              kind: 'set',
+              name: UP2_MAIN,
+              id: STALE_ID,
+              reflog: { oldId: ZERO_ID, newId: STALE_ID, message: 'stale up2' },
+            },
+          ]);
+          const originLog = await readReflog(ctx, ORIGIN_MAIN);
+          const staleLog = await readReflog(ctx, UP2_MAIN);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/up2/main',
+            expected: 'absent',
+            actual: STALE_ID,
+          });
+          expect(originLog.map((entry) => entry.message)).toEqual(['fetch origin']);
+          expect(staleLog.map((entry) => entry.message)).toEqual(['stale up2']);
+          expect(await store.resolveDirect(ORIGIN_MAIN)).toEqual({ kind: 'direct', id: ORIGIN_ID });
+          expect(await store.resolveDirect(UP2_MAIN)).toEqual({ kind: 'direct', id: STALE_ID });
+          expect(await readReflog(ctx, ORIGIN_MAIN)).toEqual(originLog);
+          expect(await readReflog(ctx, UP2_MAIN)).toEqual(staleLog);
+        });
+      });
+    });
+
+    describe('Given stale refs at two renamed names on a files-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the refusal names the byte-smallest existing name', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/zzz`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/up2/zzz`, `${STALE_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/up2/main`, `${ORIGIN_ID}\n`);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/up2/main',
+            expected: 'absent',
+            actual: ORIGIN_ID,
+          });
+          expect(await ctx.fs.readUtf8(`${gitDir}/refs/remotes/origin/zzz`)).toBe(`${ORIGIN_ID}\n`);
+        });
+      });
+    });
+
+    describe('Given a symbolic ref already at the renamed HEAD on a files-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then it refuses that name with its referent value and every ref stays put', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${STALE_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/up2/HEAD`, 'ref: refs/heads/main\n');
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/up2/HEAD',
+            expected: 'absent',
+            actual: STALE_ID,
+          });
+          const store = getRefStore(ctx);
+          expect(await store.resolveDirect(ORIGIN_MAIN)).toEqual({ kind: 'direct', id: ORIGIN_ID });
+          expect(await store.resolveDirect(ORIGIN_HEAD)).toEqual({
+            kind: 'symbolic',
+            target: ORIGIN_MAIN,
+          });
+          expect(await store.resolveDirect(UP2_HEAD)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/heads/main',
+          });
+          expect(await store.resolveDirect(UP2_MAIN)).toEqual({ kind: 'missing' });
+        });
+      });
+    });
+
+    describe('Given a symbolic ref already at the renamed HEAD on a reftable-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then it refuses that name with its referent value and every ref stays put', async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([
+            { kind: 'set', name: 'refs/heads/main' as RefName, id: STALE_ID },
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+            { kind: 'setSymbolic', name: ORIGIN_HEAD, target: ORIGIN_MAIN },
+            { kind: 'setSymbolic', name: UP2_HEAD, target: 'refs/heads/main' as RefName },
+          ]);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/up2/HEAD',
+            expected: 'absent',
+            actual: STALE_ID,
+          });
+          expect(await store.resolveDirect(ORIGIN_MAIN)).toEqual({ kind: 'direct', id: ORIGIN_ID });
+          expect(await store.resolveDirect(ORIGIN_HEAD)).toEqual({
+            kind: 'symbolic',
+            target: ORIGIN_MAIN,
+          });
+          expect(await store.resolveDirect(UP2_HEAD)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/heads/main',
+          });
+          expect(await store.resolveDirect(UP2_MAIN)).toEqual({ kind: 'missing' });
+        });
+      });
+    });
+
+    describe('Given a dangling symbolic ref already at the renamed HEAD', () => {
+      describe('When remoteRename runs', () => {
+        it('Then it refuses that name with an absent actual value and every ref stays put', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/up2/HEAD`, 'ref: refs/heads/nope\n');
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/up2/HEAD',
+            expected: 'absent',
+            actual: 'absent',
+          });
+          const store = getRefStore(ctx);
+          expect(await store.resolveDirect(ORIGIN_MAIN)).toEqual({ kind: 'direct', id: ORIGIN_ID });
+          expect(await store.resolveDirect(UP2_HEAD)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/heads/nope',
+          });
+        });
+      });
+    });
+
+    describe('Given a cyclic symbolic ref already at the renamed HEAD', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the unreadable referent refuses the rename and every ref stays put', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/up2/HEAD`, 'ref: refs/remotes/up2/loop\n');
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/up2/loop`, `ref: ${UP2_HEAD}\n`);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_CYCLE_DETECTED',
+            chain: ['refs/remotes/up2/loop', 'refs/remotes/up2/HEAD', 'refs/remotes/up2/loop'],
+          });
+          const store = getRefStore(ctx);
+          expect(await store.resolveDirect(ORIGIN_MAIN)).toEqual({ kind: 'direct', id: ORIGIN_ID });
+          expect(await store.resolveDirect(UP2_MAIN)).toEqual({ kind: 'missing' });
         });
       });
     });
