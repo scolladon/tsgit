@@ -36,11 +36,30 @@ const hasDotDotSegment = (path: string): boolean =>
 const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
   paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
 
+/**
+ * `lexists` is optional on the port, so it is forwarded only when the adapter provides it: an
+ * absent probe has to stay absent for callers to take their `lstat` fallback. It is invoked on
+ * the adapter itself, because a class-based adapter's method reads its own receiver.
+ */
+const guardedLexists = (
+  fs: FileSystem,
+  readGuard: (path: string) => void,
+): Pick<FileSystem, 'lexists'> => {
+  const { lexists } = fs;
+  if (lexists === undefined) return {};
+  return {
+    lexists: (p) => {
+      readGuard(p);
+      return lexists.call(fs, p);
+    },
+  };
+};
+
 /** Options controlling which surfaces {@link wrapFsValidator} guards. */
 export interface WrapFsValidatorOptions {
   /**
    * Guard READ surfaces (`read`, `readSlice`, `readUtf8`, `exists`, `stat`,
-   * `lstat`, `readdir`, `readlink`, `openWithNoFollow(_, 'read')`) with the
+   * `lstat`, `lexists`, `readdir`, `readlink`, `openWithNoFollow(_, 'read')`) with the
    * same containment check as every write surface. Defaults to `true`.
    *
    * Pass `false` only for a branded first-party adapter whose OWN read path
@@ -149,6 +168,7 @@ export const wrapFsValidator = (
       readGuard(p);
       return fs.lstat(p);
     },
+    ...guardedLexists(fs, readGuard),
     readdir: (p) => {
       readGuard(p);
       return fs.readdir(p);

@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BrowserFileSystem } from '../../../../src/adapters/browser/browser-file-system.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 
@@ -175,6 +175,92 @@ describe('BrowserFileSystem readdir rejection classification', () => {
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('FILE_NOT_FOUND');
         if (data.code === 'FILE_NOT_FOUND') expect(data.path).toBe('missing-entry');
+      });
+    });
+  });
+});
+
+describe('BrowserFileSystem lexists', () => {
+  const rejectionNamed = (name: string): { readonly name: string } => ({ name });
+
+  // A directory handle whose child lookups answer from `children`: a `'file'` child resolves a
+  // file lookup and rejects a directory lookup with TypeMismatchError, a directory child the
+  // reverse, and a missing child rejects both with NotFoundError.
+  const directory = (
+    children: Readonly<Record<string, 'file' | FileSystemDirectoryHandle>>,
+  ): FileSystemDirectoryHandle => {
+    const lookup = (name: string, kind: 'file' | 'directory'): Promise<unknown> => {
+      const child = children[name];
+      if (child === undefined) return Promise.reject(rejectionNamed('NotFoundError'));
+      const isFile = child === 'file';
+      if (isFile !== (kind === 'file')) return Promise.reject(rejectionNamed('TypeMismatchError'));
+      return Promise.resolve(isFile ? {} : child);
+    };
+    return {
+      getFileHandle: vi.fn((name: string) => lookup(name, 'file')),
+      getDirectoryHandle: vi.fn((name: string) => lookup(name, 'directory')),
+    } as unknown as FileSystemDirectoryHandle;
+  };
+
+  describe.each([
+    { label: 'a file', path: 'sub/file.txt', expected: true },
+    { label: 'a directory', path: 'sub/nested', expected: true },
+    { label: 'a missing entry in an existing directory', path: 'sub/missing.txt', expected: false },
+    { label: 'an entry beneath a missing directory', path: 'gone/file.txt', expected: false },
+    { label: 'an entry beneath a regular file', path: 'sub/file.txt/x', expected: false },
+    { label: 'the root', path: '/', expected: true },
+  ])('Given $label', ({ path, expected }) => {
+    describe('When lexists probes it', () => {
+      it(`Then it reports ${expected}`, async () => {
+        // Arrange
+        const root = directory({ sub: directory({ 'file.txt': 'file', nested: directory({}) }) });
+        const sut = new BrowserFileSystem(root);
+
+        // Act
+        const result = await sut.lexists(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a missing entry in an existing directory', () => {
+    describe('When lexists probes it', () => {
+      it('Then it looks the leaf up once, as a file, and never again as a directory', async () => {
+        // Arrange
+        const sub = directory({});
+        const sut = new BrowserFileSystem(directory({ sub }));
+
+        // Act
+        await sut.lexists('sub/missing.txt');
+
+        // Assert
+        expect(sub.getFileHandle).toHaveBeenCalledTimes(1);
+        expect(sub.getDirectoryHandle).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a path with a parent-directory segment', () => {
+    describe('When lexists probes it', () => {
+      it('Then it throws PERMISSION_DENIED carrying the path', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(directory({}));
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lexists('sub/../escape');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('PERMISSION_DENIED');
+        if (data.code === 'PERMISSION_DENIED') expect(data.path).toBe('sub/../escape');
       });
     });
   });

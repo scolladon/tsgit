@@ -56,6 +56,7 @@ interface OpfsFs {
   rename(src: string, dst: string): Promise<void>;
   stat(path: string): Promise<{ isDirectory: boolean }>;
   exists(path: string): Promise<boolean>;
+  lexists(path: string): Promise<boolean>;
 }
 
 test.describe('OPFS directory-occupant refusals', () => {
@@ -310,6 +311,41 @@ test.describe('OPFS listing refusals', () => {
 
     await test.step('the listed file is unchanged', () => {
       expect(result.fileBytes).toEqual([1, 2]);
+    });
+  });
+});
+
+test.describe('OPFS presence probe', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  test('Given a file, a directory and a missing entry, When lexists probes each, Then it reports the file and the directory present against real OPFS', async ({
+    readyPage,
+  }) => {
+    const result = await readyPage.evaluate(async () => {
+      const MODULE_PATH = '/dist/esm/adapters/browser/index.js';
+      const mod = (await import(MODULE_PATH)) as {
+        BrowserFileSystem: new (rootHandle: FileSystemDirectoryHandle) => OpfsFs;
+      };
+      const sut = new mod.BrowserFileSystem(await navigator.storage.getDirectory());
+      await sut.write('probed/file.txt', new Uint8Array([1]));
+      await sut.mkdir('probed/dir');
+
+      return {
+        file: await sut.lexists('probed/file.txt'),
+        directory: await sut.lexists('probed/dir'),
+        missing: await sut.lexists('probed/missing.txt'),
+        beneathMissing: await sut.lexists('never-created/file.txt'),
+      };
+    });
+
+    await test.step('a file and a directory are present', () => {
+      expect(result.file).toBe(true);
+      expect(result.directory).toBe(true);
+    });
+
+    await test.step('a missing entry and an entry beneath a missing directory are absent', () => {
+      expect(result.missing).toBe(false);
+      expect(result.beneathMissing).toBe(false);
     });
   });
 });

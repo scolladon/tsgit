@@ -117,6 +117,15 @@ export interface FileSystem {
   /** Get file/directory metadata. Throws FILE_NOT_FOUND if not found. Does NOT follow symlinks. */
   readonly lstat: (path: string) => Promise<FileStat>;
 
+  /**
+   * Whether any entry occupies `path`, a symbolic link included: the leaf is never followed, so a
+   * dangling link counts. Resolves `false` exactly where `lstat` refuses FILE_NOT_FOUND, and
+   * rejects with every other refusal `lstat` raises. OPTIONAL: a presence probe that spends no
+   * refusal on an absent path. A caller that finds it absent calls `lstat` and reads
+   * FILE_NOT_FOUND as absence, which answers identically.
+   */
+  readonly lexists?: (path: string) => Promise<boolean>;
+
   /** List directory entries. Throws NOT_A_DIRECTORY if not a directory, FILE_NOT_FOUND if absent. */
   readonly readdir: (path: string) => Promise<ReadonlyArray<DirEntry>>;
 

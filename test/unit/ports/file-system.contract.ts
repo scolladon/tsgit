@@ -65,6 +65,7 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
   { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
   { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
+  { name: 'lexists', invoke: (e, p) => lexists(e.fs, p) },
   { name: 'readdir', invoke: (e, p) => e.fs.readdir(p) },
   { name: 'mkdir', invoke: (e, p) => e.fs.mkdir(p) },
   { name: 'rm', invoke: (e, p) => e.fs.rm(p) },
@@ -105,6 +106,7 @@ const mutualLoopCalls: ReadonlyArray<EnvCall> = [
     name: 'write through it',
     invoke: (e) => e.fs.write(`${e.rootDir}/refusal-loop-a/x`, new Uint8Array()),
   },
+  { name: 'lexists through it', invoke: (e) => lexists(e.fs, `${e.rootDir}/refusal-loop-a/x`) },
   { name: 'rm through it', invoke: (e) => e.fs.rm(`${e.rootDir}/refusal-loop-a/x`) },
   { name: 'exists', invoke: (e) => e.fs.exists(`${e.rootDir}/refusal-loop-a`) },
 ];
@@ -121,6 +123,7 @@ const beneathFileCalls: ReadonlyArray<PathCall> = [
   { name: 'read', invoke: (e, p) => e.fs.read(p) },
   { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
   { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
+  { name: 'lexists', invoke: (e, p) => lexists(e.fs, p) },
   { name: 'readlink', invoke: (e, p) => e.fs.readlink(p) },
   { name: 'rm', invoke: (e, p) => e.fs.rm(p) },
   { name: 'rename', invoke: (e, p) => e.fs.rename(p, `${e.rootDir}/refusal-file-rename-dst`) },
@@ -168,6 +171,12 @@ const createCalls: ReadonlyArray<PathCall> = [
 
 const DANGLING_COMPONENT = 'sub/dangling-component';
 const DANGLING_COMPONENT_TARGET = 'sub/dangling-component-target';
+
+/** Every adapter this suite runs against provides the optional presence probe. */
+async function lexists(fs: FileSystem, path: string): Promise<boolean> {
+  if (fs.lexists === undefined) throw new Error('the adapter under contract provides no lexists');
+  return fs.lexists(path);
+}
 
 function assertFileNotFound(err: unknown): void {
   expect(err).toBeInstanceOf(TsgitError);
@@ -1626,17 +1635,18 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       }
 
       describe('Given a dangling relative symlink as an intermediate path segment', () => {
-        it('Then exists reports a path beneath it absent', async (ctx) => {
+        it('Then exists and lexists report a path beneath it absent', async (ctx) => {
           ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
 
           // Arrange
           await env.fs.symlink('dangling-component-target', `${env.rootDir}/${DANGLING_COMPONENT}`);
+          const beneath = `${env.rootDir}/${DANGLING_COMPONENT}/entry`;
 
           // Act
-          const result = await env.fs.exists(`${env.rootDir}/${DANGLING_COMPONENT}/entry`);
+          const result = [await env.fs.exists(beneath), await lexists(env.fs, beneath)];
 
           // Assert
-          expect(result).toBe(false);
+          expect(result).toEqual([false, false]);
         });
 
         for (const { name, invoke } of beneathDanglingReadCalls) {
@@ -1713,6 +1723,25 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
             expect(await env.fs.exists(`${env.rootDir}/${DANGLING_COMPONENT_TARGET}`)).toBe(false);
           });
         }
+      });
+    });
+
+    describe('Given a file, a directory, a symlink to the file and a dangling symlink', () => {
+      it('Then lexists reports each of them present and a missing sibling absent', async () => {
+        // Arrange
+        await env.fs.write(`${env.rootDir}/probe/file.bin`, new Uint8Array([1]));
+        await env.fs.mkdir(`${env.rootDir}/probe/dir`);
+        await env.fs.symlink('file.bin', `${env.rootDir}/probe/live-link`);
+        await env.fs.symlink('missing-target', `${env.rootDir}/probe/dangling-link`);
+        const names = ['file.bin', 'dir', 'live-link', 'dangling-link', 'missing'];
+
+        // Act
+        const result = await Promise.all(
+          names.map((name) => lexists(env.fs, `${env.rootDir}/probe/${name}`)),
+        );
+
+        // Assert
+        expect(result).toEqual([true, true, true, true, false]);
       });
     });
 

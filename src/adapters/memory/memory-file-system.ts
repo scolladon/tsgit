@@ -193,6 +193,8 @@ export class MemoryFileSystem implements FileSystem {
     return this.buildStat(normalized, path);
   };
 
+  lexists = async (path: string): Promise<boolean> => this.occupied(this.walk(path, 'no-follow'));
+
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
     const normalized = this.walk(path, 'follow');
     if (this.files.has(normalized)) {

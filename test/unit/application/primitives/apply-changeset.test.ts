@@ -600,32 +600,26 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given an update whose target file is reported absent by lstat() but readable', () => {
+  describe('Given an update whose target file is reported absent by the presence probe but readable', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then treats it as non-dirty and does not throw', async () => {
-        // Arrange — lstat() says absent; blobMatches must NOT run for an absent file
+        // Arrange — the presence probe says absent; blobMatches must NOT run for an absent file
         const ctx = await buildSeededContext();
         const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
         // Working tree holds content that does NOT match previousId.
-        await ctx.fs.write(`${WORKDIR}/phantom.txt`, new TextEncoder().encode('mismatching-bytes'));
-        // Only the pre-write dirty probe reports absence — the post-write index-entry
-        // lstat must see the file applyChangeset itself just wrote.
-        let dirtyProbeAnswered = false;
+        const phantomPath = `${WORKDIR}/phantom.txt`;
+        await ctx.fs.write(phantomPath, new TextEncoder().encode('mismatching-bytes'));
+        // Only the pre-write dirty probe asks for presence — the post-write index-entry
+        // lstat still sees the file applyChangeset itself just wrote.
         const wrappedCtx: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            lstat: async (p: string): Promise<FileStat> => {
-              if (p === `${WORKDIR}/phantom.txt` && !dirtyProbeAnswered) {
-                dirtyProbeAnswered = true;
-                throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });
-              }
-              return ctx.fs.lstat(p);
-            },
+            lexists: async (p: string): Promise<boolean> => p !== phantomPath,
           },
         };
-        // Act — lstat()=absent short-circuits to non-dirty; no throw despite mismatching bytes
+        // Act — probe=absent short-circuits to non-dirty; no throw despite mismatching bytes
         const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeUpdate('phantom.txt', oldId, newId)]),
           force: false,

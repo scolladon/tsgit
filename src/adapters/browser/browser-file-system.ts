@@ -114,6 +114,23 @@ export class BrowserFileSystem implements FileSystem {
     return this.stat(path);
   }
 
+  // One parent walk and one leaf lookup, where `lstat` (this adapter's `stat`) walks twice and
+  // raises two refusals for an absent path. Every rejection but a directory occupant reads as
+  // absent, as it does through `lstat`, which reports each of them FILE_NOT_FOUND.
+  async lexists(path: string): Promise<boolean> {
+    const segments = this.splitPath(path);
+    if (segments.length === 0) return true;
+    const parent = await this.walkToParent(segments, false).catch((err: unknown) => {
+      if (isFileNotFound(err)) return undefined;
+      throw err;
+    });
+    if (parent === undefined) return false;
+    return parent.getFileHandle(leafSegment(segments, path), { create: false }).then(
+      () => true,
+      (err: unknown) => isTypeMismatch(err),
+    );
+  }
+
   async readdir(path: string): Promise<ReadonlyArray<DirEntry>> {
     const handle = await this.resolveDirHandle(path, false);
     const entries: DirEntry[] = [];

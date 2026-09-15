@@ -730,18 +730,24 @@ export class NodeFileSystem implements FileSystem {
   // follows, so probing existence via `fsOps.stat` (never `lstat`) keeps
   // that contract while dropping the realpath + double root consultation
   // the old implementation paid on every call.
-  exists = async (path: string): Promise<boolean> => {
+  exists = async (path: string): Promise<boolean> => this.isPresent(path, 'stat');
+
+  // The no-follow twin of `exists`: the same probe through `fsOps.lstat`, so a
+  // dangling symlink counts as present and an absent path costs no refusal.
+  lexists = async (path: string): Promise<boolean> => this.isPresent(path, 'lstat');
+
+  private async isPresent(path: string, probe: 'stat' | 'lstat'): Promise<boolean> {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
     try {
-      await this.fsOps.stat(real);
+      await this.fsOps[probe](real);
       return true;
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') return false;
       if (isErrnoException(err)) throw mapErrno(err, path);
       throw err;
     }
-  };
+  }
 
   stat = async (path: string): Promise<FileStat> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());

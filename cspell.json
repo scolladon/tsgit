@@ -503,6 +503,7 @@
     "killable",
     "kqueue",
     "leadingdash",
+    "lexists",
     "libfoo",
     "libgit",
     "libtrust",
