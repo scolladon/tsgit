@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryFileSystem } from '../../../../src/adapters/memory/memory-file-system.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
@@ -25,6 +25,42 @@ describe('MemoryFileSystem', () => {
   });
 
   describe('memory-specific behaviors', () => {
+    describe('Given an existing entry and a symlink elsewhere in the tree', () => {
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      // `stat` runs its whole body before its first await, so every map lookup it makes lands
+      // inside the synchronous window between installing the spy and reading its count.
+      const lookupsToStat = (sut: MemoryFileSystem, path: string): number => {
+        const lookups = vi.spyOn(Map.prototype, 'get');
+        void sut.stat(path);
+        const count = lookups.mock.calls.length;
+        lookups.mockRestore();
+        return count;
+      };
+
+      describe.each([
+        { kind: 'file', shallow: '/repo/f.txt', deep: '/repo/a/b/c/d/e/f.txt' },
+        { kind: 'directory', shallow: '/repo/a', deep: '/repo/a/b/c/d/e' },
+      ])('When stat resolves a shallow and a deep $kind', ({ shallow, deep }) => {
+        it('Then both cost the same lookups, however many segments the path has', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/f.txt', new Uint8Array([1]));
+          await sut.write('/repo/a/b/c/d/e/f.txt', new Uint8Array([1]));
+          await sut.symlink('f.txt', '/repo/link');
+
+          // Act
+          const shallowLookups = lookupsToStat(sut, shallow);
+          const deepLookups = lookupsToStat(sut, deep);
+
+          // Assert
+          expect(deepLookups).toBe(shallowLookups);
+        });
+      });
+    });
+
     describe('Given pre-seeded files', () => {
       describe('When reading', () => {
         it('Then returns seeded bytes', async () => {

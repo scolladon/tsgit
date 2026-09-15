@@ -490,8 +490,13 @@ export class MemoryFileSystem implements FileSystem {
    * refuses PERMISSION_DENIED, as Node's ELOOP does.
    */
   private walk(path: string, mode: WalkMode): string {
-    const segments = segmentsUnder(this.rootDir, this.resolve(path));
+    const resolved = this.resolve(path);
+    // A file or directory filed at the lexical key proves nothing on its chain needs resolving:
+    // `directories` is prefix-closed and every create files its key at the walked path, so no
+    // file or symlink can stand at any of its ancestors, and the key itself is not a link.
+    if (this.files.has(resolved) || this.directories.has(resolved)) return resolved;
     const leaf: LeafResolution = mode === 'follow' ? 'follow' : 'no-follow';
+    const segments = segmentsUnder(this.rootDir, resolved);
     return this.resolveSegments(segments, leaf, { path, mode, hops: 0 });
   }
 
