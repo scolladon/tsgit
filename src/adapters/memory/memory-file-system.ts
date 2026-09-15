@@ -395,8 +395,12 @@ export class MemoryFileSystem implements FileSystem {
     );
   }
 
+  // Modes are not modelled, so this only refuses as the Node adapter does: a symlink leaf first
+  // (no portable no-follow chmod exists, live or dangling), then a path with no entry.
   chmod = async (path: string, _mode: number): Promise<void> => {
-    this.walk(path, 'no-follow');
+    const normalized = this.walk(path, 'no-follow');
+    if (this.symlinks.has(normalized)) throw permissionDenied(path);
+    if (!this.occupied(normalized)) throw fileNotFound(path);
   };
 
   rmRecursive = async (path: string): Promise<void> => {

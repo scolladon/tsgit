@@ -1745,6 +1745,62 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       });
     });
 
+    describe('Given a regular file and a directory', () => {
+      it('Then chmod resolves on each', async () => {
+        // Arrange
+        await env.fs.write(`${env.rootDir}/mode/file.bin`, new Uint8Array([1]));
+        await env.fs.mkdir(`${env.rootDir}/mode/dir`);
+
+        // Act
+        const result = await Promise.all([
+          env.fs.chmod(`${env.rootDir}/mode/file.bin`, 0o755),
+          env.fs.chmod(`${env.rootDir}/mode/dir`, 0o755),
+        ]);
+
+        // Assert
+        expect(result).toEqual([undefined, undefined]);
+      });
+    });
+
+    describe('Given a path with no entry', () => {
+      it('Then chmod refuses FILE_NOT_FOUND', async () => {
+        // Act
+        let caught: unknown;
+        try {
+          await env.fs.chmod(`${env.rootDir}/mode-never-created.bin`, 0o755);
+          expect.fail('expected FILE_NOT_FOUND');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        assertFileNotFound(caught);
+      });
+    });
+
+    describe.each([
+      { label: 'a live symlink', target: 'mode-target.bin' },
+      { label: 'a dangling symlink', target: 'mode-missing-target.bin' },
+    ])('Given $label at the leaf', ({ target }) => {
+      it('Then chmod refuses PERMISSION_DENIED rather than changing the target', async () => {
+        // Arrange
+        await env.fs.write(`${env.rootDir}/mode-target.bin`, new Uint8Array([1]));
+        await env.fs.symlink(target, `${env.rootDir}/mode-link`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await env.fs.chmod(`${env.rootDir}/mode-link`, 0o755);
+          expect.fail('expected PERMISSION_DENIED');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        assertPermissionDenied(caught);
+      });
+    });
+
     describe('Given an in-root symlink whose target escapes every root', () => {
       describe('When reading through it', () => {
         it('Then it is followed when the adapter declares escape reads allowed (git parity)', async (ctx) => {
