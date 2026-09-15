@@ -135,6 +135,42 @@ describe('readReflogExpiryConfig', () => {
     });
   });
 
+  describe('Given a [gc] section carrying a comment line and a blank line, then an uppercase [GC] header', () => {
+    describe('When reading', () => {
+      it('Then the comment and blank lines are skipped and the uppercase section still counts', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[gc]\n\t# keep reflogs\n\n\treflogExpire = never\n[GC]\n\treflogExpireUnreachable = now\n',
+        );
+
+        // Act
+        const result = await readReflogExpiryConfig(ctx);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            pattern: undefined,
+            slot: 'total',
+            value: 'never',
+            key: 'gc.reflogexpire',
+            source: `${ctx.layout.gitDir}/config`,
+            line: 4,
+          },
+          {
+            pattern: undefined,
+            slot: 'unreachable',
+            value: 'now',
+            key: 'gc.reflogexpireunreachable',
+            source: `${ctx.layout.gitDir}/config`,
+            line: 6,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given entries across multiple [gc] sections, in file order', () => {
     describe('When reading', () => {
       it('Then every entry is returned with its own 1-based line', async () => {
