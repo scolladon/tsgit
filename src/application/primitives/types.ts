@@ -18,8 +18,10 @@ import type {
 import type { PathHasher } from '../../domain/storage/pack-name-hash.js';
 import type { FileStat } from '../../ports/file-system.js';
 
+// git's SYMREF_MAXDEPTH (5) bounds the refs one read resolve READS, the
+// terminal included: four symbolic hops resolve, a fifth refuses.
 /** Max symbolic-ref dereferences resolveRef will follow. */
-export const MAX_SYMBOLIC_REF_DEPTH = 5;
+export const MAX_SYMBOLIC_REF_DEPTH = 4;
 
 /** Max tag-peel hops resolveRef / readTree will follow when peeling. */
 export const MAX_PEEL_DEPTH = 5;

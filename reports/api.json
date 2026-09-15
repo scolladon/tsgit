@@ -132664,9 +132664,9 @@
 					},
 					"type": {
 						"type": "literal",
-						"value": 5
+						"value": 4
 					},
-					"defaultValue": "5"
+					"defaultValue": "4"
 				},
 				{
 					"id": 430,

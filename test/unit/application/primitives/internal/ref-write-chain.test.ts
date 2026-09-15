@@ -331,6 +331,35 @@ describe('resolveWriteChain', () => {
     });
   });
 
+  describe('Given noDeref on a symref whose referent needs a given number of symbolic hops, with no expected', () => {
+    describe('When resolveWriteChain reads the old value', () => {
+      it.each([
+        { label: 'four hops read the referent value', hops: 4, old: ID_A },
+        {
+          label: 'five hops read as absent, as git reads at most five refs',
+          hops: 5,
+          old: 'absent',
+        },
+      ])('Then $label', async ({ hops, old }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setDirect(ctx, ref('refs/heads/tend'), ID_A);
+        for (let hop = hops; hop >= 1; hop -= 1) {
+          const target = hop === hops ? 'refs/heads/tend' : `refs/heads/t${hop + 1}`;
+          await writeSymbolicRef(ctx, ref(`refs/heads/t${hop}`), ref(target));
+        }
+        await writeSymbolicRef(ctx, ref('refs/heads/s'), ref('refs/heads/t1'));
+        const sut = resolveWriteChain;
+
+        // Act
+        const result = await sut(getRefStore(ctx), ref('refs/heads/s'), NO_DEREF_OPTS);
+
+        // Assert
+        expect(result.old).toBe(old);
+      });
+    });
+  });
+
   describe('Given noDeref on a symref whose referent chain exceeds the read depth cap, with no expected', () => {
     describe('When resolveWriteChain runs', () => {
       it('Then the over-depth fault is swallowed and old reads "absent"', async () => {

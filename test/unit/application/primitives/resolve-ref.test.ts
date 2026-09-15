@@ -179,6 +179,56 @@ describe('resolveRef', () => {
     });
   });
 
+  describe('Given a chain of symbolic refs and no explicit depth cap', () => {
+    const seedChain = async (hops: number): Promise<Context> => {
+      const ctx = await buildSeededContext({
+        refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+      });
+      for (let hop = 1; hop <= hops; hop += 1) {
+        const target = hop === hops ? 'refs/heads/main' : `refs/heads/link${hop + 1}`;
+        await ctx.fs.writeUtf8(`/repo/.git/refs/heads/link${hop}`, `ref: ${target}\n`);
+      }
+      return ctx;
+    };
+
+    describe('When resolveRef follows four symbolic hops', () => {
+      it('Then it resolves the terminal id, as git reads at most five refs', async () => {
+        // Arrange
+        const ctx = await seedChain(4);
+        const sut = resolveRef;
+
+        // Act
+        const result = await sut(ctx, 'refs/heads/link1' as RefName);
+
+        // Assert
+        expect(result).toBe(MAIN_ID);
+      });
+    });
+
+    describe('When resolveRef meets a fifth symbolic hop', () => {
+      it('Then it refuses REF_CHAIN_TOO_DEEP naming the five links read', async () => {
+        // Arrange
+        const ctx = await seedChain(5);
+        const sut = resolveRef;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, 'refs/heads/link1' as RefName);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_CHAIN_TOO_DEEP',
+          depth: 5,
+          chain: [1, 2, 3, 4, 5].map((hop) => `refs/heads/link${hop}`),
+        });
+      });
+    });
+  });
+
   describe('Given symbolic depth 6 with maxSymbolicDepth 5', () => {
     describe('When resolveRef is called', () => {
       it('Then throws REF_CHAIN_TOO_DEEP', async () => {

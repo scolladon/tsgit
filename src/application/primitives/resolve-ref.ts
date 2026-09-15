@@ -29,11 +29,6 @@ const UNREADABLE_REF_CODES = new Set([
   'REF_CHAIN_TOO_DEEP',
 ]);
 
-/** git's `SYMREF_MAXDEPTH` (5) bounds the refs a reading resolve READS, the
- *  terminal included — so a chain resolves through at most four symbolic
- *  hops. */
-const READING_RESOLVE_MAX_SYMBOLIC_HOPS = 4;
-
 /**
  * git's `repo_dwim_log` target-name resolution: the name `name`'s chain
  * resolves to for READING — following every symref hop — or `undefined`
@@ -46,7 +41,7 @@ export async function resolveTerminalName(
 ): Promise<RefName | undefined> {
   try {
     const store = getRefStore(ctx);
-    const outcome = await resolveDirectChain(store, name, READING_RESOLVE_MAX_SYMBOLIC_HOPS);
+    const outcome = await resolveDirectChain(store, name, MAX_SYMBOLIC_REF_DEPTH);
     return outcome.kind === 'found' ? outcome.name : undefined;
   } catch (err) {
     if (UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '')) return undefined;
