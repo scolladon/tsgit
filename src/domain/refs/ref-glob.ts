@@ -44,7 +44,9 @@ type BracketAtom =
 
 const isAlpha = (b: number): boolean => (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a);
 const isDigit = (b: number): boolean => b >= 0x30 && b <= 0x39;
-const isSpace = (b: number): boolean => b === 0x20 || (b >= 0x09 && b <= 0x0d);
+// git's own `isspace` (`sane_ctype`), not the C library's: vertical tab and form
+// feed are not spaces.
+const isSpace = (b: number): boolean => b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d;
 const isPrint = (b: number): boolean => b >= 0x20 && b < 0x7f;
 const isGraph = (b: number): boolean => isPrint(b) && b !== 0x20;
 

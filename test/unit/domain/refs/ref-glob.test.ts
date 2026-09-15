@@ -11,7 +11,7 @@ const CLASS_MEMBERSHIP_ROWS = [
   { className: 'lower', members: ['a', 'z'], nonMembers: ['`', '{', 'A'] },
   { className: 'print', members: [' ', '~'], nonMembers: ['\x1f', '\x7f'] },
   { className: 'punct', members: ['!', '~'], nonMembers: ['A', '0', ' '] },
-  { className: 'space', members: [' ', '\t', '\n', '\r'], nonMembers: ['\x08', '\x0e'] },
+  { className: 'space', members: [' ', '\t', '\n', '\r'], nonMembers: ['\b', '\v', '\f', '\x0e'] },
   { className: 'upper', members: ['A', 'Z'], nonMembers: ['@', '[', 'a'] },
   {
     className: 'xdigit',
@@ -181,7 +181,7 @@ describe('matchRefGlob', () => {
 
     describe('When matching each POSIX class against bytes on both sides of it', () => {
       it.each(CLASS_MEMBERSHIP_ROWS)(
-        'Then [:$className:] admits exactly its own members',
+        'Then the $className class admits exactly its own members',
         ({ className, members, nonMembers }) => {
           // Arrange
           const sut = matchRefGlob;
