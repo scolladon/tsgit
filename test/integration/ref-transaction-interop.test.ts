@@ -1727,5 +1727,132 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
     });
+
+    describe('Given a directory at refs/heads/e on both tools', () => {
+      const refDir = (dir: string, ...rest: string[]): string =>
+        path.join(dir, '.git', 'refs', 'heads', 'e', ...rest);
+
+      describe('When both write refs/heads/e over a tree of empty directories, its log path an empty directory too', () => {
+        it('Then both remove the trees and write identical ref and log bytes', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('empty-dir-write');
+          for (const dir of [peer, ours]) {
+            await mkdir(refDir(dir, 'a', 'b'), { recursive: true });
+            await mkdir(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e', 'c'), {
+              recursive: true,
+            });
+          }
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 32) * 1000);
+          const sut = updateRef;
+
+          // Act
+          try {
+            runGit(['-C', peer, 'update-ref', '-m', 'w', 'refs/heads/e', filesC1], {
+              env: pinnedEnv(COMMITTER_EPOCH + 32),
+            });
+            await sut(ctx, branchRef('e'), filesC1 as ObjectId, { reflogMessage: 'w' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          const log = (dir: string): Promise<string> =>
+            readFile(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e'), 'utf8');
+          expect(await readFile(refDir(ours), 'utf8')).toBe(await readFile(refDir(peer), 'utf8'));
+          expect(await log(ours)).toBe(await log(peer));
+        });
+      });
+
+      describe('When both write refs/heads/e over a directory holding a lock file', () => {
+        it('Then git refuses the blocking directory, tsgit refuses DIRECTORY_NOT_EMPTY, and both keep it', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('blocking-dir-write');
+          for (const dir of [peer, ours]) {
+            await mkdir(refDir(dir), { recursive: true });
+            await writeFile(refDir(dir, 'x.lock'), '');
+          }
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/e', filesC1], {
+            env: runGitEnv(),
+          });
+          let caught: unknown;
+          try {
+            await sut(ctx, branchRef('e'), filesC1 as ObjectId, { reflogMessage: 'w' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            "there is a non-empty directory '.git/refs/heads/e' blocking reference 'refs/heads/e'",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'DIRECTORY_NOT_EMPTY',
+            path: `${ctx.layout.gitDir}/refs/heads/e`,
+          });
+          for (const dir of [peer, ours]) {
+            expect(await pathExists(refDir(dir, 'x.lock'))).toBe(true);
+          }
+        });
+      });
+
+      describe('When both delete the absent refs/heads/e over a tree of empty directories', () => {
+        it('Then both remove the tree', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('empty-dir-delete');
+          for (const dir of [peer, ours]) await mkdir(refDir(dir, 'a'), { recursive: true });
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/e'], {
+            env: runGitEnv(),
+          });
+          await sut(ctx, branchRef('e'), ZERO, { delete: true });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(await pathExists(refDir(peer))).toBe(false);
+          expect(await pathExists(refDir(ours))).toBe(false);
+        });
+      });
+
+      describe('When both delete the absent refs/heads/e over a loose ref under it', () => {
+        it('Then git refuses naming the ref under it, tsgit refuses FILE_EXISTS naming it, and both keep it', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('refs-under-delete');
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'update-ref', 'refs/heads/e/x', filesC1]);
+          }
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/e'], {
+            env: runGitEnv(),
+          });
+          let caught: unknown;
+          try {
+            await sut(ctx, branchRef('e'), ZERO, { delete: true });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toContain(
+            "'refs/heads/e/x' exists; cannot create 'refs/heads/e'",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'FILE_EXISTS',
+            path: `${ctx.layout.gitDir}/refs/heads/e/x`,
+          });
+          for (const dir of [peer, ours]) {
+            expect(await readFile(refDir(dir, 'x'), 'utf8')).toBe(`${filesC1}\n`);
+          }
+        });
+      });
+    });
   },
 );

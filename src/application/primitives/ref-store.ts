@@ -1,7 +1,13 @@
 /**
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
-import { dirname, fileExists, notADirectory, TsgitError } from '../../domain/error.js';
+import {
+  directoryNotEmpty,
+  dirname,
+  fileExists,
+  notADirectory,
+  TsgitError,
+} from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -36,6 +42,7 @@ import type { Context } from '../../ports/context.js';
 import type { DirEntry, FileStat } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
+import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
   commonGitDir,
@@ -309,15 +316,6 @@ const HEAD_NAME: RefName = 'HEAD' as RefName;
 const NOT_A_DIRECTORY_PATH_CODES: ReadonlySet<string> = new Set([
   'FILE_NOT_FOUND',
   'NOT_A_DIRECTORY',
-]);
-/** The removal failures that end an empty-parent climb, as a failing
- *  `rmdir` ends git's: the directory is still non-empty (the browser
- *  adapter reports that as absent) or already gone. Never "not a
- *  directory": the climb starts on a known directory, whose ancestors are
- *  directories too. */
-const UNREMOVABLE_DIRECTORY_CODES: ReadonlySet<string> = new Set([
-  'DIRECTORY_NOT_EMPTY',
-  'FILE_NOT_FOUND',
 ]);
 
 /** Whether `dir` sits strictly below an immediate child of `root` — the
@@ -958,17 +956,23 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (await hasLooseFile(path)) await ctx.fs.rm(path);
   }
 
+  /** What sits at `path` without following a link there — `absent` also
+   *  when a component above it is a regular file. */
+  async function leafKind(path: string): Promise<PathKind> {
+    try {
+      return (await ctx.fs.lstat(path)).isDirectory ? 'directory' : 'file';
+    } catch (err) {
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return 'absent';
+      throw err;
+    }
+  }
+
   /** Whether a file or link — never a directory — sits at `path`: `false`
    *  when the path, or a component above it, is absent or a regular file.
    *  git's loose-ref readers treat a directory there (`EISDIR`) and a file
    *  in its path (`ENOTDIR`) as no loose ref. */
   async function hasLooseFile(path: string): Promise<boolean> {
-    try {
-      return !(await ctx.fs.lstat(path)).isDirectory;
-    } catch (err) {
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return false;
-      throw err;
-    }
+    return (await leafKind(path)) === 'file';
   }
 
   /**
@@ -1186,13 +1190,46 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function writeLooseRef(name: RefName, content: Uint8Array): Promise<void> {
     const path = looseRefPath(refDir(name), name);
     try {
-      await atomicWriteRef(ctx, name, path, content, () => refuseRefsUnderIfPacked(name));
+      await atomicWriteRef(ctx, name, path, content, (rename) =>
+        commitLooseRef(name, path, rename),
+      );
     } catch (err) {
-      const code = errorDataCode(err) ?? '';
-      if (NOT_A_DIRECTORY_PATH_CODES.has(code)) await assertNoFileInTheWay(name, path);
-      if (code === 'PERMISSION_DENIED') await refuseRefsUnder(name);
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) {
+        await assertNoFileInTheWay(name, path);
+      }
       throw err;
     }
+  }
+
+  /** Commits `name`'s held lock: refuses refs packed under it, then renames —
+   *  a rename every adapter refuses `PERMISSION_DENIED` over a directory,
+   *  retried once {@link clearDirectory} has removed it. */
+  async function commitLooseRef(
+    name: RefName,
+    path: string,
+    rename: () => Promise<void>,
+  ): Promise<void> {
+    await refuseRefsUnderIfPacked(name);
+    try {
+      await rename();
+    } catch (err) {
+      if (errorDataCode(err) !== 'PERMISSION_DENIED' || !(await isDirectoryPath(path))) throw err;
+      await clearDirectory(name, path);
+      await rename();
+    }
+  }
+
+  /**
+   * git's lock over a directory at an absent ref's loose path: a tree of
+   * empty directories is removed; otherwise a ref under the name refuses
+   * `FILE_EXISTS` ({@link refuseRefsUnder}) and anything else — a lock file,
+   * a link that resolves nowhere — `DIRECTORY_NOT_EMPTY` naming the
+   * directory, git's "non-empty directory blocking reference".
+   */
+  async function clearDirectory(name: RefName, path: string): Promise<void> {
+    if (await removeEmptyDirectoryTree(ctx, path)) return;
+    await refuseRefsUnder(name);
+    throw directoryNotEmpty(path);
   }
 
   /** The byte-smallest loose ref under `name`'s loose path, when a directory
@@ -1247,18 +1284,6 @@ function createFilesRefStore(ctx: Context): RefStore {
     );
   }
 
-  /** Removes `dir` when it is empty; `false` when it is non-empty or
-   *  already gone — where git's own `rmdir` climb stops. */
-  async function removeEmptyDirectory(dir: string): Promise<boolean> {
-    try {
-      await ctx.fs.rm(dir);
-      return true;
-    } catch (err) {
-      if (UNREMOVABLE_DIRECTORY_CODES.has(errorDataCode(err) ?? '')) return false;
-      throw err;
-    }
-  }
-
   /**
    * git's `try_remove_empty_parents`: removes the now-empty directory `dir`
    * (KNOWN to be a directory — the port's `rm` also removes a file) and then
@@ -1272,7 +1297,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function pruneEmptyParents(dir: string, root: string): Promise<void> {
     if (!isPrunableParent(dir, root)) return;
-    if (!(await removeEmptyDirectory(dir))) return;
+    if (!(await removeEmptyDirectory(ctx, dir))) return;
     await pruneEmptyParents(dirname(dir), root);
   }
 
@@ -1294,37 +1319,53 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /** Rewrites `packed-refs` without `names` — once, and only when the
-   *  cached snapshot holds at least one of them: a loose-only delete leaves
-   *  the file byte-unchanged and reads no more than its `stat`. */
+   *  snapshot holds at least one of them: a loose-only delete leaves the file
+   *  byte-unchanged and reads no more than its `stat`. */
   async function dropFromPackedRefs(
+    packed: LoadedPackedRefs,
     names: ReadonlySet<RefName>,
     commitPacked: (content: Uint8Array) => Promise<void>,
   ): Promise<void> {
-    const packed = await loadPackedRefs();
     if (!holdsAnyName(packed.byName(), names)) return;
     const rewrite = packedRefsWithout(packed.entries, names);
     await commitPacked(TEXT_ENCODER.encode(rewrite.content));
     await reseedPackedCache(rewrite.entries);
   }
 
-  async function removeLooseAndLog(target: DeleteTarget): Promise<void> {
-    await rmUnlessDirectory(target.loose);
+  async function removeLooseAndLog(target: DeleteTarget, kind: PathKind): Promise<void> {
+    if (kind === 'file') await ctx.fs.rm(target.loose);
     await removeReflogFile(target.name);
     if (target.name === HEAD_NAME) invalidateHeadSlot(ctx);
   }
 
+  /** `target`'s loose leaf kind, after git's lock over an absent ref has
+   *  cleared a directory at its path ({@link clearDirectory}); a packed ref
+   *  reads past the directory, which stays. */
+  async function clearedLeafKind(
+    target: DeleteTarget,
+    packed: LoadedPackedRefs,
+  ): Promise<PathKind> {
+    const kind = await leafKind(target.loose);
+    if (kind !== 'directory' || packed.byName().has(target.name)) return kind;
+    await clearDirectory(target.name, target.loose);
+    return 'absent';
+  }
+
   /**
-   * git's files-backend delete order: rewrite `packed-refs` first (once for
-   * the whole run), then each loose file, then its reflog. A crash between
-   * them leaves a loose file holding the ref's current value, never an
-   * older packed value resurrected.
+   * git's files-backend delete order: every lock's directory check, then
+   * `packed-refs` rewritten (once for the whole run), then each loose file,
+   * then its reflog. A crash between them leaves a loose file holding the
+   * ref's current value, never an older packed value resurrected.
    */
   async function removeEverywhere(
     targets: readonly DeleteTarget[],
     commitPacked: (content: Uint8Array) => Promise<void>,
   ): Promise<void> {
-    await dropFromPackedRefs(new Set(targets.map((target) => target.name)), commitPacked);
-    for (const target of targets) await removeLooseAndLog(target);
+    const packed = await loadPackedRefs();
+    const cleared: Array<readonly [DeleteTarget, PathKind]> = [];
+    for (const target of targets) cleared.push([target, await clearedLeafKind(target, packed)]);
+    await dropFromPackedRefs(packed, new Set(targets.map((target) => target.name)), commitPacked);
+    for (const [target, kind] of cleared) await removeLooseAndLog(target, kind);
   }
 
   /** A delete's target, refusing a file in the way before any lock. */

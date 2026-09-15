@@ -10,15 +10,20 @@ import { refLocked } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import { lockSuffix } from './path-layout.js';
 
-const NOTHING_BEFORE_RENAME = (): Promise<void> => Promise.resolve();
+/** Commits a held lock by renaming it onto its path. */
+export type CommitLock = (rename: () => Promise<void>) => Promise<void>;
+
+const RENAME_ONLY: CommitLock = (rename) => rename();
 
 /**
  * Exclusively creates `<path>.lock`, writes `content` into it, then renames
  * it onto `path` — the same lock-then-rename shape git itself takes for a
  * single-file artefact (a ref, `commit-graph`, …). `onLocked` receives the
  * lock path and produces the format-specific refusal a contended write
- * throws; `beforeRename` runs while the lock is held — a refusal it throws
- * removes the lock and leaves `path` untouched; every other failure
+ * throws; `commitLock` runs while the lock is held and performs the rename
+ * through the callback it receives — so a caller can check before renaming,
+ * or retry a refused rename once it has cleared the cause. A refusal it
+ * throws removes the lock and leaves `path` untouched; every other failure
  * propagates unchanged.
  */
 export async function atomicWriteFile(
@@ -26,7 +31,7 @@ export async function atomicWriteFile(
   path: string,
   content: Uint8Array,
   onLocked: (lockPath: string) => TsgitError,
-  beforeRename: () => Promise<void> = NOTHING_BEFORE_RENAME,
+  commitLock: CommitLock = RENAME_ONLY,
 ): Promise<void> {
   const lockPath = `${path}${lockSuffix}`;
   try {
@@ -38,8 +43,7 @@ export async function atomicWriteFile(
     throw error;
   }
   try {
-    await beforeRename();
-    await ctx.fs.rename(lockPath, path);
+    await commitLock(() => ctx.fs.rename(lockPath, path));
   } catch (error) {
     // Best-effort lock cleanup. Only swallow FILE_NOT_FOUND (the rename may have
     // succeeded partially on some filesystems), otherwise propagate so a stuck
@@ -104,9 +108,9 @@ export async function atomicWriteRef(
   refName: RefName,
   refPath: string,
   content: Uint8Array,
-  beforeRename: () => Promise<void> = NOTHING_BEFORE_RENAME,
+  commitLock: CommitLock = RENAME_ONLY,
 ): Promise<void> {
-  return await atomicWriteFile(ctx, refPath, content, () => refLocked(refName), beforeRename);
+  return await atomicWriteFile(ctx, refPath, content, () => refLocked(refName), commitLock);
 }
 
 function isFileExists(error: unknown): boolean {

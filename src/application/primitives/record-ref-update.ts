@@ -8,12 +8,14 @@
  * `reflog-store.ts`'s `readReflog`/`listReflogs` call back INTO that same
  * backend — sharing the probe would close an import cycle.
  */
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/object-id.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { sanitizeReflogMessage, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
 import { shouldAutocreateReflog } from '../../domain/reflog/should-log.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from './config-read.js';
+import { removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { perWorktreeRefDir, reflogPath } from './path-layout.js';
 import { resolveReflogIdentity } from './reflog-identity.js';
 
@@ -57,15 +59,36 @@ async function isLoggable(ctx: Context, ref: RefName, config: ParsedConfig): Pro
   return shouldAutocreateReflog(ref, config.core ?? {});
 }
 
-/** Whether `ref` has a reflog file — the files backend's own probe. */
+/** Whether `ref` has a reflog file — the files backend's own probe. A
+ *  directory at the path is no log, as git's `EISDIR` open reads it. */
 async function reflogFileExists(ctx: Context, ref: RefName): Promise<boolean> {
-  return ctx.fs.exists(reflogPath(perWorktreeRefDir(ctx, ref), ref));
+  try {
+    return (await ctx.fs.stat(reflogPath(perWorktreeRefDir(ctx, ref), ref))).isFile;
+  } catch (err) {
+    if (errorDataCode(err) === 'FILE_NOT_FOUND') return false;
+    throw err;
+  }
 }
 
-/** Append one line to `ref`'s reflog, creating the file and parents as needed. */
+/** Append one line to `ref`'s reflog, creating the file and parents as needed
+ *  — over a tree of empty directories once it is removed, as git's log setup
+ *  removes one. */
 async function appendReflogFile(ctx: Context, ref: RefName, entry: ReflogEntry): Promise<void> {
-  await ctx.fs.appendUtf8(
-    reflogPath(perWorktreeRefDir(ctx, ref), ref),
-    serializeReflogLine(entry, ctx.hashConfig.hexLength),
-  );
+  const path = reflogPath(perWorktreeRefDir(ctx, ref), ref);
+  const line = serializeReflogLine(entry, ctx.hashConfig.hexLength);
+  try {
+    await ctx.fs.appendUtf8(path, line);
+  } catch (err) {
+    await clearEmptyLogDirectory(ctx, path, err);
+    await ctx.fs.appendUtf8(path, line);
+  }
+}
+
+/** Rethrows `refusal` unless it is the `PERMISSION_DENIED` a directory at
+ *  `path` produces and that directory held only empty directories, now
+ *  removed. */
+async function clearEmptyLogDirectory(ctx: Context, path: string, refusal: unknown): Promise<void> {
+  if (errorDataCode(refusal) !== 'PERMISSION_DENIED') throw refusal;
+  if (!(await ctx.fs.stat(path)).isDirectory) throw refusal;
+  if (!(await removeEmptyDirectoryTree(ctx, path))) throw refusal;
 }
