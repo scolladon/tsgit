@@ -161,36 +161,68 @@ const repairChain = (
     .map((entry) => (rewrite && entry === following ? { ...entry, oldId: removed.oldId } : entry));
 };
 
-const runExpire = async (
+type ExpireOptions = Extract<ReflogAction, { readonly action: 'expire' }>;
+
+/** One ref's pair of expiry cutoffs — unix-seconds thresholds `expireReflog` compares entry timestamps against. */
+interface ExpiryCuts {
+  readonly expireCut: number;
+  readonly unreachableCut: number;
+}
+
+/** Resolves the cutoff pair for a given target ref. Constant today (both
+ *  flags apply repository-wide); `gc.reflogExpire*` (D) varies it per ref. */
+interface ExpiryPolicy {
+  readonly cutoffsFor: (ref: RefName) => ExpiryCuts;
+}
+
+/** The batched result of expiring every target: per-ref counts summed, and
+ *  every target's rewrite queued for the single closing `applyRefUpdates`. */
+interface ExpireOutcome {
+  readonly removed: number;
+  readonly kept: number;
+  readonly updates: RefUpdate[];
+}
+
+const resolveExpiryPolicy = (now: number, opts: ExpireOptions): ExpiryPolicy => {
+  const cuts: ExpiryCuts = {
+    expireCut: resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now),
+    unreachableCut: resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now),
+  };
+  return { cutoffsFor: () => cuts };
+};
+
+/** Strictly sequential: each target's reachability state is built inside
+ *  `expireReflog`, never shared, so one target's walk never leaks into another's. */
+const expireTargets = async (
   ctx: Context,
-  opts: {
-    readonly ref?: string;
-    readonly all?: boolean;
-    readonly expire?: string;
-    readonly expireUnreachable?: string;
-  },
-): Promise<ReflogResult> => {
-  const now = Math.floor(Date.now() / 1000);
-  const expireCut = resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now);
-  const unreachableCut = resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now);
-  const targets = await resolveExpireTargets(ctx, opts);
+  targets: ReadonlyArray<RefName>,
+  policy: ExpiryPolicy,
+): Promise<ExpireOutcome> => {
   let removed = 0;
   let kept = 0;
   const updates: RefUpdate[] = [];
   for (const ref of targets) {
+    const { expireCut, unreachableCut } = policy.cutoffsFor(ref);
     const outcome = await expireReflog(ctx, ref, expireCut, unreachableCut);
     removed += outcome.removed;
     kept += outcome.kept;
     updates.push(outcome.update);
   }
+  return { removed, kept, updates };
+};
+
+const runExpire = async (ctx: Context, opts: ExpireOptions): Promise<ReflogResult> => {
+  const policy = resolveExpiryPolicy(Math.floor(Date.now() / 1000), opts);
+  const targets = await resolveExpireTargets(ctx, opts);
+  const outcome = await expireTargets(ctx, targets, policy);
   // One transaction for every target: on the reftable backend each
   // applyRefUpdates call is a full stack transaction plus a compaction
   // attempt, so a per-ref loop makes `expire --all` cost grow faster than linearly in ref count
   // (measured 3.6-5x at 200-800 refs) and leaves a partial rewrite behind if
   // one ref fails mid-loop. An empty list is a no-op on both backends, so
   // zero targets need no guard.
-  await getRefStore(ctx).applyRefUpdates(updates);
-  return { kind: 'expire', removed, kept };
+  await getRefStore(ctx).applyRefUpdates(outcome.updates);
+  return { kind: 'expire', removed: outcome.removed, kept: outcome.kept };
 };
 
 /**
