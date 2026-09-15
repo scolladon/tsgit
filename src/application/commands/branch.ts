@@ -121,19 +121,31 @@ export const branchCreate = async (
 ): Promise<BranchCreateResult> => {
   await assertOperationalRepository(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
-  if (input.force !== true && (await refResolvesForReading(ctx, name))) {
-    throw branchExists(name);
-  }
+  const force = input.force === true;
+  if (!force && (await refResolvesForReading(ctx, name))) throw branchExists(name);
   const startPoint = input.startPoint ?? 'HEAD';
-  const id = await resolveBranchTarget(ctx, startPoint);
-  const target = await requireCommit(ctx, id);
-  const reflogMessage = branchCreatedFrom(startPoint);
+  const target = await requireCommit(ctx, await resolveBranchTarget(ctx, startPoint));
+  await writeNewBranch(ctx, { name, target, force, reflogMessage: branchCreatedFrom(startPoint) });
+  return { name, id: target };
+};
+
+interface NewBranch {
+  readonly name: RefName;
+  readonly target: ObjectId;
+  readonly force: boolean;
+  readonly reflogMessage: string;
+}
+
+/** Points `name` at `target`, mapping the compare-and-swap conflict of an
+ *  unforced creation to the faithful `BRANCH_EXISTS`. */
+const writeNewBranch = async (ctx: Context, branch: NewBranch): Promise<void> => {
+  const { name, target, force, reflogMessage } = branch;
   try {
     await updateRef(
       ctx,
       name,
       target,
-      input.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
+      force ? { reflogMessage } : { expected: 'absent', reflogMessage },
     );
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
@@ -141,7 +153,6 @@ export const branchCreate = async (
     }
     throw err;
   }
-  return { name, id: target };
 };
 
 export const branchDelete = async (
@@ -172,48 +183,40 @@ export const branchRename = async (
   const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
   const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);
-  await assertRenamableSource(ctx, { from, to, force: input.force === true });
+  const request: RenameRequest = { from, to, force: input.force === true };
+  await assertRenamableSource(ctx, request);
+  await (from === to ? renameOntoItself(ctx, request, id) : renameBranch(ctx, request, id));
+  return { from, to };
+};
+
+/**
+ * git accepts a self-rename (`branch -m x x` and `-M x x` both exit 0): the
+ * ref and its log stay put and only the rename entry is appended. Without
+ * this arm the trailing delete of a real rename would remove the branch that
+ * was just "renamed" onto itself.
+ */
+const renameOntoItself = async (
+  ctx: Context,
+  { from, to }: RenameRequest,
+  id: ObjectId,
+): Promise<void> => {
+  const message = branchRenamed(from, to);
+  await getRefStore(ctx).applyRefUpdates([
+    { kind: 'reflogOnly', name: to, reflog: { oldId: id, newId: id, message } },
+  ]);
+};
+
+const renameBranch = async (ctx: Context, request: RenameRequest, id: ObjectId): Promise<void> => {
+  const { from, to, force } = request;
   const store = getRefStore(ctx);
-  if (from === to) {
-    // git accepts a self-rename (`branch -m x x` and `-M x x` both exit 0):
-    // the ref and its log stay put and only the rename entry is appended.
-    // Without this arm the trailing delete below would remove the branch
-    // that was just "renamed" onto itself.
-    await store.applyRefUpdates([
-      {
-        kind: 'reflogOnly',
-        name: to,
-        reflog: { oldId: id, newId: id, message: branchRenamed(from, to) },
-      },
-    ]);
-    return { from, to };
-  }
   // Probed BEFORE the CAS set below makes `to` exist: git's forced rename
   // deletes the destination ref first, which drops its log; an orphan log
   // with no live ref underneath survives and takes the rename entry as an
   // append (measured, git 2.55.0).
-  const replacesLiveRef = input.force === true && (await refExists(ctx, to));
-  // The CAS conflict check runs BEFORE any log move: git checks and refuses
-  // before touching anything. The failure window differs from git's: a throw
-  // after moveReflog leaves `from` a live branch whose log already moved to
-  // `to`, where git stages the log through a temp path and rolls back.
-  try {
-    await store.applyRefUpdates([
-      {
-        kind: 'set',
-        name: to,
-        id,
-        ...(input.force === true ? {} : { expected: 'absent' as const }),
-      },
-    ]);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
-      throw branchExists(to);
-    }
-    throw err;
-  }
+  const replacesLiveRef = force && (await refExists(ctx, to));
+  await createRenameDestination(store, request, id);
   await writeRenamedBranchLog(ctx, store, { from, to, id, replacesLiveRef });
-  // The delete update drops `from`'s log; step 2 already moved it away. HEAD
+  // The delete update drops `from`'s log; the log write already moved it. HEAD
   // is still coupled to `from` here (unmoved), so this delete carries git's
   // FIRST `logs/HEAD` rename line when HEAD names the branch being renamed.
   await updateRef(ctx, from, zeroOid(ctx.hashConfig), {
@@ -221,24 +224,47 @@ export const branchRename = async (
     noDeref: true,
     reflogMessage: branchRenamed(from, to),
   });
-  const head = await readHeadRaw(ctx);
-  if (head.kind === 'symbolic' && head.target === from) {
-    // The re-point is git's SECOND `logs/HEAD` line: the old id is null
-    // because `from` is already gone.
+  await repointHeadAfterRename(ctx, store, request, id);
+};
+
+/**
+ * Writes `to` — refusing `BRANCH_EXISTS` through the compare-and-swap unless
+ * forced. The check runs BEFORE any log move: git checks and refuses before
+ * touching anything. The failure window differs from git's: a throw after
+ * the log move leaves `from` a live branch whose log already moved to `to`,
+ * where git stages the log through a temp path and rolls back.
+ */
+const createRenameDestination = async (
+  store: RefStore,
+  { to, force }: RenameRequest,
+  id: ObjectId,
+): Promise<void> => {
+  try {
     await store.applyRefUpdates([
-      {
-        kind: 'setSymbolic',
-        name: 'HEAD' as RefName,
-        target: to,
-        reflog: {
-          oldId: zeroOid(ctx.hashConfig),
-          newId: id,
-          message: branchRenamed(from, to),
-        },
-      },
+      { kind: 'set', name: to, id, ...(force ? {} : { expected: 'absent' as const }) },
     ]);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
+      throw branchExists(to);
+    }
+    throw err;
   }
-  return { from, to };
+};
+
+/** The re-point is git's SECOND `logs/HEAD` rename line: the old id is null
+ *  because `from` is already gone. */
+const repointHeadAfterRename = async (
+  ctx: Context,
+  store: RefStore,
+  { from, to }: RenameRequest,
+  id: ObjectId,
+): Promise<void> => {
+  const head = await readHeadRaw(ctx);
+  if (head.kind !== 'symbolic' || head.target !== from) return;
+  const reflog = { oldId: zeroOid(ctx.hashConfig), newId: id, message: branchRenamed(from, to) };
+  await store.applyRefUpdates([
+    { kind: 'setSymbolic', name: 'HEAD' as RefName, target: to, reflog },
+  ]);
 };
 
 const BRANCH_RENAME = 'branch.rename';
