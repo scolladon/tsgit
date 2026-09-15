@@ -1745,6 +1745,34 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       });
     });
 
+    describe.each([
+      {
+        label: 'two segments beneath a dangling symlink',
+        blocked: `${DANGLING_COMPONENT}/mid/entry`,
+      },
+      { label: 'two segments beneath a regular file', blocked: 'rename-blocker.bin/mid/entry' },
+    ])('Given a missing rename source and a destination $label', ({ blocked }) => {
+      it('Then rename refuses NOT_A_DIRECTORY: the destination parent is refused before the source is looked up', async (ctx) => {
+        ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+        // Arrange
+        await env.fs.symlink('dangling-component-target', `${env.rootDir}/${DANGLING_COMPONENT}`);
+        await env.fs.write(`${env.rootDir}/rename-blocker.bin`, new Uint8Array([1]));
+
+        // Act
+        let caught: unknown;
+        try {
+          await env.fs.rename(`${env.rootDir}/rename-missing-source`, `${env.rootDir}/${blocked}`);
+          expect.fail('expected NOT_A_DIRECTORY');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        assertNotADirectory(caught);
+      });
+    });
+
     describe('Given a regular file and a directory', () => {
       it('Then chmod resolves on each', async () => {
         // Arrange
