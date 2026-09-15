@@ -2366,3 +2366,277 @@ Found while pinning those resolutions, and resolved (a) by the user the same day
 - `src/ports/file-system.ts:120` (`readdir`), and the `NOT_A_DIRECTORY` comments listed under U1/U2.
 - `reports/api.json` — `UpdateRefOptions`, the port's `readdir` JSDoc.
 - 5.0 migration notes (plan): one line per U1–U6 observable change.
+
+---
+
+## Ref-store scope folds (symlinked refs, directory conflicts, deep chains)
+
+<!-- cspell:ignore ENOTDIR EISDIR ELOOP readlink rmdir fstat raceproof notref newb dtype symfile viafile -->
+
+### Where this comes from
+
+Five pre-existing ref-store differences, folded into this PR by the user on 2026-09-15 and decided in
+ADR-874: symbolic links as loose refs, an empty directory at a ref path, directories `pack-refs`
+empties, a symbolic-ref chain deeper than git's reading cap under DWIM, and a transaction whose own
+names collide. Pins below are git 2.55.0, scratch repositories, `HOME` isolated,
+`GIT_CONFIG_NOSYSTEM=1`, every inherited `GIT_*` unset, signing off. `C1`, `C2` commits; `side` = C1,
+`main` = C2 unless a row says otherwise.
+
+### Pins — a symbolic link as a loose ref (files backend)
+
+`read_ref_internal` (`refs/files-backend.c`) `lstat`s the loose path first; a symbolic link whose
+text starts with `refs/` and passes `check_refname_format` **is** a symref and is never followed;
+any other text falls through to `open`, which follows it — `ENOENT` there is a missing ref and the
+packed store is **not** consulted. The loose iterator (`loose_fill_ref_dir`) takes `get_dtype(…, 1)`,
+which `stat`s a `DT_LNK` entry: a directory is descended, a regular file is listed, a failed `stat`
+drops the entry.
+
+| # | Setup | Command | Exit | Key output / on-disk result |
+|---|---|---|---|---|
+| SL1 | `refs/heads/z → refs/heads/side` (text dangles as a path) | `symbolic-ref refs/heads/z`; `rev-parse z`; `rev-parse --symbolic-full-name z` | 0 | `refs/heads/side`; C1; `refs/heads/side` |
+| SL2 | SL1 | `for-each-ref`, `show-ref`, `branch` | 0 | `z` **not listed** (its `stat` fails) |
+| SL3 | SL1 + `refs/heads/refs/heads/side2` a regular file, `pl3 → refs/heads/side2` | `for-each-ref --format='%(refname) %(symref)'` | 0 | `refs/heads/pl3 refs/heads/side2` — listed as a symref once its path `stat`s |
+| SL4 | SL1 | `update-ref -m w refs/heads/z C2` | 0 | `side` = C2; the link kept; `logs/refs/heads/z` and `logs/refs/heads/side` gain `C1 C2 w` (S3's shape) |
+| SL5 | SL1 (`side` = C2) | `update-ref --no-deref -m nd refs/heads/z C1` | 0 | `z` becomes a regular file holding C1; `logs/refs/heads/z` gains `C2 C1 nd` (S17's shape) |
+| SL6 | SL1 | `update-ref -d -m del refs/heads/z` | 0 | `side` and its log gone; the link kept; `logs/refs/heads/z` gains `C1 0{40} del` (X4) |
+| SL7 | SL1, with and without `logs/refs/heads/z` | `update-ref --no-deref -d refs/heads/z`; `branch -d z`; `branch -D z` | 0 | the link and its log removed, `side` kept; `Deleted branch z (was refs/heads/side).` (X6, R5) |
+| SL8 | SL1 | `symbolic-ref -m s refs/heads/z refs/heads/main` | 0 | `z` becomes a regular `ref: refs/heads/main` file; `logs/refs/heads/z` gains `C1 C2 s` |
+| SL9 | SL1 + `rel → side` (relative, not `refs/`) | `pack-refs --all` | 0 | `z` neither packed nor removed; `side` packed and pruned (see residuals for `rel`) |
+| SL10 | `refs/heads/rel → side` | `symbolic-ref refs/heads/rel`; `rev-parse rel`; `for-each-ref` | 128; 0; 0 | `not a symbolic ref`; C1; `rel` listed |
+| SL11 | SL10 | `update-ref -m w refs/heads/rel C2` | 0 | `rel` becomes a regular file (C2), `side` unchanged |
+| SL12 | `inv → refs/heads/a..b` (invalid refname, dangles); `abs → <abs path to side>` | `symbolic-ref`; `rev-parse --verify` | 128; 128 / 0 | not a symbolic ref; `inv` does not resolve, `abs` = C1 |
+| SL13 | `bad → ../../junk` (junk = `garbage`) | `rev-parse --verify refs/heads/bad`; `for-each-ref` | 128; 0 | `warning: ignoring broken ref refs/heads/bad`; the ref omitted |
+| SL14 | `viafile → ../../symfile` (`ref: refs/heads/main`) | `symbolic-ref refs/heads/viafile` | 0 | `refs/heads/main` |
+| SL15 | packed `pk`, loose `pk → nowhere` | `rev-parse --verify refs/heads/pk`; `for-each-ref refs/heads/pk` | 128; 0 | does not resolve (no packed fallback); listed from `packed-refs` |
+| SL16 | packed `pk`, loose `pk → refs/heads/main` | `rev-parse --verify refs/heads/pk`; `symbolic-ref` | 0; 0 | C2; `refs/heads/main` — the link shadows the packed line |
+| SL17 | `refs/heads/dl → ../other`, `refs/other/m` = C1 | `for-each-ref`; `rev-parse --verify refs/heads/dl/m` | 0; 0 | `refs/heads/dl/m` listed (the linked directory is descended); C1 |
+| SL18 | SL1 | `reflog show refs/heads/z` | 0 | `side`'s entries, labelled `refs/heads/z@{0}` (`repo_dwim_log`, ADR-867) |
+
+The reftable backend has no loose files; `HEAD` keeps its own reader (ADR-855, ADR-868). OPFS has no
+symbolic links.
+
+### Pins — an empty directory at a ref or log path (files backend)
+
+`lock_raw_ref`: the read reports `EISDIR`; unless an old value is required, `remove_dir_recursively(…,
+REMOVE_DIR_EMPTY_ONLY)` removes the directory; if that fails, `refs_verify_refname_available` names
+a conflicting ref, else `there is a non-empty directory '<path>' blocking reference '<ref>'`.
+`log_ref_setup` → `raceproof_create_file` removes an empty directory at the log path the same way,
+else `there are still logs under '<path>'`.
+
+| # | Setup | Command | Exit | Result |
+|---|---|---|---|---|
+| ED1 | empty `refs/heads/e1/` | `update-ref -m w refs/heads/e1 C1` | 0 | directory removed, ref written, log created |
+| ED2 | `refs/heads/e2/a/b/`, `refs/heads/e2/c/` (only directories) | `update-ref refs/heads/e2 C1` | 0 | the tree removed, ref written |
+| ED3 | `refs/heads/e3/x.lock` | `update-ref refs/heads/e3 C1` | 128 | `cannot lock ref 'refs/heads/e3': there is a non-empty directory '.git/refs/heads/e3' blocking reference 'refs/heads/e3'`; nothing removed |
+| ED4 | `refs/heads/d8/l → nowhere` | `update-ref refs/heads/d8 C1` | 128 | ED3's message — the dangling link is no ref (SL2) |
+| ED5 | `refs/heads/e4/sub/r` (a ref); `refs/heads/e5/notref` (junk, a valid name) | `update-ref` | 128 | `'refs/heads/e4/sub/r' exists; cannot create 'refs/heads/e4'`; same for `e5/notref` (kept) |
+| ED6 | empty `refs/heads/d2/` | `update-ref refs/heads/d2 C1 C1` | 128 | `unable to resolve reference 'refs/heads/d2'`; directory kept |
+| ED7 | empty `refs/heads/d3/` | `update-ref refs/heads/d3 C1 0{40}`; `symbolic-ref refs/heads/d4 refs/heads/main`; `branch d5` | 0 | directory removed, ref written |
+| ED8 | `refs/heads/d1/a/` | `update-ref -d refs/heads/d1` | 0 | the tree removed |
+| ED9 | empty `logs/refs/heads/e6/`; nested `logs/refs/heads/e7/a/b/`; both ref and log directories | `update-ref -m w …` | 0 | every directory removed; ref and log written |
+| ED10 | `logs/refs/heads/e8/f` | `update-ref -m w refs/heads/e8 C1` | 128 | `there are still logs under '.git/logs/refs/heads/e8'`; the ref is **not** written (residual) |
+
+`remove_dir_recurse` stops at the first entry that is not a directory, after removing every empty
+subdirectory it met before it in `readdir` order.
+
+### Pins — `pack-refs --all` and emptied directories (files backend)
+
+| # | Setup | Result |
+|---|---|---|
+| PP1 | loose `refs/remotes/d/x`, `refs/remotes/o/n1/n2/r`, `refs/remotes/o/keep`, `refs/heads/solo`, `refs/tags/t/nested`, `refs/notes/deep/n`, `refs/x/y/z`, `refs/w`; `pack-refs --all` | removed: `refs/remotes/d`, `refs/remotes/o/n1/n2`, `refs/remotes/o/n1`, `refs/remotes/o`, `refs/tags/t`, `refs/notes/deep`, `refs/x/y`; kept: `refs/heads`, `refs/tags`, `refs/remotes`, `refs/notes`, `refs/x`; `logs/` untouched |
+
+`prune_ref` commits a `REF_IS_PRUNING` delete per ref, whose `files_transaction_finish` runs
+`try_remove_empty_parents(…, REMOVE_EMPTY_PARENTS_REF)`: the loose tree only, never a refname's first
+two components (the same rule the delete path follows, ADR-871).
+
+### Pins — DWIM over a chain deeper than the reading cap
+
+`expand_ref` calls `refs_resolve_ref_unsafe(…, RESOLVE_REF_READING, …)` per rule; a `NULL` result
+warns (`ignoring dangling symref` for a symref, `ignoring broken ref` otherwise) and tries the next
+rule. `SYMREF_MAXDEPTH` is 5 reads, so four hops resolve and five do not.
+
+| # | Setup | Command | Exit | Output |
+|---|---|---|---|---|
+| DW1 | `refs/heads/x → h1 → h2 → h3 → h4 → h5` (5 hops, h5 = C2), `refs/tags/x` = C1 | `rev-parse x` | 0 | `warning: ignoring dangling symref refs/heads/x`, C1 |
+| DW2 | DW1 | `rev-parse refs/heads/x`; `rev-parse --verify refs/heads/x`; `rev-parse heads/x` | 128 | `ambiguous argument` / `Needed a single revision` — no rule resolves |
+| DW3 | DW1 | `rev-parse h1` (4 hops) | 0 | C2 |
+| DW4 | `refs/tags/y` 5 hops, `refs/heads/y` = C1 | `rev-parse y`; `log -1 y`; `checkout --detach y`; `branch newb y`; `merge-base y main`; `reset --soft y` | 0 | C1 — the earlier (tag) rule is skipped |
+| DW5 | tag cycle `cy ↔ cy2`, branch `cy`; dangling tag `dg → nope`, branch `dg` | `rev-parse cy`; `rev-parse dg` | 0 | C1 each |
+| DW6 | tag `amb` = C2, branch `amb` = C1 | `rev-parse amb` | 0 | `refname 'amb' is ambiguous`, C2 |
+
+tsgit already answers every row: `revParse` (`resolveBase`), `resolveCommitIsh`, `reset`'s
+`resolveTarget`, `branch.create`'s `resolveBranchTarget` and the reflog DWIM (`resolveTerminalName`)
+each move to the next candidate on any failure, and `MAX_SYMBOLIC_REF_DEPTH` (4 hops) matches git's 5
+reads. The brief's premise does not hold; the rows are pinned with tests only.
+
+### Pins — names that collide inside one transaction (both backends)
+
+`refs_verify_refname_available(refname, extras = every name in the transaction, skip = NULL)` checks,
+in order: each proper prefix shortest first (an existing ref ⇒ `'<p>' exists; cannot create '<n>'`;
+a transaction name ⇒ `cannot process '<n>' and '<p>' at the same time`); then existing refs under
+`<n>/` (`'<x>' exists; cannot create '<n>'`); then transaction names under `<n>/` (`cannot process
+'<n>' and '<x>' at the same time`). It runs for every update whose ref does not exist and does not
+require an old value — deletes of absent refs included. Every refusal is `TRANSACTION_NAME_CONFLICT`
+and nothing is written. The reftable backend checks those names in update order after every
+compare-and-swap. The files backend checks a name while taking its lock when a regular file sits at a
+prefix or a directory sits at its path — including a directory an earlier update's lock created —
+and every other name in update order after all locks.
+
+| # | `update-ref --stdin` input (files / reftable) | Exit | files | reftable |
+|---|---|---|---|---|
+| TX1 | `d/x` exists; `create d` + `delete d/x`, either order | 128 | `'…/d/x' exists; cannot create '…/d'` | same |
+| TX2 | `e` exists; `create e/x` + `delete e` | 128 | `'…/e' exists; cannot create '…/e/x'` | same |
+| TX3 | `create f` + `create f/x` | 128 | `cannot process 'f' and 'f/x'` | same |
+| TX4 | `create g/x` + `create g` | 128 | `cannot lock ref 'g': cannot process 'g' and 'g/x'` | `cannot process 'g/x' and 'g'` |
+| TX5 | `create h` + `delete h/x` (absent); `delete j` (absent) + `create j/x` | 128 | `cannot process 'h' and 'h/x'`; `cannot process 'j' and 'j/x'` | same |
+| TX6 | `create a/y` + `create a` + `create a/b` | 128 | `cannot lock ref 'a': cannot process 'a' and 'a/b'` | `cannot process 'a/y' and 'a'` |
+| TX7 | `k/z` exists; `create m/x` + `create m` + `create k` | 128 | `cannot lock ref 'm': … 'm' and 'm/x'` | `cannot process 'm/x' and 'm'` |
+| TX8 | TX7's refs; `create k` + `create m/x` + `create m` | 128 | `'…/k/z' exists; cannot create '…/k'` | same |
+| TX9 | `pk` packed / present; `create q` + `create q/x` + `create pk/x` | 128 | `cannot process 'q' and 'q/x'` | same |
+| TX10 | `v` exists; `verify v` + `create v/w`; `d/x` exists; `update d/x` + `create d/x/w`, either order; `delete d/x` + `create d/x/w` | 128 | `'…/v' exists; cannot create '…/v/w'`; same for `d/x` | same |
+| TX11 | `d/x` loose; `e/x` packed (files) | `update-ref -d refs/remotes/d`; `-d refs/remotes/e`; `-d refs/remotes/d/x/y` | 1 | `'…/d/x' exists; cannot create '…/d'`; `… 'e/x' …`; `'…/d/x' exists; cannot create '…/d/x/y'` |
+| TX12 | `a`, `c/d` branches | `branch -m a a/b`; `branch -m c/d c` | 0 | renamed on both backends (`skip` names the old ref) |
+
+(`…/` abbreviates `refs/remotes/`.)
+
+### What tsgit does today
+
+| Item | Memory and Node today |
+|---|---|
+| Symbolic links | `resolveDirect('refs/heads/z')` follows the link: SL1's text dangles as a path, so `missing`; `updateRef` writes `z` itself (the rename replaces the link), `symbolicRef` reads nothing. The walk lists every link entry as a name and never descends a linked directory. |
+| Empty directory | `PERMISSION_DENIED { path: '<ref>.lock' }` for ED1, ED2, ED7; ED8 leaves the tree. |
+| `packRefs` | Emptied directories stay. |
+| DWIM | Matches every DW row. |
+| Transaction names | Files `applyRefUpdates([delete d/x, set d])` deletes then writes; `[set f, set f/x]` writes `f` then refuses `NOT_A_DIRECTORY`; reftable writes TX1–TX9 through. |
+
+### Change — symbolic links as loose refs
+
+`resolveDirect` (non-`HEAD`) reads the leaf **without following it**, through the port's
+`openWithNoFollow(path, 'read')` — `open(O_NOFOLLOW)`, `fstat`, `read`, `close`, the same four calls
+`readFile` makes — so a regular file costs nothing extra and a symbolic link surfaces as the open's
+refusal instead of as the file it names:
+
+```ts
+async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
+  if (name === HEAD_NAME) return resolveHeadDirect();
+  const path = looseRefPath(refDir(name), name);
+  const leaf = await readLooseLeaf(name, path);
+  if (leaf.kind === 'symlink') return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
+  if (leaf.kind === 'content') return fromLooseContent(leaf.content);
+  return resolvePacked(name);
+}
+```
+
+- `readLooseLeaf`: a directory (`fstat`) or `FILE_NOT_FOUND` is `none`; `PERMISSION_DENIED` pays one
+  `lstat`, and a link is `symlink`; every other refusal — the browser adapter's
+  `UNSUPPORTED_OPERATION { operation: 'openWithNoFollow' }`, `NOT_A_DIRECTORY`, an unreadable regular
+  file — goes through today's `readUtf8` reader, which already decides those.
+- `resolveSymlinkedRef(name, path, linkText)` is `HEAD`'s symlink arm generalised: `refs/`-prefixed
+  valid text is `symbolic`; any other text is read through (`resolveFollowed`: a directory or an
+  absent target is `missing`, never the packed value — SL15; unparseable content refuses
+  `INVALID_REF` naming the ref without its bytes, as today). `resolveHeadSymlink`/`resolveFollowedHead`
+  become these two with `HEAD`'s path.
+- `fromLooseFile`'s `lstat`-on-parse-failure goes: content now only ever comes from a regular file.
+- `walkRefDir`: an entry whose `isSymbolicLink` is set pays one `stat`: a directory is descended, any
+  other kind is listed, and `FILE_NOT_FOUND`, `NOT_A_DIRECTORY` or `PERMISSION_DENIED` (a loop) drops
+  it (SL2, SL3, SL17, ED4). Regular entries are unchanged.
+- Writes and deletes need no change: the store now reports SL1 `symbolic`, so `updateRef` walks through
+  it (SL4, SL6), `noDeref` renames over the link (SL5) or removes it (SL7, `hasLooseFile` already
+  `lstat`s), `writeSymbolicRef` replaces it (SL8), and `packRefs` skips it as a symbolic entry (SL9).
+
+**Cost.** POSIX Node and memory: a successful loose read, a miss and every write — **0** added calls
+(`open`/`fstat`/`read`/`close` replaces `readFile`'s identical sequence; a miss is one failed `open`
+either way). A symbolic link: `+1 lstat +1 readlink`, plus the followed read for non-`refs/` text.
+Windows Node: `openWithNoFollow` `lstat`s the leaf first (the platform ignores `O_NOFOLLOW`), `+1` per
+loose read or miss — git's own `lstat`. Browser: one rejected call, no I/O, then today's read.
+Enumeration: `+1 stat` per link entry, which git pays too. The instrumented pin on a loose read
+changes from `readUtf8` to `openWithNoFollow`.
+
+### Change — an empty directory at a ref or log path
+
+- `atomicWriteFile`'s `beforeRename` hook becomes `commitLock(rename)`: it runs under the held lock and
+  performs the rename through the callback (default `rename()`), so a caller can react to the rename's
+  refusal without releasing the lock. `writeLooseRef` passes `refuseRefsUnderIfPacked` followed by
+  `renameOverEmptyDirectory`: on `PERMISSION_DENIED` (every adapter's code for a file renamed onto a
+  directory) with a directory at the loose path, `removeEmptyTree` — `readdir`, descend each directory
+  entry in order, stop `false` at the first other entry, `rm` the directory once empty (git's
+  `remove_dir_recurse`) — then the rename is retried; when the tree is not removable,
+  `refuseRefsUnder` (today's `FILE_EXISTS`, ED5), else `DIRECTORY_NOT_EMPTY { path: <loose path> }`
+  (ED3, ED4). The catch-all `PERMISSION_DENIED → refuseRefsUnder` after the lock is gone moves into
+  that hook.
+- Deletes: inside the loose and `packed-refs` locks, before the rewrite, each target whose loose path
+  is a directory and whose name `packed-refs` does not hold gets the same removal and refusals (ED8,
+  TX11's loose row). The `lstat` `rmUnlessDirectory` pays per target moves ahead of the rewrite and is
+  reused, so the call count is unchanged.
+- Reflog append (`recordRefUpdate`): `appendUtf8` refused `PERMISSION_DENIED` over a directory runs
+  `removeEmptyTree` and appends again (ED9); a non-removable tree rethrows the append's refusal. The
+  loggability probe treats a directory as no log (`stat().isFile`, git's `EISDIR` "no log"), at the
+  same one call.
+- An old value required (ED6): the compare-and-swap refuses before any lock, as today.
+
+**Cost.** Nothing on a normal write or delete; the refusal path adds the tree walk.
+
+### Change — `packRefs` prunes emptied directories
+
+After the loose duplicates are removed, `pruneEmptyParents(dirname(loose), <gitDir>/refs)` runs once per
+distinct parent, sequentially (the final state is order-independent: a removal only succeeds on an
+empty directory). `+1 rm` attempt per distinct prunable parent — git pays at least one `rmdir` per
+pruned ref.
+
+### Change — DWIM
+
+None. Unit rows pin `revParse` and `resolveCommitIsh` on DW1–DW5 (memory) and an interop file pins
+DW1, DW2, DW4, DW5 against git.
+
+### Change — names that collide inside one transaction
+
+A pure domain function, `firstRefNameConflict(name, facts, transactionNames)`, applies git's order:
+prefixes shortest first (existing, then a transaction name), then the smallest existing ref under
+`name/`, then the smallest transaction name under it. It returns `{ position: 'above' | 'below',
+blocking }`; the store maps `above` to `NOT_A_DIRECTORY` and `below` to `FILE_EXISTS`, each naming
+`blocking`'s loose path — the data this branch's files refusals already carry, a packed ref included,
+so a transaction name reads like a ref that already landed. git returns `TRANSACTION_NAME_CONFLICT`
+for all four messages (`refs.h`).
+
+- **Trigger (both backends):** the check runs only when two names among the transaction's `set`,
+  `setSymbolic`, `delete` and `reflogOnly` updates are prefix-related (one is a `/`-bounded prefix of
+  the other) — a pure O(n·depth) test, so a transaction without one pays nothing. A single update keeps
+  its existing per-name refusals.
+- **Checked names:** each `set`/`setSymbolic`/`delete` whose `expected` is not an object id and whose
+  ref is absent.
+- **Files:** before any lock in `applyRefUpdates`. Facts per checked name: `resolveDirect` of the name
+  and of each proper prefix, `pathKind` of the loose path, and `smallestLooseRefUnder` plus the packed
+  `smallestUnder` index. Order: names with a regular file at a prefix, a directory at the loose path,
+  or an earlier transaction name under them first, then the rest, each in update order (TX4, TX6, TX7).
+- **Reftable:** inside `prepareStackWrite`, after `verifyExpectations`, against the freshly read stack
+  (`lookup` for prefixes; a sorted `names()` array, built once and only when a checked name exists,
+  searched for the first name under `name/`), in update order.
+
+**Cost.** Zero without a prefix-related pair. With one, files pays one read per checked name and per
+prefix; reftable one O(R) names pass per such transaction.
+
+### Residuals
+
+- **A read-through link pruned after its target** (SL9's `rel → side`): git packs `rel`, prunes `side`
+  first (reverse name order), then fails to delete `rel` (`cannot lock ref 'refs/heads/rel': unable to
+  resolve reference`, exit 0) and keeps the link; tsgit removes the link. Ordering-dependent.
+- **ED10**: git sets the log up before committing the ref and refuses both; tsgit writes the ref, then
+  the append refuses.
+- **Refusal priority** when one transaction carries both a name conflict and a compare-and-swap mismatch
+  or an ED3-shaped directory: tsgit reports the name conflict first.
+- **Single-update name checks**: the files backend still writes a ref under a packed-only ref, and a
+  delete of an absent ref under or over existing refs is a no-op (git: TX11); the reftable backend runs
+  no availability check for a single update or unrelated names. `branch -m a a/b` and `branch -m c/d c`
+  (TX12) succeed in git; tsgit's files rename refuses them through the per-name checks.
+- `fsck`'s `symlinkRef` warning (git 2.55.0 reports `use deprecated symbolic link for symref`) is not
+  produced.
+
+### Docs consequences
+
+- `docs/use/primitives/update-ref.md`, `resolve-ref.md`: a symbolic link is a symref when its text is a
+  `refs/` refname; an empty directory at the path is removed; `DIRECTORY_NOT_EMPTY`; transaction name
+  conflicts.
+- `docs/use/commands/pack-refs.md`: emptied directories are removed.
+- `docs/use/errors.md`: `DIRECTORY_NOT_EMPTY` from a ref write; `FILE_EXISTS`/`NOT_A_DIRECTORY` for a
+  transaction's own names, on reftable too.
+- Migration notes: one line per observable change above.
