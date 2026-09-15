@@ -7,7 +7,6 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { refCycleDetected } from '../../../domain/refs/error.js';
-import { validateRefName } from '../../../domain/refs/ref-validation.js';
 import type { RefStore, ResolveDirectResult } from '../ref-store.js';
 import { resolveDirectChain } from '../resolve-ref.js';
 import { MAX_SYMBOLIC_REF_DEPTH } from '../types.js';
@@ -56,7 +55,10 @@ async function walkSymbolicChain(store: RefStore, name: RefName): Promise<RefWri
       };
     }
     links.push(current);
-    current = validateRefName(value.target);
+    // Both stores hand back a target that already passed `validateRefName`:
+    // `parseLooseRef` validates it, and the reftable decoder gates it through
+    // `isSafeRefName`.
+    current = value.target;
   }
 }
 
