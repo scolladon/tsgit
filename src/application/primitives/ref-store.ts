@@ -16,6 +16,7 @@ import {
   invalidRef,
   type ReftableCheck,
   refChainTooDeep,
+  refCycleDetected,
   refLocked,
   refUpdateConflict,
 } from '../../domain/refs/error.js';
@@ -358,6 +359,30 @@ function toUpdateRuns(updates: readonly RefUpdate[]): readonly UpdateRun[] {
   }
   if (deletes.length > 0) runs.push({ kind: 'deletes', updates: deletes });
   return runs;
+}
+
+/**
+ * git's `ref_update_reject_duplicates`: a transaction naming a ref twice
+ * refuses `multiple updates for ref '<name>' not allowed` — before any lock
+ * or compare-and-swap, reporting the smallest duplicated name once the names
+ * are sorted. `REF_CYCLE_DETECTED` is the refusal git's same "multiple
+ * updates" check already maps to for a chain that meets a name twice; here
+ * the name is met twice directly.
+ */
+function assertNoDuplicateNames(updates: readonly DeleteUpdate[]): void {
+  const duplicate = smallestDuplicateName(updates);
+  if (duplicate !== undefined) throw refCycleDetected([duplicate, duplicate]);
+}
+
+/** The byte-wise smallest name `updates` carries more than once. */
+function smallestDuplicateName(updates: readonly DeleteUpdate[]): RefName | undefined {
+  const seen = new Set<RefName>();
+  let smallest: RefName | undefined;
+  for (const { name } of updates) {
+    if (seen.has(name) && (smallest === undefined || name < smallest)) smallest = name;
+    seen.add(name);
+  }
+  return smallest;
 }
 
 /** The directory an empty-parent climb starts from in the refs tree, keyed
@@ -1166,6 +1191,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    * being pruned — matching git's unlock-then-`try_remove_empty_parents`.
    */
   async function applyDeletes(updates: readonly DeleteUpdate[]): Promise<void> {
+    assertNoDuplicateNames(updates);
     for (const update of updates) await checkExpected(update.name, update.expected);
     const targets = await boundedMapFor(ctx, 'ioBound', updates, deleteTargetFor);
     const lockable = targets.filter((target) => target.looseDirExists);

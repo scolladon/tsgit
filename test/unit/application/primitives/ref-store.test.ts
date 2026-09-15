@@ -513,6 +513,77 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given branches a and b, and a held lock on a', () => {
+    const seedAB = async (): Promise<Context> => {
+      const ctx = await buildSeededContext({
+        refs: [
+          { name: 'refs/heads/a' as RefName, id: 'a'.repeat(40) as ObjectId },
+          { name: 'refs/heads/b' as RefName, id: 'b'.repeat(40) as ObjectId },
+        ],
+      });
+      await ctx.fs.write('/repo/.git/refs/heads/a.lock', new Uint8Array(0));
+      return ctx;
+    };
+
+    describe('When one applyRefUpdates call deletes a name more than once', () => {
+      it.each([
+        {
+          label: 'the smallest duplicated name is named, as git sorts before rejecting',
+          updates: ['refs/heads/b', 'refs/heads/b', 'refs/heads/a', 'refs/heads/a'],
+          duplicate: 'refs/heads/a',
+          expected: undefined,
+        },
+        {
+          label: 'the duplicate refuses before the held lock on a is met',
+          updates: ['refs/heads/a', 'refs/heads/b', 'refs/heads/b'],
+          duplicate: 'refs/heads/b',
+          expected: undefined,
+        },
+        {
+          label: 'the duplicate refuses before a mismatched compare-and-swap',
+          updates: ['refs/heads/b', 'refs/heads/b'],
+          duplicate: 'refs/heads/b',
+          expected: 'f'.repeat(40),
+        },
+      ])('Then $label and nothing changes', async ({ updates, duplicate, expected }) => {
+        // Arrange
+        const ctx = await seedAB();
+        const sut = createRefStore(ctx);
+        const deletes = updates.map(
+          (name): RefUpdate => ({
+            kind: 'delete',
+            name: name as RefName,
+            ...(expected === undefined ? {} : { expected: expected as ObjectId }),
+          }),
+        );
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates(deletes);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_CYCLE_DETECTED',
+          chain: [duplicate, duplicate],
+        });
+        expect(await sut.resolveDirect('refs/heads/a' as RefName)).toEqual({
+          kind: 'direct',
+          id: 'a'.repeat(40),
+        });
+        expect(await sut.resolveDirect('refs/heads/b' as RefName)).toEqual({
+          kind: 'direct',
+          id: 'b'.repeat(40),
+        });
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/a.lock')).toBe(true);
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/b.lock')).toBe(false);
+      });
+    });
+  });
+
   describe('Given a packed-refs snapshot the store has already loaded', () => {
     describe('When a loose-only ref is deleted', () => {
       it('Then the packed-refs file is not read again', async () => {
