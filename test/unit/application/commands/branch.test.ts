@@ -758,6 +758,95 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a branch a, and refs/heads/y a symbolic ref to the existing refs/heads/main', () => {
+    const seedSymbolicDestination = async () => {
+      const seeded = await seedWithCommit();
+      await branchCreate(seeded.ctx, { name: 'a' });
+      await writeSymbolicRef(seeded.ctx, 'refs/heads/y' as RefName, 'refs/heads/main' as RefName);
+      return seeded;
+    };
+
+    describe('When branch rename moves a onto y without force', () => {
+      it('Then it refuses BRANCH_EXISTS naming y and changes nothing', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedSymbolicDestination();
+        const store = getRefStore(ctx);
+        const sut = branchRename;
+
+        // Act
+        const caught = await expectError(() => sut(ctx, { from: 'a', to: 'y' }), 'BRANCH_EXISTS');
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_EXISTS', name: 'refs/heads/y' });
+        expect(await store.resolveDirect('refs/heads/y' as RefName)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/heads/main',
+        });
+        expect(await store.resolveDirect('refs/heads/a' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await readReflog(ctx, 'refs/heads/a' as RefName)).toHaveLength(1);
+      });
+    });
+
+    describe('When branch rename moves a onto y with force', () => {
+      it("Then y becomes a direct ref carrying a's log plus the rename entry, and main is untouched", async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(FROZEN_NOW_MS);
+        const { ctx, commitId } = await seedSymbolicDestination();
+        const store = getRefStore(ctx);
+        const mainLogBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+        const sut = branchRename;
+
+        // Act
+        await sut(ctx, { from: 'a', to: 'y', force: true });
+
+        // Assert
+        const identity = `tsgit <tsgit@localhost> ${FROZEN_NOW_S} +0000`;
+        expect(await store.resolveDirect('refs/heads/y' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await store.resolveDirect('refs/heads/a' as RefName)).toEqual({ kind: 'missing' });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/y`)).toBe(
+          `${ZERO_OID} ${commitId} ${identity}\tbranch: Created from HEAD\n` +
+            `${commitId} ${commitId} ${identity}\tBranch: renamed refs/heads/a to refs/heads/y\n`,
+        );
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(
+          mainLogBefore,
+        );
+      });
+    });
+  });
+
+  describe('Given a branch b, and refs/heads/dy a symbolic ref to an absent refs/heads/nope', () => {
+    describe('When branch rename moves b onto dy without force', () => {
+      it('Then dy is replaced by a direct ref and nope is never created', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'b' });
+        await writeSymbolicRef(ctx, 'refs/heads/dy' as RefName, 'refs/heads/nope' as RefName);
+        const store = getRefStore(ctx);
+        const sut = branchRename;
+
+        // Act
+        await sut(ctx, { from: 'b', to: 'dy' });
+
+        // Assert
+        expect(await store.resolveDirect('refs/heads/dy' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await store.resolveDirect('refs/heads/nope' as RefName)).toEqual({
+          kind: 'missing',
+        });
+        expect(await store.resolveDirect('refs/heads/b' as RefName)).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
   describe('Given refs/heads/sym is a symbolic ref to refs/heads/x, and a branch y', () => {
     const seedSymbolicSource = async () => {
       const seeded = await seedWithCommit();

@@ -184,7 +184,7 @@ export const branchRename = async (
   const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);
   const request: RenameRequest = { from, to, force: input.force === true };
-  await assertRenamableSource(ctx, request);
+  await assertRenameAllowed(ctx, request);
   await (from === to ? renameOntoItself(ctx, request, id) : renameBranch(ctx, request, id));
   return { from, to };
 };
@@ -276,15 +276,17 @@ interface RenameRequest {
 }
 
 /**
- * git refuses to rename a symbolic ref — itself included — changing
- * nothing, but only after its own "already exists" check on a distinct
- * destination (measured, git 2.55.0: `branch -m sym y` reports `y` exists,
+ * git's own pre-checks, in its order, before anything changes: an unforced
+ * rename onto a distinct destination that resolves for reading — a live
+ * symbolic ref included, a dangling one not — refuses "already exists";
+ * then a symbolic source refuses, itself included (measured, git 2.55.0:
+ * `branch -m a y` with `y → main` and `branch -m sym y` report `y` exists,
  * `branch -M sym y` and `branch -m sym sym` report the symbolic ref).
  */
-const assertRenamableSource = async (ctx: Context, request: RenameRequest): Promise<void> => {
+const assertRenameAllowed = async (ctx: Context, request: RenameRequest): Promise<void> => {
   const { from, to, force } = request;
-  if ((await getRefStore(ctx).resolveDirect(from)).kind !== 'symbolic') return;
   if (from !== to && !force && (await refResolvesForReading(ctx, to))) throw branchExists(to);
+  if ((await getRefStore(ctx).resolveDirect(from)).kind !== 'symbolic') return;
   throw unsupportedOperation(BRANCH_RENAME, `refname ${from} is a symbolic ref`);
 };
 
