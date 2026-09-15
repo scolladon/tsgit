@@ -758,6 +758,70 @@ describe('branch', () => {
     });
   });
 
+  describe('Given refs/heads/sym is a symbolic ref to refs/heads/x, and a branch y', () => {
+    const seedSymbolicSource = async () => {
+      const seeded = await seedWithCommit();
+      await branchCreate(seeded.ctx, { name: 'x' });
+      await branchCreate(seeded.ctx, { name: 'y' });
+      await writeSymbolicRef(seeded.ctx, 'refs/heads/sym' as RefName, 'refs/heads/x' as RefName);
+      return seeded;
+    };
+
+    describe('When branch rename moves sym', () => {
+      it.each([
+        { label: 'to a new name', to: 'renamed', force: false },
+        { label: 'onto itself', to: 'sym', force: false },
+        { label: 'onto the existing y with force', to: 'y', force: true },
+      ])(
+        'Then renaming it $label refuses UNSUPPORTED_OPERATION and changes nothing',
+        async ({ to, force }) => {
+          // Arrange
+          const { ctx, commitId } = await seedSymbolicSource();
+          const store = getRefStore(ctx);
+          const symLogBefore = await readReflog(ctx, 'refs/heads/sym' as RefName);
+          const sut = branchRename;
+
+          // Act
+          const caught = await expectError(
+            () => sut(ctx, { from: 'sym', to, force }),
+            'UNSUPPORTED_OPERATION',
+          );
+
+          // Assert
+          expect(caught.data).toEqual({
+            code: 'UNSUPPORTED_OPERATION',
+            operation: 'branch.rename',
+            reason: 'refname refs/heads/sym is a symbolic ref',
+          });
+          expect(await store.resolveDirect('refs/heads/sym' as RefName)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/heads/x',
+          });
+          expect(await store.resolveDirect('refs/heads/y' as RefName)).toEqual({
+            kind: 'direct',
+            id: commitId,
+          });
+          expect(await store.resolveDirect('refs/heads/renamed' as RefName)).toEqual({
+            kind: 'missing',
+          });
+          expect(await readReflog(ctx, 'refs/heads/sym' as RefName)).toEqual(symLogBefore);
+        },
+      );
+
+      it('Then renaming it onto the existing y without force refuses BRANCH_EXISTS first', async () => {
+        // Arrange
+        const { ctx } = await seedSymbolicSource();
+        const sut = branchRename;
+
+        // Act
+        const caught = await expectError(() => sut(ctx, { from: 'sym', to: 'y' }), 'BRANCH_EXISTS');
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_EXISTS', name: 'refs/heads/y' });
+      });
+    });
+  });
+
   describe('Given a non-current branch', () => {
     describe('When branch rename', () => {
       it('Then HEAD is unchanged (only the renamed-current branch updates HEAD)', async () => {

@@ -4,7 +4,7 @@
  * Context-aware function; the namespace binder lives in
  * `internal/branch-namespace.ts`.
  */
-import { TsgitError } from '../../domain/error.js';
+import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
@@ -172,6 +172,7 @@ export const branchRename = async (
   const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
   const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
   const id = await resolveRef(ctx, from);
+  await assertRenamableSource(ctx, { from, to, force: input.force === true });
   const store = getRefStore(ctx);
   if (from === to) {
     // git accepts a self-rename (`branch -m x x` and `-M x x` both exit 0):
@@ -238,6 +239,27 @@ export const branchRename = async (
     ]);
   }
   return { from, to };
+};
+
+const BRANCH_RENAME = 'branch.rename';
+
+interface RenameRequest {
+  readonly from: RefName;
+  readonly to: RefName;
+  readonly force: boolean;
+}
+
+/**
+ * git refuses to rename a symbolic ref — itself included — changing
+ * nothing, but only after its own "already exists" check on a distinct
+ * destination (measured, git 2.55.0: `branch -m sym y` reports `y` exists,
+ * `branch -M sym y` and `branch -m sym sym` report the symbolic ref).
+ */
+const assertRenamableSource = async (ctx: Context, request: RenameRequest): Promise<void> => {
+  const { from, to, force } = request;
+  if ((await getRefStore(ctx).resolveDirect(from)).kind !== 'symbolic') return;
+  if (from !== to && !force && (await refResolvesForReading(ctx, to))) throw branchExists(to);
+  throw unsupportedOperation(BRANCH_RENAME, `refname ${from} is a symbolic ref`);
 };
 
 interface RenamedBranchLogInput {
