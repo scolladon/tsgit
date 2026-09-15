@@ -440,6 +440,28 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a two-component ref that is the only ref and the only reflog', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then refs, logs and logs/refs all survive — no parent at or above the namespace root is pruned', async () => {
+        // Arrange
+        const name = 'refs/foo' as RefName;
+        const ctx = await buildSeededContext({ refs: [{ name, id: 'a'.repeat(40) as ObjectId }] });
+        await appendReflog(ctx, name, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name }]);
+
+        // Assert
+        expect(await ctx.fs.readdir('/repo/.git/refs')).toEqual([]);
+        expect(await ctx.fs.readdir('/repo/.git/logs/refs')).toEqual([]);
+        expect((await ctx.fs.readdir('/repo/.git/logs')).map((entry) => entry.name)).toEqual([
+          'refs',
+        ]);
+      });
+    });
+  });
+
   describe('Given HEAD has the only reflog in the repository', () => {
     describe('When applyRefUpdates deletes HEAD through the store', () => {
       it('Then logs/ itself survives — the refs/ pruning never applies to a bare pseudo-ref', async () => {

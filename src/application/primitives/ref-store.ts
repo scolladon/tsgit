@@ -911,16 +911,17 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /**
    * Removes now-empty ancestor directories above `leaf`, up to — but never
-   * including — an immediate child of `root` (`refs/heads`, `refs/remotes`,
-   * `logs/refs/heads`, …): those survive even fully empty, matching real
-   * git (deleting the last branch leaves `refs/heads/` and `logs/refs/heads/`
-   * behind, but deleting the last tracking ref under `refs/remotes/origin/`
-   * removes that nested directory, loose file and log alike). Measured
-   * against git 2.55.0.
+   * including — `root` itself or an immediate child of it (`refs/heads`,
+   * `refs/remotes`, `logs/refs/heads`, …): those survive even fully empty,
+   * matching real git, which skips a refname's first two components
+   * (deleting the last branch leaves `refs/heads/` and `logs/refs/heads/`
+   * behind, deleting a two-component `refs/stash` leaves `logs/refs/`, but
+   * deleting the last tracking ref under `refs/remotes/origin/` removes that
+   * nested directory, loose file and log alike). Measured against git 2.55.0.
    */
   async function pruneEmptyDirsUpTo(leaf: string, root: string): Promise<void> {
     let dir = dirname(leaf);
-    while (dirname(dir) !== root) {
+    while (dir !== root && dirname(dir) !== root) {
       let entries: ReadonlyArray<unknown>;
       try {
         entries = await ctx.fs.readdir(dir);
