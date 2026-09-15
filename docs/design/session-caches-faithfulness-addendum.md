@@ -2094,7 +2094,7 @@ async function removeEverywhere(name: RefName, loose: string, commitPacked: (con
 ### Change — O6: `remote.rename` moves tracking refs and their logs as git does, per backend
 
 `moveTrackingRef` (`remote.ts:209-223`) and the rename loop (`:242-249`) become, for each name under
-`refs/remotes/<from>/` with `message = remote: renamed <old ref> to <new ref>` (full ref names, R18):
+`refs/remotes/<from>/` with `message = remote: renamed <old ref> to <new ref>` (full ref names, R18), and only once every renamed name is proven absent — git prepares the whole rename as one transaction, so an existing name (direct, symbolic, or a dangling symref) refuses before any `moveReflog`, which would otherwise overwrite that name's log and strand the source's:
 
 | Source | Files (R18) | Reftable (R19) |
 |---|---|---|
