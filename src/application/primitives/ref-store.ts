@@ -294,6 +294,36 @@ export async function refExists(ctx: Context, name: RefName): Promise<boolean> {
 }
 
 const HEAD_NAME: RefName = 'HEAD' as RefName;
+/** The stat failures that mean "no directory here": the path, or a
+ *  component above it, is absent or a regular file. */
+const NOT_A_DIRECTORY_PATH_CODES: ReadonlySet<string> = new Set([
+  'FILE_NOT_FOUND',
+  'NOT_A_DIRECTORY',
+]);
+/** The removal failures that end an empty-parent climb, as a failing
+ *  `rmdir` ends git's: the directory is still non-empty (the browser
+ *  adapter reports that as absent) or already gone. Never "not a
+ *  directory": the climb starts on a known directory, whose ancestors are
+ *  directories too. */
+const UNREMOVABLE_DIRECTORY_CODES: ReadonlySet<string> = new Set([
+  'DIRECTORY_NOT_EMPTY',
+  'FILE_NOT_FOUND',
+]);
+
+/** Whether `dir` sits strictly below an immediate child of `root` — the
+ *  only directories an empty-parent climb may remove. */
+const isPrunableParent = (dir: string, root: string): boolean =>
+  dir.startsWith(`${root}/`) && dirname(dir) !== root;
+
+/** One delete's loose-file footprint, resolved before any lock is taken. */
+interface DeleteTarget {
+  readonly name: RefName;
+  readonly gitDir: string;
+  readonly loose: string;
+  /** Whether the loose file's parent is a directory: the loose lock is
+   *  taken, and the refs tree pruned, only then. */
+  readonly looseDirExists: boolean;
+}
 const REFS_DIR = 'refs';
 const SYMBOLIC_PREFIX = 'ref: ';
 /** Matches valid SHA-1 (40-hex) or SHA-256 (64-hex) loose-ref content. */
@@ -859,36 +889,29 @@ function createFilesRefStore(ctx: Context): RefStore {
   const packedRefsLocked = (path: string): TsgitError =>
     new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'ref', path });
 
-  /** Whether `loose`'s parent directory exists — a lock file cannot exist
-   *  without it, so contention there is unobservable, and taking the lock
-   *  would create a directory git leaves absent (a nested absent delete
-   *  must leave no `refs/heads/deep/` behind). */
-  async function looseRefDirExists(loose: string): Promise<boolean> {
+  /** Whether `dir` is an existing directory — `false` when it, or a
+   *  component above it, is absent or a regular file. */
+  async function isDirectoryPath(dir: string): Promise<boolean> {
     try {
-      return (await ctx.fs.stat(dirname(loose))).isDirectory;
+      return (await ctx.fs.stat(dir)).isDirectory;
     } catch (err) {
-      const code = errorDataCode(err);
-      if (code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY') return false;
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return false;
       throw err;
     }
   }
 
-  /** Takes `<loose>.lock` for `body` — but only when `loose`'s parent
-   *  directory exists (see {@link looseRefDirExists}). A held lock refuses
-   *  `REF_LOCKED { name }`, before the packed-refs lock is ever attempted. */
-  async function withLooseRefLock(
-    loose: string,
-    name: RefName,
-    body: () => Promise<void>,
-  ): Promise<void> {
-    if (!(await looseRefDirExists(loose))) {
-      await body();
-      return;
-    }
+  /** Takes `<loose>.lock` for `body` — but only when `loose`'s parent is a
+   *  directory: a lock file cannot exist without it, so contention there is
+   *  unobservable, and taking the lock would create a directory git leaves
+   *  absent (a nested absent delete must leave no `refs/heads/deep/`
+   *  behind). A held lock refuses `REF_LOCKED { name }`, before the
+   *  packed-refs lock is ever attempted. */
+  async function withLooseRefLock(target: DeleteTarget, body: () => Promise<void>): Promise<void> {
+    if (!target.looseDirExists) return body();
     await withLockFile(
       ctx,
-      loose,
-      () => refLocked(name),
+      target.loose,
+      () => refLocked(target.name),
       () => body(),
     );
   }
@@ -909,30 +932,42 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
   }
 
-  /**
-   * Removes now-empty ancestor directories above `leaf`, up to — but never
-   * including — `root` itself or an immediate child of it (`refs/heads`,
-   * `refs/remotes`, `logs/refs/heads`, …): those survive even fully empty,
-   * matching real git, which skips a refname's first two components
-   * (deleting the last branch leaves `refs/heads/` and `logs/refs/heads/`
-   * behind, deleting a two-component `refs/stash` leaves `logs/refs/`, but
-   * deleting the last tracking ref under `refs/remotes/origin/` removes that
-   * nested directory, loose file and log alike). Measured against git 2.55.0.
-   */
-  async function pruneEmptyDirsUpTo(leaf: string, root: string): Promise<void> {
-    let dir = dirname(leaf);
-    while (dir !== root && dirname(dir) !== root) {
-      let entries: ReadonlyArray<unknown>;
-      try {
-        entries = await ctx.fs.readdir(dir);
-      } catch (err) {
-        if (isFileNotFound(err)) return;
-        throw err;
-      }
-      if (entries.length > 0) return;
+  /** Removes `dir` when it is empty; `false` when it is non-empty or
+   *  already gone — where git's own `rmdir` climb stops. */
+  async function removeEmptyDirectory(dir: string): Promise<boolean> {
+    try {
       await ctx.fs.rm(dir);
-      dir = dirname(dir);
+      return true;
+    } catch (err) {
+      if (UNREMOVABLE_DIRECTORY_CODES.has(errorDataCode(err) ?? '')) return false;
+      throw err;
     }
+  }
+
+  /**
+   * git's `try_remove_empty_parents`: removes the now-empty directory `dir`
+   * (KNOWN to be a directory — the port's `rm` also removes a file) and then
+   * each empty ancestor, one removal attempt per level and no listing, never
+   * reaching `root` itself or an immediate child of it (`refs/heads`,
+   * `refs/remotes`, `logs/refs/heads`, …): git skips a refname's first two
+   * components, so deleting the last branch leaves `refs/heads/` and
+   * `logs/refs/heads/`, a two-component `refs/stash` leaves `logs/refs/`, but
+   * deleting the last tracking ref under `refs/remotes/origin/` removes that
+   * nested directory, loose file and log alike. Measured against git 2.55.0.
+   */
+  async function pruneEmptyParents(dir: string, root: string): Promise<void> {
+    if (!isPrunableParent(dir, root)) return;
+    if (!(await removeEmptyDirectory(dir))) return;
+    await pruneEmptyParents(dirname(dir), root);
+  }
+
+  /** {@link pruneEmptyParents} for a `dir` not yet known to be a directory:
+   *  one `stat` first, only when `dir` is prunable at all, so a file sitting
+   *  where a parent directory would be (an orphan log) is never removed. */
+  async function pruneEmptyParentsIfDirectory(dir: string, root: string): Promise<void> {
+    if (!isPrunableParent(dir, root)) return;
+    if (!(await isDirectoryPath(dir))) return;
+    await pruneEmptyParents(dir, root);
   }
 
   /**
@@ -943,21 +978,40 @@ function createFilesRefStore(ctx: Context): RefStore {
    * never an older packed value resurrected.
    */
   async function removeEverywhere(
-    name: RefName,
-    loose: string,
+    target: DeleteTarget,
     commitPacked: (content: Uint8Array) => Promise<void>,
   ): Promise<void> {
     const packedText = await readPackedRefsTextIfPresent();
     if (
       packedText !== undefined &&
-      parsePackedRefs(packedText).entries.some((e) => e.name === name)
+      parsePackedRefs(packedText).entries.some((e) => e.name === target.name)
     ) {
-      await commitPacked(TEXT_ENCODER.encode(packedRefsWithout(packedText, name)));
+      await commitPacked(TEXT_ENCODER.encode(packedRefsWithout(packedText, target.name)));
       packedCache = undefined;
     }
-    await rmIfPresent(loose);
-    await removeReflogFile(name);
-    if (name === HEAD_NAME) invalidateHeadSlot(ctx);
+    await rmIfPresent(target.loose);
+    await removeReflogFile(target.name);
+    if (target.name === HEAD_NAME) invalidateHeadSlot(ctx);
+  }
+
+  async function deleteTargetFor(name: RefName): Promise<DeleteTarget> {
+    const gitDir = refDir(name);
+    const loose = looseRefPath(gitDir, name);
+    return { name, gitDir, loose, looseDirExists: await isDirectoryPath(dirname(loose)) };
+  }
+
+  /** Both trees' empty-parent pruning for a name nested under `refs/` — a
+   *  bare pseudo-ref like `HEAD` has no such directory. The refs tree is
+   *  pruned only when the loose parent was a directory; the logs tree
+   *  whether or not the ref had a log, as git's own unlink-then-prune
+   *  treats an absent log. */
+  async function pruneDeletedParents(target: DeleteTarget): Promise<void> {
+    if (!target.name.startsWith(`${REFS_DIR}/`)) return;
+    if (target.looseDirExists) {
+      await pruneEmptyParents(dirname(target.loose), `${target.gitDir}/${REFS_DIR}`);
+    }
+    const log = reflogPath(target.gitDir, target.name);
+    await pruneEmptyParentsIfDirectory(dirname(log), `${logsDir(target.gitDir)}/${REFS_DIR}`);
   }
 
   /**
@@ -966,28 +1020,19 @@ function createFilesRefStore(ctx: Context): RefStore {
    * `packed-refs` (rewritten only when it held it), then remove the loose
    * file and its log. Both locks are taken even for an absent ref —
    * the delete's no-op is proven by nothing changing, not by a
-   * refusal. Ancestor-directory pruning (both the `refs/` and `logs/refs/`
-   * trees) runs AFTER the loose lock is released — the lock file itself
-   * lives in the same directory being pruned, so pruning while it still
-   * holds the lock would see it as non-empty and refuse to remove
-   * anything, matching git's own unlock-then-`try_remove_empty_parents`
-   * order — and only for a name nested under `refs/`: a bare pseudo-ref
-   * like `HEAD` has no such directory, and reusing the same climb for it
-   * would walk into `logs/` itself using the wrong boundary.
+   * refusal. Ancestor-directory pruning runs AFTER the loose lock is
+   * released — the lock file itself lives in the directory being pruned,
+   * matching git's own unlock-then-`try_remove_empty_parents` order.
    */
   async function applyDelete(update: Extract<RefUpdate, { kind: 'delete' }>): Promise<void> {
     await checkExpected(update.name, update.expected);
-    const gitDir = refDir(update.name);
-    const loose = looseRefPath(gitDir, update.name);
-    await withLooseRefLock(loose, update.name, () =>
+    const target = await deleteTargetFor(update.name);
+    await withLooseRefLock(target, () =>
       withLockFile(ctx, packedRefsPath(commonGitDir(ctx)), packedRefsLocked, (commit) =>
-        removeEverywhere(update.name, loose, commit),
+        removeEverywhere(target, commit),
       ),
     );
-    if (update.name.startsWith('refs/')) {
-      await pruneEmptyDirsUpTo(loose, `${gitDir}/refs`);
-      await pruneEmptyDirsUpTo(reflogPath(gitDir, update.name), `${gitDir}/logs/refs`);
-    }
+    await pruneDeletedParents(target);
   }
 
   async function applyOne(update: RefUpdate): Promise<void> {

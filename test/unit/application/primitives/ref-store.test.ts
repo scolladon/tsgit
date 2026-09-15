@@ -6,7 +6,7 @@ import { createRefStore, getRefStore } from '../../../../src/application/primiti
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
+import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -458,6 +458,212 @@ describe('ref-store', () => {
         expect((await ctx.fs.readdir('/repo/.git/logs')).map((entry) => entry.name)).toEqual([
           'refs',
         ]);
+      });
+    });
+  });
+
+  describe('Given the only ref and log under a nested namespace directory', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then both nested directories are pruned without listing any directory', async () => {
+        // Arrange
+        const name = 'refs/remotes/origin/main' as RefName;
+        const base = await buildSeededContext({ refs: [{ name, id: 'a'.repeat(40) as ObjectId }] });
+        await appendReflog(base, name, reflogEntry());
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name }]);
+
+        // Assert
+        expect(calls().filter((call) => call.method === 'readdir')).toEqual([]);
+        expect(await base.fs.exists('/repo/.git/refs/remotes/origin')).toBe(false);
+        expect(await base.fs.exists('/repo/.git/logs/refs/remotes/origin')).toBe(false);
+        expect(await base.fs.exists('/repo/.git/refs/remotes')).toBe(true);
+        expect(await base.fs.exists('/repo/.git/logs/refs/remotes')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the only branch in the repository, with a reflog', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then logs/refs/heads survives empty, matching git', async () => {
+        // Arrange
+        const name = 'refs/heads/main' as RefName;
+        const ctx = await buildSeededContext({ refs: [{ name, id: 'a'.repeat(40) as ObjectId }] });
+        await appendReflog(ctx, name, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name }]);
+
+        // Assert
+        expect(await ctx.fs.readdir('/repo/.git/logs/refs/heads')).toEqual([]);
+      });
+    });
+  });
+
+  describe("Given an orphan log file where a nested ref's log directory would be, on an adapter whose exists reports a path under a file as absent", () => {
+    describe('When applyRefUpdates deletes that nested ref', () => {
+      it.each([
+        { label: 'the log parent itself is the file', name: 'refs/remotes/q/z' },
+        { label: 'a component above the log parent is the file', name: 'refs/remotes/q/sub/z' },
+      ])('Then $label and the orphan log survives byte-unchanged', async ({ name }) => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: name as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await base.fs.writeUtf8('/repo/.git/logs/refs/remotes/q', 'orphan log\n');
+        const logPath = `/repo/.git/logs/${name}`;
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            exists: async (path) => (path === logPath ? false : base.fs.exists(path)),
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: name as RefName }]);
+
+        // Assert
+        expect(await base.fs.readUtf8('/repo/.git/logs/refs/remotes/q')).toBe('orphan log\n');
+        expect(await base.fs.exists('/repo/.git/refs/remotes/q')).toBe(false);
+      });
+    });
+  });
+
+  describe("Given a live ref file where a packed-only ref's loose directory would be, on an adapter whose exists reports a path under a file as absent", () => {
+    describe('When applyRefUpdates deletes the packed-only ref', () => {
+      it('Then its packed line is gone and the live ref file survives', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/remotes/q' as RefName, id: 'b'.repeat(40) as ObjectId }],
+          packedRefs: [{ name: 'refs/remotes/q/z' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const underFile = '/repo/.git/refs/remotes/q/';
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            exists: async (path) => (path.startsWith(underFile) ? false : base.fs.exists(path)),
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/remotes/q/z' as RefName }]);
+
+        // Assert
+        expect(await base.fs.readUtf8('/repo/.git/packed-refs')).not.toContain('refs/remotes/q/z');
+        expect(await base.fs.readUtf8('/repo/.git/refs/remotes/q')).toBe(`${'b'.repeat(40)}\n`);
+      });
+    });
+  });
+
+  describe("Given the loose ref's parent directory cannot be stat'ed for a reason other than absence", () => {
+    describe('When applyRefUpdates deletes the ref', () => {
+      it('Then that error propagates and the loose file stays', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/lo' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const denied = permissionDenied('/repo/.git/refs/heads');
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            stat: async (path) => {
+              if (path === '/repo/.git/refs/heads') throw denied;
+              return base.fs.stat(path);
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/lo' as RefName }]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(denied);
+        expect(await base.fs.exists('/repo/.git/refs/heads/lo')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an adapter that reports removing a non-empty directory as absent, and a sibling ref remaining', () => {
+    describe('When applyRefUpdates deletes the other ref in the nested directory', () => {
+      it('Then the delete completes and the directory and sibling are kept', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [
+            { name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/remotes/origin/dev' as RefName, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            rm: async (path) => {
+              if (path === '/repo/.git/refs/remotes/origin') throw fileNotFound(path);
+              return base.fs.rm(path);
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'delete', name: 'refs/remotes/origin/main' as RefName },
+        ]);
+
+        // Assert
+        expect(await base.fs.exists('/repo/.git/refs/remotes/origin/main')).toBe(false);
+        expect(await base.fs.exists('/repo/.git/refs/remotes/origin/dev')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a nested directory whose removal fails for a reason other than being non-empty or absent', () => {
+    describe('When applyRefUpdates deletes the only ref in it', () => {
+      it('Then that error propagates after the ref is gone', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const denied = permissionDenied('/repo/.git/refs/remotes/origin');
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            rm: async (path) => {
+              if (path === '/repo/.git/refs/remotes/origin') throw denied;
+              return base.fs.rm(path);
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([
+            { kind: 'delete', name: 'refs/remotes/origin/main' as RefName },
+          ]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(denied);
+        expect(await base.fs.exists('/repo/.git/refs/remotes/origin/main')).toBe(false);
       });
     });
   });
