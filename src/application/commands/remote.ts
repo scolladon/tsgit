@@ -13,7 +13,7 @@ import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/objec
 import { REMOTE_REMOVE_REFLOG } from '../../domain/reflog/reflog-messages.js';
 import { refUpdateConflict } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from '../primitives/config-read.js';
+import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
@@ -24,6 +24,7 @@ import { deleteRefs } from '../primitives/update-ref.js';
 import { parseRefspec } from './internal/refspec.js';
 import {
   assertRemoteNameUnnested,
+  type BranchReferrer,
   listBranchReferrers,
   rewriteDefaultFetchRefspecs,
   validateRemoteName,
@@ -164,6 +165,19 @@ const listTrackingRefs = async (ctx: Context, name: string): Promise<ReadonlyArr
   return all.filter((ref): ref is RefName => ref.startsWith(prefix));
 };
 
+/** A removal's config rewrite: the `[remote "<name>"]` section dropped and
+ *  every paired `branch.<X>.remote` / `branch.<X>.merge` key cleared. */
+const removeConfigOperations = (
+  name: string,
+  referrers: ReadonlyArray<BranchReferrer>,
+): ConfigOperation[] => [
+  { kind: 'removeSection', section: 'remote', subsection: name },
+  ...referrers.flatMap((referrer): ConfigOperation[] => [
+    { kind: 'removeEntry', section: 'branch', subsection: referrer.branch, key: 'remote' },
+    { kind: 'removeEntry', section: 'branch', subsection: referrer.branch, key: 'merge' },
+  ]),
+];
+
 export const remoteRemove = async (
   ctx: Context,
   input: RemoteRemoveInput,
@@ -173,27 +187,13 @@ export const remoteRemove = async (
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
   const trackingRefs = await listTrackingRefs(ctx, input.name);
   const referrers = listBranchReferrers(config, input.name);
-  // Delete tracking refs first — recoverable if we crash before the
-  // config rewrite — as ONE ref transaction, as git's `remote remove` does;
-  // each delete cleans its reflog file too.
+  // Tracking refs go first — recoverable if we crash before the config
+  // rewrite — as ONE ref transaction, as git's `remote remove` does; each
+  // delete cleans its reflog file too.
   await deleteRefs(ctx, trackingRefs, { noDeref: true, reflogMessage: REMOTE_REMOVE_REFLOG });
-  // Rewrite config: drop the [remote "<name>"] section AND clear every
-  // paired branch.<X>.remote / branch.<X>.merge key.
-  const ops: ConfigOperation[] = [
-    { kind: 'removeSection', section: 'remote', subsection: input.name },
-  ];
-  for (const referrer of referrers) {
-    ops.push(
-      { kind: 'removeEntry', section: 'branch', subsection: referrer.branch, key: 'remote' },
-      { kind: 'removeEntry', section: 'branch', subsection: referrer.branch, key: 'merge' },
-    );
-  }
-  await updateConfigOperations(ctx, ops);
-  return {
-    name: input.name,
-    removedTrackingRefs: trackingRefs,
-    clearedBranches: referrers.map((r) => r.ref),
-  };
+  await updateConfigOperations(ctx, removeConfigOperations(input.name, referrers));
+  const clearedBranches = referrers.map((referrer) => referrer.ref);
+  return { name: input.name, removedTrackingRefs: trackingRefs, clearedBranches };
 };
 
 /** One tracking ref's resolved value, tagged by kind — the split
@@ -204,6 +204,9 @@ type TrackingRefEntry =
   | { readonly kind: 'symbolic'; readonly name: RefName; readonly target: RefName };
 type DirectTrackingRef = Extract<TrackingRefEntry, { kind: 'direct' }>;
 type SymbolicTrackingRef = Extract<TrackingRefEntry, { kind: 'symbolic' }>;
+
+/** One `[remote "<name>"]` block as `readConfig` parses it. */
+type RemoteConfigEntry = NonNullable<ReturnType<NonNullable<ParsedConfig['remote']>['get']>>;
 
 /** The remote names one rename moves tracking refs between. */
 interface TrackingRename {
@@ -377,6 +380,54 @@ const renameTrackingRefs = async (
   return renamedNames;
 };
 
+/** The fetch refspec rewrite a rename makes on the renamed section: the
+ *  existing entries wiped and every rewritten spec re-emitted through
+ *  `appendEntry`, so order is kept and each spec keeps its own line (`set`
+ *  would collapse them) — canonical specs rewritten, custom ones verbatim. */
+const fetchRewriteOperations = (
+  rename: TrackingRename,
+  fetch: ReadonlyArray<string>,
+): ConfigOperation[] => {
+  const specs = rewriteDefaultFetchRefspecs(fetch, rename.from, rename.to);
+  const entry = { section: 'remote', subsection: rename.to, key: 'fetch' } as const;
+  const appends = specs.map((value): ConfigOperation => ({ kind: 'appendEntry', ...entry, value }));
+  // With no spec at all, removing the absent key rewrites nothing, so no guard is needed.
+  return [{ kind: 'removeEntry', ...entry }, ...appends];
+};
+
+/** A rename's config rewrite: the section renamed, its fetch refspecs
+ *  rewritten, and every branch tracking it re-pointed at the new name. */
+const renameConfigOperations = (
+  rename: TrackingRename,
+  fetch: ReadonlyArray<string>,
+  referrers: ReadonlyArray<BranchReferrer>,
+): ConfigOperation[] => [
+  { kind: 'renameSection', section: 'remote', from: rename.from, to: rename.to },
+  ...fetchRewriteOperations(rename, fetch),
+  ...referrers.map(
+    (referrer): ConfigOperation => ({
+      kind: 'set',
+      section: 'branch',
+      subsection: referrer.branch,
+      key: 'remote',
+      value: rename.to,
+    }),
+  ),
+];
+
+/**
+ * The configured remote a rename moves, once git's own checks pass in git's
+ * order: the source is looked up, the target checked for an existing remote,
+ * and only then the target's syntax.
+ */
+const renameSource = (config: ParsedConfig, rename: TrackingRename): RemoteConfigEntry => {
+  const fromEntry = config.remote?.get(rename.from);
+  if (fromEntry === undefined) throw remoteNotConfigured(rename.from);
+  if (config.remote?.has(rename.to) === true) throw remoteExists(rename.to);
+  validateRemoteName(rename.to);
+  return fromEntry;
+};
+
 export const remoteRename = async (
   ctx: Context,
   input: RemoteRenameInput,
@@ -386,59 +437,16 @@ export const remoteRename = async (
     throw invalidOption('remote.rename', 'from and to must differ');
   }
   const config = await readConfig(ctx);
-  const fromEntry = config.remote?.get(input.from);
-  // git's own order: the source is looked up, the target checked for an
-  // existing remote, and only then the target's syntax.
-  if (fromEntry === undefined) throw remoteNotConfigured(input.from);
-  if (config.remote?.has(input.to) === true) throw remoteExists(input.to);
-  validateRemoteName(input.to);
+  const fromEntry = renameSource(config, input);
   const referrers = listBranchReferrers(config, input.from);
-  // Move tracking refs first (recoverability): direct refs, then the
-  // symbolic `<from>/HEAD` last.
-  const moved = await renameTrackingRefs(ctx, { from: input.from, to: input.to });
-  // Config rewrite: rename the section, replace the canonical refspec
-  // (custom ones preserved), update branch referrers.
-  const rewrittenSpecs = rewriteDefaultFetchRefspecs(fromEntry.fetch ?? [], input.from, input.to);
-  const ops: ConfigOperation[] = [
-    { kind: 'renameSection', section: 'remote', from: input.from, to: input.to },
-  ];
-  // Wipe the existing fetch entries on the (renamed) section and re-emit
-  // every rewritten spec via `appendEntry` so order is preserved and each
-  // spec produces its own line (`set` would collapse them).
-  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — when rewrittenSpecs is empty (no fetch refspec) the block is a no-op: removeEntry on an absent fetch key plus an empty append loop
-  if (rewrittenSpecs.length > 0) {
-    ops.push({
-      kind: 'removeEntry',
-      section: 'remote',
-      subsection: input.to,
-      key: 'fetch',
-    });
-    for (const spec of rewrittenSpecs) {
-      ops.push({
-        kind: 'appendEntry',
-        section: 'remote',
-        subsection: input.to,
-        key: 'fetch',
-        value: spec,
-      });
-    }
-  }
-  for (const referrer of referrers) {
-    ops.push({
-      kind: 'set',
-      section: 'branch',
-      subsection: referrer.branch,
-      key: 'remote',
-      value: input.to,
-    });
-  }
-  await updateConfigOperations(ctx, ops);
-  return {
-    from: input.from,
-    to: input.to,
-    movedTrackingRefs: moved,
-    rewrittenBranches: referrers.map((r) => r.ref),
-  };
+  // Tracking refs move before the config rewrite (recoverability).
+  const moved = await renameTrackingRefs(ctx, input);
+  await updateConfigOperations(
+    ctx,
+    renameConfigOperations(input, fromEntry.fetch ?? [], referrers),
+  );
+  const rewrittenBranches = referrers.map((referrer) => referrer.ref);
+  return { from: input.from, to: input.to, movedTrackingRefs: moved, rewrittenBranches };
 };
 
 export const remoteSetUrl = async (
@@ -463,6 +471,20 @@ export const remoteSetUrl = async (
   return { remote: toRemoteInfo(input.name, refreshed) };
 };
 
+/** Each of `names` that resolves to a direct value, with that value. */
+const directTrackingValues = async (
+  ctx: Context,
+  names: ReadonlyArray<RefName>,
+): Promise<ReadonlyMap<RefName, ObjectId>> => {
+  const store = getRefStore(ctx);
+  const values = new Map<RefName, ObjectId>();
+  for (const name of names) {
+    const direct = await store.resolveDirect(name);
+    if (direct.kind === 'direct') values.set(name, direct.id);
+  }
+  return values;
+};
+
 export const remoteShow = async (
   ctx: Context,
   input: RemoteShowInput,
@@ -471,20 +493,8 @@ export const remoteShow = async (
   const config = await readConfig(ctx);
   const entry = config.remote?.get(input.name);
   if (entry === undefined) throw remoteNotConfigured(input.name);
-  const trackingRefNames = await listTrackingRefs(ctx, input.name);
-  const store = getRefStore(ctx);
-  const trackingRefs = new Map<RefName, ObjectId>();
-  for (const refName of trackingRefNames) {
-    const direct = await store.resolveDirect(refName);
-    if (direct.kind === 'direct') trackingRefs.set(refName, direct.id);
-  }
+  const trackingRefs = await directTrackingValues(ctx, await listTrackingRefs(ctx, input.name));
   const referrers = listBranchReferrers(config, input.name);
-  const base = toRemoteInfo(input.name, entry);
-  return {
-    remote: {
-      ...base,
-      trackingRefs,
-      trackedBy: referrers.map((r) => ({ branch: r.ref, merge: r.merge })),
-    },
-  };
+  const trackedBy = referrers.map((referrer) => ({ branch: referrer.ref, merge: referrer.merge }));
+  return { remote: { ...toRemoteInfo(input.name, entry), trackingRefs, trackedBy } };
 };
