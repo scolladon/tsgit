@@ -1395,5 +1395,75 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
     });
+
+    describe('Given a loose ref file refs/remotes/q in the way of a packed ref refs/remotes/q/z', () => {
+      /** Packs `refs/remotes/q/z` with git, then plants the loose file `refs/remotes/q`. */
+      const seedInTheWay = async (dir: string): Promise<void> => {
+        runGit(['-C', dir, 'update-ref', 'refs/remotes/q/z', filesC1]);
+        git(dir, 'pack-refs', '--include', 'refs/remotes/q/z');
+        await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'q'), `${filesC1}\n`);
+      };
+
+      describe('When git and tsgit delete or write under refs/remotes/q', () => {
+        it.each([
+          {
+            label: 'deleting refs/remotes/q/z',
+            gitArgs: ['update-ref', '-d', 'refs/remotes/q/z'],
+            gitExit: 1,
+            name: 'refs/remotes/q/z',
+            remove: true,
+          },
+          {
+            label: 'writing refs/remotes/q/new',
+            gitArgs: ['update-ref', 'refs/remotes/q/new'],
+            gitExit: 128,
+            name: 'refs/remotes/q/new',
+            remove: false,
+          },
+        ])(
+          'Then $label refuses on both before anything changes on disk',
+          async ({ gitArgs, gitExit, name, remove }) => {
+            // Arrange
+            const { peer, ours, ctx } = await filesCasePair(`df-${remove ? 'delete' : 'write'}`);
+            await seedInTheWay(peer);
+            await seedInTheWay(ours);
+            const packedBefore = await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8');
+            const sut = updateRef;
+
+            // Act
+            const gitResult = tryRunGitWithExit(
+              ['-C', peer, ...gitArgs, ...(remove ? [] : [filesC1])],
+              { env: runGitEnv() },
+            );
+            let caught: unknown;
+            try {
+              await sut(
+                ctx,
+                name as RefName,
+                remove ? ZERO : (filesC1 as ObjectId),
+                remove ? { delete: true } : { reflogMessage: 'm' },
+              );
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(gitExit);
+            expect(gitResult.stderr).toContain(`'refs/remotes/q' exists; cannot create '${name}'`);
+            expect((caught as TsgitError).data).toEqual({
+              code: 'NOT_A_DIRECTORY',
+              path: `${ctx.layout.gitDir}/refs/remotes/q`,
+            });
+            expect(await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8')).toBe(
+              packedBefore,
+            );
+            expect(await pathExists(path.join(ours, '.git', 'packed-refs.lock'))).toBe(false);
+            expect(await readFile(path.join(ours, '.git', 'refs', 'remotes', 'q'), 'utf8')).toBe(
+              `${filesC1}\n`,
+            );
+          },
+        );
+      });
+    });
   },
 );

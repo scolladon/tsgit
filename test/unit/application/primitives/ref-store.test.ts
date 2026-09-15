@@ -701,31 +701,120 @@ describe('ref-store', () => {
     });
   });
 
-  describe("Given a live ref file where a packed-only ref's loose directory would be, on an adapter whose exists reports a path under a file as absent", () => {
-    describe('When applyRefUpdates deletes the packed-only ref', () => {
-      it('Then its packed line is gone and the live ref file survives', async () => {
+  describe('Given a packed-only ref whose loose directory does not exist', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then no removal is attempted on the directory that was never there', async () => {
         // Arrange
         const base = await buildSeededContext({
-          refs: [{ name: 'refs/remotes/q' as RefName, id: 'b'.repeat(40) as ObjectId }],
-          packedRefs: [{ name: 'refs/remotes/q/z' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [{ name: 'refs/remotes/gone/z' as RefName, id: 'a'.repeat(40) as ObjectId }],
         });
-        const underFile = '/repo/.git/refs/remotes/q/';
-        const ctx: Context = {
-          ...base,
-          fs: {
-            ...base.fs,
-            exists: async (path) => (path.startsWith(underFile) ? false : base.fs.exists(path)),
-          },
-        };
+        const { ctx, calls } = instrumentedContext(base);
         const sut = createRefStore(ctx);
 
         // Act
-        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/remotes/q/z' as RefName }]);
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/remotes/gone/z' as RefName }]);
 
         // Assert
-        expect(await base.fs.readUtf8('/repo/.git/packed-refs')).not.toContain('refs/remotes/q/z');
-        expect(await base.fs.readUtf8('/repo/.git/refs/remotes/q')).toBe(`${'b'.repeat(40)}\n`);
+        expect(
+          calls().filter((c) => c.method === 'rm' && c.path.startsWith('/repo/.git/refs/')),
+        ).toEqual([]);
+        expect(await sut.resolveDirect('refs/remotes/gone/z' as RefName)).toEqual({
+          kind: 'missing',
+        });
       });
+    });
+  });
+
+  describe('Given a loose ref file refs/remotes/q in the way of packed refs under it', () => {
+    const PACKED = '/repo/.git/packed-refs';
+    const BLOCKING = '/repo/.git/refs/remotes/q';
+    const seedInTheWay = (): Promise<Context> =>
+      buildSeededContext({
+        refs: [{ name: 'refs/remotes/q' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        packedRefs: [
+          { name: 'refs/heads/pk' as RefName, id: 'c'.repeat(40) as ObjectId },
+          { name: 'refs/remotes/q/z' as RefName, id: 'a'.repeat(40) as ObjectId },
+          { name: 'refs/remotes/q/sub/z' as RefName, id: 'a'.repeat(40) as ObjectId },
+        ],
+      });
+    /** An `fs` answering as the browser adapter does for a path under a
+     *  regular file: absent, never "not a directory". */
+    const browserLike = (base: Context): Context => {
+      const underFile = (p: string): boolean => p.startsWith(`${BLOCKING}/`);
+      return {
+        ...base,
+        fs: {
+          ...base.fs,
+          exists: async (p) => (underFile(p) ? false : base.fs.exists(p)),
+          stat: async (p) => (underFile(p) ? Promise.reject(fileNotFound(p)) : base.fs.stat(p)),
+          readUtf8: async (p) =>
+            underFile(p) ? Promise.reject(fileNotFound(p)) : base.fs.readUtf8(p),
+          writeExclusive: async (p, d) =>
+            underFile(p) ? Promise.reject(fileNotFound(p)) : base.fs.writeExclusive(p, d),
+        },
+      };
+    };
+    const asIs = (ctx: Context): Context => ctx;
+
+    describe('When applyRefUpdates applies updates under refs/remotes/q', () => {
+      it.each([
+        {
+          label: 'a delete of a packed ref directly under it',
+          updates: [{ kind: 'delete', name: 'refs/remotes/q/z' }],
+          adapt: asIs,
+        },
+        {
+          label: 'a delete of a packed ref two levels under it',
+          updates: [{ kind: 'delete', name: 'refs/remotes/q/sub/z' }],
+          adapt: asIs,
+        },
+        {
+          label: 'a delete run whose other delete is a plain packed ref',
+          updates: [
+            { kind: 'delete', name: 'refs/heads/pk' },
+            { kind: 'delete', name: 'refs/remotes/q/z' },
+          ],
+          adapt: asIs,
+        },
+        {
+          label: 'a delete on an adapter reporting paths under a file as absent',
+          updates: [{ kind: 'delete', name: 'refs/remotes/q/sub/z' }],
+          adapt: browserLike,
+        },
+        {
+          label: 'a write of a new ref under it',
+          updates: [{ kind: 'set', name: 'refs/remotes/q/new', id: 'd'.repeat(40) }],
+          adapt: asIs,
+        },
+        {
+          label: 'a write on an adapter reporting paths under a file as absent',
+          updates: [{ kind: 'set', name: 'refs/remotes/q/sub/new', id: 'd'.repeat(40) }],
+          adapt: browserLike,
+        },
+      ])(
+        'Then $label refuses NOT_A_DIRECTORY naming refs/remotes/q and changes nothing',
+        async ({ updates, adapt }) => {
+          // Arrange
+          const base = await seedInTheWay();
+          const packedBefore = await base.fs.readUtf8(PACKED);
+          const sut = createRefStore(adapt(base));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.applyRefUpdates(updates as RefUpdate[]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'NOT_A_DIRECTORY', path: BLOCKING });
+          expect(await base.fs.readUtf8(PACKED)).toBe(packedBefore);
+          expect(await base.fs.readUtf8(BLOCKING)).toBe(`${'b'.repeat(40)}\n`);
+          expect(await base.fs.exists(`${PACKED}.lock`)).toBe(false);
+          expect(await base.fs.exists(`${BLOCKING}.lock`)).toBe(false);
+        },
+      );
     });
   });
 

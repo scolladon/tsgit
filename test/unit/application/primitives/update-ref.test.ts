@@ -318,6 +318,58 @@ describe('updateRef', () => {
     });
   });
 
+  describe('Given a loose ref file refs/remotes/q in the way of a packed ref refs/remotes/q/z', () => {
+    const BLOCKING = '/repo/.git/refs/remotes/q';
+    const PACKED = '/repo/.git/packed-refs';
+    const seedInTheWay = async (): Promise<{
+      readonly ctx: Context;
+      readonly commit: ObjectId;
+    }> => {
+      const ctx = await buildSeededContext({
+        refs: [{ name: 'refs/remotes/q' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        packedRefs: [{ name: 'refs/remotes/q/z' as RefName, id: 'a'.repeat(40) as ObjectId }],
+      });
+      return { ctx, commit: await writeCommit(ctx, 'in the way') };
+    };
+
+    describe('When updateRef deletes or writes under refs/remotes/q', () => {
+      it.each([
+        {
+          label: 'deleting refs/remotes/q/z',
+          name: 'refs/remotes/q/z',
+          options: { delete: true } as UpdateRefOptions,
+        },
+        {
+          label: 'writing refs/remotes/q/new',
+          name: 'refs/remotes/q/new',
+          options: { reflogMessage: REASON } as UpdateRefOptions,
+        },
+      ])(
+        'Then $label refuses NOT_A_DIRECTORY naming refs/remotes/q before any write',
+        async ({ name, options }) => {
+          // Arrange
+          const { ctx, commit } = await seedInTheWay();
+          const packedBefore = await ctx.fs.readUtf8(PACKED);
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, name as RefName, options.delete === true ? ZERO : commit, options);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'NOT_A_DIRECTORY', path: BLOCKING });
+          expect(await ctx.fs.readUtf8(PACKED)).toBe(packedBefore);
+          expect(await ctx.fs.exists(`${PACKED}.lock`)).toBe(false);
+          expect(await ctx.fs.exists('/repo/.git/logs/refs/remotes/q')).toBe(false);
+        },
+      );
+    });
+  });
+
   describe('Given HEAD content is malformed', () => {
     describe('When updateRef writes a branch', () => {
       it('Then it succeeds and writes the branch ref and its reflog', async () => {

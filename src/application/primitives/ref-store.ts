@@ -1,7 +1,7 @@
 /**
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
-import { dirname, TsgitError } from '../../domain/error.js';
+import { dirname, notADirectory, TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -323,6 +323,8 @@ const UNREMOVABLE_DIRECTORY_CODES: ReadonlySet<string> = new Set([
 const isPrunableParent = (dir: string, root: string): boolean =>
   dir.startsWith(`${root}/`) && dirname(dir) !== root;
 
+type PathKind = 'directory' | 'file' | 'absent';
+
 /** One delete's loose-file footprint, resolved before any lock is taken. */
 interface DeleteTarget {
   readonly name: RefName;
@@ -499,6 +501,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       return await ctx.fs.readUtf8(path);
     } catch (err) {
       if (isFileNotFound(err)) return undefined;
+      if (errorDataCode(err) === 'NOT_A_DIRECTORY') await assertNoFileInTheWay(name, path);
       throw err;
     }
   }
@@ -950,9 +953,7 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   async function applySet(update: Extract<RefUpdate, { kind: 'set' }>): Promise<void> {
     await checkExpected(update.name, update.expected);
-    const path = looseRefPath(refDir(update.name), update.name);
-    const content = TEXT_ENCODER.encode(serializeDirectRef(update.id));
-    await atomicWriteRef(ctx, update.name, path, content);
+    await writeLooseRef(update.name, TEXT_ENCODER.encode(serializeDirectRef(update.id)));
     if (update.name === HEAD_NAME) invalidateHeadSlot(ctx);
     await applyReflog(update.name, update.reflog);
   }
@@ -961,9 +962,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     update: Extract<RefUpdate, { kind: 'setSymbolic' }>,
   ): Promise<void> {
     await checkExpected(update.name, update.expected);
-    const path = looseRefPath(refDir(update.name), update.name);
-    const content = TEXT_ENCODER.encode(serializeSymbolicRef(update.target));
-    await atomicWriteRef(ctx, update.name, path, content);
+    await writeLooseRef(update.name, TEXT_ENCODER.encode(serializeSymbolicRef(update.target)));
     if (update.name === HEAD_NAME) invalidateHeadSlot(ctx);
     await applyReflog(update.name, update.reflog);
   }
@@ -971,13 +970,53 @@ function createFilesRefStore(ctx: Context): RefStore {
   const packedRefsLocked = (path: string): TsgitError =>
     new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'ref', path });
 
-  /** Whether `dir` is an existing directory — `false` when it, or a
-   *  component above it, is absent or a regular file. */
-  async function isDirectoryPath(dir: string): Promise<boolean> {
+  /** What sits at `path` — `absent` also when a component above it is a
+   *  regular file. */
+  async function pathKind(path: string): Promise<PathKind> {
     try {
-      return (await ctx.fs.stat(dir)).isDirectory;
+      return (await ctx.fs.stat(path)).isDirectory ? 'directory' : 'file';
     } catch (err) {
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return false;
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return 'absent';
+      throw err;
+    }
+  }
+
+  async function isDirectoryPath(dir: string): Promise<boolean> {
+    return (await pathKind(dir)) === 'directory';
+  }
+
+  /** The regular file sitting at `dir` or at the nearest existing path above
+   *  it, searched while below `root`; `undefined` when that path is a
+   *  directory (or nothing exists below `root`). */
+  async function fileInTheWay(dir: string, root: string): Promise<string | undefined> {
+    if (!dir.startsWith(`${root}/`)) return undefined;
+    const kind = await pathKind(dir);
+    if (kind === 'absent') return fileInTheWay(dirname(dir), root);
+    return kind === 'file' ? dir : undefined;
+  }
+
+  /**
+   * git's lock refuses a ref whose directory is blocked by a regular file —
+   * `'refs/remotes/q' exists; cannot create 'refs/remotes/q/z'` — before
+   * anything changes. tsgit refuses `NOT_A_DIRECTORY` naming that file, the
+   * same data on every adapter, whatever each reports for a path under it.
+   */
+  async function assertNoFileInTheWay(name: RefName, loose: string): Promise<void> {
+    const blocking = await fileInTheWay(dirname(loose), `${refDir(name)}/${REFS_DIR}`);
+    if (blocking !== undefined) throw notADirectory(blocking);
+  }
+
+  /** `atomicWriteRef` onto `name`'s loose file. A lock that cannot be created
+   *  for a path reason checks for a file in the way, so a normal write pays
+   *  no extra `stat`. */
+  async function writeLooseRef(name: RefName, content: Uint8Array): Promise<void> {
+    const path = looseRefPath(refDir(name), name);
+    try {
+      await atomicWriteRef(ctx, name, path, content);
+    } catch (err) {
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) {
+        await assertNoFileInTheWay(name, path);
+      }
       throw err;
     }
   }
@@ -1091,10 +1130,12 @@ function createFilesRefStore(ctx: Context): RefStore {
     for (const target of targets) await removeLooseAndLog(target);
   }
 
+  /** A delete's target, refusing a file in the way before any lock. */
   async function deleteTargetFor(update: DeleteUpdate): Promise<DeleteTarget> {
     const gitDir = refDir(update.name);
     const loose = looseRefPath(gitDir, update.name);
     const looseDirExists = await isDirectoryPath(dirname(loose));
+    if (!looseDirExists) await assertNoFileInTheWay(update.name, loose);
     return { name: update.name, gitDir, loose, looseDirExists };
   }
 
