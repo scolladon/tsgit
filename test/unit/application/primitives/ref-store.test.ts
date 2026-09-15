@@ -371,34 +371,35 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a loose-only ref with packed-refs present', () => {
+  describe('Given a loose-only ref with a canonical packed-refs present', () => {
     describe('When applyRefUpdates applies a delete update', () => {
-      it('Then packed-refs is byte- and inode-unchanged, but the lock was still taken', async () => {
+      it('Then the packed-refs lock is taken and released but nothing is written through it or renamed onto packed-refs', async () => {
         // Arrange
         const base = await buildSeededContext({
           refs: [{ name: 'refs/heads/lo' as RefName, id: 'a'.repeat(40) as ObjectId }],
-          packedRefs: [{ name: 'refs/tags/other' as RefName, id: 'b'.repeat(40) as ObjectId }],
         });
         const packedRefsPath = '/repo/.git/packed-refs';
-        const before = await base.fs.stat(packedRefsPath);
-        const beforeContent = await base.fs.readUtf8(packedRefsPath);
+        const canonical = `# pack-refs with: peeled fully-peeled sorted \n${'b'.repeat(40)} refs/tags/other\n`;
+        await base.fs.writeUtf8(packedRefsPath, canonical);
         const { ctx, calls } = instrumentedContext(base);
         const sut = createRefStore(ctx);
 
         // Act
         await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/lo' as RefName }]);
 
-        // Assert — the loose ref is gone, packed-refs is byte-for-byte and
-        // inode-for-inode unchanged, and the packed-refs lock was still
-        // taken and released (proven via the writeExclusive call log).
-        expect(await ctx.fs.exists('/repo/.git/refs/heads/lo')).toBe(false);
-        const after = await ctx.fs.stat(packedRefsPath);
-        expect(after.mtimeMs).toBe(before.mtimeMs);
-        expect(await ctx.fs.readUtf8(packedRefsPath)).toBe(beforeContent);
+        // Assert
+        const lockPath = `${packedRefsPath}.lock`;
+        const log = calls();
         expect(
-          calls().some((c) => c.method === 'writeExclusive' && c.path === `${packedRefsPath}.lock`),
-        ).toBe(true);
-        expect(await ctx.fs.exists(`${packedRefsPath}.lock`)).toBe(false);
+          log.filter((c) => c.method === 'writeExclusive' && c.path === lockPath),
+        ).toHaveLength(1);
+        expect(log.filter((c) => c.method === 'write' && c.path === lockPath)).toEqual([]);
+        expect(
+          log.filter((c) => c.method === 'rename' && c.path.endsWith(`->${packedRefsPath}`)),
+        ).toEqual([]);
+        expect(await base.fs.readUtf8(packedRefsPath)).toBe(canonical);
+        expect(await base.fs.exists(lockPath)).toBe(false);
+        expect(await base.fs.exists('/repo/.git/refs/heads/lo')).toBe(false);
       });
     });
   });
@@ -1597,6 +1598,25 @@ describe('ref-store', () => {
         // Assert
         const head = result.find((entry) => entry.name === 'HEAD');
         expect(head?.value).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+      });
+    });
+  });
+
+  describe('Given a symlinked HEAD whose link text is a valid refname outside refs/', () => {
+    describe('When resolveDirect(HEAD) runs', () => {
+      it('Then the link is read through to the file it names, never reported symbolic', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = 'a'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8('/repo/.git/heads/main', `${id}\n`);
+        await ctx.fs.symlink('heads/main', '/repo/.git/HEAD');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id });
       });
     });
   });
