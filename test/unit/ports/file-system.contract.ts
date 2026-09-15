@@ -869,9 +869,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
         caught = err;
       }
 
-      // Assert — exact code is platform-dependent (Node may surface EEXIST or ENOTDIR
-      // depending on whether the mkdir is on the file path itself or a child-of-file path);
-      // both are acceptable as long as it's a structured TsgitError.
+      // Assert — exact code is adapter-dependent: the node adapter's `mkdir -p` reports
+      // FILE_EXISTS for the file path itself, where the memory adapter keeps NOT_A_DIRECTORY.
       expect(caught).toBeInstanceOf(TsgitError);
       const code = (caught as TsgitError).data.code;
       expect(['FILE_EXISTS', 'NOT_A_DIRECTORY']).toContain(code);

@@ -386,9 +386,10 @@ test.describe('OPFS refusals beneath a regular file', () => {
         rm: await codeOf(() => sut.rm(beneath)),
         rmRecursive: await codeOf(() => sut.rmRecursive(beneath)),
       };
+      const mkdirOnFileCode = await codeOf(() => sut.mkdir('blocking-file.txt'));
       const fileBytes = Array.from(await sut.read('blocking-file.txt'));
 
-      return { codes, fileBytes };
+      return { codes, mkdirOnFileCode, fileBytes };
     });
 
     await test.step('every surface reports NOT_A_DIRECTORY', () => {
@@ -403,6 +404,10 @@ test.describe('OPFS refusals beneath a regular file', () => {
         rm: 'NOT_A_DIRECTORY',
         rmRecursive: 'NOT_A_DIRECTORY',
       });
+    });
+
+    await test.step('mkdir of the file path itself reports FILE_EXISTS', () => {
+      expect(result.mkdirOnFileCode).toBe('FILE_EXISTS');
     });
 
     await test.step('the blocking file is unchanged', () => {

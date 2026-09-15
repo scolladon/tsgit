@@ -150,23 +150,24 @@ export class BrowserFileSystem implements FileSystem {
 
   async mkdir(path: string): Promise<void> {
     const segments = this.splitPath(path);
-    let dir = this.rootHandle;
-    for (const segment of segments) {
-      dir = await this.createChildDirectory(dir, segment, path);
-    }
+    if (segments.length === 0) return;
+    const parent = await this.walkToParent(segments, true, path);
+    await this.createLeafDirectory(parent, leafSegment(segments, path), path);
   }
 
-  private async createChildDirectory(
+  /** The parents map as every other walk does; a regular file holding the leaf itself is an
+   *  occupant rather than a blocked segment, which the node adapter's `mkdir -p` reports as
+   *  FILE_EXISTS. */
+  private async createLeafDirectory(
     dir: FileSystemDirectoryHandle,
-    segment: string,
+    leaf: string,
     path: string,
-  ): Promise<FileSystemDirectoryHandle> {
+  ): Promise<void> {
     try {
-      return await dir.getDirectoryHandle(segment, { create: true });
+      await dir.getDirectoryHandle(leaf, { create: true });
     } catch (err) {
-      // A regular file already holds the segment, as the other walks refuse it.
-      if (isTypeMismatch(err)) throw notADirectory(path);
-      throw err;
+      if (isTypeMismatch(err)) throw fileExists(path);
+      throw fileNotFound(path);
     }
   }
 

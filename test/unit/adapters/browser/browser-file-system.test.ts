@@ -287,6 +287,68 @@ describe('BrowserFileSystem beneath a regular file', () => {
   });
 });
 
+describe('BrowserFileSystem mkdir', () => {
+  describe('Given a regular file holding the path itself, When mkdir creates it', () => {
+    it('Then it throws FILE_EXISTS carrying the requested path, as the node adapter does', async () => {
+      // Arrange
+      const sut = new BrowserFileSystem(directory({ 'file.txt': 'file' }));
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.mkdir('file.txt');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('FILE_EXISTS');
+      if (data.code === 'FILE_EXISTS') expect(data.path).toBe('file.txt');
+    });
+  });
+
+  // A root handle whose every directory lookup rejects with the given value.
+  const rootWhoseDirectoryCreationRejectsWith = (rejection: unknown): FileSystemDirectoryHandle =>
+    ({
+      getDirectoryHandle: async () => {
+        throw rejection;
+      },
+    }) as unknown as FileSystemDirectoryHandle;
+
+  describe.each([
+    { name: 'NotAllowedError', rejection: rejectionNamed('NotAllowedError') },
+    { name: 'InvalidModificationError', rejection: rejectionNamed('InvalidModificationError') },
+    { name: 'QuotaExceededError', rejection: rejectionNamed('QuotaExceededError') },
+    { name: 'TypeError', rejection: new TypeError('name is not allowed') },
+  ])('Given OPFS rejects a directory creation with $name', ({ rejection }) => {
+    describe.each([
+      { segment: 'the leaf', path: 'entry' },
+      { segment: 'a parent', path: 'parent/entry' },
+    ])('When mkdir creates $segment', ({ path }) => {
+      it('Then it throws FILE_NOT_FOUND carrying the path, as every other walk maps it', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(rootWhoseDirectoryCreationRejectsWith(rejection));
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.mkdir(path);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('FILE_NOT_FOUND');
+        if (data.code === 'FILE_NOT_FOUND') expect(data.path).toBe(path);
+      });
+    });
+  });
+});
+
 describe('BrowserFileSystem lexists', () => {
   describe.each([
     { label: 'a file', path: 'sub/file.txt', expected: true },
