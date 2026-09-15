@@ -1478,17 +1478,28 @@ describe('applyChangeset', () => {
           entries.push(makeAdd(`f${i}.txt`, id));
         }
         const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        // The pool's genuine per-entry concurrency window spans reading the
+        // blob through writing it — `streamBlob`'s loose stream arm now
+        // pulls real (natively-scheduled) inflate output before it resolves,
+        // so a window that starts only at the write call can land entirely
+        // inside one entry's already-finished read and under-count.
         let inFlight = 0;
         let maxInFlight = 0;
-        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
-        const spy = vi
-          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+        const realStream = streamBlobMod.streamBlob;
+        const streamSpy = vi
+          .spyOn(streamBlobMod, 'streamBlob')
           .mockImplementation(async (...args) => {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
-            await Promise.resolve();
+            return realStream(...args);
+          });
+        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
+        const writeSpy = vi
+          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+          .mockImplementation(async (...args) => {
+            const result = await realWrite(...args);
             inFlight -= 1;
-            return realWrite(...args);
+            return result;
           });
 
         // Act
@@ -1502,7 +1513,8 @@ describe('applyChangeset', () => {
           // Assert
           expect(maxInFlight).toBe(ioBound);
         } finally {
-          spy.mockRestore();
+          streamSpy.mockRestore();
+          writeSpy.mockRestore();
         }
       });
     });

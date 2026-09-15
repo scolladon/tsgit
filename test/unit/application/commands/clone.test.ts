@@ -3,7 +3,14 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { clone } from '../../../../src/application/commands/clone.js';
 import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { RefName } from '../../../../src/domain/objects/index.js';
+import { serializeObject } from '../../../../src/domain/objects/git-object.js';
+import type {
+  AuthorIdentity,
+  Commit,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
+import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HashService } from '../../../../src/ports/hash-service.js';
@@ -74,6 +81,42 @@ const buildPackFromSingleBlob = async (
   const id = built.ids[0];
   if (id === undefined) throw new Error('expected one entry');
   return { packBytes: built.packBytes, blobId: id };
+};
+
+const COMMIT_AUTHOR: AuthorIdentity = {
+  name: 'A U Thor',
+  email: 'author@example.com',
+  timestamp: 0,
+  timezoneOffset: '+0000',
+};
+
+/** Like `buildPackFromSingleBlob`, but the packed object is a real, parse-
+ *  acceptable commit — required wherever the advertisement points a local
+ *  HEAD branch (or a detached HEAD) at the packed object, since `updateRef`
+ *  now verifies that a branch target is a commit. */
+const buildPackFromSingleCommit = async (
+  ctx: Context,
+  message: string,
+): Promise<{ packBytes: Uint8Array; commitId: string }> => {
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: emptyTreeOid(ctx.hashConfig),
+      parents: [],
+      author: COMMIT_AUTHOR,
+      committer: COMMIT_AUTHOR,
+      message,
+      extraHeaders: [],
+    },
+  };
+  const serialized = serializeObject(commit, ctx.hashConfig);
+  const content = serialized.subarray(serialized.indexOf(0) + 1);
+  const entries: EntrySpec[] = [{ kind: 'base', type: 'commit', content }];
+  const built = await buildSyntheticPack(ctx, entries);
+  const id = built.ids[0];
+  if (id === undefined) throw new Error('expected one entry');
+  return { packBytes: built.packBytes, commitId: id };
 };
 
 const DECODER = new TextDecoder();
@@ -454,11 +497,11 @@ describe('clone', () => {
         // Arrange reopens depth on clone. The shallow
         // section is wrapped into the upload-pack response before the NAK.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'shallow blob\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'shallow commit\n');
         const shallowOid = 'a'.repeat(40);
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
           shallow: [shallowOid],
@@ -534,10 +577,10 @@ describe('clone', () => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'hello\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'hello\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -582,10 +625,10 @@ describe('clone', () => {
       it('Then writes refs/heads/main, refs/remotes/origin/main, and HEAD', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'cloned blob\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'cloned commit\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -601,17 +644,17 @@ describe('clone', () => {
         const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(headFile).toBe('ref: refs/heads/main\n');
         const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
-        expect(mainRef.trim()).toBe(blobId);
+        expect(mainRef.trim()).toBe(commitId);
         const remoteRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
-        expect(remoteRef.trim()).toBe(blobId);
+        expect(remoteRef.trim()).toBe(commitId);
       });
       it('Then the written refs and HEAD reflogs all carry a "clone: from <url>" message', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'reflogged clone\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'reflogged clone\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -644,9 +687,9 @@ describe('clone', () => {
         // `symref=HEAD:...` capability, so v2 clone tracks the branch exactly
         // like the v1 happy path instead of leaving HEAD detached.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 clone\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'v2 clone\n');
         const { transport, requests } = buildCloneRemoteV2({
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -662,9 +705,9 @@ describe('clone', () => {
         const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(headFile).toBe('ref: refs/heads/main\n');
         const mainRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
-        expect(mainRef.trim()).toBe(blobId);
+        expect(mainRef.trim()).toBe(commitId);
         const remoteRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`);
-        expect(remoteRef.trim()).toBe(blobId);
+        expect(remoteRef.trim()).toBe(commitId);
         const requestBodies = requests
           .filter((r) => r.method === 'POST')
           .map((r) => (r.body === undefined ? '' : DECODER.decode(r.body)));
@@ -681,12 +724,12 @@ describe('clone', () => {
         // `# service=...` line ahead of the v2 capability list; negotiateDiscovery
         // must peek past it rather than assume every v2 response is prologue-free.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(
+        const { packBytes, commitId } = await buildPackFromSingleCommit(
           ctx,
           'v2 clone with prologue\n',
         );
         const { transport } = buildCloneRemoteV2({
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
           prologue: true,
@@ -736,13 +779,13 @@ describe('clone', () => {
       it('Then writes refs/remotes/origin/<branch> for every advertised branch', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'multi branch\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'multi branch\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
           refs: [
-            { name: 'refs/heads/main', id: blobId },
-            { name: 'refs/heads/dev', id: blobId },
-            { name: 'refs/heads/feature', id: blobId },
+            { name: 'refs/heads/main', id: commitId },
+            { name: 'refs/heads/dev', id: commitId },
+            { name: 'refs/heads/feature', id: commitId },
           ],
           head: 'refs/heads/main',
           packBytes,
@@ -759,7 +802,7 @@ describe('clone', () => {
         expect(names).toContain('refs/remotes/origin/feature');
         for (const branch of ['main', 'dev', 'feature']) {
           const ref = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/${branch}`);
-          expect(ref.trim()).toBe(blobId);
+          expect(ref.trim()).toBe(commitId);
         }
       });
     });
@@ -771,12 +814,12 @@ describe('clone', () => {
         // Arrange — HEAD tracks `main`; `feature` is advertised but is not the
         // HEAD branch, so only its remote-tracking ref must be written locally.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'head-branch only\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'head-branch only\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
           refs: [
-            { name: 'refs/heads/main', id: blobId },
-            { name: 'refs/heads/feature', id: blobId },
+            { name: 'refs/heads/main', id: commitId },
+            { name: 'refs/heads/feature', id: commitId },
           ],
           head: 'refs/heads/main',
           packBytes,
@@ -833,12 +876,12 @@ describe('clone', () => {
       it('Then writes HEAD as a direct oid (detached) and returns head: undefined', async () => {
         // Arrange — emulate a server that advertises HEAD directly (no symref capability).
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'detached head\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'detached head\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k'], // no symref=HEAD:... cap
           refs: [
-            { name: 'HEAD', id: blobId },
-            { name: 'refs/heads/main', id: blobId },
+            { name: 'HEAD', id: commitId },
+            { name: 'refs/heads/main', id: commitId },
           ],
           head: 'HEAD',
           packBytes,
@@ -852,7 +895,7 @@ describe('clone', () => {
         expect(result.head).toBeUndefined();
         const headFile = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         // Direct OID (no `ref:...` prefix).
-        expect(headFile.trim()).toBe(blobId);
+        expect(headFile.trim()).toBe(commitId);
       });
     });
   });
@@ -894,10 +937,10 @@ describe('clone', () => {
       it('Then the written config records bare = false', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'bare default\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'bare default\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -919,10 +962,10 @@ describe('clone', () => {
         // Arrange — wrap the cloning transport so requests are captured. withDefaults
         // composes withAuth around ctx.transport using ctx.config.auth.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'authed\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'authed\n');
         const remote = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -949,10 +992,10 @@ describe('clone', () => {
       it('Then transport requests carry no Authorization header', async () => {
         // Arrange — without config.auth, withDefaults must not compose withAuth.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'no auth\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'no auth\n');
         const remote = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -976,12 +1019,12 @@ describe('clone', () => {
       it('Then writes refs/tags/<tag> and not under refs/remotes', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'tagged\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'tagged\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
           refs: [
-            { name: 'refs/heads/main', id: blobId },
-            { name: 'refs/tags/v1.0', id: blobId },
+            { name: 'refs/heads/main', id: commitId },
+            { name: 'refs/tags/v1.0', id: commitId },
           ],
           head: 'refs/heads/main',
           packBytes,
@@ -996,7 +1039,7 @@ describe('clone', () => {
         expect(names).toContain('refs/tags/v1.0');
         expect(names).not.toContain('refs/remotes/origin/v1.0');
         const tagRef = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`);
-        expect(tagRef.trim()).toBe(blobId);
+        expect(tagRef.trim()).toBe(commitId);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/v1.0`)).toBe(false);
       });
     });
@@ -1007,12 +1050,12 @@ describe('clone', () => {
       it('Then the HEAD ref is skipped silently and not written', async () => {
         // Arrange — the advertisement explicitly carries a `HEAD` ref alongside a branch.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'head skip\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'head skip\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
           refs: [
-            { name: 'HEAD', id: blobId },
-            { name: 'refs/heads/main', id: blobId },
+            { name: 'HEAD', id: commitId },
+            { name: 'refs/heads/main', id: commitId },
           ],
           head: 'refs/heads/main',
           packBytes,
@@ -1050,12 +1093,12 @@ describe('clone', () => {
       it('Then no local refs/heads/<branch> is written for it', async () => {
         // Arrange — HEAD tracks `main`; `dev` is advertised but not HEAD-tracked.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'non-head branch\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'non-head branch\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
           refs: [
-            { name: 'refs/heads/main', id: blobId },
-            { name: 'refs/heads/dev', id: blobId },
+            { name: 'refs/heads/main', id: commitId },
+            { name: 'refs/heads/dev', id: commitId },
           ],
           head: 'refs/heads/main',
           packBytes,
@@ -1081,12 +1124,12 @@ describe('clone', () => {
       it('Then the ref is logged and skipped', async () => {
         // Arrange — `refs/notes/*` is outside the heads/tags layout policy.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'notes ns\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'notes ns\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
           refs: [
-            { name: 'refs/heads/main', id: blobId },
-            { name: 'refs/notes/commits', id: blobId },
+            { name: 'refs/heads/main', id: commitId },
+            { name: 'refs/notes/commits', id: commitId },
           ],
           head: 'refs/heads/main',
           packBytes,
@@ -1124,12 +1167,12 @@ describe('clone', () => {
         // prefixed with refs/remotes/origin/, would escape .git and
         // overwrite gitDir/config.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'safe\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'safe\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
           refs: [
-            { name: 'refs/heads/main', id: blobId },
-            { name: 'refs/heads/../../../config', id: blobId },
+            { name: 'refs/heads/main', id: commitId },
+            { name: 'refs/heads/../../../config', id: commitId },
           ],
           head: 'refs/heads/main',
           packBytes,
@@ -1157,10 +1200,10 @@ describe('clone — progress reporting', () => {
       it("Then start fires before end with op === 'clone:discover'", async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'progress\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'progress\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -1265,10 +1308,10 @@ describe('clone — partial clone', () => {
       it('Then the promisor config block and .promisor sentinel are written', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'filtered\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'filtered\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'filter', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -1302,9 +1345,9 @@ describe('clone — partial clone', () => {
       it('Then it does not throw and sends the filter arg over the v2 fetch request', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'v2 filtered\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'v2 filtered\n');
         const { transport, requests } = buildCloneRemoteV2({
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
           filter: true,
@@ -1359,10 +1402,10 @@ describe('clone — partial clone', () => {
       it('Then writes [remote "origin"] and [branch "main"] upstream, but no [extensions]', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'plain clone\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'plain clone\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
-          refs: [{ name: 'refs/heads/main', id: blobId }],
+          refs: [{ name: 'refs/heads/main', id: commitId }],
           head: 'refs/heads/main',
           packBytes,
         });
@@ -1391,12 +1434,12 @@ describe('clone — partial clone', () => {
       it('Then writes the remote block but no [branch] upstream', async () => {
         // Arrange — server advertises HEAD directly; clone cannot name a head branch.
         const ctx = createMemoryContext();
-        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'detached config\n');
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'detached config\n');
         const transport = buildCloneRemote({
           capabilities: ['side-band-64k'],
           refs: [
-            { name: 'HEAD', id: blobId },
-            { name: 'refs/heads/main', id: blobId },
+            { name: 'HEAD', id: commitId },
+            { name: 'refs/heads/main', id: commitId },
           ],
           head: 'HEAD',
           packBytes,

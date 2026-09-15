@@ -169,9 +169,11 @@ async function lazyFetchOnce(
  * lazy-fetches the missing object and retries `run` exactly once. Shared by
  * `readObject` and `readRawObject` so a partial clone behaves identically on
  * both — a divergence here would let the raw path see a weaker retry
- * contract than the parsed one.
+ * contract than the parsed one. Exported for `blob-source.ts`'s
+ * `verifyStoredObject` (the ref-target verifier), which needs the identical
+ * retry contract for a promised object.
  */
-async function withLazyFetchRetry<T>(
+export async function withLazyFetchRetry<T>(
   ctx: Context,
   id: ObjectId,
   registry: PackRegistry,

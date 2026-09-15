@@ -4,6 +4,7 @@ import { zeroOid } from '../../domain/objects/index.js';
 import { refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
+import { assertRefTargetValid } from './internal/ref-target.js';
 import { type TransactionLogging, transactionLogging } from './internal/ref-transaction-logging.js';
 import { type RefWriteChain, resolveWriteChain } from './internal/ref-write-chain.js';
 import {
@@ -33,6 +34,9 @@ export async function updateRef(
   // that could let `${gitDir}/${name}` escape the repo — no separate path
   // containment check is needed.
   validateRefName(name);
+  // Verification precedes chain resolution and the compare-and-swap (git's
+  // own order); a delete is never verified.
+  if (!isDelete(ctx, newId, options)) await assertRefTargetValid(ctx, name, newId);
 
   const store = getRefStore(ctx);
   const chain = await resolveWriteChain(store, name, options);
@@ -44,14 +48,22 @@ export async function updateRef(
   assertExpected(name, options.expected, chain);
 
   const logging = transactionLogging(ctx);
-  // git marks a null new object id `REF_DELETING` and takes the delete path
-  // unverified, exactly as `delete: true` does — the two are one transaction
-  // shape, not two.
-  const updates =
-    options.delete === true || newId === zeroOid(ctx.hashConfig)
-      ? deleteUpdates(ctx, name, chain, head, options, logging)
-      : writeUpdates(ctx, name, chain, head, newId, options, logging);
+  const updates = isDelete(ctx, newId, options)
+    ? deleteUpdates(ctx, name, chain, head, options, logging)
+    : writeUpdates(ctx, name, chain, head, newId, options, logging);
   await store.applyRefUpdates(updates);
+}
+
+/** git marks a null new object id `REF_DELETING` and takes the delete path
+ *  unverified, exactly as `delete: true` does — the two are one transaction
+ *  shape, not two. Narrows `options` for `writeUpdates`' stricter parameter
+ *  type in the (false) write branch. */
+function isDelete(
+  ctx: Context,
+  newId: ObjectId,
+  options: UpdateRefOptions,
+): options is Extract<UpdateRefOptions, { readonly delete: true }> {
+  return options.delete === true || newId === zeroOid(ctx.hashConfig);
 }
 
 /**

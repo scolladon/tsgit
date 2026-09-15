@@ -5,6 +5,7 @@ import {
 } from '../../../../../src/application/primitives/internal/blob-source.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
+import { serializeObject } from '../../../../../src/domain/objects/git-object.js';
 import type { Blob, Commit, ObjectId } from '../../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
@@ -51,6 +52,29 @@ function looseFormatBytesWithClaim(
   return out;
 }
 
+/** Wraps a readable so cancellation is counted — an un-cancelled stream is
+ *  exactly the leaked reader/inflate instance `release()` exists to avoid. */
+function trackedReadable(
+  source: ReadableStream<Uint8Array>,
+  onCancel: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  return new ReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel: async (reason) => {
+      onCancel();
+      await reader.cancel(reason);
+    },
+  });
+}
+
 /** Overwrite an already-written loose object's on-disk file with `bytes` —
  *  used to plant a size-lying header at an id whose file already exists. */
 async function overwriteLoose(
@@ -66,6 +90,7 @@ async function overwriteLoose(
 async function buildLooseCommit(): Promise<{
   ctx: Awaited<ReturnType<typeof buildSeededContext>>;
   id: ObjectId;
+  content: Uint8Array;
 }> {
   const identity = { name: 'A', email: 'a@a.com', timestamp: 1, timezoneOffset: '+0000' as const };
   const commit: Commit = {
@@ -82,7 +107,9 @@ async function buildLooseCommit(): Promise<{
   };
   const ctx = await buildSeededContext({ objects: [commit] });
   const id = await writeObject(ctx, commit);
-  return { ctx, id };
+  const serialized = serializeObject(commit, ctx.hashConfig);
+  const content = serialized.subarray(serialized.indexOf(0) + 1);
+  return { ctx, id, content };
 }
 
 async function looseCompressedLength(
@@ -167,7 +194,7 @@ describe('openBlobSource', () => {
     });
 
     describe('When openBlobSource is called with the gate one byte under the compressed length', () => {
-      it('Then resolves as a stream source with type undefined', async () => {
+      it('Then resolves as a stream source reporting its type at open', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -184,7 +211,7 @@ describe('openBlobSource', () => {
         // Assert
         expect(result.kind).toBe('stream');
         if (result.kind === 'stream') {
-          expect(result.type).toBeUndefined();
+          expect(result.type).toBe('blob');
           expect(result.materialised).toBe(false);
           const drained = await collect(result.stream);
           expect(drained).toEqual(blob.content);
@@ -492,31 +519,21 @@ describe('openBlobSource', () => {
     });
 
     describe('When openBlobSource resolves it streamed (gate one byte under the compressed length)', () => {
-      it('Then type is undefined until first drain, which throws unexpectedObjectType', async () => {
+      it('Then type is known at open, and draining yields the body without refusing', async () => {
         // Arrange
-        const { ctx, id } = await buildLooseCommit();
+        const { ctx, id, content } = await buildLooseCommit();
         const compressedLen = await looseCompressedLength(ctx, id);
 
         // Act
         const result = await openBlobSource(ctx, id, compressedLen - 1);
 
-        // Assert
+        // Assert — openBlobSource only REPORTS type; refusing a non-blob is a
+        // caller concern, so draining a commit through it succeeds.
         expect(result.kind).toBe('stream');
         if (result.kind === 'stream') {
-          expect(result.type).toBeUndefined();
-          try {
-            await collect(result.stream);
-            expect.unreachable();
-          } catch (error) {
-            expect(error).toBeInstanceOf(TsgitError);
-            const data = (error as TsgitError).data;
-            expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
-            if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
-              expect(data.expected).toBe('blob');
-              expect(data.actual).toBe('commit');
-              expect(data.id).toBe(id);
-            }
-          }
+          expect(result.type).toBe('commit');
+          const drained = await collect(result.stream);
+          expect(drained).toEqual(content);
         }
       });
     });
@@ -730,37 +747,85 @@ describe('openBlobSource', () => {
     });
   });
 
-  describe('Given a streamed source whose inflate readable has already errored', () => {
-    describe('When release() is called on it', () => {
-      it('Then it resolves instead of re-throwing the stream’s stored error', async () => {
-        // Arrange — cancelling an errored readable rejects with the error the
-        // stream stored, which would replace whatever the caller is really
-        // reporting. Nothing is left to release at that point.
+  describe('Given the loose header read finds a malformed header', () => {
+    describe('When openBlobSource is called', () => {
+      it('Then it rejects INVALID_OBJECT_HEADER and still releases the inflate pipeline', async () => {
+        // Arrange — the header read happens at open now (not on first
+        // drain), so a throw there must still return the iterator, or the
+        // inflate pipeline leaks. The readable is left open (never closed),
+        // so a genuine cancellation — not a no-op on an already-closed
+        // stream — is what proves the release ran.
         const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
         const base = await buildSeededContext({ objects: [blob] });
         const id = await writeObject(base, blob);
-        const inflateFailure = new Error('inflate blew up');
+        let cancels = 0;
         const ctx = {
           ...base,
           compressor: {
             ...base.compressor,
             createInflateStream: () => ({
-              readable: new ReadableStream<Uint8Array>({
-                start: (controller) => {
-                  controller.error(inflateFailure);
+              readable: trackedReadable(
+                new ReadableStream<Uint8Array>({
+                  start: (controller) => {
+                    controller.enqueue(ENC.encode('garbage\0left open'));
+                  },
+                }),
+                () => {
+                  cancels += 1;
                 },
-              }),
+              ),
               writable: new WritableStream<Uint8Array>(),
             }),
           },
         };
-        const source = await openBlobSource(ctx, id, 0);
 
         // Act + Assert
+        try {
+          await openBlobSource(ctx, id, 0);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+        }
+        expect(cancels).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a streamed loose source that has not been drained', () => {
+    describe('When release() is called on it', () => {
+      it('Then it cancels the inflate readable exactly once', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(base, blob);
+        let cancels = 0;
+        const ctx = {
+          ...base,
+          compressor: {
+            ...base.compressor,
+            createInflateStream: () => {
+              const inner = base.compressor.createInflateStream();
+              return {
+                readable: trackedReadable(inner.readable, () => {
+                  cancels += 1;
+                }),
+                writable: inner.writable,
+              };
+            },
+          },
+        };
+        const source = await openBlobSource(ctx, id, 0);
+
+        // Act
         expect(source.kind).toBe('stream');
         if (source.kind === 'stream') {
-          await expect(source.release()).resolves.toBeUndefined();
+          await source.release();
         }
+
+        // Assert
+        expect(cancels).toBe(1);
       });
     });
   });

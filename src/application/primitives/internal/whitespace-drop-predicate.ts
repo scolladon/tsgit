@@ -40,10 +40,10 @@ const LF = 0x0a;
 const EMPTY = new Uint8Array(0);
 
 // The seam only REPORTS type; the blob-only refusal is this caller's concern
-// (mirrors streamBlob's own wrap-tail check). `type` is `undefined` only on
-// the loose streamed arm, where refusal stays lazy, on first drain.
+// (mirrors streamBlob's own wrap-tail check). Every arm, loose streamed
+// included, knows its type at open.
 function refuseNonBlob(id: ObjectId, source: BlobSource): void {
-  if (source.type !== undefined && source.type !== 'blob') {
+  if (source.type !== 'blob') {
     throw unexpectedObjectType('blob', source.type, id);
   }
 }

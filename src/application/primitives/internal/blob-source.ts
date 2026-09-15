@@ -5,10 +5,9 @@
  * packed base entries and packed delta entries.
  *
  * Type identity is REPORTED, never enforced here — the blob-only refusal is a
- * caller concern (`streamBlob`'s wrap tail). The one exception is the loose
- * streamed arm, whose `type` is unknown until the header is found inside the
- * inflate stream; it keeps refusing lazily, on first drain, exactly as the
- * pre-existing pipeline does today.
+ * caller concern (`streamBlob`'s wrap tail). Every arm, loose streamed
+ * included, knows its type at open: the loose arm reads its header before
+ * `openBlobSource` returns.
  */
 import { operationAborted } from '../../../domain/error.js';
 import {
@@ -16,11 +15,10 @@ import {
   type ObjectType,
   objectHashMismatch,
   objectNotFound,
-  unexpectedObjectType,
 } from '../../../domain/objects/error.js';
 import { assertLooseSizeConsistent, splitLooseObject } from '../../../domain/objects/git-object.js';
 import { parseHeader } from '../../../domain/objects/header.js';
-import type { ObjectContent, ObjectId } from '../../../domain/objects/index.js';
+import { emptyTreeOid, type ObjectContent, type ObjectId } from '../../../domain/objects/index.js';
 import { PACK_ENTRY_TYPE } from '../../../domain/storage/index.js';
 import { readableStreamToAsyncIterable } from '../../../operators/readable-stream.js';
 import type { Context } from '../../../ports/context.js';
@@ -33,7 +31,8 @@ import {
   verifyObjectContent,
 } from '../object-resolver.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
-import { getPackRegistry, peekPackRegistry } from '../read-object.js';
+import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
+import { count } from '../snapshot-operators/terminals.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
 
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
@@ -53,7 +52,7 @@ export type BlobSource =
   | { readonly kind: 'bytes'; readonly type: ObjectType; readonly content: Uint8Array }
   | {
       readonly kind: 'stream';
-      readonly type: ObjectType | undefined;
+      readonly type: ObjectType;
       readonly stream: AsyncIterable<Uint8Array>;
       readonly materialised: boolean;
       /**
@@ -128,6 +127,46 @@ export async function openBlobSource(
   return await resolvePackDelta(ctx, registry, hit, id, gate);
 }
 
+/** The result of `verifyStoredObject`: the stored type of an object git's
+ *  `parse_object` accepted — it exists and its stored bytes hash to it. */
+export interface VerifiedObject {
+  readonly type: ObjectType;
+}
+
+/** git models the empty tree as never stored; `openBlobSource` has no arm
+ *  for it, so the verifier reports it directly, ahead of the store read. */
+const VIRTUAL_EMPTY_TREE: VerifiedObject = { type: 'tree' };
+
+/**
+ * git's `parse_object` read for one ref-update target: the object exists and
+ * its stored bytes hash to `id`. Every `openBlobSource` arm hashes under
+ * `verifyHash: true` (buffered below the gate, hashed while it inflates
+ * above it), so this never materialises a large body. A promised object is
+ * lazy-fetched before it is reported missing.
+ */
+export async function verifyStoredObject(ctx: Context, id: ObjectId): Promise<VerifiedObject> {
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () => hashStoredObject(ctx, registry, id));
+}
+
+async function hashStoredObject(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+): Promise<VerifiedObject> {
+  if (id === emptyTreeOid(ctx.hashConfig)) {
+    // Same order as resolveObjectContentWithDepth: the store-setup gate runs
+    // before the virtual tree short-circuit.
+    await registry.assertLoadable();
+    return VIRTUAL_EMPTY_TREE;
+  }
+  const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, { verifyHash: true });
+  // Draining is the hash: a stream arm's own tail throws OBJECT_HASH_MISMATCH
+  // after the last chunk, before `count` can resolve.
+  if (source.kind === 'stream') await count(source.stream);
+  return { type: source.type };
+}
+
 function checkAborted(ctx: Context): void {
   if (ctx.signal?.aborted === true) {
     throw operationAborted();
@@ -184,14 +223,32 @@ async function resolveLoose(
     await verifyBufferedBytes(ctx, id, inflated, gate.verifyHash);
     return toBytesSource(inflated);
   }
-  const inflated = inflateOneShot(ctx, compressed);
+  const iterator = readableStreamToAsyncIterable(inflateOneShot(ctx, compressed))[
+    Symbol.asyncIterator
+  ]();
+  const header = await readHeaderOrRelease(id, iterator);
   return {
     kind: 'stream',
-    type: undefined,
+    type: header.type,
     materialised: false,
-    stream: yieldAndVerifyChunks(ctx, id, readableStreamToAsyncIterable(inflated), gate.verifyHash),
-    release: () => cancelUnread(inflated),
+    stream: yieldAndVerifyLooseChunks(ctx, id, header, iterator, gate.verifyHash),
+    release: () => returnIterator(iterator),
   };
+}
+
+/** Reads the loose header eagerly so the caller learns `type` at open; a
+ *  header that never resolves (no NUL, no output) must still release the
+ *  iterator it partially drained, or the inflate pipeline leaks. */
+async function readHeaderOrRelease(
+  id: ObjectId,
+  iterator: AsyncIterator<Uint8Array>,
+): Promise<HeaderStripped> {
+  try {
+    return await readLooseHeader(id, iterator);
+  } catch (error) {
+    await returnIterator(iterator);
+    throw error;
+  }
 }
 
 async function resolvePackBase(
@@ -297,35 +354,42 @@ async function cancelUnread(stream: ReadableStream<Uint8Array>): Promise<void> {
   }
 }
 
-/** Result of stripping the git object header from accumulated inflate chunks. */
+/** Result of reading the git object header from accumulated inflate chunks:
+ *  the stored type, alongside the header and initial content bytes so the
+ *  streaming tail can hash them without re-reading. */
 interface HeaderStripped {
+  readonly type: ObjectType;
   readonly headerBytes: Uint8Array;
   readonly content: Uint8Array;
 }
 
 /**
  * Accumulate inflate chunks until the NUL byte is found, then return the
- * header bytes (including NUL) and the initial content slice.
- * Throws unexpectedObjectType if the object is not a blob.
+ * stored type, the header bytes (including NUL) and the initial content
+ * slice. Never refuses on type — every consumer decides that for itself
+ * (`streamBlob`'s wrap tail, the ref-target verifier).
  */
-async function stripHeader(
+async function readLooseHeader(
   id: ObjectId,
-  chunks: AsyncIterator<Uint8Array>,
-  accum: Uint8Array,
+  iterator: AsyncIterator<Uint8Array>,
 ): Promise<HeaderStripped> {
-  let buf = accum;
-
+  const first = await iterator.next();
+  if (first.done === true) {
+    throw invalidObjectHeader(`inflate stream produced no output for object ${id}`);
+  }
+  let buf = first.value;
   for (;;) {
     const nullPos = buf.indexOf(0x00);
     if (nullPos !== -1) {
       const { type } = parseHeader(buf);
-      if (type !== 'blob') {
-        throw unexpectedObjectType('blob', type, id);
-      }
-      return { headerBytes: buf.subarray(0, nullPos + 1), content: buf.subarray(nullPos + 1) };
+      return {
+        type,
+        headerBytes: buf.subarray(0, nullPos + 1),
+        content: buf.subarray(nullPos + 1),
+      };
     }
 
-    const next = await chunks.next();
+    const next = await iterator.next();
     if (next.done === true) {
       throw invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
     }
@@ -333,39 +397,37 @@ async function stripHeader(
   }
 }
 
+/** Cancels the inflate pipeline THROUGH the iterator that read the header —
+ *  by then the readable is locked to it, so cancelling the readable directly
+ *  would reject on the lock and release nothing (`readableStreamToAsyncIterable`'s
+ *  `return` swallows on our behalf). */
+async function returnIterator(iterator: AsyncIterator<Uint8Array>): Promise<void> {
+  await iterator.return?.();
+}
+
 /**
- * Streaming tail for the loose path. Strips the git loose-format header
- * from the inflated output, then yields content chunks with incremental hash verification.
+ * Streaming tail for the loose path. The header is already known (read at
+ * open by `readLooseHeader`); this hashes it and the remaining chunks with
+ * incremental verification.
  */
-async function* yieldAndVerifyChunks(
+async function* yieldAndVerifyLooseChunks(
   ctx: Context,
   id: ObjectId,
-  chunks: AsyncIterable<Uint8Array>,
+  header: HeaderStripped,
+  iterator: AsyncIterator<Uint8Array>,
   verifyHash: boolean,
 ): AsyncIterable<Uint8Array> {
   const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
-  const iter = chunks[Symbol.asyncIterator]();
 
-  // The header yield below sits outside the `for await`, so an early return
-  // there would otherwise abandon `iter` — and the reader behind it — without
-  // cancelling. Cancelling a spent iterator is a no-op, so this is safe on the
-  // normal path too.
   try {
-    const firstChunk = await iter.next();
-    if (firstChunk.done === true) {
-      throw invalidObjectHeader(`inflate stream produced no output for object ${id}`);
+    hasher?.update(header.headerBytes);
+
+    if (header.content.length > 0) {
+      hasher?.update(header.content);
+      yield header.content;
     }
 
-    const stripped = await stripHeader(id, iter, firstChunk.value);
-
-    hasher?.update(stripped.headerBytes);
-
-    if (stripped.content.length > 0) {
-      hasher?.update(stripped.content);
-      yield stripped.content;
-    }
-
-    for await (const chunk of { [Symbol.asyncIterator]: () => iter }) {
+    for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) {
       if (ctx.signal?.aborted === true) {
         throw operationAborted();
       }
@@ -375,7 +437,7 @@ async function* yieldAndVerifyChunks(
 
     await finalizeHash(hasher, id);
   } finally {
-    await iter.return?.();
+    await returnIterator(iterator);
   }
 }
 
