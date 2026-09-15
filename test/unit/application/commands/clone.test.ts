@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { clone } from '../../../../src/application/commands/clone.js';
 import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type {
   AuthorIdentity,
@@ -11,6 +12,7 @@ import type {
   RefName,
 } from '../../../../src/domain/objects/index.js';
 import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HashService } from '../../../../src/ports/hash-service.js';
@@ -117,6 +119,45 @@ const buildPackFromSingleCommit = async (
   const id = built.ids[0];
   if (id === undefined) throw new Error('expected one entry');
   return { packBytes: built.packBytes, commitId: id };
+};
+
+/** A pack holding a real commit AND a one-entry tree (plus its blob) — the
+ *  shapes a clone's ref verification must tell apart by the ref name. */
+const buildPackWithCommitAndTree = async (
+  ctx: Context,
+): Promise<{ packBytes: Uint8Array; commitId: ObjectId; treeId: ObjectId }> => {
+  const blobContent = ENCODER.encode('tree entry\n');
+  const blobId = (await ctx.hash.hashHex(
+    serializeObject({ type: 'blob', id: '' as ObjectId, content: blobContent }, ctx.hashConfig),
+  )) as ObjectId;
+  const tree = serializeObject(
+    { type: 'tree', id: '' as ObjectId, entries: [treeEntry(FILE_MODE.REGULAR, 'a', blobId)] },
+    ctx.hashConfig,
+  );
+  const commit = serializeObject(
+    {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree: emptyTreeOid(ctx.hashConfig),
+        parents: [],
+        author: COMMIT_AUTHOR,
+        committer: COMMIT_AUTHOR,
+        message: 'with tree\n',
+        extraHeaders: [],
+      },
+    },
+    ctx.hashConfig,
+  );
+  const body = (bytes: Uint8Array): Uint8Array => bytes.subarray(bytes.indexOf(0) + 1);
+  const built = await buildSyntheticPack(ctx, [
+    { kind: 'base', type: 'blob', content: blobContent },
+    { kind: 'base', type: 'tree', content: body(tree) },
+    { kind: 'base', type: 'commit', content: body(commit) },
+  ]);
+  const [, treeId, commitId] = built.ids;
+  if (treeId === undefined || commitId === undefined) throw new Error('expected tree and commit');
+  return { packBytes: built.packBytes, commitId: commitId as ObjectId, treeId: treeId as ObjectId };
 };
 
 const DECODER = new TextDecoder();
@@ -1042,6 +1083,112 @@ describe('clone', () => {
         expect(tagRef.trim()).toBe(commitId);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/v1.0`)).toBe(false);
       });
+    });
+  });
+
+  describe('Given a discovery whose checked-out branch names a tree', () => {
+    describe('When clone', () => {
+      it('Then it refuses UNEXPECTED_OBJECT_TYPE for the tree and removes the gitDir', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, treeId } = await buildPackWithCommitAndTree(ctx);
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+          refs: [{ name: 'refs/heads/main', id: treeId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const sut = clone;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(withTransport(ctx, transport), { url: REMOTE_URL });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(await ctx.fs.exists(ctx.layout.gitDir)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a discovery with a detached HEAD naming a tree', () => {
+    describe('When clone', () => {
+      it('Then it refuses UNEXPECTED_OBJECT_TYPE for the tree and removes the gitDir', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, commitId, treeId } = await buildPackWithCommitAndTree(ctx);
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k'],
+          refs: [
+            { name: 'HEAD', id: treeId },
+            { name: 'refs/heads/main', id: commitId },
+          ],
+          head: 'HEAD',
+          packBytes,
+        });
+        const sut = clone;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(withTransport(ctx, transport), { url: REMOTE_URL });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(await ctx.fs.exists(ctx.layout.gitDir)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a discovery whose tag names an object the pack lacks', () => {
+    describe('When clone', () => {
+      it.each([{ label: 'an absent object id', missing: 'f'.repeat(40) }])(
+        'Then $label refuses OBJECT_NOT_FOUND and removes the gitDir',
+        async ({ missing }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'tag lacks\n');
+          const transport = buildCloneRemote({
+            capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+            refs: [
+              { name: 'refs/heads/main', id: commitId },
+              { name: 'refs/tags/v1', id: missing },
+            ],
+            head: 'refs/heads/main',
+            packBytes,
+          });
+          const sut = clone;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(withTransport(ctx, transport), { url: REMOTE_URL });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missing });
+          expect(await ctx.fs.exists(ctx.layout.gitDir)).toBe(false);
+        },
+      );
     });
   });
 
