@@ -15,7 +15,17 @@
  *   unique:         ref updates dereference symbolic refs and delete as git's ref transaction does
  *   interopSurface: updateRef
  */
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -1589,6 +1599,132 @@ describe.skipIf(!GIT_AVAILABLE)(
             );
           },
         );
+      });
+    });
+
+    describe('Given refs/heads/lnk is a symbolic link whose text is refs/heads/x on both tools', () => {
+      const plantLink = (dir: string): Promise<void> =>
+        symlink('refs/heads/x', path.join(dir, '.git', 'refs', 'heads', 'lnk'));
+      const logOf = (dir: string, name: string): Promise<string> =>
+        readFile(path.join(dir, '.git', 'logs', 'refs', 'heads', name), 'utf8');
+      const isLink = async (dir: string): Promise<boolean> =>
+        (await lstat(path.join(dir, '.git', 'refs', 'heads', 'lnk'))).isSymbolicLink();
+
+      describe('When git symbolic-ref and for-each-ref read it and tsgit resolves and lists it', () => {
+        it('Then both report a symref to refs/heads/x and neither lists the dangling path', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('link-read');
+          await plantLink(peer);
+          await plantLink(ours);
+          const sut = getRefStore(ctx);
+
+          // Act
+          const result = await sut.resolveDirect(branchRef('lnk'));
+          const names = await sut.listRefNames('refs/heads/' as RefName);
+
+          // Assert
+          const gitSymref = tryRunGitWithExit(['-C', peer, 'symbolic-ref', 'refs/heads/lnk'], {
+            env: runGitEnv(),
+          });
+          const gitList = tryRunGitWithExit(
+            ['-C', peer, 'for-each-ref', '--format=%(refname)', 'refs/heads/'],
+            { env: runGitEnv() },
+          );
+          expect(gitSymref.stdout.trim()).toBe('refs/heads/x');
+          expect(result).toEqual({ kind: 'symbolic', target: branchRef('x') });
+          expect(names).toEqual(gitList.stdout.trim().split('\n'));
+        });
+      });
+
+      describe('When both write it dereferencing', () => {
+        it('Then x moves, the link stays, and both logs are byte-identical', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('link-write');
+          await plantLink(peer);
+          await plantLink(ours);
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 30) * 1000);
+          const sut = updateRef;
+
+          // Act
+          try {
+            runGit(['-C', peer, 'update-ref', '-m', 'w', 'refs/heads/lnk', filesC1], {
+              env: pinnedEnv(COMMITTER_EPOCH + 30),
+            });
+            await sut(ctx, branchRef('lnk'), filesC1 as ObjectId, { reflogMessage: 'w' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(git(peer, 'rev-parse', 'refs/heads/x').trim()).toBe(filesC1);
+          expect(await getRefStore(ctx).resolveDirect(branchRef('x'))).toEqual({
+            kind: 'direct',
+            id: filesC1,
+          });
+          expect(await isLink(peer)).toBe(true);
+          expect(await isLink(ours)).toBe(true);
+          expect(await logOf(ours, 'x')).toBe(await logOf(peer, 'x'));
+          expect(await logOf(ours, 'lnk')).toBe(await logOf(peer, 'lnk'));
+        });
+      });
+
+      describe('When both write it without dereferencing', () => {
+        it('Then the link becomes the same regular file with the same log on both', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('link-no-deref-write');
+          await plantLink(peer);
+          await plantLink(ours);
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 31) * 1000);
+          const sut = updateRef;
+
+          // Act
+          try {
+            runGit(
+              ['-C', peer, 'update-ref', '--no-deref', '-m', 'nd', 'refs/heads/lnk', filesC1],
+              { env: pinnedEnv(COMMITTER_EPOCH + 31) },
+            );
+            await sut(ctx, branchRef('lnk'), filesC1 as ObjectId, {
+              reflogMessage: 'nd',
+              noDeref: true,
+            });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          const loose = (dir: string): string => path.join(dir, '.git', 'refs', 'heads', 'lnk');
+          expect(await isLink(peer)).toBe(false);
+          expect(await isLink(ours)).toBe(false);
+          expect(await readFile(loose(ours), 'utf8')).toBe(await readFile(loose(peer), 'utf8'));
+          expect(await logOf(ours, 'lnk')).toBe(await logOf(peer, 'lnk'));
+          expect(await logOf(ours, 'x')).toBe(await logOf(peer, 'x'));
+        });
+      });
+
+      describe('When both delete it without dereferencing', () => {
+        it('Then the link is gone and x is kept on both', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('link-no-deref-delete');
+          await plantLink(peer);
+          await plantLink(ours);
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit(
+            ['-C', peer, 'update-ref', '--no-deref', '-d', 'refs/heads/lnk'],
+            { env: runGitEnv() },
+          );
+          await sut(ctx, branchRef('lnk'), ZERO, { delete: true, noDeref: true });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, ours]) {
+            expect(await pathExists(path.join(dir, '.git', 'refs', 'heads', 'lnk'))).toBe(false);
+            expect(await readFile(path.join(dir, '.git', 'refs', 'heads', 'x'), 'utf8')).toBe(
+              `${filesC2}\n`,
+            );
+          }
+        });
       });
     });
   },

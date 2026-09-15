@@ -1520,11 +1520,12 @@ describe('branch', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            readUtf8: async (path: string) => {
-              if (path !== racedPath) return ctx.fs.readUtf8(path);
+            openWithNoFollow: async (path, mode) => {
+              if (path !== racedPath) return ctx.fs.openWithNoFollow(path, mode);
               reads += 1;
               if (reads === 1) throw fileNotFound(path);
-              return `${commitId}\n`;
+              await ctx.fs.writeUtf8(racedPath, `${commitId}\n`);
+              return ctx.fs.openWithNoFollow(path, mode);
             },
           },
         };

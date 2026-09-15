@@ -2109,8 +2109,8 @@ describe('reflog command', () => {
             ...ctx,
             fs: {
               ...ctx.fs,
-              readUtf8: (path: string): Promise<string> =>
-                path === refPath ? Promise.reject(boom) : ctx.fs.readUtf8(path),
+              openWithNoFollow: (path, mode) =>
+                path === refPath ? Promise.reject(boom) : ctx.fs.openWithNoFollow(path, mode),
             },
           };
 
@@ -2224,18 +2224,18 @@ describe('reflog command', () => {
           const headsDir = `${ctx.layout.gitDir}/refs/heads/`;
           let inFlight = 0;
           let maxInFlight = 0;
-          const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+          const originalOpen = ctx.fs.openWithNoFollow.bind(ctx.fs);
           const instrumented: Context = {
             ...ctx,
             fs: {
               ...ctx.fs,
-              readUtf8: async (path: string) => {
-                if (!path.startsWith(headsDir)) return originalReadUtf8(path);
+              openWithNoFollow: async (path, mode) => {
+                if (!path.startsWith(headsDir)) return originalOpen(path, mode);
                 inFlight += 1;
                 if (inFlight > maxInFlight) maxInFlight = inFlight;
                 await Promise.resolve();
                 inFlight -= 1;
-                return originalReadUtf8(path);
+                return originalOpen(path, mode);
               },
             },
           };

@@ -33,7 +33,7 @@ import {
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
-import type { FileStat } from '../../ports/file-system.js';
+import type { DirEntry, FileStat } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
@@ -53,6 +53,7 @@ import { MAX_PEEL_DEPTH, MAX_REFLOG_BYTES } from './types.js';
 import { exceedsMaxPeelDepth } from './validators.js';
 
 const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 
 export interface RefStore {
   /**
@@ -326,6 +327,38 @@ const isPrunableParent = (dir: string, root: string): boolean =>
 
 type PathKind = 'directory' | 'file' | 'absent';
 
+/** A loose ref's leaf, read without following it: a regular file's
+ *  content, a symbolic link, or no loose ref (absent, or a directory). */
+type LooseLeaf =
+  | { readonly kind: 'content'; readonly content: string }
+  | { readonly kind: 'symlink' }
+  | { readonly kind: 'none' };
+
+const NO_LEAF: LooseLeaf = { kind: 'none' };
+const SYMLINK_LEAF: LooseLeaf = { kind: 'symlink' };
+const MISSING: ResolveDirectResult = { kind: 'missing' };
+
+/** How the loose walk treats one directory entry: descend it, list it, or
+ *  drop it. */
+type ListedKind = 'directory' | 'ref' | 'unlisted';
+
+/** The `stat` failures that drop a symbolic link from the loose walk, as a
+ *  failed `stat` drops it from git's: dangling, through a regular file, or
+ *  a loop. */
+const UNRESOLVABLE_LINK_CODES: ReadonlySet<string> = new Set([
+  'FILE_NOT_FOUND',
+  'NOT_A_DIRECTORY',
+  'PERMISSION_DENIED',
+]);
+/** The no-follow open refusals the plain loose reader decides instead: an
+ *  adapter without the open, a regular file in the path, or an unreadable
+ *  regular file. */
+const PLAIN_READER_CODES: ReadonlySet<string> = new Set([
+  'UNSUPPORTED_OPERATION',
+  'NOT_A_DIRECTORY',
+  'PERMISSION_DENIED',
+]);
+
 /** The byte-smaller of two optional names. */
 const smallerName = (a: RefName | undefined, b: RefName | undefined): RefName | undefined =>
   a === undefined || (b !== undefined && b < a) ? b : a;
@@ -575,7 +608,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    * `HEAD` through the single reader: a symlink whose link text is a
    * `refs/`-prefixed valid refname is reported symbolic — matching git —
    * WITHOUT ever dereferencing it; any other link text is read through
-   * (`resolveHeadSymlink`); a regular file parses exactly as any other
+   * (`resolveSymlinkedRef`); a regular file parses exactly as any other
    * loose ref does; `unusable` folds to `missing` only for the
    * `FILE_NOT_FOUND` cause, so a permission or I/O fault on `HEAD` surfaces
    * to the caller instead of masquerading as an absent ref. `HEAD` is never
@@ -583,73 +616,131 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function resolveHeadDirect(): Promise<ResolveDirectResult> {
     const head = await readHeadFile(ctx);
-    if (head.kind === 'symlink') return resolveHeadSymlink(head.linkText);
+    if (head.kind === 'symlink') {
+      return resolveSymlinkedRef(HEAD_NAME, `${ctx.layout.gitDir}/HEAD`, head.linkText);
+    }
     if (head.kind === 'file') return fromLooseContent(head.content);
-    if (isFileNotFound(head.cause)) return { kind: 'missing' };
+    if (isFileNotFound(head.cause)) return MISSING;
     throw head.cause;
   }
 
-  /** git's `read_ref_internal` symlink rule: a `refs/`-prefixed VALID refname is a symref;
-   *  any other link text falls through to an ordinary read of the file it names. */
-  async function resolveHeadSymlink(linkText: string): Promise<ResolveDirectResult> {
+  /** git's `read_ref_internal` symlink rule, for every loose ref: a `refs/`-prefixed VALID
+   *  refname is a symref; any other link text falls through to an ordinary read of the file
+   *  it names. */
+  async function resolveSymlinkedRef(
+    name: RefName,
+    path: string,
+    linkText: string,
+  ): Promise<ResolveDirectResult> {
     const text = linkText.replace(/\\/g, '/');
     if (isRefsLinkText(text) && isSafeRefName(text)) {
       return { kind: 'symbolic', target: text as RefName };
     }
-    return resolveFollowedHead();
+    return resolveFollowed(name, path);
   }
 
   /**
-   * The file a non-refname `HEAD` symlink points to, read fresh on every call and never
+   * The file a non-refname symlink points to, read fresh on every call — for `HEAD`, never
    * slotted: the HEAD slot's identity is the link's own `lstat`, which a rewrite of the
-   * followed target does not change.
+   * followed target does not change. An absent or directory target is a missing ref, never
+   * the packed value: git's followed read ends there.
    */
-  async function resolveFollowedHead(): Promise<ResolveDirectResult> {
-    const path = `${ctx.layout.gitDir}/HEAD`;
+  async function resolveFollowed(name: RefName, path: string): Promise<ResolveDirectResult> {
     try {
-      if ((await ctx.fs.stat(path)).isDirectory) return { kind: 'missing' };
-      return fromFollowedContent(HEAD_NAME, await ctx.fs.readUtf8(path));
+      if ((await ctx.fs.stat(path)).isDirectory) return MISSING;
+      return fromFollowedContent(name, await ctx.fs.readUtf8(path));
     } catch (err) {
-      if (isFileNotFound(err)) return { kind: 'missing' };
+      if (isFileNotFound(err)) return MISSING;
       throw err;
     }
   }
 
-  /** A loose ref's parsed content. Parsing is tried first; only a refusal
-   *  pays one `lstat`, so a symbolic link's followed bytes never reach the
-   *  error while a regular file refuses as its own content parses. */
-  async function fromLooseFile(name: RefName, content: string): Promise<ResolveDirectResult> {
+  /** The regular file at `path`, through a handle that refuses a symbolic
+   *  link: its `fstat` also tells a directory apart. */
+  async function readRegularLeaf(path: string): Promise<LooseLeaf> {
+    const handle = await ctx.fs.openWithNoFollow(path, 'read');
     try {
-      return fromLooseContent(content);
-    } catch (err) {
-      const path = looseRefPath(refDir(name), name);
-      if (!(await ctx.fs.lstat(path)).isSymbolicLink) throw err;
-      throw unparseableFollowedContent(name);
+      const stat = await handle.stat();
+      if (stat.isDirectory) return NO_LEAF;
+      const buffer = new Uint8Array(stat.size);
+      const length = await handle.read(buffer, 0, stat.size, 0);
+      return { kind: 'content', content: TEXT_DECODER.decode(buffer.subarray(0, length)) };
+    } finally {
+      await handle.close();
     }
+  }
+
+  /**
+   * `name`'s loose leaf. git `lstat`s before it reads; a no-follow open asks
+   * the same question within the calls a plain read already makes, so only a
+   * refused open pays more: `PERMISSION_DENIED` one `lstat`, to tell a link
+   * from an unreadable file, and any other refusal — an adapter without the
+   * open, a regular file in the path — the plain reader, which decides those.
+   */
+  async function readLooseLeaf(name: RefName, path: string): Promise<LooseLeaf> {
+    try {
+      return await readRegularLeaf(path);
+    } catch (err) {
+      return leafAfterRefusedOpen(name, path, err);
+    }
+  }
+
+  async function leafAfterRefusedOpen(
+    name: RefName,
+    path: string,
+    err: unknown,
+  ): Promise<LooseLeaf> {
+    const code = errorDataCode(err);
+    if (code === 'FILE_NOT_FOUND') return NO_LEAF;
+    if (code === 'PERMISSION_DENIED' && (await ctx.fs.lstat(path)).isSymbolicLink) {
+      return SYMLINK_LEAF;
+    }
+    if (!PLAIN_READER_CODES.has(code ?? '')) throw err;
+    const content = await readLooseContent(name);
+    return content === undefined ? NO_LEAF : { kind: 'content', content };
+  }
+
+  async function resolvePacked(name: RefName): Promise<ResolveDirectResult> {
+    const entry = (await loadPackedRefs()).byName().get(name);
+    return entry === undefined ? MISSING : { kind: 'direct', id: entry.id };
   }
 
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
     if (name === HEAD_NAME) return resolveHeadDirect();
-    const looseContent = await readLooseContent(name);
-    if (looseContent !== undefined) return fromLooseFile(name, looseContent);
-    const packed = await loadPackedRefs();
-    const entry = packed.byName().get(name);
-    return entry === undefined ? { kind: 'missing' } : { kind: 'direct', id: entry.id };
+    const path = looseRefPath(refDir(name), name);
+    const leaf = await readLooseLeaf(name, path);
+    if (leaf.kind === 'symlink') {
+      return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
+    }
+    if (leaf.kind === 'content') return fromLooseContent(leaf.content);
+    return resolvePacked(name);
   }
+
+  /** git's loose iterator takes a symbolic link entry's followed type: a
+   *  directory is descended, anything else listed, and a link that does not
+   *  resolve dropped. */
+  async function followedEntryKind(path: string): Promise<ListedKind> {
+    try {
+      return (await ctx.fs.stat(path)).isDirectory ? 'directory' : 'ref';
+    } catch (err) {
+      if (UNRESOLVABLE_LINK_CODES.has(errorDataCode(err) ?? '')) return 'unlisted';
+      throw err;
+    }
+  }
+
+  const entryKind = (entry: DirEntry): ListedKind => (entry.isDirectory ? 'directory' : 'ref');
 
   /** Recursively walk one `refs/**` root, composing slash-joined ref names as it descends. */
   async function walkRefDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
     const entries = await ctx.fs.readdir(dir);
     const names: RefName[] = [];
     for (const entry of entries) {
+      const path = `${dir}/${entry.name}`;
       const rel = `${prefix}/${entry.name}`;
-      if (entry.isDirectory) {
-        for (const name of await walkRefDir(`${dir}/${entry.name}`, rel)) {
-          names.push(name);
-        }
-      } else {
-        names.push(rel as RefName);
-      }
+      const kind = entry.isSymbolicLink ? await followedEntryKind(path) : entryKind(entry);
+      if (kind === 'ref') names.push(rel as RefName);
+      if (kind !== 'directory') continue;
+      for (const name of await walkRefDir(path, rel)) names.push(name);
     }
     return names;
   }

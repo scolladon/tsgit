@@ -36,6 +36,9 @@ function buildSingleRefTable(refName: string, id: Uint8Array): Uint8Array {
   return buildReftable({ ...headerSpec, blocks: [block] });
 }
 
+/** Every port method a loose ref's content can be read through. */
+const LOOSE_READS: ReadonlySet<string> = new Set(['readUtf8', 'openWithNoFollow']);
+
 const IDENTITY: AuthorIdentity = {
   name: 'Ada',
   email: 'ada@example.com',
@@ -122,10 +125,10 @@ describe('ref-store', () => {
         // Act
         await sut.resolveDirect('refs/heads/main' as RefName);
 
-        // Assert — one `readUtf8` and no `exists` probe on the loose path.
+        // Assert — one no-follow open and no `exists` or `lstat` probe on the loose path.
         const loosePath = `${ctx.layout.gitDir}/refs/heads/main`;
         expect(calls().filter((c) => c.path === loosePath)).toEqual([
-          { method: 'readUtf8', path: loosePath },
+          { method: 'openWithNoFollow', path: loosePath },
         ]);
       });
     });
@@ -1824,7 +1827,7 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toHaveLength(64);
-        expect(calls().some((c) => c.method === 'readUtf8' && c.path.startsWith(tagsDir))).toBe(
+        expect(calls().some((c) => LOOSE_READS.has(c.method) && c.path.startsWith(tagsDir))).toBe(
           false,
         );
       });
@@ -2486,7 +2489,7 @@ describe('ref-store', () => {
         expect(names).toEqual(['refs/heads/main', 'refs/heads/other']);
         const looseRefsDir = `${ctx.layout.gitDir}/refs/`;
         expect(
-          calls().some((c) => c.method === 'readUtf8' && c.path.startsWith(looseRefsDir)),
+          calls().some((c) => LOOSE_READS.has(c.method) && c.path.startsWith(looseRefsDir)),
         ).toBe(false);
       });
     });
@@ -2504,10 +2507,10 @@ describe('ref-store', () => {
         });
         const loosePath = `${ctx.layout.gitDir}/refs/heads/main`;
         const fault = new Error('boom');
-        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
-        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+        const originalOpen = ctx.fs.openWithNoFollow.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'openWithNoFollow').mockImplementation(async (path, mode) => {
           if (path === loosePath) throw fault;
-          return originalReadUtf8(path);
+          return originalOpen(path, mode);
         });
         const sut = createRefStore(ctx);
 
@@ -2653,17 +2656,17 @@ describe('ref-store', () => {
         const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
         let inFlight = 0;
         let maxInFlight = 0;
-        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const originalOpen = ctx.fs.openWithNoFollow.bind(ctx.fs);
         const instrumented: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            readUtf8: async (path: string) => {
+            openWithNoFollow: async (path, mode) => {
               inFlight += 1;
               if (inFlight > maxInFlight) maxInFlight = inFlight;
               await Promise.resolve();
               inFlight -= 1;
-              return originalReadUtf8(path);
+              return originalOpen(path, mode);
             },
           },
         };

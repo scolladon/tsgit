@@ -1788,11 +1788,12 @@ describe('merge — updateRef CAS guard', () => {
     const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
     const staleId = '1'.repeat(40);
     let mainReads = 0;
-    const original = ctx.fs.readUtf8.bind(ctx.fs);
-    (ctx.fs as { readUtf8: typeof original }).readUtf8 = async (path: string) => {
-      if (path !== refPath) return original(path);
+    const original = ctx.fs.openWithNoFollow.bind(ctx.fs);
+    (ctx.fs as { openWithNoFollow: typeof original }).openWithNoFollow = async (path, mode) => {
+      if (path !== refPath) return original(path, mode);
       mainReads += 1;
-      return mainReads === 1 ? original(path) : `${staleId}\n`;
+      if (mainReads > 1) await ctx.fs.writeUtf8(refPath, `${staleId}\n`);
+      return original(path, mode);
     };
   };
 
