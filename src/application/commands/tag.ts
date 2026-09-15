@@ -93,10 +93,17 @@ export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<Ta
   const targetId = isOid(target, ctx.hashConfig)
     ? (target as ObjectId)
     : await resolveRef(ctx, target as RefName);
-  // The point where git TYPES the target — for both the annotated and the
-  // lightweight path — so this is where the repo-settings class is checked:
-  // an unresolvable target reports first (above), never the class.
+  // git's own order (builtin/tag.c:658-694): resolve the target (above),
+  // validate the name (above), class it (the point where git TYPES the
+  // target, for both the annotated and the lightweight path — an
+  // unresolvable target reports first, never the class), THEN check
+  // "already exists", THEN create the tag object (annotated only), THEN run
+  // the ref transaction, which verifies the target. Without the explicit
+  // exists check below, an existing name with an unresolvable target would
+  // report the target, not TAG_EXISTS — `updateRef`'s own compare-and-swap
+  // runs after its target verification now, too late to be the first word.
   await assertRepoSettingsValid(ctx);
+  if (input.force !== true && (await refExists(ctx, name))) throw tagExists(name);
   const id = wantsAnnotatedTag(input) ? await createAnnotatedTag(ctx, input, targetId) : targetId;
   await updateTagRef(ctx, name, id, input.force === true, `tag: ${input.name}`);
   return { name, id };

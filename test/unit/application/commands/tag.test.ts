@@ -11,9 +11,18 @@ import {
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import type {
+  AuthorIdentity,
+  ObjectId,
+  RefName,
+  TagData,
+} from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 
@@ -98,6 +107,114 @@ describe('tag', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('TAG_EXISTS');
+      });
+    });
+
+    describe('When tag create without force, and the (new) target is a missing full oid', () => {
+      it('Then it still throws TAG_EXISTS — the name is reported before the target', async () => {
+        // Arrange — this is the row that would fail without the explicit
+        // pre-check: `updateRef` now verifies its target before its own
+        // compare-and-swap, so a missing target would otherwise surface
+        // OBJECT_NOT_FOUND instead of TAG_EXISTS.
+        const { ctx } = await seedWithCommit();
+        await tagCreate(ctx, { name: 'v1.0' });
+        const missing = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', target: missing });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('TAG_EXISTS');
+      });
+    });
+
+    describe('When tag create --annotate without force, and the target is a missing full oid', () => {
+      it('Then it still throws TAG_EXISTS', async () => {
+        // Arrange
+        const { ctx } = await seedWithConfiguredUser();
+        await tagCreate(ctx, { name: 'v1.0' });
+        const missing = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', target: missing, message: 'x' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('TAG_EXISTS');
+      });
+    });
+  });
+
+  describe('Given a missing full-oid target', () => {
+    describe('When tag create', () => {
+      it('Then it throws OBJECT_NOT_FOUND and writes no ref', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const missing = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', target: missing });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('OBJECT_NOT_FOUND');
+        if (data.code === 'OBJECT_NOT_FOUND') expect(data.id).toBe(missing);
+        expect(await refExists(ctx, 'refs/tags/v1.0' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tree, a blob and an annotated tag object as targets', () => {
+    describe('When tag create runs for each', () => {
+      it('Then every existing type is written', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const blobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('blob content'),
+          id: '' as ObjectId,
+        });
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', blobId)]);
+        const tagData: TagData = {
+          object: commitId,
+          objectType: 'commit',
+          tagName: 'inner',
+          tagger: author,
+          message: 'inner\n',
+          extraHeaders: [],
+        };
+        const tagObjectId = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: tagData,
+        });
+
+        // Act
+        const tree = await tagCreate(ctx, { name: 'to-tree', target: treeId });
+        const blob = await tagCreate(ctx, { name: 'to-blob', target: blobId });
+        const tagObj = await tagCreate(ctx, { name: 'to-tag', target: tagObjectId });
+
+        // Assert
+        expect(tree.id).toBe(treeId);
+        expect(blob.id).toBe(blobId);
+        expect(tagObj.id).toBe(tagObjectId);
       });
     });
   });
@@ -314,6 +431,29 @@ describe('tag', () => {
         // (full name + same oid).
         expect(result.name).toBe('refs/tags/v1.0');
         expect(result.id).toBe(first.id);
+      });
+    });
+
+    describe('When tag create with force=true, and the (new) target is a missing full oid', () => {
+      it('Then it throws OBJECT_NOT_FOUND — force bypasses the exists check, not verification', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tagCreate(ctx, { name: 'v1.0' });
+        const missing = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', target: missing, force: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('OBJECT_NOT_FOUND');
+        if (data.code === 'OBJECT_NOT_FOUND') expect(data.id).toBe(missing);
       });
     });
   });
