@@ -440,4 +440,112 @@ describe('withLockFile', () => {
       });
     });
   });
+  describe('Given writeExclusive throws a non-FILE_EXISTS TsgitError', () => {
+    describe('When withLockFile is called', () => {
+      it('Then that error propagates, not the onLocked refusal, and the body never runs', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const writeError = new TsgitError({ code: 'PERMISSION_DENIED', path: '/x' });
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            writeExclusive: async () => {
+              throw writeError;
+            },
+          },
+        };
+        let bodyCalls = 0;
+        const sut = withLockFile;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, '/repo/.git/packed-refs', onLocked, async () => {
+            bodyCalls += 1;
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(writeError);
+        expect(bodyCalls).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a body that throws and a lock removal that reports FILE_NOT_FOUND', () => {
+    describe('When withLockFile is called', () => {
+      it("Then the removal error is swallowed and the body's error propagates", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const bodyError = new Error('body exploded');
+        const rmError = new TsgitError({
+          code: 'FILE_NOT_FOUND',
+          path: '/repo/.git/packed-refs.lock',
+        });
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rm: async () => {
+              throw rmError;
+            },
+          },
+        };
+        const sut = withLockFile;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, '/repo/.git/packed-refs', onLocked, async () => {
+            throw bodyError;
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(bodyError);
+      });
+    });
+  });
+
+  describe('Given a body that throws and a lock removal that fails for another reason', () => {
+    describe('When withLockFile is called', () => {
+      it('Then the removal error propagates so a stuck lock surfaces', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rmError = new TsgitError({
+          code: 'PERMISSION_DENIED',
+          path: '/repo/.git/packed-refs.lock',
+        });
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rm: async () => {
+              throw rmError;
+            },
+          },
+        };
+        const sut = withLockFile;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, '/repo/.git/packed-refs', onLocked, async () => {
+            throw new Error('body exploded');
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(rmError);
+        expect(await ctx.fs.exists('/repo/.git/packed-refs.lock')).toBe(true);
+      });
+    });
+  });
 });
