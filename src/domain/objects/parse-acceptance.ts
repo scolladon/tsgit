@@ -41,10 +41,10 @@ interface CommitScan {
   readonly totalBytes: number;
   readonly phase: 'tree' | 'parents' | 'tail';
   readonly carry: Uint8Array;
-  readonly pc1ContentRefusal: string | undefined;
-  readonly pc2Refusal: string | undefined;
+  readonly treeLineRefusal: string | undefined;
+  readonly treePointerRefusal: string | undefined;
   readonly treeHex: string | undefined;
-  readonly pc4Candidate: string | undefined;
+  readonly parentMatchingTree: string | undefined;
   readonly grammarRefusal: string | undefined;
 }
 
@@ -54,7 +54,7 @@ interface TagScan {
   readonly totalBytes: number;
   readonly phase: 'object' | 'type' | 'tag-line-prefix' | 'tag-line-scan' | 'tail';
   readonly carry: Uint8Array;
-  readonly pt2Refusal: string | undefined;
+  readonly objectLineRefusal: string | undefined;
   readonly earlyRefusal: string | undefined;
 }
 
@@ -74,10 +74,10 @@ export const startParseAcceptance = (
         totalBytes: 0,
         phase: 'tree',
         carry: EMPTY,
-        pc1ContentRefusal: undefined,
-        pc2Refusal: undefined,
+        treeLineRefusal: undefined,
+        treePointerRefusal: undefined,
         treeHex: undefined,
-        pc4Candidate: undefined,
+        parentMatchingTree: undefined,
         grammarRefusal: undefined,
       }
     : {
@@ -86,7 +86,7 @@ export const startParseAcceptance = (
         totalBytes: 0,
         phase: 'object',
         carry: EMPTY,
-        pt2Refusal: undefined,
+        objectLineRefusal: undefined,
         earlyRefusal: undefined,
       };
 
@@ -119,15 +119,15 @@ function feedCommitTree(scan: CommitScan): CommitScan {
   if (scan.carry.length < h + 6) return scan;
   const window = scan.carry.subarray(0, h + 6);
   const rest = scan.carry.subarray(h + 6);
-  const pc1Content = !startsWith(window, TREE_PREFIX) || window[h + 5] !== LF;
-  const pc2 = !pc1Content && !isAllHex(window.subarray(5, 5 + h));
-  const treeHex = pc1Content ? undefined : decodeLowerHex(window.subarray(5, 5 + h));
+  const badTreeLine = !startsWith(window, TREE_PREFIX) || window[h + 5] !== LF;
+  const badTreePointer = !badTreeLine && !isAllHex(window.subarray(5, 5 + h));
+  const treeHex = badTreeLine ? undefined : decodeLowerHex(window.subarray(5, 5 + h));
   return {
     ...scan,
     phase: 'parents',
     carry: rest,
-    pc1ContentRefusal: pc1Content ? 'bogus commit object' : undefined,
-    pc2Refusal: pc2 ? 'bad tree pointer' : undefined,
+    treeLineRefusal: badTreeLine ? 'bogus commit object' : undefined,
+    treePointerRefusal: badTreePointer ? 'bad tree pointer' : undefined,
     treeHex,
   };
 }
@@ -149,9 +149,8 @@ function feedCommitParents(scan: CommitScan): CommitScan {
     return { ...scan, phase: 'tail', carry: EMPTY, grammarRefusal: 'bad parents' };
   }
   const parentHex = decodeLowerHex(hexPart);
-  const pc4Candidate =
-    scan.pc4Candidate === undefined && parentHex === scan.treeHex ? parentHex : scan.pc4Candidate;
-  return { ...scan, carry: scan.carry.subarray(h + 8), pc4Candidate };
+  const parentMatchingTree = parentHex === scan.treeHex ? parentHex : scan.parentMatchingTree;
+  return { ...scan, carry: scan.carry.subarray(h + 8), parentMatchingTree };
 }
 
 const COMMIT_STEPPERS: Readonly<Record<CommitScan['phase'], (scan: CommitScan) => CommitScan>> = {
@@ -206,7 +205,12 @@ function feedTagObject(scan: TagScan): TagScan {
     !startsWith(window, OBJECT_PREFIX) ||
     !isAllHex(window.subarray(7, 7 + h)) ||
     window[h + 7] !== LF;
-  return { ...scan, phase: 'type', carry: rest, pt2Refusal: bad ? 'bad object line' : undefined };
+  return {
+    ...scan,
+    phase: 'type',
+    carry: rest,
+    objectLineRefusal: bad ? 'bad object line' : undefined,
+  };
 }
 
 const unknownTagTypeReason = (name: string): string =>
@@ -281,7 +285,7 @@ export const feedParseAcceptance = (
  *  git resolves with a lookup (a shallow boundary skips it) rather than
  *  from the bytes alone. Always `false` for a tag scan. */
 export const needsParentLookups = (scan: ParseAcceptanceScan): boolean =>
-  scan.kind === 'commit' && scan.pc4Candidate !== undefined;
+  scan.kind === 'commit' && scan.parentMatchingTree !== undefined;
 
 function commitVerdict(
   scan: CommitScan,
@@ -289,20 +293,20 @@ function commitVerdict(
 ): ParseAcceptanceRefusal | undefined {
   const h = scan.hexLength;
   if (scan.totalBytes <= h + 6) return { type: 'commit', reason: 'bogus commit object' };
-  if (scan.pc1ContentRefusal !== undefined) {
-    return { type: 'commit', reason: scan.pc1ContentRefusal };
+  if (scan.treeLineRefusal !== undefined) {
+    return { type: 'commit', reason: scan.treeLineRefusal };
   }
-  if (scan.pc2Refusal !== undefined) return { type: 'commit', reason: scan.pc2Refusal };
+  if (scan.treePointerRefusal !== undefined)
+    return { type: 'commit', reason: scan.treePointerRefusal };
   // A parent line still sitting in `carry` at exactly `h + 8` bytes, with no
   // more input coming, is the last `h + 8` bytes of the body — malformed,
-  // decided only now that "no more bytes" is known. The scan only ever
-  // reaches this phase with that much carried when the `parent ` prefix
-  // already matched (`feedCommitParents` clears it to 'tail' immediately
-  // otherwise).
-  const trailingRefusal =
-    scan.phase === 'parents' && scan.carry.length === h + 8 ? 'bad parents' : undefined;
-  if (scan.pc4Candidate !== undefined && parentLookups === 'checked') {
-    return { type: 'commit', reason: `bad parent ${scan.pc4Candidate}` };
+  // decided only now that "no more bytes" is known. Only the parent scan
+  // ever carries that much, and only once the `parent ` prefix matched
+  // (`feedCommitParents` clears it to 'tail' immediately otherwise): the
+  // tree window decides at `h + 6` bytes and a tail carries nothing.
+  const trailingRefusal = scan.carry.length === h + 8 ? 'bad parents' : undefined;
+  if (scan.parentMatchingTree !== undefined && parentLookups === 'checked') {
+    return { type: 'commit', reason: `bad parent ${scan.parentMatchingTree}` };
   }
   const grammarRefusal = scan.grammarRefusal ?? trailingRefusal;
   if (grammarRefusal !== undefined) return { type: 'commit', reason: grammarRefusal };
@@ -312,7 +316,7 @@ function commitVerdict(
 function tagVerdict(scan: TagScan): ParseAcceptanceRefusal | undefined {
   const h = scan.hexLength;
   if (scan.totalBytes < h + 24) return { type: 'tag', reason: 'tag object too short' };
-  if (scan.pt2Refusal !== undefined) return { type: 'tag', reason: scan.pt2Refusal };
+  if (scan.objectLineRefusal !== undefined) return { type: 'tag', reason: scan.objectLineRefusal };
   if (scan.earlyRefusal !== undefined) return { type: 'tag', reason: scan.earlyRefusal };
   // Reached with no more input: 'type' means no LF ever closed the type
   // line; 'tag-line-scan' means `tag ` was confirmed but no LF ever

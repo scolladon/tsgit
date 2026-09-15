@@ -322,10 +322,9 @@ describe('parse-acceptance', () => {
     describe('Given a matching parent already found on an earlier line, and a later well-formed non-matching parent', () => {
       describe('When the verdict is read', () => {
         it('Then the first candidate is kept, not overwritten', () => {
-          // Arrange — three parents: line 1 matches the tree (sets the
-          // candidate), line 2 does not (the candidate is already set, so
-          // this line's own equality is never even evaluated), line 3 is
-          // just well-formed filler.
+          // Arrange — three parents: line 1 matches the tree (records it),
+          // line 2 does not (the recorded match survives it), line 3 is just
+          // well-formed filler.
           const treeHex = T(40);
           const sut = parseAcceptanceVerdict;
           const scan = scanCommit(
