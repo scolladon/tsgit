@@ -1131,6 +1131,20 @@ describe('commit — HEAD through a chain of symbolic refs', () => {
         // main is untouched — HEAD names x through s, never main.
         const mainValue = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
         expect(mainValue).toEqual({ kind: 'direct', id: first.id });
+        // The write is logged under x's own name AND under HEAD, both with
+        // the same old/new ids — proving the coupled HEAD entry fires even
+        // though HEAD reaches x through a walked link (s), not directly.
+        // `first` was already committed through `main` before the symref
+        // chain was rewired, so HEAD's log carries that entry too — the
+        // assertion reads the LAST entry, the one this second commit made.
+        const xLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xLog).toHaveLength(1);
+        expect(xLog[0]?.oldId).toBe(first.id);
+        expect(xLog[0]?.newId).toBe(result.id);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog).toHaveLength(2);
+        expect(headLog[1]?.oldId).toBe(first.id);
+        expect(headLog[1]?.newId).toBe(result.id);
       });
     });
   });

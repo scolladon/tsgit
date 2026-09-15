@@ -16,8 +16,10 @@ import {
 import { rm } from '../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
@@ -383,6 +385,40 @@ const seedFourFiles = async (): Promise<{
   }
   return { ctx, c1: c1.id, c2: ids[0] as ObjectId, c3: ids[1] as ObjectId, c4: ids[2] as ObjectId };
 };
+
+describe('revertRun — HEAD through a chain of symbolic refs', () => {
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x', () => {
+    describe('When revertRun reverts the tip', () => {
+      it('Then x advances to the revert commit, s stays symbolic, and both x and HEAD log the move', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await branchCreate(ctx, { name: 'x' });
+        await checkout(ctx, { rev: 'x' });
+        await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, 'refs/heads/x' as RefName);
+        await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
+
+        // Act
+        const result = await revertRun(ctx, { commits: ['HEAD'] });
+
+        // Assert
+        expect(result.kind).toBe('reverted');
+        const createdId =
+          result.kind === 'reverted' ? (result.commits[0]?.created as ObjectId) : undefined;
+        const store = getRefStore(ctx);
+        const xValue = await store.resolveDirect('refs/heads/x' as RefName);
+        expect(xValue).toEqual({ kind: 'direct', id: createdId });
+        const sValue = await store.resolveDirect('refs/heads/s' as RefName);
+        expect(sValue).toEqual({ kind: 'symbolic', target: 'refs/heads/x' });
+        const xLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xLog[xLog.length - 1]?.oldId).toBe(c2);
+        expect(xLog[xLog.length - 1]?.newId).toBe(createdId);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog[headLog.length - 1]?.oldId).toBe(c2);
+        expect(headLog[headLog.length - 1]?.newId).toBe(createdId);
+      });
+    });
+  });
+});
 
 describe('revert range and sequencer', () => {
   describe('Given a clean A..B range', () => {

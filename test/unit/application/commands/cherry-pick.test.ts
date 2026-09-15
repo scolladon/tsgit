@@ -17,9 +17,11 @@ import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -252,6 +254,40 @@ const makeCleanRootPick = async (
     extraHeaders: [],
   });
 };
+
+describe('cherryPickRun — HEAD through a chain of symbolic refs', () => {
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x', () => {
+    describe('When cherryPickRun applies a commit', () => {
+      it('Then x advances to the picked commit, s stays symbolic, and both x and HEAD log the move', async () => {
+        // Arrange
+        const { ctx, feature, base } = await seedFeature();
+        await branchCreate(ctx, { name: 'x' });
+        await checkout(ctx, { rev: 'x' });
+        await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, 'refs/heads/x' as RefName);
+        await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: [feature] });
+
+        // Assert
+        expect(result.kind).toBe('picked');
+        const pickedId =
+          result.kind === 'picked' ? (result.commits[0]?.created as ObjectId) : undefined;
+        const store = getRefStore(ctx);
+        const xValue = await store.resolveDirect('refs/heads/x' as RefName);
+        expect(xValue).toEqual({ kind: 'direct', id: pickedId });
+        const sValue = await store.resolveDirect('refs/heads/s' as RefName);
+        expect(sValue).toEqual({ kind: 'symbolic', target: 'refs/heads/x' });
+        const xLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xLog[xLog.length - 1]?.oldId).toBe(base);
+        expect(xLog[xLog.length - 1]?.newId).toBe(pickedId);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog[headLog.length - 1]?.oldId).toBe(base);
+        expect(headLog[headLog.length - 1]?.newId).toBe(pickedId);
+      });
+    });
+  });
+});
 
 describe('cherryPickRun — merge commits', () => {
   describe('Given a single merge commit to pick', () => {

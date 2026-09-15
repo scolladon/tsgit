@@ -21,10 +21,12 @@ import * as writeFileMod from '../../../../src/application/primitives/internal/w
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
 import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
@@ -110,6 +112,45 @@ describe('merge', () => {
         if (result.kind === 'fast-forward') {
           expect(result.id).toBe(c2.id);
         }
+      });
+    });
+  });
+
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x, x an ancestor of the merge target', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then x moves to the target, s stays symbolic, and both x and HEAD log the move', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'x' });
+        await checkout(ctx, { rev: 'x' });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'x' });
+        await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, 'refs/heads/x' as RefName);
+        await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(result.kind).toBe('fast-forward');
+        const xValue = await getRefStore(ctx).resolveDirect('refs/heads/x' as RefName);
+        expect(xValue).toEqual({ kind: 'direct', id: c2.id });
+        const sValue = await getRefStore(ctx).resolveDirect('refs/heads/s' as RefName);
+        expect(sValue).toEqual({ kind: 'symbolic', target: 'refs/heads/x' });
+        const xLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xLog[xLog.length - 1]?.oldId).toBe(c1.id);
+        expect(xLog[xLog.length - 1]?.newId).toBe(c2.id);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog[headLog.length - 1]?.oldId).toBe(c1.id);
+        expect(headLog[headLog.length - 1]?.newId).toBe(c2.id);
       });
     });
   });

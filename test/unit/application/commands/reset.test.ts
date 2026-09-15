@@ -6,7 +6,9 @@ import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { asBareContext } from './fixtures.js';
 
@@ -47,6 +49,35 @@ describe('reset', () => {
         const ref = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
         expect(ref.trim()).toBe(c1);
         expect(c2).not.toBe(c1);
+      });
+    });
+  });
+
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x', () => {
+    describe('When reset moves x forward', () => {
+      it('Then x advances, s stays symbolic, and both x and HEAD log the move', async () => {
+        // Arrange
+        const { ctx, c1, c2 } = await seedTwoCommits();
+        const store = getRefStore(ctx);
+        await store.applyRefUpdates([{ kind: 'set', name: 'refs/heads/x' as RefName, id: c1 }]);
+        await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, 'refs/heads/x' as RefName);
+        await writeSymbolicRef(ctx, HEAD, 'refs/heads/s' as RefName);
+
+        // Act
+        const result = await reset(ctx, { mode: 'soft', rev: c2 });
+
+        // Assert
+        expect(result.id).toBe(c2);
+        const xValue = await store.resolveDirect('refs/heads/x' as RefName);
+        expect(xValue).toEqual({ kind: 'direct', id: c2 });
+        const sValue = await store.resolveDirect('refs/heads/s' as RefName);
+        expect(sValue).toEqual({ kind: 'symbolic', target: 'refs/heads/x' });
+        const xLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xLog[xLog.length - 1]?.oldId).toBe(c1);
+        expect(xLog[xLog.length - 1]?.newId).toBe(c2);
+        const headLog = await readReflog(ctx, HEAD);
+        expect(headLog[headLog.length - 1]?.oldId).toBe(c1);
+        expect(headLog[headLog.length - 1]?.newId).toBe(c2);
       });
     });
   });
