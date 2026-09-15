@@ -1152,6 +1152,173 @@ describe('updateRef', () => {
     });
   });
 
+  describe('branch typing', () => {
+    const writeTree = async (ctx: Context): Promise<ObjectId> =>
+      writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [treeEntry(FILE_MODE.REGULAR, 'a', await writeBlob(ctx))],
+      });
+    const writeBlob = (ctx: Context): Promise<ObjectId> =>
+      writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: ENC.encode('typed blob') });
+    const writeAnnotatedTag = async (ctx: Context): Promise<ObjectId> =>
+      writeObject(ctx, {
+        type: 'tag',
+        id: '' as ObjectId,
+        data: {
+          object: await writeCommit(ctx, 'tagged commit'),
+          objectType: 'commit',
+          tagName: 'v1',
+          tagger: COMMIT_AUTHOR,
+          message: 'annotated\n',
+          extraHeaders: [],
+        },
+      });
+
+    describe('Given a non-commit object written to a branch-typed name', () => {
+      describe('When updateRef writes it', () => {
+        it.each([
+          { label: 'a tree to a branch', actual: 'tree', name: 'refs/heads/x', write: writeTree },
+          { label: 'a blob to a branch', actual: 'blob', name: 'refs/heads/x', write: writeBlob },
+          {
+            label: 'an annotated tag object to a branch',
+            actual: 'tag',
+            name: 'refs/heads/x',
+            write: writeAnnotatedTag,
+          },
+          { label: 'a tree to HEAD', actual: 'tree', name: 'HEAD', write: writeTree },
+        ])(
+          'Then $label refuses UNEXPECTED_OBJECT_TYPE and leaves the ref absent',
+          async ({ actual, name, write }) => {
+            // Arrange
+            const ctx = await buildSeededContext();
+            const id = await write(ctx);
+            const sut = updateRef;
+
+            // Act
+            let caught: unknown;
+            try {
+              await sut(ctx, name as RefName, id, { reflogMessage: REASON });
+            } catch (error) {
+              caught = error;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'UNEXPECTED_OBJECT_TYPE',
+              expected: 'commit',
+              actual,
+              id,
+            });
+            expect(await getRefStore(ctx).resolveDirect(name as RefName)).toEqual({
+              kind: 'missing',
+            });
+          },
+        );
+      });
+    });
+
+    describe('Given a tree written to a name git does not type as a branch', () => {
+      describe('When updateRef writes it', () => {
+        it.each([
+          { label: 'ORIG_HEAD', name: 'ORIG_HEAD' },
+          { label: 'a tag', name: 'refs/tags/x' },
+        ])('Then $label accepts the tree', async ({ name }) => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const tree = await writeTree(ctx);
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, name as RefName, tree, { reflogMessage: REASON });
+
+          // Assert
+          expect(await getRefStore(ctx).resolveDirect(name as RefName)).toEqual({
+            kind: 'direct',
+            id: tree,
+          });
+        });
+      });
+    });
+
+    describe('Given a tag symref naming a branch', () => {
+      describe('When updateRef writes a tree through the tag name', () => {
+        it('Then the tree is accepted — the given name, not the branch it reaches, is typed', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const tree = await writeTree(ctx);
+          await writeSymbolicRef(ctx, 'refs/tags/ts' as RefName, 'refs/heads/x' as RefName);
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, 'refs/tags/ts' as RefName, tree, { reflogMessage: REASON });
+
+          // Assert
+          expect(await getRefStore(ctx).resolveDirect('refs/heads/x' as RefName)).toEqual({
+            kind: 'direct',
+            id: tree,
+          });
+        });
+      });
+    });
+
+    describe('Given a branch symref naming an absent tag', () => {
+      describe('When updateRef writes a tree through the branch name', () => {
+        it('Then it refuses UNEXPECTED_OBJECT_TYPE and the tag stays absent', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const tree = await writeTree(ctx);
+          await writeSymbolicRef(ctx, 'refs/heads/bt' as RefName, 'refs/tags/tt' as RefName);
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, 'refs/heads/bt' as RefName, tree, { reflogMessage: REASON });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'UNEXPECTED_OBJECT_TYPE',
+            expected: 'commit',
+            actual: 'tree',
+            id: tree,
+          });
+          expect(await getRefStore(ctx).resolveDirect('refs/tags/tt' as RefName)).toEqual({
+            kind: 'missing',
+          });
+        });
+      });
+    });
+
+    describe('Given a missing object id and an expected value the ref does not hold', () => {
+      describe('When updateRef writes it', () => {
+        it('Then the verification refuses OBJECT_NOT_FOUND before the compare-and-swap', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const missing = 'e'.repeat(40) as ObjectId;
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, MAIN, missing, {
+              expected: 'f'.repeat(40) as ObjectId,
+              reflogMessage: REASON,
+            });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missing });
+        });
+      });
+    });
+  });
+
   describe('verified targets on one Context', () => {
     describe('Given one commit written to two refs on the same Context', () => {
       describe('When updateRef writes the second ref', () => {
