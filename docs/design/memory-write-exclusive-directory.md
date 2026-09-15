@@ -276,6 +276,9 @@ operation in `runFs(op, src)`.
 - **R31** — A regular file at an **ancestor** segment still reports `FILE_NOT_FOUND` on every write
   surface. `walkToParent` converts its own `TypeMismatchError` before `resolveFileHandle`'s `catch`
   is reachable (§3f), so the new arm cannot mis-map an ancestor fault as `PERMISSION_DENIED`.
+  **Update (2026-09-15):** the ancestor fault now reports `NOT_A_DIRECTORY` carrying the requested
+  path — `walkToParent` maps its own `TypeMismatchError` to it on every surface, the Node and memory adapters' code for a path beneath a regular file —
+  and still never `PERMISSION_DENIED`.
 
 **Windows leg — the node adapter emulates POSIX kind rules (this revision)**
 
@@ -1131,6 +1134,11 @@ to `fileNotFound(segments.join('/'))`, and `resolveFileHandle` awaits `walkToPar
 rejections from the single leaf `getFileHandle` call. No guard, no ordering rule and no extra test is
 needed to keep this true — but a future refactor that moves the `walkToParent` call inside the `try`
 would silently break it, which is why R31 gets its own Playwright observation.
+
+> **Update (2026-09-15):** `walkToParent`'s own `catch` now converts that `TypeMismatchError` to
+> `notADirectory(path)` instead of `fileNotFound`, still outside `resolveFileHandle`'s `try`, so the
+> leaf arm remains unreachable from an ancestor fault; the Playwright observation now expects
+> `NOT_A_DIRECTORY`.
 
 **`rename` with a directory *source* is not covered by ADR-816, and does not change.** ADR-816's text
 is *"plant a directory at the target"* — the destination. A directory `src` still fails at
@@ -2628,7 +2636,7 @@ cover the `e2e` tier, so this is house style rather than a gate.
 | # | Req | Given → When → Then | Steps |
 |---|---|---|---|
 | 1 | ADR-814 | `Given a directory occupying the target path, When writeExclusive, Then it throws FILE_EXISTS against real OPFS` | the code and the requested path; the directory and its child still there afterwards |
-| 2 | **R29**, R30, R31 | `Given a directory occupying the target path, When write, Then it throws PERMISSION_DENIED against real OPFS` | (a) the code and the requested path; (b) non-destructiveness — `readdir` still lists the child and the child's bytes are unchanged; (c) **the mappings that must not move** — `stat(dir).isDirectory` is still `true` and `exists(dir)` is still `true` (R30), and a `write` under a path whose ancestor segment is a regular file still reports `FILE_NOT_FOUND`, not `PERMISSION_DENIED` (R31) |
+| 2 | **R29**, R30, R31 | `Given a directory occupying the target path, When write, Then it throws PERMISSION_DENIED against real OPFS` | (a) the code and the requested path; (b) non-destructiveness — `readdir` still lists the child and the child's bytes are unchanged; (c) **the mappings that must not move** — `stat(dir).isDirectory` is still `true` and `exists(dir)` is still `true` (R30), and a `write` under a path whose ancestor segment is a regular file still reports `FILE_NOT_FOUND`, not `PERMISSION_DENIED` (R31). **Update (2026-09-15):** that ancestor fault now reports `NOT_A_DIRECTORY`, still not `PERMISSION_DENIED` |
 | 3 | **R29** | `Given a file source and a directory destination, When rename, Then it throws PERMISSION_DENIED and the source survives` | the code and the requested path; `read(src)` returns the original bytes — `rm(src)` never ran; the destination directory's child is unchanged |
 
 Case 2's step (c) is where the fix's real risk lives. The `create: false` mapping is what `stat` and
