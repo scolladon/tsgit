@@ -98,6 +98,25 @@ const arbMessageByte = (): fc.Arbitrary<number> => fc.integer({ min: 0x20, max: 
  * always produces a valid 2-byte UTF-8 sequence, never the lone invalid byte
  * a corrupted or legacy-encoded reflog file actually carries.
  */
+// A ref-name-shaped string built from a safe alphabet only — never a glob
+// metacharacter (`*?[]\`), so a literal reflog-expiry pattern built from a
+// DIFFERENT such string can never accidentally cross-match it.
+export const arbSafeRefName = (): fc.Arbitrary<string> =>
+  fc
+    .array(fc.constantFrom('a', 'b', 'c', 'd', 'e'), { minLength: 1, maxLength: 8 })
+    .map((parts) => `refs/heads/${parts.join('')}`);
+
+/** A finite pair of expiry cutoffs — never a `NEVER`/`Infinity` sentinel, so
+ *  every property comparison stays a plain finite-number equality. */
+export const arbExpiryCuts = (): fc.Arbitrary<{
+  readonly expireCut: number;
+  readonly unreachableCut: number;
+}> =>
+  fc.record({
+    expireCut: fc.integer({ min: 0, max: 1_000_000 }),
+    unreachableCut: fc.integer({ min: 0, max: 1_000_000 }),
+  });
+
 export const arbReflogLineBytes = (length: 40 | 64 = 40): fc.Arbitrary<Uint8Array> =>
   fc
     .record({

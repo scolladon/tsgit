@@ -9,9 +9,17 @@ import { TsgitError } from '../../domain/error.js';
 import { isObjectNotFound } from '../../domain/objects/error.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import { reflogNotFound } from '../../domain/reflog/error.js';
+import {
+  type ExpiryCuts,
+  type ExplicitExpiryCuts,
+  expiryPolicyFor,
+  parseReflogExpiryEntries,
+  type ReflogExpiryPolicy,
+} from '../../domain/reflog/expire-policy.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { isSafeRefName, refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { readReflogExpiryConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { resolveExpiryCutoff } from '../primitives/expiry-cutoff.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
@@ -66,8 +74,14 @@ export type ReflogResult =
       readonly removed?: ReflogEntry;
     };
 
-const DEFAULT_EXPIRE = '90.days.ago';
-const DEFAULT_EXPIRE_UNREACHABLE = '30.days.ago';
+// git ≥ 2.50's binary `REFLOG_EXPIRE_OPTIONS_INIT` — a documented 90/30 that
+// the actual defaults have swapped: total is the SHORT cutoff, unreachable
+// the long one. Under these plain defaults `expireKindFor`'s reachability
+// walk never runs (`unreachableCut <= expireCut` is always true), so a
+// default expire is a flat 30-day cutoff for every entry regardless of
+// reachability.
+const DEFAULT_EXPIRE = '30.days.ago';
+const DEFAULT_EXPIRE_UNREACHABLE = '90.days.ago';
 
 /**
  * Validate a user-supplied ref before it indexes the filesystem. `validateRefName`
@@ -164,18 +178,6 @@ const repairChain = (
 
 type ExpireOptions = Extract<ReflogAction, { readonly action: 'expire' }>;
 
-/** One ref's pair of expiry cutoffs — unix-seconds thresholds `expireReflog` compares entry timestamps against. */
-interface ExpiryCuts {
-  readonly expireCut: number;
-  readonly unreachableCut: number;
-}
-
-/** Resolves the cutoff pair for a given target ref. Constant today (both
- *  flags apply repository-wide); `gc.reflogExpire*` (D) varies it per ref. */
-interface ExpiryPolicy {
-  readonly cutoffsFor: (ref: RefName) => ExpiryCuts;
-}
-
 /** The batched result of expiring every target: per-ref counts summed, and
  *  every target's rewrite queued for the single closing `applyRefUpdates`. */
 interface ExpireOutcome {
@@ -184,12 +186,36 @@ interface ExpireOutcome {
   readonly updates: RefUpdate[];
 }
 
-const resolveExpiryPolicy = (now: number, opts: ExpireOptions): ExpiryPolicy => {
-  const cuts: ExpiryCuts = {
-    expireCut: resolveCutoff(opts.expire ?? DEFAULT_EXPIRE, now),
-    unreachableCut: resolveCutoff(opts.expireUnreachable ?? DEFAULT_EXPIRE_UNREACHABLE, now),
-  };
-  return { cutoffsFor: () => cuts };
+/** The `--expire`/`--expire-unreachable` flags, parsed — `resolveCutoff`
+ *  refuses `REVPARSE_UNRESOLVED` on a bad flag, a residual divergence from
+ *  git's own `fatal: invalid timestamp` for this one path. Only a flag
+ *  actually given is parsed, so an absent flag never shadows a matching
+ *  pattern's own cutoff (see `expiryPolicyFor`). */
+const explicitCuts = (opts: ExpireOptions, now: number): ExplicitExpiryCuts => ({
+  ...(opts.expire !== undefined ? { total: resolveCutoff(opts.expire, now) } : {}),
+  ...(opts.expireUnreachable !== undefined
+    ? { unreachable: resolveCutoff(opts.expireUnreachable, now) }
+    : {}),
+});
+
+const defaultCuts = (now: number): ExpiryCuts => ({
+  expireCut: resolveCutoff(DEFAULT_EXPIRE, now),
+  unreachableCut: resolveCutoff(DEFAULT_EXPIRE_UNREACHABLE, now),
+});
+
+/** git's configuration-then-options sequence: every `gc.reflogExpire*`
+ *  entry is parsed — and the first invalid one refused — before either
+ *  flag is even looked at, and before the target or the repo-settings
+ *  class are reached. */
+const resolveExpiryPolicy = async (
+  ctx: Context,
+  now: number,
+  opts: ExpireOptions,
+): Promise<ReflogExpiryPolicy> => {
+  const config = parseReflogExpiryEntries(await readReflogExpiryConfig(ctx), (raw) =>
+    resolveExpiryCutoff(raw, now),
+  );
+  return expiryPolicyFor(config, explicitCuts(opts, now), defaultCuts(now));
 };
 
 /** Strictly sequential: each target's reachability state is built inside
@@ -197,7 +223,7 @@ const resolveExpiryPolicy = (now: number, opts: ExpireOptions): ExpiryPolicy => 
 const expireTargets = async (
   ctx: Context,
   targets: ReadonlyArray<RefName>,
-  policy: ExpiryPolicy,
+  policy: ReflogExpiryPolicy,
 ): Promise<ExpireOutcome> => {
   let removed = 0;
   let kept = 0;
@@ -213,7 +239,7 @@ const expireTargets = async (
 };
 
 const runExpire = async (ctx: Context, opts: ExpireOptions): Promise<ReflogResult> => {
-  const policy = resolveExpiryPolicy(Math.floor(Date.now() / 1000), opts);
+  const policy = await resolveExpiryPolicy(ctx, Math.floor(Date.now() / 1000), opts);
   const targets = await resolveExpireTargets(ctx, opts);
   // The repo-settings class is reached only once a target has resolved, and
   // never with zero targets (git's `builtin/reflog.c` parses options and

@@ -915,13 +915,14 @@ describe('reflog command', () => {
       });
     });
 
-    describe('Given an unreachable entry between the two cutoffs', () => {
+    describe('Given an unreachable entry past the 30-day default total cutoff', () => {
       describe('When expire', () => {
-        it('Then it is pruned on the shorter unreachable clock', async () => {
+        it('Then it is pruned on the total clock, not the reachability walk', async () => {
           // Arrange — an entry 45 days old whose newId is a real commit that
-          // exists but sits off every ref's tip. Reachable cutoff is 90 days
-          // (would keep it); unreachable cutoff is 30 days (prunes it). The
-          // unreachable clock must win.
+          // exists but sits off every ref's tip. Under the plain defaults the
+          // total cutoff (30 days) prunes it outright, before reachability is
+          // ever consulted — the same verdict a reachability check would
+          // reach here, but for a different reason.
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
@@ -964,12 +965,14 @@ describe('reflog command', () => {
       });
     });
 
-    describe('Given a reachable entry just past the 90-day cutoff', () => {
+    describe('Given a reachable entry past the 30-day default total cutoff', () => {
       describe('When expire', () => {
-        it('Then the reachable clock prunes it (not the unreachable clock)', async () => {
-          // Arrange — a reachable entry 50 days old: kept on the 90-day reachable
-          // clock, pruned on the 30-day unreachable clock. It survives, proving the
-          // reachable branch of the keep predicate fires for in-set tips.
+        it('Then the total clock prunes it unconditionally, reachable or not', async () => {
+          // Arrange — a reachable entry 50 days old: the 30-day default total
+          // cutoff prunes any entry past it before reachability is ever
+          // consulted (the unreachable cutoff sits at 90 days, so the walk
+          // this entry would otherwise trigger never runs — see the default
+          // constants' own comment).
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
@@ -983,7 +986,7 @@ describe('reflog command', () => {
           const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
 
           // Assert
-          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
         });
       });
     });
@@ -1500,10 +1503,14 @@ describe('reflog command', () => {
     });
 
     describe('Given a reachable entry through a parent commit', () => {
-      describe('When expire', () => {
+      describe('When expire runs with explicit cutoffs that actually consult the walk', () => {
         it('Then the walk marks it reachable', async () => {
           // Arrange — the tip has a parent; an entry pointing at the parent is
-          // reachable via the walk, so it survives the 90-day cutoff at 50 days old.
+          // reachable via the walk, so it survives the 90-day cutoff at 50 days
+          // old. The plain 30/90 defaults would prune it on the total clock
+          // alone (30 < 90 means the walk never runs), so this row pins the
+          // walk itself with the old total/unreachable relationship restored
+          // explicitly.
           const now = wallNow();
           const ctx = createMemoryContext();
           const parent = await writeCommit(ctx, [], now - DAY);
@@ -1515,7 +1522,12 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: '90.days.ago',
+            expireUnreachable: '30.days.ago',
+          });
 
           // Assert — kept proves the parent was walked into the reachable set; an
           // unreachable 50-day entry would be pruned on the 30-day clock.
@@ -1927,8 +1939,10 @@ describe('reflog command', () => {
             },
           });
           await writeReflog(ctx, HEAD, [
-            // 45 days old: between the default 90/30-day cutoffs, so the
-            // verdict actually depends on the reachability walk running.
+            // 45 days old: between the explicit 90/30-day cutoffs below, so
+            // the verdict actually depends on the reachability walk running
+            // (the plain defaults would prune it on the total clock alone,
+            // never reaching the walk this test means to exercise).
             entry({ newId: tip, identity: identityAt(now - 45 * DAY), message: 'in range' }),
           ]);
           const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
@@ -1936,7 +1950,12 @@ describe('reflog command', () => {
           // Act
           let tipCalls: number;
           try {
-            await reflog(ctx, { action: 'expire', all: true });
+            await reflog(ctx, {
+              action: 'expire',
+              all: true,
+              expire: '90.days.ago',
+              expireUnreachable: '30.days.ago',
+            });
             // Read the call history before `mockRestore` clears it.
             tipCalls = spy.mock.calls.filter(([, id]) => id === tip).length;
           } finally {
@@ -1990,8 +2009,15 @@ describe('reflog command', () => {
             },
           };
 
-          // Act
-          await reflog(instrumented, { action: 'expire', all: true });
+          // Act — explicit cutoffs so the walk this test measures actually
+          // runs (the plain 30/90 defaults skip it: `unreachableCut <=
+          // expireCut` short-circuits to a clock-only verdict).
+          await reflog(instrumented, {
+            action: 'expire',
+            all: true,
+            expire: '90.days.ago',
+            expireUnreachable: '30.days.ago',
+          });
 
           // Assert
           expect(maxInFlight).toBeGreaterThan(1);
@@ -2261,7 +2287,10 @@ describe('reflog command', () => {
       describe('When expire evaluates it', () => {
         it('Then the null id never counts as unreachable', async () => {
           // Arrange — without the null-id guard, peeling `0000…` would throw
-          // rather than keep the entry.
+          // rather than keep the entry. Explicit cutoffs restore the
+          // old total/unreachable relationship so the walk this guard lives
+          // in actually runs (the plain 30/90 defaults would prune the entry
+          // on the total clock alone, never reaching the guard).
           const now = wallNow();
           const ctx = createMemoryContext();
           const tip = await writeCommit(ctx, [], now);
@@ -2271,7 +2300,12 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: '90.days.ago',
+            expireUnreachable: '30.days.ago',
+          });
 
           // Assert
           expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
@@ -2296,8 +2330,13 @@ describe('reflog command', () => {
             entry({ oldId: tip, newId: blobId, identity: identityAt(now - 45 * DAY) }),
           ]);
 
-          // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          // Act — explicit cutoffs so the walk (and this guard) actually run.
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: '90.days.ago',
+            expireUnreachable: '30.days.ago',
+          });
 
           // Assert
           expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
@@ -2319,8 +2358,13 @@ describe('reflog command', () => {
             entry({ oldId: tip, newId: OID_X, identity: identityAt(now - 45 * DAY) }),
           ]);
 
-          // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          // Act — explicit cutoffs so the walk (and this gentle lookup) actually run.
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: '90.days.ago',
+            expireUnreachable: '30.days.ago',
+          });
 
           // Assert
           expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
@@ -2349,10 +2393,15 @@ describe('reflog command', () => {
               id === OID_X ? Promise.reject(boom) : original(readCtx, id, options),
             );
 
-          // Act
+          // Act — explicit cutoffs so the walk (and this peel) actually runs.
           let caught: unknown;
           try {
-            await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: '90.days.ago',
+              expireUnreachable: '30.days.ago',
+            });
             expect.unreachable();
           } catch (err) {
             caught = err;
@@ -2367,12 +2416,15 @@ describe('reflog command', () => {
     });
 
     describe('Given a detached HEAD pointing to a commit no ref under refs/ names', () => {
-      describe('When expire runs against HEAD', () => {
+      describe('When expire runs against HEAD with explicit cutoffs that consult the walk', () => {
         it('Then HEAD itself is not a tip — the entry naming the detached commit expires', async () => {
           // Arrange — git seeds `UE_HEAD`'s mark list via `refs_for_each_ref`,
           // refs under `refs/` only; `HEAD` is never pushed as a tip in its
           // own right, detached or not. `main` (the only ref) sits at A; B is
-          // reachable only by way of the detached HEAD.
+          // reachable only by way of the detached HEAD. Explicit cutoffs keep
+          // this row inside the reachability-consulted middle band (the plain
+          // 30/90 defaults would prune the 35-day entry on the total clock
+          // alone, without ever asking whether HEAD is its own tip).
           const now = wallNow();
           const ctx = createMemoryContext();
           const a = await writeCommit(ctx, [], now - 40 * DAY);
@@ -2383,7 +2435,12 @@ describe('reflog command', () => {
           ]);
 
           // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: '90.days.ago',
+            expireUnreachable: '30.days.ago',
+          });
 
           // Assert — without the fix, resolving `HEAD` itself as a tip marks
           // B reachable and keeps this entry instead.
@@ -2393,7 +2450,7 @@ describe('reflog command', () => {
     });
 
     describe('Given a missing ancestor reached mid-walk through a sibling parent link', () => {
-      describe('When expire runs', () => {
+      describe('When expire runs with explicit cutoffs that consult the walk', () => {
         it('Then the missing ancestor is skipped rather than aborting the walk, and the reachable sibling is still found', async () => {
           // Arrange — Mid is a merge of `missing` (never written) and `g`
           // (real); `missing` sorts first in the parent list, so the walk
@@ -2410,8 +2467,13 @@ describe('reflog command', () => {
             entry({ oldId: ZERO_OID, newId: g, identity: identityAt(now - 45 * DAY) }),
           ]);
 
-          // Act
-          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+          // Act — explicit cutoffs so the walk this test measures actually runs.
+          const result = await reflog(ctx, {
+            action: 'expire',
+            ref: 'HEAD',
+            expire: '90.days.ago',
+            expireUnreachable: '30.days.ago',
+          });
 
           // Assert
           expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
@@ -2441,10 +2503,15 @@ describe('reflog command', () => {
               id === parent ? Promise.reject(boom) : original(metaCtx, id),
             );
 
-          // Act
+          // Act — explicit cutoffs so the walk (and this parse) actually runs.
           let caught: unknown;
           try {
-            await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: '90.days.ago',
+              expireUnreachable: '30.days.ago',
+            });
             expect.unreachable();
           } catch (err) {
             caught = err;
@@ -2724,11 +2791,16 @@ describe('reflog command', () => {
           ]);
           const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
 
-          // Act
+          // Act — explicit cutoffs so the walk this test measures actually runs.
           let result: ReflogResult;
           let missingReads: number;
           try {
-            result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+            result = await reflog(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: '90.days.ago',
+              expireUnreachable: '30.days.ago',
+            });
             missingReads = spy.mock.calls.filter(([, id]) => id === missing).length;
           } finally {
             spy.mockRestore();
@@ -2737,6 +2809,127 @@ describe('reflog command', () => {
           // Assert
           expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
           expect(missingReads).toBe(1);
+        });
+      });
+    });
+
+    describe('gc.reflogExpire configuration', () => {
+      const seedConfig = async (ctx: Context, content: string): Promise<void> => {
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
+      };
+
+      describe('Given gc.reflogExpire = never and a 200-day-old reachable entry', () => {
+        describe('When expire runs', () => {
+          it('Then the entry is kept', async () => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await seedConfig(ctx, '[gc]\n\treflogExpire = never\n');
+            await writeReflog(ctx, HEAD, [
+              entry({ newId: tip, identity: identityAt(now - 200 * DAY), message: 'ancient' }),
+            ]);
+
+            // Act
+            const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          });
+        });
+      });
+
+      describe('Given a pattern matching the resolved refname, targeted by its short name', () => {
+        describe('When expire runs on the short name', () => {
+          it('Then the pattern is matched against refs/heads/main, not against main', async () => {
+            // Arrange
+            const now = wallNow();
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], now);
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await seedConfig(ctx, '[gc "refs/heads/*"]\n\treflogExpire = never\n');
+            await writeReflog(ctx, BRANCH, [
+              entry({ newId: tip, identity: identityAt(now - 200 * DAY), message: 'ancient' }),
+            ]);
+
+            // Act — DWIM resolves the short name `main` to `refs/heads/main`
+            // before the policy is ever asked for a cutoff.
+            const result = await reflog(ctx, { action: 'expire', ref: 'main' });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          });
+        });
+      });
+
+      describe('Given a bogus gc.reflogExpire and an unparseable --expire flag', () => {
+        describe('When expire runs', () => {
+          it('Then the configuration refusal wins — config is validated before flags', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await seedConfig(ctx, '[gc]\n\treflogExpire = bogus\n');
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'bogus2' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_DATE_VALUE');
+          });
+        });
+      });
+
+      describe('Given a bogus gc.reflogExpire and a ref that does not resolve', () => {
+        describe('When expire runs', () => {
+          it('Then the configuration refusal wins — config is validated before target resolution', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await seedConfig(ctx, '[gc]\n\treflogExpire = bogus\n');
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/nope' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_DATE_VALUE');
+          });
+        });
+      });
+
+      describe('Given a bogus gc.reflogExpire', () => {
+        describe.each([
+          { label: 'show', act: (ctx: Context) => reflog(ctx, { action: 'show', ref: 'HEAD' }) },
+          {
+            label: 'exists',
+            act: (ctx: Context) => reflog(ctx, { action: 'exists', ref: 'HEAD' }),
+          },
+          {
+            label: 'delete',
+            act: (ctx: Context) => reflog(ctx, { action: 'delete', ref: 'HEAD', index: 0 }),
+          },
+        ])('When $label runs', ({ act }) => {
+          it('Then the bogus reflog-expire key is never consulted', async () => {
+            // Arrange — only `reflog expire` (and `gc`'s reflog task) reads
+            // these keys; every other verb must ignore it entirely.
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await seedConfig(ctx, '[gc]\n\treflogExpire = bogus\n');
+            await appendReflog(ctx, HEAD, entry());
+
+            // Act + Assert — resolves (or answers its own no-op), never throws.
+            await expect(act(ctx)).resolves.toBeDefined();
+          });
         });
       });
     });

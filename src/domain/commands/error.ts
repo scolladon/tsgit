@@ -185,7 +185,13 @@ export type CommandError =
       readonly source: string;
       readonly value: string;
     }
-  | { readonly code: 'CONFIG_BAD_DATE_VALUE'; readonly value: string }
+  | {
+      readonly code: 'CONFIG_BAD_DATE_VALUE';
+      readonly value: string;
+      readonly key?: string;
+      readonly source?: string;
+      readonly line?: number;
+    }
   | {
       readonly code: 'CONFIG_INVALID_ENUM_VALUE';
       readonly key: string;
@@ -640,13 +646,24 @@ export const configBadBooleanLiteral = (key: string, source: string, value: stri
   });
 
 /**
- * A date-expression config value (`gc.pruneExpire`) fails the supported
- * grammar (`never`, `now`, `@<epoch>`, ISO-8601, `<n>.<unit>.ago`). Carries
- * only the offending value — the caller resolves this from a plain string,
- * not a config-file token, so there is no key/source/line to report.
+ * A date-expression config value (`gc.pruneExpire`, `gc.reflogExpire[Unreachable]`)
+ * fails the supported grammar (`never`, `now`, `@<epoch>`, ISO-8601,
+ * `<n>.<unit>.ago`). `gc.pruneExpire`'s caller resolves this from a plain
+ * string with no config-file token to report, so `location` is omitted;
+ * `gc.reflogExpire[Unreachable]`'s caller reads a config entry and passes its
+ * key, source file and 1-based line.
  */
-export const configBadDateValue = (value: string): TsgitError =>
-  new TsgitError({ code: 'CONFIG_BAD_DATE_VALUE', value: sanitizeForDisplay(value) });
+export const configBadDateValue = (
+  value: string,
+  location?: { readonly key: string; readonly source: string; readonly line: number },
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_BAD_DATE_VALUE',
+    value: sanitizeForDisplay(value),
+    ...(location !== undefined
+      ? { key: sanitizeForDisplay(location.key), source: location.source, line: location.line }
+      : {}),
+  });
 
 /**
  * A string-typed config key restricted to a fixed, case-sensitive set of

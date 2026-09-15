@@ -1572,6 +1572,16 @@ describe('domain commands error — extractDetail message formatting', () => {
     ],
     [
       {
+        code: 'CONFIG_BAD_DATE_VALUE',
+        value: 'bogus',
+        key: 'gc.reflogexpire',
+        source: '/repo/.git/config',
+        line: 9,
+      },
+      "CONFIG_BAD_DATE_VALUE: bad date config value 'bogus' for 'gc.reflogexpire' in file /repo/.git/config at line 9",
+    ],
+    [
+      {
         code: 'CONFIG_BAD_BOOLEAN_VALUE',
         key: 'core.bare',
         source: '/repo/.git/config',

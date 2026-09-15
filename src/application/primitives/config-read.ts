@@ -11,6 +11,7 @@ import {
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import type { ReflogExpiryConfigEntry } from '../../domain/reflog/expire-policy.js';
 import type { Context } from '../../ports/context.js';
 import { invalidateScopedConfigCache } from './config-scoped-read.js';
 import { layoutFailsTrustGate } from './internal/layout-verdict.js';
@@ -724,6 +725,48 @@ export const findFirstValuelessInSection = async (
     return { key: qualifiedKey, source: path, line: token.startLine + 1 };
   }
   return undefined;
+};
+
+const REFLOG_EXPIRE_SLOTS: Readonly<Record<string, 'total' | 'unreachable'>> = {
+  reflogexpire: 'total',
+  reflogexpireunreachable: 'unreachable',
+};
+
+/**
+ * Every `[gc]` / `[gc "<pattern>"]` entry whose lowercased key is
+ * `reflogExpire` or `reflogExpireUnreachable`, in file order — no value
+ * parsing here, see `../../domain/reflog/expire-policy.js`. The subsection
+ * is kept verbatim (case and `*` untouched); the qualified key folds it in
+ * as-is, lowering only the section and key themselves.
+ */
+export const readReflogExpiryConfig = async (
+  ctx: Context,
+): Promise<ReadonlyArray<ReflogExpiryConfigEntry>> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  const entries: ReflogExpiryConfigEntry[] = [];
+  let inSection = false;
+  let subsection: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = token.section.toLowerCase() === 'gc';
+      subsection = token.subsection;
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const loweredKey = token.key.toLowerCase();
+    const slot = REFLOG_EXPIRE_SLOTS[loweredKey];
+    if (slot === undefined) continue;
+    const key = subsection === undefined ? `gc.${loweredKey}` : `gc.${subsection}.${loweredKey}`;
+    entries.push({
+      pattern: subsection,
+      slot,
+      value: token.value,
+      key,
+      source: path,
+      line: token.startLine + 1,
+    });
+  }
+  return entries;
 };
 
 /** Minimum valid zlib compression level (synonym for the implementation default). */

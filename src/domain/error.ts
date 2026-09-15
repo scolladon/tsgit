@@ -508,7 +508,9 @@ function extractDetail(data: TsgitErrorData): string {
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
       return `invalid value for '${data.key}' in file ${data.source}`;
     case 'CONFIG_BAD_DATE_VALUE':
-      return `bad date config value '${data.value}'`;
+      return data.key === undefined
+        ? `bad date config value '${data.value}'`
+        : `bad date config value '${data.value}' for '${data.key}' in file ${data.source} at line ${data.line}`;
     case 'CONFIG_INVALID_ENUM_VALUE':
       return `invalid value for '${data.key}': '${data.value}' in file ${data.source} at line ${data.line}`;
     case 'CONFIG_BAD_ZLIB_LEVEL':
