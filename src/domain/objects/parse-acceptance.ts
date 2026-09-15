@@ -160,21 +160,39 @@ const COMMIT_STEPPERS: Readonly<Record<CommitScan['phase'], (scan: CommitScan) =
   tail: (scan) => scan,
 };
 
-/** Drains as much of the newly-arrived bytes as the current phase allows,
+/** Drains as much of the carried bytes as the current phase allows,
  *  advancing through phases within one call — a stepper that returns its
  *  own input back unchanged means "wait for more bytes". */
-function feedCommit(scan: CommitScan, chunk: Uint8Array): CommitScan {
-  let next: CommitScan = {
-    ...scan,
-    totalBytes: scan.totalBytes + chunk.length,
-    carry: concatBytes([scan.carry, chunk]),
-  };
+function drain<Scan extends ParseAcceptanceScan>(scan: Scan, step: (scan: Scan) => Scan): Scan {
+  let next = scan;
   for (;;) {
-    const stepped = COMMIT_STEPPERS[next.phase](next);
+    const stepped = step(next);
     if (stepped === next) return next;
     next = stepped;
   }
 }
+
+// An empty carry needs no copy: the steppers only read the bytes, and the
+// partial line left afterwards is copied out of `chunk` by `feedScan`.
+const appendToCarry = (carry: Uint8Array, chunk: Uint8Array): Uint8Array =>
+  carry.length === 0 ? chunk : concatBytes([carry, chunk]);
+
+/** Once a scan reaches its tail, no later byte can change the verdict — only
+ *  the total still matters, so the chunk itself is never carried. Whatever
+ *  partial line remains is copied, so the scan neither aliases nor keeps
+ *  alive the caller's chunk. */
+function feedScan<Scan extends ParseAcceptanceScan>(
+  scan: Scan,
+  chunk: Uint8Array,
+  step: (scan: Scan) => Scan,
+): Scan {
+  const counted: Scan = { ...scan, totalBytes: scan.totalBytes + chunk.length };
+  if (scan.phase === 'tail') return counted;
+  const drained = drain({ ...counted, carry: appendToCarry(scan.carry, chunk) }, step);
+  return { ...drained, carry: drained.carry.slice() };
+}
+
+const stepCommit = (scan: CommitScan): CommitScan => COMMIT_STEPPERS[scan.phase](scan);
 
 /** The object-line window: `object <h hex>\n`, decided immediately once
  *  `h + 8` bytes are available — no total-length ambiguity, unlike the
@@ -247,19 +265,7 @@ const TAG_STEPPERS: Readonly<Record<TagScan['phase'], (scan: TagScan) => TagScan
   tail: (scan) => scan,
 };
 
-/** Same drain-as-much-as-possible shape as `feedCommit`. */
-function feedTag(scan: TagScan, chunk: Uint8Array): TagScan {
-  let next: TagScan = {
-    ...scan,
-    totalBytes: scan.totalBytes + chunk.length,
-    carry: concatBytes([scan.carry, chunk]),
-  };
-  for (;;) {
-    const stepped = TAG_STEPPERS[next.phase](next);
-    if (stepped === next) return next;
-    next = stepped;
-  }
-}
+const stepTag = (scan: TagScan): TagScan => TAG_STEPPERS[scan.phase](scan);
 
 /** Feeds one chunk of the object's body (in storage order) into the scan.
  *  Never throws — a grammar failure is recorded and scanning keeps counting
@@ -268,7 +274,8 @@ function feedTag(scan: TagScan, chunk: Uint8Array): TagScan {
 export const feedParseAcceptance = (
   scan: ParseAcceptanceScan,
   chunk: Uint8Array,
-): ParseAcceptanceScan => (scan.kind === 'commit' ? feedCommit(scan, chunk) : feedTag(scan, chunk));
+): ParseAcceptanceScan =>
+  scan.kind === 'commit' ? feedScan(scan, chunk, stepCommit) : feedScan(scan, chunk, stepTag);
 
 /** Whether a commit parent line's id equalled the tree id — the one case
  *  git resolves with a lookup (a shallow boundary skips it) rather than

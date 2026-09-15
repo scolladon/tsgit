@@ -848,4 +848,88 @@ describe('parse-acceptance', () => {
       });
     });
   });
+
+  describe('retained bytes', () => {
+    const LONG_BODY_CHUNK_COUNT = 64;
+    const LONG_BODY_CHUNK_BYTES = 16 * 1024;
+    const LF_FREE_FILLER = 0x78;
+    const ONE_PARTIAL_LINE_BYTES = 40 + 8;
+
+    const longBody = (header: string): ReadonlyArray<Uint8Array> => [
+      ENC.encode(header),
+      ...Array.from({ length: LONG_BODY_CHUNK_COUNT }, () =>
+        new Uint8Array(LONG_BODY_CHUNK_BYTES).fill(LF_FREE_FILLER),
+      ),
+    ];
+
+    const RETENTION_ROWS = [
+      {
+        label: 'a commit whose headers precede a long message',
+        type: 'commit',
+        header: `tree ${T(40)}\nparent ${T(40, 'b')}\n\n`,
+        expected: undefined,
+      },
+      {
+        label: 'a tag whose headers precede a long message',
+        type: 'tag',
+        header: `object ${T(40)}\ntype commit\ntag t\n\n`,
+        expected: undefined,
+      },
+      {
+        label: 'a tag whose type line never ends',
+        type: 'tag',
+        header: `object ${T(40)}\ntype `,
+        expected: { type: 'tag', reason: 'bad type line' },
+      },
+      {
+        label: 'a tag whose tag line never ends',
+        type: 'tag',
+        header: `object ${T(40)}\ntype commit\ntag `,
+        expected: { type: 'tag', reason: 'bad tag line' },
+      },
+    ] as const;
+
+    describe('Given a body far longer than one line, fed in 16 KiB chunks', () => {
+      describe('When every chunk has been fed', () => {
+        it.each(RETENTION_ROWS)(
+          'Then at most one partial line stays carried and the verdict holds, for $label',
+          ({ type, header, expected }) => {
+            // Arrange
+            const sut = feedParseAcceptance;
+            const chunks = longBody(header);
+
+            // Act
+            const scan = chunks.reduce(
+              (state, chunk) => sut(state, chunk),
+              startParseAcceptance(type, 40),
+            );
+
+            // Assert
+            expect(scan.carry.length).toBeLessThanOrEqual(ONE_PARTIAL_LINE_BYTES);
+            expect(parseAcceptanceVerdict(scan, CHECKED)).toEqual(expected);
+          },
+        );
+      });
+    });
+
+    describe('Given a partial line whose chunk the caller overwrites once it has been fed', () => {
+      describe('When the next chunk completes the line', () => {
+        it('Then the verdict reflects the bytes as they were fed', () => {
+          // Arrange
+          const body = ENC.encode(`tree ${T(40)}\nparent ${T(40, 'b')}\n\nmsg\n`);
+          const first = body.slice(0, 10);
+          const second = body.slice(10);
+          const sut = feedParseAcceptance;
+          const afterFirst = sut(startParseAcceptance('commit', 40), first);
+          first.fill(LF_FREE_FILLER);
+
+          // Act
+          const scan = sut(afterFirst, second);
+
+          // Assert
+          expect(parseAcceptanceVerdict(scan, CHECKED)).toBeUndefined();
+        });
+      });
+    });
+  });
 });
