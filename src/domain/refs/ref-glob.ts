@@ -143,12 +143,10 @@ const parseBracket = (
   open: number,
 ): { readonly token: RefGlobToken; readonly next: number } | undefined => {
   let i = open + 1;
-  if (i >= bytes.length) return undefined;
   let negated = false;
   if (bytes[i] === BANG || bytes[i] === CARET) {
     negated = true;
     i += 1;
-    if (i >= bytes.length) return undefined;
   }
   const atoms: BracketAtom[] = [];
   let rangeSeed: number | undefined;
