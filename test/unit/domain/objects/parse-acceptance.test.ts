@@ -587,6 +587,22 @@ describe('parse-acceptance', () => {
       });
     });
 
+    describe('Given an unknown type name followed by a NUL and more bytes', () => {
+      describe('When the verdict is read', () => {
+        it('Then the reason names only the bytes before the NUL', () => {
+          // Arrange
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype bogus\0xyz\ntag t\n\nmsg\n`);
+
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: "unknown tag type 'bogus'" });
+        });
+      });
+    });
+
     describe('Given a type name with an embedded NUL before a known type name', () => {
       describe('When the verdict is read', () => {
         it('Then it is accepted as the type before the NUL', () => {

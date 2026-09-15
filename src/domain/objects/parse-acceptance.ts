@@ -213,6 +213,14 @@ function feedTagObject(scan: TagScan): TagScan {
   };
 }
 
+/** git copies the type name into a C string, then compares it with `strcmp`
+ *  and reports it with `%s` — a NUL ends the name for both. */
+const typeNameBeforeNul = (bytes: Uint8Array): string => {
+  const name = decode(bytes);
+  const nulAt = name.indexOf('\0');
+  return nulAt === -1 ? name : name.slice(0, nulAt);
+};
+
 const unknownTagTypeReason = (name: string): string =>
   `unknown tag type '${sanitizeForDisplay(name)}'`;
 
@@ -232,14 +240,15 @@ function feedTagType(scan: TagScan): TagScan {
     }
     return scan;
   }
-  const name = decode(nameZone.subarray(0, lf));
-  const rest = scan.carry.subarray(TYPE_PREFIX.length + lf + 1);
-  const nulAt = name.indexOf('\0');
-  const comparedName = nulAt === -1 ? name : name.slice(0, nulAt);
-  if (!KNOWN_TAG_TYPES.has(comparedName)) {
+  const name = typeNameBeforeNul(nameZone.subarray(0, lf));
+  if (!KNOWN_TAG_TYPES.has(name)) {
     return { ...scan, phase: 'tail', carry: EMPTY, earlyRefusal: unknownTagTypeReason(name) };
   }
-  return { ...scan, phase: 'tag-line-prefix', carry: rest };
+  return {
+    ...scan,
+    phase: 'tag-line-prefix',
+    carry: scan.carry.subarray(TYPE_PREFIX.length + lf + 1),
+  };
 }
 
 /** The `tag ` prefix: needs its own 4 bytes, decided immediately on mismatch. */
