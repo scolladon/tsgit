@@ -23,6 +23,7 @@ import { type ConfigOperation, updateConfigOperations } from '../primitives/upda
 import { deleteRefs } from '../primitives/update-ref.js';
 import { parseRefspec } from './internal/refspec.js';
 import {
+  assertRemoteNameUnnested,
   listBranchReferrers,
   rewriteDefaultFetchRefspecs,
   validateRemoteName,
@@ -133,35 +134,28 @@ export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
   return { remotes };
 };
 
+/** The `[remote "<name>"]` block a new remote writes: its url, then its fetch refspec. */
+const addedRemoteOperations = (input: RemoteAddInput, fetchSpec: string): ConfigOperation[] => [
+  { kind: 'set', section: 'remote', subsection: input.name, key: 'url', value: input.url },
+  { kind: 'set', section: 'remote', subsection: input.name, key: 'fetch', value: fetchSpec },
+];
+
 export const remoteAdd = async (ctx: Context, input: RemoteAddInput): Promise<RemoteAddResult> => {
   await assertAcceptedRepository(ctx);
-  validateRemoteName(input.name);
-  assertUrlSafe(input.url);
   const config = await readConfig(ctx);
+  // git's own order: an existing remote refuses before its name is checked,
+  // and the name's syntax before its nesting against the other remotes.
   if (config.remote?.has(input.name) === true) throw remoteExists(input.name);
+  validateRemoteName(input.name);
+  assertRemoteNameUnnested(config, input.name);
+  assertUrlSafe(input.url);
   const fetchSpec = input.fetch ?? `+refs/heads/*:refs/remotes/${input.name}/*`;
   // parseRefspec throws REFSPEC_INVALID on bad input — the same code
   // `fetch`/`push` consumers raise, so callers get one consistent shape.
   parseRefspec(fetchSpec);
-  const ops: ReadonlyArray<ConfigOperation> = [
-    { kind: 'set', section: 'remote', subsection: input.name, key: 'url', value: input.url },
-    {
-      kind: 'set',
-      section: 'remote',
-      subsection: input.name,
-      key: 'fetch',
-      value: fetchSpec,
-    },
-  ];
-  await updateConfigOperations(ctx, ops);
-  return {
-    remote: {
-      name: input.name,
-      url: input.url,
-      pushUrl: undefined,
-      fetchRefspecs: [fetchSpec],
-    },
-  };
+  await updateConfigOperations(ctx, addedRemoteOperations(input, fetchSpec));
+  const remote = { name: input.name, url: input.url, pushUrl: undefined };
+  return { remote: { ...remote, fetchRefspecs: [fetchSpec] } };
 };
 
 const listTrackingRefs = async (ctx: Context, name: string): Promise<ReadonlyArray<RefName>> => {
@@ -175,7 +169,6 @@ export const remoteRemove = async (
   input: RemoteRemoveInput,
 ): Promise<RemoteRemoveResult> => {
   await assertAcceptedRepository(ctx);
-  validateRemoteName(input.name);
   const config = await readConfig(ctx);
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
   const trackingRefs = await listTrackingRefs(ctx, input.name);
@@ -389,15 +382,16 @@ export const remoteRename = async (
   input: RemoteRenameInput,
 ): Promise<RemoteRenameResult> => {
   await assertAcceptedRepository(ctx);
-  validateRemoteName(input.from);
-  validateRemoteName(input.to);
   if (input.from === input.to) {
     throw invalidOption('remote.rename', 'from and to must differ');
   }
   const config = await readConfig(ctx);
   const fromEntry = config.remote?.get(input.from);
+  // git's own order: the source is looked up, the target checked for an
+  // existing remote, and only then the target's syntax.
   if (fromEntry === undefined) throw remoteNotConfigured(input.from);
   if (config.remote?.has(input.to) === true) throw remoteExists(input.to);
+  validateRemoteName(input.to);
   const referrers = listBranchReferrers(config, input.from);
   // Move tracking refs first (recoverability): direct refs, then the
   // symbolic `<from>/HEAD` last.
@@ -452,7 +446,6 @@ export const remoteSetUrl = async (
   input: RemoteSetUrlInput,
 ): Promise<RemoteSetUrlResult> => {
   await assertAcceptedRepository(ctx);
-  validateRemoteName(input.name);
   assertUrlSafe(input.url);
   const config = await readConfig(ctx);
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
@@ -475,7 +468,6 @@ export const remoteShow = async (
   input: RemoteShowInput,
 ): Promise<RemoteShowResult> => {
   await assertAcceptedRepository(ctx);
-  validateRemoteName(input.name);
   const config = await readConfig(ctx);
   const entry = config.remote?.get(input.name);
   if (entry === undefined) throw remoteNotConfigured(input.name);

@@ -353,23 +353,104 @@ describe('application/commands/remote', () => {
       });
     });
 
-    describe('Given a name with a closing bracket', () => {
+    describe('Given a name git accepts although it looks unusual', () => {
       describe('When remoteAdd runs', () => {
-        it('Then it throws REMOTE_NAME_INVALID', async () => {
+        it.each([
+          { name: 'a/b', header: '[remote "a/b"]', fetch: '+refs/heads/*:refs/remotes/a/b/*' },
+          {
+            name: 'a"b',
+            header: '[remote "a\\"b"]',
+            fetch: '+refs/heads/*:refs/remotes/a\\"b/*',
+          },
+          { name: 'a]b', header: '[remote "a]b"]', fetch: '+refs/heads/*:refs/remotes/a]b/*' },
+        ])(
+          'Then the $name section is written as git writes it',
+          async ({ name, header, fetch }) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx);
+            const configBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+
+            // Act
+            await remoteAdd(ctx, { name, url: 'https://x.invalid/' });
+
+            // Assert
+            expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(
+              `${configBefore}${header}\n\turl = https://x.invalid/\n\tfetch = ${fetch}\n`,
+            );
+            expect((await remoteList(ctx)).remotes.map((remote) => remote.name)).toEqual([name]);
+          },
+        );
+      });
+    });
+
+    describe('Given an existing remote and a new name nested under or over it', () => {
+      describe('When remoteAdd runs', () => {
+        it.each([
+          { existing: 'a', name: 'a/b', reason: "subset of existing remote 'a'" },
+          { existing: 'a', name: 'a/b/c', reason: "subset of existing remote 'a'" },
+          { existing: 'x/y', name: 'x', reason: "superset of existing remote 'x/y'" },
+        ])(
+          'Then $name refuses REMOTE_NAME_INVALID as a $reason before writing any config',
+          async ({ existing, name, reason }) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[remote "${existing}"]\n\turl = u\n`);
+            const configBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+            let caught: unknown;
+
+            // Act
+            try {
+              await remoteAdd(ctx, { name, url: 'u' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REMOTE_NAME_INVALID',
+              name,
+              reason,
+            });
+            expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(configBefore);
+          },
+        );
+      });
+    });
+
+    describe('Given an existing remote and a new name sharing only a leading string with it', () => {
+      describe('When remoteAdd runs', () => {
+        it('Then the new remote is added', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx);
+          await seed(ctx, '[remote "a"]\n\turl = u\n');
+
+          // Act
+          await remoteAdd(ctx, { name: 'ab', url: 'u' });
+
+          // Assert
+          expect((await remoteList(ctx)).remotes.map((remote) => remote.name)).toEqual(['a', 'ab']);
+        });
+      });
+    });
+
+    describe('Given a configured remote whose name cannot form a tracking ref name', () => {
+      describe('When remoteAdd runs with that name', () => {
+        it('Then the existing remote refuses first, with REMOTE_EXISTS', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "a b"]\n\turl = u\n');
           let caught: unknown;
 
           // Act
           try {
-            await remoteAdd(ctx, { name: 'a]b', url: 'u' });
+            await remoteAdd(ctx, { name: 'a b', url: 'u2' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+          expect((caught as TsgitError).data).toEqual({ code: 'REMOTE_EXISTS', remote: 'a b' });
         });
       });
     });
@@ -747,9 +828,9 @@ describe('application/commands/remote', () => {
       });
     });
 
-    describe('Given an invalid remote name', () => {
+    describe('Given an unconfigured name that cannot form a tracking ref name', () => {
       describe('When remoteRemove runs', () => {
-        it('Then it throws REMOTE_NAME_INVALID', async () => {
+        it('Then it refuses REMOTE_NOT_CONFIGURED, as git looks the remote up rather than checking its syntax', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
@@ -757,13 +838,16 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remoteRemove(ctx, { name: '' });
+            await remoteRemove(ctx, { name: 'a b' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NOT_CONFIGURED',
+            remote: 'a b',
+          });
         });
       });
     });
@@ -1662,13 +1746,78 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remoteRename(ctx, { from: 'origin', to: 'a"b' });
+            await remoteRename(ctx, { from: 'origin', to: 'a b' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NAME_INVALID',
+            name: 'a b',
+            reason: 'name does not form a valid refs/remotes/<name>/ ref name',
+          });
+        });
+      });
+    });
+
+    describe('Given a configured `from` remote whose name cannot form a tracking ref name', () => {
+      describe('When remoteRename runs onto a valid name', () => {
+        it('Then the remote is renamed', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "a b"]\n\turl = u\n');
+
+          // Act
+          await remoteRename(ctx, { from: 'a b', to: 'ok' });
+
+          // Assert
+          expect((await remoteList(ctx)).remotes.map((remote) => remote.name)).toEqual(['ok']);
+        });
+      });
+    });
+
+    describe('Given a configured `to` remote whose name cannot form a tracking ref name', () => {
+      describe('When remoteRename runs onto it', () => {
+        it('Then the existing remote refuses first, with REMOTE_EXISTS', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n[remote "a b"]\n\turl = u\n');
+          let caught: unknown;
+
+          // Act
+          try {
+            await remoteRename(ctx, { from: 'origin', to: 'a b' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'REMOTE_EXISTS', remote: 'a b' });
+        });
+      });
+    });
+
+    describe('Given an unconfigured `from` name that cannot form a tracking ref name', () => {
+      describe('When remoteRename runs', () => {
+        it('Then it refuses REMOTE_NOT_CONFIGURED', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          let caught: unknown;
+
+          // Act
+          try {
+            await remoteRename(ctx, { from: 'a b', to: 'ok' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NOT_CONFIGURED',
+            remote: 'a b',
+          });
         });
       });
     });
@@ -1799,9 +1948,25 @@ describe('application/commands/remote', () => {
       });
     });
 
-    describe('Given an invalid remote name', () => {
+    describe('Given a configured remote whose name cannot form a tracking ref name', () => {
       describe('When remoteSetUrl runs', () => {
-        it('Then it throws REMOTE_NAME_INVALID', async () => {
+        it('Then its url is replaced', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "a b"]\n\turl = u\n');
+
+          // Act
+          const result = await remoteSetUrl(ctx, { name: 'a b', url: 'u3' });
+
+          // Assert
+          expect(result.remote.url).toBe('u3');
+        });
+      });
+    });
+
+    describe('Given an unconfigured name that cannot form a tracking ref name', () => {
+      describe('When remoteSetUrl runs', () => {
+        it('Then it refuses REMOTE_NOT_CONFIGURED, as git looks the remote up rather than checking its syntax', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
@@ -1809,13 +1974,16 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remoteSetUrl(ctx, { name: '', url: 'u' });
+            await remoteSetUrl(ctx, { name: 'a b', url: 'u' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NOT_CONFIGURED',
+            remote: 'a b',
+          });
         });
       });
     });
@@ -1921,9 +2089,9 @@ describe('application/commands/remote', () => {
       });
     });
 
-    describe('Given an invalid remote name', () => {
+    describe('Given an unconfigured name that cannot form a tracking ref name', () => {
       describe('When remoteShow runs', () => {
-        it('Then it throws REMOTE_NAME_INVALID', async () => {
+        it('Then it refuses REMOTE_NOT_CONFIGURED, as git looks the remote up rather than checking its syntax', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
@@ -1931,13 +2099,16 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remoteShow(ctx, { name: '' });
+            await remoteShow(ctx, { name: 'a b' });
           } catch (err) {
             caught = err;
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NOT_CONFIGURED',
+            remote: 'a b',
+          });
         });
       });
     });

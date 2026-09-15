@@ -8,38 +8,39 @@ import type { RefName } from '../../../domain/objects/object-id.js';
 import { isSafeRefName } from '../../../domain/refs/ref-validation.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
 
-// Bans the line-surgery hard chars plus `/` (matches canonical git's
-// `check_refname_format` rejection — a remote with a slash creates
-// `refs/remotes/<a>/<b>/...` which collides with a sibling remote `a/b`'s
-// tracking-ref prefix) and `\t` (the reflog field separator).
-const FORBIDDEN_NAME_CHARS = /[\n\r\t\0"\\\]/]/;
-
 /** git's `valid_remote_name` probes the name as the remote component of a
  *  tracking ref: `refs/remotes/<name>/test` must be a valid ref name. */
 const trackingRefProbe = (name: string): string => `refs/remotes/${name}/test`;
 
 /**
- * Validate a remote subsection name. Rejects the empty string, any of
- * `\n` / `\r` / `\t` / `\0` / `"` / `\\` / `]` / `/`, and — as git's
- * `valid_remote_name` does — any name that cannot form a tracking ref name
- * (a space, `..`, a `.lock` component, …). Returns the verbatim name on
- * success — exporting the validator keeps every action's preconditions in
- * a single source.
+ * git's `valid_remote_name`, and nothing more: the name must form a valid
+ * `refs/remotes/<name>/` ref name — so an empty name, a control character,
+ * a space, a backslash, `..`, a `.lock` component, … refuse, while `/`,
+ * `"` and `]` are accepted as git accepts them. Returns the verbatim name.
  */
 export const validateRemoteName = (name: string): string => {
-  if (name === '') {
-    throw remoteNameInvalid(name, 'name must not be empty');
-  }
-  if (FORBIDDEN_NAME_CHARS.test(name)) {
-    throw remoteNameInvalid(
-      name,
-      'name must not contain a newline, tab, NUL, slash, bracket, quote, or backslash',
-    );
-  }
   if (!isSafeRefName(trackingRefProbe(name))) {
     throw remoteNameInvalid(name, 'name does not form a valid refs/remotes/<name>/ ref name');
   }
   return name;
+};
+
+/** Why `name` would nest under or over the `existing` remote, if it does. */
+const collisionReason = (existing: string, name: string): string | undefined => {
+  if (name.startsWith(`${existing}/`)) return `subset of existing remote '${existing}'`;
+  return existing.startsWith(`${name}/`) ? `superset of existing remote '${existing}'` : undefined;
+};
+
+/**
+ * git's `check_remote_collision` for a new remote: a name nested under or
+ * over a configured remote refuses — their tracking refs would share one
+ * `refs/remotes/` namespace — reporting the first such remote in config order.
+ */
+export const assertRemoteNameUnnested = (config: ParsedConfig, name: string): void => {
+  for (const existing of config.remote?.keys() ?? []) {
+    const reason = collisionReason(existing, name);
+    if (reason !== undefined) throw remoteNameInvalid(name, reason);
+  }
 };
 
 /**

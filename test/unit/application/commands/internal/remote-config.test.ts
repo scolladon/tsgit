@@ -5,7 +5,7 @@ import {
   validateRemoteName,
 } from '../../../../../src/application/commands/internal/remote-config.js';
 import type { ParsedConfig } from '../../../../../src/application/primitives/config-read.js';
-import { TsgitError } from '../../../../../src/domain/error.js';
+import { sanitizeForDisplay, type TsgitError } from '../../../../../src/domain/error.js';
 import type { RefName } from '../../../../../src/domain/objects/object-id.js';
 
 const buildBranch = (
@@ -26,42 +26,23 @@ describe('application/commands/internal/remote-config', () => {
       });
     });
 
-    describe('Given a name with a forbidden character', () => {
-      describe('When validateRemoteName runs', () => {
-        it.each([
-          // A sibling-prefix collision (e.g. `a` vs `a/b`) would silently
-          // delete cross-remote refs in remove/rename; reject slashes
-          // outright. Mirrors canonical git's check_refname_format.
-          { input: 'team/origin', label: 'a slash (canonical git rejects too)' },
-          { input: 'a\tb', label: 'a tab (would corrupt reflog format)' },
-          { input: 'a\rb', label: 'a carriage return' },
-          { input: 'a\0b', label: 'a NUL byte' },
-          { input: 'a"b', label: 'a double-quote' },
-          { input: 'a\\b', label: 'a backslash' },
-          { input: 'a]b', label: 'a closing bracket' },
-        ])('Then it throws REMOTE_NAME_INVALID for $label', ({ input }) => {
-          // Arrange + Act
-          let caught: unknown;
-          try {
-            validateRemoteName(input);
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
-        });
-      });
-    });
-
     describe('Given a name that cannot form a tracking ref name', () => {
       describe('When validateRemoteName runs', () => {
         it.each([
+          { input: '', label: 'an empty name' },
           { input: 'two parts', label: 'a space' },
+          { input: 'a\tb', label: 'a tab' },
+          { input: 'a\nb', label: 'a newline' },
+          { input: 'a\rb', label: 'a carriage return' },
+          { input: 'a\0b', label: 'a NUL byte' },
+          { input: 'a\\b', label: 'a backslash' },
           { input: 'x.lock', label: 'a .lock suffix' },
           { input: '..', label: 'a double dot alone' },
           { input: 'a..b', label: 'an inner double dot' },
           { input: '.a', label: 'a leading dot' },
+          { input: 'a/.b', label: 'a component with a leading dot' },
+          { input: 'a//b', label: 'an empty component' },
+          { input: 'a/', label: 'a trailing slash' },
           { input: 'a@{b', label: 'an @{ sequence' },
           { input: 'a:b', label: 'a colon' },
           { input: 'a*b', label: 'an asterisk' },
@@ -83,7 +64,7 @@ describe('application/commands/internal/remote-config', () => {
           // Assert
           expect((caught as TsgitError).data).toEqual({
             code: 'REMOTE_NAME_INVALID',
-            name: input,
+            name: sanitizeForDisplay(input),
             reason: 'name does not form a valid refs/remotes/<name>/ ref name',
           });
         });
@@ -96,55 +77,15 @@ describe('application/commands/internal/remote-config', () => {
           { input: 'a.', label: 'a trailing dot' },
           { input: 'a.b', label: 'an inner dot' },
           { input: '@', label: 'a lone at sign' },
+          { input: 'team/origin', label: 'a slash' },
+          { input: 'a"b', label: 'a double quote' },
+          { input: 'a]b', label: 'a closing bracket' },
         ])('Then it returns $label verbatim', ({ input }) => {
           // Arrange + Act
           const result = validateRemoteName(input);
 
           // Assert
           expect(result).toBe(input);
-        });
-      });
-    });
-
-    describe('Given an empty name', () => {
-      describe('When validateRemoteName runs', () => {
-        it('Then it throws REMOTE_NAME_INVALID with reason "empty"', () => {
-          // Arrange + Act
-          let caught: unknown;
-          try {
-            validateRemoteName('');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('REMOTE_NAME_INVALID');
-          if (data.code !== 'REMOTE_NAME_INVALID') throw new Error('unreachable');
-          expect(data.reason).toContain('empty');
-        });
-      });
-    });
-
-    describe('Given a name with a newline', () => {
-      describe('When validateRemoteName runs', () => {
-        it('Then it throws REMOTE_NAME_INVALID with the forbidden-char reason', () => {
-          // Arrange + Act
-          let caught: unknown;
-          try {
-            validateRemoteName('a\nb');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert — reason pin distinguishes the regex branch from the
-          // empty-string branch, killing a mutant that swaps the two throws.
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data;
-          expect(data.code).toBe('REMOTE_NAME_INVALID');
-          if (data.code !== 'REMOTE_NAME_INVALID') throw new Error('unreachable');
-          expect(data.reason).toContain('newline');
         });
       });
     });
