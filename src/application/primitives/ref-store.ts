@@ -125,20 +125,25 @@ export interface RefStore {
    */
   readReflogLenient(name: RefName): Promise<readonly ReflogEntry[]>;
   /**
-   * Moves `from`'s reflog onto `to`: after this call, `to`'s reflog is
-   * exactly what `from`'s was — byte-for-byte on the files backend, so a
-   * malformed line survives verbatim — and `from` has no reflog. When
-   * `from` had none, `to`'s existing reflog is REMOVED rather than kept
-   * (git's rename deletes the destination ref and its log first). This is
-   * a deliberate divergence from a read-concat-rewrite: a forced rename
-   * replaces the destination's history, it does not append to it.
+   * Moves `from`'s reflog onto `to`, leaving `from` with none. When `from`
+   * has no reflog this is a pure no-op on both backends: whether `to`'s
+   * existing log survives is the caller's decision (a forced rename drops it
+   * first). Otherwise, per backend:
+   * - files: `from`'s file is renamed onto `to`'s — `to`'s log becomes
+   *   exactly `from`'s, byte for byte (a malformed line survives verbatim),
+   *   replacing whatever `to` had.
+   * - reftable: `from`'s live records are re-keyed onto `to`, each at its
+   *   own update index, MERGED into `to`'s live history rather than
+   *   replacing it; `from`'s records are tombstoned.
    */
   moveReflog(from: RefName, to: RefName): Promise<void>;
   /**
    * Copies `from`'s reflog onto `to`, leaving `from`'s own log untouched —
-   * unlike {@link moveReflog}, both names carry the history afterward.
-   * Byte-for-byte on the files backend, exactly as `moveReflog` copies;
-   * `from` having no reflog is a pure no-op, `to` gaining none either.
+   * unlike {@link moveReflog}, both names carry the history afterward;
+   * `from` having no reflog is a pure no-op. Only a reftable rename of a
+   * symbolic tracking ref copies a log today; the files arm stays so that
+   * `RefStore` remains one backend-neutral port — narrowing the method to
+   * the reftable store would force its one caller to cast by backend.
    */
   copyReflog(from: RefName, to: RefName): Promise<void>;
   /**
