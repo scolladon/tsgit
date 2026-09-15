@@ -4,7 +4,9 @@ subjects:
   - src/application/primitives/atomic-write.ts
   - src/application/primitives/record-ref-update.ts
   - src/application/primitives/reftable-transaction.ts
-  - src/domain/refs/index.ts
+  - src/application/primitives/internal/empty-directories.ts
+  - src/application/primitives/internal/transaction-names.ts
+  - src/domain/refs/ref-name-conflict.ts
   - src/application/commands/rev-parse.ts
   - src/application/commands/internal/commit-ish.ts
 ---
@@ -36,7 +38,7 @@ the user on 2026-09-15:
    transaction name as `extras`, refuses creating `d` while deleting `d/x`, two prefix-related
    creates, and a create under an absent delete, on both backends, before anything is written.
    tsgit's files store applied a `[delete d/x, set d]` list in order and wrote the first half of
-   `[set f, set f/x]`; its reftable store wrote them all (TX1–TX12).
+   `[set f, set f/x]`; its reftable store wrote them all (TX1–TX14).
 
 ## Options considered
 
@@ -85,13 +87,14 @@ entry**.
   transaction names; then the smallest existing ref under the name; then the smallest transaction
   name under it). It runs when two of a transaction's names are prefix-related, over each absent
   name that does not require an old value: on files before any lock, names with a file at a prefix,
-  a directory at the path or an earlier transaction name under them first; on reftable after the
+  a loose ref under them or an earlier ref-changing update under them first; on reftable after the
   compare-and-swap under the stack lock, in update order. A conflict above refuses `NOT_A_DIRECTORY`
   and below refuses `FILE_EXISTS`, naming the blocking name's loose path — the data the files store's
   existing refusals carry, a packed or reftable ref included. git returns `TRANSACTION_NAME_CONFLICT`
   for every one of those messages.
 
-Where git's backends differ in which name a two-sided conflict is reported against (TX4, TX6, TX7),
+Where git's backends differ in which name a two-sided conflict is reported against (TX4, TX6, TX7,
+TX13),
 each tsgit backend reports the name its git backend does.
 
 ## Consequences
@@ -109,7 +112,7 @@ Residuals, recorded in the design: a read-through link whose target `pack-refs` 
 the link after a reported error); a non-empty log directory (git refuses before writing the ref; tsgit
 writes the ref, then the append refuses); refusal priority between a name conflict and a
 compare-and-swap mismatch in one transaction; single-update availability checks (files under a
-packed-only ref, an absent delete over refs, reftable altogether) and `branch -m` across a
+packed-only ref, an absent delete around packed-only refs, reftable altogether) and `branch -m` across a
 directory/file boundary; `fsck`'s `symlinkRef` warning.
 
 **Migration notes.** A loose ref that is a symbolic link to `refs/…` now reads as a symref and writes

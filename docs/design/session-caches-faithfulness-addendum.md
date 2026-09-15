@@ -2496,6 +2496,8 @@ and every other name in update order after all locks.
 | TX10 | `v` exists; `verify v` + `create v/w`; `d/x` exists; `update d/x` + `create d/x/w`, either order; `delete d/x` + `create d/x/w` | 128 | `'…/v' exists; cannot create '…/v/w'`; same for `d/x` | same |
 | TX11 | `d/x` loose; `e/x` packed (files) | `update-ref -d refs/remotes/d`; `-d refs/remotes/e`; `-d refs/remotes/d/x/y` | 1 | `'…/d/x' exists; cannot create '…/d'`; `… 'e/x' …`; `'…/d/x' exists; cannot create '…/d/x/y'` |
 | TX12 | `a`, `c/d` branches | `branch -m a a/b`; `branch -m c/d c` | 0 | renamed on both backends (`skip` names the old ref) |
+| TX13 | `e` exists; `create q` + `create q/x` + `create e/x/y` | 128 | files: `cannot lock ref '…/e/x/y': '…/e' exists; cannot create '…/e/x/y'` (checked under its lock, first) | reftable: `cannot process 'q' and 'q/x'` |
+| TX14 | `r2/x` exists; `delete r2/x` + `delete r2` (absent); `s` exists; `delete s` + `delete s/x` (absent) | 128 | `'…/r2/x' exists; cannot create '…/r2'`; `'…/s' exists; cannot create '…/s/x'` | same |
 
 (`…/` abbreviates `refs/remotes/`.)
 
@@ -2590,7 +2592,8 @@ DW1, DW2, DW4, DW5 against git.
 
 ### Change — names that collide inside one transaction
 
-A pure domain function, `firstRefNameConflict(name, facts, transactionNames)`, applies git's order:
+A pure domain function, `firstRefNameConflict(name, facts, transactionNames)`
+(`src/domain/refs/ref-name-conflict.ts`), applies git's order:
 prefixes shortest first (existing, then a transaction name), then the smallest existing ref under
 `name/`, then the smallest transaction name under it. It returns `{ position: 'above' | 'below',
 blocking }`; the store maps `above` to `NOT_A_DIRECTORY` and `below` to `FILE_EXISTS`, each naming
@@ -2605,9 +2608,11 @@ for all four messages (`refs.h`).
 - **Checked names:** each `set`/`setSymbolic`/`delete` whose `expected` is not an object id and whose
   ref is absent.
 - **Files:** before any lock in `applyRefUpdates`. Facts per checked name: `resolveDirect` of the name
-  and of each proper prefix, `pathKind` of the loose path, and `smallestLooseRefUnder` plus the packed
-  `smallestUnder` index. Order: names with a regular file at a prefix, a directory at the loose path,
-  or an earlier transaction name under them first, then the rest, each in update order (TX4, TX6, TX7).
+  and of each proper prefix (a regular file in the path reads as absent), `pathKind` of each prefix's
+  loose path, and `smallestLooseRefUnder` plus the packed `smallestUnder` index. Order: names with a
+  regular file at a prefix, a loose ref under them, or an earlier ref-changing update under them first,
+  then the rest, each in update order (TX4, TX6, TX7, TX13). The trigger, the checked-update filter and
+  the refusal mapping live in `internal/transaction-names.ts`, shared with the reftable backend.
 - **Reftable:** inside `prepareStackWrite`, after `verifyExpectations`, against the freshly read stack
   (`lookup` for prefixes; a sorted `names()` array, built once and only when a checked name exists,
   searched for the first name under `name/`), in update order.
@@ -2625,8 +2630,9 @@ prefix; reftable one O(R) names pass per such transaction.
 - **Refusal priority** when one transaction carries both a name conflict and a compare-and-swap mismatch
   or an ED3-shaped directory: tsgit reports the name conflict first.
 - **Single-update name checks**: the files backend still writes a ref under a packed-only ref, and a
-  delete of an absent ref under or over existing refs is a no-op (git: TX11); the reftable backend runs
-  no availability check for a single update or unrelated names. `branch -m a a/b` and `branch -m c/d c`
+  delete of an absent ref under a packed-only ref or over packed-only refs is a no-op (git: TX11); a
+  loose ref under the name refuses through the directory change, a regular file above it as before.
+  The reftable backend runs no availability check for a single update or unrelated names. `branch -m a a/b` and `branch -m c/d c`
   (TX12) succeed in git; tsgit's files rename refuses them through the per-name checks.
 - `fsck`'s `symlinkRef` warning (git 2.55.0 reports `use deprecated symbolic link for symref`) is not
   produced.
