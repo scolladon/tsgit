@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { compileRefGlob, matchRefGlob } from '../../../../src/domain/refs/ref-glob.js';
 
+const CLASS_MEMBERSHIP_ROWS = [
+  { className: 'alnum', members: ['a', '9'], nonMembers: ['_'] },
+  { className: 'alpha', members: ['A', 'Z', 'a', 'z'], nonMembers: ['@', '[', '`', '{'] },
+  { className: 'blank', members: [' ', '\t'], nonMembers: ['\v'] },
+  { className: 'cntrl', members: ['\x1f', '\x7f'], nonMembers: [' ', '~'] },
+  { className: 'digit', members: ['0', '9'], nonMembers: ['/', ':'] },
+  { className: 'graph', members: ['!', '~'], nonMembers: [' ', '\x7f'] },
+  { className: 'lower', members: ['a', 'z'], nonMembers: ['`', '{', 'A'] },
+  { className: 'print', members: [' ', '~'], nonMembers: ['\x1f', '\x7f'] },
+  { className: 'punct', members: ['!', '~'], nonMembers: ['A', '0', ' '] },
+  { className: 'space', members: [' ', '\t', '\n', '\r'], nonMembers: ['\x08', '\x0e'] },
+  { className: 'upper', members: ['A', 'Z'], nonMembers: ['@', '[', 'a'] },
+  {
+    className: 'xdigit',
+    members: ['0', '9', 'A', 'F', 'a', 'f'],
+    nonMembers: ['/', ':', '@', 'G', '`', 'g'],
+  },
+] as const;
+
 describe('matchRefGlob', () => {
   describe('Given a `*` pattern and a nested ref', () => {
     describe('When matching', () => {
@@ -10,6 +29,21 @@ describe('matchRefGlob', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a run of consecutive `*`', () => {
+    describe('When matching', () => {
+      it('Then the run behaves as a single `*`, matching any bytes or none', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const results = ['mn', 'm/x/n', 'mxn', 'mx'].map((text) => sut('m***n', text));
+
+        // Assert
+        expect(results).toEqual([true, true, true, false]);
       });
     });
   });
@@ -142,6 +176,100 @@ describe('matchRefGlob', () => {
         expect(matchRefGlob('m[[:x]n', 'm:n')).toBe(true);
         expect(matchRefGlob('m[[:x]n', 'mxn')).toBe(true);
         expect(matchRefGlob('m[[:x]n', 'myn')).toBe(false);
+      });
+    });
+
+    describe('When matching each POSIX class against bytes on both sides of it', () => {
+      it.each(CLASS_MEMBERSHIP_ROWS)(
+        'Then [:$className:] admits exactly its own members',
+        ({ className, members, nonMembers }) => {
+          // Arrange
+          const sut = matchRefGlob;
+          const pattern = `m[[:${className}:]]n`;
+
+          // Act
+          const admitted = members.map((byte) => sut(pattern, `m${byte}n`));
+          const refused = nonMembers.map((byte) => sut(pattern, `m${byte}n`));
+
+          // Assert
+          expect(admitted.every(Boolean)).toBe(true);
+          expect(refused.some(Boolean)).toBe(false);
+        },
+      );
+    });
+
+    describe('When `[:` opens right before the set closes', () => {
+      it('Then `[` and `:` are ordinary members of a negated set', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const nonMember = sut('refs/heads/m[![:]in', 'refs/heads/main');
+        const member = sut('refs/heads/m[![:]in', 'refs/heads/m:in');
+
+        // Assert
+        expect(nonMember).toBe(true);
+        expect(member).toBe(false);
+      });
+    });
+
+    describe('When a `[:` class never finds a closing `]`', () => {
+      it('Then the whole pattern matches nothing', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const results = ['m[:abc', 'ma', 'm'].map((text) => sut('m[[:abc', text));
+
+        // Assert
+        expect(results).toEqual([false, false, false]);
+      });
+    });
+
+    describe('When the class name between `[:` and `:]` is empty', () => {
+      it('Then the whole pattern matches nothing', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const results = ['m:n', 'm]n', 'mn'].map((text) => sut('m[[::]]n', text));
+
+        // Assert
+        expect(results).toEqual([false, false, false]);
+      });
+    });
+
+    describe('When a range bound is an escaped `]`', () => {
+      it('Then `]` is the bound and the next `]` closes the set', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const atBound = sut('m[#-\\]]in', 'm]in');
+        const withinRange = sut('m[#-\\]]in', 'mAin');
+        const beyond = sut('m[#-\\]]in', 'm^in');
+
+        // Assert
+        expect(atBound).toBe(true);
+        expect(withinRange).toBe(true);
+        expect(beyond).toBe(false);
+      });
+    });
+
+    describe('When the pattern ends right after `[`, `[!`, or an escaping range bound', () => {
+      it.each([
+        { pattern: 'm[', texts: ['m[', 'm', 'ma'] },
+        { pattern: 'm[!', texts: ['m[!', 'm!', 'ma'] },
+        { pattern: 'm[a-\\', texts: ['m[a-\\', 'ma', 'm\\'] },
+      ])('Then $pattern matches nothing', ({ pattern, texts }) => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const results = texts.map((text) => sut(pattern, text));
+
+        // Assert
+        expect(results).toEqual([false, false, false]);
       });
     });
 
