@@ -14,3 +14,21 @@ export function arbRefName(): fc.Arbitrary<RefName> {
     .array(arbComponent(), { minLength: 2, maxLength: 4 })
     .map((components: ReadonlyArray<string>) => components.join('/') as RefName);
 }
+
+/** Arbitrary short strings over fast-check's default (ASCII) alphabet — any
+ *  glob metacharacter included, as a pattern or as a ref text. */
+export function arbGlobText(): fc.Arbitrary<string> {
+  return fc.string({ minLength: 0, maxLength: 12 });
+}
+
+/** A glob-metacharacter-free literal — matches only itself. */
+export function arbGlobLiteral(minLength = 0): fc.Arbitrary<string> {
+  return fc.stringMatching(new RegExp(`^[a-z/0-9-]{${minLength},12}$`));
+}
+
+/** A single ASCII byte outside every glob metacharacter (`*?[]\`) and every
+ *  bracket-set operator (`!^-`) — safe to escape or to embed as a bracket
+ *  member without perturbing the grammar. */
+export function arbPlainGlobChar(): fc.Arbitrary<string> {
+  return fc.stringMatching(/^[a-zA-Z0-9/]$/);
+}
