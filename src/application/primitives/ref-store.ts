@@ -1437,6 +1437,20 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** git's pruning delete of each packed loose ref climbs its emptied
+   *  parents in the refs tree only — the logs stay — here once per distinct
+   *  parent, sequentially: a removal succeeds only on an empty directory, so
+   *  the order changes nothing but the attempts. */
+  async function prunePackedLooseParents(names: readonly RefName[]): Promise<void> {
+    const parents = new Map(
+      names.map((name) => [
+        dirname(looseRefPath(refDir(name), name)),
+        `${refDir(name)}/${REFS_DIR}`,
+      ]),
+    );
+    for (const [dir, root] of parents) await pruneEmptyParents(dir, root);
+  }
+
   /** Every packable ref — direct-kind (never symbolic, matching git's own
    *  `--all` exclusion), and never a per-worktree name (`HEAD`, `refs/bisect/`,
    *  …): `packed-refs` is a common-dir-only file, and git never packs a
@@ -1504,6 +1518,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     await boundedMapFor(ctx, 'ioBound', toPrune, (name) =>
       ctx.fs.rm(looseRefPath(refDir(name), name)),
     );
+    await prunePackedLooseParents(toPrune);
     return {
       packedRefCount: packable.length,
       prunedLooseRefCount: toPrune.length,

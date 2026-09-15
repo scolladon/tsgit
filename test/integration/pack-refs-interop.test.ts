@@ -15,7 +15,7 @@
  *   unique:         packRefs packs every ref exactly as git pack-refs --all does, on both backends
  *   interopSurface: packRefs
  */
-import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -116,6 +116,52 @@ describe.skipIf(!GIT_AVAILABLE)('packRefs interop — files backend', () => {
         const oursPacked = await readFile(path.join(pair.ours, '.git/packed-refs'), 'utf8');
         expect(oursPacked).toBe(peerPacked);
         expect(await looseHeadsEntries(ours)).toBe(0);
+      });
+    });
+  });
+
+  describe('Given loose refs nested at several depths under every namespace, built identically on both sides', () => {
+    describe('When git pack-refs --all runs on the peer and packRefs runs on ours', () => {
+      it('Then both leave the same directories under refs/ and the same packed-refs bytes', async () => {
+        // Arrange
+        const names = [
+          'refs/remotes/d/x',
+          'refs/remotes/o/n1/n2/r',
+          'refs/remotes/o/keep',
+          'refs/heads/solo',
+          'refs/tags/t/nested',
+          'refs/notes/deep/n',
+          'refs/x/y/z',
+          'refs/w',
+        ];
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: commitEnv });
+          for (const name of names) runGit(['-C', dir, 'update-ref', name, 'HEAD']);
+        }
+        const ours = createNodeContext({ workDir: pair.ours });
+        const directoriesUnderRefs = async (dir: string): Promise<readonly string[]> => {
+          const entries = await readdir(path.join(dir, '.git', 'refs'), {
+            recursive: true,
+            withFileTypes: true,
+          });
+          return entries
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)))
+            .sort();
+        };
+
+        // Act
+        runGit(['-C', pair.peer, 'pack-refs', '--all']);
+        await packRefs(ours);
+
+        // Assert
+        expect(await directoriesUnderRefs(pair.ours)).toEqual(
+          await directoriesUnderRefs(pair.peer),
+        );
+        expect(await pathExists(path.join(pair.peer, '.git', 'refs', 'remotes', 'o'))).toBe(false);
+        expect(await readFile(path.join(pair.ours, '.git/packed-refs'), 'utf8')).toBe(
+          await readFile(path.join(pair.peer, '.git/packed-refs'), 'utf8'),
+        );
       });
     });
   });

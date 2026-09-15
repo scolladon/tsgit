@@ -17,8 +17,12 @@
  *  - reftable: a deleted ref stays absent after a full compaction
  *    (tombstone elided, not resurrected)
  */
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { createNodeContext } from '../../../../src/adapters/node/node-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -505,6 +509,84 @@ async function buildFixtureTable(
   };
   return serializeReftable(refs, logs, options, ctx.compressor.deflate);
 }
+
+describe('packRefs — emptied loose directories', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    );
+  });
+
+  const ADAPTERS = [
+    { adapter: 'memory', build: async (): Promise<Context> => createMemoryContext() },
+    {
+      adapter: 'node',
+      build: async (): Promise<Context> => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pack-refs-'));
+        tempRoots.push(root);
+        return createNodeContext({ workDir: root });
+      },
+    },
+  ] as const;
+
+  describe.each(ADAPTERS)('$adapter adapter', ({ build }) => {
+    describe('Given loose refs nested at several depths under every namespace', () => {
+      describe('When packRefs prunes them', () => {
+        it('Then every emptied directory below a namespace is removed and the namespaces stay', async () => {
+          // Arrange
+          const ctx = await build();
+          await init(ctx);
+          const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+          const id = await writeObject(ctx, {
+            type: 'commit',
+            id: '' as ObjectId,
+            data: {
+              tree,
+              parents: [],
+              author: AUTHOR,
+              committer: AUTHOR,
+              message: 'm',
+              extraHeaders: [],
+            },
+          });
+          const names = [
+            'refs/remotes/d/x',
+            'refs/remotes/o/n1/n2/r',
+            'refs/remotes/o/keep',
+            'refs/heads/solo',
+            'refs/tags/t/nested',
+            'refs/notes/deep/n',
+            'refs/x/y/z',
+            'refs/w',
+          ];
+          for (const name of names) await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/${name}`, `${id}\n`);
+          const sut = packRefs;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          const exists = (relative: string): Promise<boolean> =>
+            ctx.fs.exists(`${gitDirOf(ctx)}/${relative}`);
+          for (const removed of [
+            'refs/remotes/d',
+            'refs/remotes/o',
+            'refs/tags/t',
+            'refs/notes/deep',
+            'refs/x/y',
+          ]) {
+            expect(await exists(removed)).toBe(false);
+          }
+          for (const kept of ['refs/heads', 'refs/tags', 'refs/remotes', 'refs/notes', 'refs/x']) {
+            expect(await exists(kept)).toBe(true);
+          }
+        });
+      });
+    });
+  });
+});
 
 describe('packRefs — reftable backend', () => {
   describe('Given a reftable stack with three small tables', () => {
