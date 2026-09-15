@@ -21,6 +21,8 @@ import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-p
 import { TsgitError } from '../../../../src/domain/index.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
 
+const WINDOWS_PLATFORM = 'win32';
+
 /**
  * A synthetic `FsOperations` for `removeTree` concurrency-boundary tests:
  * `lstat`/`readdir` respond deterministically (no real disk I/O, so no
@@ -88,6 +90,10 @@ describe('NodeFileSystem', () => {
         },
         expected: 'allowed' as const,
       },
+      // The segment refusal codes are pinned on POSIX hosts only: Windows reports a file used
+      // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
+      // do not surface ELOOP on every surface.
+      ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
       cleanup: async () => {
         await fsPromises.rm(rootDir, { recursive: true, force: true });
         await fsPromises.rm(siblingDir, { recursive: true, force: true });

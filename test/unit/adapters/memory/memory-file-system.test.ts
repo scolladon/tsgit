@@ -20,6 +20,7 @@ describe('MemoryFileSystem', () => {
         },
         expected: 'refused' as const,
       },
+      segmentRefusals: 'pinned' as const,
     };
   });
 

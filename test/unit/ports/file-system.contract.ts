@@ -24,7 +24,20 @@ export interface FileSystemContractEnv {
     readonly create: () => Promise<string>;
     readonly expected: 'allowed' | 'refused';
   };
+  /**
+   * Declares that a refusal raised while resolving a path segment — a symbolic link loop, or a
+   * regular file or dangling symbolic link standing where a directory is needed — carries a code
+   * this adapter pins on the current host. The rows asserting those codes run only when it is
+   * declared. Memory declares it everywhere: its codes are structural. Node declares it on POSIX
+   * hosts, where each code maps an explicit errno (`ELOOP`, `ENOTDIR`, `ENOENT`); Windows
+   * resolves such segments through reparse points and reports a file used as a directory as
+   * `ENOENT` or `EINVAL`, so the rows are skipped there rather than asserting unpinned codes.
+   */
+  readonly segmentRefusals?: 'pinned';
 }
+
+const SEGMENT_REFUSALS_UNPINNED =
+  'segment refusal codes are not pinned for this adapter on this host';
 
 interface PathCall {
   readonly name: string;
@@ -1224,7 +1237,9 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(await env.fs.exists(`${env.rootDir}/sub/missing-dir`)).toBe(false);
     });
 
-    it('Given a mutual symlink loop occupies the mkdir target, When mkdir is called, Then it refuses PERMISSION_DENIED', async () => {
+    it('Given a mutual symlink loop occupies the mkdir target, When mkdir is called, Then it refuses PERMISSION_DENIED', async (ctx) => {
+      ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
       // Arrange
       const linkA = `${env.rootDir}/sub/mkdir-loop-a`;
       const linkB = `${env.rootDir}/sub/mkdir-loop-b`;
@@ -1504,7 +1519,9 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
     describe('symlink and directory refusal parity', () => {
       describe('Given a mutual symlink loop', () => {
         for (const { name, invoke } of mutualLoopCalls) {
-          it(`Then ${name} refuses PERMISSION_DENIED`, async () => {
+          it(`Then ${name} refuses PERMISSION_DENIED`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
             // Arrange
             const linkA = `${env.rootDir}/refusal-loop-a`;
             const linkB = `${env.rootDir}/refusal-loop-b`;
@@ -1585,7 +1602,9 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       for (const { label, segment } of fileSegments) {
         describe(`Given ${label} occupying an intermediate path segment`, () => {
           for (const { name, invoke } of beneathFileCalls) {
-            it(`Then ${name} refuses NOT_A_DIRECTORY`, async () => {
+            it(`Then ${name} refuses NOT_A_DIRECTORY`, async (ctx) => {
+              ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
               // Arrange
               await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
               await env.fs.symlink('refusal-file.bin', `${env.rootDir}/refusal-file-link`);
@@ -1607,7 +1626,9 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       }
 
       describe('Given a dangling relative symlink as an intermediate path segment', () => {
-        it('Then exists reports a path beneath it absent', async () => {
+        it('Then exists reports a path beneath it absent', async (ctx) => {
+          ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
           // Arrange
           await env.fs.symlink('dangling-component-target', `${env.rootDir}/${DANGLING_COMPONENT}`);
 
@@ -1619,7 +1640,9 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
         });
 
         for (const { name, invoke } of beneathDanglingReadCalls) {
-          it(`Then ${name} beneath it refuses FILE_NOT_FOUND`, async () => {
+          it(`Then ${name} beneath it refuses FILE_NOT_FOUND`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
             // Arrange
             await env.fs.symlink(
               'dangling-component-target',
@@ -1667,7 +1690,9 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
             expect(await env.fs.exists(`${env.rootDir}/${DANGLING_COMPONENT_TARGET}`)).toBe(false);
           });
 
-          it(`Then ${name} two segments beneath it refuses NOT_A_DIRECTORY and creates nothing at the link target`, async () => {
+          it(`Then ${name} two segments beneath it refuses NOT_A_DIRECTORY and creates nothing at the link target`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
             // Arrange
             await env.fs.symlink(
               'dangling-component-target',
