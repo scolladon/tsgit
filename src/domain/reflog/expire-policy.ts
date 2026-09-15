@@ -40,9 +40,11 @@ export interface ReflogExpiryPolicy {
 const NEVER = Number.NEGATIVE_INFINITY;
 const STASH_REF = 'refs/stash' as RefName;
 
+type ExpirySlot = ReflogExpiryConfigEntry['slot'];
+
 interface PatternSlots {
-  total: number | undefined;
-  unreachable: number | undefined;
+  readonly total: number | undefined;
+  readonly unreachable: number | undefined;
 }
 
 interface CompiledPattern extends PatternSlots {
@@ -55,41 +57,63 @@ export interface ParsedExpiryConfig {
   readonly globalUnreachable: number | undefined;
 }
 
-/** Two sections sharing the same subsection text merge into one pattern
- *  entry — found by a first-seen-order lookup, so a later section only
- *  adds slots to it. */
-const findOrCreatePattern = (
-  byText: Map<string, CompiledPattern>,
-  ordered: CompiledPattern[],
-  pattern: string,
-): CompiledPattern => {
-  const existing = byText.get(pattern);
-  if (existing !== undefined) return existing;
-  const created: CompiledPattern = {
-    test: compileRefGlob(pattern),
-    total: undefined,
-    unreachable: undefined,
-  };
-  byText.set(pattern, created);
-  ordered.push(created);
-  return created;
+interface ValidatedEntry {
+  readonly pattern: string | undefined;
+  readonly slot: ExpirySlot;
+  readonly cutoff: number;
+}
+
+const validateEntry = (
+  entry: ReflogExpiryConfigEntry,
+  parse: (raw: string) => number | undefined,
+): ValidatedEntry => {
+  if (entry.value === null) throw configMissingValue(entry.key, entry.source, entry.line);
+  const cutoff = parse(entry.value);
+  if (cutoff === undefined) {
+    throw configBadDateValue(entry.value, {
+      key: entry.key,
+      source: entry.source,
+      line: entry.line,
+    });
+  }
+  return { pattern: entry.pattern, slot: entry.slot, cutoff };
 };
 
-const applyEntry = (
-  config: { globalTotal: number | undefined; globalUnreachable: number | undefined },
-  byText: Map<string, CompiledPattern>,
-  ordered: CompiledPattern[],
-  entry: ReflogExpiryConfigEntry,
-  cutoff: number,
-): void => {
-  if (entry.pattern === undefined) {
-    if (entry.slot === 'total') config.globalTotal = cutoff;
-    else config.globalUnreachable = cutoff;
-    return;
+/** Entries sharing a subsection (`undefined` for `[gc]` itself), in
+ *  first-seen order — two sections with the same pattern text are one
+ *  pattern, a later section only adding or overriding its slots. */
+const groupBySubsection = (
+  entries: ReadonlyArray<ValidatedEntry>,
+): ReadonlyMap<string | undefined, ReadonlyArray<ValidatedEntry>> => {
+  const groups = new Map<string | undefined, ValidatedEntry[]>();
+  for (const entry of entries) {
+    const group = groups.get(entry.pattern);
+    if (group === undefined) groups.set(entry.pattern, [entry]);
+    else group.push(entry);
   }
-  const record = findOrCreatePattern(byText, ordered, entry.pattern);
-  record[entry.slot] = cutoff;
+  return groups;
 };
+
+const lastCutoff = (entries: ReadonlyArray<ValidatedEntry>, slot: ExpirySlot): number | undefined =>
+  entries.reduce<number | undefined>(
+    (last, entry) => (entry.slot === slot ? entry.cutoff : last),
+    undefined,
+  );
+
+const compilePatterns = (
+  groups: ReadonlyMap<string | undefined, ReadonlyArray<ValidatedEntry>>,
+): ReadonlyArray<CompiledPattern> =>
+  [...groups].flatMap(([pattern, group]) =>
+    pattern === undefined
+      ? []
+      : [
+          {
+            test: compileRefGlob(pattern),
+            total: lastCutoff(group, 'total'),
+            unreachable: lastCutoff(group, 'unreachable'),
+          },
+        ],
+  );
 
 /**
  * git's `reflog_expire_config`: every entry is parsed in file order and the
@@ -101,43 +125,36 @@ export const parseReflogExpiryEntries = (
   entries: ReadonlyArray<ReflogExpiryConfigEntry>,
   parse: (raw: string) => number | undefined,
 ): ParsedExpiryConfig => {
-  const byText = new Map<string, CompiledPattern>();
-  const ordered: CompiledPattern[] = [];
-  const config = {
-    globalTotal: undefined as number | undefined,
-    globalUnreachable: undefined as number | undefined,
-  };
-  for (const entry of entries) {
-    if (entry.value === null) throw configMissingValue(entry.key, entry.source, entry.line);
-    const cutoff = parse(entry.value);
-    if (cutoff === undefined) {
-      throw configBadDateValue(entry.value, {
-        key: entry.key,
-        source: entry.source,
-        line: entry.line,
-      });
-    }
-    applyEntry(config, byText, ordered, entry, cutoff);
-  }
+  const groups = groupBySubsection(entries.map((entry) => validateEntry(entry, parse)));
+  const globals = groups.get(undefined) ?? [];
   return {
-    patterns: ordered,
-    globalTotal: config.globalTotal,
-    globalUnreachable: config.globalUnreachable,
+    patterns: compilePatterns(groups),
+    globalTotal: lastCutoff(globals, 'total'),
+    globalUnreachable: lastCutoff(globals, 'unreachable'),
   };
 };
 
-const resolveSlot = (
-  explicit: number | undefined,
-  matched: PatternSlots | undefined,
-  slot: keyof PatternSlots,
-  ref: string,
-  global: number | undefined,
-  fallback: number,
-): number => {
-  if (explicit !== undefined) return explicit;
+/** Where each slot reads its `[gc]` value and its default from. */
+const SLOT_FIELDS = {
+  total: { global: 'globalTotal', fallback: 'expireCut' },
+  unreachable: { global: 'globalUnreachable', fallback: 'unreachableCut' },
+} as const;
+
+interface SlotResolution {
+  readonly config: ParsedExpiryConfig;
+  readonly explicit: ExplicitExpiryCuts;
+  readonly defaults: ExpiryCuts;
+  readonly ref: RefName | 'HEAD';
+  readonly matched: PatternSlots | undefined;
+}
+
+const resolveSlot = (resolution: SlotResolution, slot: ExpirySlot): number => {
+  const { config, explicit, defaults, ref, matched } = resolution;
+  const explicitCut = explicit[slot];
+  if (explicitCut !== undefined) return explicitCut;
   if (matched !== undefined) return matched[slot] ?? NEVER;
   if (ref === STASH_REF) return NEVER;
-  return global ?? fallback;
+  return config[SLOT_FIELDS[slot].global] ?? defaults[SLOT_FIELDS[slot].fallback];
 };
 
 /**
@@ -151,27 +168,13 @@ export const expiryPolicyFor = (
   config: ParsedExpiryConfig,
   explicit: ExplicitExpiryCuts,
   defaults: ExpiryCuts,
-): ReflogExpiryPolicy => {
-  const cutoffsFor = (ref: RefName | 'HEAD'): ExpiryCuts => {
+): ReflogExpiryPolicy => ({
+  cutoffsFor: (ref: RefName | 'HEAD'): ExpiryCuts => {
     const matched = config.patterns.find((pattern) => pattern.test(ref));
+    const resolution: SlotResolution = { config, explicit, defaults, ref, matched };
     return {
-      expireCut: resolveSlot(
-        explicit.total,
-        matched,
-        'total',
-        ref,
-        config.globalTotal,
-        defaults.expireCut,
-      ),
-      unreachableCut: resolveSlot(
-        explicit.unreachable,
-        matched,
-        'unreachable',
-        ref,
-        config.globalUnreachable,
-        defaults.unreachableCut,
-      ),
+      expireCut: resolveSlot(resolution, 'total'),
+      unreachableCut: resolveSlot(resolution, 'unreachable'),
     };
-  };
-  return { cutoffsFor };
-};
+  },
+});
