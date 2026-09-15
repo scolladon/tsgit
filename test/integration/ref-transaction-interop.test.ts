@@ -31,7 +31,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { remoteRename } from '../../src/application/commands/remote.js';
-import { getRefStore } from '../../src/application/primitives/ref-store.js';
+import { getRefStore, type RefUpdate } from '../../src/application/primitives/ref-store.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
@@ -1853,6 +1853,183 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
         });
       });
+    });
+
+    describe('Given a transaction whose own names collide, on both tools and both backends', () => {
+      type StdinUpdate = readonly ['create' | 'delete', string];
+      interface CollisionRow {
+        readonly label: string;
+        readonly slug: string;
+        readonly existing: readonly string[];
+        readonly updates: readonly StdinUpdate[];
+        readonly refusal: Readonly<Record<'files' | 'reftable', readonly [string, string, string]>>;
+      }
+      const remote = (short: string): RefName => `refs/remotes/${short}` as RefName;
+      const same = (code: string, blocking: string, message: string) => ({
+        files: [code, blocking, message] as const,
+        reftable: [code, blocking, message] as const,
+      });
+      const ROWS: readonly CollisionRow[] = [
+        {
+          label: 'creating d while deleting the existing d/x',
+          slug: 'create-delete-under',
+          existing: ['d/x'],
+          updates: [
+            ['create', 'd'],
+            ['delete', 'd/x'],
+          ],
+          refusal: same(
+            'FILE_EXISTS',
+            'd/x',
+            "'refs/remotes/d/x' exists; cannot create 'refs/remotes/d'",
+          ),
+        },
+        {
+          label: 'deleting the existing d/x before creating d',
+          slug: 'delete-under-create',
+          existing: ['d/x'],
+          updates: [
+            ['delete', 'd/x'],
+            ['create', 'd'],
+          ],
+          refusal: same(
+            'FILE_EXISTS',
+            'd/x',
+            "'refs/remotes/d/x' exists; cannot create 'refs/remotes/d'",
+          ),
+        },
+        {
+          label: 'creating f and f/x together',
+          slug: 'create-both',
+          existing: [],
+          updates: [
+            ['create', 'f'],
+            ['create', 'f/x'],
+          ],
+          refusal: same(
+            'FILE_EXISTS',
+            'f/x',
+            "cannot process 'refs/remotes/f' and 'refs/remotes/f/x'",
+          ),
+        },
+        {
+          label: 'creating g/x before g',
+          slug: 'create-child-first',
+          existing: [],
+          updates: [
+            ['create', 'g/x'],
+            ['create', 'g'],
+          ],
+          refusal: {
+            files: ['FILE_EXISTS', 'g/x', "cannot process 'refs/remotes/g' and 'refs/remotes/g/x'"],
+            reftable: [
+              'NOT_A_DIRECTORY',
+              'g',
+              "cannot process 'refs/remotes/g/x' and 'refs/remotes/g'",
+            ],
+          },
+        },
+        {
+          label: 'deleting the absent j before creating j/x',
+          slug: 'absent-delete-create-under',
+          existing: [],
+          updates: [
+            ['delete', 'j'],
+            ['create', 'j/x'],
+          ],
+          refusal: same(
+            'FILE_EXISTS',
+            'j/x',
+            "cannot process 'refs/remotes/j' and 'refs/remotes/j/x'",
+          ),
+        },
+        {
+          label: 'creating q and q/x before e/x/y under the existing e',
+          slug: 'lock-phase-first',
+          existing: ['e'],
+          updates: [
+            ['create', 'q'],
+            ['create', 'q/x'],
+            ['create', 'e/x/y'],
+          ],
+          refusal: {
+            files: [
+              'NOT_A_DIRECTORY',
+              'e',
+              "'refs/remotes/e' exists; cannot create 'refs/remotes/e/x/y'",
+            ],
+            reftable: [
+              'FILE_EXISTS',
+              'q/x',
+              "cannot process 'refs/remotes/q' and 'refs/remotes/q/x'",
+            ],
+          },
+        },
+      ];
+      const BACKENDS = [
+        { backend: 'files', pairOf: filesCasePair, commit: () => filesC1 },
+        {
+          backend: 'reftable',
+          pairOf: reftableCasePair,
+          commit: () => git(reftableBase, 'rev-parse', 'main').trim(),
+        },
+      ] as const;
+      const stdinOf = (updates: readonly StdinUpdate[], id: string): string =>
+        updates
+          .map(([verb, short]) =>
+            verb === 'create' ? `create ${remote(short)} ${id}\n` : `delete ${remote(short)}\n`,
+          )
+          .join('');
+      const refUpdatesOf = (updates: readonly StdinUpdate[], id: string): readonly RefUpdate[] =>
+        updates.map(([verb, short]) =>
+          verb === 'create'
+            ? { kind: 'set', name: remote(short), id: id as ObjectId }
+            : { kind: 'delete', name: remote(short) },
+        );
+      const listRemotes = (dir: string): string =>
+        git(dir, 'for-each-ref', '--format=%(refname)', 'refs/remotes/');
+
+      describe.each(BACKENDS)(
+        'When git update-ref --stdin and applyRefUpdates run it on $backend',
+        ({ backend, pairOf, commit }) => {
+          it.each(ROWS)(
+            'Then both refuse $label and change nothing',
+            async ({ slug, existing, updates, refusal }) => {
+              // Arrange
+              const { peer, ours, ctx } = await pairOf(`names-${backend}-${slug}`);
+              const id = commit();
+              for (const dir of [peer, ours]) {
+                for (const short of existing) runGit(['-C', dir, 'update-ref', remote(short), id]);
+              }
+              const refsBefore = listRemotes(peer);
+              const sut = getRefStore(ctx);
+
+              // Act
+              const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+                input: stdinOf(updates, id),
+                env: runGitEnv(),
+              });
+              let caught: unknown;
+              try {
+                await sut.applyRefUpdates(refUpdatesOf(updates, id));
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert
+              const [code, blocking, message] = refusal[backend];
+              expect(gitResult.exitCode).toBe(128);
+              expect(gitResult.stderr).toContain(message);
+              expect((caught as TsgitError).data).toEqual({
+                code,
+                path: `${ctx.layout.gitDir}/${remote(blocking)}`,
+              });
+              expect(listRemotes(peer)).toBe(refsBefore);
+              expect(listRemotes(ours)).toBe(refsBefore);
+            },
+          );
+        },
+      );
     });
   },
 );

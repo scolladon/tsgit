@@ -79,12 +79,23 @@ import {
   suggestCompactionSegment,
 } from '../../domain/refs/index.js';
 import {
+  firstRefNameConflict,
+  type RefNameFacts,
+  refNamePrefixes,
+  smallestNameUnder,
+} from '../../domain/refs/ref-name-conflict.js';
+import {
   DEFAULT_BLOCK_SIZE,
   DEFAULT_RESTART_INTERVAL,
 } from '../../domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
+import {
+  isCheckedWhenAbsent,
+  prefixRelatedTransactionNames,
+  refNameConflictRefusal,
+} from './internal/transaction-names.js';
 import {
   invalidateReftableStack,
   parseTablesList,
@@ -371,6 +382,48 @@ function verifyExpectations(
     if (expected === undefined) continue;
     const actual = actualFor(stack.lookup(update.name));
     if (expected !== actual) throw refUpdateConflict(update.name, expected, actual);
+  }
+}
+
+/** What `stack` holds around `name`; the sorted live names are built on the
+ *  first call only. */
+function reftableNameFacts(
+  name: RefName,
+  stack: ReftableStack,
+  sortedNames: () => readonly RefName[],
+): RefNameFacts {
+  return {
+    existingPrefixes: new Set(
+      refNamePrefixes(name).filter((prefix) => stack.lookup(prefix) !== undefined),
+    ),
+    smallestExistingUnder: smallestNameUnder(sortedNames(), name),
+  };
+}
+
+function lazySortedNames(stack: ReftableStack): () => readonly RefName[] {
+  let names: readonly RefName[] | undefined;
+  return () => {
+    names ??= [...stack.names()];
+    return names;
+  };
+}
+
+/** git's availability check over a transaction naming prefix-related refs,
+ *  after every compare-and-swap and before any write: each absent name
+ *  changed without a required value, in update order. */
+function verifyTransactionNamesAvailable(
+  ctx: Context,
+  updates: readonly ReftableInternalUpdate[],
+  stack: ReftableStack,
+): void {
+  const transaction = prefixRelatedTransactionNames(updates);
+  if (transaction === undefined) return;
+  const sortedNames = lazySortedNames(stack);
+  for (const update of updates) {
+    if (!isCheckedWhenAbsent(update) || stack.lookup(update.name) !== undefined) continue;
+    const facts = reftableNameFacts(update.name, stack, sortedNames);
+    const conflict = firstRefNameConflict(update.name, facts, transaction);
+    if (conflict !== undefined) throw refNameConflictRefusal(ctx, conflict);
   }
 }
 
@@ -720,6 +773,7 @@ async function prepareStackWrite(
 ): Promise<PreparedStackWrite> {
   const { stack, existingNames } = await readFreshStack(ctx, gitDir);
   verifyExpectations(updates, stack);
+  verifyTransactionNamesAvailable(ctx, updates, stack);
   const updateIndex = stack.maxUpdateIndex + 1n;
   const loggable = createLoggableLookup(stack, loggableCandidateNames(updates));
   const refs: ReftableRefRecord[] = [];

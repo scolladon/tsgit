@@ -37,6 +37,12 @@ import {
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
+import {
+  firstRefNameConflict,
+  type RefNameFacts,
+  refNamePrefixes,
+  type TransactionNames,
+} from '../../domain/refs/ref-name-conflict.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
 import type { DirEntry, FileStat } from '../../ports/file-system.js';
@@ -44,6 +50,12 @@ import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js
 import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
+import {
+  isCheckedWhenAbsent,
+  isRefChanging,
+  prefixRelatedTransactionNames,
+  refNameConflictRefusal,
+} from './internal/transaction-names.js';
 import {
   commonGitDir,
   logsDir,
@@ -372,6 +384,14 @@ interface DeleteTarget {
 }
 
 type DeleteUpdate = Extract<RefUpdate, { kind: 'delete' }>;
+
+/** One absent name a transaction would create or delete, with what storage
+ *  holds around it and whether git checks it while taking its lock. */
+interface NameCheck {
+  readonly name: RefName;
+  readonly facts: RefNameFacts;
+  readonly checkedUnderLock: boolean;
+}
 
 /** `applyRefUpdates`' unit of work: a run of consecutive deletes applied as
  *  one transaction, or any other single update. */
@@ -1248,9 +1268,15 @@ function createFilesRefStore(ctx: Context): RefStore {
    * such ref's loose path, loose or packed alike.
    */
   async function refuseRefsUnder(name: RefName): Promise<void> {
-    const packed = (await loadPackedRefs()).smallestUnder().get(name);
-    const under = smallerName(packed, await smallestLooseRefUnder(name));
+    const under = smallerName(
+      await smallestPackedRefUnder(name),
+      await smallestLooseRefUnder(name),
+    );
     if (under !== undefined) throw fileExists(looseRefPath(refDir(under), under));
+  }
+
+  async function smallestPackedRefUnder(name: RefName): Promise<RefName | undefined> {
+    return (await loadPackedRefs()).smallestUnder().get(name);
   }
 
   /** {@link refuseRefsUnder}, paid only when the packed snapshot holds a ref
@@ -1429,9 +1455,88 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** Whether `name` exists for the availability check: a regular file in its
+   *  path reads as no ref there, as git's failed read does. */
+  async function existsForNameCheck(name: RefName): Promise<boolean> {
+    try {
+      return (await resolveDirect(name)).kind !== 'missing';
+    } catch (err) {
+      if (errorDataCode(err) === 'NOT_A_DIRECTORY') return false;
+      throw err;
+    }
+  }
+
+  async function existingNames(names: readonly RefName[]): Promise<ReadonlySet<RefName>> {
+    const existing = new Set<RefName>();
+    for (const name of names) if (await existsForNameCheck(name)) existing.add(name);
+    return existing;
+  }
+
+  async function hasLooseFileAt(names: readonly RefName[]): Promise<boolean> {
+    for (const name of names) {
+      if ((await pathKind(looseRefPath(refDir(name), name))) === 'file') return true;
+    }
+    return false;
+  }
+
+  /** git takes a lock before it checks a name when that lock meets a regular
+   *  file at a prefix, or a directory at the path: refs under the name, or
+   *  the lock of an earlier update under it. */
+  async function nameCheckFor(name: RefName, earlier: readonly RefName[]): Promise<NameCheck> {
+    const prefixes = refNamePrefixes(name);
+    const looseUnder = await smallestLooseRefUnder(name);
+    const smallestExistingUnder = smallerName(await smallestPackedRefUnder(name), looseUnder);
+    const checkedUnderLock =
+      looseUnder !== undefined ||
+      earlier.some((other) => other.startsWith(`${name}/`)) ||
+      (await hasLooseFileAt(prefixes));
+    const facts = { existingPrefixes: await existingNames(prefixes), smallestExistingUnder };
+    return { name, facts, checkedUnderLock };
+  }
+
+  async function absentNameChecks(updates: readonly RefUpdate[]): Promise<readonly NameCheck[]> {
+    const checks: NameCheck[] = [];
+    const earlier: RefName[] = [];
+    for (const update of updates) {
+      if (isCheckedWhenAbsent(update) && !(await existsForNameCheck(update.name))) {
+        checks.push(await nameCheckFor(update.name, earlier));
+      }
+      if (isRefChanging(update)) earlier.push(update.name);
+    }
+    return checks;
+  }
+
+  const refuseFirstConflict = (
+    checks: readonly NameCheck[],
+    transaction: TransactionNames,
+  ): void => {
+    for (const check of checks) {
+      const conflict = firstRefNameConflict(check.name, check.facts, transaction);
+      if (conflict !== undefined) throw refNameConflictRefusal(ctx, conflict);
+    }
+  };
+
+  /**
+   * git's availability check over a transaction naming prefix-related refs,
+   * before any lock: the absent names it would change without a required
+   * value, those git checks under their lock first, then the rest — each
+   * group in update order.
+   */
+  async function assertTransactionNamesAvailable(updates: readonly RefUpdate[]): Promise<void> {
+    const transaction = prefixRelatedTransactionNames(updates);
+    if (transaction === undefined) return;
+    const checks = await absentNameChecks(updates);
+    refuseFirstConflict(
+      [...checks.filter((c) => c.checkedUnderLock), ...checks.filter((c) => !c.checkedUnderLock)],
+      transaction,
+    );
+  }
+
   /** Applies `updates` in order, each consecutive run of deletes as one
-   *  transaction ({@link applyDeletes}). */
+   *  transaction ({@link applyDeletes}), once the transaction's own names are
+   *  known not to collide. */
   async function applyRefUpdates(updates: readonly RefUpdate[]): Promise<void> {
+    await assertTransactionNamesAvailable(updates);
     for (const run of toUpdateRuns(updates)) {
       await (run.kind === 'deletes' ? applyDeletes(run.updates) : applyOne(run.update));
     }
