@@ -52,6 +52,41 @@ export async function updateRef(
   );
 }
 
+/** What a {@link deleteRefs} run carries to every delete it plans. */
+export interface DeleteRefsOptions {
+  readonly noDeref?: boolean;
+}
+
+/**
+ * Deletes `names` as ONE ref transaction — git's `refs_delete_refs`: every
+ * name is validated and its chain walked before anything is written, then
+ * all the deletes apply as one run (one `packed-refs` rewrite, one reftable
+ * table), followed by the log entries each delete produces, exactly as
+ * {@link updateRef} would produce them one name at a time.
+ */
+export async function deleteRefs(
+  ctx: Context,
+  names: readonly RefName[],
+  options: DeleteRefsOptions,
+): Promise<void> {
+  for (const name of names) validateRefName(name);
+  const store = getRefStore(ctx);
+  const deleteOptions = { ...options, delete: true } as const;
+  const updates: RefUpdate[] = [];
+  for (const name of names) {
+    const plan = await planTransaction(ctx, store, name, deleteOptions);
+    updates.push(...deleteUpdates(plan, deleteOptions));
+  }
+  await store.applyRefUpdates(deletesFirst(updates));
+}
+
+/** `updates` with every store-level delete moved ahead of the log entries,
+ *  each group keeping its own order — so the deletes form a single run. */
+const deletesFirst = (updates: readonly RefUpdate[]): readonly RefUpdate[] => [
+  ...updates.filter((update) => update.kind === 'delete'),
+  ...updates.filter((update) => update.kind !== 'delete'),
+];
+
 /** Walks `name`'s write chain and reads the `HEAD` value it may couple with. */
 async function planTransaction(
   ctx: Context,

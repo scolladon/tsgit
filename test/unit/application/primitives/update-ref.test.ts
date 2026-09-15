@@ -13,7 +13,7 @@ import {
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import type { UpdateRefOptions } from '../../../../src/application/primitives/types.js';
-import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { deleteRefs, updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -2338,6 +2338,112 @@ describe('updateRef', () => {
             false,
           );
         });
+      });
+    });
+  });
+});
+
+describe('deleteRefs', () => {
+  /** Records every `applyRefUpdates` batch the Context's store receives. */
+  const recordBatches = (ctx: Context): RefUpdate[][] => {
+    const store = getRefStore(ctx);
+    const batches: RefUpdate[][] = [];
+    const original = store.applyRefUpdates.bind(store);
+    store.applyRefUpdates = async (updates) => {
+      batches.push([...updates]);
+      return original(updates);
+    };
+    return batches;
+  };
+
+  describe('Given two loose branches and HEAD symbolically naming one of them', () => {
+    describe('When deleteRefs deletes both', () => {
+      it('Then one batch carries both deletes first, then the coupled HEAD entry', async () => {
+        // Arrange — delete targets are never verified.
+        const mainId = 'a'.repeat(40) as ObjectId;
+        const other = 'refs/heads/other' as RefName;
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: MAIN, id: mainId },
+            { name: other, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        await writeSymbolicRef(ctx, HEAD, MAIN);
+        const batches = recordBatches(ctx);
+
+        // Act
+        await deleteRefs(ctx, [MAIN, other], {});
+
+        // Assert
+        expect(batches).toEqual([
+          [
+            { kind: 'delete', name: MAIN },
+            { kind: 'delete', name: other },
+            { kind: 'reflogOnly', name: HEAD, reflog: { oldId: mainId, newId: ZERO, message: '' } },
+          ],
+        ]);
+        expect(await getRefStore(ctx).resolveDirect(MAIN)).toEqual({ kind: 'missing' });
+        expect(await getRefStore(ctx).resolveDirect(other)).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe('Given a reftable-backend Context with a symbolic ref and its live referent', () => {
+    describe('When deleteRefs deletes both with noDeref', () => {
+      it("Then the symbolic ref's kept log records the referent's value from before the batch", async () => {
+        // Arrange — seeded through the store, so the value is never verified.
+        const mainId = 'a'.repeat(40) as ObjectId;
+        const sym = 'refs/heads/sym' as RefName;
+        const ctx = withReftableStorage(createMemoryContext());
+        const store = getRefStore(ctx);
+        await store.applyRefUpdates([
+          { kind: 'set', name: MAIN, id: mainId },
+          { kind: 'setSymbolic', name: sym, target: MAIN },
+        ]);
+        const batches = recordBatches(ctx);
+
+        // Act
+        await deleteRefs(ctx, [sym, MAIN], { noDeref: true });
+
+        // Assert
+        expect(batches).toEqual([
+          [
+            { kind: 'delete', name: sym },
+            { kind: 'delete', name: MAIN },
+            { kind: 'reflogOnly', name: sym, reflog: { oldId: mainId, newId: ZERO, message: '' } },
+          ],
+        ]);
+        const symLog = await readReflog(ctx, sym);
+        expect(symLog.map(({ oldId, newId, message }) => ({ oldId, newId, message }))).toEqual([
+          { oldId: mainId, newId: ZERO, message: '' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given an invalid name after a valid one', () => {
+    describe('When deleteRefs runs', () => {
+      it('Then it refuses the name before deleting anything', async () => {
+        // Arrange
+        const mainId = 'a'.repeat(40) as ObjectId;
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: mainId }] });
+        const batches = recordBatches(ctx);
+        let caught: unknown;
+
+        // Act
+        try {
+          await deleteRefs(ctx, [MAIN, 'refs/heads/a..b' as RefName], {});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'ref name must not contain ..',
+        });
+        expect(batches).toEqual([]);
+        expect(await getRefStore(ctx).resolveDirect(MAIN)).toEqual({ kind: 'direct', id: mainId });
       });
     });
   });

@@ -18,7 +18,6 @@
  */
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { zeroOid } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
 import {
   formatObjectFilter,
@@ -37,7 +36,7 @@ import { assertNoValuelessConfig } from '../primitives/internal/valueless-config
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
-import { updateRef } from '../primitives/update-ref.js';
+import { deleteRefs, updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
@@ -381,18 +380,16 @@ const prune = async (
   );
   const prefix = `refs/remotes/${remoteName}/` as RefName;
   const tracked = await getRefStore(ctx).listRefs(prefix);
-  const deleted: RefName[] = [];
-  for (const entry of tracked) {
-    // A symref (`<remote>/HEAD`) is never a stale-branch candidate — its own
-    // name is not a tracked branch slug, and git's prune scan skips symrefs
-    // outright rather than testing the name they happen to carry.
-    if (entry.value.kind === 'symbolic') continue;
-    const branch = entry.name.slice(prefix.length);
-    if (advertisedBranches.has(branch)) continue;
-    // A packed-only tracking ref deletes like any other — `updateRef`
-    // rewrites packed-refs to drop it, as `git fetch --prune` does.
-    await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true });
-    deleted.push(entry.name);
-  }
-  return deleted;
+  // A symref (`<remote>/HEAD`) is never a stale-branch candidate — its own
+  // name is not a tracked branch slug, and git's prune scan skips symrefs
+  // outright rather than testing the name they happen to carry.
+  const stale = tracked
+    .filter((entry) => entry.value.kind !== 'symbolic')
+    .map((entry) => entry.name)
+    .filter((name) => !advertisedBranches.has(name.slice(prefix.length)));
+  // One transaction, as git's prune queues every stale ref into one: a
+  // packed-only tracking ref deletes like any other, and `packed-refs` is
+  // rewritten once for the whole run.
+  await deleteRefs(ctx, stale, {});
+  return stale;
 };

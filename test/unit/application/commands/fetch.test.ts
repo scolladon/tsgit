@@ -18,6 +18,7 @@ import {
   commonGitDir,
   looseObjectPath,
 } from '../../../../src/application/primitives/path-layout.js';
+import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -885,6 +886,53 @@ describe('fetch', () => {
             false,
           );
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given prune=true and two stale remote-tracking refs', () => {
+      describe('When fetch', () => {
+        it('Then both are deleted in one ref transaction', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/main': FAKE_OID('a'),
+              'refs/remotes/origin/feature-x': FAKE_OID('b'),
+              'refs/remotes/origin/feature-y': FAKE_OID('c'),
+            },
+          });
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'one prune transaction\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+          const fetchCtx = { ...ctx, transport };
+          const store = getRefStore(fetchCtx);
+          const deleteBatches: RefUpdate[][] = [];
+          const originalApply = store.applyRefUpdates.bind(store);
+          store.applyRefUpdates = async (updates) => {
+            if (updates.some((update) => update.kind === 'delete'))
+              deleteBatches.push([...updates]);
+            return originalApply(updates);
+          };
+
+          // Act
+          const result = await fetch(fetchCtx, { prune: true });
+
+          // Assert
+          expect(result.prunedRefs).toEqual([
+            'refs/remotes/origin/feature-x',
+            'refs/remotes/origin/feature-y',
+          ]);
+          expect(deleteBatches).toEqual([
+            [
+              { kind: 'delete', name: 'refs/remotes/origin/feature-x' },
+              { kind: 'delete', name: 'refs/remotes/origin/feature-y' },
+            ],
+          ]);
         });
       });
     });
