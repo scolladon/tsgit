@@ -369,19 +369,18 @@ const renameTrackingRefs = async (
   rename: TrackingRename,
 ): Promise<readonly RefName[]> => {
   const resolved = await readTrackingValues(ctx, await listTrackingRefs(ctx, rename.from));
-  const renamed = (entry: TrackingRefEntry): RefName =>
-    renamedName(entry.name, rename.from, rename.to);
-  await assertRenamedNamesFree(ctx, resolved.map(renamed));
-  const direct = resolved.filter(isDirectEntry);
+  // Every renamed name, in the ref order git queues the rename in.
+  const renamedNames = resolved.map((entry) => renamedName(entry.name, rename.from, rename.to));
+  await assertRenamedNamesFree(ctx, renamedNames);
   const symbolic = resolved.filter(isSymbolicEntry);
-  await createDirectTrackingRefs(ctx, direct, rename);
+  await createDirectTrackingRefs(ctx, resolved.filter(isDirectEntry), rename);
   for (const entry of symbolic) await carrySymbolicLog(ctx, entry, rename);
   const oldNames = resolved.map((entry) => entry.name);
   await deleteRefs(ctx, oldNames, { noDeref: true });
   for (const entry of symbolic) {
     await getRefStore(ctx).applyRefUpdates([symbolicCreate(ctx, entry, rename)]);
   }
-  return [...direct, ...symbolic].map(renamed);
+  return renamedNames;
 };
 
 export const remoteRename = async (

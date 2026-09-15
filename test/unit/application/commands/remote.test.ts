@@ -1107,7 +1107,10 @@ describe('application/commands/remote', () => {
           const result = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
           // Assert
-          expect(result.movedTrackingRefs).toContain('refs/remotes/upstream/HEAD');
+          expect(result.movedTrackingRefs).toEqual([
+            'refs/remotes/upstream/HEAD',
+            'refs/remotes/upstream/main',
+          ]);
           expect(
             await getRefStore(ctx).resolveDirect('refs/remotes/origin/HEAD' as RefName),
           ).toEqual({ kind: 'missing' });
