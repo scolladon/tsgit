@@ -510,4 +510,72 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
       });
     });
   });
+  describe('Given HEAD is a symlink leaving the repository to a file that does not hold a ref', () => {
+    const SECRET = 'PRIVATE-LINE';
+    let pair: PeerPair;
+    let ctx: Context;
+
+    beforeAll(async () => {
+      pair = await makePeerPair('head-symlink-broken');
+      initBothRepos(pair.peer, pair.ours);
+      disableAutoMaintenance(pair.ours);
+      git(pair.ours, 'commit', '-q', '--allow-empty', '-m', 'root');
+      writeFileSync(path.join(pair.peer, 'secret.txt'), `${SECRET}\n`);
+      replaceHeadWithSymlink(pair.ours, `refs/../../../${path.basename(pair.peer)}/secret.txt`);
+      ctx = createNodeContext({ workDir: pair.ours });
+    }, 60_000);
+
+    afterAll(async () => {
+      await pair.dispose();
+    });
+
+    describe('When git branch and tsgit branchList both run', () => {
+      it('Then both refuse, and neither surfaces a byte of the followed file', async () => {
+        // Arrange
+        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch']);
+        const sut = branchList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain('failed to resolve HEAD as a valid ref');
+        expect(gitResult.stderr).not.toContain(SECRET);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'HEAD is a symbolic link to content that is not a ref',
+        });
+      });
+    });
+
+    describe('When git status and tsgit status both run', () => {
+      it('Then git reports no commits yet while tsgit refuses without the followed bytes — a recorded residual', async () => {
+        // Arrange
+        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'status']);
+        const sut = status;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stdout).toContain('No commits yet');
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'HEAD is a symbolic link to content that is not a ref',
+        });
+      });
+    });
+  });
 });

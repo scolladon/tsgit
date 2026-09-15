@@ -293,6 +293,31 @@ describe('updateRef', () => {
     });
   });
 
+  describe('Given HEAD is a symbolic link to a file that does not hold a ref', () => {
+    describe('When updateRef writes the branch HEAD used to name', () => {
+      it('Then the branch moves and logs, and no coupled HEAD entry is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commitA = await writeCommit(ctx, 'broken head link a');
+        await seedRef(ctx, MAIN, commitA);
+        await ctx.fs.writeUtf8('/repo/secret.txt', 'PRIVATE-LINE\n');
+        await ctx.fs.symlink('refs/../../secret.txt', `${ctx.layout.gitDir}/HEAD`);
+        const commitB = await writeCommit(ctx, 'broken head link b');
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, MAIN, commitB, { reflogMessage: REASON });
+
+        // Assert
+        expect(await resolveRef(ctx, MAIN)).toBe(commitB);
+        expect((await readReflog(ctx, MAIN)).map((entry) => [entry.oldId, entry.newId])).toEqual([
+          [commitA, commitB],
+        ]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given HEAD content is malformed', () => {
     describe('When updateRef writes a branch', () => {
       it('Then it succeeds and writes the branch ref and its reflog', async () => {

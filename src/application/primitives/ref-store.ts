@@ -13,6 +13,7 @@ import {
   serializeReflogRewriteLineBytes,
 } from '../../domain/reflog/reflog-format.js';
 import {
+  invalidRef,
   type ReftableCheck,
   refChainTooDeep,
   refLocked,
@@ -394,6 +395,24 @@ const fromLooseContent = (content: string): ResolveDirectResult => {
     : { kind: 'direct', id: parsed.target };
 };
 
+/**
+ * The refusal for content read THROUGH a symbolic link, which can point
+ * outside the repository: git reports such a ref broken and never prints the
+ * file it followed, so the error names only the ref — no byte of the file.
+ */
+const unparseableFollowedContent = (name: RefName): TsgitError =>
+  invalidRef(`${name} is a symbolic link to content that is not a ref`);
+
+/** {@link fromLooseContent} for followed content: `parseLooseRef` refuses only
+ *  content that is not a ref, and that refusal carries the bytes it read. */
+const fromFollowedContent = (name: RefName, content: string): ResolveDirectResult => {
+  try {
+    return fromLooseContent(content);
+  } catch {
+    throw unparseableFollowedContent(name);
+  }
+};
+
 /** Byte-wise total order over ref names, matching git's own ref ordering (never `localeCompare`). */
 const compareRefNames = (a: RefName, b: RefName): number => {
   // Stryker disable next-line EqualityOperator: equivalent — every array this sorts is pre-deduplicated (a Set), so a === b never occurs and <= behaves exactly like < on the only reachable inputs.
@@ -521,19 +540,30 @@ function createFilesRefStore(ctx: Context): RefStore {
     const path = `${ctx.layout.gitDir}/HEAD`;
     try {
       if ((await ctx.fs.stat(path)).isDirectory) return { kind: 'missing' };
-      return fromLooseContent(await ctx.fs.readUtf8(path));
+      return fromFollowedContent(HEAD_NAME, await ctx.fs.readUtf8(path));
     } catch (err) {
       if (isFileNotFound(err)) return { kind: 'missing' };
       throw err;
     }
   }
 
+  /** A loose ref's parsed content. Parsing is tried first; only a refusal
+   *  pays one `lstat`, so a symbolic link's followed bytes never reach the
+   *  error while a regular file refuses as its own content parses. */
+  async function fromLooseFile(name: RefName, content: string): Promise<ResolveDirectResult> {
+    try {
+      return fromLooseContent(content);
+    } catch (err) {
+      const path = looseRefPath(refDir(name), name);
+      if (!(await ctx.fs.lstat(path)).isSymbolicLink) throw err;
+      throw unparseableFollowedContent(name);
+    }
+  }
+
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
     if (name === HEAD_NAME) return resolveHeadDirect();
     const looseContent = await readLooseContent(name);
-    if (looseContent !== undefined) {
-      return fromLooseContent(looseContent);
-    }
+    if (looseContent !== undefined) return fromLooseFile(name, looseContent);
     const packed = await loadPackedRefs();
     const entry = packed.byName().get(name);
     return entry === undefined ? { kind: 'missing' } : { kind: 'direct', id: entry.id };

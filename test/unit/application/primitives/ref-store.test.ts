@@ -1773,26 +1773,34 @@ describe('ref-store', () => {
         expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
       });
 
-      it('Then malformed target content refuses INVALID_OBJECT_ID', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a..b', 'garbage\n');
-        await ctx.fs.symlink('refs/heads/a..b', '/repo/.git/HEAD');
-        const sut = createRefStore(ctx);
+      it.each([
+        { label: 'content that is neither an id nor a ref line', content: 'PRIVATE-LINE\n' },
+        { label: 'a ref line naming an invalid refname', content: 'ref: refs/heads/..PRIVATE\n' },
+      ])(
+        'Then $label refuses INVALID_REF for HEAD without echoing the followed bytes',
+        async ({ content }) => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8('/repo/secret.txt', content);
+          await ctx.fs.symlink('refs/../../secret.txt', '/repo/.git/HEAD');
+          const sut = createRefStore(ctx);
 
-        // Act
-        let caught: unknown;
-        try {
-          await sut.resolveDirect('HEAD' as RefName);
-          expect.unreachable();
-        } catch (err) {
-          caught = err;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            await sut.resolveDirect('HEAD' as RefName);
+          } catch (err) {
+            caught = err;
+          }
 
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
-      });
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_REF',
+            reason: 'HEAD is a symbolic link to content that is not a ref',
+          });
+          expect(JSON.stringify((caught as TsgitError).data)).not.toContain('PRIVATE');
+        },
+      );
 
       it('Then a stat fault on the followed target propagates instead of reading as missing', async () => {
         // Arrange
@@ -1820,6 +1828,54 @@ describe('ref-store', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given loose refs holding content that is not a ref', () => {
+    describe('When resolveDirect reads each', () => {
+      it('Then a symlinked ref refuses INVALID_REF naming it without echoing the followed bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/secret.txt', 'PRIVATE-LINE\n');
+        await ctx.fs.symlink('../../../secret.txt', '/repo/.git/refs/heads/x');
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('refs/heads/x' as RefName);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'refs/heads/x is a symbolic link to content that is not a ref',
+        });
+        expect(JSON.stringify((caught as TsgitError).data)).not.toContain('PRIVATE');
+      });
+
+      it('Then a regular ref file still refuses as its own content parses', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/g', 'garbage\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('refs/heads/g' as RefName);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_OBJECT_ID',
+          value: 'garbage',
+        });
       });
     });
   });
