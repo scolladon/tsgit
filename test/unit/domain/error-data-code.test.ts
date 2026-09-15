@@ -30,8 +30,11 @@ describe('errorDataCode', () => {
           expected: undefined,
         },
       ])('Then $label', ({ value, expected }) => {
+        // Arrange
+        const sut = errorDataCode;
+
         // Act
-        const result = errorDataCode(value);
+        const result = sut(value);
 
         // Assert
         expect(result).toBe(expected);
