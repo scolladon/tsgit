@@ -2388,6 +2388,33 @@ describe('deleteRefs', () => {
     });
   });
 
+  describe('Given a loose branch HEAD symbolically names', () => {
+    describe('When deleteRefs deletes it with a reflog message', () => {
+      it('Then the coupled HEAD entry carries that message', async () => {
+        // Arrange — delete targets are never verified.
+        const mainId = 'a'.repeat(40) as ObjectId;
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: mainId }] });
+        await writeSymbolicRef(ctx, HEAD, MAIN);
+        const batches = recordBatches(ctx);
+
+        // Act
+        await deleteRefs(ctx, [MAIN], { reflogMessage: 'fetch: prune' });
+
+        // Assert
+        expect(batches).toEqual([
+          [
+            { kind: 'delete', name: MAIN },
+            {
+              kind: 'reflogOnly',
+              name: HEAD,
+              reflog: { oldId: mainId, newId: ZERO, message: 'fetch: prune' },
+            },
+          ],
+        ]);
+      });
+    });
+  });
+
   describe('Given a reftable-backend Context with a symbolic ref and its live referent', () => {
     describe('When deleteRefs deletes both with noDeref', () => {
       it("Then the symbolic ref's kept log records the referent's value from before the batch", async () => {

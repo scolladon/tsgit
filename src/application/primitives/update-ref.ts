@@ -55,6 +55,8 @@ export async function updateRef(
 /** What a {@link deleteRefs} run carries to every delete it plans. */
 export interface DeleteRefsOptions {
   readonly noDeref?: boolean;
+  /** The message of every log entry the deletes produce (empty when absent). */
+  readonly reflogMessage?: string;
 }
 
 /**

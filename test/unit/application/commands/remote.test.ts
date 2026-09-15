@@ -666,6 +666,60 @@ describe('application/commands/remote', () => {
       });
     });
 
+    describe('Given HEAD symbolically naming a tracking ref on a files-backend Context', () => {
+      describe('When remoteRemove runs', () => {
+        it('Then the coupled HEAD entry carries git\'s "remote: remove" message', async () => {
+          // Arrange
+          vi.spyOn(Date, 'now').mockReturnValue(FROZEN_EPOCH_SECONDS * 1000);
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
+
+          // Act
+          await remoteRemove(ctx, { name: 'origin' });
+
+          // Assert
+          expect(await reflogLines(ctx, 'HEAD' as RefName)).toEqual([
+            `${ORIGIN_ID} ${ZERO_ID} ${FALLBACK_IDENTITY}\tremote: remove`,
+          ]);
+        });
+      });
+    });
+
+    describe('Given a logged symbolic origin/HEAD and HEAD naming origin/main on a reftable-backend Context', () => {
+      describe('When remoteRemove runs', () => {
+        it('Then the kept origin/HEAD log and the coupled HEAD entry both carry "remote: remove"', async () => {
+          // Arrange
+          vi.spyOn(Date, 'now').mockReturnValue(FROZEN_EPOCH_SECONDS * 1000);
+          const ctx = withReftableStorage(createMemoryContext());
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+            {
+              kind: 'setSymbolic',
+              name: ORIGIN_HEAD,
+              target: ORIGIN_MAIN,
+              reflog: { oldId: ZERO_ID, newId: ZERO_ID, message: 'clone' },
+            },
+            { kind: 'setSymbolic', name: 'HEAD' as RefName, target: ORIGIN_MAIN },
+          ]);
+          const removal = `${ORIGIN_ID} ${ZERO_ID} ${FALLBACK_IDENTITY}\tremote: remove`;
+
+          // Act
+          await remoteRemove(ctx, { name: 'origin' });
+
+          // Assert
+          expect(await reflogLines(ctx, ORIGIN_HEAD)).toEqual([
+            `${ZERO_ID} ${ZERO_ID} ${FALLBACK_IDENTITY}\tclone`,
+            removal,
+          ]);
+          expect((await reflogLines(ctx, 'HEAD' as RefName)).at(-1)).toBe(removal);
+        });
+      });
+    });
+
     describe('Given a tracking ref with a reflog file', () => {
       describe('When remoteRemove runs', () => {
         it('Then the reflog file is gone', async () => {

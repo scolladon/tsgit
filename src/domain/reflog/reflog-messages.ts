@@ -35,6 +35,12 @@ export const resetMovingTo = (target: string): string => `reset: moving to ${tar
 /** `clone: from <url>`. */
 export const cloneFrom = (url: string): string => `clone: from ${url}`;
 
+/** `fetch: prune` — the message `fetch --prune` deletes every stale tracking ref with. */
+export const FETCH_PRUNE_REFLOG = 'fetch: prune';
+
+/** `remote: remove` — the message `remote remove` deletes every tracking ref with. */
+export const REMOTE_REMOVE_REFLOG = 'remote: remove';
+
 /** `fetch <remote>: storing head`. */
 export const fetchStoringHead = (remote: string): string => `fetch ${remote}: storing head`;
 

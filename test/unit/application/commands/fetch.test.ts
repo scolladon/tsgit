@@ -10,7 +10,7 @@
  *  - Local refs (refs/heads/*, refs/tags/*) never touched.
  *  - Progress (fetch:negotiate + fetch:write-objects).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
@@ -35,6 +35,8 @@ const ENCODER = new TextEncoder();
 
 const FAKE_OID = (label: string): ObjectId =>
   label.padEnd(40, label[0] ?? '0').slice(0, 40) as ObjectId;
+
+const PRUNE_EPOCH_SECONDS = 1_800_000_000;
 
 interface RemoteRef {
   readonly name: string;
@@ -852,6 +854,10 @@ describe('fetch', () => {
   });
 
   describe('prune', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     describe('Given prune=true and a stale remote-tracking ref', () => {
       describe('When fetch', () => {
         it('Then the stale ref is deleted and listed in prunedRefs', async () => {
@@ -1033,6 +1039,39 @@ describe('fetch', () => {
             (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).trim(),
           ).toBe('ref: refs/remotes/origin/main');
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given prune=true and HEAD symbolically naming a stale remote-tracking ref', () => {
+      describe('When fetch', () => {
+        it('Then the pruned ref\'s coupled HEAD entry carries git\'s "fetch: prune" message', async () => {
+          // Arrange
+          vi.spyOn(Date, 'now').mockReturnValue(PRUNE_EPOCH_SECONDS * 1000);
+          const ctx = createMemoryContext();
+          const staleId = FAKE_OID('b');
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/main': FAKE_OID('a'),
+              'refs/remotes/origin/dev': staleId,
+            },
+            head: 'refs/remotes/origin/dev',
+          });
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'coupled prune\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          await fetch({ ...ctx, transport }, { prune: true });
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(
+            `${staleId} ${'0'.repeat(40)} tsgit <tsgit@localhost> ${PRUNE_EPOCH_SECONDS} +0000\tfetch: prune\n`,
+          );
         });
       });
     });

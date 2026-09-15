@@ -10,6 +10,7 @@
 import { invalidOption, remoteExists, remoteNotConfigured } from '../../domain/commands/error.js';
 import type { TsgitError } from '../../domain/error.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/object-id.js';
+import { REMOTE_REMOVE_REFLOG } from '../../domain/reflog/reflog-messages.js';
 import { refUpdateConflict } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
@@ -182,7 +183,7 @@ export const remoteRemove = async (
   // Delete tracking refs first — recoverable if we crash before the
   // config rewrite — as ONE ref transaction, as git's `remote remove` does;
   // each delete cleans its reflog file too.
-  await deleteRefs(ctx, trackingRefs, { noDeref: true });
+  await deleteRefs(ctx, trackingRefs, { noDeref: true, reflogMessage: REMOTE_REMOVE_REFLOG });
   // Rewrite config: drop the [remote "<name>"] section AND clear every
   // paired branch.<X>.remote / branch.<X>.merge key.
   const ops: ConfigOperation[] = [

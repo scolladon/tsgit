@@ -24,7 +24,7 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
-import { fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
+import { FETCH_PRUNE_REFLOG, fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
@@ -390,6 +390,6 @@ const prune = async (
   // One transaction, as git's prune queues every stale ref into one: a
   // packed-only tracking ref deletes like any other, and `packed-refs` is
   // rewritten once for the whole run.
-  await deleteRefs(ctx, stale, {});
+  await deleteRefs(ctx, stale, { reflogMessage: FETCH_PRUNE_REFLOG });
   return stale;
 };
