@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { validateHead } from '../../../../src/application/primitives/internal/head-file.js';
 import { assertRepository } from '../../../../src/application/primitives/internal/repo-state.js';
-import { createRefStore, getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import {
+  createRefStore,
+  getRefStore,
+  type RefUpdate,
+} from '../../../../src/application/primitives/ref-store.js';
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -395,6 +399,168 @@ describe('ref-store', () => {
           calls().some((c) => c.method === 'writeExclusive' && c.path === `${packedRefsPath}.lock`),
         ).toBe(true);
         expect(await ctx.fs.exists(`${packedRefsPath}.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given two loose and two packed-only tracking refs under one remote directory, and a ref outside it', () => {
+    const PACKED_REFS = '/repo/.git/packed-refs';
+    const ORIGIN_DIR = '/repo/.git/refs/remotes/origin';
+    const names = [
+      'refs/remotes/origin/a',
+      'refs/remotes/origin/b',
+      'refs/remotes/origin/c',
+      'refs/remotes/origin/d',
+    ] as RefName[];
+    const seed = (): Promise<Context> =>
+      buildSeededContext({
+        refs: [
+          { name: 'refs/remotes/origin/a' as RefName, id: 'a'.repeat(40) as ObjectId },
+          { name: 'refs/remotes/origin/b' as RefName, id: 'b'.repeat(40) as ObjectId },
+        ],
+        packedRefs: [
+          { name: 'refs/heads/kept' as RefName, id: 'e'.repeat(40) as ObjectId },
+          { name: 'refs/remotes/origin/c' as RefName, id: 'c'.repeat(40) as ObjectId },
+          { name: 'refs/remotes/origin/d' as RefName, id: 'd'.repeat(40) as ObjectId },
+        ],
+      });
+
+    describe('When one applyRefUpdates call deletes all four', () => {
+      it('Then packed-refs is locked and rewritten once, the directory pruned with one removal attempt, and every ref gone', async () => {
+        // Arrange
+        const base = await seed();
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates(names.map((name) => ({ kind: 'delete' as const, name })));
+
+        // Assert
+        const log = calls();
+        expect(
+          log.filter((c) => c.method === 'writeExclusive' && c.path === `${PACKED_REFS}.lock`),
+        ).toHaveLength(1);
+        expect(
+          log.filter(
+            (c) => c.method === 'rename' && c.path === `${PACKED_REFS}.lock->${PACKED_REFS}`,
+          ),
+        ).toHaveLength(1);
+        expect(log.filter((c) => c.method === 'rm' && c.path === ORIGIN_DIR)).toHaveLength(1);
+        expect(await base.fs.exists(ORIGIN_DIR)).toBe(false);
+        expect(await base.fs.readUtf8(PACKED_REFS)).toBe(
+          `# pack-refs with: peeled fully-peeled sorted \n${'e'.repeat(40)} refs/heads/kept\n`,
+        );
+        for (const name of names) {
+          expect(await sut.resolveDirect(name)).toEqual({ kind: 'missing' });
+        }
+      });
+    });
+
+    describe('When the last delete in the call carries a mismatched expected id', () => {
+      it('Then it refuses REF_UPDATE_CONFLICT before any ref, file or lock is touched', async () => {
+        // Arrange
+        const ctx = await seed();
+        const packedBefore = await ctx.fs.readUtf8(PACKED_REFS);
+        const sut = createRefStore(ctx);
+        const updates = names.map((name) => ({ kind: 'delete' as const, name }));
+        const mismatched = { ...updates[3], expected: 'f'.repeat(40) as ObjectId } as RefUpdate;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([...updates.slice(0, 3), mismatched]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_UPDATE_CONFLICT',
+          name: 'refs/remotes/origin/d',
+          expected: 'f'.repeat(40),
+          actual: 'd'.repeat(40),
+        });
+        expect(await ctx.fs.readUtf8(`${ORIGIN_DIR}/a`)).toBe(`${'a'.repeat(40)}\n`);
+        expect(await ctx.fs.readUtf8(PACKED_REFS)).toBe(packedBefore);
+      });
+    });
+
+    describe("When the second delete's loose lock is already held", () => {
+      it('Then it refuses REF_LOCKED naming it, the first ref is untouched and no lock it took remains', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.write(`${ORIGIN_DIR}/b.lock`, new Uint8Array(0));
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates(names.map((name) => ({ kind: 'delete' as const, name })));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_LOCKED',
+          name: 'refs/remotes/origin/b',
+        });
+        expect(await ctx.fs.readUtf8(`${ORIGIN_DIR}/a`)).toBe(`${'a'.repeat(40)}\n`);
+        expect(await ctx.fs.exists(`${ORIGIN_DIR}/a.lock`)).toBe(false);
+        expect(await ctx.fs.exists(`${PACKED_REFS}.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a packed-refs snapshot the store has already loaded', () => {
+    describe('When a loose-only ref is deleted', () => {
+      it('Then the packed-refs file is not read again', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/lo' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [{ name: 'refs/tags/p' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+        await sut.resolveDirect('refs/tags/p' as RefName);
+        const before = calls().length;
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/lo' as RefName }]);
+
+        // Assert
+        const reads = calls()
+          .slice(before)
+          .filter((c) => c.path === '/repo/.git/packed-refs' && c.method !== 'stat');
+        expect(reads).toEqual([]);
+        expect(await sut.resolveDirect('refs/heads/lo' as RefName)).toEqual({ kind: 'missing' });
+      });
+    });
+
+    describe('When a packed-only ref is deleted and another packed ref is resolved afterwards', () => {
+      it('Then the rewrite re-seeds the snapshot — the later lookup reads no packed-refs bytes', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          packedRefs: [
+            { name: 'refs/heads/kept' as RefName, id: 'b'.repeat(40) as ObjectId },
+            { name: 'refs/tags/old' as RefName, id: 'a'.repeat(40) as ObjectId },
+          ],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/tags/old' as RefName }]);
+        const before = calls().length;
+
+        // Act
+        const result = await sut.resolveDirect('refs/heads/kept' as RefName);
+
+        // Assert
+        const reads = calls()
+          .slice(before)
+          .filter((c) => c.path === '/repo/.git/packed-refs' && c.method !== 'stat');
+        expect(reads).toEqual([]);
+        expect(result).toEqual({ kind: 'direct', id: 'b'.repeat(40) });
+        expect(await sut.resolveDirect('refs/tags/old' as RefName)).toEqual({ kind: 'missing' });
       });
     });
   });

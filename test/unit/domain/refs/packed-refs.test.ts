@@ -579,21 +579,48 @@ describe('packedRefsWithout', () => {
     describe('When the annotated tag is removed', () => {
       it('Then the entry and its peeled line are both gone, the survivor kept', () => {
         // Arrange
-        const content = [
-          '# pack-refs with: peeled fully-peeled sorted ',
-          `${SHA1} refs/heads/main`,
-          `${SHA2} refs/tags/v1.0`,
-          `^${SHA4}`,
-          '',
-        ].join('\n');
+        const { entries } = parsePackedRefs(
+          [
+            '# pack-refs with: peeled fully-peeled sorted ',
+            `${SHA1} refs/heads/main`,
+            `${SHA2} refs/tags/v1.0`,
+            `^${SHA4}`,
+            '',
+          ].join('\n'),
+        );
+        const sut = packedRefsWithout;
 
         // Act
-        const result = packedRefsWithout(content, 'refs/tags/v1.0' as RefName);
+        const result = sut(entries, new Set(['refs/tags/v1.0' as RefName]));
 
         // Assert
-        const parsed = parsePackedRefs(result);
-        expect(parsed.entries).toEqual([{ name: 'refs/heads/main', id: SHA1 }]);
-        expect(result).not.toContain(SHA4);
+        expect(result.entries).toEqual([{ name: 'refs/heads/main', id: SHA1 }]);
+        expect(result.content).toBe(
+          `# pack-refs with: peeled fully-peeled sorted \n${SHA1} refs/heads/main\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given several names to remove at once', () => {
+    describe('When packedRefsWithout runs', () => {
+      it('Then every named entry is gone in one rewrite and the others survive', () => {
+        // Arrange
+        const entries: ReadonlyArray<PackedRefEntry> = [
+          { name: 'refs/heads/a' as RefName, id: SHA1 },
+          { name: 'refs/heads/b' as RefName, id: SHA2 },
+          { name: 'refs/tags/c' as RefName, id: SHA3, peeled: SHA4 },
+        ];
+        const sut = packedRefsWithout;
+
+        // Act
+        const result = sut(entries, new Set(['refs/heads/a', 'refs/tags/c'] as RefName[]));
+
+        // Assert
+        expect(result.entries).toEqual([{ name: 'refs/heads/b', id: SHA2 }]);
+        expect(result.content).toBe(
+          `# pack-refs with: peeled fully-peeled sorted \n${SHA2} refs/heads/b\n`,
+        );
       });
     });
   });
@@ -602,34 +629,40 @@ describe('packedRefsWithout', () => {
     describe('When an entry is removed', () => {
       it('Then the rewrite gains the canonical header', () => {
         // Arrange
-        const content = [`${SHA1} refs/heads/main`, `${SHA2} refs/heads/other`, ''].join('\n');
+        const { entries } = parsePackedRefs(
+          [`${SHA1} refs/heads/main`, `${SHA2} refs/heads/other`, ''].join('\n'),
+        );
+        const sut = packedRefsWithout;
 
         // Act
-        const result = packedRefsWithout(content, 'refs/heads/other' as RefName);
+        const result = sut(entries, new Set(['refs/heads/other' as RefName]));
 
         // Assert
-        expect(result.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
+        expect(result.content.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
       });
     });
   });
 
   describe('Given entries in unsorted order', () => {
     describe('When an unrelated entry is removed', () => {
-      it('Then the survivors come back sorted', () => {
+      it('Then the rewrite comes back sorted while the returned entries keep their order', () => {
         // Arrange
-        const content = [
-          `${SHA1} refs/heads/zzz`,
-          `${SHA2} refs/heads/aaa`,
-          `${SHA3} refs/heads/mmm`,
-          '',
-        ].join('\n');
+        const { entries } = parsePackedRefs(
+          [`${SHA1} refs/heads/zzz`, `${SHA2} refs/heads/aaa`, `${SHA3} refs/heads/mmm`, ''].join(
+            '\n',
+          ),
+        );
+        const sut = packedRefsWithout;
 
         // Act
-        const result = packedRefsWithout(content, 'refs/heads/mmm' as RefName);
+        const result = sut(entries, new Set(['refs/heads/mmm' as RefName]));
 
         // Assert
-        const parsed = parsePackedRefs(result);
-        expect(parsed.entries.map((e) => e.name)).toEqual(['refs/heads/aaa', 'refs/heads/zzz']);
+        expect(parsePackedRefs(result.content).entries.map((e) => e.name)).toEqual([
+          'refs/heads/aaa',
+          'refs/heads/zzz',
+        ]);
+        expect(result.entries.map((e) => e.name)).toEqual(['refs/heads/zzz', 'refs/heads/aaa']);
       });
     });
   });
@@ -638,18 +671,21 @@ describe('packedRefsWithout', () => {
     describe('When an entry is removed', () => {
       it("Then the rewrite replaces it with git's canonical header", () => {
         // Arrange
-        const content = [
-          '# pack-refs with: peeled',
-          `${SHA1} refs/heads/main`,
-          `${SHA2} refs/heads/other`,
-          '',
-        ].join('\n');
+        const { entries } = parsePackedRefs(
+          [
+            '# pack-refs with: peeled',
+            `${SHA1} refs/heads/main`,
+            `${SHA2} refs/heads/other`,
+            '',
+          ].join('\n'),
+        );
+        const sut = packedRefsWithout;
 
         // Act
-        const result = packedRefsWithout(content, 'refs/heads/other' as RefName);
+        const result = sut(entries, new Set(['refs/heads/other' as RefName]));
 
         // Assert
-        expect(result.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
+        expect(result.content.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
       });
     });
   });
@@ -659,20 +695,22 @@ describe('packedRefsWithout', () => {
       it('Then both survivors are copied unchanged — no object is read, no peeling happens', () => {
         // Arrange — a well-formed but unresolvable SHA, and a tag entry that
         // (unusually) carries no `^` line of its own.
-        const content = [
-          '# pack-refs with: peeled fully-peeled sorted ',
-          `${SHA1} refs/heads/gone-object`,
-          `${SHA2} refs/tags/unpeeled`,
-          `${SHA3} refs/heads/victim`,
-          '',
-        ].join('\n');
+        const { entries } = parsePackedRefs(
+          [
+            '# pack-refs with: peeled fully-peeled sorted ',
+            `${SHA1} refs/heads/gone-object`,
+            `${SHA2} refs/tags/unpeeled`,
+            `${SHA3} refs/heads/victim`,
+            '',
+          ].join('\n'),
+        );
+        const sut = packedRefsWithout;
 
         // Act
-        const result = packedRefsWithout(content, 'refs/heads/victim' as RefName);
+        const result = sut(entries, new Set(['refs/heads/victim' as RefName]));
 
         // Assert
-        const parsed = parsePackedRefs(result);
-        expect(parsed.entries).toEqual([
+        expect(parsePackedRefs(result.content).entries).toEqual([
           { name: 'refs/heads/gone-object', id: SHA1 },
           { name: 'refs/tags/unpeeled', id: SHA2 },
         ]);
@@ -682,67 +720,42 @@ describe('packedRefsWithout', () => {
 
   describe('Given the last remaining ref is removed', () => {
     describe('When packedRefsWithout runs', () => {
-      it('Then the result is exactly the 46-byte canonical header line', () => {
+      it('Then the rewrite is exactly the 46-byte canonical header line and no entry survives', () => {
         // Arrange
-        const content = [
-          '# pack-refs with: peeled fully-peeled sorted ',
-          `${SHA1} refs/heads/main`,
-          '',
-        ].join('\n');
+        const entries: ReadonlyArray<PackedRefEntry> = [
+          { name: 'refs/heads/main' as RefName, id: SHA1 },
+        ];
+        const sut = packedRefsWithout;
 
         // Act
-        const result = packedRefsWithout(content, 'refs/heads/main' as RefName);
+        const result = sut(entries, new Set(['refs/heads/main' as RefName]));
 
         // Assert
-        expect(result).toBe('# pack-refs with: peeled fully-peeled sorted \n');
-        expect(new TextEncoder().encode(result)).toHaveLength(46);
+        expect(result.content).toBe('# pack-refs with: peeled fully-peeled sorted \n');
+        expect(new TextEncoder().encode(result.content)).toHaveLength(46);
+        expect(result.entries).toEqual([]);
       });
     });
   });
 
-  describe('Given a name that is not present in the file', () => {
+  describe('Given a name that is not present in the entries', () => {
     describe('When packedRefsWithout runs', () => {
-      it('Then it returns the canonical rewrite of every surviving entry, unchanged in content', () => {
+      it('Then it returns the canonical rewrite of every entry, unchanged in content', () => {
         // Arrange
-        const content = [
-          '# pack-refs with: sorted',
-          `${SHA1} refs/heads/main`,
-          `${SHA2} refs/heads/other`,
-          '',
-        ].join('\n');
+        const entries: ReadonlyArray<PackedRefEntry> = [
+          { name: 'refs/heads/main' as RefName, id: SHA1 },
+          { name: 'refs/heads/other' as RefName, id: SHA2 },
+        ];
+        const sut = packedRefsWithout;
 
         // Act
-        const result = packedRefsWithout(content, 'refs/heads/never-existed' as RefName);
+        const result = sut(entries, new Set(['refs/heads/never-existed' as RefName]));
 
         // Assert
-        const parsed = parsePackedRefs(result);
-        expect(parsed.entries).toEqual([
-          { name: 'refs/heads/main', id: SHA1 },
-          { name: 'refs/heads/other', id: SHA2 },
-        ]);
-        expect(result.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
-      });
-    });
-  });
-
-  describe('Given a malformed packed-refs line', () => {
-    describe('When packedRefsWithout runs', () => {
-      it('Then it refuses INVALID_PACKED_REFS with the parse failure reason', () => {
-        // Arrange
-        const content = ['# pack-refs with: sorted', 'not-a-line', ''].join('\n');
-
-        // Act + Assert
-        try {
-          packedRefsWithout(content, 'refs/heads/main' as RefName);
-          expect.unreachable();
-        } catch (err) {
-          expect(err).toBeInstanceOf(TsgitError);
-          const data = (err as TsgitError).data;
-          expect(data.code).toBe('INVALID_PACKED_REFS');
-          if (data.code === 'INVALID_PACKED_REFS') {
-            expect(data.reason).toContain('invalid ref line format');
-          }
-        }
+        expect(result.entries).toEqual(entries);
+        expect(result.content).toBe(
+          `# pack-refs with: peeled fully-peeled sorted \n${SHA1} refs/heads/main\n${SHA2} refs/heads/other\n`,
+        );
       });
     });
   });

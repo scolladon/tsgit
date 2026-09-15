@@ -1,5 +1,7 @@
 import fc from 'fast-check';
 import type { RefName } from '../../../../src/domain/objects/index.js';
+import type { PackedRefEntry } from '../../../../src/domain/refs/ref-types.js';
+import { arbObjectId } from '../objects/arbitraries.js';
 
 const COMPONENT_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-'.split('');
 
@@ -13,6 +15,14 @@ export function arbRefName(): fc.Arbitrary<RefName> {
   return fc
     .array(arbComponent(), { minLength: 2, maxLength: 4 })
     .map((components: ReadonlyArray<string>) => components.join('/') as RefName);
+}
+
+/** One packed-refs entry, optionally peeled — a rewrite must drop a peeled
+ *  value together with its entry, never leave it orphaned. */
+export function arbPackedRefEntry(): fc.Arbitrary<PackedRefEntry> {
+  return fc
+    .tuple(arbRefName(), arbObjectId(), fc.option(arbObjectId(), { nil: undefined }))
+    .map(([name, id, peeled]) => (peeled === undefined ? { name, id } : { name, id, peeled }));
 }
 
 /** Arbitrary short strings over fast-check's default (ASCII) alphabet — any

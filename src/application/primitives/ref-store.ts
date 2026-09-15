@@ -66,7 +66,9 @@ export interface RefStore {
    * bare `reflogOnly` entry) appends through the same gate `recordRefUpdate`
    * applies. The single call is what lets a coupled write (e.g. a branch tip
    * plus the symbolic HEAD's reflog entry) land together instead of as two
-   * separately-observable mutations.
+   * separately-observable mutations. A run of consecutive deletes is one
+   * transaction: every compare-and-swap is checked before anything changes,
+   * and the files backend locks and rewrites `packed-refs` once for the run.
    */
   applyRefUpdates(updates: readonly RefUpdate[]): Promise<void>;
   /**
@@ -324,6 +326,51 @@ interface DeleteTarget {
    *  taken, and the refs tree pruned, only then. */
   readonly looseDirExists: boolean;
 }
+
+type DeleteUpdate = Extract<RefUpdate, { kind: 'delete' }>;
+
+/** `applyRefUpdates`' unit of work: a run of consecutive deletes applied as
+ *  one transaction, or any other single update. */
+type UpdateRun =
+  | { readonly kind: 'deletes'; readonly updates: readonly DeleteUpdate[] }
+  | { readonly kind: 'one'; readonly update: Exclude<RefUpdate, DeleteUpdate> };
+
+/** Splits `updates` into {@link UpdateRun}s, preserving their order. */
+function toUpdateRuns(updates: readonly RefUpdate[]): readonly UpdateRun[] {
+  const runs: UpdateRun[] = [];
+  let deletes: DeleteUpdate[] = [];
+  for (const update of updates) {
+    if (update.kind === 'delete') {
+      deletes.push(update);
+      continue;
+    }
+    if (deletes.length > 0) runs.push({ kind: 'deletes', updates: deletes });
+    deletes = [];
+    runs.push({ kind: 'one', update });
+  }
+  if (deletes.length > 0) runs.push({ kind: 'deletes', updates: deletes });
+  return runs;
+}
+
+/** The directory an empty-parent climb starts from in the refs tree, keyed
+ *  with the root it must stay below. */
+const refsTreeParent = (target: DeleteTarget): readonly [string, string] => [
+  dirname(target.loose),
+  `${target.gitDir}/${REFS_DIR}`,
+];
+
+/** {@link refsTreeParent} for the target's reflog in the logs tree. */
+const logsTreeParent = (target: DeleteTarget): readonly [string, string] => [
+  dirname(reflogPath(target.gitDir, target.name)),
+  `${logsDir(target.gitDir)}/${REFS_DIR}`,
+];
+
+const holdsAnyName = (
+  index: ReadonlyMap<RefName, PackedRefEntry>,
+  names: ReadonlySet<RefName>,
+): boolean => [...names].some((name) => index.has(name));
+
+const packedCacheKey = (stat: FileStat): string => `${stat.mtimeMs}:${stat.size}`;
 const REFS_DIR = 'refs';
 const SYMBOLIC_PREFIX = 'ref: ';
 /** Matches valid SHA-1 (40-hex) or SHA-256 (64-hex) loose-ref content. */
@@ -411,7 +458,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       if (isFileNotFound(err)) return EMPTY_PACKED_REFS;
       throw err;
     }
-    const key = `${stat.mtimeMs}:${stat.size}`;
+    const key = packedCacheKey(stat);
     if (packedCache !== undefined && packedCache.mtimeKey === key) {
       return packedCache.loaded;
     }
@@ -900,30 +947,26 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
-  /** Takes `<loose>.lock` for `body` — but only when `loose`'s parent is a
-   *  directory: a lock file cannot exist without it, so contention there is
-   *  unobservable, and taking the lock would create a directory git leaves
-   *  absent (a nested absent delete must leave no `refs/heads/deep/`
-   *  behind). A held lock refuses `REF_LOCKED { name }`, before the
-   *  packed-refs lock is ever attempted. */
-  async function withLooseRefLock(target: DeleteTarget, body: () => Promise<void>): Promise<void> {
-    if (!target.looseDirExists) return body();
+  /** Takes every lockable target's `<loose>.lock`, in order, for `body` —
+   *  a target is lockable only when its loose parent is a directory: a lock
+   *  file cannot exist without it, so contention there is unobservable, and
+   *  taking the lock would create a directory git leaves absent (a nested
+   *  absent delete must leave no `refs/heads/deep/` behind). A held lock
+   *  refuses `REF_LOCKED { name }` before the packed-refs lock is ever
+   *  attempted; every lock already taken is released on the way out. */
+  async function withLooseRefLocks(
+    lockable: readonly DeleteTarget[],
+    index: number,
+    body: () => Promise<void>,
+  ): Promise<void> {
+    const target = lockable[index];
+    if (target === undefined) return body();
     await withLockFile(
       ctx,
       target.loose,
       () => refLocked(target.name),
-      () => body(),
+      () => withLooseRefLocks(lockable, index + 1, body),
     );
-  }
-
-  /** `packed-refs`'s raw text, or `undefined` when the file is absent. */
-  async function readPackedRefsTextIfPresent(): Promise<string | undefined> {
-    try {
-      return await ctx.fs.readUtf8(packedRefsPath(commonGitDir(ctx)));
-    } catch (err) {
-      if (isFileNotFound(err)) return undefined;
-      throw err;
-    }
   }
 
   /** Removes `path` when present — a no-op otherwise (the delete of an
@@ -970,79 +1013,100 @@ function createFilesRefStore(ctx: Context): RefStore {
     await pruneEmptyParents(dir, root);
   }
 
-  /**
-   * git's files-backend delete order: rewrite `packed-refs` first (only
-   * when it actually held `name` — a loose-only delete leaves the file
-   * byte-unchanged), then the loose file, then the reflog. A crash
-   * between them leaves the loose file holding the ref's current value,
-   * never an older packed value resurrected.
-   */
-  async function removeEverywhere(
-    target: DeleteTarget,
+  /** Adopts `entries` — the text just renamed onto `packed-refs` — as the
+   *  cached snapshot, keyed by one `stat` of the file now in place, instead
+   *  of dropping the cache for the next reader to re-read and re-parse. */
+  async function reseedPackedCache(entries: readonly PackedRefEntry[]): Promise<void> {
+    const stat = await ctx.fs.stat(packedRefsPath(commonGitDir(ctx)));
+    const loaded: LoadedPackedRefs = { entries, byName: lazyByNameIndex(entries) };
+    packedCache = { loaded, mtimeKey: packedCacheKey(stat) };
+  }
+
+  /** Rewrites `packed-refs` without `names` — once, and only when the
+   *  cached snapshot holds at least one of them: a loose-only delete leaves
+   *  the file byte-unchanged and reads no more than its `stat`. */
+  async function dropFromPackedRefs(
+    names: ReadonlySet<RefName>,
     commitPacked: (content: Uint8Array) => Promise<void>,
   ): Promise<void> {
-    const packedText = await readPackedRefsTextIfPresent();
-    if (
-      packedText !== undefined &&
-      parsePackedRefs(packedText).entries.some((e) => e.name === target.name)
-    ) {
-      await commitPacked(TEXT_ENCODER.encode(packedRefsWithout(packedText, target.name)));
-      packedCache = undefined;
-    }
+    const packed = await loadPackedRefs();
+    if (!holdsAnyName(packed.byName(), names)) return;
+    const rewrite = packedRefsWithout(packed.entries, names);
+    await commitPacked(TEXT_ENCODER.encode(rewrite.content));
+    await reseedPackedCache(rewrite.entries);
+  }
+
+  async function removeLooseAndLog(target: DeleteTarget): Promise<void> {
     await rmIfPresent(target.loose);
     await removeReflogFile(target.name);
     if (target.name === HEAD_NAME) invalidateHeadSlot(ctx);
   }
 
-  async function deleteTargetFor(name: RefName): Promise<DeleteTarget> {
-    const gitDir = refDir(name);
-    const loose = looseRefPath(gitDir, name);
-    return { name, gitDir, loose, looseDirExists: await isDirectoryPath(dirname(loose)) };
+  /**
+   * git's files-backend delete order: rewrite `packed-refs` first (once for
+   * the whole run), then each loose file, then its reflog. A crash between
+   * them leaves a loose file holding the ref's current value, never an
+   * older packed value resurrected.
+   */
+  async function removeEverywhere(
+    targets: readonly DeleteTarget[],
+    commitPacked: (content: Uint8Array) => Promise<void>,
+  ): Promise<void> {
+    await dropFromPackedRefs(new Set(targets.map((target) => target.name)), commitPacked);
+    for (const target of targets) await removeLooseAndLog(target);
   }
 
-  /** Both trees' empty-parent pruning for a name nested under `refs/` — a
-   *  bare pseudo-ref like `HEAD` has no such directory. The refs tree is
-   *  pruned only when the loose parent was a directory; the logs tree
-   *  whether or not the ref had a log, as git's own unlink-then-prune
-   *  treats an absent log. */
-  async function pruneDeletedParents(target: DeleteTarget): Promise<void> {
-    if (!target.name.startsWith(`${REFS_DIR}/`)) return;
-    if (target.looseDirExists) {
-      await pruneEmptyParents(dirname(target.loose), `${target.gitDir}/${REFS_DIR}`);
+  async function deleteTargetFor(update: DeleteUpdate): Promise<DeleteTarget> {
+    const gitDir = refDir(update.name);
+    const loose = looseRefPath(gitDir, update.name);
+    const looseDirExists = await isDirectoryPath(dirname(loose));
+    return { name: update.name, gitDir, loose, looseDirExists };
+  }
+
+  /** Both trees' empty-parent pruning, each distinct parent once, for the
+   *  names nested under `refs/` — a bare pseudo-ref like `HEAD` has no such
+   *  directory. The refs tree is pruned only where the loose parent was a
+   *  directory; the logs tree whether or not a ref had a log, as git's own
+   *  unlink-then-prune treats an absent log. */
+  async function pruneDeletedParents(targets: readonly DeleteTarget[]): Promise<void> {
+    const nested = targets.filter((target) => target.name.startsWith(`${REFS_DIR}/`));
+    const lockable = nested.filter((target) => target.looseDirExists);
+    for (const [dir, root] of new Map(lockable.map(refsTreeParent))) {
+      await pruneEmptyParents(dir, root);
     }
-    const log = reflogPath(target.gitDir, target.name);
-    await pruneEmptyParentsIfDirectory(dirname(log), `${logsDir(target.gitDir)}/${REFS_DIR}`);
+    for (const [dir, root] of new Map(nested.map(logsTreeParent))) {
+      await pruneEmptyParentsIfDirectory(dir, root);
+    }
   }
 
   /**
-   * Deletes `name` as git's files backend does: lock the loose ref (when
-   * its directory exists), lock `packed-refs`, drop the name from
-   * `packed-refs` (rewritten only when it held it), then remove the loose
-   * file and its log. Both locks are taken even for an absent ref —
-   * the delete's no-op is proven by nothing changing, not by a
-   * refusal. Ancestor-directory pruning runs AFTER the loose lock is
-   * released — the lock file itself lives in the directory being pruned,
-   * matching git's own unlock-then-`try_remove_empty_parents` order.
+   * Deletes a run of refs as ONE git files-backend transaction: every
+   * compare-and-swap is checked first, then each loose ref is locked (when
+   * its directory exists) and `packed-refs` is locked once, the names are
+   * dropped from `packed-refs` in one rewrite, and each loose file and log is
+   * removed. Every lock is taken even for an absent ref — the delete's no-op
+   * is proven by nothing changing, not by a refusal. Empty-parent pruning
+   * runs AFTER the locks are released — a lock file lives in the directory
+   * being pruned — matching git's unlock-then-`try_remove_empty_parents`.
    */
-  async function applyDelete(update: Extract<RefUpdate, { kind: 'delete' }>): Promise<void> {
-    await checkExpected(update.name, update.expected);
-    const target = await deleteTargetFor(update.name);
-    await withLooseRefLock(target, () =>
+  async function applyDeletes(updates: readonly DeleteUpdate[]): Promise<void> {
+    for (const update of updates) await checkExpected(update.name, update.expected);
+    const targets = await boundedMapFor(ctx, 'ioBound', updates, deleteTargetFor);
+    const lockable = targets.filter((target) => target.looseDirExists);
+    await withLooseRefLocks(lockable, 0, () =>
       withLockFile(ctx, packedRefsPath(commonGitDir(ctx)), packedRefsLocked, (commit) =>
-        removeEverywhere(target, commit),
+        removeEverywhere(targets, commit),
       ),
     );
-    await pruneDeletedParents(target);
+    await pruneDeletedParents(targets);
   }
 
-  async function applyOne(update: RefUpdate): Promise<void> {
+  async function applyOne(update: Exclude<RefUpdate, DeleteUpdate>): Promise<void> {
     switch (update.kind) {
       case 'set':
         return applySet(update);
       case 'setSymbolic':
         return applySetSymbolic(update);
-      case 'delete':
-        return applyDelete(update);
       case 'reflogOnly':
         return applyReflog(update.name, update.reflog);
       case 'reflogReplace':
@@ -1050,9 +1114,11 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** Applies `updates` in order, each consecutive run of deletes as one
+   *  transaction ({@link applyDeletes}). */
   async function applyRefUpdates(updates: readonly RefUpdate[]): Promise<void> {
-    for (const update of updates) {
-      await applyOne(update);
+    for (const run of toUpdateRuns(updates)) {
+      await (run.kind === 'deletes' ? applyDeletes(run.updates) : applyOne(run.update));
     }
   }
 

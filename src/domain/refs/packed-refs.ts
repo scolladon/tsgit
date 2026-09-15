@@ -114,23 +114,35 @@ export function serializePackedRefs(refs: PackedRefs): string {
   return `${lines.join('\n')}\n`;
 }
 
+/** {@link packedRefsWithout}'s result: the surviving entries, in their
+ *  original relative order, and the rewrite's text — so a caller caching the
+ *  parsed file can adopt `entries` without re-parsing `content` (a lookup by
+ *  name, or a name-sorted listing, reads the two identically). */
+export interface PackedRefsRewrite {
+  readonly entries: ReadonlyArray<PackedRefEntry>;
+  readonly content: string;
+}
+
 /**
- * git's `packed-refs` rewrite without `name` (the files backend's delete
- * path): the entry naming `name` — and its `peeled` value, when it has one
- * — is dropped, the survivors are re-serialized under git's own canonical
- * header (`buildHeaderLine`'s traits, never the file's old header),
- * sorted, with every surviving line and `^` value copied verbatim —
+ * git's `packed-refs` rewrite without `names` (the files backend's delete
+ * path): every entry naming one of `names` — and its `peeled` value, when it
+ * has one — is dropped, the survivors are re-serialized under git's own
+ * canonical header (`buildHeaderLine`'s traits, never the file's old
+ * header), sorted, with every surviving line and `^` value copied verbatim —
  * never re-peeled, never reading an object. Dropping the last entry leaves
  * the header line alone; `serializePackedRefs` only emits it as part of a
  * whole rewrite, so that shape is built directly here.
  */
-export function packedRefsWithout(content: string, name: RefName): string {
-  const { entries } = parsePackedRefs(content);
-  const kept = entries.filter((entry) => entry.name !== name);
-  if (kept.length === 0) {
-    return `${buildHeaderLine({ entries: [], peeling: 'fully', sorted: true })}\n`;
-  }
-  return serializePackedRefs({ entries: kept, peeling: 'fully', sorted: true });
+export function packedRefsWithout(
+  entries: ReadonlyArray<PackedRefEntry>,
+  names: ReadonlySet<RefName>,
+): PackedRefsRewrite {
+  const kept = entries.filter((entry) => !names.has(entry.name));
+  const content =
+    kept.length === 0
+      ? `${buildHeaderLine({ entries: [], peeling: 'fully', sorted: true })}\n`
+      : serializePackedRefs({ entries: kept, peeling: 'fully', sorted: true });
+  return { entries: kept, content };
 }
 
 function buildHeaderLine(refs: PackedRefs): string {
