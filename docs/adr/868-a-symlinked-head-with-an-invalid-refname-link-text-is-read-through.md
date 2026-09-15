@@ -53,9 +53,10 @@ alternatives below were weighed in it.
 is read through: the file the link points to is read fresh on every call and is never held in the
 HEAD slot, because the slot's identity is the link's own `lstat`, which a rewrite of the target
 does not change. A directory target or an absent target resolves `missing`; the content goes through
-the loose-ref parse, so an object id resolves direct, `ref: …` resolves symbolic, and malformed
-content refuses as that parse does (`INVALID_REF`, or `INVALID_OBJECT_ID` for content that is
-neither an id nor `ref: …`). Other I/O failures propagate.
+the loose-ref parse, so an object id resolves direct and `ref: …` resolves symbolic. Content the parse
+refuses refuses `INVALID_REF` naming `HEAD` and carrying no byte of the followed file — a link can
+point outside the repository, and git never prints what it followed; the same holds for any other
+symlinked loose ref. Other I/O failures propagate.
 
 The HEAD slot and the gate are unchanged. The rule applies to primitive-only sessions too. HEAD
 writes are unchanged: when the read-through reports direct, `commit` writes `HEAD` itself and the
@@ -74,7 +75,11 @@ Residuals, recorded:
 - **F1 and F6.** The read-through yields `missing`, and `readHeadRaw` turns a missing `HEAD` into
   `REF_NOT_FOUND`, so tsgit's `status` and `commit` refuse where git reports a detached `(initial)`
   head and, in F1, `commit` writes a detached `HEAD` file (F6's commit refuses in git too).
-  `resolveRef('HEAD')` matches git: both fail. Reaching git's answer is option 3, not done.
+  `resolveRef('HEAD')` matches git: both fail. Reaching git's answer is option 3, not done. The same
+  residual covers a followed file that does not hold a ref: git splits — `symbolic-ref` (`No such
+  ref`), `rev-parse` and `status` (`No commits yet`) read it as missing, while `branch` (`failed to
+  resolve HEAD as a valid ref`) and `log` (`your current branch appears to be broken`) refuse — and
+  tsgit refuses `INVALID_REF` on all of them.
 - **Bidi code points.** tsgit's refname grammar refuses U+202A–U+202E and U+2066–U+2069, which
   `check_refname_format` accepts, so a link text carrying one is read through in tsgit and is a
   symref in git. The same difference applies to every ref name and is not changed here.
