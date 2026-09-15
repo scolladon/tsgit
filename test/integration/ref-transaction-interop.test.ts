@@ -15,7 +15,7 @@
  *   unique:         ref updates dereference symbolic refs and delete as git's ref transaction does
  *   interopSurface: updateRef
  */
-import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -1460,6 +1460,132 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect(await pathExists(path.join(ours, '.git', 'packed-refs.lock'))).toBe(false);
             expect(await readFile(path.join(ours, '.git', 'refs', 'remotes', 'q'), 'utf8')).toBe(
               `${filesC1}\n`,
+            );
+          },
+        );
+      });
+    });
+
+    describe('Given refs under refs/remotes/d on both tools', () => {
+      /** `d` packed and `d/x` loose: git packs a stand-in name, the line is
+       *  renamed to `d`, then `d/x` is planted as a loose file. */
+      const seedPackedOverLoose = async (dir: string): Promise<void> => {
+        runGit(['-C', dir, 'update-ref', 'refs/remotes/placeholder', filesC1]);
+        git(dir, 'pack-refs', '--include', 'refs/remotes/placeholder');
+        const packedPath = path.join(dir, '.git', 'packed-refs');
+        const packed = await readFile(packedPath, 'utf8');
+        await writeFile(
+          packedPath,
+          packed.replace('refs/remotes/placeholder\n', 'refs/remotes/d\n'),
+        );
+        await mkdir(path.join(dir, '.git', 'refs', 'remotes', 'd'), { recursive: true });
+        await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'd', 'x'), `${filesC2}\n`);
+      };
+      const seedLooseUnder = async (dir: string): Promise<void> => {
+        runGit(['-C', dir, 'update-ref', 'refs/remotes/d/x', filesC2]);
+      };
+      const seedPackedUnder = async (dir: string): Promise<void> => {
+        runGit(['-C', dir, 'update-ref', 'refs/remotes/d/x', filesC2]);
+        git(dir, 'pack-refs', '--include', 'refs/remotes/d/x');
+      };
+
+      describe('When git rev-parse and tsgit resolveRef read the packed refs/remotes/d', () => {
+        it('Then both resolve the packed value past the loose directory', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('rdf-read');
+          await seedPackedOverLoose(peer);
+          await seedPackedOverLoose(ours);
+          const sut = getRefStore(ctx);
+
+          // Act
+          const result = await sut.resolveDirect('refs/remotes/d' as RefName);
+
+          // Assert
+          const gitResult = tryRunGitWithExit(
+            ['-C', peer, 'rev-parse', '--verify', 'refs/remotes/d'],
+            {
+              env: runGitEnv(),
+            },
+          );
+          expect(gitResult.exitCode).toBe(0);
+          expect(result).toEqual({ kind: 'direct', id: gitResult.stdout.trim() });
+        });
+      });
+
+      describe('When git and tsgit delete the packed refs/remotes/d over the loose directory', () => {
+        it('Then both succeed with identical packed-refs and the loose ref under it kept', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('rdf-delete');
+          await seedPackedOverLoose(peer);
+          await seedPackedOverLoose(ours);
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/remotes/d'], {
+            env: runGitEnv(),
+          });
+          await sut(ctx, 'refs/remotes/d' as RefName, ZERO, { delete: true });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8')).toBe(
+            await readFile(path.join(peer, '.git', 'packed-refs'), 'utf8'),
+          );
+          expect(await readFile(path.join(ours, '.git', 'refs', 'remotes', 'd', 'x'), 'utf8')).toBe(
+            `${filesC2}\n`,
+          );
+          expect(await pathExists(path.join(ours, '.git', 'refs', 'remotes', 'd.lock'))).toBe(
+            false,
+          );
+        });
+      });
+
+      describe('When git and tsgit write refs/remotes/d over a ref under it', () => {
+        it.each([
+          { label: 'a loose ref under it', slug: 'rdf-write-loose', seedUnder: seedLooseUnder },
+          {
+            label: 'a packed-only ref under it',
+            slug: 'rdf-write-packed',
+            seedUnder: seedPackedUnder,
+          },
+        ])(
+          'Then both refuse over $label before anything changes on disk',
+          async ({ slug, seedUnder }) => {
+            // Arrange
+            const { peer, ours, ctx } = await filesCasePair(slug);
+            await seedUnder(peer);
+            await seedUnder(ours);
+            const packedBefore = await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8');
+            const sut = updateRef;
+
+            // Act
+            const gitResult = tryRunGitWithExit(
+              ['-C', peer, 'update-ref', 'refs/remotes/d', filesC1],
+              { env: runGitEnv() },
+            );
+            let caught: unknown;
+            try {
+              await sut(ctx, 'refs/remotes/d' as RefName, filesC1 as ObjectId, {
+                reflogMessage: 'm',
+              });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(128);
+            expect(gitResult.stderr).toContain(
+              "'refs/remotes/d/x' exists; cannot create 'refs/remotes/d'",
+            );
+            expect((caught as TsgitError).data).toEqual({
+              code: 'FILE_EXISTS',
+              path: `${ctx.layout.gitDir}/refs/remotes/d/x`,
+            });
+            expect(await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8')).toBe(
+              packedBefore,
+            );
+            expect(await pathExists(path.join(ours, '.git', 'refs', 'remotes', 'd.lock'))).toBe(
+              false,
             );
           },
         );

@@ -10,18 +10,23 @@ import { refLocked } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import { lockSuffix } from './path-layout.js';
 
+const NOTHING_BEFORE_RENAME = (): Promise<void> => Promise.resolve();
+
 /**
  * Exclusively creates `<path>.lock`, writes `content` into it, then renames
  * it onto `path` — the same lock-then-rename shape git itself takes for a
  * single-file artefact (a ref, `commit-graph`, …). `onLocked` receives the
  * lock path and produces the format-specific refusal a contended write
- * throws; every other failure propagates unchanged.
+ * throws; `beforeRename` runs while the lock is held — a refusal it throws
+ * removes the lock and leaves `path` untouched; every other failure
+ * propagates unchanged.
  */
 export async function atomicWriteFile(
   ctx: Context,
   path: string,
   content: Uint8Array,
   onLocked: (lockPath: string) => TsgitError,
+  beforeRename: () => Promise<void> = NOTHING_BEFORE_RENAME,
 ): Promise<void> {
   const lockPath = `${path}${lockSuffix}`;
   try {
@@ -33,6 +38,7 @@ export async function atomicWriteFile(
     throw error;
   }
   try {
+    await beforeRename();
     await ctx.fs.rename(lockPath, path);
   } catch (error) {
     // Best-effort lock cleanup. Only swallow FILE_NOT_FOUND (the rename may have
@@ -98,8 +104,9 @@ export async function atomicWriteRef(
   refName: RefName,
   refPath: string,
   content: Uint8Array,
+  beforeRename: () => Promise<void> = NOTHING_BEFORE_RENAME,
 ): Promise<void> {
-  return await atomicWriteFile(ctx, refPath, content, () => refLocked(refName));
+  return await atomicWriteFile(ctx, refPath, content, () => refLocked(refName), beforeRename);
 }
 
 function isFileExists(error: unknown): boolean {

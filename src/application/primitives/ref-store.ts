@@ -1,7 +1,7 @@
 /**
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
-import { dirname, notADirectory, TsgitError } from '../../domain/error.js';
+import { dirname, fileExists, notADirectory, TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -326,6 +326,10 @@ const isPrunableParent = (dir: string, root: string): boolean =>
 
 type PathKind = 'directory' | 'file' | 'absent';
 
+/** The byte-smaller of two optional names. */
+const smallerName = (a: RefName | undefined, b: RefName | undefined): RefName | undefined =>
+  a === undefined || (b !== undefined && b < a) ? b : a;
+
 /** One delete's loose-file footprint, resolved before any lock is taken. */
 interface DeleteTarget {
   readonly name: RefName;
@@ -477,6 +481,9 @@ export function createRefStore(ctx: Context): RefStore {
 interface LoadedPackedRefs {
   readonly entries: readonly PackedRefEntry[];
   readonly byName: () => ReadonlyMap<RefName, PackedRefEntry>;
+  /** Each name that is an ancestor directory of a packed ref, keyed to the
+   *  byte-smallest packed ref under it — built lazily, once per snapshot. */
+  readonly smallestUnder: () => ReadonlyMap<string, RefName>;
 }
 
 function lazyByNameIndex(
@@ -489,10 +496,41 @@ function lazyByNameIndex(
   };
 }
 
+/** Every ancestor prefix of every packed name, keyed to the smallest name under it. */
+function buildSmallestUnderIndex(entries: readonly PackedRefEntry[]): ReadonlyMap<string, RefName> {
+  const index = new Map<string, RefName>();
+  for (const { name } of entries) {
+    for (let slash = name.lastIndexOf('/'); slash > 0; slash = name.lastIndexOf('/', slash - 1)) {
+      const known = index.get(name.slice(0, slash));
+      if (known === undefined || name < known) index.set(name.slice(0, slash), name);
+    }
+  }
+  return index;
+}
+
+function lazySmallestUnderIndex(
+  entries: readonly PackedRefEntry[],
+): () => ReadonlyMap<string, RefName> {
+  let index: ReadonlyMap<string, RefName> | undefined;
+  return () => {
+    index ??= buildSmallestUnderIndex(entries);
+    return index;
+  };
+}
+
+/** A parsed snapshot's lazy indexes over `entries`. */
+const loadedPackedRefs = (entries: readonly PackedRefEntry[]): LoadedPackedRefs => ({
+  entries,
+  byName: lazyByNameIndex(entries),
+  smallestUnder: lazySmallestUnderIndex(entries),
+});
+
 const EMPTY_BY_NAME_INDEX: ReadonlyMap<RefName, PackedRefEntry> = new Map();
+const EMPTY_SMALLEST_UNDER_INDEX: ReadonlyMap<string, RefName> = new Map();
 const EMPTY_PACKED_REFS: LoadedPackedRefs = {
   entries: [],
   byName: () => EMPTY_BY_NAME_INDEX,
+  smallestUnder: () => EMPTY_SMALLEST_UNDER_INDEX,
 };
 
 function createFilesRefStore(ctx: Context): RefStore {
@@ -515,7 +553,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
     const content = await ctx.fs.readUtf8(path);
     const { entries } = parsePackedRefs(content);
-    const loaded: LoadedPackedRefs = { entries, byName: lazyByNameIndex(entries) };
+    const loaded = loadedPackedRefs(entries);
     packedCache = { loaded, mtimeKey: key };
     return loaded;
   }
@@ -527,6 +565,8 @@ function createFilesRefStore(ctx: Context): RefStore {
     } catch (err) {
       if (isFileNotFound(err)) return undefined;
       if (errorDataCode(err) === 'NOT_A_DIRECTORY') await assertNoFileInTheWay(name, path);
+      // git reads a directory at a loose path as no loose ref (`EISDIR`).
+      if ((await pathKind(path)) === 'directory') return undefined;
       throw err;
     }
   }
@@ -814,12 +854,24 @@ function createFilesRefStore(ctx: Context): RefStore {
     });
   }
 
-  /** Remove `name`'s reflog file. A no-op when the file is already absent. */
+  /** Remove `name`'s reflog file. A no-op when the file is absent, or when
+   *  a directory — the logs of refs under `name` — sits at its path. */
   async function removeReflogFile(name: RefName): Promise<void> {
-    const path = reflogPath(refDir(name), name);
-    if (await ctx.fs.exists(path)) {
-      await ctx.fs.rm(path);
+    await rmUnlessDirectory(reflogPath(refDir(name), name));
+  }
+
+  /** Removes the file or link at `path`; nothing when the path is absent or
+   *  a directory — git's unlink leaves a directory in place, even an empty
+   *  one. */
+  async function rmUnlessDirectory(path: string): Promise<void> {
+    let stat: FileStat;
+    try {
+      stat = await ctx.fs.lstat(path);
+    } catch (err) {
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return;
+      throw err;
     }
+    if (!stat.isDirectory) await ctx.fs.rm(path);
   }
 
   /**
@@ -1037,13 +1089,43 @@ function createFilesRefStore(ctx: Context): RefStore {
   async function writeLooseRef(name: RefName, content: Uint8Array): Promise<void> {
     const path = looseRefPath(refDir(name), name);
     try {
-      await atomicWriteRef(ctx, name, path, content);
+      await atomicWriteRef(ctx, name, path, content, () => refuseRefsUnderIfPacked(name));
     } catch (err) {
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) {
-        await assertNoFileInTheWay(name, path);
-      }
+      const code = errorDataCode(err) ?? '';
+      if (NOT_A_DIRECTORY_PATH_CODES.has(code)) await assertNoFileInTheWay(name, path);
+      if (code === 'PERMISSION_DENIED') await refuseRefsUnder(name);
       throw err;
     }
+  }
+
+  /** The byte-smallest loose ref under `name`'s loose path, when a directory
+   *  sits there. */
+  async function smallestLooseRefUnder(name: RefName): Promise<RefName | undefined> {
+    const dir = looseRefPath(refDir(name), name);
+    if ((await pathKind(dir)) !== 'directory') return undefined;
+    const names = (await walkRefDir(dir, name)).filter((under) => isSafeRefName(under));
+    return names.reduce<RefName | undefined>(smallerName, undefined);
+  }
+
+  /**
+   * git refuses to create a ref other refs sit under — `'refs/remotes/d/x'
+   * exists; cannot create 'refs/remotes/d'` — once its lock is held and before
+   * anything is written. tsgit refuses `FILE_EXISTS` naming the byte-smallest
+   * such ref's loose path, loose or packed alike.
+   */
+  async function refuseRefsUnder(name: RefName): Promise<void> {
+    const packed = (await loadPackedRefs()).smallestUnder().get(name);
+    const under = smallerName(packed, await smallestLooseRefUnder(name));
+    if (under !== undefined) throw fileExists(looseRefPath(refDir(under), under));
+  }
+
+  /** {@link refuseRefsUnder}, paid only when the packed snapshot holds a ref
+   *  under `name`: a loose ref under it surfaces through the rename the
+   *  directory refuses, so a normal write costs one packed-refs `stat`. */
+  async function refuseRefsUnderIfPacked(name: RefName): Promise<void> {
+    if (!name.startsWith(`${REFS_DIR}/`)) return;
+    if (!(await loadPackedRefs()).smallestUnder().has(name)) return;
+    await refuseRefsUnder(name);
   }
 
   /** Takes every lockable target's `<loose>.lock`, in order, for `body` —
@@ -1066,12 +1148,6 @@ function createFilesRefStore(ctx: Context): RefStore {
       () => refLocked(target.name),
       () => withLooseRefLocks(lockable, index + 1, body),
     );
-  }
-
-  /** Removes `path` when present — a no-op otherwise (the delete of an
-   *  absent loose ref). */
-  async function rmIfPresent(path: string): Promise<void> {
-    if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
   }
 
   /** Removes `dir` when it is empty; `false` when it is non-empty or
@@ -1117,8 +1193,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  of dropping the cache for the next reader to re-read and re-parse. */
   async function reseedPackedCache(entries: readonly PackedRefEntry[]): Promise<void> {
     const stat = await ctx.fs.stat(packedRefsPath(commonGitDir(ctx)));
-    const loaded: LoadedPackedRefs = { entries, byName: lazyByNameIndex(entries) };
-    packedCache = { loaded, mtimeKey: packedCacheKey(stat) };
+    packedCache = { loaded: loadedPackedRefs(entries), mtimeKey: packedCacheKey(stat) };
   }
 
   /** Rewrites `packed-refs` without `names` — once, and only when the
@@ -1136,7 +1211,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   async function removeLooseAndLog(target: DeleteTarget): Promise<void> {
-    await rmIfPresent(target.loose);
+    await rmUnlessDirectory(target.loose);
     await removeReflogFile(target.name);
     if (target.name === HEAD_NAME) invalidateHeadSlot(ctx);
   }

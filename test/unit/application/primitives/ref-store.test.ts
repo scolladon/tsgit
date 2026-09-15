@@ -889,6 +889,258 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given refs under refs/remotes/d while refs/remotes/d itself is written, deleted or read', () => {
+    const PACKED = '/repo/.git/packed-refs';
+    const D = 'refs/remotes/d' as RefName;
+    const ID_D = 'a'.repeat(40) as ObjectId;
+    const ID_X = 'b'.repeat(40) as ObjectId;
+    const NEW_ID = 'd'.repeat(40) as ObjectId;
+    const header = '# pack-refs with: peeled fully-peeled sorted ';
+    /** Answers as the browser adapter does around a directory: reading it
+     *  reports it absent, writing or renaming onto it is denied, removing a
+     *  non-empty one reports it absent. */
+    const browserLike = (base: Context): Context => ({
+      ...base,
+      fs: {
+        ...base.fs,
+        readUtf8: async (p) =>
+          (await base.fs.exists(p)) && (await base.fs.stat(p)).isDirectory
+            ? Promise.reject(fileNotFound(p))
+            : base.fs.readUtf8(p),
+        rm: async (p) =>
+          (await base.fs.exists(p)) && (await base.fs.stat(p)).isDirectory
+            ? Promise.reject(fileNotFound(p))
+            : base.fs.rm(p),
+      },
+    });
+    const asIs = (ctx: Context): Context => ctx;
+    const seed = async (layout: {
+      readonly loose?: ReadonlyArray<string>;
+      readonly packed?: ReadonlyArray<string>;
+      readonly logged?: ReadonlyArray<string>;
+    }): Promise<Context> => {
+      const ctx = await buildSeededContext({
+        refs: (layout.loose ?? []).map((name) => ({ name: name as RefName, id: ID_X })),
+        packedRefs: [
+          { name: 'refs/heads/pk' as RefName, id: ID_D },
+          ...(layout.packed ?? []).map((name) => ({ name: name as RefName, id: ID_D })),
+        ],
+      });
+      for (const name of layout.logged ?? []) {
+        await appendReflog(ctx, name as RefName, reflogEntry());
+      }
+      return ctx;
+    };
+
+    describe('When resolveDirect reads packed refs/remotes/d over a loose directory', () => {
+      it.each([
+        { label: 'as git reads a directory at a loose path', adapt: asIs },
+        { label: 'on an adapter reporting the directory absent', adapt: browserLike },
+      ])('Then it resolves the packed value, $label', async ({ adapt }) => {
+        // Arrange
+        const base = await seed({ loose: ['refs/remotes/d/x'], packed: [D] });
+        const sut = createRefStore(adapt(base));
+
+        // Act
+        const result = await sut.resolveDirect(D);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: ID_D });
+      });
+    });
+
+    describe('When applyRefUpdates deletes packed refs/remotes/d over a loose directory', () => {
+      it.each([
+        {
+          label: 'the packed line goes and the directory with its ref stays',
+          layout: { loose: ['refs/remotes/d/x'], packed: [D] },
+          updates: [D],
+          adapt: asIs,
+        },
+        {
+          label: 'a logged ref under it keeps its log directory',
+          layout: { loose: ['refs/remotes/d/x'], packed: [D], logged: ['refs/remotes/d/x'] },
+          updates: [D],
+          adapt: asIs,
+        },
+        {
+          label: 'a run deleting another packed ref first changes both lines',
+          layout: { loose: ['refs/remotes/d/x'], packed: [D] },
+          updates: ['refs/heads/pk', D],
+          adapt: asIs,
+        },
+        {
+          label: 'on an adapter reporting the directory absent',
+          layout: { loose: ['refs/remotes/d/x'], packed: [D] },
+          updates: [D],
+          adapt: browserLike,
+        },
+      ])('Then $label', async ({ layout, updates, adapt }) => {
+        // Arrange
+        const base = await seed(layout);
+        const logBefore = (layout.logged ?? []).length
+          ? await base.fs.readUtf8('/repo/.git/logs/refs/remotes/d/x')
+          : undefined;
+        const sut = createRefStore(adapt(base));
+
+        // Act
+        await sut.applyRefUpdates(
+          updates.map((name) => ({ kind: 'delete', name: name as RefName })),
+        );
+
+        // Assert
+        const pk = updates.some((name) => name === 'refs/heads/pk')
+          ? ''
+          : `${ID_D} refs/heads/pk\n`;
+        expect(await base.fs.readUtf8(PACKED)).toBe(`${header}\n${pk}`);
+        expect(await base.fs.readUtf8('/repo/.git/refs/remotes/d/x')).toBe(`${ID_X}\n`);
+        expect(await base.fs.exists('/repo/.git/refs/remotes/d.lock')).toBe(false);
+        expect(await base.fs.exists(`${PACKED}.lock`)).toBe(false);
+        if (logBefore !== undefined) {
+          expect(await base.fs.readUtf8('/repo/.git/logs/refs/remotes/d/x')).toBe(logBefore);
+        }
+      });
+
+      it('Then an empty directory at refs/remotes/d is left in place, as git leaves it', async () => {
+        // Arrange
+        const base = await seed({ packed: [D] });
+        await base.fs.mkdir('/repo/.git/refs/remotes/d');
+        const sut = createRefStore(base);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: D }]);
+
+        // Assert
+        expect((await base.fs.stat('/repo/.git/refs/remotes/d')).isDirectory).toBe(true);
+        expect(await sut.resolveDirect(D)).toEqual({ kind: 'missing' });
+      });
+    });
+
+    describe('When applyRefUpdates writes refs/remotes/d while refs sit under it', () => {
+      it.each([
+        {
+          label: 'a loose ref under it',
+          layout: { loose: ['refs/remotes/d/x'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/x',
+          adapt: asIs,
+        },
+        {
+          label: 'a packed-only ref under it',
+          layout: { packed: ['refs/remotes/d/x'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/x',
+          adapt: asIs,
+        },
+        {
+          label: 'a smaller packed ref beside a loose one',
+          layout: { loose: ['refs/remotes/d/y'], packed: ['refs/remotes/d/a'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/a',
+          adapt: asIs,
+        },
+        {
+          label: 'a smaller loose ref beside a packed one',
+          layout: { loose: ['refs/remotes/d/a'], packed: ['refs/remotes/d/y'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/a',
+          adapt: asIs,
+        },
+        {
+          label: 'the smaller of two packed refs under it',
+          layout: { packed: ['refs/remotes/d/a', 'refs/remotes/d/y'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/a',
+          adapt: asIs,
+        },
+        {
+          label: 'a loose ref beside a smaller lock file, which is not a ref',
+          layout: { loose: ['refs/remotes/d/x', 'refs/remotes/d/a.lock'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/x',
+          adapt: asIs,
+        },
+        {
+          label: 'a loose ref nested two levels under it',
+          layout: { loose: ['refs/remotes/d/sub/x'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/sub/x',
+          adapt: asIs,
+        },
+        {
+          label: 'a loose ref under it, written symbolic',
+          layout: { loose: ['refs/remotes/d/x'] },
+          update: { kind: 'setSymbolic', name: D, target: 'refs/heads/pk' },
+          existing: 'refs/remotes/d/x',
+          adapt: asIs,
+        },
+        {
+          label: 'a loose ref under it, on an adapter reporting the directory absent',
+          layout: { loose: ['refs/remotes/d/x'] },
+          update: { kind: 'set', name: D, id: NEW_ID },
+          existing: 'refs/remotes/d/x',
+          adapt: browserLike,
+        },
+      ])(
+        'Then $label refuses FILE_EXISTS naming it and changes nothing',
+        async ({ layout, update, existing, adapt }) => {
+          // Arrange
+          const base = await seed(layout);
+          const packedBefore = await base.fs.readUtf8(PACKED);
+          const sut = createRefStore(adapt(base));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.applyRefUpdates([update as RefUpdate]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'FILE_EXISTS',
+            path: `/repo/.git/${existing}`,
+          });
+          expect(await base.fs.readUtf8(PACKED)).toBe(packedBefore);
+          expect(await base.fs.exists('/repo/.git/refs/remotes/d.lock')).toBe(false);
+          expect(await sut.resolveDirect(D)).toEqual({ kind: 'missing' });
+        },
+      );
+
+      it('Then writing HEAD never reads packed-refs for refs under it', async () => {
+        // Arrange
+        const base = await seed({ packed: ['refs/remotes/d/x'] });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'set', name: 'HEAD' as RefName, id: NEW_ID }]);
+
+        // Assert
+        expect(calls().filter((c) => c.path === PACKED)).toEqual([]);
+      });
+
+      it('Then a held lock on refs/remotes/d refuses REF_LOCKED first, as git takes the lock before checking', async () => {
+        // Arrange
+        const base = await seed({ packed: ['refs/remotes/d/x'] });
+        await base.fs.write('/repo/.git/refs/remotes/d.lock', new Uint8Array(0));
+        const sut = createRefStore(base);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([{ kind: 'set', name: D, id: NEW_ID }]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'REF_LOCKED', name: D });
+      });
+    });
+  });
+
   describe("Given the loose ref's parent directory cannot be stat'ed for a reason other than absence", () => {
     describe('When applyRefUpdates deletes the ref', () => {
       it('Then that error propagates and the loose file stays', async () => {
