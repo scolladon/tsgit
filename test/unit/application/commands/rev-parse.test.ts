@@ -473,6 +473,84 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given a ref candidate whose symbolic chain is deeper than the reading cap', () => {
+    /** `refs/<namespace>/<base>` → four more links → a direct ref holding `id`. */
+    const seedChain = async (
+      ctx: Context,
+      namespace: string,
+      base: string,
+      hops: number,
+      id: ObjectId,
+    ): Promise<void> => {
+      const link = (index: number): string => (index === 0 ? base : `${base}-${index}`);
+      for (let index = 0; index < hops; index += 1) {
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/refs/${namespace}/${link(index)}`,
+          `ref: refs/${namespace}/${link(index + 1)}\n`,
+        );
+      }
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/${namespace}/${link(hops)}`, `${id}\n`);
+    };
+
+    describe('When revParse sweeps a five-hop refs/tags/ candidate before a valid refs/heads/ one', () => {
+      it('Then the deep candidate is swept past and refs/heads/y resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tagTip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        const branchTip = await writeCommit(ctx, TREE_OID as ObjectId, [tagTip]);
+        await seedChain(ctx, 'tags', 'y', 5, tagTip);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/y`, `${branchTip}\n`);
+
+        // Act
+        const result = await revParse(ctx, 'y');
+
+        // Assert
+        expect(result).toBe(branchTip);
+      });
+    });
+
+    describe('When revParse resolves a four-hop chain', () => {
+      it('Then it resolves to the chain tip', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedChain(ctx, 'heads', 'h', 4, tip);
+
+        // Act
+        const result = await revParse(ctx, 'h');
+
+        // Assert
+        expect(result).toBe(tip);
+      });
+    });
+
+    describe('When revParse names the five-hop ref in full', () => {
+      it('Then no candidate resolves and it refuses OBJECT_NOT_FOUND naming the argument', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedChain(ctx, 'heads', 'x', 5, tip);
+
+        // Act
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'refs/heads/x');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/x',
+        });
+      });
+    });
+  });
+
   describe('Given HEAD with one parent op', () => {
     describe('When revParse(HEAD^)', () => {
       it('Then returns the first parent', async () => {

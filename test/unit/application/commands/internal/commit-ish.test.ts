@@ -284,3 +284,43 @@ describe('resolveCommitIsh', () => {
     });
   });
 });
+
+describe('resolveCommitIsh — a symbolic chain deeper than the reading cap', () => {
+  describe('Given a five-hop refs/tags/ candidate ahead of a valid refs/heads/ one', () => {
+    describe('When resolveCommitIsh sweeps the candidates', () => {
+      it('Then the deep candidate is swept past and the branch tip resolves', async () => {
+        // Arrange
+        const { ctx, head } = await seedCommit();
+        const gitDir = ctx.layout.gitDir;
+        const links = ['y', 'y-1', 'y-2', 'y-3', 'y-4', 'y-5'];
+        for (let index = 0; index < links.length - 1; index += 1) {
+          await ctx.fs.writeUtf8(
+            `${gitDir}/refs/tags/${links[index]}`,
+            `ref: refs/tags/${links[index + 1]}\n`,
+          );
+        }
+        const deepTip = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: head,
+            parents: [head],
+            author,
+            committer: author,
+            message: 'deep',
+            extraHeaders: [],
+          },
+        });
+        await ctx.fs.writeUtf8(`${gitDir}/refs/tags/y-5`, `${deepTip}\n`);
+        await ctx.fs.writeUtf8(`${gitDir}/refs/heads/y`, `${head}\n`);
+        const sut = resolveCommitIsh;
+
+        // Act
+        const result = await sut(ctx, 'y');
+
+        // Assert
+        expect(result).toBe(head);
+      });
+    });
+  });
+});
