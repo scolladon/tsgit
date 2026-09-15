@@ -849,6 +849,66 @@ describe('updateRef', () => {
       });
     });
 
+    describe('Given refs/heads/s symbolically names HEAD, which names the branch', () => {
+      describe('When updateRef writes through s', () => {
+        it.each([
+          { label: 'files', build: (): Context => createMemoryContext() },
+          { label: 'reftable', build: (): Context => withReftableStorage(createMemoryContext()) },
+        ])(
+          'Then the $label backend appends exactly one logs/HEAD entry — HEAD is a walked link, never coupled again',
+          async ({ build }) => {
+            // Arrange
+            const ctx = build();
+            const store = getRefStore(ctx);
+            const commitA = await writeCommit(ctx, 'via head link a');
+            const commitB = await writeCommit(ctx, 'via head link b');
+            const s = 'refs/heads/s' as RefName;
+            await store.applyRefUpdates([
+              { kind: 'set', name: MAIN, id: commitA },
+              { kind: 'setSymbolic', name: HEAD, target: MAIN },
+              { kind: 'setSymbolic', name: s, target: HEAD },
+            ]);
+            const sut = updateRef;
+
+            // Act
+            await sut(ctx, s, commitB, { reflogMessage: 'm' });
+
+            // Assert
+            const result = await readReflog(ctx, HEAD);
+            expect(result).toHaveLength(1);
+            expect(result[0]).toEqual(
+              expect.objectContaining({ oldId: commitA, newId: commitB, message: 'm' }),
+            );
+          },
+        );
+      });
+    });
+
+    describe('Given HEAD symbolically names the branch', () => {
+      describe('When updateRef writes HEAD itself', () => {
+        it('Then HEAD is read once — by the chain walk, never again for coupling', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+          const commit = await writeCommit(ctx, 'head read once');
+          const store = getRefStore(ctx);
+          const reads: RefName[] = [];
+          const originalResolve = store.resolveDirect.bind(store);
+          store.resolveDirect = async (name) => {
+            reads.push(name);
+            return originalResolve(name);
+          };
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, HEAD, commit, { reflogMessage: REASON });
+
+          // Assert
+          expect(reads).toEqual([HEAD, MAIN]);
+        });
+      });
+    });
+
     describe('Given HEAD is symbolic but targets a different branch', () => {
       describe('When updateRef is called', () => {
         it('Then HEAD is not logged', async () => {

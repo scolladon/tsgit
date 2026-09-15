@@ -16,6 +16,8 @@ import {
 import type { UpdateRefOptions } from './types.js';
 
 const HEAD: RefName = 'HEAD' as RefName;
+/** The `HEAD` value a chain that walks `HEAD` itself couples with: none. */
+const UNCOUPLED_HEAD: ResolveDirectResult = { kind: 'missing' };
 
 /** The write arm of {@link UpdateRefOptions} — `reflogMessage` is required
  *  here, unlike the delete arm's optional one. `writeUpdates` only ever
@@ -42,15 +44,15 @@ export async function updateRef(
   const chain = await resolveWriteChain(store, name, options);
   // Resolved before any write so a genuine I/O error refuses the whole
   // update instead of leaving a committed ref, a written reflog, and a
-  // thrown call.
-  const head = await resolveHeadForCoupling(store);
+  // thrown call. A chain that walks HEAD already read it, and never couples.
+  const head = walksHead(name, chain) ? UNCOUPLED_HEAD : await resolveHeadForCoupling(store);
 
   assertExpected(name, options.expected, chain);
 
   const logging = transactionLogging(ctx);
   const updates = isDelete(ctx, newId, options)
-    ? deleteUpdates(ctx, name, chain, head, options, logging)
-    : writeUpdates(ctx, name, chain, head, newId, options, logging);
+    ? deleteUpdates(ctx, chain, head, options, logging)
+    : writeUpdates(ctx, chain, head, newId, options, logging);
   await store.applyRefUpdates(updates);
 }
 
@@ -94,11 +96,16 @@ function oldOrZero(old: ObjectId | 'absent', zero: ObjectId): ObjectId {
   return old === 'absent' ? zero : old;
 }
 
+/** Whether `HEAD` is the given name or a link the chain walks — git's
+ *  `REF_UPDATE_VIA_HEAD`: `HEAD` then logs as part of the chain itself and
+ *  gains no second, coupled entry. */
+const walksHead = (name: RefName, chain: RefWriteChain): boolean =>
+  name === HEAD || chain.links.includes(HEAD);
+
 /**
  * The coupled `logs/HEAD` entry a write or delete produces when `HEAD`
  * symbolically names the chain's terminal OR one of its walked links — and
- * `name` is not itself `HEAD` (that case is already covered: `HEAD` walks
- * as the chain's own first link, or is the chain's own noDeref terminal).
+ * the chain does not walk `HEAD` itself (`head` is then uncoupled).
  * The old id is the resolved chain value, except on the files backend when
  * `HEAD` names a walked LINK rather than the terminal directly: the files
  * backend splits the transaction at each hop and logs the coupled entry
@@ -106,7 +113,6 @@ function oldOrZero(old: ObjectId | 'absent', zero: ObjectId): ObjectId {
  * instead.
  */
 function coupledHeadEntry(
-  name: RefName,
   chain: RefWriteChain,
   head: ResolveDirectResult,
   newId: ObjectId,
@@ -114,7 +120,7 @@ function coupledHeadEntry(
   logging: TransactionLogging,
   zero: ObjectId,
 ): RefUpdate | undefined {
-  if (head.kind !== 'symbolic' || name === HEAD) return undefined;
+  if (head.kind !== 'symbolic') return undefined;
   const namesLink = chain.links.includes(head.target);
   if (head.target !== chain.terminal && !namesLink) return undefined;
   const oldId =
@@ -130,7 +136,6 @@ function coupledHeadEntry(
  */
 function writeUpdates(
   ctx: Context,
-  name: RefName,
   chain: RefWriteChain,
   head: ResolveDirectResult,
   newId: ObjectId,
@@ -151,7 +156,7 @@ function writeUpdates(
   for (const link of chain.links) {
     updates.push({ kind: 'reflogOnly', name: link, reflog: { oldId, newId, message } });
   }
-  const coupled = coupledHeadEntry(name, chain, head, newId, message, logging, zero);
+  const coupled = coupledHeadEntry(chain, head, newId, message, logging, zero);
   if (coupled !== undefined) updates.push(coupled);
   return updates;
 }
@@ -168,7 +173,6 @@ function writeUpdates(
  */
 function deleteUpdates(
   ctx: Context,
-  name: RefName,
   chain: RefWriteChain,
   head: ResolveDirectResult,
   options: UpdateRefOptions,
@@ -183,7 +187,7 @@ function deleteUpdates(
     for (const link of chain.links) {
       updates.push({ kind: 'reflogOnly', name: link, reflog: { oldId, newId: zero, message } });
     }
-    const coupled = coupledHeadEntry(name, chain, head, zero, message, logging, zero);
+    const coupled = coupledHeadEntry(chain, head, zero, message, logging, zero);
     if (coupled !== undefined) updates.push(coupled);
   }
   if (
