@@ -593,7 +593,7 @@ describe('streamBlob', () => {
     });
   });
 
-  // Finding 1: corrupted PACK (not loose) — the packed route runs exclusively
+  // A corrupted pack entry (not loose) — the packed route runs exclusively
   // because no loose object for this id exists. The index maps the real id to
   // an offset whose compressed payload inflates to different bytes, so the
   // incremental hash built by yieldAndVerifyPackedBaseChunks never matches.
@@ -686,7 +686,7 @@ describe('streamBlob', () => {
     });
   });
 
-  // Finding 2: header-strip across a chunk boundary
+  // Loose header split across inflate chunk boundaries.
   // readLooseHeader accumulates inflate chunks until the NUL byte is found, at open.
   // A real DecompressionStream always emits the tiny header in the first chunk,
   // so this path is only exercised by driving a re-chunking inflate that
@@ -790,7 +790,7 @@ describe('streamBlob', () => {
     });
   });
 
-  // Finding 3: between-chunks abort is untested — two isolated tests so each
+  // An abort raised between inflate chunks — two isolated tests so each
   // between-chunks guard (loose path in yieldAndVerifyLooseChunks; packed-base path
   // in yieldAndVerifyPackedBaseChunks) must fail independently when deleted.
 

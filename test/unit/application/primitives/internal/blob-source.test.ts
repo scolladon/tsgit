@@ -604,6 +604,7 @@ describe('openBlobSource', () => {
         await writeSyntheticPack(ctx, 'pack-base-hash-mismatch', [
           { kind: 'base', type: 'blob', content, idOverride: wrongId },
         ]);
+        const storedId = await ctx.hash.hashHex(looseFormatBytes('blob', content));
 
         // Act + Assert
         try {
@@ -615,7 +616,7 @@ describe('openBlobSource', () => {
           expect(data.code).toBe('OBJECT_HASH_MISMATCH');
           if (data.code === 'OBJECT_HASH_MISMATCH') {
             expect(data.expected).toBe(wrongId);
-            expect(data.actual).not.toBe(wrongId);
+            expect(data.actual).toBe(storedId);
           }
         }
       });
@@ -664,6 +665,7 @@ describe('openBlobSource', () => {
         const ctx = await buildSeededContext({ objects: [blob] });
         const id = await writeObject(ctx, blob);
         const corruptBytes = looseFormatBytes('blob', ENC.encode('CORRUPTED content'));
+        const corruptId = await ctx.hash.hashHex(corruptBytes);
         const compressed = await ctx.compressor.deflate(corruptBytes);
         const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
         await ctx.fs.write(loosePath, compressed);
@@ -678,7 +680,7 @@ describe('openBlobSource', () => {
           expect(data.code).toBe('OBJECT_HASH_MISMATCH');
           if (data.code === 'OBJECT_HASH_MISMATCH') {
             expect(data.expected).toBe(id);
-            expect(data.actual).not.toBe(id);
+            expect(data.actual).toBe(corruptId);
           }
         }
       });
@@ -725,6 +727,7 @@ describe('openBlobSource', () => {
         const ctx = await buildSeededContext({ objects: [blob] });
         const id = await writeObject(ctx, blob);
         const corruptBytes = looseFormatBytes('blob', ENC.encode('CORRUPTED content'));
+        const corruptId = await ctx.hash.hashHex(corruptBytes);
         const compressed = await ctx.compressor.deflate(corruptBytes);
         const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
         await ctx.fs.write(loosePath, compressed);
@@ -744,7 +747,7 @@ describe('openBlobSource', () => {
             expect(data.code).toBe('OBJECT_HASH_MISMATCH');
             if (data.code === 'OBJECT_HASH_MISMATCH') {
               expect(data.expected).toBe(id);
-              expect(data.actual).not.toBe(id);
+              expect(data.actual).toBe(corruptId);
             }
           }
         }

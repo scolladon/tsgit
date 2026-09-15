@@ -32,6 +32,10 @@ const seedHead = async (ctx: Context): Promise<void> => {
 };
 
 describe('readObject', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a seeded blob', () => {
     describe('When readObject is called', () => {
       it('Then returns the Blob', async () => {
@@ -458,7 +462,6 @@ describe('readObject', () => {
         // Assert — session unchanged ⇒ same registry, no re-scan.
         expect(derived.session).toBe(ctx.session);
         expect(spy).not.toHaveBeenCalledWith('/repo/.git/objects/pack');
-        spy.mockRestore();
       });
     });
   });
@@ -556,6 +559,10 @@ describe('readObject', () => {
 });
 
 describe('Given a fresh session and two concurrent first readObject calls', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('When neither call has settled before the other starts', () => {
     it('Then only one pack registry is constructed for the session', async () => {
       // Arrange
@@ -569,12 +576,15 @@ describe('Given a fresh session and two concurrent first readObject calls', () =
 
       // Assert
       expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
     });
   });
 });
 
 describe('getPackRegistry — repo-settings class boundary', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given core.maxTreeDepth = 2.5 and a loose object fixture', () => {
     describe('When readObject is called', () => {
       it('Then throws CONFIG_BAD_NUMERIC_VALUE before any registry construction', async () => {
@@ -597,7 +607,6 @@ describe('getPackRegistry — repo-settings class boundary', () => {
         // Assert
         expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
         expect(spy).not.toHaveBeenCalled();
-        spy.mockRestore();
       });
     });
   });
@@ -643,7 +652,6 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 
         // Assert
         expect(spy).not.toHaveBeenCalled();
-        spy.mockRestore();
       });
     });
   });
@@ -672,7 +680,6 @@ describe('getPackRegistry — repo-settings class boundary', () => {
           { method: 'readUtf8', path: configPath },
         ]);
         expect(spy).toHaveBeenCalledTimes(1);
-        spy.mockRestore();
       });
     });
   });
@@ -700,7 +707,6 @@ describe('getPackRegistry — repo-settings class boundary', () => {
           { method: 'stat', path: configPath },
         ]);
         expect(spy).toHaveBeenCalledTimes(1);
-        spy.mockRestore();
       });
     });
   });
@@ -720,7 +726,6 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 
         // Assert
         expect(spy).toHaveBeenCalledTimes(1);
-        spy.mockRestore();
       });
     });
   });
@@ -923,6 +928,10 @@ describe('readObjectWithSize', () => {
 });
 
 describe('readRawObject', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a seeded blob', () => {
     describe('When readRawObject is called', () => {
       it('Then returns the pre-parse { type, content }', async () => {
@@ -1046,8 +1055,6 @@ describe('readRawObject', () => {
         expect(readSliceSpy).not.toHaveBeenCalled();
         expect(result.type).toBe('blob');
         expect(result.content).toEqual(targetContent);
-        cacheGetSpy.mockRestore();
-        readSliceSpy.mockRestore();
       });
     });
   });
