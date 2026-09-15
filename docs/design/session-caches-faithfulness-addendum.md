@@ -2102,9 +2102,11 @@ async function removeEverywhere(name: RefName, loose: string, commitPacked: (con
 | direct, **without** a log | `set new = id` with no reflog and no entry — no log is created, although `refs/remotes/` autocreates for other writers; delete `old` | not reachable from a git-built reftable clone (every tracking ref is logged); same rule as files |
 | symbolic (`<from>/HEAD → refs/remotes/<from>/<b>`) | `moveReflog(old, new)`; delete `old` (`noDeref`, log already moved); `setSymbolic new → refs/remotes/<to>/<b>` with `reflog: { oldId: 0{40}, newId: 0{40}, message }` | copy `old`'s records to `new` (source kept); delete `old` (`noDeref`, no message — the reftable `kept-with-entry` rule appends `<old id> 0{40}` with an empty message to `old`'s kept log, X6); `setSymbolic new → refs/remotes/<to>/<b>` with no reflog |
 
-The writes bypass `updateRef`'s reflog so the log-existence rule holds; each rename is still one
-`applyRefUpdates` per ref plus the delete through `updateRef`. The symref is handled after every direct ref, so its
-target already exists under the new name. The copy for the reftable symref is a second internal update kind,
+The writes bypass `updateRef`'s reflog so the log-existence rule holds, in a batched shape: each logged direct ref's
+log is moved (`moveReflog`), then every direct create and its rename entry land in ONE `applyRefUpdates`; each
+symref's log is moved (files) or copied (reftable); every old name — direct and symbolic — is then deleted in ONE ref
+transaction through `deleteRefs` (`noDeref`, planned before any delete applies, so the reftable kept-with-entry rule
+reads the referent's pre-delete value); the symref is created last, so its target already exists under the new name. The copy for the reftable symref is a second internal update kind,
 `{ kind: 'reflogCopy'; from; to }` (the merge without the tombstones); on the files backend the table never selects
 it. A fifth backend-table field selects the symref sequence:
 
