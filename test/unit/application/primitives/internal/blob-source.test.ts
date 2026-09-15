@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_BUFFERED_BLOB_BYTES,
   openBlobSource,
+  type VerifiedObject,
   verifyStoredObject,
 } from '../../../../../src/application/primitives/internal/blob-source.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -9,9 +10,10 @@ import { TsgitError } from '../../../../../src/domain/error.js';
 import { serializeObject } from '../../../../../src/domain/objects/git-object.js';
 import type { Blob, Commit, ObjectId, Tag } from '../../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID } from '../../../../../src/domain/objects/index.js';
+import { parseAcceptanceVerdict } from '../../../../../src/domain/objects/parse-acceptance.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, writeRawObjectBytes } from '../fixtures.js';
 import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from '../pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
@@ -856,6 +858,15 @@ describe('openBlobSource', () => {
 
 const IDENTITY = { name: 'A', email: 'a@a.com', timestamp: 1, timezoneOffset: '+0000' as const };
 
+const NO_ACCEPTANCE_SCAN = 'no acceptance scan';
+
+/** The verdict a verified object's scan reaches with parent lookups checked,
+ *  or a marker distinct from "accepted" when the object carries no scan. */
+const checkedVerdict = (verified: VerifiedObject) =>
+  verified.acceptance === undefined
+    ? NO_ACCEPTANCE_SCAN
+    : parseAcceptanceVerdict(verified.acceptance, { parentLookups: 'checked' });
+
 /** A long, deflate-resistant printable-ASCII string — pushes a loose
  *  object's COMPRESSED size past the buffered gate without any non-UTF-8
  *  byte concerns (`Commit`/`Tag` messages are plain strings). */
@@ -939,7 +950,7 @@ describe('verifyStoredObject', () => {
 
   describe('Given a streamed loose commit above the buffered gate', () => {
     describe('When verifyStoredObject is called', () => {
-      it('Then it resolves with a defined acceptance scan', async () => {
+      it('Then its acceptance scan accepts the commit', async () => {
         // Arrange
         const commit: Commit = {
           type: 'commit',
@@ -962,14 +973,35 @@ describe('verifyStoredObject', () => {
 
         // Assert
         expect(result.type).toBe('commit');
-        expect(result.acceptance).toBeDefined();
+        expect(checkedVerdict(result)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a streamed loose commit above the buffered gate with a malformed parent line', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then its acceptance scan refuses bad parents', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const body = ENC.encode(
+          `tree ${ZERO_ID}\nparent ${'g'.repeat(40)}\n\n${pseudoRandomAsciiMessage(150_000, 2)}`,
+        );
+        const id = await writeRawObjectBytes(ctx, 'commit', body);
+        expect(await looseCompressedLength(ctx, id)).toBeGreaterThan(MAX_BUFFERED_BLOB_BYTES);
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('commit');
+        expect(checkedVerdict(result)).toEqual({ type: 'commit', reason: 'bad parents' });
       });
     });
   });
 
   describe('Given a buffered loose tag', () => {
     describe('When verifyStoredObject is called', () => {
-      it('Then it resolves with a defined acceptance scan', async () => {
+      it('Then its acceptance scan accepts the tag', async () => {
         // Arrange
         const tag: Tag = {
           type: 'tag',
@@ -990,7 +1022,7 @@ describe('verifyStoredObject', () => {
 
         // Assert
         expect(result.type).toBe('tag');
-        expect(result.acceptance).toBeDefined();
+        expect(checkedVerdict(result)).toBeUndefined();
       });
     });
   });
@@ -1033,7 +1065,7 @@ describe('verifyStoredObject', () => {
 
   describe('Given a packed base commit', () => {
     describe('When verifyStoredObject is called', () => {
-      it('Then it resolves with a defined acceptance scan', async () => {
+      it('Then its acceptance scan accepts the commit', async () => {
         // Arrange
         const content = ENC.encode(`tree ${ZERO_ID}\n\nmsg\n`);
         const ctx = await buildSeededContext();
@@ -1047,7 +1079,7 @@ describe('verifyStoredObject', () => {
 
         // Assert
         expect(result.type).toBe('commit');
-        expect(result.acceptance).toBeDefined();
+        expect(checkedVerdict(result)).toBeUndefined();
       });
     });
   });

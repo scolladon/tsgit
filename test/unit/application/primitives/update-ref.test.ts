@@ -1230,8 +1230,31 @@ describe('updateRef', () => {
           } catch (error) {
             const data = (error as TsgitError).data;
             expect(data.code).toBe('INVALID_COMMIT');
+            if (data.code === 'INVALID_COMMIT') expect(data.reason).toBe('bad parents');
           }
           expect(sawBufferedInflate).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a well-formed loose commit above the buffered gate', () => {
+      describe('When updateRef writes it', () => {
+        it('Then it is written — the streamed scan accepts it', async () => {
+          // Arrange — the same incompressible padding, after a valid tree
+          // line and the blank line that ends the headers.
+          const ctx = await buildSeededContext();
+          const treeHex = emptyTreeOid(ctx.hashConfig);
+          const prefix = ENC.encode(`tree ${treeHex}\n\n`);
+          const body = concatUint8(prefix, pseudoRandomBytes(70_000, 2));
+          const id = await writeRawObjectBytes(ctx, 'commit', body);
+          const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+          expect((await ctx.fs.read(loosePath)).length).toBeGreaterThan(65_536);
+
+          // Act
+          await updateRef(ctx, 'refs/tags/big-valid' as RefName, id, { reflogMessage: REASON });
+
+          // Assert
+          expect(await resolveRef(ctx, 'refs/tags/big-valid' as RefName)).toBe(id);
         });
       });
     });
