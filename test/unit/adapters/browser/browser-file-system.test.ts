@@ -118,3 +118,64 @@ describe('BrowserFileSystem rejection classification', () => {
     });
   });
 });
+
+describe('BrowserFileSystem readdir rejection classification', () => {
+  // A root handle whose directory lookup rejects with the given value; a root-level path never
+  // walks a parent, so this is the only OPFS call the listing reaches.
+  const rootWhoseDirectoryLookupRejectsWith = (rejection: unknown): FileSystemDirectoryHandle =>
+    ({
+      getDirectoryHandle: async () => {
+        throw rejection;
+      },
+    }) as unknown as FileSystemDirectoryHandle;
+
+  describe('Given a root handle whose directory lookup rejects with TypeMismatchError, as OPFS does for a file entry', () => {
+    describe('When listing that root-level entry', () => {
+      it('Then throws NOT_A_DIRECTORY carrying the requested path', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(
+          rootWhoseDirectoryLookupRejectsWith({ name: 'TypeMismatchError' }),
+        );
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.readdir('regular-file');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('NOT_A_DIRECTORY');
+        if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe('regular-file');
+      });
+    });
+  });
+
+  describe('Given a root handle whose directory lookup rejects with NotFoundError', () => {
+    describe('When listing that root-level entry', () => {
+      it('Then throws FILE_NOT_FOUND carrying the requested path', async () => {
+        // Arrange
+        const sut = new BrowserFileSystem(
+          rootWhoseDirectoryLookupRejectsWith({ name: 'NotFoundError' }),
+        );
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.readdir('missing-entry');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('FILE_NOT_FOUND');
+        if (data.code === 'FILE_NOT_FOUND') expect(data.path).toBe('missing-entry');
+      });
+    });
+  });
+});

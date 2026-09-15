@@ -264,3 +264,52 @@ test.describe('OPFS directory-occupant refusals', () => {
     });
   });
 });
+
+test.describe('OPFS listing refusals', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  test('Given a regular file, When readdir lists it, Then it throws NOT_A_DIRECTORY against real OPFS', async ({
+    readyPage,
+  }) => {
+    const result = await readyPage.evaluate(async () => {
+      const MODULE_PATH = '/dist/esm/adapters/browser/index.js';
+      const mod = (await import(MODULE_PATH)) as {
+        BrowserFileSystem: new (rootHandle: FileSystemDirectoryHandle) => OpfsFs;
+      };
+      const sut = new mod.BrowserFileSystem(await navigator.storage.getDirectory());
+      await sut.write('listed-file.txt', new Uint8Array([1, 2]));
+
+      const refusalOf = async (path: string) => {
+        try {
+          await sut.readdir(path);
+          return undefined;
+        } catch (err) {
+          return (err as { data?: { code?: string; path?: string } }).data;
+        }
+      };
+      const fileRefusal = await refusalOf('listed-file.txt');
+      const missingRefusal = await refusalOf('never-created-dir');
+      const fileBytes = Array.from(await sut.read('listed-file.txt'));
+
+      return {
+        fileCode: fileRefusal?.code,
+        filePath: fileRefusal?.path,
+        missingCode: missingRefusal?.code,
+        fileBytes,
+      };
+    });
+
+    await test.step('readdir on a regular file reports NOT_A_DIRECTORY on the file path', () => {
+      expect(result.fileCode).toBe('NOT_A_DIRECTORY');
+      expect(result.filePath).toBe('listed-file.txt');
+    });
+
+    await test.step('readdir on a missing entry still reports FILE_NOT_FOUND', () => {
+      expect(result.missingCode).toBe('FILE_NOT_FOUND');
+    });
+
+    await test.step('the listed file is unchanged', () => {
+      expect(result.fileBytes).toEqual([1, 2]);
+    });
+  });
+});

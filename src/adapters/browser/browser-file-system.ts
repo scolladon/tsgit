@@ -2,6 +2,7 @@
 import {
   fileExists,
   fileNotFound,
+  notADirectory,
   permissionDenied,
   TsgitError,
   unsupportedOperation,
@@ -256,6 +257,9 @@ export class BrowserFileSystem implements FileSystem {
       return await dir.getDirectoryHandle(leaf, { create });
     } catch (err) {
       if (err instanceof TsgitError) throw err;
+      // OPFS rejects a directory lookup of a file entry with TypeMismatchError: that entry is
+      // present but not a directory, which Node's ENOTDIR and the memory adapter report alike.
+      if (isTypeMismatch(err)) throw notADirectory(path);
       throw fileNotFound(path);
     }
   }
