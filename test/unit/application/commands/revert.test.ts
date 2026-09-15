@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -58,6 +58,28 @@ const codeOf = async (run: () => Promise<unknown>): Promise<string | undefined> 
 };
 
 const gitDir = (ctx: Context): string => ctx.layout.gitDir;
+
+const FROZEN_SECONDS = 1_800_000_000;
+
+/** Freezes the wall clock every reflog entry reads its timestamp from. */
+const freezeClock = (): void => {
+  vi.spyOn(Date, 'now').mockReturnValue(FROZEN_SECONDS * 1000);
+};
+
+/** `name`'s newest reflog entry, as the raw line the files backend writes. */
+const lastReflogLine = async (ctx: Context, name: string): Promise<string | undefined> => {
+  const last = (await readReflog(ctx, name as RefName)).at(-1);
+  if (last === undefined) return undefined;
+  const { oldId, newId, identity, message } = last;
+  return `${oldId} ${newId} ${identity.name} <${identity.email}> ${identity.timestamp} ${identity.timezoneOffset}\t${message}`;
+};
+
+/** Points `HEAD` at `refs/heads/s`, itself a symbolic ref naming `branch`. */
+const chainHeadThroughS = async (ctx: Context, branch: string): Promise<void> => {
+  await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, branch as RefName);
+  await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
+};
+
 const exists = (ctx: Context, rel: string): Promise<boolean> =>
   ctx.fs.exists(`${gitDir(ctx)}/${rel}`);
 
@@ -578,6 +600,36 @@ const seedConflictStop = async (): Promise<{ ctx: Context; c2: ObjectId }> => {
   if (stop.kind !== 'conflict') throw new Error('seed: expected a conflict stop');
   return { ctx, c2 };
 };
+
+describe('revert continue — HEAD through a chain of symbolic refs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a resolved single-revert conflict and HEAD -> refs/heads/s -> refs/heads/main', () => {
+    describe('When continue commits the resolution', () => {
+      it('Then main, s and HEAD each log the revert from the pre-revert id', async () => {
+        // Arrange
+        freezeClock();
+        const { ctx } = await seedConflictStop();
+        const ourId = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await chainHeadThroughS(ctx, 'refs/heads/main');
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nRESOLVED\nc\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const result = await revertContinue(ctx);
+
+        // Assert
+        const created = result.kind === 'reverted' ? result.commits[0]?.created : undefined;
+        const line = `${ourId} ${created} Vera <vera@x> ${FROZEN_SECONDS} +0000\tcommit: Revert "c2 mid"`;
+        expect(await lastReflogLine(ctx, 'refs/heads/main')).toBe(line);
+        expect(await lastReflogLine(ctx, 'refs/heads/s')).toBe(line);
+        expect(await lastReflogLine(ctx, 'HEAD')).toBe(line);
+      });
+    });
+  });
+});
 
 describe('revert continue', () => {
   describe('Given a resolved single-revert conflict', () => {

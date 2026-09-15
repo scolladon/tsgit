@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -72,6 +72,27 @@ const codeOf = async (run: () => Promise<unknown>): Promise<string | undefined> 
   } catch (err) {
     return (err as TsgitError).data.code;
   }
+};
+
+const FROZEN_SECONDS = 1_800_000_000;
+
+/** Freezes the wall clock every reflog entry reads its timestamp from. */
+const freezeClock = (): void => {
+  vi.spyOn(Date, 'now').mockReturnValue(FROZEN_SECONDS * 1000);
+};
+
+/** `name`'s newest reflog entry, as the raw line the files backend writes. */
+const lastReflogLine = async (ctx: Context, name: string): Promise<string | undefined> => {
+  const last = (await readReflog(ctx, name as RefName)).at(-1);
+  if (last === undefined) return undefined;
+  const { oldId, newId, identity, message } = last;
+  return `${oldId} ${newId} ${identity.name} <${identity.email}> ${identity.timestamp} ${identity.timezoneOffset}\t${message}`;
+};
+
+/** Points `HEAD` at `refs/heads/s`, itself a symbolic ref naming `branch`. */
+const chainHeadThroughS = async (ctx: Context, branch: string): Promise<void> => {
+  await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, branch as RefName);
+  await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
 };
 
 /** main: base.txt; feature branch off base adds feat.txt. Returns ctx + feature tip. */
@@ -254,6 +275,58 @@ const makeCleanRootPick = async (
     extraHeaders: [],
   });
 };
+
+describe('cherryPick continue and abort — HEAD through a chain of symbolic refs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a resolved conflict and HEAD -> refs/heads/s -> refs/heads/main', () => {
+    describe('When continue commits the resolution', () => {
+      it('Then main, s and HEAD each log the pick from the pre-pick id', async () => {
+        // Arrange
+        freezeClock();
+        const { ctx } = await seedConflictPick();
+        const ourId = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await chainHeadThroughS(ctx, 'refs/heads/main');
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const result = await cherryPickContinue(ctx);
+
+        // Assert
+        const created = result.kind === 'picked' ? result.commits[0]?.created : undefined;
+        const line = `${ourId} ${created} Picker <pick@x> ${FROZEN_SECONDS} +0000\tcommit (cherry-pick): feat change`;
+        expect(await lastReflogLine(ctx, 'refs/heads/main')).toBe(line);
+        expect(await lastReflogLine(ctx, 'refs/heads/s')).toBe(line);
+        expect(await lastReflogLine(ctx, 'HEAD')).toBe(line);
+      });
+    });
+  });
+
+  describe('Given a conflicted pick and HEAD -> refs/heads/s -> refs/heads/main', () => {
+    describe('When abort resets to the pre-pick commit', () => {
+      it('Then s and HEAD log the reset from the pre-pick id and main logs nothing new', async () => {
+        // Arrange
+        freezeClock();
+        const { ctx } = await seedConflictPick();
+        const ourId = await resolveRef(ctx, 'refs/heads/main' as RefName);
+        await chainHeadThroughS(ctx, 'refs/heads/main');
+        const mainBefore = await lastReflogLine(ctx, 'refs/heads/main');
+
+        // Act
+        await cherryPickAbort(ctx);
+
+        // Assert
+        const line = `${ourId} ${ourId} Picker <pick@x> ${FROZEN_SECONDS} +0000\treset: moving to ${ourId}`;
+        expect(await lastReflogLine(ctx, 'refs/heads/main')).toBe(mainBefore);
+        expect(await lastReflogLine(ctx, 'refs/heads/s')).toBe(line);
+        expect(await lastReflogLine(ctx, 'HEAD')).toBe(line);
+      });
+    });
+  });
+});
 
 describe('cherryPickRun — HEAD through a chain of symbolic refs', () => {
   describe('Given HEAD -> refs/heads/s -> refs/heads/x', () => {

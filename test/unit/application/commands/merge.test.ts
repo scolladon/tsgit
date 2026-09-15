@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -43,6 +43,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
   buildTreeChain,
@@ -66,6 +67,27 @@ const author: AuthorIdentity = {
   email: 'ada@example.com',
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
+};
+
+const FROZEN_SECONDS = 1_800_000_000;
+
+/** Freezes the wall clock every reflog entry reads its timestamp from. */
+const freezeClock = (): void => {
+  vi.spyOn(Date, 'now').mockReturnValue(FROZEN_SECONDS * 1000);
+};
+
+/** `name`'s newest reflog entry, as the raw line the files backend writes. */
+const lastReflogLine = async (ctx: Context, name: string): Promise<string | undefined> => {
+  const last = (await readReflog(ctx, name as RefName)).at(-1);
+  if (last === undefined) return undefined;
+  const { oldId, newId, identity, message } = last;
+  return `${oldId} ${newId} ${identity.name} <${identity.email}> ${identity.timestamp} ${identity.timezoneOffset}\t${message}`;
+};
+
+/** Points `HEAD` at `refs/heads/s`, itself a symbolic ref naming `branch`. */
+const chainHeadThroughS = async (ctx: Context, branch: string): Promise<void> => {
+  await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, branch as RefName);
+  await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
 };
 
 describe('merge', () => {
@@ -1984,6 +2006,47 @@ describe('merge — conflicting-write atomicity', () => {
         expect(data?.code).toBe('INVALID_INDEX_ENTRY');
         expect(data?.reason).toBe("'.' segment rejected");
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/clean.txt`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('merge commit — HEAD through a chain of symbolic refs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x and a diverged feature branch', () => {
+    describe('When merge records a merge commit', () => {
+      it('Then x, s and HEAD each log the merge from the pre-merge id', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'x' });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'x' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+        await add(ctx, ['c.txt']);
+        const ours = await commit(ctx, { message: 'third', author });
+        await chainHeadThroughS(ctx, 'refs/heads/x');
+        freezeClock();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'feature', message: 'merge', author });
+
+        // Assert
+        const created = result.kind === 'merge' ? result.id : undefined;
+        const line = `${ours.id} ${created} tsgit <tsgit@localhost> ${FROZEN_SECONDS} +0000\tmerge feature: Merge made by the 'tsgit' strategy.`;
+        expect(await lastReflogLine(ctx, 'refs/heads/x')).toBe(line);
+        expect(await lastReflogLine(ctx, 'refs/heads/s')).toBe(line);
+        expect(await lastReflogLine(ctx, 'HEAD')).toBe(line);
       });
     });
   });
