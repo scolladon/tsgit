@@ -228,15 +228,14 @@ describe('parsedObjectMemoFor — entry-bound sizing', () => {
       ])(
         'Then at $label the real sizer reconciles with the typical entry allowance, and maxEntries × that real size never exceeds the valve',
         ({ algorithm, hexLength, valve }) => {
-          // Arrange — one parent (this row's own hex width) plus a message
-          // sized so the variable fields (message + parents; no signature, no
-          // extra headers) total 216 bytes at sha1 width: 216 + 40 = 256,
-          // matching the "256 B typical message/parents allowance"
-          // PARSED_OBJECT_TYPICAL_ENTRY_BYTES's own doc comment describes on
-          // top of the sizer's fixed overhead. Unlike a hand-picked literal,
-          // this ties the constant to what `parsedObjectByteSize` — the
-          // function that actually sizes every cached entry — computes for a
-          // representative commit at that width.
+          // Arrange — one parent (this row's own hex width) plus a 216-byte
+          // message, no signature and no extra headers: the shape
+          // PARSED_OBJECT_TYPICAL_ENTRY_BYTES was measured on, whose doc
+          // comment reconciles it as the sizer's 950 B fixed overhead + 216 B
+          // message + 40 B sha1 parent = 1,206 B. Unlike a hand-picked literal,
+          // this ties the measured constant to what `parsedObjectByteSize` —
+          // the function that actually sizes every cached entry — computes for
+          // that representative commit at this width.
           const typicalCommitData = {
             message: 'x'.repeat(216),
             extraHeaders: [],

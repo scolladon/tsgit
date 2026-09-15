@@ -687,7 +687,7 @@ describe('streamBlob', () => {
   });
 
   // Finding 2: header-strip across a chunk boundary
-  // stripHeader accumulates inflate chunks until the NUL byte is found.
+  // readLooseHeader accumulates inflate chunks until the NUL byte is found, at open.
   // A real DecompressionStream always emits the tiny header in the first chunk,
   // so this path is only exercised by driving a re-chunking inflate that
   // emits 1–3 bytes per chunk, forcing the NUL to land in chunk ≥2.
@@ -695,7 +695,7 @@ describe('streamBlob', () => {
   // Implementation: override createInflateStream to return a TransformStream
   // that collects all compressed input, inflates it via the real inflate(), then
   // emits the inflated bytes 2 bytes at a time. This avoids complex stream
-  // chaining while deterministically driving the multi-chunk stripHeader loop.
+  // chaining while deterministically driving the multi-chunk readLooseHeader loop.
   function makeRechunkingInflateStream(
     realInflate: (data: Uint8Array) => Promise<Uint8Array>,
     chunkSize: number,
@@ -761,7 +761,7 @@ describe('streamBlob', () => {
   });
 
   describe('Given an empty loose blob and a re-chunking inflate (2 bytes/chunk), When drained', () => {
-    it('Then yields zero content bytes without error (header-only stream via multi-chunk stripHeader path)', async () => {
+    it('Then yields zero content bytes without error (header-only stream via the multi-chunk loose header read)', async () => {
       // Arrange — "blob 0\0" is 7 bytes; 2-byte chunks guarantee the NUL lands in chunk 4
       const blob: Blob = { type: 'blob', content: new Uint8Array(0), id: '' as ObjectId };
       const baseCtx = await buildSeededContext({ objects: [blob] });
@@ -791,7 +791,7 @@ describe('streamBlob', () => {
   });
 
   // Finding 3: between-chunks abort is untested — two isolated tests so each
-  // between-chunks guard (loose path in yieldAndVerifyChunks; packed-base path
+  // between-chunks guard (loose path in yieldAndVerifyLooseChunks; packed-base path
   // in yieldAndVerifyPackedBaseChunks) must fail independently when deleted.
 
   describe('Given a large loose blob and an abort signal fired mid-drain, When the iterator is advanced after abort', () => {
@@ -895,7 +895,7 @@ describe('streamBlob', () => {
     });
   });
 
-  // Group A — empty deltified blob content check (streamFromBuffer line 148)
+  // Empty deltified blob: wrapBufferedContent yields nothing for empty content.
   describe('Given a deltified blob with empty content, When streamBlob is drained', () => {
     it('Then yields zero content chunks and materialised is true (kills >= 0 and true mutants)', async () => {
       // Arrange — base blob + ofs-delta that reconstructs to empty blob
@@ -917,8 +917,9 @@ describe('streamBlob', () => {
     });
   });
 
-  // Group B — degenerate inflate: zero chunks (yieldAndVerifyChunks line 208)
-  describe('Given a loose blob whose inflate stream emits zero chunks, When streamBlob is drained', () => {
+  // Degenerate inflate: zero chunks. readLooseHeader reads the header while the
+  // stream opens, so the refusal fires before anything is drained.
+  describe('Given a loose blob whose inflate stream emits zero chunks, When streamBlob opens it', () => {
     it('Then throws invalidObjectHeader (corrupt/empty inflate output, not silent empty)', async () => {
       // Arrange — real loose object exists so looseCompressedBytes returns bytes;
       // override createInflateStream to return an immediately-closed stream.
@@ -941,8 +942,7 @@ describe('streamBlob', () => {
 
       // Act + Assert
       try {
-        const sut = await streamBlob(ctx as typeof baseCtx, id);
-        await collect(sut);
+        await streamBlob(ctx as typeof baseCtx, id);
         expect.unreachable();
       } catch (error) {
         expect(error).toBeInstanceOf(TsgitError);
@@ -955,8 +955,9 @@ describe('streamBlob', () => {
     });
   });
 
-  // Group B — degenerate inflate: NUL-less bytes exhausted (stripHeader line 187)
-  describe('Given a loose blob whose inflate stream emits bytes with no NUL terminator, When streamBlob is drained', () => {
+  // Degenerate inflate: NUL-less bytes exhausted. readLooseHeader reads the header
+  // while the stream opens, so the refusal fires before anything is drained.
+  describe('Given a loose blob whose inflate stream emits bytes with no NUL terminator, When streamBlob opens it', () => {
     it('Then throws invalidObjectHeader (no NUL in header, not silent empty)', async () => {
       // Arrange — real loose object exists; override inflate to emit bytes without NUL.
       const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
@@ -970,7 +971,7 @@ describe('streamBlob', () => {
           createInflateStream: (): TransformStream<Uint8Array, Uint8Array> =>
             new TransformStream<Uint8Array, Uint8Array>({
               start(controller) {
-                // Emit bytes with no NUL (0x00) byte — stripHeader will exhaust the iterator
+                // Emit bytes with no NUL (0x00) byte — readLooseHeader exhausts the iterator
                 controller.enqueue(new Uint8Array([0x62, 0x6c, 0x6f, 0x62, 0x20])); // "blob "
                 controller.terminate();
               },
@@ -980,8 +981,7 @@ describe('streamBlob', () => {
 
       // Act + Assert
       try {
-        const sut = await streamBlob(ctx as typeof baseCtx, id);
-        await collect(sut);
+        await streamBlob(ctx as typeof baseCtx, id);
         expect.unreachable();
       } catch (error) {
         expect(error).toBeInstanceOf(TsgitError);

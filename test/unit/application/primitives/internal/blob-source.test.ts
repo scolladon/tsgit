@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_BUFFERED_BLOB_BYTES,
   openBlobSource,
   type VerifiedObject,
   verifyStoredObject,
 } from '../../../../../src/application/primitives/internal/blob-source.js';
+import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { serializeObject } from '../../../../../src/domain/objects/git-object.js';
@@ -791,6 +792,9 @@ describe('openBlobSource', () => {
           expect(error).toBeInstanceOf(TsgitError);
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe('missing space between type and size');
+          }
         }
         expect(cancels).toBe(1);
       });
@@ -830,6 +834,79 @@ describe('openBlobSource', () => {
 
         // Assert
         expect(cancels).toBe(1);
+      });
+    });
+  });
+
+  // Cancelling an errored readable rejects with the error the stream stored, which would
+  // replace whatever the caller is really reporting; nothing is left to release by then.
+  describe('Given a streamed loose source whose inflate readable errored after handing over the header', () => {
+    describe('When release() is called on it', () => {
+      it('Then it resolves instead of re-throwing the stream’s stored error', async () => {
+        // Arrange — the header is read at open, so the readable must yield it before erroring.
+        const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(base, blob);
+        let errored = false;
+        const ctx = {
+          ...base,
+          compressor: {
+            ...base.compressor,
+            createInflateStream: () => ({
+              readable: new ReadableStream<Uint8Array>({
+                start: (controller) => {
+                  controller.enqueue(looseFormatBytes('blob', blob.content));
+                },
+                pull: (controller) => {
+                  errored = true;
+                  controller.error(new Error('inflate blew up'));
+                },
+              }),
+              writable: new WritableStream<Uint8Array>(),
+            }),
+          },
+        };
+        const source = await openBlobSource(ctx, id, 0);
+
+        // Act
+        const released = source.kind === 'stream' ? await source.release() : source.kind;
+
+        // Assert
+        expect(released).toBeUndefined();
+        expect(errored).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a streamed packed base source whose inflate readable has already errored', () => {
+    describe('When release() is called on it', () => {
+      it('Then it resolves instead of re-throwing the stream’s stored error', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ids = await writeSyntheticPack(base, 'release-errored-base', [
+          { kind: 'base', type: 'blob', content: ENC.encode('packed base content to release') },
+        ]);
+        const ctx = {
+          ...base,
+          compressor: {
+            ...base.compressor,
+            createInflateStream: () => ({
+              readable: new ReadableStream<Uint8Array>({
+                start: (controller) => {
+                  controller.error(new Error('inflate blew up'));
+                },
+              }),
+              writable: new WritableStream<Uint8Array>(),
+            }),
+          },
+        };
+        const source = await openBlobSource(ctx, ids[0] as ObjectId, 0);
+
+        // Act
+        const released = source.kind === 'stream' ? await source.release() : source.kind;
+
+        // Assert
+        expect(released).toBeUndefined();
       });
     });
   });
@@ -883,6 +960,10 @@ function pseudoRandomAsciiMessage(length: number, seed: number): string {
 }
 
 describe('verifyStoredObject', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a delta-cache entry whose content does NOT hash to its own key', () => {
     describe('When verifyStoredObject is called', () => {
       it('Then it refuses OBJECT_HASH_MISMATCH — a cache hit is hashed, never trusted', async () => {
@@ -894,6 +975,7 @@ describe('verifyStoredObject', () => {
         )) as ObjectId;
         const poisoned = ENC.encode('an entirely different body');
         ctx.deltaCache.set(realId, { type: 'blob', content: poisoned }, poisoned.length);
+        const poisonedId = await ctx.hash.hashHex(looseFormatBytes('blob', poisoned));
 
         // Act + Assert
         try {
@@ -904,7 +986,7 @@ describe('verifyStoredObject', () => {
           expect(data.code).toBe('OBJECT_HASH_MISMATCH');
           if (data.code === 'OBJECT_HASH_MISMATCH') {
             expect(data.expected).toBe(realId);
-            expect(data.actual).not.toBe(realId);
+            expect(data.actual).toBe(poisonedId);
           }
         }
       });
@@ -1032,6 +1114,23 @@ describe('verifyStoredObject', () => {
       it('Then it resolves with no acceptance scan (git never parses a tree)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'tree', ENC.encode('not really a tree body'));
+
+        // Act
+        const result = await verifyStoredObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('tree');
+        expect(result.acceptance).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a buffered packed base tree', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it resolves with no acceptance scan (git never parses a tree)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
         const ids = await writeSyntheticPack(ctx, 'verify-tree', [
           { kind: 'base', type: 'tree', content: ENC.encode('not really a tree body') },
         ]);
@@ -1049,9 +1148,15 @@ describe('verifyStoredObject', () => {
 
   describe('Given the virtual empty tree', () => {
     describe('When verifyStoredObject is called', () => {
-      it('Then it resolves type tree with no acceptance scan, without a store read', async () => {
+      it('Then it resolves type tree with no acceptance scan, after the store gate and without a store read', async () => {
         // Arrange
         const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        const gate = vi.spyOn(registry, 'assertLoadable');
+        const lookup = vi.spyOn(registry, 'lookup');
+        const read = vi.spyOn(ctx.fs, 'read');
+        const readdir = vi.spyOn(ctx.fs, 'readdir');
+        const fanoutDir = `${ctx.layout.gitDir}/objects/${EMPTY_TREE_OID.slice(0, 2)}`;
 
         // Act
         const result = await verifyStoredObject(ctx, EMPTY_TREE_OID);
@@ -1059,6 +1164,36 @@ describe('verifyStoredObject', () => {
         // Assert
         expect(result.type).toBe('tree');
         expect(result.acceptance).toBeUndefined();
+        expect(gate).toHaveBeenCalledTimes(1);
+        expect(lookup).not.toHaveBeenCalled();
+        const looseProbes = [...read.mock.calls, ...readdir.mock.calls]
+          .map(([path]) => path)
+          .filter((path) => path.startsWith(fanoutDir));
+        expect(looseProbes).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the virtual empty tree and a store gate that refuses', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then the gate refusal surfaces instead of the virtual tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        const refusal = new TsgitError({ code: 'PERMISSION_DENIED', path: 'store gate' });
+        vi.spyOn(registry, 'assertLoadable').mockRejectedValue(refusal);
+
+        // Act
+        let caught: unknown;
+        try {
+          await verifyStoredObject(ctx, EMPTY_TREE_OID);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(refusal);
       });
     });
   });

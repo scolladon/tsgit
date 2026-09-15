@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import { assertRepoSettingsValid } from '../../../../src/application/primitives/internal/repo-settings-gate.js';
@@ -751,6 +751,10 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 });
 
 describe('peekPackRegistry', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a fresh session that has never constructed a registry', () => {
     describe('When checked', () => {
       it('Then returns undefined — nothing to serve synchronously yet', async () => {
@@ -783,7 +787,6 @@ describe('peekPackRegistry', () => {
         // Assert
         expect(result).toBe(warm);
         expect(spy).toHaveBeenCalledTimes(1);
-        spy.mockRestore();
       });
     });
   });
@@ -809,6 +812,10 @@ describe('peekPackRegistry', () => {
 });
 
 describe('disposePackRegistry', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a construction in flight that then rejects', () => {
     describe('When disposePackRegistry races the rejection', () => {
       it('Then dispose resolves without throwing, and the original caller still observes the rejection', async () => {
@@ -820,7 +827,7 @@ describe('disposePackRegistry', () => {
         await seedHead(ctx);
         await assertRepoSettingsValid(ctx);
         const failure = new Error('construction boom');
-        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry').mockRejectedValue(failure);
+        vi.spyOn(packRegistryMod, 'createPackRegistry').mockRejectedValue(failure);
 
         // Act — start the (soon-to-reject) construction, then race dispose
         // against it before the rejection has settled.
@@ -834,7 +841,6 @@ describe('disposePackRegistry', () => {
         // Assert
         await expect(disposal).resolves.toBeUndefined();
         await expect(pending).rejects.toBe(failure);
-        spy.mockRestore();
       });
     });
   });
@@ -849,7 +855,6 @@ describe('disposePackRegistry', () => {
         // Act + Assert
         await expect(disposePackRegistry(ctx)).resolves.toBeUndefined();
         expect(spy).not.toHaveBeenCalled();
-        spy.mockRestore();
       });
     });
   });
