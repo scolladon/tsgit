@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { ReflogResult } from '../../../../src/application/commands/reflog.js';
 import { reflog } from '../../../../src/application/commands/reflog.js';
 import * as readCommitMetaMod from '../../../../src/application/primitives/internal/read-commit-meta.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
+import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
 import { appendReflog, writeReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -64,6 +65,17 @@ const writeCommit = (
   };
   return writeObject(ctx, { type: 'commit', id: '' as ObjectId, data });
 };
+
+/** The repository-state files every `reflog` run reads before resolving a
+ *  target; any other path touched is a candidate ref, log or pack read. */
+const REPOSITORY_STATE_FILES = ['HEAD', 'config'];
+
+/** Every recorded call that touches something other than repository state. */
+const candidateReads = (
+  calls: ReadonlyArray<{ readonly path: string }>,
+  gitDir: string,
+): ReadonlyArray<{ readonly path: string }> =>
+  calls.filter((call) => !REPOSITORY_STATE_FILES.some((file) => call.path === `${gitDir}/${file}`));
 
 describe('reflog command', () => {
   describe('Given a non-repo ctx', () => {
@@ -344,7 +356,7 @@ describe('reflog command', () => {
       });
     });
 
-    describe('When reflog expire runs on a ref that resolves', () => {
+    describe('When reflog expire runs with --all over an existing reflog', () => {
       it('Then it throws CONFIG_BAD_NUMERIC_VALUE', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -825,6 +837,7 @@ describe('reflog command', () => {
             ref: '../../etc/passwd',
           });
           expect(calls().some((call) => call.path.includes('etc/passwd'))).toBe(false);
+          expect(candidateReads(calls(), base.layout.gitDir)).toEqual([]);
         });
       });
     });
@@ -865,8 +878,12 @@ describe('reflog command', () => {
   });
 
   describe('expire', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     // `expire` reads `Date.now()` internally for the cutoff; entry timestamps
-    // are therefore relative to the real wall clock, not a frozen instant.
+    // are relative to the real wall clock unless a row freezes it.
     const DAY = 86_400;
     const wallNow = (): number => Math.floor(Date.now() / 1000);
 
@@ -1114,6 +1131,7 @@ describe('reflog command', () => {
               ref: 'refs/heads/..bad',
             });
             expect(calls().some((call) => call.path.includes('..bad'))).toBe(false);
+            expect(candidateReads(calls(), base.layout.gitDir)).toEqual([]);
           });
         });
       });
@@ -1138,6 +1156,70 @@ describe('reflog command', () => {
               code: 'REFLOG_NOT_FOUND',
               ref: 'refs/heads/gone',
             });
+          });
+        });
+      });
+
+      describe('Given a branch that resolves but has no log', () => {
+        describe('When expire runs on its name', () => {
+          it('Then it refuses REFLOG_NOT_FOUND and creates no log', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], wallNow());
+            await seedRepo(ctx, { refs: { 'refs/heads/unlogged': tip } });
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/unlogged' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/unlogged',
+            });
+            expect(await reflog(ctx, { action: 'exists', ref: 'refs/heads/unlogged' })).toEqual({
+              kind: 'exists',
+              exists: false,
+            });
+          });
+        });
+      });
+
+      describe('Given a symref with no own log, pointing at a resolving branch with no log either', () => {
+        describe('When expire runs on the symref name', () => {
+          it('Then it refuses REFLOG_NOT_FOUND and creates no log on either name', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], wallNow());
+            await seedRepo(ctx, { refs: { 'refs/heads/unlogged': tip } });
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/refs/heads/unlogged-link`,
+              'ref: refs/heads/unlogged\n',
+            );
+
+            // Act
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/unlogged-link' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/unlogged-link',
+            });
+            for (const ref of ['refs/heads/unlogged-link', 'refs/heads/unlogged']) {
+              expect(await reflog(ctx, { action: 'exists', ref })).toEqual({
+                kind: 'exists',
+                exists: false,
+              });
+            }
           });
         });
       });
@@ -1884,6 +1966,107 @@ describe('reflog command', () => {
           expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
           const after = await ctx.fs.readUtf8(reflogPath);
           expect(after).toBe(serializeReflogLine(kept, 40));
+        });
+      });
+    });
+
+    describe('Given --all over one log with a stale entry and one log with only recent entries', () => {
+      describe('When expire', () => {
+        it('Then both rewrites land in one ref transaction', async () => {
+          // Arrange
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          const recent = entry({ newId: tip, identity: identityAt(now - DAY), message: 'recent' });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: OID_X, identity: identityAt(now - 100 * DAY), message: 'stale' }),
+            recent,
+          ]);
+          await writeReflog(ctx, BRANCH, [recent]);
+          const store = getRefStore(ctx);
+          const batches: RefUpdate[][] = [];
+          const originalApply = store.applyRefUpdates.bind(store);
+          store.applyRefUpdates = async (updates) => {
+            batches.push([...updates]);
+            return originalApply(updates);
+          };
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', all: true });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 2 });
+          expect(batches).toHaveLength(1);
+          expect(batches).toMatchObject([
+            [
+              { kind: 'reflogReplace', name: HEAD, entries: [recent] },
+              { kind: 'reflogReplace', name: BRANCH, entries: [recent] },
+            ],
+          ]);
+        });
+      });
+    });
+
+    describe('Given reachable entries one second either side of the 30-day default total cutoff', () => {
+      describe('When expire runs with no cutoff given', () => {
+        it('Then the entry at the cutoff is kept and the one a second older is pruned', async () => {
+          // Arrange
+          const now = 1_800_000_000;
+          vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          const atCutoff = entry({
+            newId: tip,
+            identity: identityAt(now - 30 * DAY),
+            message: 'at the cutoff',
+          });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: tip, identity: identityAt(now - 30 * DAY - 1), message: 'older' }),
+            atCutoff,
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 1 });
+          expect(await reflog(ctx, { action: 'show', ref: 'HEAD' })).toMatchObject({
+            entries: [{ index: 0, selector: 'HEAD@{0}', entry: atCutoff }],
+          });
+        });
+      });
+    });
+
+    describe('Given unreachable entries one second either side of the 90-day default unreachable cutoff', () => {
+      describe('When expire runs with only a never total cutoff given', () => {
+        it('Then the entry at the cutoff is kept and the one a second older is pruned', async () => {
+          // Arrange
+          const now = 1_800_000_000;
+          vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          const island = await writeCommit(ctx, [], now - 1);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          const atCutoff = entry({
+            newId: island,
+            identity: identityAt(now - 90 * DAY),
+            message: 'at the cutoff',
+          });
+          await writeReflog(ctx, HEAD, [
+            entry({ newId: island, identity: identityAt(now - 90 * DAY - 1), message: 'older' }),
+            atCutoff,
+          ]);
+
+          // Act
+          const result = await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'never' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 1 });
+          expect(await reflog(ctx, { action: 'show', ref: 'HEAD' })).toMatchObject({
+            entries: [{ index: 0, selector: 'HEAD@{0}', entry: atCutoff }],
+          });
         });
       });
     });
