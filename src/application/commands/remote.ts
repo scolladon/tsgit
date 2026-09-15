@@ -276,24 +276,31 @@ const moveDirectTrackingRef = async (
  * - files: moves the log wholesale, then re-creates the symref with a
  *   null-id reflog entry recording the rename.
  * - reftable: copies the log onto the new name WITHOUT removing the old
- *   one — the delete below is `noDeref`, and the reftable store keeps a
- *   `noDeref`-deleted symref's log, appending its own tombstone entry to
- *   it (an empty message, since none is given here).
+ *   one, then deletes the old name directly (bypassing `updateRef`): the
+ *   reftable store already keeps a symbolic delete's log uncut, so this
+ *   only needs to add the trailing entry itself. Its old id is the
+ *   referent's value from BEFORE the batch started — by the time this
+ *   runs, the direct ref it named has already moved to the new namespace,
+ *   so a fresh resolve would read it as absent. Measured against git
+ *   2.55.0: git's own entry names the referent's last real value, not the
+ *   null id, so `renameTrackingRefs` captures it upfront and threads it
+ *   through here.
  */
 const moveSymbolicTrackingRef = async (
   ctx: Context,
   entry: Extract<TrackingRefEntry, { kind: 'symbolic' }>,
   from: string,
   to: string,
+  preMoveReferentId: ObjectId | undefined,
 ): Promise<void> => {
   const store = getRefStore(ctx);
   const target = renamedName(entry.name, from, to);
   const rewrittenTarget = rewriteSymbolicTarget(entry.target, from, to);
   const logging = transactionLogging(ctx);
+  const zero = zeroOid(ctx.hashConfig);
   if (logging.renamedSymrefLog === 'move-then-null-entry') {
     await store.moveReflog(entry.name, target);
-    await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
-    const zero = zeroOid(ctx.hashConfig);
+    await updateRef(ctx, entry.name, zero, { delete: true, noDeref: true });
     const message = trackingRenameMessage(entry.name, target);
     await store.applyRefUpdates([
       {
@@ -305,7 +312,14 @@ const moveSymbolicTrackingRef = async (
     ]);
   } else {
     await store.copyReflog(entry.name, target);
-    await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
+    await store.applyRefUpdates([
+      { kind: 'delete', name: entry.name },
+      {
+        kind: 'reflogOnly',
+        name: entry.name,
+        reflog: { oldId: preMoveReferentId ?? zero, newId: zero, message: '' },
+      },
+    ]);
     await store.applyRefUpdates([{ kind: 'setSymbolic', name: target, target: rewrittenTarget }]);
   }
 };
@@ -325,11 +339,16 @@ const renameTrackingRefs = async (
   const resolved = await readTrackingValues(ctx, names);
   const direct = resolved.filter(isDirectEntry);
   const symbolic = resolved.filter(isSymbolicEntry);
+  // Captured before any ref moves: a symbolic tracking ref's own referent
+  // is always one of these direct entries (the pinned shape), so its value
+  // must be read now — once the direct move below runs, the old name is
+  // gone and a fresh resolve would see nothing.
+  const preMoveIds = new Map(direct.map((entry) => [entry.name, entry.id]));
   for (const entry of direct) {
     await moveDirectTrackingRef(ctx, entry, renamedName(entry.name, from, to));
   }
   for (const entry of symbolic) {
-    await moveSymbolicTrackingRef(ctx, entry, from, to);
+    await moveSymbolicTrackingRef(ctx, entry, from, to, preMoveIds.get(entry.target));
   }
   return [...direct, ...symbolic].map((entry) => renamedName(entry.name, from, to));
 };

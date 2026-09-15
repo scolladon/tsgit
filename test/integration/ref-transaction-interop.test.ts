@@ -1037,6 +1037,132 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a reftable-base clone with a fetched tracking branch and a symbolic origin/HEAD', () => {
+      describe('When the remote is renamed', () => {
+        it('Then every moved ref, its reflog, and the kept origin/HEAD log match git exactly after migrating both sides to files', async () => {
+          // Arrange — a bare upstream and a source repo pushing two commits,
+          // fetched twice into a reftable-format clone so `origin/main` gets
+          // two real log lines (clone, then fast-forward) and `origin/HEAD`
+          // gets its own clone-time entry. Reftable has no packed/loose
+          // split, so this fixture only needs the one tracking branch plus
+          // the symref — the files-backend row above covers the packed and
+          // loose shapes that don't apply here.
+          const upstream = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-rt-rename-up-'),
+          );
+          caseRoots.push(upstream);
+          runGit(['init', '-q', '--bare', '-b', 'main', upstream]);
+          const src = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-rt-rename-src-'));
+          caseRoots.push(src);
+          runGit(['init', '-q', '-b', 'main', src]);
+          git(src, 'config', 'user.name', 'A');
+          git(src, 'config', 'user.email', 'a@x');
+          git(src, 'config', 'commit.gpgsign', 'false');
+          disableAutoMaintenance(src);
+          await writeFile(path.join(src, 'f.txt'), 'c1\n');
+          git(src, 'add', '-A');
+          runGit(['-C', src, 'commit', '-q', '-m', 'c1'], {
+            env: pinnedEnv(COMMITTER_EPOCH + 200),
+          });
+          runGit(['-C', src, 'remote', 'add', 'origin', upstream]);
+          runGit(['-C', src, 'push', '-q', 'origin', 'main'], {
+            env: pinnedEnv(COMMITTER_EPOCH + 200),
+          });
+          const rtRenameBase = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-rt-rename-base-'),
+          );
+          caseRoots.push(rtRenameBase);
+          runGit(['clone', '-q', '--ref-format=reftable', upstream, rtRenameBase], {
+            env: pinnedEnv(COMMITTER_EPOCH + 201),
+          });
+          git(rtRenameBase, 'config', 'user.name', 'A');
+          git(rtRenameBase, 'config', 'user.email', 'a@x');
+          disableAutoMaintenance(rtRenameBase);
+          await writeFile(path.join(src, 'f.txt'), 'c2\n');
+          git(src, 'add', '-A');
+          runGit(['-C', src, 'commit', '-q', '-m', 'c2'], {
+            env: pinnedEnv(COMMITTER_EPOCH + 202),
+          });
+          runGit(['-C', src, 'push', '-q', 'origin', 'main'], {
+            env: pinnedEnv(COMMITTER_EPOCH + 202),
+          });
+          runGit(['-C', rtRenameBase, 'fetch', '-q', 'origin'], {
+            env: pinnedEnv(COMMITTER_EPOCH + 203),
+          });
+          const peer = await cloneRepo(rtRenameBase, 'rt-rename-peer');
+          const ours = await cloneRepo(rtRenameBase, 'rt-rename-ours');
+          const ctx = withReftableStorage(nodeCtx(ours));
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'up2'], {
+            env: {
+              ...runGitEnv(),
+              GIT_COMMITTER_NAME: 'A',
+              GIT_COMMITTER_EMAIL: 'a@x',
+              GIT_COMMITTER_DATE: `${COMMITTER_EPOCH + 204} +0000`,
+            },
+          });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 204) * 1000);
+          try {
+            await remoteRename(ctx, { from: 'origin', to: 'up2' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+          runGit(['-C', peer, 'refs', 'migrate', '--ref-format=files']);
+          runGit(['-C', ours, 'refs', 'migrate', '--ref-format=files']);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          // up2/main: the moved history (clone + fetch) plus the rename's
+          // own same-id entry.
+          const peerMainLog = await readFile(
+            path.join(peer, '.git', 'logs', 'refs', 'remotes', 'up2', 'main'),
+            'utf8',
+          );
+          const oursMainLog = await readFile(
+            path.join(ours, '.git', 'logs', 'refs', 'remotes', 'up2', 'main'),
+            'utf8',
+          );
+          expect(oursMainLog).toBe(peerMainLog);
+          expect(peerMainLog.trim().split('\n')).toHaveLength(3);
+          // up2/HEAD: the copied clone-time history, with NO trailing entry
+          // — the reftable create side never gets one.
+          const peerHeadLog = await readFile(
+            path.join(peer, '.git', 'logs', 'refs', 'remotes', 'up2', 'HEAD'),
+            'utf8',
+          );
+          const oursHeadLog = await readFile(
+            path.join(ours, '.git', 'logs', 'refs', 'remotes', 'up2', 'HEAD'),
+            'utf8',
+          );
+          expect(oursHeadLog).toBe(peerHeadLog);
+          expect(peerHeadLog.trim().split('\n')).toHaveLength(1);
+          // origin/HEAD: no live ref, but its log survives (an orphan, like
+          // any other moved-away name) with ONE new entry appended — the
+          // referent's LAST value before the rename, to the null id, no
+          // message.
+          expect(await pathExists(path.join(peer, '.git', 'refs', 'remotes', 'origin'))).toBe(
+            false,
+          );
+          expect(await pathExists(path.join(ours, '.git', 'refs', 'remotes', 'origin'))).toBe(
+            false,
+          );
+          const peerOrphanLog = await readFile(
+            path.join(peer, '.git', 'logs', 'refs', 'remotes', 'origin', 'HEAD'),
+            'utf8',
+          );
+          const oursOrphanLog = await readFile(
+            path.join(ours, '.git', 'logs', 'refs', 'remotes', 'origin', 'HEAD'),
+            'utf8',
+          );
+          expect(oursOrphanLog).toBe(peerOrphanLog);
+          expect(peerOrphanLog.trim().split('\n')).toHaveLength(2);
+          expect(peerOrphanLog).toContain(`${ZERO} A <a@x>`);
+          expect(peerOrphanLog.trimEnd().endsWith(`+0000`)).toBe(true);
+        });
+      });
+    });
+
     describe('Given a symbolic ref', () => {
       describe('When it is deleted by its own name', () => {
         it('Then both git and tsgit dereference: the target is gone, the symref itself survives', async () => {
