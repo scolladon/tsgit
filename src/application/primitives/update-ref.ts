@@ -19,12 +19,16 @@ const HEAD: RefName = 'HEAD' as RefName;
 /** The `HEAD` value a chain that walks `HEAD` itself couples with: none. */
 const UNCOUPLED_HEAD: ResolveDirectResult = { kind: 'missing' };
 
-/** The write arm of {@link UpdateRefOptions} — `reflogMessage` is required
- *  here, unlike the delete arm's optional one. `writeUpdates` only ever
- *  receives this shape (the caller routes `delete: true` to `deleteUpdates`
- *  before it is reached), so narrowing to it removes a fallback that could
- *  never actually run. */
-type WriteRefOptions = Extract<UpdateRefOptions, { readonly delete?: false }>;
+/** What every entry of one update's transaction shares: the walked chain,
+ *  the `HEAD` value it may couple with, the backend's logging shape, the
+ *  null id, and the reflog message (empty when a delete carries none). */
+interface TransactionPlan {
+  readonly chain: RefWriteChain;
+  readonly head: ResolveDirectResult;
+  readonly logging: TransactionLogging;
+  readonly zero: ObjectId;
+  readonly message: string;
+}
 
 export async function updateRef(
   ctx: Context,
@@ -41,19 +45,28 @@ export async function updateRef(
   if (!isDelete(ctx, newId, options)) await assertRefTargetValid(ctx, name, newId);
 
   const store = getRefStore(ctx);
+  const plan = await planTransaction(ctx, store, name, options);
+  assertExpected(name, options.expected, plan.chain);
+  await store.applyRefUpdates(
+    isDelete(ctx, newId, options) ? deleteUpdates(plan, options) : writeUpdates(plan, newId),
+  );
+}
+
+/** Walks `name`'s write chain and reads the `HEAD` value it may couple with. */
+async function planTransaction(
+  ctx: Context,
+  store: RefStore,
+  name: RefName,
+  options: UpdateRefOptions,
+): Promise<TransactionPlan> {
   const chain = await resolveWriteChain(store, name, options);
   // Resolved before any write so a genuine I/O error refuses the whole
   // update instead of leaving a committed ref, a written reflog, and a
   // thrown call. A chain that walks HEAD already read it, and never couples.
   const head = walksHead(name, chain) ? UNCOUPLED_HEAD : await resolveHeadForCoupling(store);
-
-  assertExpected(name, options.expected, chain);
-
   const logging = transactionLogging(ctx);
-  const updates = isDelete(ctx, newId, options)
-    ? deleteUpdates(ctx, chain, head, options, logging)
-    : writeUpdates(ctx, chain, head, newId, options, logging);
-  await store.applyRefUpdates(updates);
+  const message = options.reflogMessage ?? '';
+  return { chain, head, logging, zero: zeroOid(ctx.hashConfig), message };
 }
 
 /** git marks a null new object id `REF_DELETING` and takes the delete path
@@ -112,14 +125,8 @@ const walksHead = (name: RefName, chain: RefWriteChain): boolean =>
  * before the terminal's value is known, so it logs the null id there
  * instead.
  */
-function coupledHeadEntry(
-  chain: RefWriteChain,
-  head: ResolveDirectResult,
-  newId: ObjectId,
-  message: string,
-  logging: TransactionLogging,
-  zero: ObjectId,
-): RefUpdate | undefined {
+function coupledHeadEntry(plan: TransactionPlan, newId: ObjectId): RefUpdate | undefined {
+  const { chain, head, logging, zero, message } = plan;
   if (head.kind !== 'symbolic') return undefined;
   const namesLink = chain.links.includes(head.target);
   if (head.target !== chain.terminal && !namesLink) return undefined;
@@ -128,81 +135,60 @@ function coupledHeadEntry(
   return { kind: 'reflogOnly', name: HEAD, reflog: { oldId, newId, message } };
 }
 
-/**
- * The updates a write produces: the terminal's own `set` (reflog attached
- * unless old === new); one `reflogOnly` entry per walked link, unconditional
- * even when the value is unchanged; and the coupled `HEAD` entry, when it
- * applies.
- */
-function writeUpdates(
-  ctx: Context,
-  chain: RefWriteChain,
-  head: ResolveDirectResult,
-  newId: ObjectId,
-  options: WriteRefOptions,
-  logging: TransactionLogging,
-): readonly RefUpdate[] {
-  const zero = zeroOid(ctx.hashConfig);
-  const oldId = oldOrZero(chain.old, zero);
-  const message = options.reflogMessage;
-  const updates: RefUpdate[] = [
-    {
-      kind: 'set',
-      name: chain.terminal,
-      id: newId,
-      ...(oldId !== newId ? { reflog: { oldId, newId, message } } : {}),
-    },
-  ];
-  for (const link of chain.links) {
-    updates.push({ kind: 'reflogOnly', name: link, reflog: { oldId, newId, message } });
-  }
-  const coupled = coupledHeadEntry(chain, head, newId, message, logging, zero);
-  if (coupled !== undefined) updates.push(coupled);
-  return updates;
+/** The entries git's transaction splits off at each symbolic hop: one
+ *  `reflogOnly` per walked link — unconditional, even when the value is
+ *  unchanged — and the coupled `HEAD` entry, when it applies. */
+function splitLogEntries(plan: TransactionPlan, newId: ObjectId): readonly RefUpdate[] {
+  const reflog = { oldId: oldOrZero(plan.chain.old, plan.zero), newId, message: plan.message };
+  const links = plan.chain.links.map((name): RefUpdate => ({ kind: 'reflogOnly', name, reflog }));
+  const coupled = coupledHeadEntry(plan, newId);
+  return coupled === undefined ? links : [...links, coupled];
 }
 
-/**
- * The updates a delete produces: the store-level `delete` of the terminal,
- * always. When the terminal is ABSENT, the split log-only entries (each
- * walked link, plus the coupled `HEAD` entry) are backend-specific
- * (`noOpDeleteLogs`) — the files backend still writes them as `0{40} 0{40}`,
- * the reftable backend writes none. A `noDeref` delete of a symbolic ref on
- * the reftable backend keeps its log (the store never tombstones it, see
- * `applyDeleteRecords`) and gains one more entry recording the deletion
- * itself.
- */
-function deleteUpdates(
-  ctx: Context,
-  chain: RefWriteChain,
-  head: ResolveDirectResult,
+/** The updates a write produces: the terminal's own `set` (reflog attached
+ *  unless old === new), then the {@link splitLogEntries}. */
+function writeUpdates(plan: TransactionPlan, newId: ObjectId): readonly RefUpdate[] {
+  const oldId = oldOrZero(plan.chain.old, plan.zero);
+  const reflog = { oldId, newId, message: plan.message };
+  const terminal: RefUpdate = {
+    kind: 'set',
+    name: plan.chain.terminal,
+    id: newId,
+    ...(oldId !== newId ? { reflog } : {}),
+  };
+  return [terminal, ...splitLogEntries(plan, newId)];
+}
+
+/** A delete's {@link splitLogEntries}. When the terminal is ABSENT they are
+ *  backend-specific (`noOpDeleteLogs`): the files backend still writes them
+ *  as `0{40} 0{40}`, the reftable backend writes none. */
+function deleteSplitLogEntries(plan: TransactionPlan): readonly RefUpdate[] {
+  const written = plan.chain.old !== 'absent' || plan.logging.noOpDeleteLogs === 'written';
+  return written ? splitLogEntries(plan, plan.zero) : [];
+}
+
+/** A `noDeref` delete of a symbolic ref on the reftable backend keeps its
+ *  log (the store never tombstones it, see `applyDeleteRecords`) and gains
+ *  one more entry recording the deletion itself; elsewhere, none. */
+function keptSymbolicLogEntry(
+  plan: TransactionPlan,
   options: UpdateRefOptions,
-  logging: TransactionLogging,
 ): readonly RefUpdate[] {
-  const zero = zeroOid(ctx.hashConfig);
-  const message = options.reflogMessage ?? '';
-  const updates: RefUpdate[] = [{ kind: 'delete', name: chain.terminal }];
-  const terminalAbsent = chain.old === 'absent';
-  if (!terminalAbsent || logging.noOpDeleteLogs === 'written') {
-    const oldId = oldOrZero(chain.old, zero);
-    for (const link of chain.links) {
-      updates.push({ kind: 'reflogOnly', name: link, reflog: { oldId, newId: zero, message } });
-    }
-    const coupled = coupledHeadEntry(chain, head, zero, message, logging, zero);
-    if (coupled !== undefined) updates.push(coupled);
-  }
-  if (
-    options.noDeref === true &&
-    chain.terminalIsSymbolic &&
-    logging.symbolicDeleteLog === 'kept-with-entry'
-  ) {
-    const oldId = oldOrZero(chain.old, zero);
-    updates.push({
-      kind: 'reflogOnly',
-      name: chain.terminal,
-      reflog: { oldId, newId: zero, message },
-    });
-  }
-  return updates;
+  const { chain, logging, zero, message } = plan;
+  const kept = logging.symbolicDeleteLog === 'kept-with-entry' && chain.terminalIsSymbolic;
+  if (options.noDeref !== true || !kept) return [];
+  const reflog = { oldId: oldOrZero(chain.old, zero), newId: zero, message };
+  return [{ kind: 'reflogOnly', name: chain.terminal, reflog }];
+}
+
+/** The updates a delete produces: the store-level `delete` of the terminal,
+ *  always, then its split log entries and the kept symbolic log entry. */
+function deleteUpdates(plan: TransactionPlan, options: UpdateRefOptions): readonly RefUpdate[] {
+  return [
+    { kind: 'delete', name: plan.chain.terminal },
+    ...deleteSplitLogEntries(plan),
+    ...keptSymbolicLogEntry(plan, options),
+  ];
 }
 
 /**
