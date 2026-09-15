@@ -10,7 +10,7 @@ import {
   remoteShow,
 } from '../../../../src/application/commands/remote.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
-import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -33,6 +33,18 @@ const ORIGIN_MAIN = 'refs/remotes/origin/main' as RefName;
 const ORIGIN_HEAD = 'refs/remotes/origin/HEAD' as RefName;
 const UP2_MAIN = 'refs/remotes/up2/main' as RefName;
 const UP2_HEAD = 'refs/remotes/up2/HEAD' as RefName;
+
+/** Records every `applyRefUpdates` batch the Context's store receives. */
+const recordBatches = (ctx: Context): RefUpdate[][] => {
+  const store = getRefStore(ctx);
+  const batches: RefUpdate[][] = [];
+  const original = store.applyRefUpdates.bind(store);
+  store.applyRefUpdates = async (updates) => {
+    batches.push([...updates]);
+    return original(updates);
+  };
+  return batches;
+};
 
 /** Renames `origin` to `to`, returning what it threw (or `undefined`). */
 const renameRefusal = async (ctx: Context, to: string): Promise<unknown> => {
@@ -498,6 +510,33 @@ describe('application/commands/remote', () => {
           ]);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(false);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/dev`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a configured remote with a symbolic HEAD and two direct tracking refs', () => {
+      describe('When remoteRemove runs', () => {
+        it('Then every tracking ref is deleted in one ref transaction', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/dev`, `${STALE_ID}\n`);
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
+          const batches = recordBatches(ctx);
+
+          // Act
+          await remoteRemove(ctx, { name: 'origin' });
+
+          // Assert
+          expect(batches).toEqual([
+            [
+              { kind: 'delete', name: ORIGIN_HEAD },
+              { kind: 'delete', name: 'refs/remotes/origin/dev' },
+              { kind: 'delete', name: ORIGIN_MAIN },
+            ],
+          ]);
         });
       });
     });
@@ -1129,6 +1168,147 @@ describe('application/commands/remote', () => {
           const oldLog = await readReflog(ctx, 'refs/remotes/origin/HEAD' as RefName);
           expect(oldLog.length).toBeGreaterThanOrEqual(1);
           expect(oldLog[0]?.message).toBe('clone');
+        });
+      });
+    });
+
+    describe('Given two logged direct tracking refs and a symbolic HEAD on a files-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the creates share one batch, every old name is deleted in one ref transaction, and HEAD is re-created last', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/dev`, `${STALE_ID}\n`);
+          await ctx.fs.writeUtf8(
+            `${gitDir}/logs/refs/remotes/origin/dev`,
+            `${ZERO_ID} ${STALE_ID} A <a@x> 1700000000 +0000\tfetch\n`,
+          );
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(
+            `${gitDir}/logs/refs/remotes/origin/main`,
+            `${ZERO_ID} ${ORIGIN_ID} A <a@x> 1700000000 +0000\tfetch\n`,
+          );
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
+          const batches = recordBatches(ctx);
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+          // Assert
+          expect(batches).toEqual([
+            [
+              { kind: 'set', name: 'refs/remotes/up2/dev', id: STALE_ID, expected: 'absent' },
+              {
+                kind: 'reflogOnly',
+                name: 'refs/remotes/up2/dev',
+                reflog: {
+                  oldId: STALE_ID,
+                  newId: STALE_ID,
+                  message: 'remote: renamed refs/remotes/origin/dev to refs/remotes/up2/dev',
+                },
+              },
+              { kind: 'set', name: UP2_MAIN, id: ORIGIN_ID, expected: 'absent' },
+              {
+                kind: 'reflogOnly',
+                name: UP2_MAIN,
+                reflog: {
+                  oldId: ORIGIN_ID,
+                  newId: ORIGIN_ID,
+                  message: 'remote: renamed refs/remotes/origin/main to refs/remotes/up2/main',
+                },
+              },
+            ],
+            [
+              { kind: 'delete', name: ORIGIN_HEAD },
+              { kind: 'delete', name: 'refs/remotes/origin/dev' },
+              { kind: 'delete', name: ORIGIN_MAIN },
+            ],
+            [
+              {
+                kind: 'setSymbolic',
+                name: UP2_HEAD,
+                target: UP2_MAIN,
+                reflog: {
+                  oldId: ZERO_ID,
+                  newId: ZERO_ID,
+                  message: 'remote: renamed refs/remotes/origin/HEAD to refs/remotes/up2/HEAD',
+                },
+              },
+            ],
+          ]);
+        });
+      });
+    });
+
+    describe('Given two logged direct tracking refs and a symbolic HEAD on a reftable-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it("Then the old names' deletes share one ref transaction with HEAD's kept-log entry", async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([
+            {
+              kind: 'set',
+              name: 'refs/remotes/origin/dev' as RefName,
+              id: STALE_ID,
+              reflog: { oldId: ZERO_ID, newId: STALE_ID, message: 'fetch' },
+            },
+            {
+              kind: 'set',
+              name: ORIGIN_MAIN,
+              id: ORIGIN_ID,
+              reflog: { oldId: ZERO_ID, newId: ORIGIN_ID, message: 'fetch' },
+            },
+            {
+              kind: 'setSymbolic',
+              name: ORIGIN_HEAD,
+              target: ORIGIN_MAIN,
+              reflog: { oldId: ZERO_ID, newId: ZERO_ID, message: 'clone' },
+            },
+          ]);
+          const batches = recordBatches(ctx);
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+          // Assert
+          expect(batches).toEqual([
+            [
+              { kind: 'set', name: 'refs/remotes/up2/dev', id: STALE_ID, expected: 'absent' },
+              {
+                kind: 'reflogOnly',
+                name: 'refs/remotes/up2/dev',
+                reflog: {
+                  oldId: STALE_ID,
+                  newId: STALE_ID,
+                  message: 'remote: renamed refs/remotes/origin/dev to refs/remotes/up2/dev',
+                },
+              },
+              { kind: 'set', name: UP2_MAIN, id: ORIGIN_ID, expected: 'absent' },
+              {
+                kind: 'reflogOnly',
+                name: UP2_MAIN,
+                reflog: {
+                  oldId: ORIGIN_ID,
+                  newId: ORIGIN_ID,
+                  message: 'remote: renamed refs/remotes/origin/main to refs/remotes/up2/main',
+                },
+              },
+            ],
+            [
+              { kind: 'delete', name: ORIGIN_HEAD },
+              { kind: 'delete', name: 'refs/remotes/origin/dev' },
+              { kind: 'delete', name: ORIGIN_MAIN },
+              {
+                kind: 'reflogOnly',
+                name: ORIGIN_HEAD,
+                reflog: { oldId: ORIGIN_ID, newId: ZERO_ID, message: '' },
+              },
+            ],
+            [{ kind: 'setSymbolic', name: UP2_HEAD, target: UP2_MAIN }],
+          ]);
         });
       });
     });

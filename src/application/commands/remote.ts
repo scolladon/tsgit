@@ -17,9 +17,9 @@ import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
 import { assertAcceptedRepository } from '../primitives/internal/repo-state.js';
-import { getRefStore } from '../primitives/ref-store.js';
+import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
-import { updateRef } from '../primitives/update-ref.js';
+import { deleteRefs } from '../primitives/update-ref.js';
 import { parseRefspec } from './internal/refspec.js';
 import {
   listBranchReferrers,
@@ -180,10 +180,9 @@ export const remoteRemove = async (
   const trackingRefs = await listTrackingRefs(ctx, input.name);
   const referrers = listBranchReferrers(config, input.name);
   // Delete tracking refs first — recoverable if we crash before the
-  // config rewrite. `updateRef` cleans the reflog file too.
-  for (const ref of trackingRefs) {
-    await updateRef(ctx, ref, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
-  }
+  // config rewrite — as ONE ref transaction, as git's `remote remove` does;
+  // each delete cleans its reflog file too.
+  await deleteRefs(ctx, trackingRefs, { noDeref: true });
   // Rewrite config: drop the [remote "<name>"] section AND clear every
   // paired branch.<X>.remote / branch.<X>.merge key.
   const ops: ConfigOperation[] = [
@@ -204,11 +203,19 @@ export const remoteRemove = async (
 };
 
 /** One tracking ref's resolved value, tagged by kind — the split
- *  `renameTrackingRefs` needs to move direct refs before symbolic ones
- *  (git's own order) and to treat each shape differently. */
+ *  `renameTrackingRefs` needs to create symbolic refs after direct ones
+ *  and to treat each shape differently. */
 type TrackingRefEntry =
   | { readonly kind: 'direct'; readonly name: RefName; readonly id: ObjectId }
   | { readonly kind: 'symbolic'; readonly name: RefName; readonly target: RefName };
+type DirectTrackingRef = Extract<TrackingRefEntry, { kind: 'direct' }>;
+type SymbolicTrackingRef = Extract<TrackingRefEntry, { kind: 'symbolic' }>;
+
+/** The remote names one rename moves tracking refs between. */
+interface TrackingRename {
+  readonly from: string;
+  readonly to: string;
+}
 
 const readTrackingValues = async (
   ctx: Context,
@@ -226,12 +233,10 @@ const readTrackingValues = async (
   return entries;
 };
 
-const isDirectEntry = (
-  entry: TrackingRefEntry,
-): entry is Extract<TrackingRefEntry, { kind: 'direct' }> => entry.kind === 'direct';
-const isSymbolicEntry = (
-  entry: TrackingRefEntry,
-): entry is Extract<TrackingRefEntry, { kind: 'symbolic' }> => entry.kind === 'symbolic';
+const isDirectEntry = (entry: TrackingRefEntry): entry is DirectTrackingRef =>
+  entry.kind === 'direct';
+const isSymbolicEntry = (entry: TrackingRefEntry): entry is SymbolicTrackingRef =>
+  entry.kind === 'symbolic';
 
 const renamedName = (name: RefName, from: string, to: string): RefName =>
   `refs/remotes/${to}/${name.slice(`refs/remotes/${from}/`.length)}` as RefName;
@@ -276,116 +281,107 @@ const assertRenamedNamesFree = async (ctx: Context, targets: readonly RefName[])
   }
 };
 
-/**
- * Move one direct tracking ref, preserving its own reflog (when it has
- * one) as the new name's history plus a single trailing rename entry — no
- * log is created for a name that never had one. `noDeref` on the delete
- * matters only for defensive symmetry with the symbolic mover below; a
- * direct ref never dereferences anywhere.
- */
-const moveDirectTrackingRef = async (
-  ctx: Context,
-  entry: Extract<TrackingRefEntry, { kind: 'direct' }>,
-  target: RefName,
-): Promise<void> => {
-  const store = getRefStore(ctx);
-  if (await store.hasReflog(entry.name)) {
-    await store.moveReflog(entry.name, target);
-    const message = trackingRenameMessage(entry.name, target);
-    await store.applyRefUpdates([
-      { kind: 'set', name: target, id: entry.id, expected: 'absent' },
-      { kind: 'reflogOnly', name: target, reflog: { oldId: entry.id, newId: entry.id, message } },
-    ]);
-  } else {
-    await store.applyRefUpdates([{ kind: 'set', name: target, id: entry.id, expected: 'absent' }]);
-  }
-  await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
-};
+/** A direct tracking ref's create under its renamed name — no log is
+ *  created for it here. */
+const directCreate = (entry: DirectTrackingRef, target: RefName): RefUpdate => ({
+  kind: 'set',
+  name: target,
+  id: entry.id,
+  expected: 'absent',
+});
+
+/** The single trailing same-id entry a moved log gains under its new name. */
+const directRenameLogEntry = (entry: DirectTrackingRef, target: RefName): RefUpdate => ({
+  kind: 'reflogOnly',
+  name: target,
+  reflog: { oldId: entry.id, newId: entry.id, message: trackingRenameMessage(entry.name, target) },
+});
 
 /**
- * Move one symbolic tracking ref (`<remote>/HEAD`), per backend:
- * - files: moves the log wholesale, then re-creates the symref with a
- *   null-id reflog entry recording the rename.
- * - reftable: copies the log onto the new name WITHOUT removing the old
- *   one, then deletes the old name directly (bypassing `updateRef`): the
- *   reftable store already keeps a symbolic delete's log uncut, so this
- *   only needs to add the trailing entry itself. Its old id is the
- *   referent's value from BEFORE the batch started — by the time this
- *   runs, the direct ref it named has already moved to the new namespace,
- *   so a fresh resolve would read it as absent. Measured against git
- *   2.55.0: git's own entry names the referent's last real value, not the
- *   null id, so `renameTrackingRefs` captures it upfront and threads it
- *   through here.
+ * Create every direct tracking ref under its renamed name in one batch,
+ * each logged source's history moved onto the new name first and followed
+ * by one rename entry — no log is created for a name that never had one.
  */
-const moveSymbolicTrackingRef = async (
+const createDirectTrackingRefs = async (
   ctx: Context,
-  entry: Extract<TrackingRefEntry, { kind: 'symbolic' }>,
-  from: string,
-  to: string,
-  preMoveReferentId: ObjectId | undefined,
+  direct: readonly DirectTrackingRef[],
+  rename: TrackingRename,
 ): Promise<void> => {
   const store = getRefStore(ctx);
-  const target = renamedName(entry.name, from, to);
-  const rewrittenTarget = rewriteSymbolicTarget(entry.target, from, to);
-  const logging = transactionLogging(ctx);
+  const updates: RefUpdate[] = [];
+  for (const entry of direct) {
+    const target = renamedName(entry.name, rename.from, rename.to);
+    updates.push(directCreate(entry, target));
+    if (!(await store.hasReflog(entry.name))) continue;
+    await store.moveReflog(entry.name, target);
+    updates.push(directRenameLogEntry(entry, target));
+  }
+  await store.applyRefUpdates(updates);
+};
+
+/** Whether the backend moves a renamed symref's log wholesale (files) rather
+ *  than copying it and keeping the old name's log (reftable). */
+const movesSymrefLog = (ctx: Context): boolean =>
+  transactionLogging(ctx).renamedSymrefLog === 'move-then-null-entry';
+
+/**
+ * Carry a symbolic tracking ref's log onto its renamed name before the old
+ * name is deleted. The reftable backend copies it: the old name keeps its
+ * log, and the `noDeref` delete appends the referent's value from before the
+ * delete to it, as git's does.
+ */
+const carrySymbolicLog = async (
+  ctx: Context,
+  entry: SymbolicTrackingRef,
+  rename: TrackingRename,
+): Promise<void> => {
+  const store = getRefStore(ctx);
+  const target = renamedName(entry.name, rename.from, rename.to);
+  await (movesSymrefLog(ctx)
+    ? store.moveReflog(entry.name, target)
+    : store.copyReflog(entry.name, target));
+};
+
+/** A symbolic tracking ref's create under its renamed name, its target
+ *  rewritten into the new namespace — with a null-id rename entry on the
+ *  files backend only. */
+const symbolicCreate = (
+  ctx: Context,
+  entry: SymbolicTrackingRef,
+  rename: TrackingRename,
+): RefUpdate => {
+  const name = renamedName(entry.name, rename.from, rename.to);
+  const target = rewriteSymbolicTarget(entry.target, rename.from, rename.to);
+  if (!movesSymrefLog(ctx)) return { kind: 'setSymbolic', name, target };
   const zero = zeroOid(ctx.hashConfig);
-  if (logging.renamedSymrefLog === 'move-then-null-entry') {
-    await store.moveReflog(entry.name, target);
-    await updateRef(ctx, entry.name, zero, { delete: true, noDeref: true });
-    const message = trackingRenameMessage(entry.name, target);
-    await store.applyRefUpdates([
-      {
-        kind: 'setSymbolic',
-        name: target,
-        target: rewrittenTarget,
-        reflog: { oldId: zero, newId: zero, message },
-      },
-    ]);
-  } else {
-    await store.copyReflog(entry.name, target);
-    await store.applyRefUpdates([
-      { kind: 'delete', name: entry.name },
-      {
-        kind: 'reflogOnly',
-        name: entry.name,
-        reflog: { oldId: preMoveReferentId ?? zero, newId: zero, message: '' },
-      },
-    ]);
-    await store.applyRefUpdates([{ kind: 'setSymbolic', name: target, target: rewrittenTarget }]);
-  }
+  const reflog = { oldId: zero, newId: zero, message: trackingRenameMessage(entry.name, name) };
+  return { kind: 'setSymbolic', name, target, reflog };
 };
 
 /**
- * Move every tracking ref from `refs/remotes/<from>/` to `refs/remotes/<to>/`,
- * direct refs first and the symbolic `<from>/HEAD` last — git's own order,
- * since a symref rewritten before its target moved would still resolve, but
- * the pinned on-disk shape is taken with the target already moved.
+ * Move every tracking ref from `refs/remotes/<from>/` to `refs/remotes/<to>/`:
+ * every renamed name proven free, the direct refs created, the symbolic
+ * refs' logs carried, every old name deleted in ONE ref transaction, and the
+ * symbolic `<to>/HEAD` created last, once its target already exists.
  */
 const renameTrackingRefs = async (
   ctx: Context,
-  from: string,
-  to: string,
+  rename: TrackingRename,
 ): Promise<readonly RefName[]> => {
-  const names = await listTrackingRefs(ctx, from);
-  const resolved = await readTrackingValues(ctx, names);
-  await assertRenamedNamesFree(
-    ctx,
-    resolved.map((entry) => renamedName(entry.name, from, to)),
-  );
+  const resolved = await readTrackingValues(ctx, await listTrackingRefs(ctx, rename.from));
+  const renamed = (entry: TrackingRefEntry): RefName =>
+    renamedName(entry.name, rename.from, rename.to);
+  await assertRenamedNamesFree(ctx, resolved.map(renamed));
   const direct = resolved.filter(isDirectEntry);
   const symbolic = resolved.filter(isSymbolicEntry);
-  // Captured before any ref moves: a symbolic tracking ref's own referent
-  // is always one of these direct entries (the pinned shape), so its value
-  // must be read now — once the direct move below runs, the old name is
-  // gone and a fresh resolve would see nothing.
-  const preMoveIds = new Map(direct.map((entry) => [entry.name, entry.id]));
-  for (const entry of direct) {
-    await moveDirectTrackingRef(ctx, entry, renamedName(entry.name, from, to));
-  }
+  await createDirectTrackingRefs(ctx, direct, rename);
+  for (const entry of symbolic) await carrySymbolicLog(ctx, entry, rename);
+  const oldNames = resolved.map((entry) => entry.name);
+  await deleteRefs(ctx, oldNames, { noDeref: true });
   for (const entry of symbolic) {
-    await moveSymbolicTrackingRef(ctx, entry, from, to, preMoveIds.get(entry.target));
+    await getRefStore(ctx).applyRefUpdates([symbolicCreate(ctx, entry, rename)]);
   }
-  return [...direct, ...symbolic].map((entry) => renamedName(entry.name, from, to));
+  return [...direct, ...symbolic].map(renamed);
 };
 
 export const remoteRename = async (
@@ -405,7 +401,7 @@ export const remoteRename = async (
   const referrers = listBranchReferrers(config, input.from);
   // Move tracking refs first (recoverability): direct refs, then the
   // symbolic `<from>/HEAD` last.
-  const moved = await renameTrackingRefs(ctx, input.from, input.to);
+  const moved = await renameTrackingRefs(ctx, { from: input.from, to: input.to });
   // Config rewrite: rename the section, replace the canonical refspec
   // (custom ones preserved), update branch referrers.
   const rewrittenSpecs = rewriteDefaultFetchRefspecs(fromEntry.fetch ?? [], input.from, input.to);
