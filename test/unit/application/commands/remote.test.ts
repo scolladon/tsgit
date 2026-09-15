@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
@@ -34,6 +34,17 @@ const ORIGIN_HEAD = 'refs/remotes/origin/HEAD' as RefName;
 const UP2_MAIN = 'refs/remotes/up2/main' as RefName;
 const UP2_HEAD = 'refs/remotes/up2/HEAD' as RefName;
 
+const FROZEN_EPOCH_SECONDS = 1_700_000_000;
+/** The identity a repository with no `[user]` config logs under, at the frozen clock. */
+const FALLBACK_IDENTITY = `tsgit <tsgit@localhost> ${FROZEN_EPOCH_SECONDS} +0000`;
+
+/** Every reflog entry of `name`, as the raw line the files backend writes. */
+const reflogLines = async (ctx: Context, name: RefName): Promise<readonly string[]> =>
+  (await readReflog(ctx, name)).map(
+    ({ oldId, newId, identity, message }) =>
+      `${oldId} ${newId} ${identity.name} <${identity.email}> ${identity.timestamp} ${identity.timezoneOffset}\t${message}`,
+  );
+
 /** Records every `applyRefUpdates` batch the Context's store receives. */
 const recordBatches = (ctx: Context): RefUpdate[][] => {
   const store = getRefStore(ctx);
@@ -66,6 +77,10 @@ const rejectedCtx = async (content?: string): Promise<Context> => {
 describe('application/commands/remote', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('list', () => {
@@ -1130,47 +1145,39 @@ describe('application/commands/remote', () => {
 
     describe('Given a symbolic tracking ref (HEAD) on a reftable-backend Context', () => {
       describe('When remoteRename runs', () => {
-        it('Then the new HEAD symref carries the copied log and the old name keeps it too', async () => {
+        it('Then the new HEAD symref carries the copied log and the old name keeps it with one deletion entry', async () => {
           // Arrange
+          vi.spyOn(Date, 'now').mockReturnValue(FROZEN_EPOCH_SECONDS * 1000);
           const ctx = withReftableStorage(createMemoryContext());
           await seed(ctx, '[remote "origin"]\n\turl = u\n');
           const store = getRefStore(ctx);
           await store.applyRefUpdates([
-            {
-              kind: 'set',
-              name: 'refs/remotes/origin/main' as RefName,
-              id: 'a'.repeat(40) as ObjectId,
-            },
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
             {
               kind: 'setSymbolic',
-              name: 'refs/remotes/origin/HEAD' as RefName,
-              target: 'refs/remotes/origin/main' as RefName,
-              reflog: {
-                oldId: '0'.repeat(40) as ObjectId,
-                newId: '0'.repeat(40) as ObjectId,
-                message: 'clone',
-              },
+              name: ORIGIN_HEAD,
+              target: ORIGIN_MAIN,
+              reflog: { oldId: ZERO_ID, newId: ZERO_ID, message: 'clone' },
             },
           ]);
 
           // Act
           await remoteRename(ctx, { from: 'origin', to: 'upstream' });
 
-          // Assert — the new symref carries the copied history with NO
-          // trailing entry (reftable never gets one on the create side);
-          // the old name keeps its own log too (copy, not move) — the
-          // `noDeref` delete's own kept-with-entry rule (an empty message)
-          // is a store-level concern already pinned elsewhere.
+          // Assert — the copied history carries no trailing entry on the
+          // create side; the old name's kept log gains the referent's value
+          // from before the rename, to the null id, with no message.
           expect(await store.resolveDirect('refs/remotes/upstream/HEAD' as RefName)).toEqual({
             kind: 'symbolic',
             target: 'refs/remotes/upstream/main',
           });
-          const newLog = await readReflog(ctx, 'refs/remotes/upstream/HEAD' as RefName);
-          expect(newLog).toHaveLength(1);
-          expect(newLog[0]?.message).toBe('clone');
-          const oldLog = await readReflog(ctx, 'refs/remotes/origin/HEAD' as RefName);
-          expect(oldLog.length).toBeGreaterThanOrEqual(1);
-          expect(oldLog[0]?.message).toBe('clone');
+          expect(await store.resolveDirect(ORIGIN_HEAD)).toEqual({ kind: 'missing' });
+          const clone = `${ZERO_ID} ${ZERO_ID} ${FALLBACK_IDENTITY}\tclone`;
+          expect(await reflogLines(ctx, 'refs/remotes/upstream/HEAD' as RefName)).toEqual([clone]);
+          expect(await reflogLines(ctx, ORIGIN_HEAD)).toEqual([
+            clone,
+            `${ORIGIN_ID} ${ZERO_ID} ${FALLBACK_IDENTITY}\t`,
+          ]);
         });
       });
     });
