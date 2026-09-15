@@ -777,7 +777,22 @@ export class NodeFileSystem implements FileSystem {
     // — can still be removed. A regular file's containment is still
     // verified via its parent directory, which is the same guarantee.
     const real = await this.resolveWrite(path);
-    await runFs(() => this.fsOps.rm(real), path);
+    try {
+      await this.fsOps.rm(real);
+    } catch (err) {
+      // Node's `fs.rm` refuses EVERY directory outright (`ERR_FS_EISDIR`)
+      // unless `recursive: true` is passed — it never even checks whether
+      // one is empty. The port's own contract is "file or EMPTY directory",
+      // so a directory falls back to `rmdir`, which succeeds only when
+      // empty and throws `ENOTEMPTY` (mapped to `directoryNotEmpty`)
+      // otherwise — never silently recursing into a non-empty one.
+      if (isErrnoException(err) && err.code === 'ERR_FS_EISDIR') {
+        await runFs(() => this.fsOps.rmdir(real), path);
+        return;
+      }
+      if (isErrnoException(err)) throw mapErrno(err, path);
+      throw err;
+    }
     // Node's `fs.rm` without `recursive` only removes leaves — a regular
     // file or symlink. The parent directory and its realpath are
     // unchanged, so the parent-realpath cache entry for `dirname(real)`

@@ -1263,6 +1263,18 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(await env.fs.readUtf8(path)).toBe('a\nb\nc\n');
     });
 
+    it('Given empty directory, When rm, Then the directory is removed', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/rm-empty-dir`;
+      await env.fs.mkdir(dir);
+
+      // Act
+      await env.fs.rm(dir);
+
+      // Assert
+      expect(await env.fs.exists(dir)).toBe(false);
+    });
+
     it('Given non-empty directory, When rm, Then throws a TsgitError', async () => {
       // Arrange
       const dir = `${env.rootDir}/non-empty`;
@@ -1277,8 +1289,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
         caught = err;
       }
 
-      // Assert — exact code is platform-dependent (Node returns ENOTEMPTY which maps to
-      // UNSUPPORTED_OPERATION; other adapters may surface NOT_A_DIRECTORY or similar).
+      // Assert — exact code is platform-dependent (Node returns ENOTEMPTY, mapped to
+      // DIRECTORY_NOT_EMPTY; other adapters may surface NOT_A_DIRECTORY or similar).
       // What matters is that a structured TsgitError is thrown, not the loose fact of throwing.
       expect(caught).toBeInstanceOf(TsgitError);
     });

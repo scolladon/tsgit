@@ -133,6 +133,13 @@ export interface RefStore {
    */
   moveReflog(from: RefName, to: RefName): Promise<void>;
   /**
+   * Copies `from`'s reflog onto `to`, leaving `from`'s own log untouched —
+   * unlike {@link moveReflog}, both names carry the history afterward.
+   * Byte-for-byte on the files backend, exactly as `moveReflog` copies;
+   * `from` having no reflog is a pure no-op, `to` gaining none either.
+   */
+  copyReflog(from: RefName, to: RefName): Promise<void>;
+  /**
    * Whether `name` has a reflog at all — a file-presence question
    * independent of entry count (an emptied-but-present log still counts,
    * matching real git), and independent of `listReflogs`'s whole-tree walk:
@@ -764,6 +771,17 @@ function createFilesRefStore(ctx: Context): RefStore {
     await ctx.fs.rename(src, reflogPath(refDir(to), to));
   }
 
+  /**
+   * Reads `from`'s reflog bytes and writes them to `to`'s path, leaving
+   * `from`'s own file in place — the same byte-preserving copy `moveReflog`
+   * does, minus the deletion. `from` having no reflog is a pure no-op.
+   */
+  async function copyReflog(from: RefName, to: RefName): Promise<void> {
+    if (!(await hasReflog(from))) return;
+    const bytes = await ctx.fs.read(reflogPath(refDir(from), from));
+    await ctx.fs.write(reflogPath(refDir(to), to), bytes);
+  }
+
   /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
    *  alone answers "does something live at this path" and returns `true`
    *  for a directory too, which a name like `refs/heads/feature` collides
@@ -892,6 +910,31 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /**
+   * Removes now-empty ancestor directories above `leaf`, up to — but never
+   * including — an immediate child of `root` (`refs/heads`, `refs/remotes`,
+   * `logs/refs/heads`, …): those survive even fully empty, matching real
+   * git (deleting the last branch leaves `refs/heads/` and `logs/refs/heads/`
+   * behind, but deleting the last tracking ref under `refs/remotes/origin/`
+   * removes that nested directory, loose file and log alike). Measured
+   * against git 2.55.0.
+   */
+  async function pruneEmptyDirsUpTo(leaf: string, root: string): Promise<void> {
+    let dir = dirname(leaf);
+    while (dirname(dir) !== root) {
+      let entries: ReadonlyArray<unknown>;
+      try {
+        entries = await ctx.fs.readdir(dir);
+      } catch (err) {
+        if (isFileNotFound(err)) return;
+        throw err;
+      }
+      if (entries.length > 0) return;
+      await ctx.fs.rm(dir);
+      dir = dirname(dir);
+    }
+  }
+
+  /**
    * git's files-backend delete order: rewrite `packed-refs` first (only
    * when it actually held `name` — a loose-only delete leaves the file
    * byte-unchanged, Q4), then the loose file, then the reflog. A crash
@@ -922,16 +965,28 @@ function createFilesRefStore(ctx: Context): RefStore {
    * `packed-refs` (rewritten only when it held it), then remove the loose
    * file and its log. Both locks are taken even for an absent ref (U3, Q5,
    * X13) — the delete's no-op is proven by nothing changing, not by a
-   * refusal.
+   * refusal. Ancestor-directory pruning (both the `refs/` and `logs/refs/`
+   * trees) runs AFTER the loose lock is released — the lock file itself
+   * lives in the same directory being pruned, so pruning while it still
+   * holds the lock would see it as non-empty and refuse to remove
+   * anything, matching git's own unlock-then-`try_remove_empty_parents`
+   * order — and only for a name nested under `refs/`: a bare pseudo-ref
+   * like `HEAD` has no such directory, and reusing the same climb for it
+   * would walk into `logs/` itself using the wrong boundary.
    */
   async function applyDelete(update: Extract<RefUpdate, { kind: 'delete' }>): Promise<void> {
     await checkExpected(update.name, update.expected);
-    const loose = looseRefPath(refDir(update.name), update.name);
+    const gitDir = refDir(update.name);
+    const loose = looseRefPath(gitDir, update.name);
     await withLooseRefLock(loose, update.name, () =>
       withLockFile(ctx, packedRefsPath(commonGitDir(ctx)), packedRefsLocked, (commit) =>
         removeEverywhere(update.name, loose, commit),
       ),
     );
+    if (update.name.startsWith('refs/')) {
+      await pruneEmptyDirsUpTo(loose, `${gitDir}/refs`);
+      await pruneEmptyDirsUpTo(reflogPath(gitDir, update.name), `${gitDir}/logs/refs`);
+    }
   }
 
   async function applyOne(update: RefUpdate): Promise<void> {
@@ -1038,6 +1093,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     readReflog,
     readReflogLenient,
     moveReflog,
+    copyReflog,
     hasReflog,
     listReflogs,
     packRefs,

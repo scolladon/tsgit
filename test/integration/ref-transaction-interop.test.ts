@@ -926,10 +926,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given packed-only, fetch-logged and loose-over-packed tracking refs (R18)', () => {
       describe('When the remote is renamed', () => {
-        it('Then packed-refs and every moved loose ref match git exactly (reflog/HEAD bytes complete in a later change)', async () => {
+        it('Then packed-refs, every moved ref, and every reflog match git exactly, including the symbolic HEAD', async () => {
           // Arrange — GIT_COMMITTER_NAME/EMAIL, not repository config: git's
           // own `remote rename` does not read `user.name`/`user.email` for
-          // its rename entries (recorded, not yet asserted here).
+          // its rename entries — `ours` carries the same identity via its
+          // config's `[user]` instead, so both sides produce the same bytes.
           const { peer, ours, ctx } = await r18CasePair('r18-rename');
           const renameEnv: NodeJS.ProcessEnv = {
             ...runGitEnv(),
@@ -944,10 +945,8 @@ describe.skipIf(!GIT_AVAILABLE)(
           const result = await remoteRename(ctx, { from: 'origin', to: 'up2' });
 
           // Assert — packed-refs collapses to just refs/heads/main (every
-          // tracking ref moved loose, as git's own rewrite does). tsgit's
-          // result today also NAMES origin/HEAD among the "moved" refs even
-          // though — see below — the underlying file never moves; that
-          // over-claim is a pre-existing residual this part does not touch.
+          // tracking ref moved loose, as git's own rewrite does), and every
+          // tracking ref including the symbolic HEAD is reported moved.
           expect(gitResult.exitCode).toBe(0);
           expect([...result.movedTrackingRefs].sort()).toEqual(
             [
@@ -971,16 +970,58 @@ describe.skipIf(!GIT_AVAILABLE)(
             ).trim();
             expect(oursValue).toBe(peerValue);
           }
-          // git moves every tracking ref including the symbolic origin/HEAD
-          // (nothing left under refs/remotes/origin/); tsgit today leaves
-          // origin/HEAD behind — O6 (a) fixes this in a later change, so
-          // this row does not assert HEAD's own move yet.
+          // git moves every tracking ref including the symbolic origin/HEAD —
+          // nothing survives under refs/remotes/origin/ on either side.
           expect(await pathExists(path.join(peer, '.git', 'refs', 'remotes', 'origin'))).toBe(
             false,
           );
+          expect(await pathExists(path.join(ours, '.git', 'refs', 'remotes', 'origin'))).toBe(
+            false,
+          );
+          // The symbolic HEAD itself: same target on both sides, rewritten
+          // onto the new remote namespace.
+          const peerSymShow = tryRunGitWithExit([
+            '-C',
+            peer,
+            'symbolic-ref',
+            'refs/remotes/up2/HEAD',
+          ]);
+          expect(peerSymShow.exitCode).toBe(0);
+          expect(peerSymShow.stdout.trim()).toBe('refs/remotes/up2/main');
+          expect(await getRefStore(ctx).resolveDirect('refs/remotes/up2/HEAD' as RefName)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/remotes/up2/main',
+          });
+          // keep/main: packed-only, never fetched into individually — no log
+          // ever existed, and the rename creates none.
+          for (const name of ['keep', 'main']) {
+            expect(
+              await pathExists(path.join(peer, '.git', 'logs', 'refs', 'remotes', 'up2', name)),
+            ).toBe(false);
+            expect(
+              await pathExists(path.join(ours, '.git', 'logs', 'refs', 'remotes', 'up2', name)),
+            ).toBe(false);
+          }
+          // lp, pl, HEAD: every fetch-built log line, byte-for-byte, plus the
+          // rename's own trailing entry.
+          for (const name of ['lp', 'pl', 'HEAD']) {
+            const peerLog = await readFile(
+              path.join(peer, '.git', 'logs', 'refs', 'remotes', 'up2', name),
+              'utf8',
+            );
+            const oursLog = await readFile(
+              path.join(ours, '.git', 'logs', 'refs', 'remotes', 'up2', name),
+              'utf8',
+            );
+            expect(oursLog).toBe(peerLog);
+          }
+          // No log survives under the old namespace.
           expect(
-            await pathExists(path.join(ours, '.git', 'refs', 'remotes', 'origin', 'HEAD')),
-          ).toBe(true);
+            await pathExists(path.join(peer, '.git', 'logs', 'refs', 'remotes', 'origin')),
+          ).toBe(false);
+          expect(
+            await pathExists(path.join(ours, '.git', 'logs', 'refs', 'remotes', 'origin')),
+          ).toBe(false);
         });
       });
     });

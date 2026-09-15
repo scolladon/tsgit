@@ -95,4 +95,34 @@ describe('transactionLogging', () => {
       });
     });
   });
+
+  describe('Given a files-backend Context', () => {
+    describe('When transactionLogging is called', () => {
+      it('Then renamedSymrefLog is "move-then-null-entry"', () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = transactionLogging(ctx);
+
+        // Assert
+        expect(result.renamedSymrefLog).toBe('move-then-null-entry');
+      });
+    });
+  });
+
+  describe('Given a reftable-backend Context', () => {
+    describe('When transactionLogging is called', () => {
+      it('Then renamedSymrefLog is "copy-then-delete-entry"', () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+
+        // Act
+        const result = transactionLogging(ctx);
+
+        // Assert
+        expect(result.renamedSymrefLog).toBe('copy-then-delete-entry');
+      });
+    });
+  });
 });

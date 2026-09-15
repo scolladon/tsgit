@@ -664,6 +664,69 @@ describe('NodeFileSystem', () => {
       });
     });
 
+    describe('Given fs.rm throws a non-errno error', () => {
+      describe('When rm', () => {
+        it('Then rethrows the original error untouched', async () => {
+          // Arrange — the EISDIR-fallback catch in `rm` re-implements
+          // `runFs`'s own errno-vs-non-errno split for its OWN try/catch
+          // (it cannot delegate the initial call to `runFs`, since it
+          // needs the raw error to detect `ERR_FS_EISDIR`), so it needs
+          // its own proof of the non-errno passthrough branch.
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const original = new TypeError('boom');
+          const fsOps: FsOperations = {
+            ...fsPromises,
+            rm: (async () => {
+              throw original;
+            }) as FsOperations['rm'],
+          };
+          const fs = new NodeFileSystem(rootDir, undefined, fsOps);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.rm(nodePath.join(rootDir, 'whatever.txt'));
+          } catch (err) {
+            caught = err;
+          } finally {
+            await fsPromises.rm(rootDir, { recursive: true, force: true });
+          }
+
+          // Assert
+          expect(caught).toBe(original);
+        });
+      });
+    });
+
+    describe('Given fs.rm throws ERR_FS_EISDIR for a non-empty directory', () => {
+      describe('When rm', () => {
+        it('Then rmdir refuses with DIRECTORY_NOT_EMPTY rather than recursing', async () => {
+          // Arrange
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const dir = nodePath.join(rootDir, 'busy');
+          await fsPromises.mkdir(dir);
+          await fsPromises.writeFile(nodePath.join(dir, 'inside.txt'), 'x');
+          const fs = new NodeFileSystem(rootDir);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.rm(dir);
+          } catch (err) {
+            caught = err;
+          } finally {
+            await fsPromises.rm(rootDir, { recursive: true, force: true });
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('DIRECTORY_NOT_EMPTY');
+        });
+      });
+    });
+
     describe('Given rmRecursive through a symlinked leading directory that resolves outside root', () => {
       describe('When rmRecursive', () => {
         it('Then throws PERMISSION_DENIED', async () => {

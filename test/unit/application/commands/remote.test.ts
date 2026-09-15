@@ -11,10 +11,12 @@ import {
 } from '../../../../src/application/commands/remote.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { RefName } from '../../../../src/domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const seed = async (ctx: Context, content?: string): Promise<void> => {
   await init(ctx);
@@ -804,11 +806,116 @@ describe('application/commands/remote', () => {
           // either — the empty-spec path writes no `fetch` line.
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           expect(written).not.toContain('fetch');
-          // The move records the rename reflog message on the new ref.
-          const movedLog = await ctx.fs.readUtf8(
-            `${ctx.layout.gitDir}/logs/refs/remotes/upstream/main`,
+        });
+      });
+    });
+
+    describe('Given a tracking ref under the old name with an existing reflog', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the new name keeps that history and gains one full-ref-name rename entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const oid = 'a'.repeat(40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/logs/refs/remotes/origin/main`,
+            `${'0'.repeat(40)} ${oid} A <a@e.com> 1700000000 +0000\tfetch\n`,
           );
-          expect(movedLog).toContain('remote: renamed origin to upstream');
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+          const log = await readReflog(ctx, 'refs/remotes/upstream/main' as RefName);
+
+          // Assert — the moved history, plus exactly one appended entry
+          // naming the full ref paths, not the remote names.
+          expect(log).toHaveLength(2);
+          expect(log[0]?.newId).toBe(oid);
+          expect(log[1]?.oldId).toBe(oid);
+          expect(log[1]?.newId).toBe(oid);
+          expect(log[1]?.message).toBe(
+            'remote: renamed refs/remotes/origin/main to refs/remotes/upstream/main',
+          );
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/remotes/origin/main`)).toBe(
+            false,
+          );
+        });
+      });
+    });
+
+    describe('Given a tracking ref under the old name with NO existing reflog', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the new name has no reflog either', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const oid = 'a'.repeat(40);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+
+          // Assert
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/remotes/upstream/main`)).toBe(
+            false,
+          );
+        });
+      });
+    });
+
+    describe('Given an unlogged direct tracking ref on a reftable-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the new name has no reflog either', async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([
+            {
+              kind: 'set',
+              name: 'refs/remotes/origin/main' as RefName,
+              id: 'a'.repeat(40) as ObjectId,
+            },
+          ]);
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+
+          // Assert
+          expect(await readReflog(ctx, 'refs/remotes/upstream/main' as RefName)).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given an unlogged symbolic tracking ref (HEAD) on a reftable-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the new HEAD symref exists with no reflog either', async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([
+            {
+              kind: 'set',
+              name: 'refs/remotes/origin/main' as RefName,
+              id: 'a'.repeat(40) as ObjectId,
+            },
+            {
+              kind: 'setSymbolic',
+              name: 'refs/remotes/origin/HEAD' as RefName,
+              target: 'refs/remotes/origin/main' as RefName,
+            },
+          ]);
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+
+          // Assert
+          expect(await store.resolveDirect('refs/remotes/upstream/HEAD' as RefName)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/remotes/upstream/main',
+          });
+          expect(await readReflog(ctx, 'refs/remotes/upstream/HEAD' as RefName)).toEqual([]);
         });
       });
     });
@@ -861,6 +968,159 @@ describe('application/commands/remote', () => {
           expect(moved).toBe(oid);
           const packedContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/packed-refs`);
           expect(packedContent).not.toContain('refs/remotes/origin/main');
+        });
+      });
+    });
+
+    describe('Given a packed-only tracking ref under the old name, with an existing reflog', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the moved history gains one rename entry and the old packed-refs line is gone', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const oid = 'a'.repeat(40);
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/packed-refs`,
+            `# pack-refs with: peeled fully-peeled sorted\n${oid} refs/remotes/origin/main\n`,
+          );
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/logs/refs/remotes/origin/main`,
+            `${'0'.repeat(40)} ${oid} A <a@e.com> 1700000000 +0000\tfetch\n`,
+          );
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+          const log = await readReflog(ctx, 'refs/remotes/upstream/main' as RefName);
+
+          // Assert
+          expect(log).toHaveLength(2);
+          expect(log[1]?.message).toBe(
+            'remote: renamed refs/remotes/origin/main to refs/remotes/upstream/main',
+          );
+          const packedContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/packed-refs`);
+          expect(packedContent).not.toContain('refs/remotes/origin/main');
+        });
+      });
+    });
+
+    describe('Given a symbolic tracking ref (HEAD) on a files-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the new HEAD symref is re-created with a rewritten target and a null-id rename entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/main`,
+            `${'a'.repeat(40)}\n`,
+          );
+          await writeSymbolicRef(
+            ctx,
+            'refs/remotes/origin/HEAD' as RefName,
+            'refs/remotes/origin/main' as RefName,
+          );
+
+          // Act
+          const result = await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+
+          // Assert
+          expect(result.movedTrackingRefs).toContain('refs/remotes/upstream/HEAD');
+          expect(
+            await getRefStore(ctx).resolveDirect('refs/remotes/origin/HEAD' as RefName),
+          ).toEqual({ kind: 'missing' });
+          expect(
+            await getRefStore(ctx).resolveDirect('refs/remotes/upstream/HEAD' as RefName),
+          ).toEqual({ kind: 'symbolic', target: 'refs/remotes/upstream/main' });
+          const log = await readReflog(ctx, 'refs/remotes/upstream/HEAD' as RefName);
+          expect(log).toHaveLength(1);
+          expect(log[0]?.oldId).toBe('0'.repeat(40));
+          expect(log[0]?.newId).toBe('0'.repeat(40));
+          expect(log[0]?.message).toBe(
+            'remote: renamed refs/remotes/origin/HEAD to refs/remotes/upstream/HEAD',
+          );
+        });
+      });
+    });
+
+    describe('Given a symbolic tracking ref (HEAD) on a reftable-backend Context', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the new HEAD symref carries the copied log and the old name keeps it too', async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([
+            {
+              kind: 'set',
+              name: 'refs/remotes/origin/main' as RefName,
+              id: 'a'.repeat(40) as ObjectId,
+            },
+            {
+              kind: 'setSymbolic',
+              name: 'refs/remotes/origin/HEAD' as RefName,
+              target: 'refs/remotes/origin/main' as RefName,
+              reflog: {
+                oldId: '0'.repeat(40) as ObjectId,
+                newId: '0'.repeat(40) as ObjectId,
+                message: 'clone',
+              },
+            },
+          ]);
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+
+          // Assert — the new symref carries the copied history with NO
+          // trailing entry (reftable never gets one on the create side);
+          // the old name keeps its own log too (copy, not move) — the
+          // `noDeref` delete's own kept-with-entry rule (an empty message)
+          // is a store-level concern already pinned elsewhere.
+          expect(await store.resolveDirect('refs/remotes/upstream/HEAD' as RefName)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/remotes/upstream/main',
+          });
+          const newLog = await readReflog(ctx, 'refs/remotes/upstream/HEAD' as RefName);
+          expect(newLog).toHaveLength(1);
+          expect(newLog[0]?.message).toBe('clone');
+          const oldLog = await readReflog(ctx, 'refs/remotes/origin/HEAD' as RefName);
+          expect(oldLog.length).toBeGreaterThanOrEqual(1);
+          expect(oldLog[0]?.message).toBe('clone');
+        });
+      });
+    });
+
+    describe('Given both direct and symbolic tracking refs under the old name', () => {
+      describe('When remoteRename runs', () => {
+        it('Then every direct ref moves before the symbolic ref does', async () => {
+          // Arrange — git's own order: direct refs first, the symref last.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/main`,
+            `${'a'.repeat(40)}\n`,
+          );
+          await writeSymbolicRef(
+            ctx,
+            'refs/remotes/origin/HEAD' as RefName,
+            'refs/remotes/origin/main' as RefName,
+          );
+          const store = getRefStore(ctx);
+          const calls: Array<{ readonly kind: string }> = [];
+          const originalApply = store.applyRefUpdates.bind(store);
+          store.applyRefUpdates = async (updates) => {
+            for (const update of updates) calls.push({ kind: update.kind });
+            return originalApply(updates);
+          };
+
+          // Act
+          await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+
+          // Assert — the LAST `setSymbolic` call is the HEAD re-creation;
+          // every `set` (the direct ref) lands before it.
+          const setSymbolicIndex = calls.findIndex((c) => c.kind === 'setSymbolic');
+          const lastSetIndex = calls.map((c) => c.kind).lastIndexOf('set');
+          expect(setSymbolicIndex).toBeGreaterThan(-1);
+          expect(lastSetIndex).toBeGreaterThan(-1);
+          expect(setSymbolicIndex).toBeGreaterThan(lastSetIndex);
         });
       });
     });

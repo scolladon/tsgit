@@ -101,7 +101,7 @@ import {
 import type { ReflogAppend, RefUpdate } from './ref-store.js';
 
 /**
- * `moveReflog`'s reftable decomposition (O5, `renamedBranchLog:
+ * `moveReflog`'s reftable decomposition (`renamedBranchLog:
  * 'merge-then-delete-and-create'`): re-key `from`'s log under `to`, one
  * record at a time, without disturbing either ref's OWN value or any log
  * record `to` already carries. Never part of the public `RefUpdate` union
@@ -114,9 +114,22 @@ export interface ReflogMergeUpdate {
   readonly from: RefName;
 }
 
+/**
+ * `copyReflog`'s reftable decomposition (`renamedSymrefLog:
+ * 'copy-then-delete-entry'`): re-key `from`'s log under `to` exactly like
+ * {@link ReflogMergeUpdate}, with no tombstone written for `from` — both
+ * names carry the history afterward. Never part of the public `RefUpdate`
+ * union; the reftable store's own `copyReflog` is the only emitter.
+ */
+export interface ReflogCopyUpdate {
+  readonly kind: 'reflogCopy';
+  readonly name: RefName;
+  readonly from: RefName;
+}
+
 /** Every update `applyReftableUpdates` accepts: the public `RefUpdate`
  *  union plus reftable-only internal kinds no other backend ever sees. */
-export type ReftableInternalUpdate = RefUpdate | ReflogMergeUpdate;
+export type ReftableInternalUpdate = RefUpdate | ReflogMergeUpdate | ReflogCopyUpdate;
 
 import { resolveReflogIdentity } from './reflog-identity.js';
 
@@ -584,6 +597,24 @@ function applyReflogMergeRecords(
   }
 }
 
+/**
+ * `RefStore.copyReflog`'s reftable decomposition: every LIVE record under
+ * `from` is re-emitted under `to` at that SAME record's own `update_index`,
+ * merged into whatever live history `to` already has — identical to {@link
+ * applyReflogMergeRecords} except `from`'s own records are never
+ * tombstoned, so `readReflog(from)` still reads its full history afterward.
+ */
+function applyReflogCopyRecords(
+  stack: ReftableStack,
+  update: ReflogCopyUpdate,
+  logs: ReftableLogRecord[],
+): void {
+  for (const record of stack.logs(update.from)) {
+    if (record.entry.kind !== 'entry') continue;
+    logs.push({ name: update.name, updateIndex: record.updateIndex, entry: record.entry });
+  }
+}
+
 async function applyOneUpdate(
   ctx: Context,
   stack: ReftableStack,
@@ -642,6 +673,9 @@ async function applyOneUpdate(
       return;
     case 'reflogMerge':
       applyReflogMergeRecords(stack, update, logs);
+      return;
+    case 'reflogCopy':
+      applyReflogCopyRecords(stack, update, logs);
       return;
   }
 }

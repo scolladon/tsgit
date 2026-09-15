@@ -29,6 +29,13 @@ export interface TransactionLogging {
    *  the deletion to it: the files backend removes the log with the ref;
    *  the reftable backend keeps it and appends `<old> 0{40}`. */
   readonly symbolicDeleteLog: 'removed' | 'kept-with-entry';
+  /** How `remote.rename` moves a tracking symref's (`<remote>/HEAD`) own
+   *  log: the files backend moves it wholesale and appends one null-id
+   *  entry to the destination; the reftable backend copies it onto the
+   *  destination and leaves the source's log record live, with no
+   *  tombstone for it, so the source's log survives for the coupled
+   *  delete's own kept-with-entry append. */
+  readonly renamedSymrefLog: 'move-then-null-entry' | 'copy-then-delete-entry';
 }
 
 const FILES: TransactionLogging = {
@@ -36,12 +43,14 @@ const FILES: TransactionLogging = {
   renamedBranchLog: 'replace-then-same-id',
   headOldThroughLink: 'null-id',
   symbolicDeleteLog: 'removed',
+  renamedSymrefLog: 'move-then-null-entry',
 };
 const REFTABLE: TransactionLogging = {
   noOpDeleteLogs: 'skipped',
   renamedBranchLog: 'merge-then-delete-and-create',
   headOldThroughLink: 'resolved',
   symbolicDeleteLog: 'kept-with-entry',
+  renamedSymrefLog: 'copy-then-delete-entry',
 };
 
 /** `ctx.layout.refStorage`'s own discriminant — the same one

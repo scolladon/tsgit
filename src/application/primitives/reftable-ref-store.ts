@@ -320,6 +320,16 @@ export function createReftableRefStore(ctx: Context): RefStore {
     await applyReftableUpdates(ctx, [{ kind: 'reflogMerge', name: to, from }]);
   }
 
+  /**
+   * `RefStore.copyReflog`'s reftable implementation: identical to {@link
+   * moveReflog} except `from`'s own records are never tombstoned — both
+   * `from` and `to` carry the full history afterward.
+   */
+  async function copyReflog(from: RefName, to: RefName): Promise<void> {
+    if (!(await hasReflog(from))) return;
+    await applyReftableUpdates(ctx, [{ kind: 'reflogCopy', name: to, from }]);
+  }
+
   /** Whether `stack.logs(name)` — already tombstone-shadowed — yields at
    *  least one live entry. A name whose raw tables carry only shadowed-away
    *  entries has no reflog at all, matching the files backend's own
@@ -394,6 +404,7 @@ export function createReftableRefStore(ctx: Context): RefStore {
     readReflog,
     readReflogLenient,
     moveReflog,
+    copyReflog,
     hasReflog,
     listReflogs,
     packRefs,

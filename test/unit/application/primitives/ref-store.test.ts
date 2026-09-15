@@ -400,6 +400,107 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given the only ref under a nested namespace directory', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then the now-empty nested directory is pruned, matching git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'delete', name: 'refs/remotes/origin/main' as RefName },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/remotes/origin')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the only ref under a nested namespace directory, with a reflog', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then the now-empty nested LOG directory is pruned too, matching git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await appendReflog(ctx, 'refs/remotes/origin/main' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'delete', name: 'refs/remotes/origin/main' as RefName },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/logs/refs/remotes/origin')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD has the only reflog in the repository', () => {
+    describe('When applyRefUpdates deletes HEAD through the store', () => {
+      it('Then logs/ itself survives — the refs/ pruning never applies to a bare pseudo-ref', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'HEAD' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'HEAD' as RefName }]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/logs')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the only branch in the repository', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then refs/heads itself survives empty, matching git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/main' as RefName }]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads')).toBe(true);
+        expect(await ctx.fs.readdir('/repo/.git/refs/heads')).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a sibling ref remaining under a nested namespace directory', () => {
+    describe('When applyRefUpdates deletes the other ref in it', () => {
+      it('Then the directory is kept — it is not empty', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/remotes/origin/dev' as RefName, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'delete', name: 'refs/remotes/origin/main' as RefName },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/remotes/origin')).toBe(true);
+        expect(await ctx.fs.exists('/repo/.git/refs/remotes/origin/dev')).toBe(true);
+      });
+    });
+  });
+
   describe('Given a packed-refs.lock already held', () => {
     describe('When a delete of a packed-only ref is applied', () => {
       it('Then it refuses RESOURCE_LOCKED naming the ref resource and packed-refs.lock path', async () => {
@@ -2129,6 +2230,49 @@ describe('ref-store', () => {
 
         // Assert
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/trunk`)).toBe(before);
+      });
+    });
+  });
+
+  describe('Given a files-backed reflog containing a malformed line', () => {
+    describe('When copyReflog copies it to a new ref name', () => {
+      it('Then the destination text is byte-identical to the source AND the source survives untouched', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({ oldId: first.newId, message: 'second' });
+        await appendReflog(ctx, 'refs/heads/main' as RefName, first);
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/logs/refs/heads/main`,
+          'this is not a valid reflog line at all\n',
+        );
+        await appendReflog(ctx, 'refs/heads/main' as RefName, second);
+        const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.copyReflog('refs/heads/main' as RefName, 'refs/heads/copied' as RefName);
+
+        // Assert
+        const after = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/copied`);
+        expect(after).toBe(before);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(before);
+      });
+    });
+  });
+
+  describe('Given a source ref with no reflog', () => {
+    describe('When copyReflog is called', () => {
+      it('Then no destination reflog is created', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.copyReflog('refs/heads/absent' as RefName, 'refs/heads/copied' as RefName);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/copied`)).toBe(false);
       });
     });
   });
