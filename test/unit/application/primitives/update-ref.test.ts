@@ -1,13 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import {
   commonGitDir,
   shallowFilePath,
 } from '../../../../src/application/primitives/path-layout.js';
-import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import {
+  getRefStore,
+  type RefUpdate,
+  type ResolveDirectResult,
+} from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import type { UpdateRefOptions } from '../../../../src/application/primitives/types.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -1147,6 +1152,527 @@ describe('updateRef', () => {
           expect(symLog[0]).toEqual(
             expect.objectContaining({ oldId: unverified, newId: ZERO, message: 'bye' }),
           );
+        });
+      });
+    });
+  });
+
+  describe('symbolic refs in one ref transaction', () => {
+    const FROZEN_SECONDS = 1_700_000_000;
+    const IDENTITY = `tsgit <tsgit@localhost> ${FROZEN_SECONDS} +0000`;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(FROZEN_SECONDS * 1000);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    type Backend = 'files' | 'reftable';
+    type Slot = 'c1' | 'c2' | 'zero';
+    type ExpectedRef =
+      | { readonly kind: 'direct'; readonly id: Slot }
+      | { readonly kind: 'symbolic'; readonly target: string }
+      | { readonly kind: 'missing' };
+
+    interface Seed {
+      readonly direct?: Readonly<Record<string, Slot>>;
+      readonly symbolic?: Readonly<Record<string, string>>;
+      readonly logged?: ReadonlyArray<string>;
+    }
+
+    interface Fixture {
+      readonly ctx: Context;
+      readonly ids: Readonly<Record<Slot, ObjectId>>;
+      readonly calls: ReadonlyArray<ReadonlyArray<RefUpdate>>;
+    }
+
+    const contextFor = (backend: Backend): Context =>
+      backend === 'files' ? createMemoryContext() : withReftableStorage(createMemoryContext());
+
+    /** Seeds refs through the store (no reflog), optionally one `seed` log
+     *  line per `logged` name, then records every later applyRefUpdates call. */
+    const symrefFixture = async (backend: Backend, seed: Seed): Promise<Fixture> => {
+      const ctx = contextFor(backend);
+      const ids = {
+        c1: await writeCommit(ctx, 'symref c1'),
+        c2: await writeCommit(ctx, 'symref c2'),
+        zero: ZERO,
+      };
+      const store = getRefStore(ctx);
+      await store.applyRefUpdates([
+        ...Object.entries(seed.direct ?? {}).map(
+          ([name, slot]): RefUpdate => ({
+            kind: 'set',
+            name: name as RefName,
+            id: ids[slot],
+          }),
+        ),
+        ...Object.entries(seed.symbolic ?? {}).map(
+          ([name, target]): RefUpdate => ({
+            kind: 'setSymbolic',
+            name: name as RefName,
+            target: target as RefName,
+          }),
+        ),
+        ...(seed.logged ?? []).map(
+          (name): RefUpdate => ({
+            kind: 'reflogOnly',
+            name: name as RefName,
+            reflog: { oldId: ZERO, newId: ids.c1, message: 'seed' },
+          }),
+        ),
+      ]);
+      const calls: RefUpdate[][] = [];
+      const original = store.applyRefUpdates.bind(store);
+      store.applyRefUpdates = async (updates) => {
+        calls.push([...updates]);
+        return original(updates);
+      };
+      return { ctx, ids, calls };
+    };
+
+    const logLines = async (fixture: Fixture, name: string): Promise<readonly string[]> =>
+      (await readReflog(fixture.ctx, name as RefName)).map(
+        (entry) =>
+          `${entry.oldId} ${entry.newId} ${entry.identity.name} <${entry.identity.email}> ${entry.identity.timestamp} ${entry.identity.timezoneOffset}\t${entry.message}`,
+      );
+
+    const expectedLine = (ids: Fixture['ids'], [from, to, message]: LogSpec): string =>
+      `${ids[from]} ${ids[to]} ${IDENTITY}\t${message}`;
+
+    const expectedValue = (ids: Fixture['ids'], ref: ExpectedRef): ResolveDirectResult =>
+      ref.kind === 'direct' ? { kind: 'direct', id: ids[ref.id] } : (ref as ResolveDirectResult);
+
+    type LogSpec = readonly [Slot, Slot, string];
+
+    interface SuccessRow {
+      readonly label: string;
+      readonly backend: Backend;
+      readonly seed: Seed;
+      readonly name: string;
+      readonly newId: Slot;
+      readonly options: UpdateRefOptions;
+      readonly refs: Readonly<Record<string, ExpectedRef>>;
+      readonly logs: Readonly<Record<string, ReadonlyArray<LogSpec>>>;
+    }
+
+    const HEAD_S_X = { symbolic: { HEAD: 'refs/heads/s', 'refs/heads/s': 'refs/heads/x' } };
+
+    describe('Given a seeded chain of symbolic refs', () => {
+      describe('When updateRef applies one write or delete to it', () => {
+        it.each<SuccessRow>([
+          {
+            label: 'a link logs an unchanged value while the terminal does not',
+            backend: 'files',
+            seed: {
+              direct: { 'refs/heads/x': 'c2' },
+              symbolic: { 'refs/heads/a1': 'refs/heads/a2', 'refs/heads/a2': 'refs/heads/x' },
+            },
+            name: 'refs/heads/a1',
+            newId: 'c2',
+            options: { reflogMessage: 'm' },
+            refs: { 'refs/heads/x': { kind: 'direct', id: 'c2' } },
+            logs: {
+              'refs/heads/a1': [['c2', 'c2', 'm']],
+              'refs/heads/a2': [['c2', 'c2', 'm']],
+              'refs/heads/x': [],
+            },
+          },
+          {
+            label: 'a tag symref to a branch passes its own logging gate: no tag log',
+            backend: 'files',
+            seed: {
+              direct: { 'refs/heads/x': 'c1' },
+              symbolic: { 'refs/tags/ts': 'refs/heads/x' },
+            },
+            name: 'refs/tags/ts',
+            newId: 'c2',
+            options: { reflogMessage: 'm' },
+            refs: { 'refs/heads/x': { kind: 'direct', id: 'c2' } },
+            logs: { 'refs/heads/x': [['c1', 'c2', 'm']], 'refs/tags/ts': [] },
+          },
+          {
+            label: 'expecting absent through a dangling symref creates its target',
+            backend: 'files',
+            seed: { symbolic: { 'refs/heads/s4': 'refs/heads/nope4' } },
+            name: 'refs/heads/s4',
+            newId: 'c2',
+            options: { expected: 'absent', reflogMessage: 'm' },
+            refs: {
+              'refs/heads/s4': { kind: 'symbolic', target: 'refs/heads/nope4' },
+              'refs/heads/nope4': { kind: 'direct', id: 'c2' },
+            },
+            logs: {
+              'refs/heads/s4': [['zero', 'c2', 'm']],
+              'refs/heads/nope4': [['zero', 'c2', 'm']],
+            },
+          },
+          {
+            label: 'writing HEAD moves its branch and keeps HEAD symbolic',
+            backend: 'files',
+            seed: { direct: { 'refs/heads/main': 'c1' }, symbolic: { HEAD: 'refs/heads/main' } },
+            name: 'HEAD',
+            newId: 'c2',
+            options: { reflogMessage: 'm' },
+            refs: {
+              HEAD: { kind: 'symbolic', target: 'refs/heads/main' },
+              'refs/heads/main': { kind: 'direct', id: 'c2' },
+            },
+            logs: { HEAD: [['c1', 'c2', 'm']], 'refs/heads/main': [['c1', 'c2', 'm']] },
+          },
+          {
+            label: 'writing HEAD through two hops logs every name once',
+            backend: 'files',
+            seed: { direct: { 'refs/heads/x': 'c2' }, ...HEAD_S_X },
+            name: 'HEAD',
+            newId: 'c1',
+            options: { reflogMessage: 'm' },
+            refs: { 'refs/heads/x': { kind: 'direct', id: 'c1' } },
+            logs: {
+              HEAD: [['c2', 'c1', 'm']],
+              'refs/heads/s': [['c2', 'c1', 'm']],
+              'refs/heads/x': [['c2', 'c1', 'm']],
+            },
+          },
+          {
+            label: 'a noDeref write of HEAD detaches it and leaves the branch unlogged',
+            backend: 'files',
+            seed: { direct: { 'refs/heads/main': 'c2' }, symbolic: { HEAD: 'refs/heads/main' } },
+            name: 'HEAD',
+            newId: 'c1',
+            options: { noDeref: true, reflogMessage: 'detach' },
+            refs: {
+              HEAD: { kind: 'direct', id: 'c1' },
+              'refs/heads/main': { kind: 'direct', id: 'c2' },
+            },
+            logs: { HEAD: [['c2', 'c1', 'detach']], 'refs/heads/main': [] },
+          },
+          {
+            label: 'reftable logs the resolved old value for HEAD naming a walked link',
+            backend: 'reftable',
+            seed: { direct: { 'refs/heads/x': 'c2' }, ...HEAD_S_X },
+            name: 'refs/heads/s',
+            newId: 'c1',
+            options: { reflogMessage: 'm' },
+            refs: { 'refs/heads/x': { kind: 'direct', id: 'c1' } },
+            logs: {
+              HEAD: [['c2', 'c1', 'm']],
+              'refs/heads/s': [['c2', 'c1', 'm']],
+              'refs/heads/x': [['c2', 'c1', 'm']],
+            },
+          },
+          ...(['files', 'reftable'] as const).map(
+            (backend): SuccessRow => ({
+              label: `${backend} logs HEAD naming a later link with ${backend === 'files' ? 'the null id' : 'the resolved value'}`,
+              backend,
+              seed: {
+                direct: { 'refs/heads/x': 'c1' },
+                symbolic: {
+                  HEAD: 'refs/heads/a2',
+                  'refs/heads/a1': 'refs/heads/a2',
+                  'refs/heads/a2': 'refs/heads/x',
+                },
+              },
+              name: 'refs/heads/a1',
+              newId: 'c2',
+              options: { reflogMessage: 'm' },
+              refs: { 'refs/heads/x': { kind: 'direct', id: 'c2' } },
+              logs: {
+                HEAD: [[backend === 'files' ? 'zero' : 'c1', 'c2', 'm']],
+                'refs/heads/a1': [['c1', 'c2', 'm']],
+                'refs/heads/a2': [['c1', 'c2', 'm']],
+                'refs/heads/x': [['c1', 'c2', 'm']],
+              },
+            }),
+          ),
+          {
+            label: 'writing the terminal that HEAD reaches through a link couples nothing',
+            backend: 'files',
+            seed: { direct: { 'refs/heads/x': 'c1' }, ...HEAD_S_X },
+            name: 'refs/heads/x',
+            newId: 'c2',
+            options: { reflogMessage: 'm' },
+            refs: { 'refs/heads/x': { kind: 'direct', id: 'c2' } },
+            logs: { HEAD: [], 'refs/heads/s': [], 'refs/heads/x': [['c1', 'c2', 'm']] },
+          },
+          ...(['files', 'reftable'] as const).map(
+            (backend): SuccessRow => ({
+              label: `${backend} logs the resolved old value for HEAD on a noDeref write of the symref it names`,
+              backend,
+              seed: { direct: { 'refs/heads/x': 'c1' }, ...HEAD_S_X },
+              name: 'refs/heads/s',
+              newId: 'c2',
+              options: { noDeref: true, reflogMessage: 'm' },
+              refs: {
+                'refs/heads/s': { kind: 'direct', id: 'c2' },
+                'refs/heads/x': { kind: 'direct', id: 'c1' },
+              },
+              logs: {
+                HEAD: [['c1', 'c2', 'm']],
+                'refs/heads/s': [['c1', 'c2', 'm']],
+                'refs/heads/x': [],
+              },
+            }),
+          ),
+          {
+            label: 'a delete through a symref removes its target and logs the symref',
+            backend: 'files',
+            seed: {
+              direct: { 'refs/heads/x': 'c1' },
+              symbolic: { 'refs/heads/s': 'refs/heads/x' },
+            },
+            name: 'refs/heads/s',
+            newId: 'zero',
+            options: { delete: true, reflogMessage: 'del' },
+            refs: {
+              'refs/heads/s': { kind: 'symbolic', target: 'refs/heads/x' },
+              'refs/heads/x': { kind: 'missing' },
+            },
+            logs: { 'refs/heads/s': [['c1', 'zero', 'del']], 'refs/heads/x': [] },
+          },
+          ...(['files', 'reftable'] as const).map(
+            (backend): SuccessRow => ({
+              label: `${backend} ${backend === 'files' ? 'logs' : 'skips'} the null entry of a delete through a dangling symref`,
+              backend,
+              seed: { symbolic: { 'refs/heads/dd': 'refs/heads/nope' } },
+              name: 'refs/heads/dd',
+              newId: 'zero',
+              options: { delete: true },
+              refs: { 'refs/heads/dd': { kind: 'symbolic', target: 'refs/heads/nope' } },
+              logs: { 'refs/heads/dd': backend === 'files' ? [['zero', 'zero', '']] : [] },
+            }),
+          ),
+          {
+            label: 'files removes the log of a symref deleted with noDeref, keeping its target',
+            backend: 'files',
+            seed: {
+              direct: { 'refs/heads/w': 'c1' },
+              symbolic: { 'refs/heads/u': 'refs/heads/w' },
+              logged: ['refs/heads/u'],
+            },
+            name: 'refs/heads/u',
+            newId: 'zero',
+            options: { delete: true, noDeref: true, reflogMessage: 'm' },
+            refs: {
+              'refs/heads/u': { kind: 'missing' },
+              'refs/heads/w': { kind: 'direct', id: 'c1' },
+            },
+            logs: { 'refs/heads/u': [] },
+          },
+          {
+            label: 'a delete through a symref whose expected matches its target removes the target',
+            backend: 'files',
+            seed: {
+              direct: { 'refs/heads/x3': 'c1' },
+              symbolic: { 'refs/heads/dd2': 'refs/heads/x3' },
+            },
+            name: 'refs/heads/dd2',
+            newId: 'zero',
+            options: { delete: true, expected: 'c1' as ObjectId, reflogMessage: 'm' },
+            refs: {
+              'refs/heads/dd2': { kind: 'symbolic', target: 'refs/heads/x3' },
+              'refs/heads/x3': { kind: 'missing' },
+            },
+            logs: { 'refs/heads/dd2': [['c1', 'zero', 'm']] },
+          },
+          {
+            label: 'deleting HEAD removes its branch and keeps HEAD symbolic',
+            backend: 'files',
+            seed: { direct: { 'refs/heads/main': 'c2' }, symbolic: { HEAD: 'refs/heads/main' } },
+            name: 'HEAD',
+            newId: 'zero',
+            options: { delete: true, reflogMessage: 'm' },
+            refs: {
+              HEAD: { kind: 'symbolic', target: 'refs/heads/main' },
+              'refs/heads/main': { kind: 'missing' },
+            },
+            logs: { HEAD: [['c2', 'zero', 'm']] },
+          },
+          {
+            label: 'a noDeref delete of HEAD removes HEAD and its log, keeping the branch',
+            backend: 'files',
+            seed: { direct: { 'refs/heads/main': 'c2' }, symbolic: { HEAD: 'refs/heads/main' } },
+            name: 'HEAD',
+            newId: 'zero',
+            options: { delete: true, noDeref: true, reflogMessage: 'm' },
+            refs: { HEAD: { kind: 'missing' }, 'refs/heads/main': { kind: 'direct', id: 'c2' } },
+            logs: { HEAD: [] },
+          },
+          ...(['files', 'reftable'] as const).map(
+            (backend): SuccessRow => ({
+              label: `${backend} logs HEAD naming a deleted link with ${backend === 'files' ? 'the null id' : 'the resolved value'}`,
+              backend,
+              seed: { direct: { 'refs/heads/x': 'c1' }, ...HEAD_S_X },
+              name: 'refs/heads/s',
+              newId: 'zero',
+              options: { delete: true, reflogMessage: 'm' },
+              refs: { 'refs/heads/x': { kind: 'missing' } },
+              logs: {
+                HEAD: [[backend === 'files' ? 'zero' : 'c1', 'zero', 'm']],
+                'refs/heads/s': [['c1', 'zero', 'm']],
+              },
+            }),
+          ),
+          {
+            label: 'deleting HEAD through two hops logs HEAD and the link once each',
+            backend: 'files',
+            seed: { direct: { 'refs/heads/x': 'c1' }, ...HEAD_S_X },
+            name: 'HEAD',
+            newId: 'zero',
+            options: { delete: true, reflogMessage: 'm' },
+            refs: { 'refs/heads/x': { kind: 'missing' } },
+            logs: { HEAD: [['c1', 'zero', 'm']], 'refs/heads/s': [['c1', 'zero', 'm']] },
+          },
+          ...(['files', 'reftable'] as const).map(
+            (backend): SuccessRow => ({
+              label: `${backend} ${backend === 'files' ? 'logs' : 'skips'} the null entries of HEAD and a dangling link on delete`,
+              backend,
+              seed: { symbolic: { HEAD: 'refs/heads/dd', 'refs/heads/dd': 'refs/heads/nope' } },
+              name: 'refs/heads/dd',
+              newId: 'zero',
+              options: { delete: true, reflogMessage: 'm' },
+              refs: { 'refs/heads/dd': { kind: 'symbolic', target: 'refs/heads/nope' } },
+              logs:
+                backend === 'files'
+                  ? { HEAD: [['zero', 'zero', 'm']], 'refs/heads/dd': [['zero', 'zero', 'm']] }
+                  : { HEAD: [], 'refs/heads/dd': [] },
+            }),
+          ),
+          ...(['files', 'reftable'] as const).map(
+            (backend): SuccessRow => ({
+              label: `${backend} logs HEAD with the resolved value on a noDeref delete of its branch`,
+              backend,
+              seed: { direct: { 'refs/heads/main': 'c1' }, symbolic: { HEAD: 'refs/heads/main' } },
+              name: 'refs/heads/main',
+              newId: 'zero',
+              options: { delete: true, noDeref: true, reflogMessage: 'm' },
+              refs: { 'refs/heads/main': { kind: 'missing' } },
+              logs: { HEAD: [['c1', 'zero', 'm']] },
+            }),
+          ),
+        ])('Then $label, in one applyRefUpdates call', async (row) => {
+          // Arrange
+          const fixture = await symrefFixture(row.backend, row.seed);
+          const options = withSlotIds(row.options, fixture.ids);
+          const sut = updateRef;
+
+          // Act
+          await sut(fixture.ctx, row.name as RefName, fixture.ids[row.newId], options);
+
+          // Assert
+          const store = getRefStore(fixture.ctx);
+          expect(fixture.calls).toHaveLength(1);
+          for (const [name, ref] of Object.entries(row.refs)) {
+            expect(await store.resolveDirect(name as RefName)).toEqual(
+              expectedValue(fixture.ids, ref),
+            );
+          }
+          for (const [name, lines] of Object.entries(row.logs)) {
+            expect(await logLines(fixture, name)).toEqual(
+              lines.map((line) => expectedLine(fixture.ids, line)),
+            );
+          }
+        });
+      });
+    });
+
+    /** Rows name expected ids by slot (`'c1'`); the real ids exist only once
+     *  the fixture has written the commits. */
+    const withSlotIds = (options: UpdateRefOptions, ids: Fixture['ids']): UpdateRefOptions => {
+      const expected = options.expected;
+      if (expected === undefined || expected === 'absent') return options;
+      return { ...options, expected: ids[expected as Slot] };
+    };
+
+    interface ConflictRow {
+      readonly label: string;
+      readonly seed: Seed;
+      readonly name: string;
+      readonly options: UpdateRefOptions;
+      readonly conflict: { readonly expected: Slot | 'absent'; readonly actual: Slot | 'absent' };
+    }
+
+    describe('Given a seeded symbolic ref and an expected value it does not match', () => {
+      describe('When updateRef checks the compare-and-swap', () => {
+        it.each<ConflictRow>([
+          {
+            label: 'a write through a symref compares its target and names the given ref',
+            seed: {
+              direct: { 'refs/heads/x': 'c1' },
+              symbolic: { 'refs/heads/s': 'refs/heads/x' },
+            },
+            name: 'refs/heads/s',
+            options: { expected: 'c2' as ObjectId, reflogMessage: 'm' },
+            conflict: { expected: 'c2', actual: 'c1' },
+          },
+          {
+            label: 'expecting absent through a symref to a live target refuses',
+            seed: {
+              direct: { 'refs/heads/x': 'c1' },
+              symbolic: { 'refs/heads/s': 'refs/heads/x' },
+            },
+            name: 'refs/heads/s',
+            options: { expected: 'absent', reflogMessage: 'm' },
+            conflict: { expected: 'absent', actual: 'c1' },
+          },
+          {
+            label: 'a noDeref write expecting absent over a symref to a live target refuses',
+            seed: {
+              direct: { 'refs/heads/x': 'c1' },
+              symbolic: { 'refs/heads/s6': 'refs/heads/x' },
+            },
+            name: 'refs/heads/s6',
+            options: { expected: 'absent', noDeref: true, reflogMessage: 'm' },
+            conflict: { expected: 'absent', actual: 'c1' },
+          },
+          {
+            label: 'a noDeref write expecting an id over a dangling symref refuses as absent',
+            seed: { symbolic: { 'refs/heads/s7': 'refs/heads/nope7' } },
+            name: 'refs/heads/s7',
+            options: { expected: 'c1' as ObjectId, noDeref: true, reflogMessage: 'm' },
+            conflict: { expected: 'c1', actual: 'absent' },
+          },
+          {
+            label: 'a delete through a symref compares its target',
+            seed: {
+              direct: { 'refs/heads/x3': 'c1' },
+              symbolic: { 'refs/heads/dd2': 'refs/heads/x3' },
+            },
+            name: 'refs/heads/dd2',
+            options: { delete: true, expected: 'c2' as ObjectId },
+            conflict: { expected: 'c2', actual: 'c1' },
+          },
+        ])('Then $label and nothing is applied', async (row) => {
+          // Arrange
+          const fixture = await symrefFixture('files', row.seed);
+          const slotId = (slot: Slot | 'absent'): ObjectId | 'absent' =>
+            slot === 'absent' ? 'absent' : fixture.ids[slot];
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(
+              fixture.ctx,
+              row.name as RefName,
+              row.options.delete === true ? ZERO : fixture.ids.c2,
+              withSlotIds(row.options, fixture.ids),
+            );
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: row.name,
+            expected: slotId(row.conflict.expected),
+            actual: slotId(row.conflict.actual),
+          });
+          expect(fixture.calls).toEqual([]);
         });
       });
     });
