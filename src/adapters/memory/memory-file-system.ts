@@ -33,6 +33,24 @@ const MEMORY_FILE_MODE = 0o100644;
 // "an attempt was made to make a directory a subdirectory of itself".
 const INVALID_ARGUMENT = 'EINVAL';
 
+/** Whether a resolution follows a symbolic link at its final component. */
+type LeafResolution = 'follow' | 'no-follow';
+
+/**
+ * How a surface walks its path: `'follow'` and `'no-follow'` decide the final component alone;
+ * `'create'` does not follow it either, and also refuses to pass through a symbolic link whose
+ * target is not a directory, since the entry would otherwise be filed under the link's target.
+ */
+type WalkMode = LeafResolution | 'create';
+
+interface WalkContext {
+  readonly path: string;
+  readonly mode: WalkMode;
+  // Shared by every link one resolution follows, nested link texts included, so a cycle that
+  // only ever passes through intermediate components still exhausts the one budget.
+  hops: number;
+}
+
 export class MemoryFileSystem implements FileSystem {
   private readonly files = new Map<string, Uint8Array>();
   private readonly directories = new Set<string>();
@@ -97,7 +115,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   write = async (path: string, data: Uint8Array): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow');
+    const normalized = this.walk(path, 'create');
     // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
     // mapErrno sends both to PERMISSION_DENIED.
     if (this.directories.has(normalized) || this.symlinks.has(normalized)) {
@@ -122,7 +140,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow');
+    const normalized = this.walk(path, 'create');
     if (this.occupied(normalized)) {
       throw fileExists(path);
     }
@@ -202,7 +220,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   mkdir = async (path: string): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow');
+    const normalized = this.walk(path, 'create');
     if (this.symlinks.has(normalized)) {
       this.mkdirThroughLeafSymlink(path);
       return;
@@ -255,7 +273,7 @@ export class MemoryFileSystem implements FileSystem {
 
   rename = async (src: string, dst: string): Promise<void> => {
     const normalizedSrc = this.walk(src, 'no-follow');
-    const normalizedDst = this.walk(dst, 'no-follow');
+    const normalizedDst = this.walk(dst, 'create');
     this.assertRenamable(normalizedSrc, normalizedDst, src);
     if (normalizedSrc === normalizedDst) return;
     if (this.directories.has(normalizedSrc)) {
@@ -358,7 +376,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
-    const normalized = this.walk(path, 'no-follow');
+    const normalized = this.walk(path, 'create');
     if (this.occupied(normalized)) {
       throw fileExists(path);
     }
@@ -465,34 +483,56 @@ export class MemoryFileSystem implements FileSystem {
    * POSIX resolution over the in-memory tree: every symlinked path component is followed — a
    * relative link text resolves against the link's own directory — and the leaf too under
    * `'follow'`. Every hop is re-checked by `resolve`'s own containment, so a followed target
-   * outside the root still refuses. A regular file at a non-final component refuses
-   * NOT_A_DIRECTORY, as Node's own path resolution does; more than `SYMLINK_FOLLOW_LIMIT` hops
+   * outside the root still refuses. A regular file at a non-final component, reached directly or
+   * through a link, refuses NOT_A_DIRECTORY, as Node's own path resolution does; so does a link
+   * that resolves to nothing under `'create'`, the code this adapter keeps for every create
+   * surface whose parent chain cannot hold the entry. More than `SYMLINK_FOLLOW_LIMIT` hops
    * refuses PERMISSION_DENIED, as Node's ELOOP does.
    */
-  private walk(path: string, leaf: 'follow' | 'no-follow'): string {
-    let pending = segmentsUnder(this.rootDir, this.resolve(path));
+  private walk(path: string, mode: WalkMode): string {
+    const segments = segmentsUnder(this.rootDir, this.resolve(path));
+    const leaf: LeafResolution = mode === 'follow' ? 'follow' : 'no-follow';
+    return this.resolveSegments(segments, leaf, { path, mode, hops: 0 });
+  }
+
+  private resolveSegments(
+    segments: ReadonlyArray<string>,
+    leaf: LeafResolution,
+    walk: WalkContext,
+  ): string {
+    const last = segments.length - 1;
     let current = this.rootDir;
-    for (let hops = 0; pending.length > 0; ) {
-      const next = `${current}/${pending[0] as string}`;
-      if (pending.length > 1 && this.files.has(next)) {
-        throw notADirectory(path);
-      }
-      const target = this.symlinks.get(next);
-      if (target === undefined || (pending.length === 1 && leaf === 'no-follow')) {
-        current = next;
-        pending = pending.slice(1);
-        continue;
-      }
-      hops += 1;
-      if (hops >= MemoryFileSystem.SYMLINK_FOLLOW_LIMIT) {
-        // POSIX ELOOP: too many levels of symbolic links.
-        throw permissionDenied(path);
-      }
-      const joined = target.startsWith('/') ? target : `${current}/${target}`;
-      pending = [...segmentsUnder(this.rootDir, this.resolve(joined)), ...pending.slice(1)];
-      current = this.rootDir;
+    for (let index = 0; index < last; index += 1) {
+      current = this.resolveIntermediate(`${current}/${segments[index] as string}`, walk);
     }
-    return current;
+    if (last < 0) return current;
+    return this.resolveLeaf(`${current}/${segments[last] as string}`, leaf, walk);
+  }
+
+  private resolveIntermediate(next: string, walk: WalkContext): string {
+    if (this.files.has(next)) throw notADirectory(walk.path);
+    const target = this.symlinks.get(next);
+    if (target === undefined) return next;
+    const resolved = this.followLink(next, target, walk);
+    if (this.files.has(resolved)) throw notADirectory(walk.path);
+    if (walk.mode === 'create' && !this.directories.has(resolved)) throw notADirectory(walk.path);
+    return resolved;
+  }
+
+  private resolveLeaf(next: string, leaf: LeafResolution, walk: WalkContext): string {
+    const target = this.symlinks.get(next);
+    if (target === undefined || leaf === 'no-follow') return next;
+    return this.followLink(next, target, walk);
+  }
+
+  private followLink(link: string, target: string, walk: WalkContext): string {
+    walk.hops += 1;
+    if (walk.hops >= MemoryFileSystem.SYMLINK_FOLLOW_LIMIT) {
+      // POSIX ELOOP: too many levels of symbolic links.
+      throw permissionDenied(walk.path);
+    }
+    const joined = target.startsWith('/') ? target : `${parentOf(link)}/${target}`;
+    return this.resolveSegments(segmentsUnder(this.rootDir, this.resolve(joined)), 'follow', walk);
   }
 
   private ensureParentDirs(normalizedPath: string): void {

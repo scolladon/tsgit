@@ -471,6 +471,99 @@ describe('MemoryFileSystem', () => {
       });
     });
 
+    describe('Given a dangling symlink as the immediate parent of a create target', () => {
+      const target = '/repo/link/entry';
+      describe.each([
+        {
+          name: 'write',
+          create: (sut: MemoryFileSystem) => sut.write(target, new Uint8Array([1])),
+        },
+        {
+          name: 'writeExclusive',
+          create: (sut: MemoryFileSystem) => sut.writeExclusive(target, new Uint8Array([1])),
+        },
+        { name: 'appendUtf8', create: (sut: MemoryFileSystem) => sut.appendUtf8(target, 'line') },
+        { name: 'mkdir', create: (sut: MemoryFileSystem) => sut.mkdir(target) },
+        { name: 'symlink', create: (sut: MemoryFileSystem) => sut.symlink('elsewhere', target) },
+        {
+          name: 'rename',
+          create: (sut: MemoryFileSystem) => sut.rename('/repo/existing.txt', target),
+        },
+      ])('When $name creates beneath it', ({ create }) => {
+        it('Then it refuses NOT_A_DIRECTORY carrying the requested path and leaves the tree untouched', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/existing.txt', new Uint8Array([7]));
+          await sut.symlink('missing-dir', '/repo/link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await create(sut);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NOT_A_DIRECTORY');
+          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe(target);
+          expect(await sut.readdir('/repo')).toEqual([
+            { name: 'existing.txt', isFile: true, isDirectory: false, isSymbolicLink: false },
+            { name: 'link', isFile: false, isDirectory: false, isSymbolicLink: true },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a create target beneath a chain of links ending in a missing entry', () => {
+      describe.each([
+        { label: 'a link to a dangling link', link: 'inner-link', inner: 'missing-dir' },
+        {
+          label: 'a link whose text passes through a missing directory',
+          link: 'missing-dir/deeper',
+        },
+      ])('When writing beneath $label', ({ link, inner }) => {
+        it('Then it refuses NOT_A_DIRECTORY', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.symlink(link, '/repo/outer-link');
+          if (inner !== undefined) await sut.symlink(inner, '/repo/inner-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/outer-link/entry', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect(await sut.exists('/repo/missing-dir')).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a live link followed by a missing component', () => {
+      describe('When writing beneath the missing component', () => {
+        it('Then the missing parent is created under the link target', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.mkdir('/repo/real');
+          await sut.symlink('real', '/repo/live-link');
+
+          // Act
+          await sut.write('/repo/live-link/new-dir/entry', new Uint8Array([3]));
+
+          // Assert
+          expect(await sut.read('/repo/real/new-dir/entry')).toEqual(new Uint8Array([3]));
+        });
+      });
+    });
+
     describe('Given directory containing a symlink', () => {
       describe('When readdir', () => {
         it('Then entry is returned with isSymbolicLink=true', async () => {
