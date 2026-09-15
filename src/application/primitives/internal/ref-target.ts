@@ -6,7 +6,7 @@
  * additionally needs a commit.
  */
 import { invalidCommit, invalidTag, unexpectedObjectType } from '../../../domain/objects/error.js';
-import { type ObjectId, type RefName, zeroOid } from '../../../domain/objects/index.js';
+import type { ObjectId, ObjectType, RefName } from '../../../domain/objects/index.js';
 import {
   needsParentLookups,
   type ParseAcceptanceScan,
@@ -14,10 +14,27 @@ import {
 } from '../../../domain/objects/parse-acceptance.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
+import { hasObject } from '../has-object.js';
 import { verifyStoredObject } from './blob-source.js';
 import { loadShallowSet } from './shallow-set.js';
 
 const HEAD_REF: RefName = 'HEAD' as RefName;
+
+/** At most this many verified ids are remembered per Context, oldest
+ *  forgotten first — a long-lived Context writing ever more distinct targets
+ *  keeps a bounded memo. */
+const VERIFIED_TARGETS_CAP = 4096;
+
+/**
+ * Ids a Context already verified — present, hashing to their id, and
+ * parse-accepted without consulting the shallow set — with the type found.
+ * Content addressing keeps those bytes and that verdict valid for as long as
+ * the object is present, so a remembered id re-probes presence only (git's
+ * `parse_object` likewise returns an already-parsed object without hashing it again). An
+ * acceptance that depended on `.git/shallow` is never remembered: the
+ * shallow set can change under the same Context.
+ */
+const verifiedTargets = new WeakMap<Context, Map<ObjectId, ObjectType>>();
 
 /** git's `is_branch` (`refs.c:1072`): only `HEAD` and `refs/heads/*` are
  *  typed to a commit. */
@@ -38,20 +55,49 @@ const assertParseAccepted = async (
   throw refusal.type === 'commit' ? invalidCommit(refusal.reason) : invalidTag(refusal.reason);
 };
 
+const verifiedTargetsOf = (ctx: Context): Map<ObjectId, ObjectType> => {
+  const existing = verifiedTargets.get(ctx);
+  if (existing !== undefined) return existing;
+  const created = new Map<ObjectId, ObjectType>();
+  verifiedTargets.set(ctx, created);
+  return created;
+};
+
+const rememberVerified = (
+  memo: Map<ObjectId, ObjectType>,
+  id: ObjectId,
+  type: ObjectType,
+): void => {
+  // A full memo is never empty, so its first key — the oldest — exists.
+  if (memo.size >= VERIFIED_TARGETS_CAP) memo.delete(memo.keys().next().value as ObjectId);
+  memo.set(id, type);
+};
+
+/** `id`'s type once it is verified present, intact and parse-accepted —
+ *  from the memo when this Context already verified it and it is still
+ *  present, from a full verification otherwise. */
+const verifiedTargetType = async (ctx: Context, id: ObjectId): Promise<ObjectType> => {
+  const memo = verifiedTargetsOf(ctx);
+  const known = memo.get(id);
+  if (known !== undefined && (await hasObject(ctx, id))) return known;
+  const { type, acceptance } = await verifyStoredObject(ctx, id);
+  if (acceptance !== undefined) await assertParseAccepted(ctx, id, acceptance);
+  if (acceptance === undefined || !needsParentLookups(acceptance)) rememberVerified(memo, id, type);
+  return type;
+};
+
 /**
  * Verifies a ref update's target the way git's ref transaction does, against
  * the GIVEN name — never the write chain's terminal (a tree reached through
  * a symref is typed by the name the caller passed, not what it resolves
- * to). The null id is git's delete sentinel and is never verified; every
- * other write is checked before the compare-and-swap.
+ * to). Every write is checked before the compare-and-swap; the null id is
+ * no exception — it names no stored object, so it refuses as missing.
  */
 export const assertRefTargetValid = async (
   ctx: Context,
   name: RefName,
   id: ObjectId,
 ): Promise<void> => {
-  if (id === zeroOid(ctx.hashConfig)) return;
-  const { type, acceptance } = await verifyStoredObject(ctx, id);
-  if (acceptance !== undefined) await assertParseAccepted(ctx, id, acceptance);
+  const type = await verifiedTargetType(ctx, id);
   if (type !== 'commit' && isBranchRef(name)) throw unexpectedObjectType('commit', type, id);
 };

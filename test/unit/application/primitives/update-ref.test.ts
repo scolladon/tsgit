@@ -12,8 +12,10 @@ import { updateRef } from '../../../../src/application/primitives/update-ref.js'
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from './fixtures.js';
@@ -1145,6 +1147,130 @@ describe('updateRef', () => {
           expect(symLog[0]).toEqual(
             expect.objectContaining({ oldId: unverified, newId: ZERO, message: 'bye' }),
           );
+        });
+      });
+    });
+  });
+
+  describe('verified targets on one Context', () => {
+    describe('Given one commit written to two refs on the same Context', () => {
+      describe('When updateRef writes the second ref', () => {
+        it("Then the commit's stored bytes are not read again — only its presence is probed", async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          const commit = await writeCommit(base, 'verified once');
+          const loosePath = `${base.layout.gitDir}/objects/${computeLooseObjectPath(commit)}`;
+          const { ctx, calls } = instrumentedContext(base);
+          await updateRef(ctx, 'refs/remotes/origin/main' as RefName, commit, {
+            reflogMessage: REASON,
+          });
+          const before = calls().length;
+          const sut = updateRef;
+
+          // Act
+          await sut(ctx, MAIN, commit, { reflogMessage: REASON });
+
+          // Assert
+          const touches = calls()
+            .slice(before)
+            .filter((call) => call.path === loosePath)
+            .map((call) => call.method);
+          expect(touches).toEqual(['exists']);
+          expect(await resolveRef(ctx, MAIN)).toBe(commit);
+        });
+      });
+    });
+
+    describe('Given a verified commit whose loose object is removed afterwards', () => {
+      describe('When updateRef writes it to another ref on the same Context', () => {
+        it('Then it refuses OBJECT_NOT_FOUND and the ref stays absent', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const commit = await writeCommit(ctx, 'verified then removed');
+          await updateRef(ctx, 'refs/tags/first' as RefName, commit, { reflogMessage: REASON });
+          await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commit)}`);
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, 'refs/tags/second' as RefName, commit, { reflogMessage: REASON });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: commit });
+          expect(await getRefStore(ctx).resolveDirect('refs/tags/second' as RefName)).toEqual({
+            kind: 'missing',
+          });
+        });
+      });
+    });
+
+    describe('Given a tree already written to a tag on the same Context', () => {
+      describe('When updateRef writes the same tree to a branch', () => {
+        it('Then the branch typing still refuses it', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const tree = await writeObject(ctx, {
+            type: 'tree',
+            id: '' as ObjectId,
+            entries: [treeEntry(FILE_MODE.REGULAR, 'a', await writeCommit(ctx, 'tree entry'))],
+          });
+          await updateRef(ctx, 'refs/tags/tree' as RefName, tree, { reflogMessage: REASON });
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, 'refs/heads/tree' as RefName, tree, { reflogMessage: REASON });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'UNEXPECTED_OBJECT_TYPE',
+            expected: 'commit',
+            actual: 'tree',
+            id: tree,
+          });
+        });
+      });
+    });
+
+    describe('Given a commit accepted only because .git/shallow lists it', () => {
+      describe('When the shallow entry is dropped and updateRef writes it again on the same Context', () => {
+        it('Then it refuses bad parent — a shallow-dependent acceptance is never remembered', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const treeHex = emptyTreeOid(ctx.hashConfig);
+          const id = await writeRawObjectBytes(
+            ctx,
+            'commit',
+            ENC.encode(`tree ${treeHex}\nparent ${treeHex}\nx`),
+          );
+          await ctx.fs.writeUtf8(shallowFilePath(commonGitDir(ctx)), `${id}\n`);
+          invalidateShallowSet(ctx);
+          await updateRef(ctx, 'refs/tags/shallow' as RefName, id, { reflogMessage: REASON });
+          await ctx.fs.writeUtf8(shallowFilePath(commonGitDir(ctx)), '');
+          invalidateShallowSet(ctx);
+          const sut = updateRef;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, 'refs/tags/again' as RefName, id, { reflogMessage: REASON });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_COMMIT',
+            reason: `bad parent ${treeHex}`,
+          });
         });
       });
     });

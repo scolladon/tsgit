@@ -1159,36 +1159,36 @@ describe('clone', () => {
 
   describe('Given a discovery whose tag names an object the pack lacks', () => {
     describe('When clone', () => {
-      it.each([{ label: 'an absent object id', missing: 'f'.repeat(40) }])(
-        'Then $label refuses OBJECT_NOT_FOUND and removes the gitDir',
-        async ({ missing }) => {
-          // Arrange
-          const ctx = createMemoryContext();
-          const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'tag lacks\n');
-          const transport = buildCloneRemote({
-            capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
-            refs: [
-              { name: 'refs/heads/main', id: commitId },
-              { name: 'refs/tags/v1', id: missing },
-            ],
-            head: 'refs/heads/main',
-            packBytes,
-          });
-          const sut = clone;
+      it.each([
+        { label: 'an absent object id', missing: 'f'.repeat(40) },
+        { label: 'the null object id', missing: '0'.repeat(40) },
+      ])('Then $label refuses OBJECT_NOT_FOUND and removes the gitDir', async ({ missing }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { packBytes, commitId } = await buildPackFromSingleCommit(ctx, 'tag lacks\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'symref=HEAD:refs/heads/main'],
+          refs: [
+            { name: 'refs/heads/main', id: commitId },
+            { name: 'refs/tags/v1', id: missing },
+          ],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const sut = clone;
 
-          // Act
-          let caught: unknown;
-          try {
-            await sut(withTransport(ctx, transport), { url: REMOTE_URL });
-          } catch (err) {
-            caught = err;
-          }
+        // Act
+        let caught: unknown;
+        try {
+          await sut(withTransport(ctx, transport), { url: REMOTE_URL });
+        } catch (err) {
+          caught = err;
+        }
 
-          // Assert
-          expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missing });
-          expect(await ctx.fs.exists(ctx.layout.gitDir)).toBe(false);
-        },
-      );
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missing });
+        expect(await ctx.fs.exists(ctx.layout.gitDir)).toBe(false);
+      });
     });
   });
 
