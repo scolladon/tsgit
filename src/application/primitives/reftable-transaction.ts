@@ -510,7 +510,11 @@ function tombstoneExistingLogs(
  *  log tombstone per EXISTING live reflog entry, each at THAT entry's own
  *  `update_index` — never the new one. A ref that is not currently live is
  *  already git's desired end state — no record is written at all, matching
- *  the files backend's no-op. */
+ *  the files backend's no-op. A SYMBOLIC record's log is the one exception:
+ *  a `noDeref` delete of a symbolic ref keeps its log on the reftable
+ *  backend, so the delete never tombstones it here — the log-only entry
+ *  that records the deletion is the caller's own concern (`updateRef`'s
+ *  `deleteUpdates`). */
 function applyDeleteRecords(
   stack: ReftableStack,
   name: RefName,
@@ -518,9 +522,10 @@ function applyDeleteRecords(
   refs: ReftableRefRecord[],
   logs: ReftableLogRecord[],
 ): void {
-  if (stack.lookup(name) === undefined) return;
+  const live = stack.lookup(name);
+  if (live === undefined) return;
   refs.push({ name, updateIndex, value: { kind: 'deletion' } });
-  tombstoneExistingLogs(stack, name, logs);
+  if (live.value.kind !== 'symbolic') tombstoneExistingLogs(stack, name, logs);
 }
 
 /**

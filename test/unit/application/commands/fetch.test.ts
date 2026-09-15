@@ -953,6 +953,41 @@ describe('fetch', () => {
         });
       });
     });
+
+    describe('Given prune=true and a symbolic tracking ref (origin/HEAD)', () => {
+      describe('When fetch', () => {
+        it('Then the symref and its target are kept — the stale scan skips symrefs', async () => {
+          // Arrange — `origin/HEAD` is a symref onto `origin/main`, which the
+          // server still advertises. The scan must never treat a symref's own
+          // name ("HEAD") as a branch slug to test against the advertisement.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: { 'refs/remotes/origin/main': FAKE_OID('a') },
+          });
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/HEAD`,
+            'ref: refs/remotes/origin/main\n',
+          );
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'keep symref\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const result = await fetch({ ...ctx, transport }, { prune: true });
+
+          // Assert
+          expect(result.prunedRefs).toEqual([]);
+          expect(
+            (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).trim(),
+          ).toBe('ref: refs/remotes/origin/main');
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
+        });
+      });
+    });
   });
 
   describe('advertisement filtering (mutation kills for remoteTargetForRef)', () => {

@@ -108,17 +108,21 @@ export interface ResolveRefOptions {
  * walked symbolic ref) still gains a coupled `logs/HEAD` entry on every
  * delete path, so a delete carries an OPTIONAL message for that entry —
  * empty when omitted, matching a bare `git update-ref -d` with no `-m`.
+ * `noDeref` mirrors git's `--no-deref`: act on `name` itself even when it is
+ * a symbolic ref, instead of walking through it to its terminal.
  */
 export type UpdateRefOptions =
   | {
       readonly delete?: false;
       readonly expected?: ObjectId | 'absent';
       readonly reflogMessage: string;
+      readonly noDeref?: boolean;
     }
   | {
       readonly delete: true;
       readonly expected?: ObjectId | 'absent';
       readonly reflogMessage?: string;
+      readonly noDeref?: boolean;
     };
 
 export interface WalkCommitsOptions {

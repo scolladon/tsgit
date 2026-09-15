@@ -9,7 +9,9 @@ import {
   invalidateConfigCache,
 } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -112,6 +114,27 @@ describe('tag', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v1.0`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a symbolic tag name pointing at another tag', () => {
+    describe('When tag delete runs', () => {
+      it('Then the symbolic ref itself is deleted and its target is kept, --no-deref', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await tagCreate(ctx, { name: 'tt' });
+        await writeSymbolicRef(ctx, 'refs/tags/ts' as RefName, 'refs/tags/tt' as RefName);
+
+        // Act
+        const result = await tagDelete(ctx, { name: 'ts' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/tags/ts' });
+        expect(await getRefStore(ctx).resolveDirect('refs/tags/ts' as RefName)).toEqual({
+          kind: 'missing',
+        });
+        expect(await refExists(ctx, 'refs/tags/tt' as RefName)).toBe(true);
       });
     });
   });

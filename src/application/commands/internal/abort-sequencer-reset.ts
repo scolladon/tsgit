@@ -18,18 +18,21 @@ import { hardResetWorktreeToCommit } from './reset-worktree.js';
 import { clearSequencer } from './sequencer-state.js';
 
 export interface AbortSequencerResetOptions {
-  readonly branch: RefName;
   readonly target: ObjectId;
   /** Remove the op-specific marker (`clearCherryPickHead` / `clearRevertHead`). */
   readonly clearHead: (ctx: Context) => Promise<void>;
 }
+
+const HEAD: RefName = 'HEAD' as RefName;
 
 export const abortSequencerReset = async (
   ctx: Context,
   options: AbortSequencerResetOptions,
 ): Promise<void> => {
   await hardResetWorktreeToCommit(ctx, options.target);
-  await updateRef(ctx, options.branch, options.target, {
+  // Written through the literal `HEAD` — git's own sequencer rollback resets
+  // HEAD, not the branch name by value.
+  await updateRef(ctx, HEAD, options.target, {
     reflogMessage: resetMovingTo(options.target),
   });
   await options.clearHead(ctx);

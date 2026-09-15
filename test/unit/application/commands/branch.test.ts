@@ -25,6 +25,7 @@ import {
 } from '../../../../src/application/primitives/reflog-store.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName, Tag } from '../../../../src/domain/objects/index.js';
 import { ObjectId, serializeObject, zeroOid } from '../../../../src/domain/objects/index.js';
@@ -268,6 +269,27 @@ describe('branch', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a symbolic branch name pointing at another branch', () => {
+    describe('When branch delete runs', () => {
+      it('Then the symbolic ref itself is deleted and its target is kept, --no-deref', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'x' });
+        await writeSymbolicRef(ctx, 'refs/heads/sym' as RefName, 'refs/heads/x' as RefName);
+
+        // Act
+        const result = await branchDelete(ctx, { name: 'sym' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/sym' });
+        expect(await getRefStore(ctx).resolveDirect('refs/heads/sym' as RefName)).toEqual({
+          kind: 'missing',
+        });
+        expect(await refExists(ctx, 'refs/heads/x' as RefName)).toBe(true);
       });
     });
   });

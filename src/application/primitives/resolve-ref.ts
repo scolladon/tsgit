@@ -11,7 +11,7 @@ import { exceedsMaxPeelDepth, exceedsMaxSymbolicDepth } from './validators.js';
  *  chain ended on when no candidate exists — never a thrown `REF_NOT_FOUND`,
  *  so a caller sweeping several candidates (rev-parse, resolveCommitIsh)
  *  pays no stack-capturing throw per miss. */
-type ChainOutcome =
+export type ChainOutcome =
   | { readonly kind: 'found'; readonly id: ObjectId }
   | { readonly kind: 'missing'; readonly name: RefName };
 
@@ -61,7 +61,17 @@ const finalizeOutcome = (
   return peelChain(ctx, outcome.id, options?.maxPeelDepth ?? MAX_PEEL_DEPTH);
 };
 
-async function resolveDirectChain(
+/**
+ * The read-side symbolic-ref walk, shared with the write side's `noDeref`
+ * referent read (`internal/ref-write-chain.ts`) rather than copied: follows
+ * `initial` through every symbolic hop up to `maxDepth`, refusing
+ * `REF_CYCLE_DETECTED` on a repeated name (an O(n²) `includes` scan — fine
+ * at this bounded depth; the WRITE walk's own unbounded chain uses an O(1)
+ * `Set` instead and must not reuse this check). Store-level: takes a
+ * `RefStore`, not a `Context`, so a caller that already has one pays no
+ * second `getRefStore` lookup.
+ */
+export async function resolveDirectChain(
   refStore: RefStore,
   initial: RefName | 'HEAD',
   maxDepth: number,

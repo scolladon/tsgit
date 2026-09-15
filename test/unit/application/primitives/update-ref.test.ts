@@ -158,6 +158,37 @@ describe('updateRef', () => {
     });
   });
 
+  describe('Given a noDeref name that is itself a dangling symref', () => {
+    describe('When updateRef is called with expected="absent"', () => {
+      it('Then throws REF_UPDATE_CONFLICT naming both sides "absent" — the symref itself exists', async () => {
+        // Arrange — `sym` exists and is symbolic, but its target does not:
+        // `expected: 'absent'` must not treat that as a match, since the
+        // name being updated (under noDeref) is not itself absent.
+        const ctx = await buildSeededContext();
+        const sym = 'refs/heads/sym' as RefName;
+        const ghost = 'refs/heads/ghost' as RefName;
+        await writeSymbolicRef(ctx, sym, ghost);
+
+        // Act + Assert
+        try {
+          await updateRef(ctx, sym, ID_A, {
+            expected: 'absent',
+            noDeref: true,
+            reflogMessage: REASON,
+          });
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('REF_UPDATE_CONFLICT');
+          if (data.code === 'REF_UPDATE_CONFLICT') {
+            expect(data.expected).toBe('absent');
+            expect(data.actual).toBe('absent');
+          }
+        }
+      });
+    });
+  });
+
   describe('Given an invalid ref name', () => {
     describe('When updateRef is called', () => {
       it('Then throws INVALID_REF', async () => {
@@ -484,7 +515,7 @@ describe('updateRef', () => {
     });
 
     describe('When updateRef is called against a symbolic ref by its own name', () => {
-      it('Then the symbolic ref file itself is removed (dereferencing lands in a later change)', async () => {
+      it('Then it dereferences: the target is deleted and the symbolic ref itself is kept', async () => {
         // Arrange
         const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
         const sym = 'refs/heads/sym' as RefName;
@@ -494,8 +525,37 @@ describe('updateRef', () => {
         await updateRef(ctx, sym, ZERO, { reflogMessage: REASON });
 
         // Assert
-        expect(await ctx.fs.exists('/repo/.git/refs/heads/sym')).toBe(false);
-        expect(await resolveRef(ctx, MAIN)).toBe(ID_A);
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/main')).toBe(false);
+        expect(await ctx.fs.readUtf8('/repo/.git/refs/heads/sym')).toBe('ref: refs/heads/main\n');
+      });
+    });
+  });
+
+  describe('Given a live target reached through one symbolic hop', () => {
+    describe('When updateRef writes a new value through the symbolic ref', () => {
+      it('Then the terminal moves, the symref stays put, and both get a reflog entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        const sym = 'refs/heads/sym' as RefName;
+        await writeSymbolicRef(ctx, sym, MAIN);
+
+        // Act
+        await updateRef(ctx, sym, ID_B, { reflogMessage: 'move' });
+
+        // Assert — the terminal's value moved; the symref's own file is
+        // untouched (still a symref onto `main`); both names logged the move.
+        expect(await resolveRef(ctx, MAIN)).toBe(ID_B);
+        expect(await ctx.fs.readUtf8('/repo/.git/refs/heads/sym')).toBe('ref: refs/heads/main\n');
+        const mainLog = await readReflog(ctx, MAIN);
+        const symLog = await readReflog(ctx, sym);
+        expect(mainLog).toHaveLength(1);
+        expect(mainLog[0]?.oldId).toBe(ID_A);
+        expect(mainLog[0]?.newId).toBe(ID_B);
+        expect(mainLog[0]?.message).toBe('move');
+        expect(symLog).toHaveLength(1);
+        expect(symLog[0]?.oldId).toBe(ID_A);
+        expect(symLog[0]?.newId).toBe(ID_B);
+        expect(symLog[0]?.message).toBe('move');
       });
     });
   });
@@ -625,6 +685,31 @@ describe('updateRef', () => {
           // Assert
           expect(calls).toHaveLength(1);
           expect(calls[0]).toHaveLength(2);
+        });
+      });
+    });
+
+    describe('Given HEAD symbolically points at a LINK the write walks through, not the terminal', () => {
+      describe('When updateRef writes through that link', () => {
+        it('Then the files backend logs HEAD with the null id — the value is not known yet at that hop', async () => {
+          // Arrange — HEAD -> s -> x: writing through `s` walks one hop to
+          // reach the terminal `x`; HEAD names `s` itself, a walked LINK,
+          // not the terminal.
+          const ctx = await buildSeededContext({
+            refs: [{ name: 'refs/heads/x' as RefName, id: ID_A }],
+          });
+          const s = 'refs/heads/s' as RefName;
+          await writeSymbolicRef(ctx, s, 'refs/heads/x' as RefName);
+          await writeSymbolicRef(ctx, HEAD, s);
+
+          // Act
+          await updateRef(ctx, s, ID_B, { reflogMessage: 'via link' });
+          const result = await readReflog(ctx, HEAD);
+
+          // Assert
+          expect(result).toHaveLength(1);
+          expect(result[0]?.oldId).toBe(ZERO);
+          expect(result[0]?.newId).toBe(ID_B);
         });
       });
     });
@@ -818,6 +903,35 @@ describe('updateRef', () => {
           // Assert
           expect(calls).toHaveLength(1);
           expect(calls[0]).toHaveLength(2);
+        });
+      });
+    });
+
+    describe('Given a reftable-backend Context and a symbolic ref pointing at a live target', () => {
+      describe('When that symbolic ref is deleted with noDeref', () => {
+        it('Then its own kept log gains an entry recording the deletion', async () => {
+          // Arrange
+          const ctx = withReftableStorage(createMemoryContext());
+          const sym = 'refs/heads/sym' as RefName;
+          const store = getRefStore(ctx);
+          await store.applyRefUpdates([
+            { kind: 'set', name: MAIN, id: ID_A },
+            { kind: 'setSymbolic', name: sym, target: MAIN },
+          ]);
+
+          // Act
+          await updateRef(ctx, sym, ZERO, { delete: true, noDeref: true, reflogMessage: 'bye' });
+          const symLog = await readReflog(ctx, sym);
+
+          // Assert — the symref itself is gone, its target untouched, and its
+          // own log (kept, not tombstoned, on the reftable backend) gained
+          // one entry recording the deletion.
+          expect(await store.resolveDirect(sym)).toEqual({ kind: 'missing' });
+          expect(await resolveRef(ctx, MAIN)).toBe(ID_A);
+          expect(symLog).toHaveLength(1);
+          expect(symLog[0]).toEqual(
+            expect.objectContaining({ oldId: ID_A, newId: ZERO, message: 'bye' }),
+          );
         });
       });
     });

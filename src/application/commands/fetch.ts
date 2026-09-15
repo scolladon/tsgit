@@ -383,6 +383,10 @@ const prune = async (
   const tracked = await getRefStore(ctx).listRefs(prefix);
   const deleted: RefName[] = [];
   for (const entry of tracked) {
+    // A symref (`<remote>/HEAD`) is never a stale-branch candidate — its own
+    // name is not a tracked branch slug, and git's prune scan skips symrefs
+    // outright rather than testing the name they happen to carry.
+    if (entry.value.kind === 'symbolic') continue;
     const branch = entry.name.slice(prefix.length);
     if (advertisedBranches.has(branch)) continue;
     // A packed-only tracking ref deletes like any other — `updateRef`

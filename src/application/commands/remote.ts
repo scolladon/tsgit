@@ -178,7 +178,7 @@ export const remoteRemove = async (
   // Delete tracking refs first — recoverable if we crash before the
   // config rewrite. `updateRef` cleans the reflog file too.
   for (const ref of trackingRefs) {
-    await updateRef(ctx, ref, zeroOid(ctx.hashConfig), { delete: true });
+    await updateRef(ctx, ref, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
   }
   // Rewrite config: drop the [remote "<name>"] section AND clear every
   // paired branch.<X>.remote / branch.<X>.merge key.

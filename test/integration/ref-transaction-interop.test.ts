@@ -987,7 +987,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a symbolic ref', () => {
       describe('When it is deleted by its own name', () => {
-        it('Then git deletes the target and keeps the symref, but tsgit still deletes the symref file itself (dereferencing lands in a later change)', async () => {
+        it('Then both git and tsgit dereference: the target is gone, the symref itself survives', async () => {
           // Arrange
           const { peer, ours, ctx } = await filesCasePair('symref-residual');
 
@@ -1011,10 +1011,15 @@ describe.skipIf(!GIT_AVAILABLE)(
           const gitXShow = tryRunGitWithExit(['-C', peer, 'show-ref', '--verify', 'refs/heads/x']);
           expect(gitXShow.exitCode).not.toBe(0);
 
-          // tsgit today: the symref FILE is removed, its target untouched.
-          expect(await pathExists(path.join(ours, '.git', 'refs', 'heads', 'sym'))).toBe(false);
+          // tsgit: the symref FILE survives (still symbolic to `x`); the
+          // target is gone — matching git exactly.
+          expect(await pathExists(path.join(ours, '.git', 'refs', 'heads', 'sym'))).toBe(true);
+          expect(await getRefStore(ctx).resolveDirect(branchRef('sym'))).toEqual({
+            kind: 'symbolic',
+            target: branchRef('x'),
+          });
           const target = await getRefStore(ctx).resolveDirect(branchRef('x'));
-          expect(target).toEqual({ kind: 'direct', id: filesC2 });
+          expect(target).toEqual({ kind: 'missing' });
         });
       });
     });

@@ -218,7 +218,7 @@ export const tagDelete = async (ctx: Context, input: TagDeleteInput): Promise<Ta
     throw tagNotFound(name);
   }
   await assertRepoSettingsValid(ctx);
-  await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true });
+  await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
   return { name };
 };
 

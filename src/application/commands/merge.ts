@@ -78,6 +78,8 @@ export type { IndexEntry } from '../../domain/git-index/index.js';
 export type { ConflictType, MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
 export type { SparseMatcher } from '../../domain/sparse/index.js';
 
+const HEAD: RefName = 'HEAD' as RefName;
+
 export interface MergeRunInput {
   readonly rev: string;
   readonly message?: string;
@@ -179,7 +181,9 @@ const computeMerge = async (
   if (base === ourId) {
     if (opts.fastForward !== 'never') {
       return materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
-        await updateRef(ctx, head.target, theirId, {
+        // Written through the literal `HEAD` — merge refuses on a detached
+        // HEAD, so `HEAD` always names the branch being fast-forwarded here.
+        await updateRef(ctx, HEAD, theirId, {
           expected: ourId,
           reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
         });
@@ -295,7 +299,9 @@ const commitCleanMerge = async (
   };
   return materialiseAndApply(ctx, mergedTree, async () => {
     const id = await createCommit(ctx, commitData);
-    await updateRef(ctx, branchName, id, {
+    // Written through the literal `HEAD` — merge refuses on a detached
+    // HEAD, so `HEAD` always names the branch this merge commit advances.
+    await updateRef(ctx, HEAD, id, {
       expected: ourId,
       reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
     });

@@ -506,6 +506,66 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a symbolic ref with a live reflog entry', () => {
+    describe('When the ref is deleted', () => {
+      it('Then the log survives — a symbolic delete keeps its log', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/remotes/origin/HEAD');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'setSymbolic',
+            name,
+            target: ref('refs/remotes/origin/main'),
+            reflog: {
+              oldId: oid(0),
+              newId: oid(0),
+              message: 'clone',
+              unconditional: true,
+            },
+          },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name }]);
+
+        // Assert — the ref itself is gone, but its reflog is not: reading it
+        // through the store's own reflog API (never the raw tables, which
+        // may legitimately compact away an all-tombstone log section).
+        const store = createReftableRefStore(ctx);
+        expect(await store.resolveDirect(name)).toEqual({ kind: 'missing' });
+        const entries = await store.readReflog(name);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]?.message).toBe('clone');
+      });
+    });
+  });
+
+  describe('Given a direct ref with a live reflog entry', () => {
+    describe('When the ref is deleted', () => {
+      it('Then the log is gone — unaffected by the symbolic-keep rule', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/heads/direct');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'created', unconditional: true },
+          },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name }]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.readReflog(name)).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a reflogOnly update with no ref-set anywhere in the transaction', () => {
     describe('When applyReftableUpdates is called', () => {
       it('Then a table is still written, carrying the log record and no ref record', async () => {

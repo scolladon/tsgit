@@ -158,7 +158,9 @@ export const branchDelete = async (
   if (!(await refExists(ctx, name))) {
     throw branchNotFound(name);
   }
-  await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true });
+  // `branch -D` deletes the symref itself when `name` names one — git's
+  // own `REF_NO_DEREF` on this delete.
+  await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
   return { name };
 };
 
@@ -215,6 +217,7 @@ export const branchRename = async (
   // FIRST `logs/HEAD` rename line when HEAD names the branch being renamed.
   await updateRef(ctx, from, zeroOid(ctx.hashConfig), {
     delete: true,
+    noDeref: true,
     reflogMessage: branchRenamed(from, to),
   });
   const head = await readHeadRaw(ctx);
@@ -245,8 +248,7 @@ interface RenamedBranchLogInput {
 }
 
 /**
- * Writes the RENAMED branch's own log — shaped per backend (O5 (a), design
- * R16/R17).
+ * Writes the RENAMED branch's own log — shaped per backend.
  */
 const writeRenamedBranchLog = async (
   ctx: Context,

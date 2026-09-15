@@ -1,8 +1,7 @@
 /**
  * Where git's files and reftable ref backends log the same transaction
  * differently — a small, backend-selected data table rather than a branch
- * scattered through the transaction builders themselves. Each field is
- * documented against the design pin(s) that measured it.
+ * scattered through the transaction builders themselves.
  */
 import type { Context } from '../../../ports/context.js';
 
@@ -12,21 +11,37 @@ export interface TransactionLogging {
    *  the coupled `HEAD` entry) — the files backend writes them as
    *  `0{40} 0{40}`; the reftable backend writes none. */
   readonly noOpDeleteLogs: 'written' | 'skipped';
-  /** How `branch.rename` writes the RENAMED branch's own log (O5, R16/R17):
-   *  files replaces the destination's history (on a forced rename) and
-   *  appends one `<id> <id>` entry; reftable never drops the destination,
-   *  merges the source's live records in at their own update indices, and
-   *  appends two entries shaped like a delete then a create. */
+  /** How `branch.rename` writes the RENAMED branch's own log: files replaces
+   *  the destination's history (on a forced rename) and appends one
+   *  `<id> <id>` entry; reftable never drops the destination, merges the
+   *  source's live records in at their own update indices, and appends two
+   *  entries shaped like a delete then a create. */
   readonly renamedBranchLog: 'replace-then-same-id' | 'merge-then-delete-and-create';
+  /** The old id of a `logs/HEAD` entry coupled through a symbolic ref the
+   *  write walked: the files backend splits the update at each hop and logs
+   *  the coupled entry before the terminal's value is known, so it is always
+   *  the null id; the reftable backend resolves the old value directly, so
+   *  it carries the real one. An update that is not walked (`noDeref`) or
+   *  whose terminal `HEAD` itself names logs the resolved value on both
+   *  backends regardless of this field. */
+  readonly headOldThroughLink: 'null-id' | 'resolved';
+  /** Whether a `noDeref` delete of a symbolic ref keeps its log, appending
+   *  the deletion to it: the files backend removes the log with the ref;
+   *  the reftable backend keeps it and appends `<old> 0{40}`. */
+  readonly symbolicDeleteLog: 'removed' | 'kept-with-entry';
 }
 
 const FILES: TransactionLogging = {
   noOpDeleteLogs: 'written',
   renamedBranchLog: 'replace-then-same-id',
+  headOldThroughLink: 'null-id',
+  symbolicDeleteLog: 'removed',
 };
 const REFTABLE: TransactionLogging = {
   noOpDeleteLogs: 'skipped',
   renamedBranchLog: 'merge-then-delete-and-create',
+  headOldThroughLink: 'resolved',
+  symbolicDeleteLog: 'kept-with-entry',
 };
 
 /** `ctx.layout.refStorage`'s own discriminant — the same one

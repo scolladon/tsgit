@@ -10,7 +10,10 @@ import {
   remoteShow,
 } from '../../../../src/application/commands/remote.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const seed = async (ctx: Context, content?: string): Promise<void> => {
@@ -528,6 +531,36 @@ describe('application/commands/remote', () => {
 
           // Assert
           expect([...result.clearedBranches].sort()).toEqual(['refs/heads/dev', 'refs/heads/main']);
+        });
+      });
+    });
+
+    describe('Given a tracking symref (HEAD) among the tracking refs', () => {
+      describe('When remoteRemove runs', () => {
+        it('Then every tracking ref and the symref are gone, --no-deref', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/main`,
+            `${'a'.repeat(40)}\n`,
+          );
+          await writeSymbolicRef(
+            ctx,
+            'refs/remotes/origin/HEAD' as RefName,
+            'refs/remotes/origin/main' as RefName,
+          );
+
+          // Act
+          await remoteRemove(ctx, { name: 'origin' });
+
+          // Assert
+          expect(
+            await getRefStore(ctx).resolveDirect('refs/remotes/origin/HEAD' as RefName),
+          ).toEqual({ kind: 'missing' });
+          expect(
+            await getRefStore(ctx).resolveDirect('refs/remotes/origin/main' as RefName),
+          ).toEqual({ kind: 'missing' });
         });
       });
     });
