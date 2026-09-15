@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import type { ReflogExpiryConfigEntry } from '../../../../src/domain/reflog/expire-policy.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/reflog-format.js';
 import { arbObjectId } from '../objects/arbitraries.js';
@@ -89,15 +90,6 @@ const arbIdentityByte = (): fc.Arbitrary<number> =>
 // structural role inside a message once the line's own TAB has been found.
 const arbMessageByte = (): fc.Arbitrary<number> => fc.integer({ min: 0x20, max: 0xff });
 
-/**
- * One well-formed reflog line, built directly in BYTES rather than through a
- * UTF-8 string encode: the identity/message payloads are arbitrary bytes
- * across the full latin1-inclusive range, including values (0x80–0xFF) that
- * are not valid UTF-8 on their own. This is what a UTF-8 `serializeReflogLine`
- * round trip cannot exercise — encoding a JS string codepoint 0x80–0xFF
- * always produces a valid 2-byte UTF-8 sequence, never the lone invalid byte
- * a corrupted or legacy-encoded reflog file actually carries.
- */
 // A ref-name-shaped string built from a safe alphabet only — never a glob
 // metacharacter (`*?[]\`), so a literal reflog-expiry pattern built from a
 // DIFFERENT such string can never accidentally cross-match it.
@@ -117,6 +109,40 @@ export const arbExpiryCuts = (): fc.Arbitrary<{
     unreachableCut: fc.integer({ min: 0, max: 1_000_000 }),
   });
 
+const EXPIRY_SLOT_KEYS = { total: 'reflogexpire', unreachable: 'reflogexpireunreachable' } as const;
+
+/** A valid `[gc]` or `[gc "<pattern>"]` reflog-expiry entry whose value is a
+ *  decimal cutoff; `arbPattern` decides which subsection (if any) it sits in. */
+export const arbReflogExpiryEntry = (
+  arbPattern: fc.Arbitrary<string | undefined>,
+): fc.Arbitrary<ReflogExpiryConfigEntry> =>
+  fc
+    .record({
+      pattern: arbPattern,
+      slot: fc.constantFrom('total', 'unreachable'),
+      cutoff: fc.integer({ min: 0, max: 1_000_000 }),
+    })
+    .map(({ pattern, slot, cutoff }) => ({
+      pattern,
+      slot,
+      value: String(cutoff),
+      key:
+        pattern === undefined
+          ? `gc.${EXPIRY_SLOT_KEYS[slot]}`
+          : `gc.${pattern}.${EXPIRY_SLOT_KEYS[slot]}`,
+      source: '/repo/.git/config',
+      line: 1,
+    }));
+
+/**
+ * One well-formed reflog line, built directly in BYTES rather than through a
+ * UTF-8 string encode: the identity/message payloads are arbitrary bytes
+ * across the full latin1-inclusive range, including values (0x80–0xFF) that
+ * are not valid UTF-8 on their own. This is what a UTF-8 `serializeReflogLine`
+ * round trip cannot exercise — encoding a JS string codepoint 0x80–0xFF
+ * always produces a valid 2-byte UTF-8 sequence, never the lone invalid byte
+ * a corrupted or legacy-encoded reflog file actually carries.
+ */
 export const arbReflogLineBytes = (length: 40 | 64 = 40): fc.Arbitrary<Uint8Array> =>
   fc
     .record({

@@ -99,8 +99,23 @@ describe('parseReflogExpiryEntries', () => {
           }),
         ];
 
-        // Act + Assert
-        expect(() => parseReflogExpiryEntries(entries, stubParse)).toThrow();
+        // Act
+        let caught: unknown;
+        try {
+          parseReflogExpiryEntries(entries, stubParse);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_DATE_VALUE');
+        if (data.code === 'CONFIG_BAD_DATE_VALUE') {
+          expect(data.value).toBe('bogus');
+          expect(data.key).toBe('gc.refs/tags/*.reflogexpire');
+          expect(data.source).toBe(SOURCE);
+          expect(data.line).toBe(5);
+        }
       });
     });
   });
@@ -208,6 +223,25 @@ describe('expiryPolicyFor', () => {
 
         // Assert
         expect(result).toEqual({ expireCut: 5, unreachableCut: 6 });
+      });
+    });
+  });
+
+  describe('Given only a subsectionless unreachable value', () => {
+    describe('When resolving cutoffs for an ordinary ref', () => {
+      it('Then the unreachable cut takes that value and the expire cut keeps its default', () => {
+        // Arrange
+        const config = parseReflogExpiryEntries(
+          [entry({ slot: 'unreachable', value: '7', key: 'gc.reflogexpireunreachable' })],
+          stubParse,
+        );
+        const sut = expiryPolicyFor(config, {}, DEFAULTS);
+
+        // Act
+        const result = sut.cutoffsFor(REF);
+
+        // Assert
+        expect(result).toEqual({ expireCut: 30, unreachableCut: 7 });
       });
     });
   });

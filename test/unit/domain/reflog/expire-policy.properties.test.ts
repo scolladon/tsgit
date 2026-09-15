@@ -6,7 +6,7 @@ import {
   parseReflogExpiryEntries,
   type ReflogExpiryConfigEntry,
 } from '../../../../src/domain/reflog/expire-policy.js';
-import { arbExpiryCuts, arbSafeRefName } from './arbitraries.js';
+import { arbExpiryCuts, arbReflogExpiryEntry, arbSafeRefName } from './arbitraries.js';
 
 const NEVER = Number.NEGATIVE_INFINITY;
 const STASH = 'refs/stash' as RefName;
@@ -54,26 +54,36 @@ describe('Given an empty entry list', () => {
   });
 });
 
-describe('Given a policy already built from some entries', () => {
+describe('Given a policy built from an arbitrary mix of global and pattern entries', () => {
   describe('When a pattern entry that cannot match a given ref is appended', () => {
-    it("Then that ref's cutoffs never change", () => {
-      // Arrange + Act + Assert — the appended pattern is `ref` plus a byte
-      // (`Z`) the ref's own alphabet never produces, so as a literal glob it
-      // can equal nothing this suite generates for `ref`.
+    it("Then that ref's cutoffs never change — no global or earlier pattern value is hidden", () => {
+      // Arrange — the base mixes global entries, entries whose pattern is the
+      // ref itself, and entries for unrelated refs; the appended pattern is
+      // the ref plus a byte (`Z`) the safe alphabet never produces, so it can
+      // neither match the ref nor merge into any base pattern.
+      const sut = expiryPolicyFor;
+      const arbCase = arbSafeRefName().chain((ref) =>
+        fc.record({
+          ref: fc.constant(ref),
+          base: fc.array(
+            arbReflogExpiryEntry(
+              fc.oneof(fc.constant(undefined), fc.constant(ref), arbSafeRefName()),
+            ),
+            { maxLength: 6 },
+          ),
+          appended: arbReflogExpiryEntry(fc.constant(`${ref}Z`)),
+          defaults: arbExpiryCuts(),
+        }),
+      );
+
+      // Act + Assert
       fc.assert(
-        fc.property(arbSafeRefName(), arbExpiryCuts(), (ref, defaults) => {
-          const before = expiryPolicyFor(parseReflogExpiryEntries([], parseOne), {}, defaults);
-          const beforeCuts = before.cutoffsFor(ref as RefName);
+        fc.property(arbCase, ({ ref, base, appended, defaults }) => {
+          const refName = ref as RefName;
+          const before = sut(parseReflogExpiryEntries(base, Number), {}, defaults);
+          const after = sut(parseReflogExpiryEntries([...base, appended], Number), {}, defaults);
 
-          const nonMatching = `${ref}Z`;
-          const after = expiryPolicyFor(
-            parseReflogExpiryEntries([entryFor(nonMatching)], parseOne),
-            {},
-            defaults,
-          );
-          const afterCuts = after.cutoffsFor(ref as RefName);
-
-          expect(afterCuts).toEqual(beforeCuts);
+          expect(after.cutoffsFor(refName)).toEqual(before.cutoffsFor(refName));
         }),
         { numRuns: 100 },
       );
