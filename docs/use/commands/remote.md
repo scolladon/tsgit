@@ -53,7 +53,7 @@ Each method returns a concrete result — no discriminator to narrow on at the c
 
 ## Behaviour
 
-- **Name validation.** Empty names and names containing `\n` / `\r` / `\0` / `"` / `\\` / `]` are rejected with `REMOTE_NAME_INVALID`. Slashes and spaces are accepted (canonical-git permits them).
+- **Name validation.** Empty names, names containing `\n` / `\r` / `\t` / `\0` / `"` / `\\` / `]` / `/`, and names that cannot form a `refs/remotes/<name>/` ref name (a space, `..`, a leading `.`, a `.lock` suffix, `:`, `~`, `^`, `?`, `*`, `[`, `@{` — the names git's own `remote add`/`rename` refuse) are rejected with `REMOTE_NAME_INVALID`, before anything is written.
 - **URL validation.** Only control-char rejection at write time (`\n` / `\r` / `\0`). Scheme / SSRF guards apply when the URL is consumed by `clone` / `fetch` / `push` — matching canonical git.
 - **Ordering on multi-step methods.** `remove` and `rename` delete or move tracking refs FIRST, then rewrite config. Mid-flight failures are recoverable by re-running the method (ADR-177, ADR-178).
 - **Packed refs.** Tracking refs are deleted via `updateRef`, which rejects packed-only refs with `UNSUPPORTED_OPERATION`. Run `git pack-refs --unpack` and retry.
@@ -94,7 +94,7 @@ for (const [ref, oid] of remote.trackingRefs) console.log(ref, oid);
 - `DUBIOUS_OWNERSHIP` / `IMPLICIT_BARE_REPOSITORY` / `REPOSITORY_FORMAT_VERSION_UNSUPPORTED` / `REPOSITORY_EXTENSIONS_UNSUPPORTED` — the repository the acceptance tier rejects; every `remote` verb refuses, including `list` and `show` (see [`errors.md`](../errors.md#repository-state)).
 - `REMOTE_NOT_CONFIGURED` — `remove` / `rename` / `setUrl` / `show` targeting an unknown remote.
 - `REMOTE_EXISTS` — `add` against a configured name; `rename` whose `to` is already configured.
-- `REMOTE_NAME_INVALID` — empty name or any of `\n` / `\r` / `\0` / `"` / `\\` / `]`.
+- `REMOTE_NAME_INVALID` — empty name, any of `\n` / `\r` / `\t` / `\0` / `"` / `\\` / `]` / `/`, or a name that cannot form a `refs/remotes/<name>/` ref name.
 - `INVALID_OPTION` — URL contains a control character; `rename` called with `from === to`.
 - `REFSPEC_INVALID` — `add({ fetch })` supplied a malformed custom refspec.
 - `UNSUPPORTED_OPERATION` — `remove` / `rename` hit a packed-only tracking ref.

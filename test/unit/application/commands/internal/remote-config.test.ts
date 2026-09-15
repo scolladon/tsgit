@@ -54,14 +54,54 @@ describe('application/commands/internal/remote-config', () => {
       });
     });
 
-    describe('Given a name with a space', () => {
+    describe('Given a name that cannot form a tracking ref name', () => {
       describe('When validateRemoteName runs', () => {
-        it('Then it accepts the name (unusual but legal)', () => {
-          // Arrange + Act
-          const result = validateRemoteName('two parts');
+        it.each([
+          { input: 'two parts', label: 'a space' },
+          { input: 'x.lock', label: 'a .lock suffix' },
+          { input: '..', label: 'a double dot alone' },
+          { input: 'a..b', label: 'an inner double dot' },
+          { input: '.a', label: 'a leading dot' },
+          { input: 'a@{b', label: 'an @{ sequence' },
+          { input: 'a:b', label: 'a colon' },
+          { input: 'a*b', label: 'an asterisk' },
+          { input: 'a?b', label: 'a question mark' },
+          { input: 'a~b', label: 'a tilde' },
+          { input: 'a^b', label: 'a caret' },
+          { input: 'a[b', label: 'an opening bracket' },
+        ])('Then it throws REMOTE_NAME_INVALID for $label', ({ input }) => {
+          // Arrange
+          let caught: unknown;
+
+          // Act
+          try {
+            validateRemoteName(input);
+          } catch (err) {
+            caught = err;
+          }
 
           // Assert
-          expect(result).toBe('two parts');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NAME_INVALID',
+            name: input,
+            reason: 'name does not form a valid refs/remotes/<name>/ ref name',
+          });
+        });
+      });
+    });
+
+    describe('Given a name git accepts although it looks unusual', () => {
+      describe('When validateRemoteName runs', () => {
+        it.each([
+          { input: 'a.', label: 'a trailing dot' },
+          { input: 'a.b', label: 'an inner dot' },
+          { input: '@', label: 'a lone at sign' },
+        ])('Then it returns $label verbatim', ({ input }) => {
+          // Arrange + Act
+          const result = validateRemoteName(input);
+
+          // Assert
+          expect(result).toBe(input);
         });
       });
     });

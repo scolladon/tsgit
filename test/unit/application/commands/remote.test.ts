@@ -347,6 +347,33 @@ describe('application/commands/remote', () => {
       });
     });
 
+    describe('Given a name that cannot form a tracking ref name', () => {
+      describe('When remoteAdd runs', () => {
+        it('Then it throws REMOTE_NAME_INVALID before writing any config', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          const configBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remoteAdd(ctx, { name: 'a b', url: 'u' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NAME_INVALID',
+            name: 'a b',
+            reason: 'name does not form a valid refs/remotes/<name>/ ref name',
+          });
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(configBefore);
+        });
+      });
+    });
+
     describe('Given a url containing a newline', () => {
       describe('When remoteAdd runs', () => {
         it('Then it throws INVALID_OPTION', async () => {
@@ -1398,6 +1425,33 @@ describe('application/commands/remote', () => {
 
           // Assert
           expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+        });
+      });
+    });
+
+    describe('Given a `to` name that cannot form a tracking ref name', () => {
+      describe('When remoteRename runs', () => {
+        it('Then it throws REMOTE_NAME_INVALID before moving any ref or rewriting the config', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          const gitDir = ctx.layout.gitDir;
+          await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+          const configBefore = await ctx.fs.readUtf8(`${gitDir}/config`);
+
+          // Act
+          const caught = await renameRefusal(ctx, '..');
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NAME_INVALID',
+            name: '..',
+            reason: 'name does not form a valid refs/remotes/<name>/ ref name',
+          });
+          expect(await ctx.fs.readUtf8(`${gitDir}/refs/remotes/origin/main`)).toBe(
+            `${ORIGIN_ID}\n`,
+          );
+          expect(await ctx.fs.readUtf8(`${gitDir}/config`)).toBe(configBefore);
         });
       });
     });

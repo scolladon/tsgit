@@ -5,6 +5,7 @@
 
 import { remoteNameInvalid } from '../../../domain/commands/error.js';
 import type { RefName } from '../../../domain/objects/object-id.js';
+import { isSafeRefName } from '../../../domain/refs/ref-validation.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
 
 // Bans the line-surgery hard chars plus `/` (matches canonical git's
@@ -13,11 +14,17 @@ import type { ParsedConfig } from '../../primitives/config-read.js';
 // tracking-ref prefix) and `\t` (the reflog field separator).
 const FORBIDDEN_NAME_CHARS = /[\n\r\t\0"\\\]/]/;
 
+/** git's `valid_remote_name` probes the name as the remote component of a
+ *  tracking ref: `refs/remotes/<name>/test` must be a valid ref name. */
+const trackingRefProbe = (name: string): string => `refs/remotes/${name}/test`;
+
 /**
- * Validate a remote subsection name. Rejects the empty string and any of
- * `\n` / `\r` / `\t` / `\0` / `"` / `\\` / `]` / `/`. Returns the verbatim
- * name on success — exporting the validator keeps every action's
- * preconditions in a single source.
+ * Validate a remote subsection name. Rejects the empty string, any of
+ * `\n` / `\r` / `\t` / `\0` / `"` / `\\` / `]` / `/`, and — as git's
+ * `valid_remote_name` does — any name that cannot form a tracking ref name
+ * (a space, `..`, a `.lock` component, …). Returns the verbatim name on
+ * success — exporting the validator keeps every action's preconditions in
+ * a single source.
  */
 export const validateRemoteName = (name: string): string => {
   if (name === '') {
@@ -28,6 +35,9 @@ export const validateRemoteName = (name: string): string => {
       name,
       'name must not contain a newline, tab, NUL, slash, bracket, quote, or backslash',
     );
+  }
+  if (!isSafeRefName(trackingRefProbe(name))) {
+    throw remoteNameInvalid(name, 'name does not form a valid refs/remotes/<name>/ ref name');
   }
   return name;
 };
