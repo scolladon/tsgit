@@ -742,7 +742,7 @@ const REFLOG_EXPIRE_SLOTS: Readonly<Record<string, 'total' | 'unreachable'>> = {
 export const readReflogExpiryConfig = async (
   ctx: Context,
 ): Promise<ReadonlyArray<ReflogExpiryConfigEntry>> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
+  const { tokens, source } = await readConfigEntry(ctx);
   const entries: ReflogExpiryConfigEntry[] = [];
   let inSection = false;
   let subsection: string | undefined;
@@ -753,20 +753,26 @@ export const readReflogExpiryConfig = async (
       continue;
     }
     if (!inSection || token.kind !== 'entry') continue;
-    const loweredKey = token.key.toLowerCase();
-    const slot = REFLOG_EXPIRE_SLOTS[loweredKey];
-    if (slot === undefined) continue;
-    const key = subsection === undefined ? `gc.${loweredKey}` : `gc.${subsection}.${loweredKey}`;
-    entries.push({
-      pattern: subsection,
-      slot,
-      value: token.value,
-      key,
-      source: path,
-      line: token.startLine + 1,
-    });
+    const entry = reflogExpiryEntry(token, subsection, source);
+    if (entry !== undefined) entries.push(entry);
   }
   return entries;
+};
+
+/** A `[gc]` / `[gc "<pattern>"]` entry's reflog-expiry reading, or
+ *  `undefined` when its key is neither `reflogExpire` nor
+ *  `reflogExpireUnreachable`. */
+const reflogExpiryEntry = (
+  token: Extract<ConfigToken, { kind: 'entry' }>,
+  subsection: string | undefined,
+  source: string,
+): ReflogExpiryConfigEntry | undefined => {
+  const loweredKey = token.key.toLowerCase();
+  const slot = REFLOG_EXPIRE_SLOTS[loweredKey];
+  if (slot === undefined) return undefined;
+  const key = subsection === undefined ? `gc.${loweredKey}` : `gc.${subsection}.${loweredKey}`;
+  const line = token.startLine + 1;
+  return { pattern: subsection, slot, value: token.value, key, source, line };
 };
 
 /** Minimum valid zlib compression level (synonym for the implementation default). */
