@@ -55,6 +55,26 @@ const guardedLexists = (
   };
 };
 
+/**
+ * `atomicRename` is optional on the port for the same reason: an adapter that omits it (OPFS) has
+ * to stay without it behind the wrapper, so lock-file protocols keep their degraded path there,
+ * while an adapter that provides it keeps its atomic commit. Both paths get `rename`'s guard.
+ */
+const guardedAtomicRename = (
+  fs: FileSystem,
+  guard: (path: string) => void,
+): Pick<FileSystem, 'atomicRename'> => {
+  const { atomicRename } = fs;
+  if (atomicRename === undefined) return {};
+  return {
+    atomicRename: (s, d) => {
+      guard(s);
+      guard(d);
+      return atomicRename.call(fs, s, d);
+    },
+  };
+};
+
 /** Options controlling which surfaces {@link wrapFsValidator} guards. */
 export interface WrapFsValidatorOptions {
   /**
@@ -186,6 +206,7 @@ export const wrapFsValidator = (
       guard(d);
       return fs.rename(s, d);
     },
+    ...guardedAtomicRename(fs, guard),
     readlink: (p) => {
       readGuard(p);
       return fs.readlink(p);

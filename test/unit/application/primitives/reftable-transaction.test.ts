@@ -29,6 +29,7 @@ import {
 } from '../../../../src/domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileSystem } from '../../../../src/ports/file-system.js';
+import { wrapFsValidator } from '../../../../src/repository/wrap-fs-validator.js';
 import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
 
 const oid = (fill: number): ObjectId => ObjectId.fromRaw(new Uint8Array(20).fill(fill));
@@ -225,6 +226,27 @@ describe('reftable-transaction', () => {
 
         // Assert
         expect(atomicRenameSpy).toHaveBeenCalledWith(lockPath, listPath);
+      });
+    });
+
+    describe('When the transaction commits through the validating wrapper a repository opens', () => {
+      it('Then the wrapper forwards atomicRename, so the commit still takes the atomic branch', async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        const atomicRenameSpy = vi.spyOn(base.fs, 'atomicRename');
+        const rmSpy = vi.spyOn(base.fs, 'rm');
+        const ctx: Context = { ...base, fs: wrapFsValidator(base.fs, base.layout.gitDir) };
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        expect(atomicRenameSpy).toHaveBeenCalledWith(lockPath, listPath);
+        expect(rmSpy).not.toHaveBeenCalledWith(lockPath);
       });
     });
   });
