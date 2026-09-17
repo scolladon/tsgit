@@ -362,6 +362,72 @@ describe('ref-store — names that collide inside one transaction', () => {
       });
     });
 
+    describe.skipIf(backend === 'reftable')(
+      'Given a packed ref above a loose ref of its own',
+      () => {
+        describe('When applyRefUpdates moves the loose ref under it', () => {
+          it('Then the write goes through — git checks a name only when the ref is absent', async () => {
+            // Arrange — neither store can create this shape; only a hand-written
+            // `packed-refs` beside a loose file can.
+            const ctx = await build();
+            await seedUnlooseRefs(ctx, backend, ['k']);
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref('k/z')}`, `${ID}\n`);
+            const sut = createRefStore(ctx);
+
+            // Act
+            await sut.applyRefUpdates([{ kind: 'set', name: ref('k/z'), id: OTHER_ID }]);
+
+            // Assert
+            expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/${ref('k/z')}`)).toBe(
+              `${OTHER_ID}\n`,
+            );
+          });
+        });
+
+        describe('When applyRefUpdates moves it with a value it requires', () => {
+          it('Then the write goes through too', async () => {
+            // Arrange
+            const ctx = await build();
+            await seedUnlooseRefs(ctx, backend, ['k']);
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref('k/z')}`, `${ID}\n`);
+            const sut = createRefStore(ctx);
+
+            // Act
+            await sut.applyRefUpdates([
+              { kind: 'set', name: ref('k/z'), id: OTHER_ID, expected: ID },
+            ]);
+
+            // Assert
+            expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/${ref('k/z')}`)).toBe(
+              `${OTHER_ID}\n`,
+            );
+          });
+        });
+      },
+    );
+
+    describe.skipIf(backend === 'reftable')(
+      'Given a packed ref above a packed ref of its own',
+      () => {
+        describe('When applyRefUpdates moves the one under it', () => {
+          it('Then the write goes through — the packed store already answers for the name', async () => {
+            // Arrange
+            const ctx = await build();
+            await seedUnlooseRefs(ctx, backend, ['k', 'k/z']);
+            const sut = createRefStore(ctx);
+
+            // Act
+            await sut.applyRefUpdates([{ kind: 'set', name: ref('k/z'), id: OTHER_ID }]);
+
+            // Assert
+            expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/${ref('k/z')}`)).toBe(
+              `${OTHER_ID}\n`,
+            );
+          });
+        });
+      },
+    );
+
     describe('Given an absent name no existing ref sits above or under', () => {
       describe('When applyRefUpdates deletes it alone', () => {
         it('Then the delete is a no-op', async () => {

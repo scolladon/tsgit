@@ -278,6 +278,46 @@ describe.skipIf(!GIT_AVAILABLE)(
       throw new Error('unreachable');
     };
 
+    describe('Given a packed ref above a ref of its own that still exists', () => {
+      describe('When both tools move the ref under it', () => {
+        it('Then both write it — git checks a name only when its own read finds nothing', async () => {
+          // Arrange — `refs/remotes/k` packed, `refs/remotes/k/z` loose: a
+          // shape neither tool can create, only a hand-written `packed-refs`
+          // beside a loose file.
+          const { peer, ctx } = await filesCasePair('packed-above-existing');
+          for (const dir of [peer, path.dirname(ctx.layout.gitDir)]) {
+            await mkdir(path.join(dir, '.git', 'refs', 'remotes', 'k'), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'k', 'z'), `${filesC1}\n`);
+            await writeFile(
+              path.join(dir, '.git', 'packed-refs'),
+              `# pack-refs with: peeled fully-peeled sorted \n${filesC1} refs/remotes/k\n`,
+            );
+          }
+          const sut = getRefStore(ctx);
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'update-ref',
+            'refs/remotes/k/z',
+            filesC2,
+          ]);
+          await sut.applyRefUpdates([
+            { kind: 'set', name: 'refs/remotes/k/z' as RefName, id: filesC2 as ObjectId },
+          ]);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, path.dirname(ctx.layout.gitDir)]) {
+            expect(
+              await readFile(path.join(dir, '.git', 'refs', 'remotes', 'k', 'z'), 'utf8'),
+            ).toBe(`${filesC2}\n`);
+          }
+        });
+      });
+    });
+
     describe('Given a ref file sitting where another name needs a directory', () => {
       describe('When both tools read the name under it', () => {
         it('Then both report it absent, packed value and all, and still refuse the write', async () => {
