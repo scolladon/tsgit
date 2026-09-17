@@ -20,6 +20,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   stat,
@@ -81,6 +82,26 @@ const remoteAndBranchConfig = (repo: string): string =>
     .stdout.split('\n')
     .filter((line) => line.startsWith('remote.') || line.startsWith('branch.'))
     .join('\n');
+
+/** Every file under a repository's `logs/`, keyed by its path relative to
+ *  that directory — the whole reflog tree as bytes, for twin comparison. */
+const readLogTree = async (repo: string): Promise<Record<string, string>> => {
+  const root = path.join(repo, '.git', 'logs');
+  const tree: Record<string, string> = {};
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else tree[path.relative(root, full)] = await readFile(full, 'utf8');
+    }
+  };
+  try {
+    await walk(root);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  return tree;
+};
 
 const pathExists = async (p: string): Promise<boolean> => {
   try {
@@ -375,14 +396,15 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(gitRead.exitCode).toBe(128);
           expect(read).toEqual({ kind: 'missing' });
 
-          // Assert — both still list the packed entry
-          expect(git(peer, 'for-each-ref', '--format=%(refname)', 'refs/remotes/')).toContain(
-            'refs/remotes/q/z',
+          // Assert — both still list the packed entry, and list the same set
+          const peerNames = git(peer, 'for-each-ref', '--format=%(refname)', 'refs/remotes/')
+            .trim()
+            .split('\n')
+            .sort();
+          expect(peerNames).toEqual(['refs/remotes/q', 'refs/remotes/q/z']);
+          expect([...(await sut.listRefNames('refs/remotes/' as RefName))].sort()).toEqual(
+            peerNames,
           );
-          expect([...(await sut.listRefNames('refs/remotes/' as RefName))].sort()).toEqual([
-            'refs/remotes/q',
-            'refs/remotes/q/z',
-          ]);
 
           // Assert — the write side still names the blocking file
           expect(gitWrite.exitCode).toBe(128);
@@ -703,16 +725,19 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe('When it is deleted through the null object id', () => {
         it('Then git and tsgit both remove it', async () => {
           // Arrange
-          const { peer, ctx } = await reftableCasePair('reftable-existing');
+          const { peer, ours, ctx } = await reftableCasePair('reftable-existing');
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/rb', ZERO]);
           await updateRef(ctx, branchRef('rb'), ZERO, { reflogMessage: 'delete' });
 
-          // Assert
+          // Assert — the same oracle reads both twins
           expect(gitResult.exitCode).toBe(0);
-          const gitShow = tryRunGitWithExit(['-C', peer, 'show-ref', '--verify', 'refs/heads/rb']);
-          expect(gitShow.exitCode).not.toBe(0);
+          for (const dir of [peer, ours]) {
+            const gitShow = tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/heads/rb']);
+            expect(gitShow.exitCode).toBe(128);
+            expect(gitShow.stderr).toContain("'refs/heads/rb' - not a valid ref");
+          }
           expect(await getRefStore(ctx).resolveDirect(branchRef('rb'))).toEqual({
             kind: 'missing',
           });
@@ -753,8 +778,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
-          const gitShow = tryRunGitWithExit(['-C', peer, 'show-ref', '--verify', 'refs/heads/p1']);
-          expect(gitShow.exitCode).not.toBe(0);
+          for (const dir of [peer, ours]) {
+            const gitShow = tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/heads/p1']);
+            expect(gitShow.exitCode).toBe(128);
+            expect(gitShow.stderr).toContain("'refs/heads/p1' - not a valid ref");
+          }
           expect(await getRefStore(ctx).resolveDirect(branchRef('p1'))).toEqual({
             kind: 'missing',
           });
@@ -779,14 +807,16 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
-          const gitVerify = tryRunGitWithExit([
-            '-C',
-            peer,
-            'rev-parse',
-            '--verify',
-            'refs/heads/lp',
-          ]);
-          expect(gitVerify.exitCode).not.toBe(0);
+          for (const dir of [peer, ours]) {
+            const gitVerify = tryRunGitWithExit([
+              '-C',
+              dir,
+              'rev-parse',
+              '--verify',
+              'refs/heads/lp',
+            ]);
+            expect(gitVerify.exitCode).toBe(128);
+          }
           expect(await pathExists(path.join(peer, '.git', 'refs', 'heads', 'lp'))).toBe(false);
           expect(await pathExists(path.join(ours, '.git', 'refs', 'heads', 'lp'))).toBe(false);
           const peerPacked = await readFile(path.join(peer, '.git', 'packed-refs'), 'utf8');
@@ -849,9 +879,19 @@ describe.skipIf(!GIT_AVAILABLE)(
           await writeFile(path.join(peer, '.git', 'packed-refs.lock'), '');
           await writeFile(path.join(ours, '.git', 'packed-refs.lock'), '');
 
+          const lockedData = {
+            code: 'RESOURCE_LOCKED',
+            resource: 'ref',
+            path: `${ctx.layout.gitDir}/packed-refs.lock`,
+          };
+          // git prints the lock's resolved path, so the tail is the portable
+          // half that still names the exact lock file.
+          const lockRefusal = "packed-refs.lock': File exists.";
+
           // Act + Assert — packed-only
           const gitPacked = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/p1']);
-          expect(gitPacked.exitCode).not.toBe(0);
+          expect(gitPacked.exitCode).toBe(1);
+          expect(gitPacked.stderr).toContain(lockRefusal);
           let caught: unknown;
           try {
             await updateRef(ctx, branchRef('p1'), ZERO, { delete: true });
@@ -859,30 +899,32 @@ describe.skipIf(!GIT_AVAILABLE)(
           } catch (err) {
             caught = err;
           }
-          expect((caught as TsgitError).data.code).toBe('RESOURCE_LOCKED');
+          expect((caught as TsgitError).data).toEqual(lockedData);
 
           // Act + Assert — loose-only
           const gitLoose = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/b']);
-          expect(gitLoose.exitCode).not.toBe(0);
+          expect(gitLoose.exitCode).toBe(1);
+          expect(gitLoose.stderr).toContain(lockRefusal);
           try {
             await updateRef(ctx, branchRef('b'), ZERO, { delete: true });
             expect.unreachable();
           } catch (err) {
             caught = err;
           }
-          expect((caught as TsgitError).data.code).toBe('RESOURCE_LOCKED');
+          expect((caught as TsgitError).data).toEqual(lockedData);
           expect(await pathExists(path.join(ours, '.git', 'refs', 'heads', 'b'))).toBe(true);
 
           // Act + Assert — absent, both forms
           const gitAbsent = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/gone']);
-          expect(gitAbsent.exitCode).not.toBe(0);
+          expect(gitAbsent.exitCode).toBe(1);
+          expect(gitAbsent.stderr).toContain(lockRefusal);
           try {
             await updateRef(ctx, branchRef('gone'), ZERO, { delete: true });
             expect.unreachable();
           } catch (err) {
             caught = err;
           }
-          expect((caught as TsgitError).data.code).toBe('RESOURCE_LOCKED');
+          expect((caught as TsgitError).data).toEqual(lockedData);
         });
       });
     });
@@ -1028,6 +1070,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange
           const { peer, ours, ctx } = await filesCasePair('malformed-packed-refs');
           const malformed = `# pack-refs with: peeled fully-peeled sorted \nnot-a-line\n`;
+          const PACKED_REFS_REASON = 'invalid ref line format: not-a-line';
           await writeFile(path.join(peer, '.git', 'packed-refs'), malformed);
           await writeFile(path.join(ours, '.git', 'packed-refs'), malformed);
 
@@ -1043,7 +1086,10 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitResult.exitCode).toBe(128);
-          expect((caught as TsgitError).data.code).toBe('INVALID_PACKED_REFS');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_PACKED_REFS',
+            reason: PACKED_REFS_REASON,
+          });
           const peerPacked = await readFile(path.join(peer, '.git', 'packed-refs'), 'utf8');
           const oursPacked = await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8');
           expect(peerPacked).toBe(malformed);
@@ -1064,7 +1110,13 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act + Assert — existing name
           const gitExisting = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/b']);
-          expect(gitExisting.exitCode).not.toBe(0);
+          expect(gitExisting.exitCode).toBe(1);
+          expect(gitExisting.stderr).toContain(
+            "cannot lock ref 'refs/heads/b': Unable to create '",
+          );
+          expect(gitExisting.stderr).toContain(
+            `${path.join('refs', 'heads', 'b.lock')}': File exists.`,
+          );
           let caught: unknown;
           try {
             await updateRef(ctx, branchRef('b'), ZERO, { delete: true });
@@ -1072,18 +1124,28 @@ describe.skipIf(!GIT_AVAILABLE)(
           } catch (err) {
             caught = err;
           }
-          expect((caught as TsgitError).data.code).toBe('REF_LOCKED');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_LOCKED',
+            name: 'refs/heads/b',
+          });
 
           // Act + Assert — absent name
           const gitAbsent = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/ab']);
-          expect(gitAbsent.exitCode).not.toBe(0);
+          expect(gitAbsent.exitCode).toBe(1);
+          expect(gitAbsent.stderr).toContain("cannot lock ref 'refs/heads/ab': Unable to create '");
+          expect(gitAbsent.stderr).toContain(
+            `${path.join('refs', 'heads', 'ab.lock')}': File exists.`,
+          );
           try {
             await updateRef(ctx, branchRef('ab'), ZERO, { delete: true });
             expect.unreachable();
           } catch (err) {
             caught = err;
           }
-          expect((caught as TsgitError).data.code).toBe('REF_LOCKED');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_LOCKED',
+            name: 'refs/heads/ab',
+          });
         });
       });
     });
@@ -1692,7 +1754,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             '--verify',
             'refs/remotes/up2/main',
           ]);
-          expect(moved.exitCode).not.toBe(0);
+          expect(moved.exitCode).toBe(128);
         }
         expect(remoteAndBranchConfig(ours)).toBe(remoteAndBranchConfig(peer));
         expect(remoteAndBranchConfig(peer)).toContain('remote.up2.url=');
@@ -1788,7 +1850,7 @@ describe.skipIf(!GIT_AVAILABLE)(
               '--verify',
               'refs/remotes/up2/main',
             ]);
-            expect(moved.exitCode).not.toBe(0);
+            expect(moved.exitCode).toBe(128);
             const source = tryRunGitWithExit([
               '-C',
               repo,
@@ -1833,7 +1895,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(gitSymShow.exitCode).toBe(0);
           expect(gitSymShow.stdout.trim()).toBe('refs/heads/x');
           const gitXShow = tryRunGitWithExit(['-C', peer, 'show-ref', '--verify', 'refs/heads/x']);
-          expect(gitXShow.exitCode).not.toBe(0);
+          expect(gitXShow.exitCode).toBe(128);
 
           // tsgit: the symref FILE survives (still symbolic to `x`); the
           // target is gone — matching git exactly.
@@ -2204,22 +2266,21 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a fresh reftable repository whose HEAD points at an unborn branch', () => {
       describe('When that branch is deleted', () => {
         it('Then neither git nor tsgit write a HEAD entry — the reftable backend skips the no-op delete log', async () => {
-          // Arrange — git's own reftable repository proves it writes NO
-          // `log -g HEAD` history at all; tsgit's primitive is proven
-          // separately on an equivalent fresh reftable repo, since there is
-          // no `git refs migrate` shortcut for reading a reftable HEAD log
-          // directly.
-          const peerRoot = await mkdtemp(
-            path.join(os.tmpdir(), 'tsgit-ref-transaction-unborn-reftable-peer-'),
+          // Arrange — ONE fresh reftable base copied into both twins, so the
+          // logs each side ends up with are comparable byte for byte once
+          // both are migrated to the files format.
+          const base = await mkdtemp(
+            path.join(os.tmpdir(), 'tsgit-ref-transaction-unborn-reftable-base-'),
           );
-          runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', peerRoot]);
-          git(peerRoot, 'config', 'user.name', 'A');
-          git(peerRoot, 'config', 'user.email', 'a@x');
-          disableAutoMaintenance(peerRoot);
-          const oursRoot = await mkdtemp(
-            path.join(os.tmpdir(), 'tsgit-ref-transaction-unborn-reftable-ours-'),
-          );
-          runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', oursRoot]);
+          caseRoots.push(base);
+          runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', base]);
+          git(base, 'config', 'user.name', 'A');
+          git(base, 'config', 'user.email', 'a@x');
+          disableAutoMaintenance(base);
+          const peerRoot = await cloneRepo(base, 'unborn-reftable-peer');
+          const oursRoot = await cloneRepo(base, 'unborn-reftable-ours');
+          const oursCtx = withReftableStorage(createNodeContext({ workDir: oursRoot }));
+          const sut = updateRef;
 
           // Act
           const gitResult = tryRunGitWithExit([
@@ -2231,22 +2292,18 @@ describe.skipIf(!GIT_AVAILABLE)(
             'unborn',
             'refs/heads/main',
           ]);
-          const oursCtx = withReftableStorage(createNodeContext({ workDir: oursRoot }));
-          await updateRef(oursCtx, branchRef('main'), ZERO, {
+          await sut(oursCtx, branchRef('main'), ZERO, {
             delete: true,
             reflogMessage: 'unborn',
           });
+          runGit(['-C', peerRoot, 'refs', 'migrate', '--ref-format=files']);
+          runGit(['-C', oursRoot, 'refs', 'migrate', '--ref-format=files']);
 
-          // Assert — git's own `log -g HEAD` refuses (no history at all);
-          // tsgit's primitive reads the same emptiness through its own API.
+          // Assert — the migrated log trees are identical, and empty.
           expect(gitResult.exitCode).toBe(0);
-          const peerLog = tryRunGitWithExit(['-C', peerRoot, 'log', '-g', '--format=%H', 'HEAD']);
-          expect(peerLog.exitCode).not.toBe(0);
-          expect(await getRefStore(oursCtx).readReflog('HEAD' as RefName)).toEqual([]);
-          await Promise.all([
-            rm(peerRoot, { recursive: true, force: true }),
-            rm(oursRoot, { recursive: true, force: true }),
-          ]);
+          const peerLogs = await readLogTree(peerRoot);
+          expect(await readLogTree(oursRoot)).toEqual(peerLogs);
+          expect(peerLogs).toEqual({});
         });
       });
     });
@@ -3230,20 +3287,31 @@ describe.skipIf(!GIT_AVAILABLE)(
         /** Where the mismatching update sits among `updates`. */
         readonly mismatchAt: number;
         readonly refusal: Readonly<
-          Record<'files' | 'reftable', { readonly code: string; readonly blocking?: string }>
+          Record<
+            'files' | 'reftable',
+            { readonly code: string; readonly blocking?: string; readonly message: string }
+          >
         >;
       }
 
+      const ALREADY_EXISTS = "cannot lock ref 'refs/remotes/v': reference already exists";
       const CONFLICT: Record<
         'files' | 'reftable',
-        { readonly code: string; readonly blocking?: string }
+        { readonly code: string; readonly blocking?: string; readonly message: string }
       > = {
-        files: { code: 'NOT_A_DIRECTORY', blocking: 'v' },
-        reftable: { code: 'REF_UPDATE_CONFLICT' },
+        files: {
+          code: 'NOT_A_DIRECTORY',
+          blocking: 'v',
+          // The whole refusal, blocker AND blocked name: truncated at
+          // `cannot create` it would read the same as any other name under `v`.
+          message:
+            "cannot lock ref 'refs/remotes/v/w': 'refs/remotes/v' exists; cannot create 'refs/remotes/v/w'",
+        },
+        reftable: { code: 'REF_UPDATE_CONFLICT', message: ALREADY_EXISTS },
       };
       const MISMATCH = {
-        files: { code: 'REF_UPDATE_CONFLICT' },
-        reftable: { code: 'REF_UPDATE_CONFLICT' },
+        files: { code: 'REF_UPDATE_CONFLICT', message: ALREADY_EXISTS },
+        reftable: { code: 'REF_UPDATE_CONFLICT', message: ALREADY_EXISTS },
       } as const;
 
       const PRIORITY_ROWS: readonly PriorityRow[] = [
@@ -3324,11 +3392,10 @@ describe.skipIf(!GIT_AVAILABLE)(
               // Assert
               const expected = refusal[backend];
               expect(gitResult.exitCode).toBe(128);
-              expect(gitResult.stderr).toContain(
-                expected.blocking === undefined
-                  ? `cannot lock ref '${remote('v')}': reference already exists`
-                  : `'${remote(expected.blocking)}' exists; cannot create`,
-              );
+              expect(gitResult.stderr).toContain(expected.message);
+              expect(
+                tryRunGitWithExit(['-C', peer, 'show-ref', '--verify', remote('v/w')]).exitCode,
+              ).toBe(128);
               expect((caught as TsgitError).data).toEqual(
                 expected.blocking === undefined
                   ? { code: expected.code, name: remote('v'), expected: 'absent', actual: id }
