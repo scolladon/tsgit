@@ -26,35 +26,63 @@ const RUNS = 100;
 
 const OID = ObjectId.fromRaw(new Uint8Array(20).fill(0x11));
 
-/** Ref names of a drawn width, so a run exercises both short keys (many per
- *  block) and long ones (few per block, deeper index). */
-const arbNames = (): fc.Arbitrary<ReadonlyArray<RefName>> =>
+const NAME_PREFIX = 'refs/heads/';
+const NAME_SUFFIX_WIDTH = 5;
+/** An index level has to be strictly smaller than the level below it, which
+ *  needs a block wide enough for two summary keys. The writer refuses a
+ *  narrower one outright, so the generator stays on its safe subset. */
+const INDEX_ENTRY_OVERHEAD = 24;
+
+interface SeekScenario {
+  readonly names: ReadonlyArray<RefName>;
+  readonly blockSize: number;
+  readonly restartInterval: number;
+}
+
+/** Ref names of a drawn width, paired with a block size wide enough to
+ *  summarise them: short keys pack many per block (deep index, many
+ *  boundaries to cross), long ones few (shallow index, wide blocks).
+ *  `blockSize` 0 leaves the table unaligned, which has no index at all. */
+const arbScenario = (): fc.Arbitrary<SeekScenario> =>
   fc
     .record({
       width: fc.integer({ min: 3, max: 40 }),
       count: fc.integer({ min: 1, max: 400 }),
+      blockSize: fc.constantFrom(0, 128, 256, 1024, 4096),
+      restartInterval: fc.integer({ min: 1, max: 16 }),
     })
-    .map(({ width, count }) =>
-      Array.from(
+    .filter(({ width, blockSize }) => {
+      const nameLength = NAME_PREFIX.length + width + NAME_SUFFIX_WIDTH;
+      return blockSize === 0 || blockSize >= 2 * nameLength + INDEX_ENTRY_OVERHEAD;
+    })
+    .map(({ width, count, blockSize, restartInterval }) => ({
+      names: Array.from(
         { length: count },
-        (_, index) => `refs/heads/${'n'.repeat(width)}${String(index).padStart(5, '0')}` as RefName,
+        (_, index) =>
+          `${NAME_PREFIX}${'n'.repeat(width)}${String(index).padStart(NAME_SUFFIX_WIDTH, '0')}` as RefName,
       ),
-    );
+      blockSize,
+      restartInterval,
+    }));
 
-/** Block size and restart interval together decide how many blocks a table
- *  has and how deep its ref index descends; `0` leaves the table unaligned,
- *  which has no index at all. */
-const arbLayout = (): fc.Arbitrary<{ blockSize: number; restartInterval: number }> =>
-  fc.record({
-    blockSize: fc.constantFrom(0, 128, 256, 1024, 4096),
-    restartInterval: fc.integer({ min: 1, max: 16 }),
-  });
+/** A floor to seek to, chosen once the table's own names are known: a free
+ *  name over the alphabet, or the gap immediately after one of the names the
+ *  table carries — the gap is what lands a floor past the last key of the
+ *  block the index points at, so the walk has to continue into the next. */
+const arbFloor = (): fc.Arbitrary<(names: ReadonlyArray<RefName>) => RefName> =>
+  fc.oneof(
+    fc
+      .string({ minLength: 0, maxLength: 24 })
+      .map((suffix) => () => `${NAME_PREFIX}${suffix}` as RefName),
+    fc
+      .nat()
+      .map(
+        (pick) => (names: ReadonlyArray<RefName>) => `${names[pick % names.length]}~` as RefName,
+      ),
+  );
 
-const buildTable = async (
-  names: ReadonlyArray<RefName>,
-  layout: { blockSize: number; restartInterval: number },
-) => {
-  const refs: ReftableRefRecord[] = names.map((name) => ({
+const buildTable = async (scenario: SeekScenario) => {
+  const refs: ReftableRefRecord[] = scenario.names.map((name) => ({
     name,
     updateIndex: 1n,
     value: { kind: 'direct', id: OID },
@@ -64,8 +92,8 @@ const buildTable = async (
     [],
     {
       hashId: 'sha1',
-      blockSize: layout.blockSize,
-      restartInterval: layout.restartInterval,
+      blockSize: scenario.blockSize,
+      restartInterval: scenario.restartInterval,
       indexObjects: false,
       minUpdateIndex: 1n,
       maxUpdateIndex: 1n,
@@ -84,20 +112,15 @@ describe('reftable seek properties', () => {
 
         // Act + Assert
         await fc.assert(
-          fc.asyncProperty(
-            arbNames(),
-            arbLayout(),
-            fc.string({ minLength: 0, maxLength: 24 }),
-            async (names, layout, suffix) => {
-              const table = await buildTable(names, layout);
-              const all = [...iterateReftableRefs(table)].map((entry) => entry.name);
-              const floor = `refs/heads/${suffix}` as RefName;
+          fc.asyncProperty(arbScenario(), arbFloor(), async (scenario, chooseFloor) => {
+            const table = await buildTable(scenario);
+            const all = [...iterateReftableRefs(table)].map((entry) => entry.name);
+            const floor = chooseFloor(all);
 
-              const seen = [...sut(table, floor)].map((entry) => entry.name);
+            const seen = [...sut(table, floor)].map((entry) => entry.name);
 
-              expect(seen).toEqual(all.filter((name) => name >= floor));
-            },
-          ),
+            expect(seen).toEqual(all.filter((name) => name >= floor));
+          }),
           { numRuns: RUNS },
         );
       });
@@ -110,8 +133,8 @@ describe('reftable seek properties', () => {
 
         // Act + Assert
         await fc.assert(
-          fc.asyncProperty(arbNames(), arbLayout(), fc.nat(), async (names, layout, pick) => {
-            const table = await buildTable(names, layout);
+          fc.asyncProperty(arbScenario(), fc.nat(), async (scenario, pick) => {
+            const table = await buildTable(scenario);
             const all = [...iterateReftableRefs(table)].map((entry) => entry.name);
             const target = all[pick % all.length] as RefName;
 
