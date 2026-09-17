@@ -1386,6 +1386,83 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a branch renamed onto a name nested under its own', () => {
+      describe('When both tools rename it', () => {
+        it("Then the destination ref and log are byte-identical to git's, the source gone", async () => {
+          // Arrange — twin repos, the rename entry's committer timestamp
+          // pinned on both sides so the whole destination log compares.
+          const peer = await caseDir('nested-rename-down-peer');
+          const ours = await caseDir('nested-rename-down-ours');
+          const renameEpoch = BASE_EPOCH + 2_000;
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'branch', 'a', 'main'], { env: pinnedCommitterEnv(BASE_EPOCH) });
+          }
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          runGit(['-C', peer, 'branch', '-m', 'a', 'a/b'], {
+            env: pinnedCommitterEnv(renameEpoch),
+          });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(renameEpoch * 1000);
+          try {
+            await branchRename(ctx, { from: 'a', to: 'a/b' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(await readFile(refPath(ours, 'refs/heads/a/b'), 'utf8')).toBe(
+            await readFile(refPath(peer, 'refs/heads/a/b'), 'utf8'),
+          );
+          expect(await readFile(branchLogPath(ours, 'a/b'))).toEqual(
+            await readFile(branchLogPath(peer, 'a/b')),
+          );
+          for (const dir of [peer, ours]) {
+            expect((await stat(refPath(dir, 'refs/heads/a'))).isDirectory()).toBe(true);
+            expect((await stat(branchLogPath(dir, 'a'))).isDirectory()).toBe(true);
+          }
+        });
+      });
+    });
+
+    describe('Given a branch renamed onto the name it is nested under', () => {
+      describe('When both tools rename it', () => {
+        it("Then the destination ref and log are byte-identical to git's, the source tree pruned", async () => {
+          // Arrange
+          const peer = await caseDir('nested-rename-up-peer');
+          const ours = await caseDir('nested-rename-up-ours');
+          const renameEpoch = BASE_EPOCH + 3_000;
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'branch', 'c/d', 'main'], { env: pinnedCommitterEnv(BASE_EPOCH) });
+          }
+          const ctx = createNodeContext({ workDir: ours });
+
+          // Act
+          runGit(['-C', peer, 'branch', '-m', 'c/d', 'c'], {
+            env: pinnedCommitterEnv(renameEpoch),
+          });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(renameEpoch * 1000);
+          try {
+            await branchRename(ctx, { from: 'c/d', to: 'c' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(await readFile(refPath(ours, 'refs/heads/c'), 'utf8')).toBe(
+            await readFile(refPath(peer, 'refs/heads/c'), 'utf8'),
+          );
+          expect(await readFile(branchLogPath(ours, 'c'))).toEqual(
+            await readFile(branchLogPath(peer, 'c')),
+          );
+          for (const dir of [peer, ours]) {
+            expect((await stat(refPath(dir, 'refs/heads/c'))).isFile()).toBe(true);
+            expect((await stat(branchLogPath(dir, 'c'))).isFile()).toBe(true);
+          }
+        });
+      });
+    });
+
     describe('Given two branches each with their own reflog', () => {
       describe('When the first is force-renamed onto the second', () => {
         it("Then the destination log becomes exactly the source history plus the rename entry, byte-identical to git's own forced rename", async () => {

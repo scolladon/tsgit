@@ -213,9 +213,29 @@ const renameOntoItself = async (
   ]);
 };
 
+/** git's staging name for a log in flight across a rename
+ *  (`logs/refs/.tmp-renamed-log`), the same one its own rename uses. */
+const STAGED_LOG = 'refs/.tmp-renamed-log' as RefName;
+
+/** The reftable backend's `renamedBranchLog` discriminator. */
+const MERGED_RENAME_LOG = 'merge-then-delete-and-create';
+
+/** What an appended rename entry needs. */
+interface RenameEntriesInput {
+  readonly from: RefName;
+  readonly to: RefName;
+  readonly id: ObjectId;
+}
+
+/** Whether one name is a `/`-bounded prefix of the other — the pair a
+ *  directory and a file would have to occupy the same path for. */
+const areNested = (from: RefName, to: RefName): boolean =>
+  from.startsWith(`${to}/`) || to.startsWith(`${from}/`);
+
 const renameBranch = async (ctx: Context, request: RenameRequest, id: ObjectId): Promise<void> => {
   const { from, to, force } = request;
   const store = getRefStore(ctx);
+  if (areNested(from, to)) return renameNestedBranch(ctx, store, request, id);
   // Probed BEFORE the CAS set below makes `to` exist: git's forced rename
   // deletes the destination ref first, which drops its log; an orphan log
   // with no live ref underneath survives and takes the rename entry as an
@@ -231,6 +251,38 @@ const renameBranch = async (ctx: Context, request: RenameRequest, id: ObjectId):
     noDeref: true,
     reflogMessage: branchRenamed(from, to),
   });
+  await repointHeadAfterRename(ctx, store, request, id);
+};
+
+/**
+ * git's rename order, which only a nested pair needs: the source's log is
+ * moved to a staging name, the source ref deleted (carrying the first
+ * `logs/HEAD` rename line while HEAD is still coupled to it), the
+ * destination created on the path the delete has just freed, and the staged
+ * log moved in. A destination nested with the source cannot already exist —
+ * no store creates a ref under or above another — so nothing is replaced.
+ */
+const renameNestedBranch = async (
+  ctx: Context,
+  store: RefStore,
+  request: RenameRequest,
+  id: ObjectId,
+): Promise<void> => {
+  const { from, to } = request;
+  // Reftable keeps its logs in the stack, where nested names never collide,
+  // so the records move straight across; the files backend parks them on
+  // git's own staging path, since `logs/<from>` and `logs/<to>` would need
+  // the same path to be a file and a directory at once.
+  const staging = transactionLogging(ctx).renamedBranchLog === MERGED_RENAME_LOG ? to : STAGED_LOG;
+  await store.moveReflog(from, staging);
+  await updateRef(ctx, from, zeroOid(ctx.hashConfig), {
+    delete: true,
+    noDeref: true,
+    reflogMessage: branchRenamed(from, to),
+  });
+  await createRenameDestination(store, request, id);
+  if (staging !== to) await store.moveReflog(staging, to);
+  await appendRenameEntries(ctx, store, { from, to, id });
   await repointHeadAfterRename(ctx, store, request, id);
 };
 
@@ -290,9 +342,19 @@ interface RenameRequest {
  * `branch -m a y` with `y → main` and `branch -m sym y` report `y` exists,
  * `branch -M sym y` and `branch -m sym sym` report the symbolic ref).
  */
-const assertRenameAllowed = async (ctx: Context, request: RenameRequest): Promise<void> => {
+/** git's "already exists" gate on a rename's destination. A destination
+ *  nested with the source is never asked: no store holds a ref under or above
+ *  another, and the read itself would refuse over the file the source
+ *  occupies. */
+const destinationTaken = async (ctx: Context, request: RenameRequest): Promise<boolean> => {
   const { from, to, force } = request;
-  if (from !== to && !force && (await refResolvesForReading(ctx, to))) throw branchExists(to);
+  if (from === to || force || areNested(from, to)) return false;
+  return refResolvesForReading(ctx, to);
+};
+
+const assertRenameAllowed = async (ctx: Context, request: RenameRequest): Promise<void> => {
+  const { from, to } = request;
+  if (await destinationTaken(ctx, request)) throw branchExists(to);
   if ((await getRefStore(ctx).resolveDirect(from)).kind !== 'symbolic') return;
   throw unsupportedOperation(BRANCH_RENAME, `refname ${from} is a symbolic ref`);
 };
@@ -329,6 +391,14 @@ const writeRenamedBranchLogFiles = async (
     await store.applyRefUpdates([{ kind: 'reflogReplace', name: to, entries: [] }]);
   }
   await store.moveReflog(from, to);
+  await appendRenameEntriesFiles(store, { from, to, id });
+};
+
+/** The files backend's own rename entry: one `<id> <id>` line. */
+const appendRenameEntriesFiles = async (
+  store: RefStore,
+  { from, to, id }: RenameEntriesInput,
+): Promise<void> => {
   const message = branchRenamed(from, to);
   await store.applyRefUpdates([
     { kind: 'reflogOnly', name: to, reflog: { oldId: id, newId: id, message } },
@@ -349,6 +419,16 @@ const writeRenamedBranchLogReftable = async (
   { from, to, id }: RenamedBranchLogInput,
 ): Promise<void> => {
   await store.moveReflog(from, to);
+  await appendRenameEntriesReftable(ctx, store, { from, to, id });
+};
+
+/** The reftable backend's own rename entries: a delete-shaped line then a
+ *  create-shaped one. */
+const appendRenameEntriesReftable = async (
+  ctx: Context,
+  store: RefStore,
+  { from, to, id }: RenameEntriesInput,
+): Promise<void> => {
   const message = branchRenamed(from, to);
   const zero = zeroOid(ctx.hashConfig);
   await store.applyRefUpdates([
@@ -358,6 +438,15 @@ const writeRenamedBranchLogReftable = async (
     { kind: 'reflogOnly', name: to, reflog: { oldId: zero, newId: id, message } },
   ]);
 };
+
+const appendRenameEntries = (
+  ctx: Context,
+  store: RefStore,
+  input: RenameEntriesInput,
+): Promise<void> =>
+  transactionLogging(ctx).renamedBranchLog === MERGED_RENAME_LOG
+    ? appendRenameEntriesReftable(ctx, store, input)
+    : appendRenameEntriesFiles(store, input);
 
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {
   if (isOid(startPoint, ctx.hashConfig)) return startPoint as ObjectId;
