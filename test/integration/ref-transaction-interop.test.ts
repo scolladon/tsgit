@@ -22,6 +22,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  readlink,
   rm,
   stat,
   symlink,
@@ -92,6 +93,29 @@ const readLogTree = async (repo: string): Promise<Record<string, string>> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(full);
+      else tree[path.relative(root, full)] = await readFile(full, 'utf8');
+    }
+  };
+  try {
+    await walk(root);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  return tree;
+};
+
+/** Every file under a repository's `refs/`, keyed by its path relative to
+ *  that directory — a symbolic link recorded by its link text, so a link and
+ *  a regular file of the same content never compare equal. */
+const readRefTree = async (repo: string): Promise<Record<string, string>> => {
+  const root = path.join(repo, '.git', 'refs');
+  const tree: Record<string, string> = {};
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.isSymbolicLink())
+        tree[path.relative(root, full)] = `-> ${await readlink(full)}`;
       else tree[path.relative(root, full)] = await readFile(full, 'utf8');
     }
   };
@@ -2163,6 +2187,436 @@ describe.skipIf(!GIT_AVAILABLE)(
             `${rbId} ${mainId} A <a@x> ${COMMITTER_EPOCH + 46} +0000\tm`,
           );
           expect(lastLine(peerLogs.link)).toBe(lastLine(peerLogs.head));
+        });
+      });
+    });
+
+    describe('Given writes aimed at names that reach their target through symbolic refs', () => {
+      interface SymrefWriteRow {
+        readonly label: string;
+        readonly slug: string;
+        /** Argument lists canonical git runs on BOTH twins before the act. */
+        readonly plant: () => readonly (readonly string[])[];
+        readonly ref: string;
+        readonly newId?: () => string;
+        readonly old?: () => string;
+        readonly noDeref?: boolean;
+        readonly message?: string;
+        readonly remove?: boolean;
+        readonly exitCode: number;
+        readonly stderr?: () => string;
+        readonly refusal?: () => Record<string, unknown>;
+      }
+
+      const PLANT_EPOCH = COMMITTER_EPOCH + 60;
+      const ACT_EPOCH = COMMITTER_EPOCH + 61;
+      const link = (name: string, target: string): readonly string[] => [
+        'symbolic-ref',
+        name,
+        target,
+      ];
+      const point =
+        (name: string, id: () => string): (() => readonly string[]) =>
+        () => ['update-ref', '-m', 'plant', name, id()];
+      const c1 = (): string => filesC1;
+      const c2 = (): string => filesC2;
+      const zero = (): string => ZERO;
+
+      /** Every observable byte of a repository's ref state. */
+      const snapshotOf = async (
+        dir: string,
+      ): Promise<{
+        readonly refs: string;
+        readonly head: string | undefined;
+        readonly files: Record<string, string>;
+        readonly packed: string | undefined;
+        readonly logs: Record<string, string>;
+      }> => ({
+        refs: tryRunGitWithExit([
+          '-C',
+          dir,
+          'for-each-ref',
+          '--format=%(refname) %(objectname) %(symref)',
+        ]).stdout,
+        head: (await pathExists(path.join(dir, '.git', 'HEAD')))
+          ? await readFile(path.join(dir, '.git', 'HEAD'), 'utf8')
+          : undefined,
+        files: await readRefTree(dir),
+        packed: (await pathExists(path.join(dir, '.git', 'packed-refs')))
+          ? await readFile(path.join(dir, '.git', 'packed-refs'), 'utf8')
+          : undefined,
+        logs: await readLogTree(dir),
+      });
+
+      const gitArgsOf = (row: SymrefWriteRow): readonly string[] => [
+        'update-ref',
+        ...(row.noDeref === true ? ['--no-deref'] : []),
+        ...(row.remove === true ? ['-d'] : []),
+        ...(row.message === undefined ? [] : ['-m', row.message]),
+        row.ref,
+        ...(row.remove === true ? [] : [(row.newId ?? c1)()]),
+        ...(row.old === undefined ? [] : [row.old()]),
+      ];
+
+      const expectedOf = (row: SymrefWriteRow): { readonly expected?: ObjectId | 'absent' } => {
+        if (row.old === undefined) return {};
+        const value = row.old();
+        return { expected: value === ZERO ? 'absent' : (value as ObjectId) };
+      };
+
+      const applyOurs = (
+        sut: typeof updateRef,
+        row: SymrefWriteRow,
+        ctx: Context,
+      ): Promise<void> => {
+        const shared = { ...expectedOf(row), ...(row.noDeref === true ? { noDeref: true } : {}) };
+        return row.remove === true
+          ? sut(ctx, row.ref as RefName, ZERO, {
+              delete: true,
+              ...shared,
+              ...(row.message === undefined ? {} : { reflogMessage: row.message }),
+            })
+          : sut(ctx, row.ref as RefName, (row.newId ?? c1)() as ObjectId, {
+              reflogMessage: row.message ?? '',
+              ...shared,
+            });
+      };
+
+      const ROWS: readonly SymrefWriteRow[] = [
+        {
+          label: 'HEAD written through the branch it names',
+          slug: 'head-through-branch',
+          plant: () => [point('refs/heads/main', c1)()],
+          ref: 'HEAD',
+          newId: c2,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a symbolic ref written with an old value its target does not hold',
+          slug: 'symref-old-mismatch',
+          plant: () => [],
+          ref: 'refs/heads/sym',
+          newId: c1,
+          old: c1,
+          message: 'm',
+          exitCode: 128,
+          stderr: () =>
+            `cannot lock ref 'refs/heads/sym': is at ${filesC2} but expected ${filesC1}`,
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/sym',
+            expected: filesC1,
+            actual: filesC2,
+          }),
+        },
+        {
+          label: 'a symbolic ref written through a target that does not exist yet',
+          slug: 'symref-dangling-write',
+          plant: () => [link('refs/heads/s2', 'refs/heads/nope')],
+          ref: 'refs/heads/s2',
+          newId: c2,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a create guard through a symbolic ref whose target is absent',
+          slug: 'symref-dangling-create-guard',
+          plant: () => [link('refs/heads/s4', 'refs/heads/nope4')],
+          ref: 'refs/heads/s4',
+          newId: c2,
+          old: zero,
+          exitCode: 0,
+        },
+        {
+          label: 'a create guard through a symbolic ref whose target exists',
+          slug: 'symref-existing-create-guard',
+          plant: () => [],
+          ref: 'refs/heads/sym',
+          newId: c2,
+          old: zero,
+          exitCode: 128,
+          stderr: () => "cannot lock ref 'refs/heads/sym': reference already exists",
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/sym',
+            expected: 'absent',
+            actual: filesC2,
+          }),
+        },
+        {
+          label: 'a write through a two-link chain',
+          slug: 'chain-write',
+          plant: () => [
+            link('refs/heads/a2', 'refs/heads/x'),
+            link('refs/heads/a1', 'refs/heads/a2'),
+          ],
+          ref: 'refs/heads/a1',
+          newId: c1,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a write through a two-link chain that changes nothing',
+          slug: 'chain-write-same-value',
+          plant: () => [
+            link('refs/heads/a2', 'refs/heads/x'),
+            link('refs/heads/a1', 'refs/heads/a2'),
+          ],
+          ref: 'refs/heads/a1',
+          newId: c2,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a write through a tag name that reaches a branch',
+          slug: 'tag-symref-write',
+          plant: () => [link('refs/tags/ts', 'refs/heads/x')],
+          ref: 'refs/tags/ts',
+          newId: c1,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref write over a symbolic ref with a matching target value',
+          slug: 'no-deref-old-match',
+          plant: () => [point('refs/heads/x', c1)(), link('refs/heads/s5', 'refs/heads/x')],
+          ref: 'refs/heads/s5',
+          newId: c2,
+          old: c1,
+          noDeref: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref write over a symbolic ref with a mismatching target value',
+          slug: 'no-deref-old-mismatch',
+          plant: () => [point('refs/heads/x', c1)(), link('refs/heads/s5', 'refs/heads/x')],
+          ref: 'refs/heads/s5',
+          newId: c2,
+          old: c2,
+          noDeref: true,
+          exitCode: 128,
+          stderr: () => `cannot lock ref 'refs/heads/s5': is at ${filesC1} but expected ${filesC2}`,
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/s5',
+            expected: filesC2,
+            actual: filesC1,
+          }),
+        },
+        {
+          label: 'a no-deref create guard over a symbolic ref whose target exists',
+          slug: 'no-deref-create-guard-existing',
+          plant: () => [link('refs/heads/s6', 'refs/heads/x')],
+          ref: 'refs/heads/s6',
+          newId: c2,
+          old: zero,
+          noDeref: true,
+          exitCode: 128,
+          stderr: () => "cannot lock ref 'refs/heads/s6': reference already exists",
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/s6',
+            expected: 'absent',
+            actual: filesC2,
+          }),
+        },
+        {
+          label: 'a no-deref create guard over a symbolic ref whose target is absent',
+          slug: 'no-deref-create-guard-dangling',
+          plant: () => [link('refs/heads/s7', 'refs/heads/nope7')],
+          ref: 'refs/heads/s7',
+          newId: c2,
+          old: zero,
+          noDeref: true,
+          exitCode: 128,
+          stderr: () => "cannot lock ref 'refs/heads/s7': dangling symref already exists",
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/s7',
+            expected: 'absent',
+            actual: 'absent',
+          }),
+        },
+        {
+          label: 'a no-deref write over a symbolic ref whose target is absent',
+          slug: 'no-deref-dangling-write',
+          plant: () => [link('refs/heads/dg', 'refs/heads/nope')],
+          ref: 'refs/heads/dg',
+          newId: c1,
+          message: 'nd',
+          noDeref: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref write on HEAD itself',
+          slug: 'no-deref-head',
+          plant: () => [],
+          ref: 'HEAD',
+          newId: c1,
+          message: 'detach',
+          noDeref: true,
+          exitCode: 0,
+        },
+        {
+          label: 'HEAD written through two links',
+          slug: 'head-two-links',
+          plant: () => [link('HEAD', 'refs/heads/sym')],
+          ref: 'HEAD',
+          newId: c1,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a chain written while HEAD names its middle link',
+          slug: 'chain-head-middle',
+          plant: () => [
+            link('refs/heads/a2', 'refs/heads/x'),
+            link('refs/heads/a1', 'refs/heads/a2'),
+            link('HEAD', 'refs/heads/a2'),
+          ],
+          ref: 'refs/heads/a1',
+          newId: c1,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: "the terminal of HEAD's own chain, written by its own name",
+          slug: 'chain-terminal-direct',
+          plant: () => [link('HEAD', 'refs/heads/sym')],
+          ref: 'refs/heads/x',
+          newId: c1,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'the branch HEAD names, written with the value it already holds',
+          slug: 'head-branch-same-value',
+          plant: () => [link('HEAD', 'refs/heads/x')],
+          ref: 'refs/heads/x',
+          newId: c2,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a write into a chain that loops back on itself',
+          slug: 'cycle-write',
+          plant: () => [link('refs/heads/p', 'refs/heads/q'), link('refs/heads/q', 'refs/heads/p')],
+          ref: 'refs/heads/p',
+          newId: c1,
+          exitCode: 128,
+          stderr: () =>
+            "multiple updates for 'refs/heads/p' (including one via symref 'refs/heads/q') are not allowed",
+          refusal: () => ({
+            code: 'REF_CYCLE_DETECTED',
+            chain: ['refs/heads/p', 'refs/heads/q', 'refs/heads/p'],
+          }),
+        },
+        {
+          label: 'a delete of a chain that loops back on itself',
+          slug: 'cycle-delete',
+          plant: () => [link('refs/heads/p', 'refs/heads/q'), link('refs/heads/q', 'refs/heads/p')],
+          ref: 'refs/heads/p',
+          remove: true,
+          exitCode: 1,
+          stderr: () =>
+            "multiple updates for 'refs/heads/p' (including one via symref 'refs/heads/q') are not allowed",
+          refusal: () => ({
+            code: 'REF_CYCLE_DETECTED',
+            chain: ['refs/heads/p', 'refs/heads/q', 'refs/heads/p'],
+          }),
+        },
+        {
+          label: 'a no-deref write over a chain that loops back on itself',
+          slug: 'cycle-no-deref-write',
+          plant: () => [link('refs/heads/p', 'refs/heads/q'), link('refs/heads/q', 'refs/heads/p')],
+          ref: 'refs/heads/p',
+          newId: c1,
+          message: 'm',
+          noDeref: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref old-value check over a chain that loops back on itself',
+          slug: 'cycle-no-deref-old-check',
+          plant: () => [link('refs/heads/p', 'refs/heads/q'), link('refs/heads/q', 'refs/heads/p')],
+          ref: 'refs/heads/p',
+          newId: c1,
+          old: c1,
+          noDeref: true,
+          exitCode: 128,
+          stderr: () => "cannot lock ref 'refs/heads/p': error reading reference",
+          // `--no-deref` never walks the named ref itself, so the loop is
+          // discovered from its target onward.
+          refusal: () => ({
+            code: 'REF_CYCLE_DETECTED',
+            chain: ['refs/heads/q', 'refs/heads/p', 'refs/heads/q'],
+          }),
+        },
+        {
+          label: 'a no-deref old-value check on a name nothing has ever written',
+          slug: 'no-deref-old-check-absent',
+          plant: () => [],
+          ref: 'refs/heads/zz',
+          newId: c1,
+          old: c1,
+          noDeref: true,
+          exitCode: 128,
+          stderr: () =>
+            "cannot lock ref 'refs/heads/zz': unable to resolve reference 'refs/heads/zz'",
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/zz',
+            expected: filesC1,
+            actual: 'absent',
+          }),
+        },
+        {
+          label: "a no-deref write on the middle of HEAD's chain",
+          slug: 'no-deref-middle-of-head-chain',
+          plant: () => [point('refs/heads/x', c1)(), link('HEAD', 'refs/heads/sym')],
+          ref: 'refs/heads/sym',
+          newId: c2,
+          message: 'm',
+          noDeref: true,
+          exitCode: 0,
+        },
+      ];
+
+      describe.each(ROWS)('When git update-ref and tsgit updateRef run $label', (row) => {
+        it('Then both tools leave byte-identical refs, HEAD and reflogs', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair(`symref-write-${row.slug}`);
+          for (const dir of [peer, ours]) {
+            for (const args of row.plant()) {
+              runGit(['-C', dir, ...args], { env: pinnedEnv(PLANT_EPOCH) });
+            }
+          }
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(ACT_EPOCH * 1000);
+          const sut = updateRef;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stderr: string };
+          let caught: unknown;
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, ...gitArgsOf(row)], {
+              env: pinnedEnv(ACT_EPOCH),
+            });
+            try {
+              await applyOurs(sut, row, ctx);
+            } catch (err) {
+              caught = err;
+            }
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(row.exitCode);
+          if (row.stderr !== undefined) expect(gitResult.stderr).toContain(row.stderr());
+          if (row.refusal === undefined) expect(caught).toBeUndefined();
+          else expect((caught as TsgitError).data).toEqual(row.refusal());
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
         });
       });
     });
