@@ -2622,20 +2622,11 @@ prefix; reftable one O(R) names pass per such transaction.
 
 ### Residuals
 
-- **A read-through link pruned after its target** (SL9's `rel → side`): git packs `rel`, prunes `side`
-  first (reverse name order), then fails to delete `rel` (`cannot lock ref 'refs/heads/rel': unable to
-  resolve reference`, exit 0) and keeps the link; tsgit removes the link. Ordering-dependent.
-- **ED10**: git sets the log up before committing the ref and refuses both; tsgit writes the ref, then
-  the append refuses.
-- **Refusal priority** when one transaction carries both a name conflict and a compare-and-swap mismatch
-  or an ED3-shaped directory: tsgit reports the name conflict first.
-- **Single-update name checks**: the files backend still writes a ref under a packed-only ref, and a
-  delete of an absent ref under a packed-only ref or over packed-only refs is a no-op (git: TX11); a
-  loose ref under the name refuses through the directory change, a regular file above it as before.
-  The reftable backend runs no availability check for a single update or unrelated names. `branch -m a a/b` and `branch -m c/d c`
-  (TX12) succeed in git; tsgit's files rename refuses them through the per-name checks.
-- `fsck`'s `symlinkRef` warning (git 2.55.0 reports `use deprecated symbolic link for symref`) is not
-  produced.
+Every residual this section recorded was folded in by the user on 2026-09-17 and is pinned in
+**Ref-store scope folds, round two** below: the read-through link `pack-refs` prunes after its target
+(PR), the log path that cannot be set up (LD), single-update name checks (SU), `branch -m` across a
+directory/file boundary (RN), refusal priority (PO) and `fsck`'s `symlinkRef` warning (FK). One
+residual survives, recorded with them: a name conflict against an ED3-shaped blocking directory.
 
 ### Docs consequences
 
@@ -2646,3 +2637,230 @@ prefix; reftable one O(R) names pass per such transaction.
 - `docs/use/errors.md`: `DIRECTORY_NOT_EMPTY` from a ref write; `FILE_EXISTS`/`NOT_A_DIRECTORY` for a
   transaction's own names, on reftable too.
 - Migration notes: one line per observable change above.
+
+## Ref-store scope folds, round two (pruning order, log paths, single-update names, rename, listing, fsck, priority, target names)
+
+<!-- cspell:ignore symlinkRef badRefOid badRefContent dwim branchname -->
+
+### Where this comes from
+
+The eight residuals the first ref-store fold left behind, folded in by the user on 2026-09-17 and
+decided in ADR-874. Pins are git 2.55.0, scratch repositories, `HOME` isolated,
+`GIT_CONFIG_NOSYSTEM=1`, every inherited `GIT_*` unset, signing off. `C1`, `C2` commits; `side` = C1,
+`main` = C2 unless a row says otherwise.
+
+### Pins — `pack-refs --all` over a read-through link (files backend)
+
+`pack_refs` prepends each prunable ref onto its list as it iterates the name-sorted ref space, so it
+commits one `REF_IS_PRUNING` delete per ref in **descending full name order, across every namespace**.
+Each delete re-reads its ref under `REF_NO_DEREF` and refuses unless the value still matches — and a
+read-through symbolic link stops resolving once the file it names has been pruned (no packed fallback,
+SL15). The error is printed and the run still exits 0.
+
+| # | Setup | Result |
+|---|---|---|
+| PR1 | `refs/heads/rel → side` | `error: cannot lock ref 'refs/heads/rel': unable to resolve reference 'refs/heads/rel'`, exit **0**; `rel` and `side` both packed at C1, `side`'s loose file pruned, the **link kept** |
+| PR2 | `refs/heads/zz → main` | `zz` is pruned first (descending), `main` still readable, so both loose files go |
+| PR3 | `refs/heads/b1 → side`, `refs/heads/b2 → b1` | both refuse (`b2` then `b1`, descending) and both links are kept |
+| PR4 | `refs/heads/zz → ../tags/t1` / `refs/tags/zz → ../heads/main` | the first refuses (`refs/tags/t1` prunes first), the second succeeds — the order is over full names, not per namespace |
+
+`pack-refs`'s stderr line has no structured counterpart: `PackRefsOutcome` carries counts only
+(`packedRefCount`, `prunedLooseRefCount`, `removedOrphanCount`), and a per-ref warning channel is a
+surface change this fold does not make. The **observable** result — which loose files survive, which
+are counted as pruned, and the exit being success — is matched exactly.
+
+### Pins — a log path that cannot be set up (files backend)
+
+`log_ref_setup` only touches the log path when it is about to CREATE a log — `force_create ||
+should_autocreate_reflog(refname)`. That branch removes a tree of empty directories at the path and
+otherwise refuses `there are still logs under '<path>'`; the other branch opens an existing log and
+reads `EISDIR` as "no log", leaving the directory alone. `files_transaction_finish` writes every log
+BEFORE it renames any lockfile, so a refusal there leaves the ref unwritten.
+
+| # | Setup | Command | Exit | Result |
+|---|---|---|---|---|
+| LD1 | `logs/refs/heads/e8/f` (a file) | `update-ref -m w refs/heads/e8 C1` | 128 | `cannot update the ref 'refs/heads/e8': there are still logs under '.git/logs/refs/heads/e8'`; the ref is **not** written |
+| LD2 | LD1's shape | `branch e9 side` | 128 | same message |
+| LD3 | LD1's shape | `symbolic-ref -m s refs/heads/e10 refs/heads/main` | 1 | same message; the ref is not written |
+| LD4 | `refs/heads/e11` already at C1, `logs/refs/heads/e11/sub/x` | `update-ref -m w2 refs/heads/e11 C2` | 128 | same message; `e11` still reads C1 |
+| LD5 | `core.logAllRefUpdates=false`, blocked or empty log directory | `update-ref -m w …` | 0 | the ref is written, the directory left exactly as it was |
+| LD6 | default gate, `logs/refs/tags/t9/f` | `update-ref -m w refs/tags/t9 C1` | 0 | `refs/tags/` is not a default-loggable prefix, so no log is set up and nothing refuses |
+
+The reftable backend keeps its logs in the stack and has no `logs/` tree: every LD row exits 0 there.
+
+### Pins — the availability check for ONE update (both backends)
+
+`lock_raw_ref` runs `refs_verify_refname_available` whenever the ref it is locking turns out to be
+absent, whatever the transaction's size — so a lone `update-ref`, `branch` or `symbolic-ref` is
+checked exactly as a multi-update transaction is. An update that requires a current value is never
+checked: its compare-and-swap refuses first.
+
+| # | Setup (packed-only on files) | Command | Exit | Message |
+|---|---|---|---|---|
+| SU1 | `refs/remotes/k` | `update-ref refs/remotes/k/z C1` | 128 | `'refs/remotes/k' exists; cannot create 'refs/remotes/k/z'` |
+| SU2 | `refs/remotes/d/x` | `update-ref refs/remotes/d/x/y C1` | 128 | `'refs/remotes/d/x' exists; cannot create 'refs/remotes/d/x/y'` |
+| SU3 | `refs/remotes/e/x` | `update-ref -d refs/remotes/e` | 1 | `'refs/remotes/e/x' exists; cannot create 'refs/remotes/e'` |
+| SU4 | `refs/remotes/d/x` | `update-ref -d refs/remotes/d/x/y` | 1 | `'refs/remotes/d/x' exists; cannot create 'refs/remotes/d/x/y'` |
+| SU5 | `refs/remotes/k` | `update-ref --stdin` with one `create refs/remotes/k/s` | 128 | SU1's message |
+| SU6 | `refs/remotes/k` | `symbolic-ref refs/remotes/k/sym refs/heads/main` | 1 | `'refs/remotes/k' exists; cannot create 'refs/remotes/k/sym'` |
+| SU7 | `refs/heads/main` loose | `update-ref refs/heads/main/deep C1` | 128 | the same refusal for a loose blocker |
+| SU8 | nothing above or under | `update-ref -d refs/remotes/zzz` | 0 | a no-op |
+| SU9 | `refs/remotes/p/q` | `update-ref -d refs/remotes/p C1` | 1 | `cannot lock ref 'refs/remotes/p': unable to resolve reference` — a required value refuses first, the name is never checked |
+
+Both backends answer every row identically.
+
+### Pins — `branch -m` across a directory/file boundary (both backends)
+
+`files_copy_or_rename_ref` moves the source's log to `logs/refs/.tmp-renamed-log`, deletes the source
+ref, creates the destination on the path the delete just freed, and moves the staged log in.
+
+| # | Setup | Command | Exit | Result |
+|---|---|---|---|---|
+| RN1 | branch `a`, checked out | `branch -m a a/b` | 0 | `HEAD` = `ref: refs/heads/a/b`; `logs/refs/heads/a/b` holds the creation entry plus `<id> <id> … Branch: renamed refs/heads/a to refs/heads/a/b`; `refs/heads/a` and `logs/refs/heads/a` are now **directories**; `logs/HEAD` gains `<id> 0{40}` then `0{40} <id>`, both with the rename message |
+| RN2 | branch `c/d`, checked out | `branch -m c/d c` | 0 | `refs/heads/c` and `logs/refs/heads/c` are now **files**; `refs/heads/c/` and `logs/refs/heads/c/` are pruned |
+| RN3 | RN1 on `--ref-format=reftable` | `branch -m a a/b` | 0 | `symbolic-ref HEAD` = `refs/heads/a/b`; the reflog carries the rename entry |
+| RN4 | RN2 on `--ref-format=reftable` | `branch -m c/d c` | 0 | same |
+
+### Pins — listing a chain that does not resolve for reading
+
+`expand_ref`/`for_each_ref` drop an entry `refs_resolve_ref_unsafe(RESOLVE_REF_READING)` cannot
+resolve, silently, and still exit 0.
+
+| # | Setup | Command | Exit | Output |
+|---|---|---|---|---|
+| LS1 | `refs/heads/x → h1 → h2 → h3 → h4 → h5` (5 reads) | `branch`, `branch -v`, `branch --format`, `for-each-ref`, `show-ref` | 0 | `x` omitted, **no warning**; `h1` (4 reads) listed, resolved to `h5`'s value |
+| LS2 | `refs/tags/deep → refs/heads/h1` (5 reads) | `tag -l`, `tag -l --format` | 0 | `deep` omitted |
+| LS3 | `refs/heads/dang → refs/heads/gone` | `branch`, `for-each-ref` | 0 | omitted |
+| LS4 | `refs/heads/cyc1 ↔ refs/heads/cyc2` | `branch` | 0 | both omitted |
+
+(A loose ref whose CONTENT does not parse is different: git prints `warning: ignoring broken ref …`
+and omits it — `verifyIntegrity`'s `badRefContent` already covers that.)
+
+### Pins — `fsck` over a loose ref that is a symbolic link
+
+git's ref-store check walks `refs/**` with `lstat` and never follows a link.
+
+| # | Setup | Exit | Output |
+|---|---|---|---|
+| FK1 | `refs/heads/rel → side` (read-through) | 0 | `warning: refs/heads/rel: symlinkRef: use deprecated symbolic link for symref` |
+| FK2 | `refs/heads/sym → refs/heads/side` (a refname) | 0 | the same warning, naming `refs/heads/sym` |
+| FK3 | `refs/heads/dl → ../other` (a directory of refs), `refs/heads/nest/deep → ../../side` | 0 | one warning per link, naming the link's own ref path; the linked directory is **not** descended |
+| FK4 | `HEAD` itself a symbolic link | 0 | no warning — the walk covers `refs/**` only |
+
+`fsck.symlinkRef=error` raises it to `error:`, `=ignore` drops it; the exit code is 0 either way when
+nothing else is wrong.
+
+### Pins — refusal priority inside one transaction
+
+`files_transaction_prepare` locks each update in turn — a name it must check while taking that lock
+refuses there — and verifies that update's old value before moving to the next; the batch
+`refs_verify_refnames_available` runs only once every lock is held. The reftable backend verifies
+every old value first, then checks names in update order.
+
+| # | `update-ref --stdin` input (`v` exists) | files | reftable |
+|---|---|---|---|
+| PO1 | `create v/w` + `create v/w/y`, then a mismatching `update v` | `cannot lock ref 'refs/remotes/v/w': 'refs/remotes/v' exists; …` | `cannot lock ref 'refs/remotes/v': reference already exists` |
+| PO2 | a mismatching `update v`, then `create v/w` + `create v/w/y` | the mismatch | the mismatch |
+| PO3 | `create f` + `create f/x`, then a mismatching `update` | the mismatch | the mismatch |
+| PO4 | a mismatching `update`, then `create f` + `create f/x` | the mismatch | the mismatch |
+| PO5 | `create f`, a mismatching `update`, `create f/x` | the mismatch | the mismatch |
+| PO6 | `verify refs/heads/nope <oid>` (absent), then `create f` + `create f/x` | `cannot lock ref 'refs/heads/nope': unable to resolve reference` | same |
+| PO7 | `create <blocked dir>` first, then `create g` + `create g/x` | `there is a non-empty directory '…' blocking reference '…'` | n/a |
+
+### Pins — the name a `checkout`/`switch` or `tag` target stands for
+
+`parse_branchname_arg` reads `refs/heads/<arg>` first and only falls back to `get_oid_mb`; `builtin/tag.c`
+uses `repo_get_oid` directly, which is the plain gitrevisions ladder.
+
+| # | Setup | Command | Result |
+|---|---|---|---|
+| TN1 | branch `amb` = C1, tag `amb` = C2 | `checkout amb` | `warning: refname 'amb' is ambiguous`; switches to the BRANCH |
+| TN2 | TN1 | `checkout --detach amb`, `switch --detach amb` | detaches at **C1** — the branch, not `rev-parse`'s tag |
+| TN3 | tag `release` = C2 only | `checkout release` | detaches at C2 |
+| TN4 | `refs/remotes/org/tgt` = C1 | `switch --detach org/tgt` | detaches at C1 |
+| TN5 | TN1 | `tag newtag amb` | names **C2** — the tag the ladder reaches first |
+| TN6 | TN1 | `tag nt2 heads/amb` / `tag nt3 tags/amb` | C1 / C2 |
+
+### What tsgit did before this round
+
+| Item | Memory, Node and reftable |
+|---|---|
+| `packRefs` over a link | Pruned every packed loose duplicate, the link included. |
+| A blocked log path | The ref was written, then the append refused `PERMISSION_DENIED`. |
+| One update's name | Only a regular file at a prefix (`NOT_A_DIRECTORY`) or a loose ref under the name refused; a packed blocker, and every reftable blocker, went through. |
+| `branch -m a a/b` | Refused — the destination was created before the source was deleted. |
+| An over-deep, dangling or looping branch/tag symref | `branchList` / `tagList` threw `REF_CHAIN_TOO_DEEP`, `REF_NOT_FOUND` or `REF_CYCLE_DETECTED`. |
+| `fsck` over a symlinked ref | Nothing reported. |
+| Refusal priority | The name conflict came first, whatever the update order. |
+| `checkout --detach <name>` / `tag <name> <target>` | Resolved the name as given: a short name did not resolve at all. |
+
+### Changes
+
+- **`packRefs`.** The per-ref duplicate probe already `lstat`s the loose path; it now reports whether
+  that leaf is a link. With no link among the duplicates the pooled, order-free removal is unchanged;
+  with one, the removals run sequentially in descending name order and each link-backed ref is
+  re-resolved first — a link that no longer holds the value `packed-refs` now carries is kept and not
+  counted. **Cost:** unchanged for a repository without a symlinked ref (the same one `lstat` per
+  packable ref); with one, sequential `rm`s plus one loose read per link.
+- **The log path.** `recordRefUpdate` splits into `prepareRefUpdate` (config, the gate, and the log
+  path) and `commitRefUpdate` (identity and the append). The gate's single `stat` now also reports a
+  directory, so when — and only when — git would create a log (`force` or the autocreate rule) a tree
+  of empty directories there is removed and anything else refuses `DIRECTORY_NOT_EMPTY` naming the log
+  path. `writeLooseRef` runs the prepare half under the held lock, between the lock's own refusals and
+  the rename, so a blocked log path refuses before the ref changes and a directory at the REF path
+  still reports first. **Cost:** unchanged — the same one `stat` and one config read per logged write.
+- **One update's name.** The files store's packed-side check grew the prefix half: a packed ref at a
+  proper prefix of the name refuses `NOT_A_DIRECTORY`, a packed ref under it `FILE_EXISTS`, both read
+  from the snapshot the write already loads. A delete whose target turns out absent runs the same
+  check under its locks. The reftable store now runs its existing per-name check for every
+  transaction, with an empty transaction-name set when none of its own names are prefix-related.
+  **Cost:** files — zero added syscalls (two map lookups on an already-loaded snapshot); reftable —
+  one sorted-names pass over the already-loaded stack per transaction carrying a checked name,
+  memoised across its updates, and a `lookup` per proper prefix. No I/O either way.
+- **`branch -m` across a boundary.** A rename whose names are `/`-bounded prefixes of one another
+  takes git's order: the source's log moves to git's own staging name (`refs/.tmp-renamed-log`, which
+  the reftable backend skips — its stack has no colliding path), the source ref is deleted, the
+  destination is created, the staged log moves in, the rename entry is appended and `HEAD` is
+  repointed. Every other rename keeps the create-then-delete order it had. The "destination already
+  exists" gate skips a nested destination, which no store can hold.
+- **Listing.** `branchList` and `tagList` resolve a symbolic entry through a new
+  `resolveRefForReading`, which folds a missing, looping, over-deep or unparseable chain to
+  `undefined`; such an entry is omitted instead of throwing.
+- **`fsck`.** The files store's `verifyIntegrity` walks `refs/**` for symbolic links — `readdir` only,
+  never following one — and reports `symlinkRef` per link; the refs-verify pass turns each into a
+  `bad-ref` finding with `severity: 'warning'` and no exit bit.
+- **Refusal priority.** The files store's prepare pass now walks the updates in order, raising each
+  name it checks under that name's lock and then that update's compare-and-swap, and runs the batch
+  half only afterwards. **Cost:** one extra compare-and-swap read per update, paid only by a
+  transaction that already pays the availability check. The reftable store is unchanged — verifying
+  every value first is already git's order there.
+- **Target names.** `resolveRevisionName` (`commands/internal/revision-name.ts`) is the shared
+  `get_oid` ladder — a full-width oid, the gitrevisions candidates, an abbreviated oid — with a miss
+  reported as `undefined` so each caller keeps its own refusal. `rev-parse`'s base resolution is now a
+  thin wrapper over it; `tag`'s target uses it directly; `checkout`'s detaching path uses
+  `resolveSwitchName`, which consults `refs/heads/<name>` first.
+- **Adapter parity, folded in on the way.** A `<loose>.lock` that cannot be created because a regular
+  file sits at a prefix surfaced as `NOT_A_DIRECTORY` on the memory adapter and `REF_LOCKED` on Node;
+  the write path now checks for a file in the way on either refusal, so both report git's `'<p>'
+  exists; cannot create '<n>'`.
+
+### Residuals
+
+- **A name conflict against a blocking directory** (PO7): git raises the directory refusal while it
+  takes that update's lock, so it reports ahead of a batch-checked name conflict; tsgit discovers the
+  directory only when the rename meets it, after the batch check has already refused.
+- **An update that requires a current value, under a packed blocker**: git skips the availability
+  check for it entirely (SU9); tsgit's write path runs the packed-side check for every write. The two
+  agree on every state git itself can produce — only a hand-planted packed parent with a loose child
+  separates them.
+- **Reftable's "first name under"**: the check materialises the stack's sorted names rather than
+  seeking to `<name>/`, which git's own iterator does in O(log R). No syscall either way.
+
+### Docs consequences
+
+- `docs/use/primitives/update-ref.md`, `resolve-ref.md`: a single update is name-checked; a blocked
+  log path refuses `DIRECTORY_NOT_EMPTY` before the ref is written.
+- `docs/use/commands/pack-refs.md`: a read-through symbolic link whose target is pruned first is kept.
+- `docs/use/commands/branch.md`: a rename onto a nested name; a listing that drops an unreadable chain.
+- `docs/use/commands/tag.md`, `checkout.md`: the target name goes through the revision ladder.
+- `docs/use/commands/fsck.md`, `docs/use/errors.md`: the `symlinkRef` warning.
