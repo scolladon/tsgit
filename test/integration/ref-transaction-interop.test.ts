@@ -34,6 +34,7 @@ import { branchDelete } from '../../src/application/commands/branch.js';
 import { remoteRemove, remoteRename, remoteShow } from '../../src/application/commands/remote.js';
 import { tagDelete } from '../../src/application/commands/tag.js';
 import { getRefStore, type RefUpdate } from '../../src/application/primitives/ref-store.js';
+import { resolveRefForReading } from '../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
@@ -2616,6 +2617,174 @@ describe.skipIf(!GIT_AVAILABLE)(
               `${filesC2}\n`,
             );
           }
+        });
+      });
+    });
+
+    describe('Given loose ref paths that are symbolic links of several shapes', () => {
+      const headsPath = (dir: string, ...rest: string[]): string =>
+        path.join(dir, '.git', 'refs', 'heads', ...rest);
+      const headsLogPath = (dir: string, name: string): string =>
+        path.join(dir, '.git', 'logs', 'refs', 'heads', name);
+      /** Moves `refs/heads/x` back to the first commit on both twins under
+       *  one pinned clock, so a later write really changes its value. */
+      const rewindTarget = (dirs: readonly string[]): void => {
+        for (const dir of dirs) {
+          runGit(['-C', dir, 'update-ref', '-m', 'rewind', 'refs/heads/x', filesC1], {
+            env: pinnedEnv(COMMITTER_EPOCH + 49),
+          });
+        }
+      };
+
+      describe('When both tools make a link to another branch symbolic to a third', () => {
+        it('Then the link becomes the same regular symbolic file and both logs match git byte for byte', async () => {
+          // Arrange — the old value both tools log is the one read THROUGH
+          // the link, which tsgit derives from the link itself.
+          const { peer, ours, ctx } = await filesCasePair('link-set-symbolic');
+          rewindTarget([peer, ours]);
+          await symlink('refs/heads/x', headsPath(peer, 'sl'));
+          await symlink('refs/heads/x', headsPath(ours, 'sl'));
+          const throughLink = await resolveRefForReading(ctx, branchRef('sl'));
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 50) * 1000);
+          const sut = getRefStore(ctx);
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'symbolic-ref', '-m', 's', 'refs/heads/sl', 'refs/heads/main'],
+              { env: pinnedEnv(COMMITTER_EPOCH + 50) },
+            );
+            await sut.applyRefUpdates([
+              {
+                kind: 'setSymbolic',
+                name: branchRef('sl'),
+                target: branchRef('main'),
+                reflog: {
+                  oldId: throughLink as ObjectId,
+                  newId: filesC2 as ObjectId,
+                  message: 's',
+                },
+              },
+            ]);
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(throughLink).toBe(filesC1);
+          for (const dir of [peer, ours]) {
+            expect((await lstat(headsPath(dir, 'sl'))).isSymbolicLink()).toBe(false);
+            expect(await readFile(headsPath(dir, 'sl'), 'utf8')).toBe('ref: refs/heads/main\n');
+          }
+          const peerLog = await readFile(headsLogPath(peer, 'sl'), 'utf8');
+          expect(peerLog).toBe(`${filesC1} ${filesC2} A <a@x> ${COMMITTER_EPOCH + 50} +0000\ts\n`);
+          expect(await readFile(headsLogPath(ours, 'sl'), 'utf8')).toBe(peerLog);
+          expect(await readFile(headsLogPath(ours, 'x'), 'utf8')).toBe(
+            await readFile(headsLogPath(peer, 'x'), 'utf8'),
+          );
+        });
+      });
+
+      describe('When both tools write through a link whose text is not a ref name', () => {
+        it('Then the link becomes the same regular file, its target is untouched, and both logs match', async () => {
+          // Arrange — link text `x` is not `refs/`-prefixed, so neither tool
+          // reads it as a symbolic ref: the read follows the link to the
+          // file, and the write replaces the link itself.
+          const { peer, ours, ctx } = await filesCasePair('link-relative-text');
+          rewindTarget([peer, ours]);
+          await symlink('x', headsPath(peer, 'rel'));
+          await symlink('x', headsPath(ours, 'rel'));
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 51) * 1000);
+          const sut = updateRef;
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'update-ref', '-m', 'w', 'refs/heads/rel', filesC2],
+              { env: pinnedEnv(COMMITTER_EPOCH + 51) },
+            );
+            await sut(ctx, branchRef('rel'), filesC2 as ObjectId, { reflogMessage: 'w' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, ours]) {
+            expect((await lstat(headsPath(dir, 'rel'))).isSymbolicLink()).toBe(false);
+            expect(await readFile(headsPath(dir, 'rel'), 'utf8')).toBe(`${filesC2}\n`);
+            expect(await readFile(headsPath(dir, 'x'), 'utf8')).toBe(`${filesC1}\n`);
+          }
+          const peerLog = await readFile(headsLogPath(peer, 'rel'), 'utf8');
+          expect(peerLog).toBe(`${filesC1} ${filesC2} A <a@x> ${COMMITTER_EPOCH + 51} +0000\tw\n`);
+          expect(await readFile(headsLogPath(ours, 'rel'), 'utf8')).toBe(peerLog);
+          expect(await readFile(headsLogPath(ours, 'x'), 'utf8')).toBe(
+            await readFile(headsLogPath(peer, 'x'), 'utf8'),
+          );
+        });
+      });
+
+      describe('When both tools read a link whose text is an invalid ref name and one naming an absolute path', () => {
+        it('Then neither calls either symbolic, the invalid one does not resolve and the absolute one reads its target', async () => {
+          // Arrange
+          const { peer, ctx } = await filesCasePair('link-unreadable-text');
+          const ours = path.dirname(ctx.layout.gitDir);
+          for (const dir of [peer, ours]) {
+            await symlink('refs/heads/a..b', headsPath(dir, 'invalid'));
+            await symlink(headsPath(dir, 'x'), headsPath(dir, 'absolute'));
+          }
+          const sut = getRefStore(ctx);
+
+          // Act
+          const invalid = await sut.resolveDirect(branchRef('invalid'));
+          const absolute = await sut.resolveDirect(branchRef('absolute'));
+
+          // Assert — a link text that is not a valid ref name is read
+          // through, never reported symbolic.
+          for (const name of ['invalid', 'absolute']) {
+            const symbolic = tryRunGitWithExit(['-C', peer, 'symbolic-ref', `refs/heads/${name}`]);
+            expect(symbolic.exitCode).toBe(128);
+            expect(symbolic.stderr).toContain(`ref refs/heads/${name} is not a symbolic ref`);
+          }
+          expect(
+            tryRunGitWithExit(['-C', peer, 'rev-parse', '--verify', 'refs/heads/invalid']).exitCode,
+          ).toBe(128);
+          expect(invalid).toEqual({ kind: 'missing' });
+          const gitAbsolute = tryRunGitWithExit([
+            '-C',
+            peer,
+            'rev-parse',
+            '--verify',
+            'refs/heads/absolute',
+          ]);
+          expect(gitAbsolute.exitCode).toBe(0);
+          expect(gitAbsolute.stdout.trim()).toBe(filesC2);
+          expect(absolute).toEqual({ kind: 'direct', id: filesC2 });
+        });
+      });
+
+      describe('When both tools read a link naming a file that holds a symbolic ref', () => {
+        it('Then both report the symbolic target the followed file names', async () => {
+          // Arrange
+          const { peer, ctx } = await filesCasePair('link-to-symbolic-file');
+          const ours = path.dirname(ctx.layout.gitDir);
+          for (const dir of [peer, ours]) {
+            await writeFile(path.join(dir, '.git', 'indirect'), 'ref: refs/heads/main\n');
+            await symlink('../../indirect', headsPath(dir, 'followed'));
+          }
+          const sut = getRefStore(ctx);
+
+          // Act
+          const result = await sut.resolveDirect(branchRef('followed'));
+
+          // Assert
+          const gitResult = tryRunGitWithExit(['-C', peer, 'symbolic-ref', 'refs/heads/followed']);
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout.trim()).toBe('refs/heads/main');
+          expect(result).toEqual({ kind: 'symbolic', target: branchRef('main') });
         });
       });
     });
