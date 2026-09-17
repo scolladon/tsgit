@@ -1707,8 +1707,9 @@ suffix only.
   `get_oid` accepts both (B5/B6 by tag name, B8); lightweight `tag.create` does not type its
   target where git does (ADR-860's recorded family gap).
 - **Pre-existing intra-verb refusal orders surfaced by O** — `tag.create` validates the name
-  before its target where git types the target first (O3); `reflog show <unknown>` returns an
-  empty log where git refuses `ambiguous argument` (O5); neither is moved here.
+  before its target where git types the target first (O3); not moved here. `reflog show
+  <unknown>` no longer returns an empty log: it parses its argument as a revision first and
+  refuses `REVPARSE_UNRESOLVED`, git's `ambiguous argument` (O5).
 - **`core.logAllRefUpdates` on `remote.*` / `ls-remote`** — git dies, tsgit's acceptance tier
   runs (spike §5.6): one class, the other direction; not this item.
 - **The 21 other keys `prepare_repo_settings` reads** (`core.commitGraph`, `index.version`,

@@ -31,6 +31,7 @@ import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { resolveRef, resolveTerminalName } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
+import { resolveRevisionName } from './internal/revision-name.js';
 
 export type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 
@@ -159,7 +160,18 @@ const showSourceFor = async (ctx: Context, arg: RefName): Promise<ShowSource> =>
   return entriesViaCandidates(ctx, arg);
 };
 
+/**
+ * git parses `show`'s argument as a revision before it walks any log, so the
+ * refusal is the revision machinery's, not the reflog's: a name nothing
+ * resolves refuses even when a log file survives under it, while a name that
+ * resolves but carries no log simply reports nothing.
+ */
+const assertRevisionResolves = async (ctx: Context, name: string): Promise<void> => {
+  if ((await resolveRevisionName(ctx, name)) === undefined) throw revparseUnresolved(name);
+};
+
 const runShow = async (ctx: Context, refName: string): Promise<ReflogResult> => {
+  await assertRevisionResolves(ctx, refName);
   const { ref, entries: stored } = await showSourceFor(ctx, resolveUserRef(refName));
   const lastIndex = stored.length - 1;
   // Build newest-first directly: output position `index` (0 = newest) reads the

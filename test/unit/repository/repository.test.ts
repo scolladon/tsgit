@@ -869,16 +869,32 @@ describe('openRepository — round-trip via memory adapter', () => {
     describe('When the bound reflog command is called', () => {
       it('Then it delegates and returns a show result', async () => {
         // Arrange — the bound `reflog` strips `ctx`; calling it with no args
-        // defaults to `show` on HEAD with an empty entry list.
+        // defaults to `show` on HEAD. HEAD has to resolve first: git parses
+        // the argument as a revision before it walks any log.
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo' }, fallback);
         await sut.init();
+        await sut.ctx.fs.writeUtf8('/repo/a.txt', 'a');
+        await sut.add(['a.txt']);
+        await sut.commit({
+          message: 'seed',
+          author: {
+            name: 'Ada',
+            email: 'ada@example.com',
+            timestamp: 1_700_000_000,
+            timezoneOffset: '+0000',
+          },
+        });
 
         // Act
         const result = await sut.reflog();
 
         // Assert
-        expect(result).toEqual({ kind: 'show', ref: 'HEAD', entries: [] });
+        expect(result.kind).toBe('show');
+        expect(result.kind === 'show' && result.ref).toBe('HEAD');
+        expect(result.kind === 'show' && result.entries.map((e) => e.entry.message)).toEqual([
+          'commit (initial): seed',
+        ]);
       });
     });
     describe('When the bound sparseCheckout command is called', () => {

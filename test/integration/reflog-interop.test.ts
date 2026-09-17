@@ -1257,20 +1257,107 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
 
       describe('When reflog show runs on a ref name that does not resolve to any ref at all', () => {
-        it('Then git refuses (fatal: ambiguous argument, exit 128) but tsgit returns an empty result — a pre-existing, accepted divergence', async () => {
+        it('Then both refuse before any log is walked', async () => {
           // Arrange
           const dir = await caseDir('degenerate-absent-ref');
           const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'totally-absent-ref']);
-          const result = await reflog(ctx, { action: 'show', ref: 'totally-absent-ref' });
+          let caught: unknown;
+          try {
+            await sut(ctx, { action: 'show', ref: 'totally-absent-ref' });
+          } catch (err) {
+            caught = err;
+          }
 
           // Assert
           expect(gitResult.exitCode).toBe(128);
-          expect(gitResult.stderr).toContain('ambiguous argument');
-          expect(result.kind).toBe('show');
+          expect(gitResult.stderr).toContain(
+            "fatal: ambiguous argument 'totally-absent-ref': unknown revision or path not in the working tree.",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REVPARSE_UNRESOLVED',
+            expression: 'totally-absent-ref',
+          });
+        });
+      });
+
+      describe('When reflog show runs on a ref that resolves but carries no log', () => {
+        it('Then both report nothing at all, without refusing', async () => {
+          // Arrange
+          const dir = await caseDir('resolves-no-log');
+          git(dir, 'branch', 'quiet');
+          await rm(branchLogPath(dir, 'quiet'), { force: true });
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'refs/heads/quiet']);
+          const result = await sut(ctx, { action: 'show', ref: 'refs/heads/quiet' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout).toBe('');
           expect(result.kind === 'show' && result.entries).toEqual([]);
+        });
+      });
+
+      describe('When reflog show runs on a name whose log survives but whose ref is gone', () => {
+        it('Then both refuse — the revision parse runs before the log is ever read', async () => {
+          // Arrange — the log file stays on disk; only the ref is unlinked.
+          const dir = await caseDir('log-without-ref');
+          git(dir, 'branch', 'orphaned');
+          await rm(refPath(dir, 'refs/heads/orphaned'), { force: true });
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'refs/heads/orphaned']);
+          let caught: unknown;
+          try {
+            await sut(ctx, { action: 'show', ref: 'refs/heads/orphaned' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(await pathExists(branchLogPath(dir, 'orphaned'))).toBe(true);
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain('ambiguous argument');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REVPARSE_UNRESOLVED',
+            expression: 'refs/heads/orphaned',
+          });
+        });
+      });
+
+      describe('When reflog show runs on HEAD in a repository with no commit yet', () => {
+        it('Then both refuse — an unborn HEAD resolves to nothing', async () => {
+          // Arrange
+          const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-unborn-'));
+          caseRoots.push(dir);
+          runGit(['init', '-q', '-b', 'main', dir]);
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'HEAD']);
+          let caught: unknown;
+          try {
+            await sut(ctx, { action: 'show', ref: 'HEAD' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain("fatal: ambiguous argument 'HEAD'");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REVPARSE_UNRESOLVED',
+            expression: 'HEAD',
+          });
         });
       });
     });

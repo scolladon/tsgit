@@ -119,7 +119,7 @@ describe('reflog command', () => {
         it('Then entries are newest-first with index and selector', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ message: 'commit (initial): first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'commit: second' });
           const third = entry({ oldId: OID_Y, newId: OID_Z, message: 'commit: third' });
@@ -148,7 +148,7 @@ describe('reflog command', () => {
         it('Then it defaults to show on HEAD', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await appendReflog(ctx, HEAD, entry());
 
           // Act
@@ -263,7 +263,7 @@ describe('reflog command', () => {
         it('Then its own entries win and the target is never read', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await appendReflog(ctx, BRANCH, entry({ message: 'branch entry' }));
           await writeSymbolicRef(ctx, 'refs/heads/z' as RefName, BRANCH);
           await appendReflog(ctx, 'refs/heads/z' as RefName, entry({ message: 'own entry' }));
@@ -314,7 +314,7 @@ describe('reflog command', () => {
           // reader would throw on the whole file; the lenient one drops only
           // the garbage line and keeps counting the rest.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ message: 'commit (initial): first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'commit: second' });
           const third = entry({ oldId: OID_Y, newId: OID_Z, message: 'commit: third' });
@@ -342,18 +342,42 @@ describe('reflog command', () => {
       });
     });
 
-    describe('Given a ref with no reflog file', () => {
+    describe('Given a ref that resolves but carries no reflog file', () => {
       describe('When reflog show', () => {
         it('Then it returns an empty entry list (not an error)', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
 
           // Act
-          const result = await reflog(ctx, { action: 'show', ref: 'refs/heads/missing' });
+          const result = await reflog(ctx, { action: 'show', ref: 'refs/heads/main' });
 
           // Assert
           expect(result.kind === 'show' && result.entries).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a ref name that resolves to nothing', () => {
+      describe('When reflog show', () => {
+        it('Then it refuses the argument as an unresolved revision', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedLiveHead(ctx);
+
+          // Act
+          let caught: unknown;
+          try {
+            await reflog(ctx, { action: 'show', ref: 'refs/heads/missing' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REVPARSE_UNRESOLVED',
+            expression: 'refs/heads/missing',
+          });
         });
       });
     });
@@ -910,11 +934,13 @@ describe('reflog command', () => {
   describe('ref-name validation', () => {
     describe('Given an invalid ref containing ..', () => {
       describe('When reflog show', () => {
-        it('Then throws INVALID_REF', async () => {
-          // Arrange — a path-traversal attempt must be rejected before it indexes
-          // the filesystem.
-          const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+        it('Then it refuses as an unresolved revision, touching no path under it', async () => {
+          // Arrange — `show` parses its argument as a revision first, so a
+          // name the grammar rejects folds into the same "nothing resolves"
+          // refusal rather than a format one, and reaches no path under it.
+          const base = createMemoryContext();
+          await seedLiveHead(base);
+          const { ctx, calls } = instrumentedContext(base);
 
           // Act
           let caught: unknown;
@@ -927,9 +953,10 @@ describe('reflog command', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toEqual({
-            code: 'INVALID_REF',
-            reason: 'ref name must not contain ..',
+            code: 'REVPARSE_UNRESOLVED',
+            expression: '../../etc/passwd',
           });
+          expect(calls().some((call) => call.path.includes('etc/passwd'))).toBe(false);
         });
       });
     });
@@ -1012,7 +1039,7 @@ describe('reflog command', () => {
         it('Then it is accepted verbatim', async () => {
           // Arrange — `HEAD` is a pseudo-ref the validator would not produce.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await appendReflog(ctx, HEAD, entry());
 
           // Act
@@ -1029,7 +1056,7 @@ describe('reflog command', () => {
         it('Then it resolves', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await appendReflog(ctx, BRANCH, entry());
 
           // Act
