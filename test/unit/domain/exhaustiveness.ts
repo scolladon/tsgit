@@ -74,6 +74,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'MISSING_CAPABILITIES':
     case 'INVALID_REF_LINE':
     case 'DUPLICATE_REF':
+    case 'REMOTE_ERROR':
     case 'INVALID_SIDEBAND_CHANNEL':
     case 'SIDEBAND_FATAL':
     case 'UNKNOWN_ACK_STATUS':

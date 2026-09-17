@@ -10,7 +10,13 @@ import {
   tooManyAdvertisedRefs,
   unknownAckStatus,
 } from './error.js';
-import { encodePktLine, encodePktLines, encodePktStream, type PktLine } from './pkt-line.js';
+import {
+  assertNotRemoteError,
+  encodePktLine,
+  encodePktLines,
+  encodePktStream,
+  type PktLine,
+} from './pkt-line.js';
 import { parseSideBand } from './side-band.js';
 
 // Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's `fatal` option defaults to `false` per the WHATWG Encoding spec, so `{}` behaves identically to `{ fatal: false }`.
@@ -256,6 +262,7 @@ const collectRefs = async (
       throw tooManyAdvertisedRefs(acc.refs.length + 1, MAX_ADVERTISED_REFS);
     }
     const line = stripTrailingNewline(TEXT_DECODER.decode(pkt.value.payload));
+    assertNotRemoteError(line);
     capabilities = handleRefLine(acc, capabilities, line);
     pkt = await iter.next();
   }
@@ -452,6 +459,7 @@ const splitMeta = async (iter: AsyncIterator<PktLine>): Promise<ResponseSplit> =
       return { acks, nak, buffered: [pkt.value] };
     }
     const text = TEXT_DECODER.decode(pkt.value.payload);
+    assertNotRemoteError(text);
     if (text.startsWith('ACK ')) {
       acks.push(parseAckLine(text));
       pkt = await iter.next();

@@ -16,6 +16,7 @@ export type ProtocolError =
   | { readonly code: 'DUPLICATE_REF'; readonly name: string }
   | { readonly code: 'INVALID_SIDEBAND_CHANNEL'; readonly channel: number }
   | { readonly code: 'SIDEBAND_FATAL'; readonly message: string }
+  | { readonly code: 'REMOTE_ERROR'; readonly message: string }
   | { readonly code: 'UNKNOWN_ACK_STATUS'; readonly value: string }
   | { readonly code: 'INVALID_REPORT_STATUS'; readonly line: string }
   | { readonly code: 'EMPTY_WANTS' }
@@ -83,6 +84,9 @@ export const invalidSidebandChannel = (channel: number): TsgitError =>
 
 export const sidebandFatal = (message: string): TsgitError =>
   new TsgitError({ code: 'SIDEBAND_FATAL', message });
+
+export const remoteError = (message: string): TsgitError =>
+  new TsgitError({ code: 'REMOTE_ERROR', message });
 
 export const unknownAckStatus = (value: string): TsgitError =>
   new TsgitError({ code: 'UNKNOWN_ACK_STATUS', value });

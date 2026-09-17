@@ -1,6 +1,12 @@
 import { AGENT } from '../capabilities.js';
 import { unexpectedV2Section } from '../error.js';
-import { DELIM_PKT, encodePktLines, FLUSH_PKT, type PktLine } from '../pkt-line.js';
+import {
+  assertNotRemoteError,
+  DELIM_PKT,
+  encodePktLines,
+  FLUSH_PKT,
+  type PktLine,
+} from '../pkt-line.js';
 
 const KNOWN_SECTION_NAMES = ['acknowledgments', 'shallow-info', 'wanted-refs', 'packfile'] as const;
 
@@ -81,6 +87,7 @@ export async function* readSections(pktStream: AsyncIterable<PktLine>): AsyncIte
 
   while (!header.done && header.value.kind === 'data') {
     const name = stripTrailingNewline(TEXT_DECODER.decode(header.value.payload));
+    assertNotRemoteError(name);
     if (!isSectionName(name)) {
       throw unexpectedV2Section(name);
     }

@@ -263,3 +263,32 @@ describe('parseSideBand — flush handling', () => {
     });
   });
 });
+
+describe('parseSideBand — an error packet inside the body', () => {
+  describe('Given a data packet whose payload begins with the ERR prefix', () => {
+    describe('When iterated', () => {
+      it('Then it is read as the band its first byte names, not as a remote error', async () => {
+        // Arrange — once the body is streaming, canonical git reports the
+        // out-of-range band rather than unwrapping the payload as an error.
+        const source = asyncOf([
+          { kind: 'data', payload: enc.encode('ERR upload-pack: too late') } as PktLine,
+        ]);
+
+        // Act
+        let captured: unknown;
+        try {
+          await collect(parseSideBand(source, {}));
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect(captured).toBeInstanceOf(TsgitError);
+        expect((captured as TsgitError).data).toEqual({
+          code: 'INVALID_SIDEBAND_CHANNEL',
+          channel: 'E'.charCodeAt(0),
+        });
+      });
+    });
+  });
+});

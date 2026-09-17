@@ -323,6 +323,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `invalid sideband channel: ${data.channel}`;
     case 'SIDEBAND_FATAL':
       return `sideband fatal: ${data.message}`;
+    case 'REMOTE_ERROR':
+      return `remote error: ${data.message}`;
     case 'UNKNOWN_ACK_STATUS':
       return `unknown ack status: ${data.value}`;
     case 'INVALID_REPORT_STATUS':

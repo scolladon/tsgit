@@ -369,6 +369,10 @@ describe('domain protocol error', () => {
         'SIDEBAND_FATAL: sideband fatal: repository not found',
       ],
       [
+        { code: 'REMOTE_ERROR', message: 'upload-pack: not our ref' },
+        'REMOTE_ERROR: remote error: upload-pack: not our ref',
+      ],
+      [
         { code: 'UNKNOWN_ACK_STATUS', value: 'bogus' },
         'UNKNOWN_ACK_STATUS: unknown ack status: bogus',
       ],

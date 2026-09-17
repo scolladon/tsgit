@@ -149,6 +149,10 @@ const HOSTILE_SKIP: string | false = RUNNING_UNDER_STRYKER
 
 const CLONE_TIMEOUT = 60_000;
 
+/** An oid no repository can hold — the shape that makes upload-pack answer the
+ *  client's `want` with the protocol's error packet instead of a packfile. */
+const GHOST_OID = '1'.repeat(40);
+
 /** `git` over the same URL as tsgit, without blocking the in-process CGI
  *  server, reporting the refusal instead of throwing it. */
 const tryCloneWithGit = async (
@@ -197,6 +201,7 @@ describe.skipIf(HOSTILE_SKIP !== false)(
       treeId = git(source, 'rev-parse', 'HEAD^{tree}').trim();
       await plantBare('branch-tree.git', 'refs/heads/main', treeId);
       await plantBare('detached-tree.git', 'HEAD', treeId);
+      await plantBare('ghost-want.git', 'refs/tags/ghost', GHOST_OID);
       server = await startGitHttpBackend({ projectRoot: root });
     }, CLONE_TIMEOUT);
 
@@ -252,6 +257,32 @@ describe.skipIf(HOSTILE_SKIP !== false)(
           });
           expect(peerResult.exitCode).toBe(128);
           expect(peerResult.stderr).toContain(`trying to write non-commit object ${treeId}`);
+        },
+        CLONE_TIMEOUT,
+      );
+    });
+
+    describe('Given a remote advertising a ref no object backs, When clone runs', () => {
+      it(
+        'Then both report the remote message the server sent over the wire',
+        async () => {
+          // Arrange
+          const url = urlFor('ghost-want.git');
+          const dest = path.join(root, 'peer-ghost-want');
+
+          // Act
+          const oursData = await cloneWithTsgit(url);
+          const peerResult = await tryCloneWithGit(url, dest);
+
+          // Assert
+          expect(oursData).toEqual({
+            code: 'REMOTE_ERROR',
+            message: `upload-pack: not our ref ${GHOST_OID}`,
+          });
+          expect(peerResult.exitCode).toBe(128);
+          expect(peerResult.stderr).toContain(
+            `remote error: upload-pack: not our ref ${GHOST_OID}`,
+          );
         },
         CLONE_TIMEOUT,
       );
