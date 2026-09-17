@@ -46,18 +46,20 @@ Each method returns a concrete result — no discriminator to narrow on at the c
 |---|---|
 | `list` | Return every configured remote, sorted by name (byte-wise). |
 | `add` | Register `[remote "<name>"]` with `url = <url>` and a default fetch refspec `+refs/heads/*:refs/remotes/<name>/*`. Pass `fetch: <custom>` to override. |
-| `remove` | Drop the config section, delete loose tracking refs under `refs/remotes/<name>/*`, clear `branch.<X>.remote` / `branch.<X>.merge` referrers. |
-| `rename` | Move the section and (conservatively) rewrite the canonical fetch refspec; move tracking refs; rewrite `branch.<X>.remote = <new>` referrers. Custom refspecs are preserved verbatim (ADR-178). |
+| `remove` | Drop the config section, delete the tracking refs this remote alone fetches into, clear `branch.<X>.remote` / `branch.<X>.merge` referrers. |
+| `rename` | Move the section; move the tracking refs its fetch refspecs bring in; rewrite those refspecs and the `branch.<X>.remote = <new>` referrers. A refspec that does not fetch into `refs/remotes/<old>/` is preserved verbatim. |
 | `setUrl` | Replace `remote.<n>.url`. `push: true` writes `remote.<n>.pushurl` instead — `push` consumes `pushurl ?? url`. |
-| `show` | Local-only structured view: config plus tracking refs (loose+packed) plus tracking branches. No network query. |
+| `show` | Local-only structured view: config plus tracking refs (loose+packed) plus tracking branches. No network query. A name no remote is configured under is described with the name itself as its `url`, as `git remote show -n` does. |
 
 ## Behaviour
 
 - **Name validation.** `add` and `rename`'s `to` follow git's `valid_remote_name`: the name must form a valid `refs/remotes/<name>/` ref name — an empty name, a control character, a space, a backslash, `..`, a leading `.`, a `.lock` suffix, `:`, `~`, `^`, `?`, `*`, `[` or `@{` refuse with `REMOTE_NAME_INVALID`, while `/`, `"` and `]` are accepted. `add` also refuses a name nested under or over a configured remote (`a/b` next to `a`), as git does. Both checks run after the existing-remote check and before anything is written; `remove`, `rename`'s `from`, `setUrl` and `show` only look the remote up.
 - **URL validation.** Only control-char rejection at write time (`\n` / `\r` / `\0`). Scheme / SSRF guards apply when the URL is consumed by `clone` / `fetch` / `push` — matching canonical git.
-- **Ordering on multi-step methods.** `remove` and `rename` delete or move tracking refs FIRST, then rewrite config. Mid-flight failures are recoverable by re-running the method (ADR-177, ADR-178).
-- **Packed refs.** Tracking refs are deleted via `updateRef`, which rejects packed-only refs with `UNSUPPORTED_OPERATION`. Run `git pack-refs --unpack` and retry.
-- **Reflog.** `remove` deletes per-ref reflog files via the standard `updateRef` delete path. `rename` writes a `remote: renamed <from> to <to>` entry on each moved ref.
+- **Which tracking refs a remote owns.** Both `remove` and `rename` go by the remote's **fetch refspecs**, as git does. `remove` deletes every ref under `refs/remotes/` that this remote's refspecs fetch into and no other configured remote's refspecs do. `rename` moves the refs under `refs/remotes/<old>/` only when at least one refspec fetches into that namespace — a remote with no fetch refspec, a mirror's `+refs/*:refs/*`, or a destination elsewhere leaves every ref where it is, while the section and the `branch.<X>.remote` referrers are still re-pointed.
+- **Ordering on `rename`.** The config **section header** is renamed first, before any ref moves; the rewritten refspecs and referrers are written only after every ref has moved. The ref move itself is prepared in full before anything is written, so a refusal leaves every ref and log untouched — but the section keeps the new name with values still naming the old one. This is canonical git's own order, bug included.
+- **A tracking `HEAD` pointing outside the remote.** `rename` rewrites a symbolic tracking ref's target by overwriting a fixed byte slice, without checking where the target points — git's behaviour, transcribed deliberately. A target too short for the slice refuses `INVALID_REF`.
+- **Packed refs.** Packed-only tracking refs are deleted and moved like any other; `packed-refs` is rewritten without them.
+- **Reflog.** `remove` deletes per-ref reflog files via the standard delete path. `rename` writes a `remote: renamed <old ref> to <new ref>` entry, naming the full ref paths, on each moved ref that already had a log.
 - **A repository the acceptance tier rejects.** Every `remote` verb refuses — reads included. This is narrower than `config`'s surviving four read verbs: canonical git refuses `remote`, `remote -v`, `remote get-url` and `remote show -n` on a rejected repository exactly as it refuses the writers (measured on 2.55.0, ownership and format rejections alike), so `list` and `show` sit on the same tier as `add` / `remove` / `rename` / `setUrl`. See [Repository layout](../../understand/repository-layout.md#the-repository-acceptance-tiers).
 
 ## Examples
@@ -92,12 +94,12 @@ for (const [ref, oid] of remote.trackingRefs) console.log(ref, oid);
 
 - `NOT_A_REPOSITORY` — `.git/HEAD` is absent.
 - `DUBIOUS_OWNERSHIP` / `IMPLICIT_BARE_REPOSITORY` / `REPOSITORY_FORMAT_VERSION_UNSUPPORTED` / `REPOSITORY_EXTENSIONS_UNSUPPORTED` — the repository the acceptance tier rejects; every `remote` verb refuses, including `list` and `show` (see [`errors.md`](../errors.md#repository-state)).
-- `REMOTE_NOT_CONFIGURED` — `remove` / `rename` / `setUrl` / `show` targeting an unknown remote.
-- `REMOTE_EXISTS` — `add` against a configured name; `rename` whose `to` is already configured.
+- `REMOTE_NOT_CONFIGURED` — `remove` / `rename`'s `from` / `setUrl` targeting an unknown remote; `show` only for the empty name.
+- `REMOTE_EXISTS` — `add` against a configured name; `rename` whose `to` is already configured, including a rename onto the remote's own name.
 - `REMOTE_NAME_INVALID` — `add` / `rename`'s `to` naming something that cannot form a `refs/remotes/<name>/` ref name, or an `add` nested under or over a configured remote.
-- `INVALID_OPTION` — URL contains a control character; `rename` called with `from === to`.
+- `INVALID_OPTION` — URL contains a control character.
 - `REFSPEC_INVALID` — `add({ fetch })` supplied a malformed custom refspec.
-- `UNSUPPORTED_OPERATION` — `remove` / `rename` hit a packed-only tracking ref.
+- `INVALID_REF` — `rename` met a symbolic tracking ref whose target is too short for the slice git overwrites.
 
 ## See also
 

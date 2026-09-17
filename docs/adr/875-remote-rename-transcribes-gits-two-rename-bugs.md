@@ -93,7 +93,7 @@ process: the refusal is a normal `TsgitError`, and the caller sees the same on-d
   name *and* for a symbolic ref's target: `value.slice(0, 13) + <new> + value.slice(13 + <old>.length)`.
   `rewriteSymbolicTarget` refuses `INVALID_REF` when `target.length < 13 + <old>.length`.
 - Every symref's two spliced names are computed in `prepareSymrefs`, before `assertRenamedNamesFree`,
-  so an unspliceable target refuses ahead of any name conflict and before any ref is written.
+  so a target too short to splice refuses ahead of any name conflict and before any ref is written.
 - `remoteRename` issues **two** config operations: `renameSectionOperations` (the section header
   alone) before `renameTrackingRefs`, and `renameValueOperations` (the fetch rewrite plus the
   `branch.<x>.remote` re-points) after it. The refusals that precede the section rename — unknown

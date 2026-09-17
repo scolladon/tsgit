@@ -408,7 +408,7 @@ const symbolicCreate = (ctx: Context, renamed: RenamedSymref): RefUpdate => {
 /**
  * Move every tracking ref from `refs/remotes/<from>/` to `refs/remotes/<to>/`:
  * every symref's two names spliced first (git splices them while it prepares
- * the rename, so an unspliceable target refuses ahead of any name conflict),
+ * the rename, so a target too short to splice refuses ahead of any name conflict),
  * every renamed name proven free, the direct refs created, the symbolic refs'
  * logs carried, every old name deleted in ONE ref transaction, and the
  * symbolic `<to>/HEAD` created last, once its target already exists.

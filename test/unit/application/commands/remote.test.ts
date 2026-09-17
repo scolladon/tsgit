@@ -99,7 +99,7 @@ const SPLICED_TARGETS = [
 ].map((row) => ({ ...row, target: row.target as RefName }));
 
 /** Targets too short for the slice: git's splice refuses over them. */
-const UNSPLICEABLE_TARGETS = [
+const SHORT_TARGETS = [
   { label: 'a target one byte shorter than the slice', target: 'refs/remotes/origi' },
   { label: 'a target far shorter than the slice', target: 'refs/heads/main' },
 ].map((row) => ({ ...row, target: row.target as RefName }));
@@ -2179,7 +2179,7 @@ describe('application/commands/remote', () => {
         },
       );
 
-      describe.each(UNSPLICEABLE_TARGETS)('Given $label, When remoteRename runs', ({ target }) => {
+      describe.each(SHORT_TARGETS)('Given $label, When remoteRename runs', ({ target }) => {
         it('Then it throws INVALID_REF and leaves every tracking ref where it was', async () => {
           // Arrange
           const ctx = frame(createMemoryContext());
@@ -2203,9 +2203,9 @@ describe('application/commands/remote', () => {
         });
       });
 
-      describe('Given a renamed name already taken and an unspliceable symref target', () => {
+      describe('Given a renamed name already taken and a symref target too short to splice', () => {
         describe('When remoteRename runs', () => {
-          it('Then the unspliceable target refuses ahead of the name conflict', async () => {
+          it('Then the short target refuses ahead of the name conflict', async () => {
             // Arrange
             const ctx = frame(createMemoryContext());
             await seedRenameSource(ctx, 'refs/heads/main' as RefName);
@@ -2221,7 +2221,7 @@ describe('application/commands/remote', () => {
       });
     });
 
-    describe('Given an unspliceable symref target and a branch tracking the remote', () => {
+    describe('Given a symref target too short to splice and a branch tracking the remote', () => {
       describe('When remoteRename runs', () => {
         it('Then the section carries the new name while its refspec and referrer still name the old one', async () => {
           // Arrange

@@ -192,7 +192,7 @@ the write chain, reads `HEAD` for coupling, checks `expected`, and applies every
 - **`remote.rename`'s write order** (amended 2026-09-17, after probing git 2.55.0 on both backends).
   The **ref half** is prepared in full before anything is written — every splice computed, every
   renamed name proven free — which is git's own order: a rename refused by a taken name or by an
-  unspliceable target leaves every ref and every log exactly where it was, on both backends. The
+  target too short to splice leaves every ref and every log exactly where it was, on both backends. The
   **config half is not**: git renames the section header *before* it prepares the ref move, and writes
   the rewritten fetch refspecs and the `branch.<x>.remote` re-points only *after* every ref has moved,
   so a refusal in between leaves `[remote "<new>"]` carrying values that still name `<old>`.
