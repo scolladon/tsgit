@@ -256,9 +256,32 @@ each tsgit backend reports the name its git backend does.
 - A ref name blocked by a regular file in its path reads as absent, with no packed fallback, while
   enumeration still lists a packed entry under that file and the write side still refuses by name.
 
-Residuals, recorded in the design: `checkout` has no pathspec fallback for an unresolvable argument,
-and the `refname '<x>' is ambiguous` warning git prints wherever it takes the first candidate has no
-structured counterpart.
+### Residuals — rendered text only, deliberately not folded
+
+Three differences from git 2.55.0 remain on these surfaces. All three are **message and surface
+shape**, not behaviour: for each, tsgit's refusal *condition* — which inputs refuse, and at which
+point in the sequence — and the on-disk state left behind are already git's, byte for byte. Only the
+human-readable line differs, and composing that line is the caller's job: the library ships the
+fields (the code, the name as given, the candidate set) every one of these sentences is built from.
+
+1. **`checkout` has no pathspec fallback.** git's `cmd_checkout` falls through from the revision
+   ladder to a pathspec interpretation and, when neither resolves, prints
+   `error: pathspec '<x>' did not match any file(s) known to git`. tsgit's switch surface refuses
+   `BRANCH_NOT_FOUND` carrying the argument verbatim. Paths are a separate call in this API — a
+   checkout that restores paths takes them as its own input — so no argument reaches the switch
+   surface for a pathspec fallback to reinterpret: there is no input tsgit accepts that git refuses,
+   nor one it refuses that git accepts.
+2. **The ambiguity warning has no structured counterpart.** Every git surface that takes the first
+   candidate of a multi-namespace match prints `warning: refname '<x>' is ambiguous.` on stderr and
+   proceeds. tsgit proceeds with the same candidate, writing the same ref and the same reflog bytes,
+   and emits nothing — the same shape as `packRefs`' stderr line, which is likewise unrepresented.
+   The one surface that *refuses* on ambiguity (`branch.create`, item 18 above) does carry the
+   structured `REVPARSE_AMBIGUOUS` with its candidate list; only the non-refusing warning is absent.
+3. **Total-miss wording.** Where a name resolves in no namespace, git's sentence depends on the
+   surface the name entered through — `fatal: not a valid object name: '<x>'` from the revision
+   ladder, `error: pathspec '<x>' did not match any file(s) known to git` from `checkout`'s fallback.
+   tsgit raises one `BRANCH_NOT_FOUND` carrying the name as given, from which either sentence can be
+   composed. The set of names that miss is identical, and a miss writes nothing on either side.
 
 **Migration notes (round three).** A blocked ref path reads as absent instead of refusing
 `NOT_A_DIRECTORY`, and no longer reaches a packed value under it. A write to an existing ref with a
