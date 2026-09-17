@@ -815,7 +815,7 @@ does not run a reflog expire (git's does); unchanged.
 | O-a / O-b | malformed `core.deltaBaseCacheLimit` + `expire refs/heads/nope` / `refs/heads/gone` | **255 could not be found** — target resolution precedes the class |
 | O-c | malformed class + `--expire=bogus HEAD` | 128 invalid timestamp — flags precede the class |
 | O-d | malformed class + `expire --expire=now` (no ref) | **0** |
-| O-e / O-f | malformed class + `--all`; + `never`/`never HEAD` | 128 class |
+| O-e / O-f | malformed class + `--all`; + `never`/`never HEAD` | 128 class. Under `--all` git reaches the class mid-sweep and has **already truncated `logs/HEAD`** by then; the named branch log is untouched |
 
 Source: `builtin/reflog.c:282-297` — per argument `repo_dwim_log(argv[i], …, &ref)` else
 `status |= error("reflog could not be found: '%s'")`; `refs.c:840-879` `repo_dwim_log` —
@@ -859,6 +859,12 @@ const logForCandidate = async (ctx: Context, candidate: RefName | 'HEAD'): Promi
 
 Behaviour moves: E1/E5/E8/E12/E13 refuse `REFLOG_NOT_FOUND { ref: <argument> }` (git prints the
 argument as typed); E4/E6b/E7 succeed on the resolved log; E15 expires by clock.
+
+**Residual recorded (O-e).** git's `--all` sweep rewrites each log as it goes, so a class refusal
+raised part-way through leaves the already-swept `logs/HEAD` emptied on disk. tsgit applies one
+`applyRefUpdates` transaction after the whole sweep, so its refusal writes nothing at all. The
+refusal itself agrees (same key, value and reason); the partial on-disk state does not, and
+tsgit's all-or-nothing side is the one worth keeping.
 
 ---
 
