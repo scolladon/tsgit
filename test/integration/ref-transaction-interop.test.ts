@@ -30,7 +30,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { branchDelete } from '../../src/application/commands/branch.js';
 import { remoteRemove, remoteRename, remoteShow } from '../../src/application/commands/remote.js';
+import { tagDelete } from '../../src/application/commands/tag.js';
 import { getRefStore, type RefUpdate } from '../../src/application/primitives/ref-store.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -1716,6 +1718,263 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
           const target = await getRefStore(ctx).resolveDirect(branchRef('x'));
           expect(target).toEqual({ kind: 'missing' });
+        });
+      });
+    });
+
+    describe('Given a branch name held by a symbolic ref aimed at another branch', () => {
+      describe('When git branch -D and tsgit branchDelete remove that name', () => {
+        it('Then both drop the symbolic ref itself, keep the target, and leave the target log untouched', async () => {
+          // Arrange — `refs/heads/sd` is symbolic to `refs/heads/x`; both
+          // twins get it from canonical git under one pinned clock, so the
+          // pre-state bytes are identical and only the delete differs.
+          const { peer, ours, ctx } = await filesCasePair('symref-name-branch-delete');
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'symbolic-ref', 'refs/heads/sd', 'refs/heads/x'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 40),
+            });
+          }
+          const peerTargetLog = await readFile(
+            path.join(peer, '.git', 'logs', 'refs', 'heads', 'x'),
+            'utf8',
+          );
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 41) * 1000);
+          const sut = branchDelete;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stdout: string };
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, 'branch', '-D', 'sd'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 41),
+            });
+            await sut(ctx, { name: 'sd' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert — the symbolic ref is the name that goes; `x` survives.
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout.trim()).toBe('Deleted branch sd (was refs/heads/x).');
+          for (const dir of [peer, ours]) {
+            expect(
+              tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/heads/sd']).exitCode,
+            ).toBe(128);
+            expect(
+              tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/heads/x']).stdout,
+            ).toBe(`${filesC2} refs/heads/x\n`);
+            // The files backend removes a symbolic ref's own log with it.
+            expect(await pathExists(path.join(dir, '.git', 'logs', 'refs', 'heads', 'sd'))).toBe(
+              false,
+            );
+          }
+          expect(
+            await readFile(path.join(ours, '.git', 'logs', 'refs', 'heads', 'x'), 'utf8'),
+          ).toBe(peerTargetLog);
+        });
+      });
+
+      describe('When git branch -D and tsgit branchDelete remove that name on the reftable backend', () => {
+        it('Then both keep the symbolic ref log and append the same resolved-value deletion to it', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await reftableCasePair('symref-name-branch-delete-reftable');
+          const rbId = git(reftableBase, 'rev-parse', 'refs/heads/rb').trim();
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'symbolic-ref', 'refs/heads/sd', 'refs/heads/rb'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 40),
+            });
+          }
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 41) * 1000);
+          const sut = branchDelete;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stdout: string };
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, 'branch', '-D', 'sd'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 41),
+            });
+            await sut(ctx, { name: 'sd' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+          runGit(['-C', peer, 'refs', 'migrate', '--ref-format=files']);
+          runGit(['-C', ours, 'refs', 'migrate', '--ref-format=files']);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout.trim()).toBe('Deleted branch sd (was refs/heads/rb).');
+          for (const dir of [peer, ours]) {
+            expect(
+              tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/heads/sd']).exitCode,
+            ).toBe(128);
+            expect(
+              tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/heads/rb']).stdout,
+            ).toBe(`${rbId} refs/heads/rb\n`);
+          }
+          const logOf = (dir: string, name: string): Promise<string> =>
+            readFile(path.join(dir, '.git', 'logs', 'refs', 'heads', name), 'utf8');
+          const peerDeletedLog = await logOf(peer, 'sd');
+          // The reftable backend keeps the log and appends the RESOLVED old
+          // value against the null id, with no message.
+          expect(peerDeletedLog.trimEnd().split('\n')).toHaveLength(2);
+          expect(peerDeletedLog.trimEnd().split('\n')[1]).toBe(
+            `${rbId} ${ZERO} A <a@x> ${COMMITTER_EPOCH + 41} +0000`,
+          );
+          expect(await logOf(ours, 'sd')).toBe(peerDeletedLog);
+          expect(await logOf(ours, 'rb')).toBe(await logOf(peer, 'rb'));
+        });
+      });
+    });
+
+    describe('Given a tag name held by a symbolic ref aimed at another tag', () => {
+      describe('When git tag -d and tsgit tagDelete remove that name', () => {
+        it('Then both drop the symbolic ref itself and the pointed-at tag survives', async () => {
+          // Arrange — `refs/tags/st` is symbolic to the packed annotated tag.
+          const { peer, ours, ctx } = await filesCasePair('symref-name-tag-delete');
+          const tagId = git(filesBase, 'rev-parse', 'refs/tags/at1').trim();
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'symbolic-ref', 'refs/tags/st', 'refs/tags/at1'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 42),
+            });
+          }
+          const sut = tagDelete;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'tag', '-d', 'st'], {
+            env: pinnedEnv(COMMITTER_EPOCH + 43),
+          });
+          await sut(ctx, { name: 'st' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout.trim()).toBe(`Deleted tag 'st' (was ${tagId.slice(0, 7)})`);
+          for (const dir of [peer, ours]) {
+            expect(
+              tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/tags/st']).exitCode,
+            ).toBe(128);
+            expect(
+              tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/tags/at1']).stdout,
+            ).toBe(`${tagId} refs/tags/at1\n`);
+          }
+          expect(await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8')).toBe(
+            await readFile(path.join(peer, '.git', 'packed-refs'), 'utf8'),
+          );
+        });
+      });
+    });
+
+    describe('Given HEAD reaches a branch through a second symbolic ref', () => {
+      /** `HEAD → refs/heads/hs → refs/heads/x`, planted by canonical git on
+       *  both twins under one pinned clock. */
+      const plantChain = (dir: string): void => {
+        runGit(['-C', dir, 'symbolic-ref', 'refs/heads/hs', 'refs/heads/x'], {
+          env: pinnedEnv(COMMITTER_EPOCH + 44),
+        });
+        runGit(['-C', dir, 'symbolic-ref', 'HEAD', 'refs/heads/hs'], {
+          env: pinnedEnv(COMMITTER_EPOCH + 45),
+        });
+      };
+      const chainLogs = async (
+        dir: string,
+        target: string,
+      ): Promise<{ readonly head: string; readonly link: string; readonly target: string }> => ({
+        head: await readFile(path.join(dir, '.git', 'logs', 'HEAD'), 'utf8'),
+        link: await readFile(path.join(dir, '.git', 'logs', 'refs', 'heads', 'hs'), 'utf8'),
+        target: await readFile(path.join(dir, '.git', 'logs', 'refs', 'heads', target), 'utf8'),
+      });
+      const lastLine = (log: string): string => {
+        const lines = log.trimEnd().split('\n');
+        return lines[lines.length - 1] ?? '';
+      };
+
+      describe('When the middle link is moved with a message', () => {
+        it('Then all three logs gain the same entry on both tools, HEAD carrying the null old id', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('head-through-link');
+          plantChain(peer);
+          plantChain(ours);
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 46) * 1000);
+          const sut = updateRef;
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'update-ref', '-m', 'm', 'refs/heads/hs', filesC1],
+              { env: pinnedEnv(COMMITTER_EPOCH + 46) },
+            );
+            await sut(ctx, branchRef('hs'), filesC1 as ObjectId, { reflogMessage: 'm' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          const peerLogs = await chainLogs(peer, 'x');
+          const oursLogs = await chainLogs(ours, 'x');
+          expect(oursLogs).toEqual(peerLogs);
+          // The files backend splits the walk and logs the coupled HEAD
+          // entry before the terminal's old value is known: the null id.
+          expect(lastLine(peerLogs.head)).toBe(
+            `${ZERO} ${filesC1} A <a@x> ${COMMITTER_EPOCH + 46} +0000\tm`,
+          );
+          expect(lastLine(peerLogs.link)).toBe(
+            `${filesC2} ${filesC1} A <a@x> ${COMMITTER_EPOCH + 46} +0000\tm`,
+          );
+          expect(lastLine(peerLogs.target)).toBe(lastLine(peerLogs.link));
+        });
+      });
+
+      describe('When the middle link is moved with a message on the reftable backend', () => {
+        it('Then all three logs still agree between tools, HEAD carrying the resolved old id instead', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await reftableCasePair('head-through-link-reftable');
+          const rbId = git(reftableBase, 'rev-parse', 'refs/heads/rb').trim();
+          // A second commit, made identically on both twins under one pinned
+          // identity and clock, so the moved value really differs from the
+          // one HEAD resolves to through the link.
+          for (const dir of [peer, ours]) {
+            await writeFile(path.join(dir, 'f.txt'), 'c2\n');
+            git(dir, 'add', '-A');
+            runGit(['-C', dir, 'commit', '-q', '-m', 'c2'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 43),
+            });
+            runGit(['-C', dir, 'symbolic-ref', 'refs/heads/hs', 'refs/heads/rb'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 44),
+            });
+            runGit(['-C', dir, 'symbolic-ref', 'HEAD', 'refs/heads/hs'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 45),
+            });
+          }
+          const mainId = git(peer, 'rev-parse', 'refs/heads/main').trim();
+          expect(git(ours, 'rev-parse', 'refs/heads/main').trim()).toBe(mainId);
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 46) * 1000);
+          const sut = updateRef;
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'update-ref', '-m', 'm', 'refs/heads/hs', mainId],
+              { env: pinnedEnv(COMMITTER_EPOCH + 46) },
+            );
+            await sut(ctx, branchRef('hs'), mainId as ObjectId, { reflogMessage: 'm' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+          runGit(['-C', peer, 'refs', 'migrate', '--ref-format=files']);
+          runGit(['-C', ours, 'refs', 'migrate', '--ref-format=files']);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          const peerLogs = await chainLogs(peer, 'rb');
+          const oursLogs = await chainLogs(ours, 'rb');
+          expect(oursLogs).toEqual(peerLogs);
+          // The reftable backend resolves the old value directly, so the
+          // coupled HEAD entry disagrees with the files backend's null id.
+          expect(lastLine(peerLogs.head)).toBe(
+            `${rbId} ${mainId} A <a@x> ${COMMITTER_EPOCH + 46} +0000\tm`,
+          );
+          expect(lastLine(peerLogs.link)).toBe(lastLine(peerLogs.head));
         });
       });
     });
