@@ -8,12 +8,13 @@
  *   unique:         gc.reflogExpire* configuration against git 2.55.0
  *   interopSurface: reflog
  */
-import { appendFile, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { reflog } from '../../src/application/commands/reflog.js';
+import { status } from '../../src/application/commands/status.js';
 import { TsgitError } from '../../src/domain/error.js';
 import {
   disableAutoMaintenance,
@@ -671,6 +672,188 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(gitResult.stderr).toBe(gitRefusalText(data, ours, row.code));
           expect(await readAllLogs(peer)).toEqual(beforePeer);
           expect(await readAllLogs(ours)).toEqual(beforeOurs);
+        });
+      });
+    });
+
+    describe('Given a bogus reflog-expiry value and a verb that never reads it', () => {
+      const BOGUS = '[gc]\n\treflogExpire = bogus\n';
+
+      const unaffectedVerbs: ReadonlyArray<{
+        readonly label: string;
+        readonly gitArgs: ReadonlyArray<string>;
+        readonly run: (dir: string) => Promise<unknown>;
+      }> = [
+        {
+          label: 'reflog show',
+          gitArgs: ['reflog', 'show', 'HEAD'],
+          run: (dir) =>
+            reflog(createNodeContext({ workDir: dir }), { action: 'show', ref: 'HEAD' }),
+        },
+        {
+          label: 'reflog delete',
+          gitArgs: ['reflog', 'delete', 'HEAD@{0}'],
+          run: (dir) =>
+            reflog(createNodeContext({ workDir: dir }), {
+              action: 'delete',
+              ref: 'HEAD',
+              index: 0,
+            }),
+        },
+        {
+          label: 'reflog exists',
+          gitArgs: ['reflog', 'exists', 'HEAD'],
+          run: (dir) =>
+            reflog(createNodeContext({ workDir: dir }), { action: 'exists', ref: 'HEAD' }),
+        },
+        {
+          label: 'status',
+          gitArgs: ['status', '--porcelain'],
+          run: (dir) => status(createNodeContext({ workDir: dir })),
+        },
+      ];
+
+      describe.each(unaffectedVerbs)('When $label runs', (verb) => {
+        it('Then neither tool refuses — only expire reads the reflog-expiry keys', async () => {
+          // Arrange
+          const peer = await caseDir(`unread-peer-${verb.label.replace(/\W+/g, '')}`);
+          const ours = await caseDir(`unread-ours-${verb.label.replace(/\W+/g, '')}`);
+          await seedRow(peer, BOGUS);
+          await seedRow(ours, BOGUS);
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, ...verb.gitArgs]);
+          const outcome = await verb.run(ours).then(
+            () => 'resolved',
+            (err: unknown) => (err as TsgitError).data.code,
+          );
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(outcome).toBe('resolved');
+        });
+      });
+    });
+
+    describe('Given a clean configuration and a cutoff flag nothing parses', () => {
+      describe('When expire runs', () => {
+        it('Then both refuse on the flag and leave every log untouched', async () => {
+          // Arrange
+          const peer = await caseDir('flag-bogus-peer');
+          const ours = await caseDir('flag-bogus-ours');
+          await seedRow(peer, undefined);
+          await seedRow(ours, undefined);
+          const before = await readAllLogs(ours);
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'reflog',
+            'expire',
+            '--expire=bogus',
+            'HEAD',
+          ]);
+          let caught: unknown;
+          try {
+            await reflog(createNodeContext({ workDir: ours }), {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: 'bogus',
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git blames the flag by name; tsgit reports the same
+          // unparseable expression through its revision-resolution refusal.
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe("fatal: invalid timestamp 'bogus' given to '--expire'\n");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REVPARSE_UNRESOLVED',
+            expression: 'bogus',
+          });
+          expect(await readAllLogs(peer)).toEqual(before);
+          expect(await readAllLogs(ours)).toEqual(before);
+        });
+      });
+    });
+
+    describe('Given --all asked for alongside a named ref', () => {
+      describe('When expire runs', () => {
+        it('Then both sweep every log, the named one included, byte-identical', async () => {
+          // Arrange
+          const peer = await caseDir('all-plus-ref-peer');
+          const ours = await caseDir('all-plus-ref-ours');
+          await seedRow(peer, undefined);
+          await seedRow(ours, undefined);
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'reflog',
+            'expire',
+            '--all',
+            '--expire=now',
+            'HEAD',
+          ]);
+          await reflog(createNodeContext({ workDir: ours }), {
+            action: 'expire',
+            all: true,
+            ref: 'HEAD',
+            expire: 'now',
+          });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(await survivingLabels(headLogPath(peer))).toEqual([]);
+          expect(await survivingLabels(mainLogPath(peer))).toEqual([]);
+          expect(await readAllLogs(ours)).toEqual(await readAllLogs(peer));
+        });
+      });
+    });
+
+    describe('Given the cutoffs set in the global scope rather than the repository', () => {
+      describe('When expire runs', () => {
+        it('Then git honours them and tsgit keeps reading the repository config alone', async () => {
+          // Arrange — the same file is offered to both tools: git through
+          // its global-config override, tsgit through the home directory its
+          // layout resolves. tsgit reads these keys from the repository
+          // config only, so the two answers differ by scope, not by grammar.
+          const peer = await caseDir('global-scope-peer');
+          const ours = await caseDir('global-scope-ours');
+          await seedRow(peer, undefined);
+          await seedRow(ours, undefined);
+          const home = path.join(path.dirname(ours), 'home');
+          await mkdir(home, { recursive: true });
+          await writeFile(
+            path.join(home, '.gitconfig'),
+            '[gc]\n\treflogExpire = never\n\treflogExpireUnreachable = never\n',
+          );
+          const previousHome = process.env['HOME'];
+          process.env['HOME'] = home;
+          const ctx = createNodeContext({ workDir: ours });
+          process.env['HOME'] = previousHome;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'reflog', 'expire', 'refs/heads/main'], {
+            env: { ...runGitEnv(), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig') },
+          });
+          await reflog(ctx, { action: 'expire', ref: 'refs/heads/main' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(await survivingLabels(mainLogPath(peer))).toEqual([
+            'e1',
+            'e2',
+            'e3',
+            'e4',
+            'e5',
+            'e6',
+            'e7',
+          ]);
+          expect(await survivingLabels(mainLogPath(ours))).toEqual(['e6', 'e7']);
         });
       });
     });
