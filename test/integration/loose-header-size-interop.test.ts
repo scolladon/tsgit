@@ -125,7 +125,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     return target;
   };
 
-  describe('Given a small blob whose header claims a size disagreeing with its 12-byte body', () => {
+  describe('Given a small blob whose header claims a size disagreeing with its 12-byte body, When git and tsgit both read it', () => {
     it.each([
       { label: 'claim 5 (smaller than body)', claim: 5 },
       { label: 'claim 20 (larger than body)', claim: 20 },
@@ -164,7 +164,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     );
   });
 
-  describe('Given a medium (1880-byte) blob whose header claim disagrees with its body', () => {
+  describe('Given a medium (1880-byte) blob whose header claim disagrees with its body, When git and tsgit both read it', () => {
     it.each([{ claim: 500 }, { claim: 4000 }])(
       'Then git and tsgit both serve the real 1880-byte body for claim $claim',
       async ({ claim }) => {
@@ -187,7 +187,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     );
   });
 
-  describe('Given the lying small blob checked out from the working tree', () => {
+  describe('Given the lying small blob and its working-tree file removed, When git checkout and tsgit checkout both run', () => {
     it('Then both git checkout and tsgit checkout restore the real 12-byte file', async () => {
       // Arrange — twin copies: one git mutates, one tsgit mutates.
       const gitDir = await caseDir('checkout-git');
@@ -210,7 +210,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
-  describe('Given a lying loose object whose working-tree file is unchanged', () => {
+  describe('Given a lying loose object whose working-tree file is unchanged, When git status and tsgit status both run', () => {
     it('Then both git status and tsgit status report the repository clean', async () => {
       // Arrange
       const dir = await caseDir('status');
@@ -227,7 +227,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
-  describe('Given a lying small blob read with hash verification', () => {
+  describe('Given a lying small blob, When git fsck runs and tsgit reads it with hash verification', () => {
     it('Then git fsck reports a hash-path mismatch and tsgit refuses OBJECT_HASH_MISMATCH', async () => {
       // Arrange
       const dir = await caseDir('verify');
@@ -273,7 +273,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
-  describe('Given a commit whose header claim is smaller than its real body (over-run)', () => {
+  describe('Given a commit whose header claim is smaller than its real body (over-run), When git and tsgit both read it', () => {
     it('Then git refuses corrupt loose object and tsgit refuses INVALID_OBJECT_HEADER', async () => {
       // Arrange
       const dir = await caseDir('commit-overrun');
@@ -308,7 +308,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
-  describe('Given a commit whose header claim is larger than its real body (under-run) — the recorded residual', () => {
+  describe('Given a commit whose header claim is larger than its real body (under-run), When git and tsgit both read it — the recorded residual', () => {
     it('Then git zero-pads and accepts it (log/cat-file succeed) but tsgit still refuses INVALID_OBJECT_HEADER', async () => {
       // Arrange
       const dir = await caseDir('commit-underrun');
@@ -346,7 +346,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
-  describe('Given a tree whose header claim disagrees with its real body', () => {
+  describe('Given a tree whose header claim disagrees with its real body, When git and tsgit both read it', () => {
     it.each([
       { label: 'claim smaller than the body', delta: -10 },
       { label: 'claim larger than the body', delta: 125 },
@@ -383,7 +383,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
-  describe('Given a blob header claim of 9007199254740993 (2^53 + 1) — the recorded residual', () => {
+  describe('Given a blob header claim of 9007199254740993 (2^53 + 1), When git and tsgit both read it — the recorded residual', () => {
     it('Then git prints the claim verbatim and streams the real body, but tsgit refuses an unrepresentable size', async () => {
       // Arrange
       const dir = await caseDir('claim-2pow53plus1');
@@ -417,7 +417,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
-  describe('Given a blob header claim of 18446744073709551616 (2^64)', () => {
+  describe('Given a blob header claim of 18446744073709551616 (2^64), When git and tsgit both read it', () => {
     it('Then git itself refuses size_t overflow and tsgit refuses an unrepresentable size', async () => {
       // Arrange
       const dir = await caseDir('claim-2pow64');
