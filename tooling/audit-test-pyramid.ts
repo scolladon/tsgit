@@ -146,7 +146,7 @@ export const runAudit = async (
 
 interface IntegrationSurfacesFile {
   readonly path: string;
-  readonly surface: string;
+  readonly surfaces: ReadonlyArray<string>;
   readonly bucket: string;
   readonly unique: string;
 }
@@ -155,7 +155,7 @@ const renderIntegrationSurfaces = (outcome: AuditOutcome): string => {
   const files: IntegrationSurfacesFile[] = outcome.findings.integrationProof.accepted.map(
     (record: AcceptedRecord) => ({
       path: record.path,
-      surface: record.surface,
+      surfaces: record.surfaces,
       bucket: record.bucket,
       unique: record.unique,
     }),

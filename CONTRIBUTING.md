@@ -309,11 +309,14 @@ integration}/` and are scanned by the same audit globs.
   adapter is fine — it's a real class, not a mock).
 - **Integration usefulness** — every `test/integration/**/*.test.ts` file
   must carry a `@proves` JSDoc header declaring `surface`, `bucket`, and
-  `unique`. The audit reports three classes:
+  `unique`. `surface` is a comma-separated list of one or more names — a
+  file exercising several surfaces names all of them rather than picking
+  one. The audit reports three classes:
   - `missing` — header absent or grammar-invalid
   - `duplicate` — two files claim the same `(surface, bucket)` pair without
     the platform-only exemption (`posix-only/` + `win-only/` with bucket
-    `platform-only` is allowed)
+    `platform-only` is allowed); a file naming several surfaces is compared
+    on each of them
   - `misplaced` — bucket's directory rule rejects the file's directory
     (e.g. `real-http` outside `network/`)
 
@@ -415,7 +418,9 @@ bytes (stat-cache fields are per-host). Drive the command through the
 
 `npm run check:write-surfaces` (also part of `npm run validate`) walks
 both sides and reports gaps, allowlist rot, orphan coverage, and
-malformed headers. Ships warn-only (ADR-139) — promotion to blocking
+malformed headers — including a `@proves` block that is present but
+fails the grammar, whose `interopSurface` claim would otherwise be
+dropped without a word. Ships warn-only (ADR-139) — promotion to blocking
 is a follow-up PR after one clean observation cycle. Exemptions live
 in `tooling/audit-write-surfaces.allowlist.json` with a written
 `reason` and a `deferredTo` phase tag.

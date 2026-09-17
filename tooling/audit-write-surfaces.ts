@@ -18,7 +18,11 @@ import * as process from 'node:process';
 import * as url from 'node:url';
 
 import type { IntegrationProofHeuristic } from './test-pyramid/parse-manifest.ts';
-import { parseProvesHeader } from './test-pyramid/parse-proves-header.ts';
+import {
+  type ProvesError,
+  type ProvesErrorReason,
+  parseProvesHeader,
+} from './test-pyramid/parse-proves-header.ts';
 import { type AllowEntry, computeGaps } from './audit-write-surfaces/compute-gaps.ts';
 import { parseAllowlist } from './audit-write-surfaces/load-allowlist.ts';
 import { parseInteropSurface } from './audit-write-surfaces/parse-interop-surface.ts';
@@ -209,6 +213,21 @@ interface CollectedCoverage {
   readonly malformedTest: ReadonlyArray<ParseFinding>;
 }
 
+// A file with no `@proves` block claims no surface, so it can lose none —
+// the test-pyramid audit owns that class. A block that is present but fails
+// the grammar is a claim the audit would otherwise drop unseen, so it is
+// reported here instead.
+const NO_CLAIM_REASONS: ReadonlySet<ProvesErrorReason> = new Set<ProvesErrorReason>([
+  'no-jsdoc-at-top',
+  'no-proves-block',
+]);
+
+const claimsNothing = (reason: ProvesErrorReason): boolean =>
+  NO_CLAIM_REASONS.has(reason);
+
+const describeProvesError = (error: ProvesError): string =>
+  error.detail === undefined ? error.reason : `${error.reason}: ${error.detail}`;
+
 const collectCoverage = async (root: string): Promise<CollectedCoverage> => {
   const testDir = path.join(root, 'test', 'integration');
   const files = await walkDir(testDir, isIntegrationTest);
@@ -217,9 +236,17 @@ const collectCoverage = async (root: string): Promise<CollectedCoverage> => {
   for (const absPath of files) {
     const source = await readFile(absPath, 'utf8');
     const proves = parseProvesHeader(source, PROVES_CONFIG);
-    if (!proves.ok) continue;
-    const interop = parseInteropSurface(source, proves.header.bucket, INTEROP_CONFIG);
     const rel = path.relative(root, absPath).replaceAll(path.sep, '/');
+    if (!proves.ok) {
+      if (claimsNothing(proves.error.reason)) continue;
+      malformed.push({
+        path: rel,
+        kind: 'test-malformed',
+        detail: describeProvesError(proves.error),
+      });
+      continue;
+    }
+    const interop = parseInteropSurface(source, proves.header.bucket, INTEROP_CONFIG);
     if (!interop.ok) {
       malformed.push({
         path: rel,

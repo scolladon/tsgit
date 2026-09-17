@@ -6,12 +6,17 @@
  * Grammar:
  *   - block must be the first JSDoc in the file (optionally after a shebang)
  *   - `@proves` directive followed by three `key: value` lines
- *   - surface ∈ `surfaceRegex`, bucket ∈ enum, unique ∈ length window
+ *   - surface is a comma-separated list of one or more names, each ∈
+ *     `surfaceRegex`; bucket ∈ enum; unique ∈ length window
+ *
+ * A file that exercises several surfaces names all of them rather than
+ * picking one, so a downstream consumer reading the header sees the whole
+ * claim instead of silently losing the file to a grammar rejection.
  */
 import type { IntegrationProofHeuristic } from './parse-manifest.ts';
 
 export interface ProvesHeader {
-  readonly surface: string;
+  readonly surfaces: ReadonlyArray<string>;
   readonly bucket: string;
   readonly unique: string;
 }
@@ -80,6 +85,30 @@ const collectKeys = (
   return out;
 };
 
+const SURFACE_SEPARATOR = ',';
+
+type SurfaceListResult =
+  | { readonly ok: true; readonly surfaces: ReadonlyArray<string> }
+  | { readonly ok: false; readonly error: ProvesError };
+
+const splitSurfaceNames = (raw: string): ReadonlyArray<string> =>
+  raw
+    .split(SURFACE_SEPARATOR)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+const parseSurfaceList = (raw: string, config: IntegrationProofHeuristic): SurfaceListResult => {
+  const names = splitSurfaceNames(raw);
+  if (names.length === 0) {
+    return { ok: false, error: { reason: 'bad-surface', detail: raw } };
+  }
+  const invalid = names.find((name) => !config.surfaceRegex.test(name));
+  if (invalid !== undefined) {
+    return { ok: false, error: { reason: 'bad-surface', detail: invalid } };
+  }
+  return { ok: true, surfaces: [...new Set(names)] };
+};
+
 const validateUnique = (value: string, config: IntegrationProofHeuristic): ProvesError | null => {
   // `collectKeys` already splits the JSDoc on `\n` and the per-line regex
   // (`KEY_LINE`) cannot capture across line breaks, so a multi-line `unique`
@@ -127,9 +156,8 @@ export const parseProvesHeader = (
   const surfaceValue = surface as string;
   const bucketValue = bucket as string;
   const uniqueValue = unique as string;
-  if (!config.surfaceRegex.test(surfaceValue)) {
-    return { ok: false, error: { reason: 'bad-surface', detail: surfaceValue } };
-  }
+  const surfaceList = parseSurfaceList(surfaceValue, config);
+  if (!surfaceList.ok) return { ok: false, error: surfaceList.error };
   const bucketSet = new Set(config.buckets);
   if (!bucketSet.has(bucketValue)) {
     return { ok: false, error: { reason: 'bad-bucket', detail: bucketValue } };
@@ -138,6 +166,6 @@ export const parseProvesHeader = (
   if (uniqueError !== null) return { ok: false, error: uniqueError };
   return {
     ok: true,
-    header: { surface: surfaceValue, bucket: bucketValue, unique: uniqueValue },
+    header: { surfaces: surfaceList.surfaces, bucket: bucketValue, unique: uniqueValue },
   };
 };
