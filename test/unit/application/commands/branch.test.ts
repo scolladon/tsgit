@@ -944,6 +944,61 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a branch name a ref already resolves under', () => {
+    describe('When branch create forces it onto a new start point', () => {
+      it('Then the appended reflog reads "branch: Reset to <start-point>"', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const sut = branchCreate;
+        await sut(ctx, { name: 'feature', startPoint: commitId });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+
+        // Act
+        await sut(ctx, { name: 'feature', startPoint: 'main', force: true });
+
+        // Assert
+        const log = await readReflog(ctx, 'refs/heads/feature' as RefName);
+        expect(log.at(-1)?.message).toBe('branch: Reset to main');
+      });
+    });
+
+    describe('When branch create forces a name only a dangling symbolic ref holds', () => {
+      it('Then the appended reflog still reads "branch: Created from <start-point>"', async () => {
+        // Arrange — git types the message off `ref_exists`, which a symbolic
+        // ref whose target is absent does not satisfy.
+        const { ctx, commitId } = await seedWithCommit();
+        await writeSymbolicRef(ctx, 'refs/heads/dangling' as RefName, 'refs/heads/nope' as RefName);
+        const sut = branchCreate;
+
+        // Act
+        await sut(ctx, { name: 'dangling', startPoint: commitId, force: true });
+
+        // Assert
+        const log = await readReflog(ctx, 'refs/heads/nope' as RefName);
+        expect(log.at(-1)?.message).toBe(`branch: Created from ${commitId}`);
+      });
+    });
+  });
+
+  describe('Given a branch name nothing holds', () => {
+    describe('When branch create forces it', () => {
+      it('Then the appended reflog reads "branch: Created from <start-point>"', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const sut = branchCreate;
+
+        // Act
+        await sut(ctx, { name: 'fresh', startPoint: commitId, force: true });
+
+        // Assert
+        const log = await readReflog(ctx, 'refs/heads/fresh' as RefName);
+        expect(log.at(-1)?.message).toBe(`branch: Created from ${commitId}`);
+      });
+    });
+  });
+
   describe('Given an explicit startPoint (oid)', () => {
     describe('When branch create', () => {
       it('Then the new ref points at that oid', async () => {

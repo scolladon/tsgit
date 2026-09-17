@@ -12,7 +12,11 @@ import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../.
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { isOid, zeroOid } from '../../domain/objects/index.js';
-import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-messages.js';
+import {
+  branchCreatedFrom,
+  branchRenamed,
+  branchResetTo,
+} from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
@@ -132,7 +136,10 @@ export const branchCreate = async (
   await assertOperationalRepository(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   const force = input.force === true;
-  if (!force && (await refResolvesForReading(ctx, name))) throw branchExists(name);
+  // git's `ref_exists` answers this once and the answer is kept: it both
+  // refuses an unforced clobber and types the reflog message below.
+  const held = await refResolvesForReading(ctx, name);
+  if (!force && held) throw branchExists(name);
   const startPoint = input.startPoint ?? HEAD_NAME;
   // git hands `create_branch` the CURRENT branch's own resolved ref name when
   // no start point is given, so the default never goes through the ladder —
@@ -142,7 +149,8 @@ export const branchCreate = async (
       ? await resolveRef(ctx, HEAD_NAME)
       : await resolveBranchTarget(ctx, input.startPoint);
   const target = await requireCommit(ctx, start);
-  await writeNewBranch(ctx, { name, target, force, reflogMessage: branchCreatedFrom(startPoint) });
+  const reflogMessage = force && held ? branchResetTo(startPoint) : branchCreatedFrom(startPoint);
+  await writeNewBranch(ctx, { name, target, force, reflogMessage });
   return { name, id: target };
 };
 
