@@ -21,7 +21,7 @@
  *                    lines, and annotated-tag peeling, match git 2.55.0
  *   interopSurface: branch
  */
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -45,6 +45,13 @@ const errorLine = (id: string, actual: string): string =>
 /** git's `fatal: not a valid branch point: '<start>'` — composed from the caller's own start point. */
 const fatalLine = (startPoint: string): string =>
   `fatal: not a valid branch point: '${startPoint}'\n`;
+
+/** The message field of a ref log's last line, read off disk so the two tools
+ *  are compared on the same bytes rather than through either one's reader. */
+const lastLogMessage = async (dir: string, ref: string): Promise<string> => {
+  const text = await readFile(path.join(dir, '.git', 'logs', ref), 'utf8');
+  return text.trimEnd().split('\n').at(-1)?.split('\t').at(1) ?? '';
+};
 
 const catchTsgitError = async (thrower: () => Promise<unknown>): Promise<TsgitError> => {
   let caught: unknown;
@@ -97,6 +104,52 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     await Promise.all(
       caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
     );
+  });
+
+  describe('Given no start point at all, with HEAD attached to a branch', () => {
+    describe('When git branch and tsgit branchCreate both create a name', () => {
+      it('Then both log the creation as cut from the current branch, not from HEAD', async () => {
+        // Arrange — git resolves HEAD to its ref name and strips
+        // `refs/heads/`, so the label carries the branch's own short name.
+        const { dir, ctx } = await caseRepo('omitted-attached');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-omit-git']);
+        const result = await branchCreate(ctx, { name: 'b-omit-tsgit' });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.id).toBe(commitId);
+        expect(await lastLogMessage(dir, 'refs/heads/b-omit-git')).toBe(
+          'branch: Created from main',
+        );
+        expect(await lastLogMessage(dir, 'refs/heads/b-omit-tsgit')).toBe(
+          await lastLogMessage(dir, 'refs/heads/b-omit-git'),
+        );
+      });
+    });
+  });
+
+  describe('Given no start point at all, with a detached HEAD', () => {
+    describe('When git branch and tsgit branchCreate both create a name', () => {
+      it('Then both log the creation as cut from HEAD, which names no branch', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo('omitted-detached');
+        git(dir, 'checkout', '-q', '--detach', commitId);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-det-git']);
+        const result = await branchCreate(ctx, { name: 'b-det-tsgit' });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.id).toBe(commitId);
+        expect(await lastLogMessage(dir, 'refs/heads/b-det-git')).toBe('branch: Created from HEAD');
+        expect(await lastLogMessage(dir, 'refs/heads/b-det-tsgit')).toBe(
+          await lastLogMessage(dir, 'refs/heads/b-det-git'),
+        );
+      });
+    });
   });
 
   describe('Given a bare name only one namespace carries', () => {

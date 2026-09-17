@@ -19,6 +19,7 @@ import {
 } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
@@ -129,6 +130,18 @@ export const compareRefName = (left: RefName, right: RefName): number => {
   return 0;
 };
 
+/**
+ * The label an omitted start point carries into the reflog. git resolves
+ * `HEAD` up front and hands `create_branch` the ref name it landed on with
+ * `refs/heads/` stripped, so an attached HEAD types the entry with the
+ * current branch's own short name; only a detached HEAD — where the
+ * resolution stops at `HEAD` itself — leaves the literal behind.
+ */
+const omittedStartPointLabel = async (ctx: Context): Promise<string> => {
+  const current = await resolveCurrentBranchTarget(ctx);
+  return current === undefined ? HEAD_NAME : shortBranchName(current);
+};
+
 export const branchCreate = async (
   ctx: Context,
   input: BranchCreateInput,
@@ -140,7 +153,7 @@ export const branchCreate = async (
   // refuses an unforced clobber and types the reflog message below.
   const held = await refResolvesForReading(ctx, name);
   if (!force && held) throw branchExists(name);
-  const startPoint = input.startPoint ?? HEAD_NAME;
+  const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
   // git hands `create_branch` the CURRENT branch's own resolved ref name when
   // no start point is given, so the default never goes through the ladder —
   // and never reports ambiguity against a branch literally named `HEAD`.

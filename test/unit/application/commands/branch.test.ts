@@ -280,7 +280,9 @@ describe('branch', () => {
 
         // Assert
         const store = getRefStore(ctx);
-        const line = `${ZERO_OID} ${commitId} tsgit <tsgit@localhost> ${FROZEN_NOW_S} +0000\tbranch: Created from HEAD\n`;
+        // git 2.55.0 resolves HEAD before typing the entry and strips
+        // `refs/heads/`, so an attached HEAD labels it with the branch name.
+        const line = `${ZERO_OID} ${commitId} tsgit <tsgit@localhost> ${FROZEN_NOW_S} +0000\tbranch: Created from main\n`;
         expect(result).toEqual({ name: 'refs/heads/x', id: commitId });
         expect(await store.resolveDirect('refs/heads/x' as RefName)).toEqual({
           kind: 'symbolic',
@@ -811,7 +813,7 @@ describe('branch', () => {
         });
         expect(await store.resolveDirect('refs/heads/a' as RefName)).toEqual({ kind: 'missing' });
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/y`)).toBe(
-          `${ZERO_OID} ${commitId} ${identity}\tbranch: Created from HEAD\n` +
+          `${ZERO_OID} ${commitId} ${identity}\tbranch: Created from main\n` +
             `${commitId} ${commitId} ${identity}\tBranch: renamed refs/heads/a to refs/heads/y\n`,
         );
         expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(
