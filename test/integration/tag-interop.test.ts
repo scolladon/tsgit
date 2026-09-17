@@ -342,6 +342,45 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
     });
   });
 
+  describe('Given an annotated tag targeting a tree', () => {
+    let target: TagTargets;
+
+    beforeEach(async () => {
+      target = await seedTagTargets(pair.peer);
+      await seedTagTargets(pair.ours);
+    });
+
+    describe('When git tag -a and tsgit tag create (message implies annotate) each attempt it', () => {
+      it('Then both accept it and the tag object peels back to the tree', async () => {
+        // Arrange
+        const name = 'a-tree';
+        const treeId = target.treeId;
+
+        // Act
+        const peerResult = tryRunGitWithExit([
+          '-C',
+          pair.peer,
+          'tag',
+          '-a',
+          '-m',
+          'x',
+          name,
+          treeId,
+        ]);
+        const oursResult = await runOursTagCreate(pair.ours, name, treeId, { message: 'x' });
+
+        // Assert
+        expect(peerResult.exitCode).toBe(0);
+        expect(oursResult.ok).toBe(true);
+        const ref = `refs/tags/${name}`;
+        expect(git(pair.peer, 'for-each-ref', '--format=%(objecttype)', ref).trim()).toBe('tag');
+        expect(git(pair.ours, 'for-each-ref', '--format=%(objecttype)', ref).trim()).toBe('tag');
+        expect(git(pair.peer, 'rev-parse', `${ref}^{}`).trim()).toBe(treeId);
+        expect(git(pair.ours, 'rev-parse', `${ref}^{}`).trim()).toBe(treeId);
+      });
+    });
+  });
+
   describe('Given an annotated tag targeting a nonexistent object', () => {
     const missing = '6'.repeat(40);
 

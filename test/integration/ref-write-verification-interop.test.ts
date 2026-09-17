@@ -211,6 +211,9 @@ describe.skipIf(!GIT_AVAILABLE)(
     let junkAfterAuthorCommitId = '';
     let emptyTagNameId = '';
     let tooShortTagId = '';
+    let nonHexTreeCommitId = '';
+    let badTypeLineTagId = '';
+    let badTagLineTagId = '';
     const NX = '1'.repeat(40);
     const caseRoots: string[] = [];
 
@@ -267,6 +270,9 @@ describe.skipIf(!GIT_AVAILABLE)(
       );
       emptyTagNameId = plantObject('tag', `object ${mainId}\ntype commit\ntag \n\nmsg\n`);
       tooShortTagId = plantObject('tag', `object ${mainId}\ntype commit\n`);
+      nonHexTreeCommitId = plantObject('commit', `tree ${treeId.slice(0, 39)}z\n\nmsg\n`);
+      badTypeLineTagId = plantObject('tag', `object ${mainId}\ntyp commit\ntag t\n\nmsg\n`);
+      badTagLineTagId = plantObject('tag', `object ${mainId}\ntype commit\ntg t\n\nmsg\n`);
 
       reftableBase = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-write-verify-reftable-'));
       runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', reftableBase]);
@@ -881,6 +887,77 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(oursResult.data).toEqual({ code: 'INVALID_COMMIT', reason: 'bad parents' });
         expect(gitResult.stderr.trim()).toBe(
           reconstructStderr('refs/tags/x', nonHexParentCommitId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/x');
+      });
+
+      it('Then a tree line with a non-hex character refuses bad tree pointer', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('non-hex-tree');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          nonHexTreeCommitId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', nonHexTreeCommitId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(oursResult.data).toEqual({ code: 'INVALID_COMMIT', reason: 'bad tree pointer' });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/x', nonHexTreeCommitId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/x');
+      });
+
+      it('Then a type line that is not "type " refuses bad type line (fatal only, no error: line)', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('bad-type-line');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          badTypeLineTagId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', badTypeLineTagId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).not.toContain('error:');
+        expect(oursResult.data).toEqual({ code: 'INVALID_TAG', reason: 'bad type line' });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/x', badTypeLineTagId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/x');
+      });
+
+      it('Then a tag line that is not "tag " refuses bad tag line (fatal only, no error: line)', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('bad-tag-line');
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          peer,
+          'update-ref',
+          'refs/tags/x',
+          badTagLineTagId,
+        ]);
+        const oursResult = await runOurs(ours, 'refs/tags/x', badTagLineTagId);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).not.toContain('error:');
+        expect(oursResult.data).toEqual({ code: 'INVALID_TAG', reason: 'bad tag line' });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/x', badTagLineTagId, refusalData(oursResult)),
         );
         expectRefMissing(peer, ours, 'refs/tags/x');
       });
