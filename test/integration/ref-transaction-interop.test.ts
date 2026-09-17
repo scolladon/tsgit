@@ -10,7 +10,7 @@
  * `logs/…` file the row names.
  *
  * @proves
- *   surface:        updateRef, fetch, branch.delete, tag.delete, remote.remove, remote.rename, remote.show
+ *   surface:        updateRef, remote.remove, remote.rename, remote.show
  *   bucket:         cross-tool-interop
  *   unique:         ref updates dereference symbolic refs and delete as git's ref transaction does
  *   interopSurface: updateRef
@@ -1110,13 +1110,12 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a packed-only remote-tracking ref (the shape fetch --prune deletes)', () => {
       describe('When it is deleted', () => {
-        it("Then packed-refs matches git's own `fetch --prune` packed-only removal byte-for-byte", async () => {
-          // Arrange — proves the same rewrite `fetch.ts`'s own `prune()`
-          // drives through `updateRef` (unit-tested in fetch.test.ts, which
-          // proves the caller no longer refuses or warns) matches git's own
-          // `fetch --prune` packed-only-ref removal, without spinning a live
-          // smart-HTTP server: a clone whose tracking ref is packed-only,
-          // pruned locally by each side.
+        it('Then both rewrite packed-refs to the same bytes, with the tracking ref gone', async () => {
+          // Arrange — the same rewrite `fetch.ts`'s own `prune()` drives
+          // through `updateRef` (unit-tested in fetch.test.ts, which proves
+          // the caller no longer refuses or warns), exercised without
+          // spinning a live smart-HTTP server: a clone whose tracking ref is
+          // packed-only, removed locally by each side.
           const clonePeer = await cloneRepo(filesBase, 'prune-shape-peer');
           const cloneOurs = await cloneRepo(filesBase, 'prune-shape-ours');
           for (const dir of [clonePeer, cloneOurs]) {
@@ -1153,17 +1152,22 @@ describe.skipIf(!GIT_AVAILABLE)(
           // its rename entries — `ours` carries the same identity via its
           // config's `[user]` instead, so both sides produce the same bytes.
           const { peer, ours, ctx } = await remoteRenameCasePair('remote-rename');
+          const renameEpoch = COMMITTER_EPOCH + 103;
           const renameEnv: NodeJS.ProcessEnv = {
             ...runGitEnv(),
             GIT_COMMITTER_NAME: 'A',
             GIT_COMMITTER_EMAIL: 'a@x',
+            GIT_COMMITTER_DATE: `${renameEpoch} +0000`,
           };
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'up2'], {
             env: renameEnv,
           });
-          const result = await remoteRename(ctx, { from: 'origin', to: 'up2' });
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(renameEpoch * 1000);
+          const result = await remoteRename(ctx, { from: 'origin', to: 'up2' }).finally(() => {
+            dateSpy.mockRestore();
+          });
 
           // Assert — packed-refs collapses to just refs/heads/main (every
           // tracking ref moved loose, as git's own rewrite does), and every
@@ -2498,7 +2502,6 @@ describe.skipIf(!GIT_AVAILABLE)(
         readonly slug: string;
         /** Where the create of the blocked name sits among the updates. */
         readonly blockedAt: number;
-        readonly blocked: boolean;
       }
 
       const BLOCKED_ROWS: readonly BlockedRow[] = [
@@ -2506,20 +2509,18 @@ describe.skipIf(!GIT_AVAILABLE)(
           label: 'the blocked name before a pair of colliding creates',
           slug: 'blocked-first',
           blockedAt: 0,
-          blocked: true,
         },
         {
           label: 'a pair of colliding creates before the blocked name',
           slug: 'blocked-last',
           blockedAt: 2,
-          blocked: true,
         },
       ];
 
       describe('When git update-ref --stdin and applyRefUpdates meet a blocked directory', () => {
         it.each(BLOCKED_ROWS)(
           'Then both report $label the same way',
-          async ({ slug, blockedAt, blocked }) => {
+          async ({ slug, blockedAt }) => {
             // Arrange — a lock file nothing can remove sits at `blk`'s path.
             const { peer, ours, ctx } = await filesCasePair(slug);
             const id = filesC1;
@@ -2557,7 +2558,6 @@ describe.skipIf(!GIT_AVAILABLE)(
             }
 
             // Assert
-            expect(blocked).toBe(true);
             expect(gitResult.exitCode).toBe(128);
             expect(gitResult.stderr).toContain(
               `there is a non-empty directory '${path.join('.git', 'refs', 'remotes', 'blk')}' blocking reference '${remote('blk')}'`,
