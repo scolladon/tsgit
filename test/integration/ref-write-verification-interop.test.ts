@@ -109,6 +109,16 @@ const gitErrorLine = (reason: string, id: string): string | undefined => {
   return undefined;
 };
 
+/** Rewrites a loose object's file in place with ANOTHER object's bytes: the
+ *  id still names a file that inflates, but those bytes no longer hash to it.
+ *  git writes loose objects read-only, so the mode is opened first. */
+const corruptLooseInPlace = (repoDir: string, id: string, sourceId: string): void => {
+  const target = path.join(repoDir, '.git', 'objects', id.slice(0, 2), id.slice(2));
+  const source = path.join(repoDir, '.git', 'objects', sourceId.slice(0, 2), sourceId.slice(2));
+  chmodSync(target, 0o644);
+  writeFileSync(target, readFileSync(source));
+};
+
 interface TsgitOutcome {
   readonly ok: boolean;
   readonly data: TsgitErrorData | undefined;
@@ -1195,6 +1205,59 @@ describe.skipIf(!GIT_AVAILABLE)(
           reconstructStderr('refs/tags/x', tooShortTagId, refusalData(oursResult)),
         );
         expectRefMissing(peer, ours, 'refs/tags/x');
+      });
+    });
+
+    describe('Given a target a Context already verified, When the object is corrupted in place and the id is written again', () => {
+      it('Then that Context accepts the id again, where a second git process refuses it', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('memo-same-context');
+        const ctx = nodeCtx(ours);
+        const firstOurs = await runOursOn(ctx, 'refs/tags/m1', blobId);
+        const firstGit = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/tags/m1', blobId]);
+        corruptLooseInPlace(peer, blobId, treeId);
+        corruptLooseInPlace(ours, blobId, treeId);
+
+        // Act
+        const secondOurs = await runOursOn(ctx, 'refs/tags/m2', blobId);
+        const secondGit = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/tags/m2', blobId]);
+
+        // Assert — the second write has no refusal data on our side, so git's
+        // stderr is the literal shape here; that asymmetry is the divergence.
+        expect(firstOurs.ok).toBe(true);
+        expect(firstGit.exitCode).toBe(0);
+        expectRefAt(peer, ours, 'refs/tags/m1', blobId);
+        expect(secondOurs.data).toBeUndefined();
+        expect(secondGit.exitCode).toBe(128);
+        expect(secondGit.stderr.trim()).toBe(hashMismatchStderr('refs/tags/m2', blobId));
+        expect(refState(ours, 'refs/tags/m2')).toEqual({ present: true, oid: blobId });
+        expect(refState(peer, 'refs/tags/m2')).toEqual({ present: false, oid: '' });
+      });
+
+      it('Then a different Context refuses it, as a second git process does', async () => {
+        // Arrange
+        const { peer, ours } = await filesPair('memo-fresh-context');
+        const ctx = nodeCtx(ours);
+        await runOursOn(ctx, 'refs/tags/m1', blobId);
+        tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/tags/m1', blobId]);
+        corruptLooseInPlace(peer, blobId, treeId);
+        corruptLooseInPlace(ours, blobId, treeId);
+
+        // Act
+        const freshOurs = await runOurs(ours, 'refs/tags/m3', blobId);
+        const freshGit = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/tags/m3', blobId]);
+
+        // Assert
+        expect(freshOurs.data).toEqual({
+          code: 'OBJECT_HASH_MISMATCH',
+          expected: blobId,
+          actual: treeId,
+        });
+        expect(freshGit.exitCode).toBe(128);
+        expect(freshGit.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/m3', blobId, refusalData(freshOurs)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/m3');
       });
     });
 
