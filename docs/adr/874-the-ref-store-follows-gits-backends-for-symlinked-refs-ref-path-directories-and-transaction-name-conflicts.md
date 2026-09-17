@@ -1,6 +1,8 @@
 ---
 subjects:
   - src/application/primitives/ref-store.ts
+  - src/domain/refs/reftable/reftable-block.ts
+  - src/domain/refs/reftable/reftable-stack.ts
   - src/application/primitives/reftable-transaction.ts
   - src/application/primitives/resolve-ref.ts
   - src/application/commands/branch.ts
@@ -19,8 +21,8 @@ subjects:
 # 874 — The ref store follows git's backends for symlinked refs, ref-path directories and transaction name conflicts
 
 - **Status:** accepted
-- **Date:** 2026-09-15 · **Extended:** 2026-09-17
-- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref-store scope folds: SL, ED, PP, DW, TX pins; round two: PR, LD, SU, RN, LS, FK, PO, TN pins) · **Supersedes/Refines:** refines ADR-868 (its symlink rule now covers every loose ref) and ADR-871 (its pruning and refusal data)
+- **Date:** 2026-09-15 · **Extended:** 2026-09-17 (rounds two and three)
+- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref-store scope folds: SL, ED, PP, DW, TX pins; round two: PR, LD, SU, RN, LS, FK, PO, TN pins; round three: BD, EX, FP, CD, AM pins) · **Supersedes/Refines:** refines ADR-868 (its symlink rule now covers every loose ref) and ADR-871 (its pruning and refusal data)
 
 ## Context
 
@@ -72,6 +74,28 @@ The eight residuals round one left behind, folded in by the user on the same ter
 13. **The name a detaching `checkout` or a `tag` target stands for.** git runs both through its
     revision ladder — `checkout` consulting `refs/heads/<name>` ahead of it; tsgit resolved the name
     as given (TN1–TN6).
+
+### Round three (2026-09-17)
+
+The six residuals round two left behind, folded in on the same terms:
+
+14. **A directory at a ref path takes its turn.** git's lock meets `EISDIR` at that update's own
+    position, so the refusal beats a batch-checked name conflict either way and a later
+    compare-and-swap; the empty directories it removes stay removed. tsgit only met the directory when
+    the rename did, after the batch check had already refused (BD1–BD9).
+15. **The availability check's filter is existence, not the required value.** git checks a name only
+    from the read that already consulted `packed-refs` and came back empty; tsgit ran the packed-side
+    check on every write (EX1–EX7).
+16. **Reftable's "first name under".** git's iterator seeks; tsgit decoded every record in the stack
+    to build a sorted names array (SK).
+17. **`checkout` over a name no branch carries.** git falls back to the revision ladder and detaches,
+    echoing the argument in `logs/HEAD`; tsgit refused, and abbreviated the oid it had resolved
+    (CD1–CD6).
+18. **An ambiguous start point.** `create_branch` alone refuses more than one `dwim_ref` match; tsgit
+    took the first of a two-candidate ladder that did not even reach tags (AM1–AM8).
+19. **A regular file in a ref name's path.** git's reader reports the name absent — and, unlike an
+    absent path, never falls back to `packed-refs`; tsgit refused `NOT_A_DIRECTORY` from the READ
+    (FP1–FP9).
 
 ## Options considered
 
@@ -127,9 +151,31 @@ entry**.
 13. **Target names.** Follow git (chosen), through one shared ladder rather than three copies, with
     the miss reported as `undefined` so each command keeps the refusal it already raises.
 
+### Round three
+
+14. **The lock's turn.** Follow git (chosen), carrying the directory verdict out of the `stat` the
+    name check already makes — so the order becomes faithful at no I/O cost. Probing the path
+    separately per update would add a `stat` to every absent create.
+15. **The existence filter.** Follow git (chosen), reading the ref only once a packed blocker is
+    already known to be present, so the no-conflict path is untouched.
+16. **The seek.** Follow git (chosen). The codec CAN express it safely: block positions come back in
+    sorted order, the index descent finds the block a name would live in, and continuing into the
+    blocks that follow closes the boundary case where every key in that block sorts before the floor.
+    The alternative — keeping the full pass — leaves a decode of the whole ref space on every
+    reftable ref write.
+17. **`checkout`'s fallback.** Follow git (chosen), including the reflog subject, which echoes the
+    argument rather than an abbreviation of the resolved oid. Keeping the refusal makes
+    `checkout <tag>` fail where git detaches.
+18. **Ambiguity.** Follow git (chosen), refusing on the surface that refuses and leaving every other
+    surface taking the first candidate. Refusing everywhere would diverge from five commands to fix
+    one.
+19. **A blocked path.** Follow git (chosen), as a distinct loose-leaf verdict so the read stops
+    without the packed fallback an absent path takes — the same stop a followed link's absent target
+    already makes. Enumeration keeps listing the packed entry, as git's iterators do.
+
 ## Decision
 
-**Follow git's files and reftable backends for all thirteen.**
+**Follow git's files and reftable backends for all nineteen.**
 
 - `resolveDirect` reads a non-`HEAD` loose ref through `openWithNoFollow(path, 'read')`. A directory or
   `FILE_NOT_FOUND` is no loose ref; `PERMISSION_DENIED` pays one `lstat`, and a link is resolved by
@@ -192,10 +238,36 @@ each tsgit backend reports the name its git backend does.
 - A detaching `checkout` and a `tag` target resolve through the shared revision ladder, `checkout`
   consulting `refs/heads/<name>` first.
 
-Residuals, recorded in the design: a name conflict against an ED3-shaped blocking directory (git
-raises the directory at lock time, ahead of the batch check); an update requiring a current value under
-a packed blocker (git skips its availability check; the two differ only on a hand-planted state); and
-reftable's sorted-names pass where git's iterator seeks.
+### Round three
+
+- The files prepare pass raises, per update in order, the name check that update's lock would run and
+  then the directory at its path it would clear or refuse over — carried out of the `stat` the name
+  check already makes.
+- The availability check runs only for a name the store's own read cannot find, whatever value the
+  update requires.
+- `iterateReftableRefsFrom` seeks through the ref index and continues across block boundaries;
+  `ReftableStack.entriesFrom` merges those iterators, and the availability check asks it for the first
+  live name under `<name>/`.
+- A `checkout` onto a name no branch carries detaches through the revision ladder, and the `logs/HEAD`
+  subject echoes the caller's own argument.
+- `branch.create` resolves its start point through the shared ladder and refuses `REVPARSE_AMBIGUOUS`
+  when more than one candidate namespace resolves; a create with no start point resolves `HEAD`
+  directly.
+- A ref name blocked by a regular file in its path reads as absent, with no packed fallback, while
+  enumeration still lists a packed entry under that file and the write side still refuses by name.
+
+Residuals, recorded in the design: `checkout` has no pathspec fallback for an unresolvable argument,
+and the `refname '<x>' is ambiguous` warning git prints wherever it takes the first candidate has no
+structured counterpart.
+
+**Migration notes (round three).** A blocked ref path reads as absent instead of refusing
+`NOT_A_DIRECTORY`, and no longer reaches a packed value under it. A write to an existing ref with a
+packed ref above or under it goes through. A transaction meeting a blocked directory reports it at
+that update's turn. `checkout({ rev })` without `detach` detaches onto a tag, a remote-tracking path
+or an object id instead of refusing, and every detaching checkout logs the argument it was handed
+rather than a 7-character abbreviation. `branch.create` accepts a tag, a remote-tracking path or an
+abbreviated oid as a start point, and refuses `REVPARSE_AMBIGUOUS` for a short name more than one
+namespace carries.
 
 **Migration notes (round two).** `packRefs` keeps a read-through symbolic link whose target it pruned
 first, and reports it in neither count. A ref write whose reflog path is blocked refuses
