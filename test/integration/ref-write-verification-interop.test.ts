@@ -8,10 +8,10 @@
  * reconstructed stderr and ref presence.
  *
  * @proves
- *   surface:        updateRef, tag.create, clone
+ *   surface:        updateRef
  *   bucket:         cross-tool-interop
  *   unique:         ref updates verify their target as git's ref transaction does
- *   interopSurface: updateRef, tag.create
+ *   interopSurface: updateRef
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -386,7 +386,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given git --stdin against tsgit’s single updateRef', () => {
+    describe('Given a git --stdin transaction beside tsgit’s single updateRef, When each writes a tree to a branch', () => {
       it('Then create refs/heads/s <tree> refuses the same way, without the update_ref-failed prefix', async () => {
         // Arrange
         const { peer, ours } = await filesPair('stdin-create-branch');
@@ -675,7 +675,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given commit and tag targets git’s own parser accepts or refuses', () => {
+    describe('Given commit and tag targets git’s own parser accepts or refuses, When update-ref writes them', () => {
       it('Then a commit with no tree line refuses bogus commit object', async () => {
         // Arrange
         const { peer, ours } = await filesPair('no-tree-line');
