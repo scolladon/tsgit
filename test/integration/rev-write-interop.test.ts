@@ -237,7 +237,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   describe('Given a tsgit-written pack copied into a scratch dir, When git index-pack -o regenerates its own .rev (X1)', () => {
     it("Then tsgit's .rev is byte-identical to git's", async () => {
       // Arrange
-      const dir = await freshRepo('x1');
+      const dir = await freshRepo('byte-identical');
       await commitFiles(dir, SEED_FILES, 'seed');
       const sut = trackedNodeContext(dir);
       await packObjects(sut, { wants: ['HEAD'] });
@@ -257,7 +257,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   describe('Given a fixture whose oid and offset orders are non-monotonically correlated, When both tools build its .rev (X2)', () => {
     it("Then the body is a non-trivial permutation, not [0, 1, …, N−1], and still matches git's bytes", async () => {
       // Arrange
-      const dir = await freshRepo('x2');
+      const dir = await freshRepo('non-monotonic');
       await commitFiles(dir, SEED_FILES, 'seed');
       const sut = trackedNodeContext(dir);
       const written = await packObjects(sut, { wants: ['HEAD'] });
@@ -284,7 +284,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   describe('Given a repo whose pack dir tsgit wrote, When git verify-pack -v and git fsck --strict run (X3)', () => {
     it('Then both exit 0', async () => {
       // Arrange
-      const dir = await freshRepo('x3');
+      const dir = await freshRepo('git-verify');
       await commitFiles(dir, SEED_FILES, 'seed');
       const sut = trackedNodeContext(dir);
       await packObjects(sut, { wants: ['HEAD'] });
@@ -303,7 +303,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   describe('Given the same repo, When tsgit fsck runs (X4)', () => {
     it('Then exit bit 64 is clear with no rev-index finding', async () => {
       // Arrange
-      const dir = await freshRepo('x4');
+      const dir = await freshRepo('tsgit-fsck');
       await commitFiles(dir, SEED_FILES, 'seed');
       const writeCtx = trackedNodeContext(dir);
       await packObjects(writeCtx, { wants: ['HEAD'] });
@@ -328,7 +328,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   describe('Given pack.writeReverseIndex=false in the local config, When packObjects runs (X5)', () => {
     it('Then no .rev is written and git fsck --strict stays clean', async () => {
       // Arrange
-      const dir = await freshRepo('x5');
+      const dir = await freshRepo('rev-disabled');
       git(dir, 'config', 'pack.writeReverseIndex', 'false');
       await commitFiles(dir, SEED_FILES, 'seed');
       const sut = trackedNodeContext(dir);
@@ -350,7 +350,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
     it('Then .rev is written', async () => {
       // Arrange — git's CLI cannot emit a valueless entry; the config file is
       // written directly.
-      const dir = await freshRepo('x6');
+      const dir = await freshRepo('rev-valueless');
       await appendFile(path.join(dir, '.git', 'config'), '[pack]\n\twriteReverseIndex\n');
       await commitFiles(dir, SEED_FILES, 'seed');
       const sut = trackedNodeContext(dir);
@@ -370,7 +370,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   describe('Given pack.writeReverseIndex=maybe, When the same repo state is handed to both tools (X7)', () => {
     it('Then git exits 128 and tsgit throws CONFIG_BAD_BOOLEAN_VALUE, neither writing new artefacts', async () => {
       // Arrange
-      const dir = await freshRepo('x7');
+      const dir = await freshRepo('rev-bad-boolean');
       git(dir, 'config', 'pack.writeReverseIndex', 'maybe');
       await commitFiles(dir, SEED_FILES, 'seed');
       const scratch = await newRoot('x7-scratch');
@@ -523,7 +523,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
       // adapter's containment policy scopes every write under the context's
       // own workDir root, so the directory is a sibling under it, not a
       // wholly separate filesystem root.
-      const dir = await freshRepo('x9');
+      const dir = await freshRepo('outside-output-dir');
       await commitFiles(dir, SEED_FILES, 'seed');
       const outputDirectory = path.join(dir, 'custom-packs');
       const sut = trackedNodeContext(dir);
@@ -548,7 +548,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   describe('Given a small tsgit-written pack, When tsgit re-reads its own .rev via loadPackRevIndex (X10)', () => {
     it('Then it reports usable and revIndexPositions matches packPositionMap', async () => {
       // Arrange
-      const dir = await freshRepo('x10');
+      const dir = await freshRepo('self-reread');
       await commitFiles(dir, SEED_FILES, 'seed');
       const sut = trackedNodeContext(dir);
       const written = await packObjects(sut, { wants: ['HEAD'] });

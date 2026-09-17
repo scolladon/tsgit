@@ -568,7 +568,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   describe('Given an orphaned .idx with no sibling .pack, When fsck runs (row K-11)', () => {
     it('Then both are silent: git exits 0 and fsck reports no finding', async () => {
       // Arrange
-      const dir = await freshRepo('k11');
+      const dir = await freshRepo('orphaned-idx');
       await writeIdxOnly(dir, 'orphan', baseIdxBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
@@ -587,7 +587,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   describe('Given an idx-less .pack with no sibling .idx, When fsck runs (row K-12)', () => {
     it('Then both are silent: git exits 0 and fsck reports no finding', async () => {
       // Arrange
-      const dir = await freshRepo('k12');
+      const dir = await freshRepo('idx-less-pack');
       await writePackOnly(dir, 'no-pack', basePackBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
@@ -606,7 +606,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   describe('Given two independently-unusable packs in the same repo, When fsck runs (row K-13)', () => {
     it('Then git reports each pack once and fsck reports two findings with bit 4 set once', async () => {
       // Arrange
-      const dir = await freshRepo('k13');
+      const dir = await freshRepo('two-unusable-packs');
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
       const badSignatureBytes = corruptSignature(basePackBytes);
@@ -632,7 +632,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   describe('Given a v99 pack and a healthy twin holding the same objects, When fsck runs (row K-14)', () => {
     it('Then git still reports the objects via the healthy twin, and fsck classifies them while reporting the bad pack', async () => {
       // Arrange
-      const dir = await freshRepo('k14');
+      const dir = await freshRepo('v99-with-twin');
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
       await writePack(dir, 'bad', v99PackBytes, v99IdxBytes);
@@ -729,7 +729,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       // cache-tree extension stripped from the on-disk index, then every
       // object deleted. Real git 2.55.0 does not run its cache-tree check
       // at all without the extension.
-      const dir = await freshRepo('k38');
+      const dir = await freshRepo('no-cache-tree');
       await writeFile(path.join(dir, 'a.txt'), 'alpha\n');
       commitSeed(dir);
       const commitSha = git(dir, 'rev-parse', 'HEAD').trim();
@@ -758,7 +758,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       // Arrange — the cache-tree's own entry resolves fine (the tree is
       // untouched); the commit and blob are deleted so the connectivity
       // pass alone accounts for the non-zero exit.
-      const dir = await freshRepo('k39');
+      const dir = await freshRepo('unreadable-beside-readable');
       await writeFile(path.join(dir, 'a.txt'), 'alpha\n');
       commitSeed(dir);
       const commitSha = git(dir, 'rev-parse', 'HEAD').trim();
@@ -1091,7 +1091,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a chmod-000 loose object, unreferenced, When fsck runs with connectivityOnly (row K-22, node tier only)', () => {
       it('Then git exits 0 with dangling unknown once, and fsck reports one dangling finding typed unknown', async () => {
         // Arrange
-        const dir = await freshRepo('k22');
+        const dir = await freshRepo('unreferenced-unreadable');
         const oid = hashObjectW(dir, 'k22-content\n');
         await chmod(looseObjectPath(dir, oid), 0o000);
         const gitResult = gitFsck(dir, '--connectivity-only');
@@ -1113,7 +1113,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given the same chmod-000 loose object, When fsck runs in default mode (row K-23)', () => {
       it('Then git computes no dangling/unreachable line for it even with the projection flags on, and fsck rejects with the pre-existing IO-fault gap', async () => {
         // Arrange — same fixture recipe as K-22, its own repo
-        const dir = await freshRepo('k23');
+        const dir = await freshRepo('unreadable-default-mode');
         const oid = hashObjectW(dir, 'k23-content\n');
         await chmod(looseObjectPath(dir, oid), 0o000);
         const gitDefault = gitFsck(dir);
@@ -1139,7 +1139,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a chmod-000 loose object that is reachable, When fsck runs with connectivityOnly (row K-24, node tier only)', () => {
       it('Then both are silent: git exits 0 with empty stdout, and fsck reports no finding for that object', async () => {
         // Arrange
-        const dir = await freshRepo('k24');
+        const dir = await freshRepo('reachable-unreadable');
         await writeFile(path.join(dir, 'reach.txt'), 'k24-content\n');
         commitSeed(dir);
         const oid = git(dir, 'rev-parse', 'HEAD:reach.txt').trim();
@@ -1165,7 +1165,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Arrange — the object's real content hashes to a different oid than
         // the path it is filed under; connectivity-only reads the header and
         // never hashes the body, so it types the object anyway
-        const dir = await freshRepo('k25');
+        const dir = await freshRepo('hash-path-mismatch');
         const content = Buffer.from('k25-mismatch-content\n');
         const oid = syntheticOid('k25-mismatch-target');
         await writeLooseObject(dir, oid, craftedLooseBytes(`blob ${content.length}`, content));
@@ -1188,7 +1188,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given an undecodable loose object, dangling, When fsck runs with connectivityOnly (row K-26)', () => {
       it('Then both reject: git exits 128 with empty stdout, and fsck rejects with a DECOMPRESS_FAILED cause', async () => {
         // Arrange
-        const dir = await freshRepo('k26');
+        const dir = await freshRepo('dangling-undecodable');
         const oid = syntheticOid('k26-garbage');
         await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
@@ -1207,7 +1207,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given the same undecodable loose object, When fsck runs in default mode (row K-27)', () => {
       it('Then git exits 1, and fsck resolves with exit bit 1 and a bad-object finding — the mode boundary on the same bytes as K-26', async () => {
         // Arrange — same fixture recipe as K-26, its own repo
-        const dir = await freshRepo('k27');
+        const dir = await freshRepo('undecodable-default-mode');
         const oid = syntheticOid('k27-garbage');
         await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir);
@@ -1229,7 +1229,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a reachable undecodable object, When fsck runs with connectivityOnly (row K-28)', () => {
       it('Then both are fully silent: git exits 0 with empty stdout and stderr, and fsck resolves with no finding for that object', async () => {
         // Arrange
-        const dir = await freshRepo('k28');
+        const dir = await freshRepo('reachable-undecodable');
         await writeFile(path.join(dir, 'reach.txt'), 'k28-content\n');
         commitSeed(dir);
         const oid = git(dir, 'rev-parse', 'HEAD:reach.txt').trim();
@@ -1257,7 +1257,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Arrange — the corrupt blob has an in-edge from the tree, so it is
         // merely unreachable (not dangling); the tree itself stays dangling
         // and readable
-        const dir = await freshRepo('k29');
+        const dir = await freshRepo('undecodable-under-dangling-tree');
         const blobOid = hashObjectW(dir, 'k29-content\n');
         mktree(dir, `100644 blob ${blobOid}\ttarget.txt\n`);
         await chmod(looseObjectPath(dir, blobOid), 0o644);
@@ -1278,7 +1278,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given an empty loose object, dangling, When fsck runs with connectivityOnly (row K-30)', () => {
       it('Then both resolve: git exits 0 with dangling unknown, and fsck reports one dangling finding typed unknown', async () => {
         // Arrange
-        const dir = await freshRepo('k30');
+        const dir = await freshRepo('empty-dangling');
         const oid = hashObjectW(dir, 'k30-content\n');
         await chmod(looseObjectPath(dir, oid), 0o644);
         await writeFile(looseObjectPath(dir, oid), new Uint8Array(0));
@@ -1301,7 +1301,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a loose object with an unrecoverable header, When fsck runs with connectivityOnly (row K-31)', () => {
       it('Then both reject: git exits 128, and fsck rejects with an INVALID_OBJECT_HEADER cause', async () => {
         // Arrange
-        const dir = await freshRepo('k31');
+        const dir = await freshRepo('unrecoverable-header');
         const oid = syntheticOid('k31-widget');
         await writeLooseObject(dir, oid, craftedLooseBytes('widget 5', Buffer.from('abcde')));
         const gitResult = gitFsck(dir, '--connectivity-only');
@@ -1320,7 +1320,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       it('Then both resolve, typed from the recovered header: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
         // Arrange — pins the split as header-recovery, not error code: the
         // header parses fine, so nothing here aborts
-        const dir = await freshRepo('k32');
+        const dir = await freshRepo('header-size-mismatch');
         const oid = syntheticOid('k32-size-mismatch');
         await writeLooseObject(dir, oid, craftedLooseBytes('blob 99', Buffer.from('hi')));
         const gitResult = gitFsck(dir, '--connectivity-only');
@@ -1342,7 +1342,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a healthy dangling object and an undecodable dangling object in the same repo, When fsck runs with connectivityOnly (row K-33)', () => {
       it('Then both withhold the whole report: git exits 128 with the healthy line absent from stdout, and fsck rejects', async () => {
         // Arrange
-        const dir = await freshRepo('k33');
+        const dir = await freshRepo('healthy-beside-undecodable');
         const healthyOid = hashObjectW(dir, 'k33-healthy\n');
         const garbageOid = syntheticOid('k33-garbage');
         await writeLooseObject(dir, garbageOid, NON_ZLIB_GARBAGE);
@@ -1449,7 +1449,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       it('Then both resolve, typed from the header alone: git exits 0 with dangling tree, and fsck reports one dangling finding typed tree', async () => {
         // Arrange — git's own "too-short tree object" stderr is not compared
         // (verdict line only)
-        const dir = await freshRepo('k37');
+        const dir = await freshRepo('unparseable-tree-body');
         const oid = syntheticOid('k37-tree-junk');
         await writeLooseObject(
           dir,
