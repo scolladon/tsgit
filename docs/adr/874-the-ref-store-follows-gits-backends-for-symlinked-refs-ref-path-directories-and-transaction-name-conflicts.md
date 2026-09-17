@@ -1,9 +1,15 @@
 ---
 subjects:
   - src/application/primitives/ref-store.ts
+  - src/application/primitives/reftable-transaction.ts
+  - src/application/primitives/resolve-ref.ts
+  - src/application/commands/branch.ts
+  - src/application/commands/tag.ts
+  - src/application/commands/checkout.ts
+  - src/application/commands/internal/revision-name.ts
+  - src/application/commands/internal/fsck/refs-verify.ts
   - src/application/primitives/atomic-write.ts
   - src/application/primitives/record-ref-update.ts
-  - src/application/primitives/reftable-transaction.ts
   - src/application/primitives/internal/empty-directories.ts
   - src/application/primitives/internal/transaction-names.ts
   - src/domain/refs/ref-name-conflict.ts
@@ -13,8 +19,8 @@ subjects:
 # 874 — The ref store follows git's backends for symlinked refs, ref-path directories and transaction name conflicts
 
 - **Status:** accepted
-- **Date:** 2026-09-15
-- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref-store scope folds: SL, ED, PP, DW, TX pins) · **Supersedes/Refines:** refines ADR-868 (its symlink rule now covers every loose ref) and ADR-871 (its pruning and refusal data)
+- **Date:** 2026-09-15 · **Extended:** 2026-09-17
+- **Design:** docs/design/session-caches-faithfulness-addendum.md (Ref-store scope folds: SL, ED, PP, DW, TX pins; round two: PR, LD, SU, RN, LS, FK, PO, TN pins) · **Supersedes/Refines:** refines ADR-868 (its symlink rule now covers every loose ref) and ADR-871 (its pruning and refusal data)
 
 ## Context
 
@@ -39,6 +45,33 @@ the user on 2026-09-15:
    creates, and a create under an absent delete, on both backends, before anything is written.
    tsgit's files store applied a `[delete d/x, set d]` list in order and wrote the first half of
    `[set f, set f/x]`; its reftable store wrote them all (TX1–TX14).
+
+### Round two (2026-09-17)
+
+The eight residuals round one left behind, folded in by the user on the same terms:
+
+6. **`pack-refs --all` over a read-through link.** git prunes in descending full-name order and
+   re-reads each ref it deletes, so a link whose target was pruned first no longer resolves: git
+   reports an error, keeps the link and still exits 0. tsgit pruned every duplicate, the link
+   included (PR1–PR4).
+7. **A log path that cannot be set up.** git writes every log before it renames any lockfile, so
+   `there are still logs under '<path>'` leaves the ref unwritten; tsgit wrote the ref and then let
+   the append refuse (LD1–LD6).
+8. **The availability check for ONE update.** git checks any name it locks that turns out absent,
+   whatever the transaction's size. tsgit checked only a regular file at a prefix and a loose ref
+   under the name on files, and nothing at all on reftable (SU1–SU9).
+9. **`branch -m` across a directory/file boundary.** git frees the source first — log staged, ref
+   deleted — then creates the destination; tsgit created first and so refused both directions
+   (RN1–RN4).
+10. **Listing a chain that does not resolve for reading.** git's iterators drop it silently;
+    `branchList` / `tagList` threw (LS1–LS4).
+11. **`fsck` over a symlinked loose ref.** git warns `symlinkRef: use deprecated symbolic link for
+    symref` per link under `refs/**` and still exits 0; tsgit reported nothing (FK1–FK4).
+12. **Refusal priority.** git raises each update's lock-time refusal and its compare-and-swap in
+    update order, the batch name check last; tsgit reported the name conflict first (PO1–PO7).
+13. **The name a detaching `checkout` or a `tag` target stands for.** git runs both through its
+    revision ladder — `checkout` consulting `refs/heads/<name>` ahead of it; tsgit resolved the name
+    as given (TN1–TN6).
 
 ## Options considered
 
@@ -66,9 +99,37 @@ entry**.
    c/d c`, which git allows through its rename-specific `skip` (TX12). Keeping tsgit's answer leaves a
    half-applied transaction on files.
 
+### Round two
+
+6. **Pruning order.** Follow git (chosen). The duplicate probe's existing `lstat` already answers
+   whether the leaf is a link, so a repository without one keeps the order-free pooled removal and
+   pays nothing; only a repository holding one takes the sequential, descending pass with a re-read
+   per link. Sorting every prune unconditionally would serialise a hot path for a state almost no
+   repository is in.
+7. **Log paths.** Follow git (chosen), by splitting the single reflog writer into a prepare half and
+   a commit half and running the prepare half under the write's own lock. Probing the log path
+   separately before the write would add a `stat` to every logged write; running the whole append
+   first would put the log ahead of the lock's own refusals, which git raises first.
+8. **Single-update names.** Follow git (chosen). On files the answer is free — a packed ref at a
+   prefix or under the name reads out of the snapshot the write already loads, and every loose
+   blocker already refuses through the lock or the rename. On reftable it costs one sorted-names pass
+   over the already-loaded stack; seeking to `<name>/` the way git's iterator does needs a codec
+   change this fold does not make, and adds no syscall either way.
+9. **`branch -m`.** Follow git (chosen), for a nested pair only. Taking git's delete-then-create order
+   for every rename would make every destination momentarily absent, for a shape only a nested pair
+   needs.
+10. **Listing.** Follow git (chosen): resolve through the reading walk and drop what it cannot
+    resolve. Keeping the throw makes one hand-planted ref fail a whole listing.
+11. **`fsck`.** Follow git (chosen), as a `bad-ref` finding carrying `symlinkRef` at `warning`
+    severity — the shape the pass's existing findings use — contributing no exit bit.
+12. **Refusal priority.** Follow git (chosen) on the files backend, whose prepare loop interleaves;
+    the reftable backend already verifies every value first, which is its git counterpart's order.
+13. **Target names.** Follow git (chosen), through one shared ladder rather than three copies, with
+    the miss reported as `undefined` so each command keeps the refusal it already raises.
+
 ## Decision
 
-**Follow git's files and reftable backends for all five.**
+**Follow git's files and reftable backends for all thirteen.**
 
 - `resolveDirect` reads a non-`HEAD` loose ref through `openWithNoFollow(path, 'read')`. A directory or
   `FILE_NOT_FOUND` is no loose ref; `PERMISSION_DENIED` pays one `lstat`, and a link is resolved by
@@ -108,12 +169,43 @@ each tsgit backend reports the name its git backend does.
 - A transaction with prefix-related names refuses before anything changes on both backends, and a
   delete of an absent ref in such a transaction can now refuse.
 
-Residuals, recorded in the design: a read-through link whose target `pack-refs` prunes first (git keeps
-the link after a reported error); a non-empty log directory (git refuses before writing the ref; tsgit
-writes the ref, then the append refuses); refusal priority between a name conflict and a
-compare-and-swap mismatch in one transaction; single-update availability checks (files under a
-packed-only ref, an absent delete around packed-only refs, reftable altogether) and `branch -m` across a
-directory/file boundary; `fsck`'s `symlinkRef` warning.
+### Round two
+
+- `packRefs` prunes its loose duplicates in descending full-name order when any of them is a symbolic
+  link, re-reading each link first and keeping one that no longer holds the packed value; a repository
+  without one keeps the order-free pooled removal.
+- The single reflog writer splits into a prepare half — config, the loggability gate, and the log path
+  — and a commit half. The prepare half runs under the ref write's own lock, after the lock's refusals
+  and before the rename, so a log path git could not set up refuses `DIRECTORY_NOT_EMPTY` naming that
+  path before the ref changes. It touches the path only where git would create a log.
+- A single update is name-checked exactly as a transaction's is: on files through the packed snapshot
+  the write already loads (a packed ref at a prefix refuses `NOT_A_DIRECTORY`, one under the name
+  `FILE_EXISTS`), on reftable through the check that previously ran for prefix-related transactions
+  only.
+- A branch rename whose names are `/`-bounded prefixes of one another stages the source's log, deletes
+  the source, creates the destination and moves the log in — git's own order.
+- `branchList` and `tagList` drop an entry whose chain does not resolve for reading.
+- `fsck` reports `symlinkRef` at `warning` severity for every loose ref that is a symbolic link,
+  contributing no exit bit.
+- The files store raises each update's lock-time refusal and compare-and-swap in update order, and its
+  batch availability check only afterwards.
+- A detaching `checkout` and a `tag` target resolve through the shared revision ladder, `checkout`
+  consulting `refs/heads/<name>` first.
+
+Residuals, recorded in the design: a name conflict against an ED3-shaped blocking directory (git
+raises the directory at lock time, ahead of the batch check); an update requiring a current value under
+a packed blocker (git skips its availability check; the two differ only on a hand-planted state); and
+reftable's sorted-names pass where git's iterator seeks.
+
+**Migration notes (round two).** `packRefs` keeps a read-through symbolic link whose target it pruned
+first, and reports it in neither count. A ref write whose reflog path is blocked refuses
+`DIRECTORY_NOT_EMPTY` instead of writing the ref and then refusing `PERMISSION_DENIED`. A single
+`updateRef`, `branch.create`, `symbolicRef` or delete now refuses `NOT_A_DIRECTORY` / `FILE_EXISTS`
+where a ref sits above or under the name, on either backend. `branch.rename` accepts a destination
+nested with the source. `branchList` and `tagList` omit an entry whose chain does not resolve instead
+of throwing. `fsck` reports a `symlinkRef` warning per symlinked loose ref, with no change to the exit
+code. A transaction carrying both a name conflict and a compare-and-swap mismatch reports whichever
+git reports. `checkout({ detach: true })` and `tag.create`'s target accept a short name.
 
 **Migration notes.** A loose ref that is a symbolic link to `refs/…` now reads as a symref and writes
 through to its target unless `noDeref` is set. A write over an empty directory at a ref path succeeds
