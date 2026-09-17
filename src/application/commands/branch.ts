@@ -342,19 +342,9 @@ interface RenameRequest {
  * `branch -m a y` with `y → main` and `branch -m sym y` report `y` exists,
  * `branch -M sym y` and `branch -m sym sym` report the symbolic ref).
  */
-/** git's "already exists" gate on a rename's destination. A destination
- *  nested with the source is never asked: no store holds a ref under or above
- *  another, and the read itself would refuse over the file the source
- *  occupies. */
-const destinationTaken = async (ctx: Context, request: RenameRequest): Promise<boolean> => {
-  const { from, to, force } = request;
-  if (from === to || force || areNested(from, to)) return false;
-  return refResolvesForReading(ctx, to);
-};
-
 const assertRenameAllowed = async (ctx: Context, request: RenameRequest): Promise<void> => {
-  const { from, to } = request;
-  if (await destinationTaken(ctx, request)) throw branchExists(to);
+  const { from, to, force } = request;
+  if (from !== to && !force && (await refResolvesForReading(ctx, to))) throw branchExists(to);
   if ((await getRefStore(ctx).resolveDirect(from)).kind !== 'symbolic') return;
   throw unsupportedOperation(BRANCH_RENAME, `refname ${from} is a symbolic ref`);
 };

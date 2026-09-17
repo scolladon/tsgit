@@ -278,6 +278,74 @@ describe.skipIf(!GIT_AVAILABLE)(
       throw new Error('unreachable');
     };
 
+    describe('Given a ref file sitting where another name needs a directory', () => {
+      describe('When both tools read the name under it', () => {
+        it('Then both report it absent, packed value and all, and still refuse the write', async () => {
+          // Arrange — `refs/remotes/q` is a loose file and `refs/remotes/q/z`
+          // is packed: git's read stops at the file and never reaches
+          // `packed-refs`, while its iterators still list the packed entry.
+          const { peer, ctx } = await filesCasePair('file-in-ref-path');
+          for (const dir of [peer, path.dirname(ctx.layout.gitDir)]) {
+            await mkdir(path.join(dir, '.git', 'refs', 'remotes'), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'q'), `${filesC1}\n`);
+            await writeFile(
+              path.join(dir, '.git', 'packed-refs'),
+              `# pack-refs with: peeled fully-peeled sorted \n${filesC1} refs/remotes/q/z\n`,
+            );
+          }
+          const sut = getRefStore(ctx);
+
+          // Act
+          const gitRead = tryRunGitWithExit([
+            '-C',
+            peer,
+            'rev-parse',
+            '--verify',
+            'refs/remotes/q/z',
+          ]);
+          const gitWrite = tryRunGitWithExit([
+            '-C',
+            peer,
+            'update-ref',
+            'refs/remotes/q/z/w',
+            filesC1,
+          ]);
+          const read = await sut.resolveDirect('refs/remotes/q/z' as RefName);
+          let caught: unknown;
+          try {
+            await sut.applyRefUpdates([
+              { kind: 'set', name: 'refs/remotes/q/z/w' as RefName, id: filesC1 as ObjectId },
+            ]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — neither tool resolves the name
+          expect(gitRead.exitCode).toBe(128);
+          expect(read).toEqual({ kind: 'missing' });
+
+          // Assert — both still list the packed entry
+          expect(git(peer, 'for-each-ref', '--format=%(refname)', 'refs/remotes/')).toContain(
+            'refs/remotes/q/z',
+          );
+          expect([...(await sut.listRefNames('refs/remotes/' as RefName))].sort()).toEqual([
+            'refs/remotes/q',
+            'refs/remotes/q/z',
+          ]);
+
+          // Assert — the write side still names the blocking file
+          expect(gitWrite.exitCode).toBe(128);
+          expect(gitWrite.stderr).toContain(
+            "'refs/remotes/q' exists; cannot create 'refs/remotes/q/z/w'",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'NOT_A_DIRECTORY',
+            path: `${ctx.layout.gitDir}/refs/remotes/q`,
+          });
+        });
+      });
+    });
+
     describe("Given a directory holding a file at a branch's log path", () => {
       describe('When git update-ref and applyRefUpdates write that branch', () => {
         it('Then both refuse before the ref is written and leave the tree untouched', async () => {

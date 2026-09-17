@@ -2749,7 +2749,7 @@ describe('ref-store', () => {
     });
 
     describe('When the refs are listed and the one under a loose file is resolved', () => {
-      it('Then both are listed, as git for-each-ref lists them, while the blocked name refuses', async () => {
+      it('Then both are listed, as git for-each-ref lists them, while the blocked name does not resolve', async () => {
         // Arrange
         const base = await buildSeededContext();
         const id = 'a'.repeat(40) as ObjectId;
@@ -2767,16 +2767,9 @@ describe('ref-store', () => {
           { name: 'refs/remotes/q', value: { kind: 'direct', id } },
           { name: 'refs/remotes/q/z', value: { kind: 'direct', id } },
         ]);
-        let caught: unknown;
-        try {
-          await sut.resolveDirect('refs/remotes/q/z' as RefName);
-        } catch (err) {
-          caught = err;
-        }
-        expect((caught as TsgitError).data).toEqual({
-          code: 'NOT_A_DIRECTORY',
-          path: '/repo/.git/refs/remotes/q',
-        });
+        // git's own read stops at the regular file in the path and never
+        // reaches `packed-refs`, so the name resolves to nothing at all.
+        expect(await sut.resolveDirect('refs/remotes/q/z' as RefName)).toEqual({ kind: 'missing' });
       });
     });
   });

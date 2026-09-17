@@ -357,14 +357,18 @@ type PathKind = 'directory' | 'file' | 'absent';
 /** {@link PathKind} with a symbolic link told apart from a regular file. */
 type LooseLeafKind = PathKind | 'link';
 
-/** A loose ref's leaf, read without following it: a regular file's
- *  content, a symbolic link, or no loose ref (absent, or a directory). */
+/** A loose ref's leaf, read without following it: a regular file's content,
+ *  a symbolic link, no loose ref (absent, or a directory — the packed store
+ *  still answers), or a regular file in the path, which git's reader reports
+ *  as no ref at all WITHOUT consulting `packed-refs`. */
 type LooseLeaf =
   | { readonly kind: 'content'; readonly content: string }
   | { readonly kind: 'symlink' }
-  | { readonly kind: 'none' };
+  | { readonly kind: 'none' }
+  | { readonly kind: 'blocked' };
 
 const NO_LEAF: LooseLeaf = { kind: 'none' };
+const BLOCKED_LEAF: LooseLeaf = { kind: 'blocked' };
 const SYMLINK_LEAF: LooseLeaf = { kind: 'symlink' };
 const MISSING: ResolveDirectResult = { kind: 'missing' };
 
@@ -652,9 +656,10 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       return await ctx.fs.readUtf8(path);
     } catch (err) {
-      if (isFileNotFound(err)) return undefined;
-      if (errorDataCode(err) === 'NOT_A_DIRECTORY') await assertNoFileInTheWay(name, path);
-      // git reads a directory at a loose path as no loose ref (`EISDIR`).
+      // Absent, and a regular file in the path, both read as no loose ref —
+      // git's `ENOENT` and `ENOTDIR` alike; so does a directory at the path
+      // (`EISDIR`), which costs the one `stat` below.
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return undefined;
       if ((await pathKind(path)) === 'directory') return undefined;
       throw err;
     }
@@ -748,6 +753,11 @@ function createFilesRefStore(ctx: Context): RefStore {
   ): Promise<LooseLeaf> {
     const code = errorDataCode(err);
     if (code === 'FILE_NOT_FOUND') return NO_LEAF;
+    // A regular file in the path is no such ref — git's `lstat` leaves the
+    // read there, so `packed-refs` is never consulted for the name (the same
+    // stop a followed link's absent target makes). Only the WRITE side turns
+    // it into `'<p>' exists; cannot create '<n>'`.
+    if (code === 'NOT_A_DIRECTORY') return BLOCKED_LEAF;
     if (code === 'PERMISSION_DENIED' && (await ctx.fs.lstat(path)).isSymbolicLink) {
       return SYMLINK_LEAF;
     }
@@ -769,6 +779,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
     }
     if (leaf.kind === 'content') return fromLooseContent(leaf.content);
+    if (leaf.kind === 'blocked') return MISSING;
     return resolvePacked(name);
   }
 
@@ -1613,20 +1624,15 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
-  /** Whether `name` exists for the availability check: a regular file in its
-   *  path reads as no ref there, as git's failed read does. */
-  async function existsForNameCheck(name: RefName): Promise<boolean> {
-    try {
-      return (await resolveDirect(name)).kind !== 'missing';
-    } catch (err) {
-      if (errorDataCode(err) === 'NOT_A_DIRECTORY') return false;
-      throw err;
-    }
+  /** Whether `name` exists at all — the question git's own read answers, a
+   *  regular file in the path or a directory at it reading as no ref. */
+  async function refIsPresent(name: RefName): Promise<boolean> {
+    return (await resolveDirect(name)).kind !== 'missing';
   }
 
   async function existingNames(names: readonly RefName[]): Promise<ReadonlySet<RefName>> {
     const existing = new Set<RefName>();
-    for (const name of names) if (await existsForNameCheck(name)) existing.add(name);
+    for (const name of names) if (await refIsPresent(name)) existing.add(name);
     return existing;
   }
 
@@ -1656,7 +1662,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     const checks: NameCheck[] = [];
     const earlier: RefName[] = [];
     for (const update of updates) {
-      if (isCheckedWhenAbsent(update) && !(await existsForNameCheck(update.name))) {
+      if (isCheckedWhenAbsent(update) && !(await refIsPresent(update.name))) {
         checks.push(await nameCheckFor(update.name, earlier));
       }
       if (isRefChanging(update)) earlier.push(update.name);
