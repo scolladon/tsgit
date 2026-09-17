@@ -24,7 +24,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -1679,3 +1679,61 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// Refs-verify pass — a loose ref that is a symbolic link
+// ---------------------------------------------------------------------------
+// Pinned against real git 2.55.0:
+//   stderr: "warning: refs/heads/rel: symlinkRef: use deprecated symbolic link for symref"
+//   exit: 0 — the notice never fails the audit
+
+let symlinkRefDir = '';
+let symlinkRefCtx: Context;
+const SYMLINKED_REF = 'refs/heads/rel';
+
+beforeAll(async () => {
+  symlinkRefDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlinkRef-'));
+  initRepo(symlinkRefDir);
+  await writeFile(path.join(symlinkRefDir, 'f.txt'), 'c1\n');
+  runGit(['-C', symlinkRefDir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', symlinkRefDir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  runGit(['-C', symlinkRefDir, 'branch', 'side', 'main'], { env: SAFE_ENV });
+  // Read-through text, so the link also resolves as a path and git's own
+  // worktree probe stays out of the way.
+  await symlink('side', path.join(symlinkRefDir, '.git', 'refs', 'heads', 'rel'));
+  symlinkRefCtx = createNodeContext({ workDir: symlinkRefDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (symlinkRefDir !== '') await rm(symlinkRefDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a loose ref that is a symbolic link', () => {
+  describe('When fsck runs', () => {
+    it('Then emits a symlinkRef warning and the clean exit code real git reports', async () => {
+      // Arrange — git's expected output
+      const gitResult = gitFsck(symlinkRefDir);
+
+      // Act
+      const result = await fsck(symlinkRefCtx);
+
+      // Assert — the notice never fails the audit
+      expect(gitResult.exitCode).toBe(0);
+      expect(result.exitCode).toBe(0);
+
+      // Assert — the warning names the link's own ref path
+      const warned = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'symlinkRef',
+      );
+      expect(warned).toBeDefined();
+      expect(warned?.severity).toBe('warning');
+      expect(warned?.ref).toBe(SYMLINKED_REF);
+
+      // Reconstruct git's exact stderr line and assert byte-equality
+      expect(gitResult.stderr).toContain(
+        `warning: ${warned?.ref}: ${warned?.msgId}: use deprecated symbolic link for symref`,
+      );
+    });
+  });
+});

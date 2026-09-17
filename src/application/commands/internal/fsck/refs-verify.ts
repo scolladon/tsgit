@@ -59,6 +59,13 @@ export async function runRefsVerifyPass(
   ]);
 
   for (const finding of integrityFindings) {
+    if (finding.msgId !== 'symlinkRef') continue;
+    // git's deprecation notice for a symbolic link standing in for a symref:
+    // one warning per link under `refs/`, contributing no exit bit.
+    findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'symlinkRef', severity: 'warning' });
+  }
+
+  for (const finding of integrityFindings) {
     if (finding.msgId !== 'badRefContent') continue;
     let bit = EXIT_MISSING; // synthesised zero-OID pointer always contributes bit 2
     if (checkContentFormat) {

@@ -131,6 +131,9 @@ export interface RefStore {
    * text to run that grammar check against, so `badRefContent` never
    * appears there; it instead reports one `badReftableTable` finding per
    * table that fails a structural check, naming the table and the check.
+   * The files backend also reports every loose ref that is a symbolic link
+   * (`symlinkRef`), whatever its text names and whether or not it resolves —
+   * git's deprecation notice, which never fails the audit.
    * Independent of any external reachability scope.
    */
   verifyIntegrity(): Promise<readonly RefIntegrityFinding[]>;
@@ -216,6 +219,7 @@ export interface RefEntry {
 
 export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
+  | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
   | {
       readonly table: string;
@@ -796,6 +800,15 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) ? HEAD_NAME : undefined;
   }
 
+  /** The worktree's own and the common dir's copies of `relative`, collapsed
+   *  into one when both name the same directory (a normal repository or the
+   *  main worktree). */
+  function refsWalkRoots(relative: string = REFS_DIR): ReadonlyArray<string> {
+    const own = `${ctx.layout.gitDir}/${relative}`;
+    const common = `${commonGitDir(ctx)}/${relative}`;
+    return own === common ? [own] : [own, common];
+  }
+
   /**
    * Every name under one `refs/**` root matching `prefix`, or `[]` when the
    * root doesn't exist OR isn't a directory — the per-root half of {@link
@@ -846,10 +859,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (head !== undefined) names.push(head);
     const root = refsWalkRoot(prefix);
     if (root === undefined) return names;
-    const ownRefs = `${ctx.layout.gitDir}/${root.relative}`;
-    const commonRefs = `${commonGitDir(ctx)}/${root.relative}`;
-    const roots = ownRefs === commonRefs ? [ownRefs] : [ownRefs, commonRefs];
-    for (const walkRoot of roots) {
+    for (const walkRoot of refsWalkRoots(root.relative)) {
       // Loop form, not `names.push(...names)` — `walkRefDir`'s own reason
       // twelve lines above applies here too: V8 caps spread-call argument
       // counts (~10^5), which a large unpacked ref space (a mirror's
@@ -920,26 +930,57 @@ function createFilesRefStore(ctx: Context): RefStore {
     return [...(await collectCandidateNames(prefix))].sort(compareRefNames);
   }
 
-  async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
-    const findings: RefIntegrityFinding[] = [];
-    for (const name of await walkAllLooseRefNames(undefined)) {
-      const raw = await readLooseContent(name);
-      if (raw === undefined) continue;
-      const content = raw.replace(/[\r\n]+$/, '');
-      if (content.startsWith(SYMBOLIC_PREFIX)) continue;
-      if (!LOOSE_OID_RE.test(content)) {
-        findings.push({ ref: name, msgId: 'badRefContent' });
+  /** git's ref-store check walks `refs/**` with `lstat` and never follows a
+   *  link, so a link to a directory of refs reports itself and nothing under
+   *  it, and one that resolves nowhere reports all the same. */
+  async function walkLinkedRefNames(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
+    const names: RefName[] = [];
+    for (const entry of await ctx.fs.readdir(dir)) {
+      const rel = `${prefix}/${entry.name}` as RefName;
+      if (entry.isSymbolicLink) {
+        names.push(rel);
         continue;
       }
-      const oid = content as ObjectId;
-      // Loose-only: a pack-registry probe (multi-pack-index, delta bases…)
-      // belongs to a caller's own reachability audit, not this grammar
-      // check — fsck's refs-verify pass runs its own OID-presence check
-      // against its scan-scoped universe once no `badRefContent` finding
-      // has already flagged this ref.
-      if (!(await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), oid)))) {
-        findings.push({ ref: name, msgId: 'badRefOid', target: oid });
-      }
+      if (!entry.isDirectory) continue;
+      for (const name of await walkLinkedRefNames(`${dir}/${entry.name}`, rel)) names.push(name);
+    }
+    return names;
+  }
+
+  /** Every loose ref that is a symbolic link, across both `refs/**` roots. */
+  async function linkedRefNames(): Promise<ReadonlyArray<RefName>> {
+    const names: RefName[] = [];
+    for (const root of refsWalkRoots()) {
+      if (!(await isDirectoryPath(root))) continue;
+      for (const name of await walkLinkedRefNames(root, REFS_DIR)) names.push(name);
+    }
+    return names;
+  }
+
+  /** `name`'s loose-body verdict: a `ref:` line is healthy, anything that is
+   *  not a well-formed oid is `badRefContent`, and an oid with no LOOSE
+   *  object behind it is `badRefOid`. A pack-registry probe (multi-pack-index,
+   *  delta bases…) belongs to a caller's own reachability audit, not this
+   *  grammar check — fsck's refs-verify pass runs its own OID-presence check
+   *  against its scan-scoped universe once no `badRefContent` finding has
+   *  already flagged this ref. */
+  async function looseBodyFinding(name: RefName): Promise<RefIntegrityFinding | undefined> {
+    const raw = await readLooseContent(name);
+    if (raw === undefined) return undefined;
+    const content = raw.replace(/[\r\n]+$/, '');
+    if (content.startsWith(SYMBOLIC_PREFIX)) return undefined;
+    if (!LOOSE_OID_RE.test(content)) return { ref: name, msgId: 'badRefContent' };
+    const oid = content as ObjectId;
+    if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), oid))) return undefined;
+    return { ref: name, msgId: 'badRefOid', target: oid };
+  }
+
+  async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
+    const findings: RefIntegrityFinding[] = [];
+    for (const ref of await linkedRefNames()) findings.push({ ref, msgId: 'symlinkRef' });
+    for (const name of await walkAllLooseRefNames(undefined)) {
+      const finding = await looseBodyFinding(name);
+      if (finding !== undefined) findings.push(finding);
     }
     return findings;
   }
