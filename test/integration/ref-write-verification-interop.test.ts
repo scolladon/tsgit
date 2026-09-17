@@ -5,7 +5,9 @@
  * One shared base repo is built once with canonical git (files backend) and
  * a reftable twin; every row copies the relevant base into a fresh `peer`
  * (mutated by git) and `ours` (mutated by tsgit), then compares exit code,
- * reconstructed stderr and ref presence.
+ * the refusal's whole data, git's stderr reconstructed from that data, and
+ * the resulting ref state read back with `git show-ref --verify` on both
+ * sides — a refusal must leave the ref exactly as it found it.
  *
  * @proves
  *   surface:        updateRef
@@ -21,7 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import { writeSymbolicRef } from '../../src/application/primitives/write-symbolic-ref.js';
-import type { TsgitError } from '../../src/domain/error.js';
+import type { TsgitError, TsgitErrorData } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import {
@@ -94,30 +96,98 @@ const plantLooseAt = (repoDir: string, fakeId: string, sourceId: string): void =
   chmodSync(dstPath, 0o644);
 };
 
+/** The `error:` line git prints ahead of the fatal for a parse refusal,
+ *  composed from tsgit's own refusal reason and the target id. The reasons
+ *  git prints no line for — a tag too short, a bad object, type or tag
+ *  line — return undefined. */
+const gitErrorLine = (reason: string, id: string): string | undefined => {
+  if (reason === 'bogus commit object') return `error: bogus commit object ${id}`;
+  if (reason === 'bad tree pointer') return `error: bad tree pointer in commit ${id}`;
+  if (reason === 'bad parents') return `error: bad parents in commit ${id}`;
+  if (reason.startsWith('bad parent ')) return `error: ${reason} in commit ${id}`;
+  if (reason.startsWith('unknown tag type ')) return `error: ${reason} in ${id}`;
+  return undefined;
+};
+
 interface TsgitOutcome {
   readonly ok: boolean;
-  readonly code: string | undefined;
+  readonly data: TsgitErrorData | undefined;
 }
 
-/** Runs `updateRef` against `ours`, capturing success or the refusal's data
- *  code — never lets a refusal escape as an uncaught rejection. */
-const runOurs = async (
-  ours: string,
+/** Runs `updateRef` against a caller-owned Context, capturing success or the
+ *  refusal's whole data — never lets a refusal escape as an uncaught
+ *  rejection. */
+const runOursOn = async (
+  ctx: Context,
   name: string,
   id: string,
   options: { readonly expected?: string; readonly noDeref?: boolean } = {},
 ): Promise<TsgitOutcome> => {
-  const ctx = nodeCtx(ours);
   try {
     await updateRef(ctx, name as RefName, id as ObjectId, {
       reflogMessage: REFLOG_MESSAGE,
       ...(options.expected !== undefined ? { expected: options.expected as ObjectId } : {}),
       ...(options.noDeref !== undefined ? { noDeref: options.noDeref } : {}),
     });
-    return { ok: true, code: undefined };
+    return { ok: true, data: undefined };
   } catch (error) {
-    return { ok: false, code: (error as TsgitError).data.code };
+    return { ok: false, data: (error as TsgitError).data };
   }
+};
+
+/** The same write through a Context of its own, as a fresh process would. */
+const runOurs = (
+  ours: string,
+  name: string,
+  id: string,
+  options: { readonly expected?: string; readonly noDeref?: boolean } = {},
+): Promise<TsgitOutcome> => runOursOn(nodeCtx(ours), name, id, options);
+
+/** The refusal data of an outcome that must have refused. An accepted write
+ *  has no stderr to reconstruct, so it fails here rather than reconstructing
+ *  nothing and comparing it to nothing. */
+const refusalData = (outcome: TsgitOutcome): TsgitErrorData => {
+  if (outcome.data === undefined) throw new Error('expected a refused update, got an accepted one');
+  return outcome.data;
+};
+
+/** git's whole stderr for one refused update, reconstructed from tsgit's own
+ *  refusal data plus the ref name and target the caller passed — never from a
+ *  literal the test keeps of its own. */
+const reconstructStderr = (ref: string, target: string, data: TsgitErrorData): string => {
+  if (data.code === 'OBJECT_NOT_FOUND') return nonexistentFatal(ref, data.id);
+  if (data.code === 'UNEXPECTED_OBJECT_TYPE') return nonCommitFatal(ref, data.id);
+  if (data.code === 'OBJECT_HASH_MISMATCH') return hashMismatchStderr(ref, data.expected);
+  if (data.code !== 'INVALID_COMMIT' && data.code !== 'INVALID_TAG') {
+    throw new Error(`no git stderr shape for ${data.code}`);
+  }
+  const errorLine = gitErrorLine(data.reason, target);
+  const fatal = nonexistentFatal(ref, target);
+  return errorLine === undefined ? fatal : `${errorLine}\n${fatal}`;
+};
+
+interface RefState {
+  readonly present: boolean;
+  readonly oid: string;
+}
+
+/** `git show-ref --verify` read against either twin: exit 0 with the ref's id
+ *  on stdout, exit 128 and no id when the ref does not resolve. */
+const refState = (repo: string, ref: string): RefState => {
+  const result = tryRunGitWithExit(['-C', repo, 'show-ref', '--verify', ref]);
+  return { present: result.exitCode === 0, oid: result.stdout.trim().split(' ')[0] ?? '' };
+};
+
+/** Neither twin resolves the ref — what a refused create must leave behind. */
+const expectRefMissing = (peer: string, ours: string, ref: string): void => {
+  expect(refState(peer, ref)).toEqual({ present: false, oid: '' });
+  expect(refState(ours, ref)).toEqual({ present: false, oid: '' });
+};
+
+/** Both twins resolve the ref, to the same id. */
+const expectRefAt = (peer: string, ours: string, ref: string, id: string): void => {
+  expect(refState(peer, ref)).toEqual({ present: true, oid: id });
+  expect(refState(ours, ref)).toEqual({ present: true, oid: id });
 };
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -181,9 +251,11 @@ describe.skipIf(!GIT_AVAILABLE)(
         `tree ${treeId}\nparent ${treeId.slice(0, 39)}z\n\nmsg\n`,
       );
       bogusTypeTagId = plantObject('tag', `object ${mainId}\ntype bogus\ntag t\n\nmsg\n`);
+      // Padded past the `h + 24` length floor so the short object line is
+      // what refuses it, not the body's total length.
       shortObjectLineTagId = plantObject(
         'tag',
-        `object ${treeId.slice(0, 30)}\ntype commit\ntag t\n\nmsg\n`,
+        `object ${treeId.slice(0, 30)}\ntype commit\ntag t\n\nmsg padded past the tag length floor\n`,
       );
       noAuthorCommitId = plantObject('commit', `tree ${treeId}\nparent ${mainId}\n\nmsg\n`);
       garbageTreeId = plantObject('tree', 'not a real tree body');
@@ -236,34 +308,48 @@ describe.skipIf(!GIT_AVAILABLE)(
       pairFrom(filesBase, slug);
 
     describe('Given a target commit, tree, blob, annotated tag or missing id, When update-ref writes refs/heads/u', () => {
+      const nonCommit = (actual: string, id: string) => ({
+        code: 'UNEXPECTED_OBJECT_TYPE',
+        expected: 'commit',
+        actual,
+        id,
+      });
+
       it.each([
-        { label: 'commit', target: () => mainId, ok: true },
-        { label: 'tree', target: () => treeId, ok: false },
-        { label: 'blob', target: () => blobId, ok: false },
-        { label: 'annotated tag (not peeled)', target: () => annotatedTagId, ok: false },
-        { label: 'missing', target: () => NX, ok: false },
-      ])('Then $label matches git', async ({ target, ok }) => {
+        { label: 'commit', target: () => mainId, refusal: () => undefined },
+        { label: 'tree', target: () => treeId, refusal: () => nonCommit('tree', treeId) },
+        { label: 'blob', target: () => blobId, refusal: () => nonCommit('blob', blobId) },
+        {
+          label: 'annotated tag (not peeled)',
+          target: () => annotatedTagId,
+          refusal: () => nonCommit('tag', annotatedTagId),
+        },
+        {
+          label: 'missing',
+          target: () => NX,
+          refusal: () => ({ code: 'OBJECT_NOT_FOUND', id: NX }),
+        },
+      ])('Then $label matches git', async ({ target, refusal }) => {
         // Arrange
         const { peer, ours } = await filesPair('fresh-branch-target');
         const id = target();
+        const expectedRefusal = refusal();
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/u', id]);
         const oursResult = await runOurs(ours, 'refs/heads/u', id);
 
         // Assert
-        expect(oursResult.ok).toBe(ok);
-        expect(gitResult.exitCode).toBe(ok ? 0 : 128);
-        if (!ok) {
-          expect(
-            oursResult.code === 'UNEXPECTED_OBJECT_TYPE' || oursResult.code === 'OBJECT_NOT_FOUND',
-          ).toBe(true);
-          const expectedStderr =
-            oursResult.code === 'OBJECT_NOT_FOUND'
-              ? nonexistentFatal('refs/heads/u', id)
-              : nonCommitFatal('refs/heads/u', id);
-          expect(gitResult.stderr.trim()).toBe(expectedStderr);
+        expect(oursResult.data).toEqual(expectedRefusal);
+        expect(gitResult.exitCode).toBe(expectedRefusal === undefined ? 0 : 128);
+        if (expectedRefusal === undefined) {
+          expectRefAt(peer, ours, 'refs/heads/u', id);
+          return;
         }
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/u', id, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/heads/u');
       });
     });
 
@@ -295,6 +381,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, ref, id);
       });
     });
 
@@ -311,9 +398,9 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitResult.exitCode).toBe(128);
-          expect(gitResult.stderr.trim()).toBe(nonexistentFatal(ref, NX));
-          expect(oursResult.ok).toBe(false);
-          expect(oursResult.code).toBe('OBJECT_NOT_FOUND');
+          expect(oursResult.data).toEqual({ code: 'OBJECT_NOT_FOUND', id: NX });
+          expect(gitResult.stderr.trim()).toBe(reconstructStderr(ref, NX, refusalData(oursResult)));
+          expectRefMissing(peer, ours, ref);
         },
       );
     });
@@ -335,9 +422,17 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(nonCommitFatal('HEAD', treeId));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursResult.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('HEAD', treeId, refusalData(oursResult)),
+        );
+        expectRefAt(peer, ours, 'HEAD', mainId);
+        expectRefAt(peer, ours, 'refs/heads/main', mainId);
       });
     });
 
@@ -352,9 +447,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(nonexistentFatal('HEAD', NX));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('OBJECT_NOT_FOUND');
+        expect(oursResult.data).toEqual({ code: 'OBJECT_NOT_FOUND', id: NX });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('HEAD', NX, refusalData(oursResult)),
+        );
+        expectRefAt(peer, ours, 'HEAD', mainId);
       });
 
       it('Then ORIG_HEAD accepts a tree (not branch-typed)', async () => {
@@ -368,6 +465,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'ORIG_HEAD', treeId);
       });
 
       it('Then FOO_HEAD with a missing id refuses nonexistent (not branch-typed)', async () => {
@@ -380,9 +478,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(nonexistentFatal('FOO_HEAD', NX));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('OBJECT_NOT_FOUND');
+        expect(oursResult.data).toEqual({ code: 'OBJECT_NOT_FOUND', id: NX });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('FOO_HEAD', NX, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'FOO_HEAD');
       });
     });
 
@@ -401,8 +501,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr.trim()).toBe(nonCommitFatalStdin('refs/heads/s', treeId));
         expect(gitResult.stderr).not.toContain('update_ref failed');
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursResult.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expectRefMissing(peer, ours, 'refs/heads/s');
       });
 
       it('Then update refs/heads/main <tree> refuses the same way', async () => {
@@ -418,8 +523,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr.trim()).toBe(nonCommitFatalStdin('refs/heads/main', treeId));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursResult.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expectRefAt(peer, ours, 'refs/heads/main', mainId);
       });
     });
 
@@ -434,9 +544,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(nonexistentFatal('refs/tags/t', NX));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('OBJECT_NOT_FOUND');
+        expect(oursResult.data).toEqual({ code: 'OBJECT_NOT_FOUND', id: NX });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/t', NX, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/t');
       });
 
       it('Then a non-commit target on refs/heads/main is reported before the wrong-old CAS', async () => {
@@ -456,9 +568,16 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(nonCommitFatal('refs/heads/main', treeId));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursResult.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/main', treeId, refusalData(oursResult)),
+        );
+        expectRefAt(peer, ours, 'refs/heads/main', mainId);
       });
     });
 
@@ -476,9 +595,15 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(hashMismatchStderr('refs/tags/cb', fakeId));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('OBJECT_HASH_MISMATCH');
+        expect(oursResult.data).toEqual({
+          code: 'OBJECT_HASH_MISMATCH',
+          expected: fakeId,
+          actual: blobId,
+        });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/cb', fakeId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/cb');
       });
 
       it('Then refs/heads/cc reports hash mismatch then nonexistent (not the branch-typing refusal)', async () => {
@@ -494,9 +619,15 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(hashMismatchStderr('refs/heads/cc', fakeId));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('OBJECT_HASH_MISMATCH');
+        expect(oursResult.data).toEqual({
+          code: 'OBJECT_HASH_MISMATCH',
+          expected: fakeId,
+          actual: mainId,
+        });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/cc', fakeId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/heads/cc');
       });
     });
 
@@ -532,6 +663,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(1);
         expect(oursCode).toBe('REF_UPDATE_CONFLICT');
+        expectRefAt(peer, ours, 'refs/heads/delete-target', mainId);
       });
 
       it('Then symbolic-ref writes agree, and a typed write through it refuses by the given name', async () => {
@@ -557,9 +689,17 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitSym.exitCode).toBe(0);
         expect(gitWrite.exitCode).toBe(128);
-        expect(gitWrite.stderr.trim()).toBe(nonCommitFatal('refs/heads/s', treeId));
-        expect(oursWrite.ok).toBe(false);
-        expect(oursWrite.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursWrite.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(gitWrite.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/s', treeId, refusalData(oursWrite)),
+        );
+        expectRefMissing(peer, ours, 'refs/heads/nope');
+        expectRefMissing(peer, ours, 'refs/heads/s');
       });
 
       it('Then a tag symref to a branch writes through, typed by the terminal', async () => {
@@ -586,6 +726,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(gitSym.exitCode).toBe(0);
         expect(gitWrite.exitCode).toBe(0);
         expect(oursWrite.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/heads/x', treeId);
+        expectRefAt(peer, ours, 'refs/tags/ts', treeId);
       });
 
       it('Then a branch symref to a tag refuses non-commit typed by the given (branch) name', async () => {
@@ -615,9 +757,17 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitSym.exitCode).toBe(0);
         expect(gitWrite.exitCode).toBe(128);
-        expect(gitWrite.stderr.trim()).toBe(nonCommitFatal('refs/heads/bt', treeId));
-        expect(oursWrite.ok).toBe(false);
-        expect(oursWrite.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursWrite.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(gitWrite.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/bt', treeId, refusalData(oursWrite)),
+        );
+        expectRefAt(peer, ours, 'refs/tags/tt', mainId);
+        expectRefAt(peer, ours, 'refs/heads/bt', mainId);
       });
     });
 
@@ -636,6 +786,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/tags/et', EMPTY_TREE);
       });
 
       it('Then the (never stored) empty tree refuses non-commit on a branch', async () => {
@@ -654,9 +805,16 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(nonCommitFatal('refs/heads/et', EMPTY_TREE));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursResult.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: EMPTY_TREE,
+        });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/et', EMPTY_TREE, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/heads/et');
       });
 
       it('Then the (never stored) empty blob refuses nonexistent', async () => {
@@ -669,9 +827,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr.trim()).toBe(nonexistentFatal('refs/tags/eb', EMPTY_BLOB));
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('OBJECT_NOT_FOUND');
+        expect(oursResult.data).toEqual({ code: 'OBJECT_NOT_FOUND', id: EMPTY_BLOB });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/eb', EMPTY_BLOB, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/eb');
       });
     });
 
@@ -692,11 +852,14 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
+        expect(oursResult.data).toEqual({
+          code: 'INVALID_COMMIT',
+          reason: 'bogus commit object',
+        });
         expect(gitResult.stderr.trim()).toBe(
-          `error: bogus commit object ${noTreeLineCommitId}\n${nonexistentFatal('refs/tags/x', noTreeLineCommitId)}`,
+          reconstructStderr('refs/tags/x', noTreeLineCommitId, refusalData(oursResult)),
         );
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('INVALID_COMMIT');
+        expectRefMissing(peer, ours, 'refs/tags/x');
       });
 
       it('Then a parent line with a non-hex character refuses', async () => {
@@ -715,8 +878,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('INVALID_COMMIT');
+        expect(oursResult.data).toEqual({ code: 'INVALID_COMMIT', reason: 'bad parents' });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/x', nonHexParentCommitId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/x');
       });
 
       it('Then an unknown tag type refuses, reporting the type name', async () => {
@@ -735,9 +901,14 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr).toContain(`unknown tag type 'bogus' in ${bogusTypeTagId}`);
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('INVALID_TAG');
+        expect(oursResult.data).toEqual({
+          code: 'INVALID_TAG',
+          reason: "unknown tag type 'bogus'",
+        });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/x', bogusTypeTagId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/x');
       });
 
       it('Then a tag whose object line is cut short refuses (fatal only, no error: line)', async () => {
@@ -757,8 +928,11 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr).not.toContain('error:');
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('INVALID_TAG');
+        expect(oursResult.data).toEqual({ code: 'INVALID_TAG', reason: 'bad object line' });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/x', shortObjectLineTagId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/x');
       });
 
       it('Then a commit with a tree and a parent but no author or committer is accepted on a branch', async () => {
@@ -778,6 +952,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/heads/x', noAuthorCommitId);
       });
 
       it('Then a garbage tree body is accepted on a non-branch ref', async () => {
@@ -797,6 +972,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/tags/x', garbageTreeId);
       });
 
       it('Then a parent equal to the tree refuses bad parent, naming the tree in both tools', async () => {
@@ -813,11 +989,19 @@ describe.skipIf(!GIT_AVAILABLE)(
         ]);
         const oursResult = await runOurs(ours, 'refs/tags/x', selfParentCommitId);
 
-        // Assert
+        // Assert — git prints one extra line tsgit's data cannot carry (the
+        // parent lookup that found a tree), so the reconstruction is matched
+        // inside git's stderr rather than against the whole of it.
         expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr).toContain(`bad parent ${treeId} in commit ${selfParentCommitId}`);
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('INVALID_COMMIT');
+        expect(oursResult.data).toEqual({
+          code: 'INVALID_COMMIT',
+          reason: `bad parent ${treeId}`,
+        });
+        expect(gitResult.stderr).toContain(
+          reconstructStderr('refs/tags/x', selfParentCommitId, refusalData(oursResult)),
+        );
+        expect(gitResult.stderr).toContain(`error: object ${treeId} is a tree, not a commit`);
+        expectRefMissing(peer, ours, 'refs/tags/x');
       });
 
       it('Then the same commit listed in .git/shallow in both twins is accepted on a tag and a branch', async () => {
@@ -849,6 +1033,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(oursTag.ok).toBe(true);
         expect(gitBranch.exitCode).toBe(0);
         expect(oursBranch.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/tags/x', selfParentCommitId);
+        expectRefAt(peer, ours, 'refs/heads/x', selfParentCommitId);
       });
 
       it('Then an upper-case tree hex is accepted', async () => {
@@ -868,6 +1054,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/heads/x', upperCaseTreeCommitId);
       });
 
       it('Then a junk "parent"-looking line after author is accepted', async () => {
@@ -887,6 +1074,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/heads/x', junkAfterAuthorCommitId);
       });
 
       it('Then an empty tag name is accepted', async () => {
@@ -906,6 +1094,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/tags/x', emptyTagNameId);
       });
 
       it('Then a tag body shorter than h + 24 refuses tag object too short', async () => {
@@ -924,8 +1113,11 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(oursResult.ok).toBe(false);
-        expect(oursResult.code).toBe('INVALID_TAG');
+        expect(oursResult.data).toEqual({ code: 'INVALID_TAG', reason: 'tag object too short' });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/tags/x', tooShortTagId, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/tags/x');
       });
     });
 
@@ -943,18 +1135,12 @@ describe.skipIf(!GIT_AVAILABLE)(
           'refs/heads/u',
           reftableMainId,
         ]);
-        let oursOk = true;
-        try {
-          await updateRef(ctx, 'refs/heads/u' as RefName, reftableMainId as ObjectId, {
-            reflogMessage: REFLOG_MESSAGE,
-          });
-        } catch {
-          oursOk = false;
-        }
+        const oursResult = await runOursOn(ctx, 'refs/heads/u', reftableMainId);
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
-        expect(oursOk).toBe(true);
+        expect(oursResult.ok).toBe(true);
+        expectRefAt(peer, ours, 'refs/heads/u', reftableMainId);
       });
 
       it('Then a tree target refuses non-commit', async () => {
@@ -965,18 +1151,20 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/u', treeGit]);
-        let oursCode: string | undefined;
-        try {
-          await updateRef(ctx, 'refs/heads/u' as RefName, treeGit as ObjectId, {
-            reflogMessage: REFLOG_MESSAGE,
-          });
-        } catch (error) {
-          oursCode = (error as TsgitError).data.code;
-        }
+        const oursResult = await runOursOn(ctx, 'refs/heads/u', treeGit);
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(oursCode).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(oursResult.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeGit,
+        });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/u', treeGit, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/heads/u');
       });
 
       it('Then a missing target refuses nonexistent', async () => {
@@ -986,18 +1174,15 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/u', NX]);
-        let oursCode: string | undefined;
-        try {
-          await updateRef(ctx, 'refs/heads/u' as RefName, NX as ObjectId, {
-            reflogMessage: REFLOG_MESSAGE,
-          });
-        } catch (error) {
-          oursCode = (error as TsgitError).data.code;
-        }
+        const oursResult = await runOursOn(ctx, 'refs/heads/u', NX);
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        expect(oursCode).toBe('OBJECT_NOT_FOUND');
+        expect(oursResult.data).toEqual({ code: 'OBJECT_NOT_FOUND', id: NX });
+        expect(gitResult.stderr.trim()).toBe(
+          reconstructStderr('refs/heads/u', NX, refusalData(oursResult)),
+        );
+        expectRefMissing(peer, ours, 'refs/heads/u');
       });
     });
   },
