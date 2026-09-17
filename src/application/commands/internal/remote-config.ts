@@ -105,6 +105,36 @@ const rewriteFetchRefspec = (spec: string, from: string, to: string): string => 
   return spec.slice(0, start) + to + spec.slice(start + from.length);
 };
 
+/** The destination half of a refspec, or `undefined` when it has none —
+ *  a colon-free fetch refspec lands in `FETCH_HEAD`, never in a ref. */
+const destinationOf = (spec: string): string | undefined => {
+  const at = spec.indexOf(':');
+  return at < 0 ? undefined : spec.slice(at + 1);
+};
+
+/** git's `match_name_with_pattern`: a destination holding one `*` matches
+ *  any name framed by its two halves; one without matches only itself. */
+const matchesDestination = (pattern: string, name: string): boolean => {
+  const star = pattern.indexOf('*');
+  if (star < 0) return pattern === name;
+  const before = pattern.slice(0, star);
+  const after = pattern.slice(star + 1);
+  return (
+    name.length >= before.length + after.length && name.startsWith(before) && name.endsWith(after)
+  );
+};
+
+/**
+ * Whether any of `refspecs` fetches INTO `name` — the per-ref destination
+ * test git runs when it decides which refs a remote owns. A remote removes
+ * only the refs it alone fetches into, so this answers both halves.
+ */
+export const fetchesInto = (refspecs: ReadonlyArray<string>, name: string): boolean =>
+  refspecs.some((spec) => {
+    const destination = destinationOf(spec);
+    return destination !== undefined && matchesDestination(destination, name);
+  });
+
 /** Every refspec of a renamed remote, each spliced where it fetches into
  *  `from`'s own tracking namespace. */
 export const rewriteTrackingFetchRefspecs = (

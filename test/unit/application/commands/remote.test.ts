@@ -702,7 +702,7 @@ describe('application/commands/remote', () => {
         it('Then both refs are deleted and reported', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/refs/remotes/origin/main`,
             `${'a'.repeat(40)}\n`,
@@ -731,7 +731,7 @@ describe('application/commands/remote', () => {
         it('Then every tracking ref is deleted in one ref transaction', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/dev`, `${STALE_ID}\n`);
@@ -801,7 +801,7 @@ describe('application/commands/remote', () => {
         it('Then only branch.<X>.remote is cleared (merge already absent)', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
+          await seed(ctx, `${ORIGIN_TRACKING_CONFIG}[branch "main"]\n\tremote = origin\n`);
 
           // Act
           const result = await remoteRemove(ctx, { name: 'origin' });
@@ -838,7 +838,7 @@ describe('application/commands/remote', () => {
         it('Then every tracking ref and the symref are gone, --no-deref', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/refs/remotes/origin/main`,
             `${'a'.repeat(40)}\n`,
@@ -869,7 +869,7 @@ describe('application/commands/remote', () => {
           // Arrange
           vi.spyOn(Date, 'now').mockReturnValue(FROZEN_EPOCH_SECONDS * 1000);
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
           await ctx.fs.writeUtf8(`${gitDir}/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
@@ -891,7 +891,7 @@ describe('application/commands/remote', () => {
           // Arrange
           vi.spyOn(Date, 'now').mockReturnValue(FROZEN_EPOCH_SECONDS * 1000);
           const ctx = withReftableStorage(createMemoryContext());
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           await getRefStore(ctx).applyRefUpdates([
             { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
             {
@@ -922,7 +922,7 @@ describe('application/commands/remote', () => {
         it('Then the reflog file is gone', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/refs/remotes/origin/main`,
             `${'a'.repeat(40)}\n`,
@@ -965,6 +965,77 @@ describe('application/commands/remote', () => {
             remote: 'a b',
           });
         });
+      });
+    });
+    describe.each([
+      {
+        label: 'no fetch refspec of its own',
+        config: '[remote "origin"]\n\turl = u\n',
+        removed: [] as readonly string[],
+        kept: ['refs/remotes/origin/main', 'refs/remotes/origin/sub/x', 'refs/remotes/zzz/q'],
+      },
+      {
+        label: 'a refspec fetching outside refs/remotes',
+        config: '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/other/origin/*\n',
+        removed: [],
+        kept: ['refs/remotes/origin/main', 'refs/remotes/origin/sub/x', 'refs/remotes/zzz/q'],
+      },
+      {
+        label: 'a refspec fetching only into a nested path',
+        config: '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/sub/*\n',
+        removed: ['refs/remotes/origin/sub/x'],
+        kept: ['refs/remotes/origin/main', 'refs/remotes/zzz/q'],
+      },
+      {
+        label: "a refspec fetching into another remote's namespace",
+        config: '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/zzz/*\n',
+        removed: ['refs/remotes/zzz/q'],
+        kept: ['refs/remotes/origin/main', 'refs/remotes/origin/sub/x'],
+      },
+      {
+        label: 'a second remote fetching into the same namespace',
+        config: `${ORIGIN_TRACKING_CONFIG}[remote "k"]\n\turl = k\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n`,
+        removed: [],
+        kept: ['refs/remotes/origin/main', 'refs/remotes/origin/sub/x', 'refs/remotes/zzz/q'],
+      },
+      {
+        label: 'a second remote fetching into a nested path of it',
+        config: `${ORIGIN_TRACKING_CONFIG}[remote "k"]\n\turl = k\n\tfetch = +refs/heads/*:refs/remotes/origin/sub/*\n`,
+        removed: ['refs/remotes/origin/main'],
+        kept: ['refs/remotes/origin/sub/x', 'refs/remotes/zzz/q'],
+      },
+      {
+        label: 'a second remote mirroring every ref',
+        config: `${ORIGIN_TRACKING_CONFIG}[remote "k"]\n\turl = k\n\tfetch = +refs/*:refs/*\n`,
+        removed: [],
+        kept: ['refs/remotes/origin/main', 'refs/remotes/origin/sub/x', 'refs/remotes/zzz/q'],
+      },
+    ])('Given $label, When remoteRemove runs', ({ config, removed, kept }) => {
+      it('Then exactly the refs it alone fetches into are deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+          { kind: 'set', name: 'refs/remotes/origin/sub/x' as RefName, id: ORIGIN_ID },
+          { kind: 'set', name: 'refs/remotes/zzz/q' as RefName, id: ORIGIN_ID },
+        ]);
+
+        // Act
+        const result = await remoteRemove(ctx, { name: 'origin' });
+
+        // Assert
+        expect([...result.removedTrackingRefs].sort()).toEqual([...removed].sort());
+        const store = getRefStore(ctx);
+        for (const name of removed) {
+          expect(await store.resolveDirect(name as RefName)).toEqual({ kind: 'missing' });
+        }
+        for (const name of kept) {
+          expect(await store.resolveDirect(name as RefName)).toEqual({
+            kind: 'direct',
+            id: ORIGIN_ID,
+          });
+        }
       });
     });
   });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  fetchesInto,
   listBranchReferrers,
   mapsTrackingNamespace,
   rewriteTrackingFetchRefspecs,
@@ -219,6 +220,93 @@ describe('application/commands/internal/remote-config', () => {
 
           // Assert
           expect(result).toEqual(expected);
+        });
+      });
+    });
+  });
+
+  describe('fetchesInto', () => {
+    describe('Given a list of fetch refspecs', () => {
+      describe('When asked whether any fetches into a given ref', () => {
+        it.each([
+          {
+            refspecs: [],
+            name: 'refs/remotes/old/x',
+            expected: false,
+            label: 'an empty list fetches nowhere',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/*'],
+            name: 'refs/remotes/old/x',
+            expected: true,
+            label: 'a trailing star matches a name under it',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/*'],
+            name: 'refs/remotes/old/deep/x',
+            expected: true,
+            label: 'a trailing star matches across slashes',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/sub/*'],
+            name: 'refs/remotes/old/x',
+            expected: false,
+            label: 'a nested destination does not match a name above it',
+          },
+          {
+            refspecs: ['+refs/heads/main:refs/remotes/old/main'],
+            name: 'refs/remotes/old/main',
+            expected: true,
+            label: 'a star-free destination matches only itself',
+          },
+          {
+            refspecs: ['+refs/heads/main:refs/remotes/old/main'],
+            name: 'refs/remotes/old/mainx',
+            expected: false,
+            label: 'a star-free destination does not match a longer name',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/pre*post'],
+            name: 'refs/remotes/old/preXpost',
+            expected: true,
+            label: 'a star in an odd position frames the name',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/pre*post'],
+            name: 'refs/remotes/old/prepost',
+            expected: true,
+            label: 'the two halves may meet with nothing between them',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/prepre*post'],
+            name: 'refs/remotes/old/prepost',
+            expected: false,
+            label: 'the halves may not overlap to reach the name',
+          },
+          {
+            refspecs: ['+refs/*:refs/*'],
+            name: 'refs/remotes/old/x',
+            expected: true,
+            label: 'a mirror refspec fetches into every ref',
+          },
+          {
+            refspecs: ['refs/heads/main'],
+            name: 'refs/heads/main',
+            expected: false,
+            label: 'a colon-free refspec has no destination to match',
+          },
+          {
+            refspecs: ['+refs/tags/*:refs/other/x/*', '+refs/heads/*:refs/remotes/old/*'],
+            name: 'refs/remotes/old/x',
+            expected: true,
+            label: 'one matching entry among others is enough',
+          },
+        ])('Then $label', ({ refspecs, name, expected }) => {
+          // Arrange + Act
+          const result = fetchesInto(refspecs, name);
+
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });

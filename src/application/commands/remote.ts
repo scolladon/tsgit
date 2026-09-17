@@ -25,6 +25,7 @@ import { parseRefspec } from './internal/refspec.js';
 import {
   assertRemoteNameUnnested,
   type BranchReferrer,
+  fetchesInto,
   listBranchReferrers,
   mapsTrackingNamespace,
   rewriteTrackingFetchRefspecs,
@@ -166,6 +167,30 @@ const listTrackingRefs = async (ctx: Context, name: string): Promise<ReadonlyArr
   return all.filter((ref): ref is RefName => ref.startsWith(prefix));
 };
 
+/** Every ref under `refs/remotes/`, whatever remote it belongs to — the
+ *  space a removal searches, since a refspec may aim anywhere inside it. */
+const listRemoteTrackingRefs = async (ctx: Context): Promise<ReadonlyArray<RefName>> => {
+  const all = await enumerateRefs(ctx);
+  return all.filter((ref): ref is RefName => ref.startsWith('refs/remotes/'));
+};
+
+/**
+ * The refs `remote remove <name>` deletes: those `<name>`'s own fetch
+ * refspecs bring in, minus those any other configured remote's refspecs
+ * bring in too — git never deletes a ref a second remote still fetches.
+ */
+const removableTrackingRefs = (
+  config: ParsedConfig,
+  name: string,
+  candidates: ReadonlyArray<RefName>,
+): ReadonlyArray<RefName> => {
+  const own = config.remote?.get(name)?.fetch ?? [];
+  const others = [...(config.remote ?? [])].filter(([other]) => other !== name);
+  const keptElsewhere = (ref: RefName): boolean =>
+    others.some(([, entry]) => fetchesInto(entry.fetch ?? [], ref));
+  return candidates.filter((ref) => fetchesInto(own, ref) && !keptElsewhere(ref));
+};
+
 /** A removal's config rewrite: the `[remote "<name>"]` section dropped and
  *  every paired `branch.<X>.remote` / `branch.<X>.merge` key cleared. */
 const removeConfigOperations = (
@@ -186,7 +211,7 @@ export const remoteRemove = async (
   await assertAcceptedRepository(ctx);
   const config = await readConfig(ctx);
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
-  const trackingRefs = await listTrackingRefs(ctx, input.name);
+  const trackingRefs = removableTrackingRefs(config, input.name, await listRemoteTrackingRefs(ctx));
   const referrers = listBranchReferrers(config, input.name);
   // Tracking refs go first — recoverable if we crash before the config
   // rewrite — as ONE ref transaction, as git's `remote remove` does; each

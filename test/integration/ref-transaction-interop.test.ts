@@ -30,7 +30,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { remoteRename, remoteShow } from '../../src/application/commands/remote.js';
+import { remoteRemove, remoteRename, remoteShow } from '../../src/application/commands/remote.js';
 import { getRefStore, type RefUpdate } from '../../src/application/primitives/ref-store.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -1396,6 +1396,55 @@ describe.skipIf(!GIT_AVAILABLE)(
           if (data.code !== 'REMOTE_EXISTS') throw new Error('unreachable');
           expect(data.remote).toBe('origin');
         });
+      });
+    });
+
+    describe.each([
+      {
+        label: 'a second remote fetching into the same namespace',
+        spec: '+refs/heads/*:refs/remotes/origin/*',
+        kept: ['refs/remotes/origin/main', 'refs/remotes/origin/sub/x'],
+        dropped: [] as readonly string[],
+      },
+      {
+        label: 'a second remote fetching into a nested path of it',
+        spec: '+refs/heads/*:refs/remotes/origin/sub/*',
+        kept: ['refs/remotes/origin/sub/x'],
+        dropped: ['refs/remotes/origin/main'],
+      },
+    ])('Given $label, When the first remote is removed', ({ spec, kept, dropped }) => {
+      it('Then neither tool deletes a ref the second remote still fetches', async () => {
+        // Arrange
+        const { peer, ours, ctx } = await remoteRenameCasePair(
+          `remote-remove-overlap-${dropped.length}`,
+        );
+        const oid = git(peer, 'rev-parse', 'HEAD').trim();
+        for (const repo of [peer, ours]) {
+          runGit(['-C', repo, 'update-ref', 'refs/remotes/origin/sub/x', oid]);
+          runGit(['-C', repo, 'remote', 'add', 'k', 'https://example.invalid/k.git']);
+          runGit(['-C', repo, 'config', '--unset-all', 'remote.k.fetch']);
+          runGit(['-C', repo, 'config', '--add', 'remote.k.fetch', spec]);
+        }
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'remove', 'origin']);
+        const result = await remoteRemove(ctx, { name: 'origin' });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        const survivors = (repo: string): string =>
+          tryRunGitWithExit([
+            '-C',
+            repo,
+            'for-each-ref',
+            '--format=%(refname)',
+            'refs/remotes',
+          ]).stdout.trim();
+        expect(survivors(ours)).toBe(survivors(peer));
+        for (const name of kept) expect(survivors(peer)).toContain(name);
+        for (const name of dropped) expect(survivors(peer)).not.toContain(name);
+        for (const name of dropped) expect(result.removedTrackingRefs).toContain(name);
+        for (const name of kept) expect(result.removedTrackingRefs).not.toContain(name);
       });
     });
 

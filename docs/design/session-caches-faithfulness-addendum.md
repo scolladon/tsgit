@@ -2448,6 +2448,30 @@ refspec destination *pattern*, so a destination such as `+refs/heads/*:refs/othe
 list only what lives under `deep/`. `remoteShow` still enumerates `refs/remotes/<name>/` once the
 gate passes.
 
+### `remote remove` deletes only what it alone fetches (2026-09-17)
+
+Same harness. git searches **all of `refs/remotes/`** — not `refs/remotes/<name>/` — and deletes each
+ref there that the removed remote's fetch refspecs bring in and that no other configured remote's
+refspecs bring in. Base: `origin` plus `refs/remotes/origin/main`, `refs/remotes/origin/sub/x`,
+`refs/other/origin/z` (and, for the last row, `refs/remotes/zzz/q`).
+
+| `remote.origin.fetch` | other remote's fetch | deleted |
+|---|---|---|
+| `+refs/heads/*:refs/remotes/origin/*` | — | `origin/main`, `origin/sub/x` (`refs/other/origin/z` untouched — outside the searched space) |
+| (none) | — | nothing |
+| `+refs/heads/*:refs/other/origin/*` | — | nothing (`refs/other/origin/z` untouched: outside `refs/remotes/`) |
+| `+refs/heads/*:refs/remotes/origin/sub/*` | — | `origin/sub/x` only |
+| `+refs/heads/*:refs/remotes/zzz/*` | — | `refs/remotes/zzz/q` only — `origin/main` survives |
+| `+refs/heads/*:refs/remotes/origin/*` | `+refs/heads/*:refs/remotes/origin/*` | nothing |
+| `+refs/heads/*:refs/remotes/origin/*` | `+refs/heads/*:refs/remotes/origin/sub/*` | `origin/main` only |
+| `+refs/heads/*:refs/remotes/origin/*` | `+refs/*:refs/*` | nothing |
+
+The matcher is git's `match_name_with_pattern` over the refspec's destination half: a destination
+holding one `*` matches any name framed by its two halves (the halves may meet, but may not overlap),
+one without matches only itself, and a colon-free refspec has no destination at all.
+`fetchesInto(refspecs, ref)` in `remote-config.ts` answers both halves of the rule; `remoteRemove`
+enumerates `refs/remotes/` and filters with it.
+
 ### Docs consequences
 
 - `docs/use/primitives/update-ref.md` — its signature block documents `{ oldId?, message? }`, which no
