@@ -567,6 +567,7 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       'simpledetached',
       'matchingpartial',
       'matchingdetached',
+      'symref-tracking',
     ]) {
       seedBare(name, 'real');
       seedBare(name, 'ts');
@@ -694,6 +695,71 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       },
       30_000,
     );
+  });
+
+  /** Aims `<remote>/main` at a sibling `<remote>/real` holding the value it
+   *  had — the shape a tracking update has to dereference. */
+  const plantTrackingSymref = async (dir: string, remote: string): Promise<void> => {
+    const tracking = `refs/remotes/${remote}`;
+    git(dir, 'update-ref', `${tracking}/real`, git(dir, 'rev-parse', `${tracking}/main`).trim());
+    await rm(path.join(dir, '.git', 'refs', 'remotes', remote, 'main'), { force: true });
+    git(dir, 'symbolic-ref', `${tracking}/main`, `${tracking}/real`);
+  };
+
+  /** One twin's tracking state after its second push: what `<remote>/real`
+   *  holds, and the raw bytes of the `<remote>/main` file. */
+  const trackingShape = async (
+    dir: string,
+    remote: string,
+  ): Promise<{ readonly real: string; readonly mainFile: string }> => ({
+    real: git(dir, 'rev-parse', `refs/remotes/${remote}/real`).trim(),
+    mainFile: await readFile(path.join(dir, '.git', 'refs', 'remotes', remote, 'main'), 'utf8'),
+  });
+
+  describe('Given a tracking ref that reaches its value through a sibling symbolic ref', () => {
+    describe('When both tools push the branch again', () => {
+      it('Then both move the pointed-at tracking ref and keep the symbolic one', async () => {
+        // Arrange — real-git twin: push once so the tracking ref exists,
+        // aim it at a sibling, then commit again.
+        const remote = 'symref-tracking';
+        const gitDir = await initGitRepo();
+        git(gitDir, 'remote', 'add', remote, bareUrl(remote, 'real'));
+        await gitAsync(gitDir, 'push', '-q');
+        await plantTrackingSymref(gitDir, remote);
+        await writeFile(path.join(gitDir, 'seed.txt'), 'second from real git\n');
+        git(gitDir, 'add', 'seed.txt');
+        git(gitDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'second (real git)');
+        const gitTip = git(gitDir, 'rev-parse', 'HEAD').trim();
+
+        // Arrange — tsgit twin: the same sequence against its own bare.
+        const { repo, dir } = await initTsgitRepo();
+        await appendConfig(repo, `[remote "${remote}"]\n  url = ${bareUrl(remote, 'ts')}`);
+        await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
+        await plantTrackingSymref(dir, remote);
+        await writeFile(path.join(dir, 'seed.txt'), 'second from tsgit\n');
+        git(dir, 'add', 'seed.txt');
+        git(dir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'second (tsgit)');
+        const tsgitTip = git(dir, 'rev-parse', 'HEAD').trim();
+        __resetConfigCacheForTests();
+
+        // Act
+        await gitAsync(gitDir, 'push', '-q');
+        const result = await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
+
+        // Assert — each twin's sibling carries its OWN new tip (the two
+        // histories are deliberately unrelated), and the symbolic ref itself
+        // survives the update on both.
+        expect(result.pushedRefs[0]).toMatchObject({ status: 'ok' });
+        const peerShape = await trackingShape(gitDir, remote);
+        const ourShape = await trackingShape(dir, remote);
+        expect(peerShape.real).toBe(gitTip);
+        expect(ourShape.real).toBe(tsgitTip);
+        expect(peerShape.mainFile).toBe(`ref: refs/remotes/${remote}/real\n`);
+        expect(ourShape.mainFile).toBe(peerShape.mainFile);
+
+        await repo.dispose();
+      }, 60_000);
+    });
   });
 
   const REFSPEC_PUSH_MATRIX: ReadonlyArray<{
