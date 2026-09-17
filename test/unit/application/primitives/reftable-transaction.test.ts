@@ -904,6 +904,38 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a stack holding many refs, and a single-update batch for a brand-new name', () => {
+    describe('When the transaction commits', () => {
+      it('Then the availability check seeks past the ref space instead of decoding it', async () => {
+        // Arrange — every live ref record decodes one object id, so the
+        // `fromRaw` count is the record-decode count. The name created sorts
+        // after every existing one, which is exactly where a full sorted-names
+        // pass would be most expensive and a seek cheapest.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const priorRefs = Array.from({ length: 400 }, (_, index) =>
+          liveRef(`refs/heads/b${String(index).padStart(5, '0')}`, (index % 250) + 1, index + 1),
+        );
+        const bytes = await buildFixtureTable(ctx, priorRefs, [], 1n, BigInt(priorRefs.length));
+        await writeReftableFiles(ctx, dir, [{ name: 'many.ref', bytes }]);
+        const fromRawSpy = vi.spyOn(ObjectId, 'fromRaw');
+        fromRawSpy.mockClear();
+
+        // Act
+        try {
+          await applyReftableUpdates(ctx, [
+            { kind: 'set', name: ref('refs/heads/zzz'), id: oid(9) },
+          ]);
+
+          // Assert
+          expect(fromRawSpy.mock.calls.length).toBeLessThan(priorRefs.length);
+        } finally {
+          fromRawSpy.mockRestore();
+        }
+      });
+    });
+  });
+
   describe('Given a stack with reflog history under several OTHER ref names, and a single-update batch for a brand-new ref', () => {
     describe('When the transaction commits', () => {
       it('Then only the checked name would ever be decoded — none of the other names’ log records are', async () => {

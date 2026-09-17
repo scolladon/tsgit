@@ -10,6 +10,7 @@
 import type { RefName } from '../../objects/index.js';
 import {
   iterateReftableRefs,
+  iterateReftableRefsFrom,
   lookupReftableRef,
   type ReftableRefRecord,
 } from './reftable-block.js';
@@ -29,6 +30,10 @@ export interface ReftableStack {
    *  by the SAME k-way merge rather than a `names()` walk followed by one
    *  `lookup()` re-search per name. */
   entries(): Iterable<ReftableRefRecord>;
+  /** {@link entries} restricted to the names sorting at or after `from` —
+   *  seeked through each table's ref index, so a caller asking about one
+   *  narrow range never decodes the records before it. */
+  entriesFrom(from: RefName): Iterable<ReftableRefRecord>;
   logs(name: RefName): Iterable<ReftableLogRecord>;
 }
 
@@ -132,7 +137,23 @@ function resolveAndAdvance(
  *  so a caller that wants both the name and the resolved value never pays
  *  for that second search. */
 function* mergeEntries(tables: readonly LoadedReftable[]): Generator<ReftableRefRecord> {
-  const iterators = tables.map((table) => iterateReftableRefs(table)[Symbol.iterator]());
+  yield* mergeIterators(tables.map((table) => iterateReftableRefs(table)[Symbol.iterator]()));
+}
+
+/** {@link mergeEntries} over iterators already seeked to `from` — the same
+ *  shadowing, over a suffix of each table's sorted records. */
+function* mergeEntriesFrom(
+  tables: readonly LoadedReftable[],
+  from: RefName,
+): Generator<ReftableRefRecord> {
+  yield* mergeIterators(
+    tables.map((table) => iterateReftableRefsFrom(table, from)[Symbol.iterator]()),
+  );
+}
+
+function* mergeIterators(
+  iterators: ReadonlyArray<Iterator<ReftableRefRecord>>,
+): Generator<ReftableRefRecord> {
   const heads: (ReftableRefRecord | undefined)[] = iterators.map(nextOrUndefined);
 
   for (let next = minName(heads); next !== undefined; next = minName(heads)) {
@@ -169,6 +190,7 @@ export function createReftableStack(tables: readonly LoadedReftable[]): Reftable
     lookup: (name) => lookupInStack(tablesNewestFirst, name),
     names: () => mergeNames(tables),
     entries: () => mergeEntries(tables),
+    entriesFrom: (from) => mergeEntriesFrom(tables, from),
     logs: (name) => logsInStack(tablesNewestFirst, name),
   };
 }

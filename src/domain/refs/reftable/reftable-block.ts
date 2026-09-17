@@ -396,9 +396,13 @@ export function* walkBlockRecords<T>(
   bytes: Uint8Array,
   bounds: BlockBounds,
   decodeRecord: RecordDecoder<T>,
+  resume?: BlockRecord<T>,
 ): Generator<BlockRecord<T>> {
-  let cursor = bounds.recordsStart;
-  let priorNameBytes: Uint8Array | undefined;
+  // `resume` is the record a seek already decoded: its own name is exactly
+  // the prior name the next record's prefix compression is measured against,
+  // so the walk picks up mid-block without re-reading from the first record.
+  let cursor = resume?.nextOffset ?? bounds.recordsStart;
+  let priorNameBytes: Uint8Array | undefined = resume?.nameBytes;
   while (cursor < bounds.recordsEnd) {
     const record = decodeRecord(bytes, cursor, priorNameBytes);
     assertForwardProgress(cursor, record.nextOffset);
@@ -702,6 +706,51 @@ function* collectIndexLeaves(
       assertBlockType(reftable, childPosition, 'r');
       yield childPosition;
     }
+  }
+}
+
+/**
+ * Every ref record whose name sorts at or after `from`, in name order. The
+ * block to start in is found the way a lookup finds one — through the ref
+ * index when the table has one, so the seek costs O(log R) rather than a
+ * walk of every record before `from` — and the walk then continues into the
+ * blocks that FOLLOW it, so a `from` sorting past the last key of the block
+ * the index points at is never mistaken for "nothing at or after it".
+ */
+export function* iterateReftableRefsFrom(
+  table: Reftable,
+  from: RefName,
+): Iterable<ReftableRefRecord> {
+  const target = encode(from);
+  const decodeRecord = refRecordDecoder(table.header);
+  const startBlock = resolveRefBlockPosition(table, target);
+  if (startBlock === undefined) return;
+  let reached = false;
+  for (const blockStart of refBlockPositions(table)) {
+    if (!reached && blockStart !== startBlock) continue;
+    const bounds = blockBoundsAt(table, blockStart);
+    if (reached) {
+      yield* blockPayloads(table, bounds, decodeRecord);
+      continue;
+    }
+    reached = true;
+    // Every key in the block the index points at can still sort before
+    // `from`; the answer is then the first record of a LATER block.
+    const seek = findInBlock(table._bytes, bounds, target, decodeRecord);
+    if (seek === undefined) continue;
+    yield seek.payload;
+    yield* blockPayloads(table, bounds, decodeRecord, seek);
+  }
+}
+
+function* blockPayloads(
+  table: Reftable,
+  bounds: BlockBounds,
+  decodeRecord: RecordDecoder<ReftableRefRecord>,
+  resume?: BlockRecord<ReftableRefRecord>,
+): Generator<ReftableRefRecord> {
+  for (const record of walkBlockRecords(table._bytes, bounds, decodeRecord, resume)) {
+    yield record.payload;
   }
 }
 

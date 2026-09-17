@@ -82,7 +82,6 @@ import {
   firstRefNameConflict,
   type RefNameFacts,
   refNamePrefixes,
-  smallestNameUnder,
 } from '../../domain/refs/ref-name-conflict.js';
 import {
   DEFAULT_BLOCK_SIZE,
@@ -386,27 +385,28 @@ function verifyExpectations(
   }
 }
 
-/** What `stack` holds around `name`; the sorted live names are built on the
- *  first call only. */
-function reftableNameFacts(
-  name: RefName,
-  stack: ReftableStack,
-  sortedNames: () => readonly RefName[],
-): RefNameFacts {
+/** What `stack` holds around `name`. */
+function reftableNameFacts(name: RefName, stack: ReftableStack): RefNameFacts {
+  const under = firstNameUnder(stack, name);
   return {
     existingPrefixes: new Set(
       refNamePrefixes(name).filter((prefix) => stack.lookup(prefix) !== undefined),
     ),
-    smallestExistingUnder: smallestNameUnder(sortedNames(), name),
+    smallestExistingUnder: under,
   };
 }
 
-function lazySortedNames(stack: ReftableStack): () => readonly RefName[] {
-  let names: readonly RefName[] | undefined;
-  return () => {
-    names ??= [...stack.names()];
-    return names;
-  };
+/** The byte-smallest LIVE name strictly under `<name>/`. The merge view is
+ *  seeked straight to that floor through each table's ref index and stops at
+ *  the first name past the prefix, so the answer costs one seek plus the
+ *  records that actually sit under the name — never a pass over the whole
+ *  ref space. */
+function firstNameUnder(stack: ReftableStack, name: RefName): RefName | undefined {
+  const floor = `${name}/`;
+  for (const entry of stack.entriesFrom(floor as RefName)) {
+    return entry.name.startsWith(floor) ? entry.name : undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -415,10 +415,9 @@ function lazySortedNames(stack: ReftableStack): () => readonly RefName[] {
  * in update order — against the refs the stack already holds, and, when two
  * of the transaction's own names are prefix-related, against those too.
  *
- * Cost: one sorted-names pass over the loaded stack per transaction carrying
- * such a name (memoised across its updates), and a `lookup` per proper
- * prefix. All in memory — the stack is already read; no syscall is added to
- * any write.
+ * Cost: per checked name, one index-guided seek to `<name>/` plus the
+ * records actually under it, and one `lookup` per proper prefix. All in
+ * memory — the stack is already read; no syscall is added to any write.
  */
 function verifyTransactionNamesAvailable(
   ctx: Context,
@@ -426,10 +425,9 @@ function verifyTransactionNamesAvailable(
   stack: ReftableStack,
 ): void {
   const transaction = prefixRelatedTransactionNames(updates) ?? NO_TRANSACTION_NAMES;
-  const sortedNames = lazySortedNames(stack);
   for (const update of updates) {
     if (!isCheckedWhenAbsent(update) || stack.lookup(update.name) !== undefined) continue;
-    const facts = reftableNameFacts(update.name, stack, sortedNames);
+    const facts = reftableNameFacts(update.name, stack);
     const conflict = firstRefNameConflict(update.name, facts, transaction);
     if (conflict !== undefined) throw refNameConflictRefusal(ctx, conflict);
   }
