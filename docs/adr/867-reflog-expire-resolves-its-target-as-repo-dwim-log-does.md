@@ -83,6 +83,20 @@ and zero targets never reach it. With no ref and no `all`, `expire` returns `{ r
 }`. Configuration and flag refusals keep their place ahead of both (ADR-866), and each target's
 cutoffs are looked up by its resolved refname.
 
+**Write ordering.** Each target's rewrite is committed as the sweep reaches it, never batched
+behind the last one: git rewrites a log the moment that log is swept, on both backends — the files
+backend replaces the file, the reftable backend appends a table of its own — so a refusal part-way
+through a sweep leaves every earlier target already rewritten on disk, and tsgit leaves the same
+bytes. The cost is one ref transaction per target instead of one per run; on the reftable backend
+that is a full stack transaction plus a compaction attempt each time, measured 3.6-5x on a 200-800
+ref sweep. Faithful on-disk state is worth it: a caller reading a repository after a failed sweep
+sees what it would see after canonical git's.
+
+A swept target (`--all`) therefore reaches the repo-settings class only where it would read an
+object — always for a named ref, whose tip git resolves before the cutoff pair can shortcut the
+walk, and for `HEAD` only when its reachability walk actually runs. A named target given as an
+argument still reaches the class before its own sweep starts.
+
 ## Consequences
 
 Observable changes: a gone ref, a dangling symref, an unborn `HEAD`, an invalid name and an
@@ -98,7 +112,9 @@ Residuals, recorded:
 
 - **One ref per call.** git takes several and keeps expiring after one refuses (E9); tsgit's API
   takes one.
-- **`reflog delete` and `reflog show` target resolution** carry the same `repo_dwim_log` and
-  revision-parsing differences (E1d, E1e) and are not changed here.
+- **`reflog delete` and `reflog show` target resolution** now follow symbolic refs too: `delete`
+  through the same `repo_dwim_log` walk, `show` through git's own lookup chain — its own log, the
+  log of the ref it resolves to, then `refs/<arg>` and `refs/heads/<arg>`, each labelled with the
+  argument as typed, and only the closing candidate walk relabelling to the name it found.
 - **`core.warnAmbiguousRefs`** changes whether git keeps counting candidates after the first hit,
   never which log it chooses; not modelled.

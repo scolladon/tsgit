@@ -815,7 +815,7 @@ does not run a reflog expire (git's does); unchanged.
 | O-a / O-b | malformed `core.deltaBaseCacheLimit` + `expire refs/heads/nope` / `refs/heads/gone` | **255 could not be found** — target resolution precedes the class |
 | O-c | malformed class + `--expire=bogus HEAD` | 128 invalid timestamp — flags precede the class |
 | O-d | malformed class + `expire --expire=now` (no ref) | **0** |
-| O-e / O-f | malformed class + `--all`; + `never`/`never HEAD` | 128 class. Under `--all` git reaches the class mid-sweep and has **already truncated `logs/HEAD`** by then; the named branch log is untouched |
+| O-e / O-f | malformed class + `--all`; + `never`/`never HEAD` | 128 class. Under `--all --expire=now` git reaches the class mid-sweep and has **already truncated `logs/HEAD`** by then; the named branch log is untouched. Under `--expire=never --expire-unreachable=now` the walk runs for `HEAD` itself, so the class refuses before anything is written. With `logs/HEAD` as the ONLY log, `--all --expire=now` exits **0** and empties it — `HEAD` reads no object of its own |
 
 Source: `builtin/reflog.c:282-297` — per argument `repo_dwim_log(argv[i], …, &ref)` else
 `status |= error("reflog could not be found: '%s'")`; `refs.c:840-879` `repo_dwim_log` —
@@ -860,11 +860,21 @@ const logForCandidate = async (ctx: Context, candidate: RefName | 'HEAD'): Promi
 Behaviour moves: E1/E5/E8/E12/E13 refuse `REFLOG_NOT_FOUND { ref: <argument> }` (git prints the
 argument as typed); E4/E6b/E7 succeed on the resolved log; E15 expires by clock.
 
-**Residual recorded (O-e).** git's `--all` sweep rewrites each log as it goes, so a class refusal
-raised part-way through leaves the already-swept `logs/HEAD` emptied on disk. tsgit applies one
-`applyRefUpdates` transaction after the whole sweep, so its refusal writes nothing at all. The
-refusal itself agrees (same key, value and reason); the partial on-disk state does not, and
-tsgit's all-or-nothing side is the one worth keeping.
+**Transcribed, not recorded (O-e).** A sweep rewrites each log the moment it reaches it, so a class
+refusal raised part-way through leaves every already-swept log rewritten on disk — under
+`--all --expire=now` that is `logs/HEAD` emptied while the branch log the refusal lands on is
+untouched, on the files backend and on reftable alike (which appends the swept target's own table
+before the next target refuses). tsgit writes per target too rather than batching one closing
+`applyRefUpdates`, so both twins leave the same bytes behind. The cost — one ref transaction per
+target, on reftable a full stack transaction plus a compaction attempt each time, measured 3.6-5x
+on a 200-800 ref sweep — is accepted: the on-disk state after a failed sweep is observable, and
+faithfulness binds it.
+
+The class is reached where git would read an object, which is why the sweep gets that far at all:
+`HEAD` resolves no tip of its own and, under a cutoff pair that cannot move a verdict, reads
+nothing, so a repository whose only log is `logs/HEAD` sweeps clean and exits 0 under a malformed
+class; a named target resolves its tip before that shortcut and so always reaches the class; and a
+target named as an argument reaches it before its own sweep starts.
 
 ---
 
