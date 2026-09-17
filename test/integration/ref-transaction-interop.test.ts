@@ -1033,6 +1033,55 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a packed annotated tag beside the entry being deleted', () => {
+      describe.each([
+        {
+          slug: 'no-header-no-peel-line',
+          label: 'no header and no peel line',
+          header: '',
+          peelLine: '',
+        },
+        {
+          slug: 'peeled-header-with-peel-line',
+          label: 'the older peeled-only header and a peel line',
+          header: '# pack-refs with: peeled \n',
+          peelLine: true,
+        },
+        {
+          slug: 'fully-peeled-header-no-peel-line',
+          label: 'the fully-peeled header and no peel line',
+          header: '# pack-refs with: peeled fully-peeled sorted \n',
+          peelLine: '',
+        },
+      ])('When the rewrite runs over a file carrying $label', ({ slug, header, peelLine }) => {
+        it('Then both copy the tag line and whatever peel line it had, and peel nothing new', async () => {
+          // Arrange — the surviving tag object is never read: the rewrite is
+          // a line copy, so an absent peel line stays absent.
+          const { peer, ours, ctx } = await filesCasePair(`packed-peel-${slug}`);
+          const tagId = git(filesBase, 'rev-parse', 'refs/tags/at1').trim();
+          const tail = peelLine === true ? `^${filesC2}\n` : '';
+          const packed = `${header}${filesC1} refs/heads/keep\n${tagId} refs/tags/at1\n${tail}`;
+          for (const dir of [peer, ours]) {
+            await writeFile(path.join(dir, '.git', 'packed-refs'), packed);
+            await rm(path.join(dir, '.git', 'refs', 'tags', 'at1'), { force: true });
+          }
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '-d', 'refs/heads/keep']);
+          await sut(ctx, branchRef('keep'), ZERO, { delete: true });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          const peerPacked = await readFile(path.join(peer, '.git', 'packed-refs'), 'utf8');
+          expect(peerPacked).toBe(
+            `# pack-refs with: peeled fully-peeled sorted \n${tagId} refs/tags/at1\n${tail}`,
+          );
+          expect(await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8')).toBe(peerPacked);
+        });
+      });
+    });
+
     describe('Given a header-less, unsorted packed-refs file', () => {
       describe('When a middle entry is deleted', () => {
         it('Then both rewrites come back sorted', async () => {
