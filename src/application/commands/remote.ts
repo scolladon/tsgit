@@ -421,14 +421,19 @@ const fetchRewriteOperations = (
   return [{ kind: 'removeEntry', ...entry }, ...appends];
 };
 
-/** A rename's config rewrite: the section renamed, its fetch refspecs
- *  rewritten, and every branch tracking it re-pointed at the new name. */
-const renameConfigOperations = (
+/** The half of a rename's config rewrite git commits before it touches a
+ *  ref: the section header alone, its values left naming the old remote. */
+const renameSectionOperations = (rename: TrackingRename): ConfigOperation[] => [
+  { kind: 'renameSection', section: 'remote', from: rename.from, to: rename.to },
+];
+
+/** The half git commits only once every ref has moved: the fetch refspecs
+ *  rewritten and every branch tracking the remote re-pointed. */
+const renameValueOperations = (
   rename: TrackingRename,
   fetch: ReadonlyArray<string>,
   referrers: ReadonlyArray<BranchReferrer>,
 ): ConfigOperation[] => [
-  { kind: 'renameSection', section: 'remote', from: rename.from, to: rename.to },
   ...fetchRewriteOperations(rename, fetch),
   ...referrers.map(
     (referrer): ConfigOperation => ({
@@ -465,12 +470,11 @@ export const remoteRename = async (
   const config = await readConfig(ctx);
   const fromEntry = renameSource(config, input);
   const referrers = listBranchReferrers(config, input.from);
-  // Tracking refs move before the config rewrite (recoverability).
+  // git commits the section header before it prepares the ref move, so a
+  // refused rename leaves the section renamed and its values untouched.
+  await updateConfigOperations(ctx, renameSectionOperations(input));
   const moved = await renameTrackingRefs(ctx, input);
-  await updateConfigOperations(
-    ctx,
-    renameConfigOperations(input, fromEntry.fetch ?? [], referrers),
-  );
+  await updateConfigOperations(ctx, renameValueOperations(input, fromEntry.fetch ?? [], referrers));
   const rewrittenBranches = referrers.map((referrer) => referrer.ref);
   return { from: input.from, to: input.to, movedTrackingRefs: moved, rewrittenBranches };
 };

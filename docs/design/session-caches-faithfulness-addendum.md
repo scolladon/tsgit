@@ -2346,7 +2346,50 @@ Found while pinning those resolutions, and resolved (a) by the user the same day
 | # | Item | Resolution |
 |---|---|---|
 | O5 | reftable `branch.rename` branch-log bytes | **(a)** — reftable writes git's reftable shape (moved history merged by update index + `<id> 0{40}` + `0{40} <id>`), files keeps git's files shape (R16, R17; Change — U6). |
-| O6 | `remote.rename` reflog outcome and `<remote>/HEAD` re-point | **(a)** — tracking refs and their logs move as git does per backend, the symbolic `<remote>/HEAD` re-pointed with its per-backend log (R18, R19; Change — O6). |
+| O6 | `remote.rename` reflog outcome and `<remote>/HEAD` re-point | **(a)** — tracking refs and their logs move as git does per backend, the symbolic `<remote>/HEAD` re-pointed with its per-backend log (R18, R19; Change — O6). **Amended 2026-09-17** — the re-point is a blind byte splice of the target, and the config section rename lands ahead of the ref move and is never rolled back; see below. |
+
+### `remote.rename`'s two transcribed defects (2026-09-17)
+
+Probed against git 2.55.0 on both backends, `mktemp -d`, `HOME` isolated, every `GIT_*` unset,
+`GIT_CONFIG_NOSYSTEM=1`, signing off. Both are copied rather than fixed, on the user's decision; the
+full probe tables, the options weighed and the revisit trigger live in ADR-875.
+
+**The splice.** git rewrites a name it moves by overwriting the bytes at `strlen("refs/remotes/")`
+= 13 for `strlen(<old>)` bytes, replacing them with `<new>`. It applies the same splice to a symbolic
+tracking ref's **target** without checking the target lies under the renamed remote, or under
+`refs/remotes/` at all. With `origin` → `up2` the slice is bytes 13..19:
+
+| `<remote>/HEAD` target | exit | resulting `up2/HEAD` |
+|---|---|---|
+| `refs/remotes/other/main` | 0 | `refs/remotes/up2main` (dangling) |
+| `refs/heads/feature-long-name` | 0 | `refs/heads/feup2long-name` (dangling) |
+| `refs/remotes/originX/main` | 0 | `refs/remotes/up2X/main` |
+| `refs/remotes/myorigin/main` | 0 | `refs/remotes/up2in/main` |
+| `refs/remotes/origin` (exactly the slice) | 0 | `refs/remotes/up2` |
+| `refs/remotes/originz` (one byte past) | 0 | `refs/remotes/up2z` |
+| `refs/remotes/origi` (one byte short) | 128 | none; `fatal: \`pos + len' is too far after the end of the buffer` |
+| `refs/heads/main` (far short) | 128 | none; the same `fatal` |
+
+The splice runs while the rename is prepared, so the two `fatal` rows beat every name conflict: a
+taken `up2/main` or `up2/HEAD` planted alongside them still reports the `fatal` and moves nothing.
+tsgit refuses `INVALID_REF` with
+`reason: symbolic ref target '<target>' is shorter than the renamed slice`, leaving the same state.
+
+**The half-renamed config.** git commits the `remote.<old>` → `remote.<new>` **section rename**
+before it prepares the ref move, and writes the rewritten fetch refspecs and the `branch.<x>.remote`
+re-points only after every ref has moved:
+
+| Refusal | exit | config afterwards | refs |
+|---|---|---|---|
+| source not configured | 2 | untouched | untouched |
+| target already a remote | 3 | untouched | untouched |
+| new name invalid (`ba..d`, `a b`) | 128 | untouched | untouched |
+| `up2/main` or `up2/HEAD` already exists | 128 | `[remote "up2"]` with `fetch = +refs/heads/*:refs/remotes/origin/*` and `branch.main.remote=origin` | untouched |
+| target too short to splice | 128 | as above | untouched |
+
+So the **ref** half keeps its up-front refusal — that IS git's order, confirmed by a tracking ref
+sorted ahead of the conflicting one staying put — and only the **config** half moves: `remoteRename`
+writes `renameSectionOperations` before `renameTrackingRefs` and `renameValueOperations` after it.
 
 ### Docs consequences
 

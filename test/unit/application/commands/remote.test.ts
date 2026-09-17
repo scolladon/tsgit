@@ -104,6 +104,10 @@ const UNSPLICEABLE_TARGETS = [
   { label: 'a target far shorter than the slice', target: 'refs/heads/main' },
 ].map((row) => ({ ...row, target: row.target as RefName }));
 
+/** `origin` with the canonical refspec, plus a branch tracking it. */
+const TRACKED_ORIGIN_CONFIG =
+  '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n';
+
 /** `origin` with the canonical refspec, one direct tracking ref and a
  *  symbolic `origin/HEAD` aimed at `target`. */
 const seedRenameSource = async (ctx: Context, target: RefName): Promise<void> => {
@@ -1965,6 +1969,77 @@ describe('application/commands/remote', () => {
             // Assert
             expect((caught as TsgitError).data.code).toBe('INVALID_REF');
           });
+        });
+      });
+    });
+
+    describe('Given an unspliceable symref target and a branch tracking the remote', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the section carries the new name while its refspec and referrer still name the old one', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, TRACKED_ORIGIN_CONFIG);
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+            { kind: 'setSymbolic', name: ORIGIN_HEAD, target: 'refs/heads/main' as RefName },
+          ]);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_REF');
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('[remote "up2"]');
+          expect(written).not.toContain('[remote "origin"]');
+          expect(written).toContain('fetch = +refs/heads/*:refs/remotes/origin/*');
+          expect(written).toContain('remote = origin');
+        });
+      });
+    });
+
+    describe('Given a renamed tracking name already taken and a branch tracking the remote', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the section carries the new name while its refspec and referrer still name the old one', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, TRACKED_ORIGIN_CONFIG);
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+            { kind: 'set', name: UP2_MAIN, id: STALE_ID },
+          ]);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REF_UPDATE_CONFLICT');
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('[remote "up2"]');
+          expect(written).toContain('fetch = +refs/heads/*:refs/remotes/origin/*');
+          expect(written).toContain('remote = origin');
+          expect(await getRefStore(ctx).resolveDirect(ORIGIN_MAIN)).toEqual({
+            kind: 'direct',
+            id: ORIGIN_ID,
+          });
+        });
+      });
+    });
+
+    describe('Given a `to` that is already a configured remote', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the config is left byte-for-byte as it was', async () => {
+          // Arrange — this refusal precedes the section rename, so nothing moves.
+          const ctx = createMemoryContext();
+          await seed(ctx, `${TRACKED_ORIGIN_CONFIG}[remote "up2"]\n\turl = b\n`);
+          const before = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('REMOTE_EXISTS');
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(before);
         });
       });
     });

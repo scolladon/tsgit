@@ -72,6 +72,13 @@ const withReftableStorage = (ctx: Context): Context => ({
 const nodeCtx = (dir: string): Context => createNodeContext({ workDir: dir });
 
 /** Whether `p` exists on disk. */
+/** Every `remote.*` / `branch.*` key of a repository's own config, in order. */
+const remoteAndBranchConfig = (repo: string): string =>
+  tryRunGitWithExit(['-C', repo, 'config', '--local', '--list'])
+    .stdout.split('\n')
+    .filter((line) => line.startsWith('remote.') || line.startsWith('branch.'))
+    .join('\n');
+
 const pathExists = async (p: string): Promise<boolean> => {
   try {
     await stat(p);
@@ -1465,6 +1472,13 @@ describe.skipIf(!GIT_AVAILABLE)(
             ]);
             expect(source.exitCode).toBe(0);
           }
+          // The config half is NOT rolled back: the section header already
+          // carries the new name while its values still name the old one.
+          expect(remoteAndBranchConfig(ours)).toBe(remoteAndBranchConfig(peer));
+          expect(remoteAndBranchConfig(peer)).toContain(
+            'remote.up2.fetch=+refs/heads/*:refs/remotes/origin/*',
+          );
+          expect(remoteAndBranchConfig(peer)).not.toContain('remote.origin.');
         });
       });
     });

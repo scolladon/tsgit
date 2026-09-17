@@ -189,6 +189,23 @@ the write chain, reads `HEAD` for coupling, checks `expected`, and applies every
   `0{40} 0{40} remote: renamed …` to the new symref; reftable copies its log (a `reflogCopy` update kind),
   deletes it with `noDeref` and no message — the kept-with-entry rule adds `<id> 0{40}` — and writes the new
   symref with no entry.
+- **`remote.rename`'s write order** (amended 2026-09-17, after probing git 2.55.0 on both backends).
+  The **ref half** is prepared in full before anything is written — every splice computed, every
+  renamed name proven free — which is git's own order: a rename refused by a taken name or by an
+  unspliceable target leaves every ref and every log exactly where it was, on both backends. The
+  **config half is not**: git renames the section header *before* it prepares the ref move, and writes
+  the rewritten fetch refspecs and the `branch.<x>.remote` re-points only *after* every ref has moved,
+  so a refusal in between leaves `[remote "<new>"]` carrying values that still name `<old>`.
+  `remote.rename` therefore issues the section rename as its own config operation ahead of
+  `renameTrackingRefs`, and the value rewrite as a second one after it.
+
+  | Refusal | git exit | Config left behind | Refs |
+  |---|---|---|---|
+  | source not configured | 2 | untouched | untouched |
+  | target already a configured remote | 3 | untouched | untouched |
+  | new name is not a valid remote name | 128 | untouched | untouched |
+  | a renamed tracking name already exists | 128 | section renamed; fetch and `branch.*.remote` still name `<old>` | untouched |
+  | a tracking HEAD's target is too short to splice | 128 | section renamed; fetch and `branch.*.remote` still name `<old>` | untouched |
 
 ## Consequences
 
@@ -216,9 +233,10 @@ removes them; the port has no directory removal that works on Node); `fetch --pr
 `remote.remove` delete one ref per transaction, so a batch rewrites `packed-refs` once per packed name
 and is not atomic; `packRefs` still writes `packed-refs` without its lock; a `sorted` trait over
 unsorted lines makes git miss the ref where tsgit finds it; a reftable merge of two logs holding records
-at one shared update index (two refs written in one transaction) is unpinned; a `<remote>/HEAD` naming a ref
-outside the renamed remote, or without a log, is unpinned; `git remote rename` reads no `user.name` /
+at one shared update index (two refs written in one transaction) is unpinned; a `<remote>/HEAD`
+without a log is unpinned; `git remote rename` reads no `user.name` /
 `user.email` for its entries (it fell back to the system identity while pinning), where tsgit uses the
-configured identity.
+configured identity. A `<remote>/HEAD` naming a ref outside the renamed remote is no longer a residual:
+it is pinned by the splice rule recorded in ADR-875.
 
 ADR-864's closing note on the null id now points here.
