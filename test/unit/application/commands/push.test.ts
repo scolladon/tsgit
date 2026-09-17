@@ -265,9 +265,37 @@ const packObjectCount = (body: Uint8Array): number => {
 };
 
 describe('push — config + refspec guards', () => {
+  describe('Given a remote name git accepts but the old allowlist did not', () => {
+    describe('When push runs', () => {
+      it.each([['a/b'], ['a"b'], ['a]b']])(
+        'Then the name reaches the config lookup and refuses REMOTE_NOT_CONFIGURED',
+        async (name) => {
+          // Arrange — git's own rule is `refs/remotes/<name>/test` being a
+          // valid ref name, which accepts all three.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+
+          // Act
+          let caught: unknown;
+          try {
+            await push(ctx, { remote: name });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; remote: string };
+          expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+          expect(data.remote).toBe(name);
+        },
+      );
+    });
+  });
+
   describe('Given an invalid remote name %j', () => {
     describe('When push runs', () => {
-      it.each([['../escape'], ['has space'], ['weird/slash'], ['']])(
+      it.each([['../escape'], ['has space'], ['..'], ['x.lock'], ['']])(
         'Then throws INVALID_OPTION naming the remote',
         async (badName) => {
           // Arrange — pins the REMOTE_NAME_RE allowlist guarding the composed

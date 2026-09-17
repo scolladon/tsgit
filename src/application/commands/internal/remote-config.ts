@@ -13,13 +13,17 @@ import type { ParsedConfig } from '../../primitives/config-read.js';
 const trackingRefProbe = (name: string): string => `refs/remotes/${name}/test`;
 
 /**
- * git's `valid_remote_name`, and nothing more: the name must form a valid
+ * git's `valid_remote_name` as a predicate: the name must form a valid
  * `refs/remotes/<name>/` ref name — so an empty name, a control character,
- * a space, a backslash, `..`, a `.lock` component, … refuse, while `/`,
- * `"` and `]` are accepted as git accepts them. Returns the verbatim name.
+ * a space, a backslash, `..`, a `.lock` component, … are rejected, while
+ * `/`, `"` and `]` pass, as git lets them. Composing `refs/remotes/<name>/…`
+ * from a name that passes cannot escape the ref namespace.
  */
+export const isValidRemoteName = (name: string): boolean => isSafeRefName(trackingRefProbe(name));
+
+/** `isValidRemoteName`, raising `REMOTE_NAME_INVALID`. Returns the verbatim name. */
 export const validateRemoteName = (name: string): string => {
-  if (!isSafeRefName(trackingRefProbe(name))) {
+  if (!isValidRemoteName(name)) {
     throw remoteNameInvalid(name, 'name does not form a valid refs/remotes/<name>/ ref name');
   }
   return name;

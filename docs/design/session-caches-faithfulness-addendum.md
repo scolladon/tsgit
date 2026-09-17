@@ -2472,6 +2472,19 @@ one without matches only itself, and a colon-free refspec has no destination at 
 `fetchesInto(refspecs, ref)` in `remote-config.ts` answers both halves of the rule; `remoteRemove`
 enumerates `refs/remotes/` and filters with it.
 
+### The fetch/push remote-name guard (2026-09-17)
+
+`assertValidRemoteName` (`default-remote.ts`) filtered on `/^[A-Za-z0-9._-]+$/`, which is stricter
+than `remote add` / `remote rename` now are, so a remote those verbs create could not be fetched from
+or pushed to. Probed against a local bare upstream: `git remote add <name> <url>` then `git fetch
+<name>` and `git push <name> HEAD:refs/heads/pushed` all exit 0 for `a/b`, `a"b`, `a]b` and `a.b`,
+creating `refs/remotes/a/b/*`, `refs/remotes/a"b/*` and `refs/remotes/a]b/*` (git writes the config
+subsection as `[remote "a\"b"]`). The guard now uses git's own `valid_remote_name` through
+`isValidRemoteName`, shared with `validateRemoteName`. Containment is unchanged: a name that passes
+composes a `refs/remotes/<name>/…` path `validateRefName` already accepts, and `..`, a leading `/`,
+a backslash, a space and every control character are still rejected — the refusal stays
+`INVALID_OPTION` (`option: 'remote'`) so no public error code moves.
+
 ### Docs consequences
 
 - `docs/use/primitives/update-ref.md` — its signature block documents `{ oldId?, message? }`, which no

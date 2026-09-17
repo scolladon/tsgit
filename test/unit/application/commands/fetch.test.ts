@@ -674,6 +674,36 @@ describe('fetch', () => {
       });
     });
 
+    describe('Given a configured remote whose name git accepts but the old allowlist did not', () => {
+      describe('When fetch is called with that remote', () => {
+        it.each([['a/b'], ['a"b'], ['a]b']])(
+          'Then the name reaches the transport rather than refusing INVALID_OPTION',
+          async (name) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/config`,
+              `[remote "${name.replace('"', String.raw`\"`)}"]\n  url = https://example.com/r.git\n`,
+            );
+            __resetConfigCacheForTests();
+            const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+            const { transport } = fakeRemote({
+              url: 'https://example.com/r.git',
+              advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+              packBytes,
+            });
+
+            // Act
+            const result = await fetch({ ...ctx, transport }, { remote: name });
+
+            // Assert
+            expect(result.remote).toBe(name);
+          },
+        );
+      });
+    });
+
     describe('Given a sole configured remote whose name is a path-traversal string', () => {
       describe('When fetch is called with no explicit remote', () => {
         it('Then it refuses with INVALID_OPTION and never reads a traversal directory', async () => {
