@@ -34,6 +34,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchCreate, branchDelete, branchRename } from '../../src/application/commands/branch.js';
 import { notesAdd } from '../../src/application/commands/notes.js';
+import { reflog } from '../../src/application/commands/reflog.js';
 import { remoteRemove, remoteRename, remoteShow } from '../../src/application/commands/remote.js';
 import { tagCreate, tagDelete } from '../../src/application/commands/tag.js';
 import { getRefStore, type RefUpdate } from '../../src/application/primitives/ref-store.js';
@@ -2069,6 +2070,40 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
+      describe('When git branch -f and tsgit branchCreate reset a branch name held by a symbolic ref', () => {
+        it('Then both move the pointed-at branch, keep the symbolic ref, and log the same reset', async () => {
+          // Arrange — `sym` already points at `x`, which the shared base put
+          // at C2; the force write aims the pair at C1.
+          const { peer, ours, ctx } = await filesCasePair('branch-force-symref');
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((PORCELAIN_EPOCH + 2) * 1000);
+          const sut = branchCreate;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stderr: string };
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, 'branch', '-f', 'sym', filesC1], {
+              env: pinnedEnv(PORCELAIN_EPOCH + 2),
+            });
+            await sut(ctx, { name: 'sym', startPoint: filesC1, force: true });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          expect(git(peer, 'rev-parse', 'refs/heads/x').trim()).toBe(filesC1);
+          expect(await readFile(path.join(peer, '.git', 'refs', 'heads', 'sym'), 'utf8')).toBe(
+            'ref: refs/heads/x\n',
+          );
+          const peerLogs = await readLogTree(peer);
+          expect(peerLogs[path.join('refs', 'heads', 'x')]).toContain(
+            `branch: Reset to ${filesC1}`,
+          );
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+
       describe('When git branch -m and tsgit branchRename rename a checked-out branch with no log of its own', () => {
         it('Then both write the same pair of HEAD entries and the same single rename entry', async () => {
           // Arrange — `main` is moved back and its log removed, so the rename
@@ -3835,6 +3870,37 @@ describe.skipIf(!GIT_AVAILABLE)(
       const isLink = async (dir: string): Promise<boolean> =>
         (await lstat(path.join(dir, '.git', 'refs', 'heads', 'lnk'))).isSymbolicLink();
 
+      describe('When both read the reflog under the link, which carries none of its own', () => {
+        it("Then both read the target's entries and label them with the link's own name", async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('link-reflog-show');
+          await plantLink(peer);
+          await plantLink(ours);
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, { action: 'show', ref: 'refs/heads/lnk' });
+
+          // Assert — git's own selectors, read back out of its rendered lines.
+          const gitShow = tryRunGitWithExit(['-C', peer, 'reflog', 'show', 'refs/heads/lnk'], {
+            env: runGitEnv(),
+          });
+          expect(gitShow.exitCode).toBe(0);
+          const gitSelectors = gitShow.stdout
+            .trim()
+            .split('\n')
+            .map((line) => /\s(\S+@\{\d+\}):/.exec(line)?.[1]);
+          expect(gitSelectors).toEqual(['refs/heads/lnk@{0}']);
+          expect(result.kind === 'show' && result.ref).toBe('refs/heads/lnk');
+          expect(result.kind === 'show' && result.entries.map((e) => e.selector)).toEqual(
+            gitSelectors,
+          );
+          expect(result.kind === 'show' && result.entries.map((e) => e.entry.message)).toEqual([
+            'branch: Created from main',
+          ]);
+        });
+      });
+
       describe('When git symbolic-ref and for-each-ref read it and tsgit resolves and lists it', () => {
         it('Then both report a symref to refs/heads/x and neither lists the dangling path', async () => {
           // Arrange
@@ -4912,6 +4978,56 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
         },
       );
+
+      describe('When git update-ref --stdin and applyRefUpdates queue a create over an empty directory tree ahead of a name that can never be locked', () => {
+        it('Then both clear the tree at its own turn yet write neither ref, and refuse on the blocked name', async () => {
+          // Arrange — `e1`'s turn comes first and clears the empty tree its
+          // lock meets; `blk` can never be locked, so the run refuses before
+          // either ref is committed.
+          const { peer, ours, ctx } = await filesCasePair('empty-tree-before-blocked');
+          const id = filesC1;
+          const treePath = (dir: string): string =>
+            path.join(dir, '.git', 'refs', 'remotes', 'e1', 'a', 'b');
+          for (const dir of [peer, ours]) {
+            await mkdir(path.join(dir, '.git', 'refs', 'remotes', 'blk'), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'blk', 'x.lock'), '');
+            await mkdir(treePath(dir), { recursive: true });
+          }
+          const order: readonly StdinUpdate[] = [
+            ['create', 'e1'],
+            ['create', 'blk'],
+          ];
+          const refsBefore = listRemotes(peer);
+          const sut = getRefStore(ctx);
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+            input: stdinOf(order, id),
+            env: runGitEnv(),
+          });
+          let caught: unknown;
+          try {
+            await sut.applyRefUpdates(refUpdatesOf(order, id));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            `there is a non-empty directory '${path.join('.git', 'refs', 'remotes', 'blk')}' blocking reference '${remote('blk')}'`,
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'DIRECTORY_NOT_EMPTY',
+            path: `${ctx.layout.gitDir}/${remote('blk')}`,
+          });
+          expect(listRemotes(peer)).toBe(refsBefore);
+          expect(listRemotes(ours)).toBe(refsBefore);
+          for (const dir of [peer, ours]) {
+            expect(await pathExists(path.join(dir, '.git', 'refs', 'remotes', 'e1'))).toBe(false);
+          }
+        });
+      });
 
       describe('When git update-ref --stdin and applyRefUpdates queue a create over an empty directory tree behind a name that can never be locked', () => {
         it('Then both refuse on the blocked name, write nothing, and leave the tree standing', async () => {
