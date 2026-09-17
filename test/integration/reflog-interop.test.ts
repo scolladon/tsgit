@@ -2204,6 +2204,152 @@ describe.skipIf(!GIT_AVAILABLE)(
           },
         );
       });
+
+      describe('When reflog exists is asked about the surviving log', () => {
+        it('Then both answer yes — presence is a file question, not a resolution one', async () => {
+          // Arrange
+          const dir = await caseDir('reach-gone-exists');
+          git(dir, 'branch', 'gone');
+          await rm(refPath(dir, 'refs/heads/gone'));
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'exists', 'refs/heads/gone']);
+          const result = await sut(ctx, { action: 'exists', ref: 'refs/heads/gone' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(result).toEqual({ kind: 'exists', exists: true });
+        });
+      });
+
+      describe('When reflog delete names the newest entry of the surviving log', () => {
+        it('Then both refuse and leave the log exactly as it was', async () => {
+          // Arrange
+          const dir = await caseDir('reach-gone-delete');
+          git(dir, 'branch', 'gone');
+          await rm(refPath(dir, 'refs/heads/gone'));
+          const before = await readFile(branchLogPath(dir, 'gone'), 'utf8');
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            dir,
+            'reflog',
+            'delete',
+            'refs/heads/gone@{0}',
+          ]);
+          let caught: unknown;
+          try {
+            await sut(ctx, { action: 'delete', ref: 'refs/heads/gone', index: 0 });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(255);
+          expect(gitResult.stderr).toContain("error: no reflog for 'refs/heads/gone@{0}'");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: 'refs/heads/gone',
+          });
+          expect(await readFile(branchLogPath(dir, 'gone'), 'utf8')).toBe(before);
+        });
+      });
+
+      describe('When expire is asked for the gone ref and the live one together', () => {
+        it('Then the refusal on the first never stops the second from expiring', async () => {
+          // Arrange — git takes both names in one run; tsgit takes one ref per
+          // call, so the same pair is driven as two calls in the same order.
+          const peer = await caseDir('reach-gone-pair-peer');
+          const ours = await caseDir('reach-gone-pair-ours');
+          for (const dir of [peer, ours]) {
+            git(dir, 'branch', 'gone');
+            await rm(refPath(dir, 'refs/heads/gone'));
+          }
+          const ctx = createNodeContext({ workDir: ours });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'reflog',
+            'expire',
+            '--expire=now',
+            'refs/heads/gone',
+            'refs/heads/main',
+          ]);
+          let caught: unknown;
+          try {
+            await sut(ctx, { action: 'expire', ref: 'refs/heads/gone', expire: 'now' });
+          } catch (err) {
+            caught = err;
+          }
+          await sut(ctx, { action: 'expire', ref: 'refs/heads/main', expire: 'now' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(255);
+          expect(gitResult.stderr).toContain("reflog could not be found: 'refs/heads/gone'");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: 'refs/heads/gone',
+          });
+          expect(await readFile(mainLogPath(peer), 'utf8')).toHaveLength(0);
+          expect(await readFile(mainLogPath(ours), 'utf8')).toBe(
+            await readFile(mainLogPath(peer), 'utf8'),
+          );
+          expect(await readFile(branchLogPath(ours, 'gone'), 'utf8')).toBe(
+            await readFile(branchLogPath(peer, 'gone'), 'utf8'),
+          );
+        });
+      });
+    });
+
+    describe('Given a tag ref pointing at a tree, carrying a reflog', () => {
+      describe('When expire runs with --expire=never --expire-unreachable=now', () => {
+        it('Then both fully expire it — a target that peels to no commit is always unreachable', async () => {
+          // Arrange — the tag names a TREE, so git's commit lookup comes back
+          // empty and every entry is treated as unreachable.
+          const peer = await caseDir('tree-tag-peer');
+          const ours = await caseDir('tree-tag-ours');
+          for (const dir of [peer, ours]) {
+            const treeId = git(dir, 'rev-parse', 'HEAD^{tree}').trim();
+            git(dir, 'update-ref', '--create-reflog', 'refs/tags/tree-tag', treeId);
+            git(dir, 'update-ref', '--create-reflog', 'refs/tags/tree-tag', treeId, treeId);
+          }
+          const tagLog = (dir: string): string =>
+            path.join(dir, '.git', 'logs', 'refs', 'tags', 'tree-tag');
+          expect(await readFile(tagLog(peer), 'utf8')).not.toBe('');
+          const ctx = createNodeContext({ workDir: ours });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'reflog',
+            'expire',
+            '--expire=never',
+            '--expire-unreachable=now',
+            'refs/tags/tree-tag',
+          ]);
+          await sut(ctx, {
+            action: 'expire',
+            ref: 'refs/tags/tree-tag',
+            expire: 'never',
+            expireUnreachable: 'now',
+          });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(await readFile(tagLog(peer), 'utf8')).toBe('');
+          expect(await readFile(tagLog(ours), 'utf8')).toBe(await readFile(tagLog(peer), 'utf8'));
+        });
+      });
     });
 
     describe('target resolution (repo_dwim_log)', () => {
