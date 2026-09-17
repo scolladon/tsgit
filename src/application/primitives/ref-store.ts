@@ -408,6 +408,9 @@ interface DeleteTarget {
   /** Whether the loose file's parent is a directory: the loose lock is
    *  taken, and the refs tree pruned, only then. */
   readonly looseDirExists: boolean;
+  /** Whether git runs the availability check on this name once the ref turns
+   *  out to be absent: it requires no current value. */
+  readonly checked: boolean;
 }
 
 type DeleteUpdate = Extract<RefUpdate, { kind: 'delete' }>;
@@ -1336,7 +1339,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     rename: () => Promise<void>,
     prepareLog: () => Promise<void>,
   ): Promise<void> {
-    await refuseRefsUnderIfPacked(name);
+    await refusePackedNameConflict(name);
     try {
       await prepareLog();
     } catch (err) {
@@ -1404,12 +1407,19 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (await loadPackedRefs()).smallestUnder().get(name);
   }
 
-  /** {@link refuseRefsUnder}, paid only when the packed snapshot holds a ref
-   *  under `name`: a loose ref under it surfaces through the rename the
-   *  directory refuses, so a normal write costs one packed-refs `stat`. */
-  async function refuseRefsUnderIfPacked(name: RefName): Promise<void> {
+  /**
+   * git's availability check against the half no loose probe can answer: a
+   * packed ref at a proper prefix of `name`, or packed under it. A regular
+   * file at a prefix and a loose ref under the name surface through the lock
+   * and the rename the directory refuses, so a write that meets neither pays
+   * one `packed-refs` `stat` and two map lookups — never a read per prefix.
+   */
+  async function refusePackedNameConflict(name: RefName): Promise<void> {
     if (!name.startsWith(`${REFS_DIR}/`)) return;
-    if (!(await loadPackedRefs()).smallestUnder().has(name)) return;
+    const packed = await loadPackedRefs();
+    const above = refNamePrefixes(name).find((prefix) => packed.byName().has(prefix));
+    if (above !== undefined) throw notADirectory(looseRefPath(refDir(above), above));
+    if (!packed.smallestUnder().has(name)) return;
     await refuseRefsUnder(name);
   }
 
@@ -1491,14 +1501,18 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   /** `target`'s loose leaf kind, after git's lock over an absent ref has
    *  cleared a directory at its path ({@link clearDirectory}); a packed ref
-   *  reads past the directory, which stays. */
+   *  reads past the directory, which stays. A name left absent is then
+   *  checked for availability, as git checks every delete of a ref that is
+   *  not there — `packed-refs` being the only store the walk above has not
+   *  already answered for. */
   async function clearedLeafKind(
     target: DeleteTarget,
     packed: LoadedPackedRefs,
   ): Promise<PathKind> {
     const kind = await leafKind(target.loose);
-    if (kind !== 'directory' || packed.byName().has(target.name)) return kind;
-    await clearDirectory(target.name, target.loose);
+    if (kind === 'file' || packed.byName().has(target.name)) return kind;
+    if (kind === 'directory') await clearDirectory(target.name, target.loose);
+    if (target.checked) await refusePackedNameConflict(target.name);
     return 'absent';
   }
 
@@ -1525,7 +1539,13 @@ function createFilesRefStore(ctx: Context): RefStore {
     const loose = looseRefPath(gitDir, update.name);
     const looseDirExists = await isDirectoryPath(dirname(loose));
     if (!looseDirExists) await assertNoFileInTheWay(update.name, loose);
-    return { name: update.name, gitDir, loose, looseDirExists };
+    return {
+      name: update.name,
+      gitDir,
+      loose,
+      looseDirExists,
+      checked: isCheckedWhenAbsent(update),
+    };
   }
 
   /** Both trees' empty-parent pruning, each distinct parent once, for the

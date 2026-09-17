@@ -93,6 +93,7 @@ import { readConfig } from './config-read.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
 import {
   isCheckedWhenAbsent,
+  NO_TRANSACTION_NAMES,
   prefixRelatedTransactionNames,
   refNameConflictRefusal,
 } from './internal/transaction-names.js';
@@ -408,16 +409,23 @@ function lazySortedNames(stack: ReftableStack): () => readonly RefName[] {
   };
 }
 
-/** git's availability check over a transaction naming prefix-related refs,
- *  after every compare-and-swap and before any write: each absent name
- *  changed without a required value, in update order. */
+/**
+ * git's availability check, after every compare-and-swap and before any
+ * write: each absent name the transaction changes without a required value,
+ * in update order — against the refs the stack already holds, and, when two
+ * of the transaction's own names are prefix-related, against those too.
+ *
+ * Cost: one sorted-names pass over the loaded stack per transaction carrying
+ * such a name (memoised across its updates), and a `lookup` per proper
+ * prefix. All in memory — the stack is already read; no syscall is added to
+ * any write.
+ */
 function verifyTransactionNamesAvailable(
   ctx: Context,
   updates: readonly ReftableInternalUpdate[],
   stack: ReftableStack,
 ): void {
-  const transaction = prefixRelatedTransactionNames(updates);
-  if (transaction === undefined) return;
+  const transaction = prefixRelatedTransactionNames(updates) ?? NO_TRANSACTION_NAMES;
   const sortedNames = lazySortedNames(stack);
   for (const update of updates) {
     if (!isCheckedWhenAbsent(update) || stack.lookup(update.name) !== undefined) continue;

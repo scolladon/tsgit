@@ -31,6 +31,10 @@ const TRANSACTION_NAME_KINDS: ReadonlySet<string> = new Set([...REF_CHANGING_KIN
 export const isRefChanging = (update: NamedUpdate): update is RefChangingUpdate =>
   REF_CHANGING_KINDS.has(update.kind);
 
+/** No transaction name of its own to check against — an availability check
+ *  that only has the store's existing refs to go on. */
+export const NO_TRANSACTION_NAMES: TransactionNames = { names: new Set(), sorted: [] };
+
 /** The names `updates` carry, when two of them are prefix-related — the only
  *  shape the availability check can refuse among the transaction's own names. */
 export const prefixRelatedTransactionNames = (

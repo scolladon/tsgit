@@ -2074,6 +2074,97 @@ describe.skipIf(!GIT_AVAILABLE)(
       const listRemotes = (dir: string): string =>
         git(dir, 'for-each-ref', '--format=%(refname)', 'refs/remotes/');
 
+      interface SingleRow {
+        readonly label: string;
+        readonly slug: string;
+        /** Created, then packed on the files backend so no loose file backs it. */
+        readonly existing: string;
+        readonly update: StdinUpdate;
+        readonly exitCode: number;
+        readonly code: string;
+        readonly blocking: string;
+        readonly message: string;
+      }
+
+      const SINGLE_ROWS: readonly SingleRow[] = [
+        {
+          label: 'creating k/z under the existing k',
+          slug: 'single-create-under',
+          existing: 'k',
+          update: ['create', 'k/z'],
+          exitCode: 128,
+          code: 'NOT_A_DIRECTORY',
+          blocking: 'k',
+          message: "'refs/remotes/k' exists; cannot create 'refs/remotes/k/z'",
+        },
+        {
+          label: 'deleting the absent e above the existing e/x',
+          slug: 'single-delete-above',
+          existing: 'e/x',
+          update: ['delete', 'e'],
+          exitCode: 1,
+          code: 'FILE_EXISTS',
+          blocking: 'e/x',
+          message: "'refs/remotes/e/x' exists; cannot create 'refs/remotes/e'",
+        },
+        {
+          label: 'deleting the absent d/x/y under the existing d/x',
+          slug: 'single-delete-under',
+          existing: 'd/x',
+          update: ['delete', 'd/x/y'],
+          exitCode: 1,
+          code: 'NOT_A_DIRECTORY',
+          blocking: 'd/x',
+          message: "'refs/remotes/d/x' exists; cannot create 'refs/remotes/d/x/y'",
+        },
+      ];
+
+      describe.each(BACKENDS)(
+        'When git update-ref and applyRefUpdates run ONE such update on $backend',
+        ({ backend, pairOf, commit }) => {
+          it.each(SINGLE_ROWS)(
+            'Then both refuse $label and change nothing',
+            async ({ slug, existing, update, exitCode, code, blocking, message }) => {
+              // Arrange — packed on the files backend, so no loose file or
+              // directory can answer the availability question.
+              const { peer, ours, ctx } = await pairOf(`${backend}-${slug}`);
+              const id = commit();
+              for (const dir of [peer, ours]) {
+                runGit(['-C', dir, 'update-ref', remote(existing), id]);
+                if (backend === 'files') git(dir, 'pack-refs', '--all');
+              }
+              const refsBefore = listRemotes(peer);
+              const sut = getRefStore(ctx);
+
+              // Act
+              const [verb, short] = update;
+              const gitResult = tryRunGitWithExit(
+                verb === 'create'
+                  ? ['-C', peer, 'update-ref', remote(short), id]
+                  : ['-C', peer, 'update-ref', '-d', remote(short)],
+                { env: runGitEnv() },
+              );
+              let caught: unknown;
+              try {
+                await sut.applyRefUpdates(refUpdatesOf([update], id));
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert
+              expect(gitResult.exitCode).toBe(exitCode);
+              expect(gitResult.stderr).toContain(message);
+              expect((caught as TsgitError).data).toEqual({
+                code,
+                path: `${ctx.layout.gitDir}/${remote(blocking)}`,
+              });
+              expect(listRemotes(peer)).toBe(refsBefore);
+              expect(listRemotes(ours)).toBe(refsBefore);
+            },
+          );
+        },
+      );
+
       describe.each(BACKENDS)(
         'When git update-ref --stdin and applyRefUpdates run it on $backend',
         ({ backend, pairOf, commit }) => {

@@ -166,15 +166,10 @@ const ROWS: readonly Row[] = [
   },
 ];
 
-/** `w` and `w/x` both existing, each written by its own update — one
- *  transaction could not create both. On the files backend `w` can only be
- *  packed. */
-const seedSplitRefs = async (ctx: Context, backend: Backend): Promise<void> => {
-  if (backend === 'reftable') {
-    await createRefStore(ctx).applyRefUpdates([set('w')]);
-    await createRefStore(ctx).applyRefUpdates([set('w/x')]);
-    return;
-  }
+/** `w` packed and `w/x` loose — a files-backend-only shape: neither backend
+ *  lets a ref be created under an existing one, so `w` can only have been
+ *  packed before `w/x` was written straight to disk. */
+const seedSplitRefs = async (ctx: Context): Promise<void> => {
   await ctx.fs.writeUtf8(
     `${ctx.layout.gitDir}/packed-refs`,
     `# pack-refs with: peeled fully-peeled sorted \n${ID} ${ref('w')}\n`,
@@ -190,6 +185,66 @@ const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
   }
   return undefined;
 };
+
+/** `shorts` existing with NO loose file behind them — `packed-refs` on the
+ *  files backend, the stack on reftable. */
+const seedUnlooseRefs = async (
+  ctx: Context,
+  backend: Backend,
+  shorts: readonly string[],
+): Promise<void> => {
+  if (backend === 'reftable') {
+    await createRefStore(ctx).applyRefUpdates(shorts.map((short) => set(short)));
+    return;
+  }
+  const lines = [...shorts]
+    .map((short) => `${ID} ${ref(short)}\n`)
+    .sort()
+    .join('');
+  await ctx.fs.writeUtf8(
+    `${ctx.layout.gitDir}/packed-refs`,
+    `# pack-refs with: peeled fully-peeled sorted \n${lines}`,
+  );
+};
+
+interface SingleRow {
+  readonly label: string;
+  readonly existing: readonly string[];
+  readonly update: RefUpdate;
+  readonly code: string;
+  readonly blocking: string;
+}
+
+const SINGLE_ROWS: readonly SingleRow[] = [
+  {
+    label: 'creating k/z under the existing k',
+    existing: ['k'],
+    update: set('k/z'),
+    code: 'NOT_A_DIRECTORY',
+    blocking: 'k',
+  },
+  {
+    label: 'pointing k/sym at a ref under the existing k',
+    existing: ['k'],
+    update: { kind: 'setSymbolic', name: ref('k/sym'), target: 'refs/heads/main' as RefName },
+    code: 'NOT_A_DIRECTORY',
+    blocking: 'k',
+  },
+  {
+    label: 'deleting the absent e above the existing e/x',
+    existing: ['e/x'],
+    update: del('e'),
+    code: 'FILE_EXISTS',
+    blocking: 'e/x',
+  },
+  {
+    label: 'deleting the absent d/x/y under the existing d/x',
+    existing: ['d/x'],
+    update: del('d/x/y'),
+    code: 'NOT_A_DIRECTORY',
+    blocking: 'd/x',
+  },
+];
 
 describe('ref-store — names that collide inside one transaction', () => {
   describe.each(BACKENDS)('$label', ({ backend, build }) => {
@@ -238,13 +293,52 @@ describe('ref-store — names that collide inside one transaction', () => {
       });
     });
 
-    describe('Given prefix-related names that all exist', () => {
+    describe.each(SINGLE_ROWS)('Given $label', ({ existing, update, code, blocking }) => {
+      describe('When applyRefUpdates applies that one update', () => {
+        it('Then it refuses naming the blocking ref and changes nothing', async () => {
+          // Arrange
+          const ctx = await build();
+          await seedUnlooseRefs(ctx, backend, existing);
+          const sut = createRefStore(ctx);
+          const namesBefore = await sut.listRefNames(`${REMOTES}/` as RefName);
+
+          // Act
+          const data = await refusalOf(() => sut.applyRefUpdates([update]));
+
+          // Assert
+          expect(data).toEqual({
+            code,
+            path: `${ctx.layout.gitDir}/${ref(blocking)}`,
+          });
+          expect(await sut.listRefNames(`${REMOTES}/` as RefName)).toEqual(namesBefore);
+        });
+      });
+    });
+
+    describe('Given an absent name no existing ref sits above or under', () => {
+      describe('When applyRefUpdates deletes it alone', () => {
+        it('Then the delete is a no-op', async () => {
+          // Arrange
+          const ctx = await build();
+          await seedUnlooseRefs(ctx, backend, ['k']);
+          const sut = createRefStore(ctx);
+
+          // Act
+          await sut.applyRefUpdates([del('unrelated')]);
+
+          // Assert
+          expect(await sut.listRefNames(`${REMOTES}/` as RefName)).toEqual([ref('k')]);
+        });
+      });
+    });
+
+    describe.skipIf(backend === 'reftable')('Given prefix-related names that all exist', () => {
       describe('When applyRefUpdates deletes both', () => {
         it('Then no name is checked and both are gone', async () => {
           // Arrange
           const ctx = await build();
           const sut = createRefStore(ctx);
-          await seedSplitRefs(ctx, backend);
+          await seedSplitRefs(ctx);
 
           // Act
           await sut.applyRefUpdates([del('w'), del('w/x')]);

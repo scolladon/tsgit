@@ -41,6 +41,12 @@ const liveRef = (name: string, id: number, updateIndex: number): ReftableRefReco
   value: { kind: 'direct', id: oid(id) },
 });
 
+const symbolicRef = (name: string, updateIndex: number): ReftableRefRecord => ({
+  name: ref(name),
+  updateIndex: BigInt(updateIndex),
+  value: { kind: 'symbolic', target: ref('refs/heads/main') },
+});
+
 const tombstoneRef = (name: string, updateIndex: number): ReftableRefRecord => ({
   name: ref(name),
   updateIndex: BigInt(updateIndex),
@@ -918,7 +924,10 @@ describe('reftable-transaction', () => {
           'refs/tags/e',
         ];
         const priorLogs = priorNames.map((name, i) => liveLog(name, i + 1, `history for ${name}`));
-        const priorRefs = priorNames.map((name, i) => liveRef(name, i + 1, i + 1));
+        // Symbolic, so reading the ref space never decodes an `ObjectId`
+        // either: any `fromRaw` call can then only have come from a log
+        // record, which is what this row is about.
+        const priorRefs = priorNames.map((name, i) => symbolicRef(name, i + 1));
         const bytes = await buildFixtureTable(
           ctx,
           priorRefs,
