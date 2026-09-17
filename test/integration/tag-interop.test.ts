@@ -207,9 +207,12 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
     describe('When git tag and tsgit tag create each attempt it', () => {
       it('Then both refuse in the transaction and write no ref', async () => {
+        // Arrange
+        const name = 'l-nx';
+
         // Act
-        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', 'l-nx', missing]);
-        const oursResult = await runOursTagCreate(pair.ours, 'l-nx', missing);
+        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', name, missing]);
+        const oursResult = await runOursTagCreate(pair.ours, name, missing);
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
@@ -217,10 +220,12 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
         expect(oursResult.ok).toBe(false);
         if (!oursResult.ok) expect(oursResult.error.data.code).toBe('OBJECT_NOT_FOUND');
         expect(
-          tryRunGitWithExit(['-C', pair.peer, 'rev-parse', '--verify', 'refs/tags/l-nx']).exitCode,
+          tryRunGitWithExit(['-C', pair.peer, 'rev-parse', '--verify', `refs/tags/${name}`])
+            .exitCode,
         ).not.toBe(0);
         expect(
-          tryRunGitWithExit(['-C', pair.ours, 'rev-parse', '--verify', 'refs/tags/l-nx']).exitCode,
+          tryRunGitWithExit(['-C', pair.ours, 'rev-parse', '--verify', `refs/tags/${name}`])
+            .exitCode,
         ).not.toBe(0);
       });
     });
@@ -237,9 +242,12 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
         { label: 'a short hex fragment', value: '0123456' },
         { label: 'a nonexistent ref name', value: 'nope' },
       ])('Then both refuse resolution for $label before any verification', async ({ value }) => {
+        // Arrange
+        const name = 'l-unresolved';
+
         // Act
-        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', 'l-unresolved', value]);
-        const oursResult = await runOursTagCreate(pair.ours, 'l-unresolved', value);
+        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', name, value]);
+        const oursResult = await runOursTagCreate(pair.ours, name, value);
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
@@ -263,17 +271,21 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
     describe('When git tag and tsgit tag create each attempt to recreate it pointing at a missing target', () => {
       it('Then both report the name already exists, before the target is verified', async () => {
+        // Arrange
+        const name = 'l-commit';
+        const seededTarget = target.commitId;
+
         // Act
-        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', 'l-commit', missing]);
-        const oursResult = await runOursTagCreate(pair.ours, 'l-commit', missing);
+        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', name, missing]);
+        const oursResult = await runOursTagCreate(pair.ours, name, missing);
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
-        expect(peerResult.stderr).toContain("tag 'l-commit' already exists");
+        expect(peerResult.stderr).toContain(`tag '${name}' already exists`);
         expect(oursResult.ok).toBe(false);
         if (!oursResult.ok) expect(oursResult.error.data.code).toBe('TAG_EXISTS');
-        expect(git(pair.peer, 'rev-parse', 'l-commit').trim()).toBe(target.commitId);
-        expect(git(pair.ours, 'rev-parse', 'l-commit').trim()).toBe(target.commitId);
+        expect(git(pair.peer, 'rev-parse', name).trim()).toBe(seededTarget);
+        expect(git(pair.ours, 'rev-parse', name).trim()).toBe(seededTarget);
       });
     });
   });
@@ -288,9 +300,12 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
     describe('When git tag -f and tsgit tag create with force each attempt it', () => {
       it('Then both refuse in the transaction — force bypasses the exists check, not verification', async () => {
+        // Arrange
+        const name = 't';
+
         // Act
-        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', '-f', 't', missing]);
-        const oursResult = await runOursTagCreate(pair.ours, 't', missing, { force: true });
+        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', '-f', name, missing]);
+        const oursResult = await runOursTagCreate(pair.ours, name, missing, { force: true });
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
@@ -311,13 +326,16 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
     describe('When git tag and tsgit tag create each attempt it', () => {
       it('Then both refuse the name before the target is looked at', async () => {
+        // Arrange
+        const name = 'bad..name';
+
         // Act
-        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', 'bad..name', missing]);
-        const oursResult = await runOursTagCreate(pair.ours, 'bad..name', missing);
+        const peerResult = tryRunGitWithExit(['-C', pair.peer, 'tag', name, missing]);
+        const oursResult = await runOursTagCreate(pair.ours, name, missing);
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
-        expect(peerResult.stderr).toContain("'bad..name' is not a valid tag name");
+        expect(peerResult.stderr).toContain(`'${name}' is not a valid tag name`);
         expect(oursResult.ok).toBe(false);
         if (!oursResult.ok) expect(oursResult.error.data.code).toBe('INVALID_REF');
       });
@@ -334,6 +352,9 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
     describe('When git tag -a and tsgit tag create (message implies annotate) each attempt it', () => {
       it('Then both refuse and write no ref', async () => {
+        // Arrange
+        const name = 'a-nx';
+
         // Act
         const peerResult = tryRunGitWithExit([
           '-C',
@@ -342,10 +363,10 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
           '-a',
           '-m',
           'x',
-          'a-nx',
+          name,
           missing,
         ]);
-        const oursResult = await runOursTagCreate(pair.ours, 'a-nx', missing, { message: 'x' });
+        const oursResult = await runOursTagCreate(pair.ours, name, missing, { message: 'x' });
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
@@ -353,10 +374,12 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
         expect(oursResult.ok).toBe(false);
         if (!oursResult.ok) expect(oursResult.error.data.code).toBe('OBJECT_NOT_FOUND');
         expect(
-          tryRunGitWithExit(['-C', pair.peer, 'rev-parse', '--verify', 'refs/tags/a-nx']).exitCode,
+          tryRunGitWithExit(['-C', pair.peer, 'rev-parse', '--verify', `refs/tags/${name}`])
+            .exitCode,
         ).not.toBe(0);
         expect(
-          tryRunGitWithExit(['-C', pair.ours, 'rev-parse', '--verify', 'refs/tags/a-nx']).exitCode,
+          tryRunGitWithExit(['-C', pair.ours, 'rev-parse', '--verify', `refs/tags/${name}`])
+            .exitCode,
         ).not.toBe(0);
       });
     });
