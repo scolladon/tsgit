@@ -27,6 +27,11 @@ import {
 const SETUP_TIMEOUT = 60_000;
 const DAY = 86_400;
 
+/** One clock for the whole file, read at module load so a row's own config
+ *  text can quote an absolute `@<epoch>` cutoff that still lines up with the
+ *  ages `beforeAll` stamps into the fixture. */
+const NOW = Math.floor(Date.now() / 1_000);
+
 const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
   ...runGitEnv(),
   GIT_AUTHOR_NAME: 'Ada',
@@ -40,6 +45,21 @@ const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
 const mainLogPath = (dir: string): string =>
   path.join(dir, '.git', 'logs', 'refs', 'heads', 'main');
 const stashLogPath = (dir: string): string => path.join(dir, '.git', 'logs', 'refs', 'stash');
+const headLogPath = (dir: string): string => path.join(dir, '.git', 'logs', 'HEAD');
+const configPath = (dir: string): string => path.join(dir, '.git', 'config');
+
+/** The three seeded logs, so a row can assert on the one it targets AND that
+ *  the other two were never touched. */
+const ALL_LOGS: ReadonlyArray<(dir: string) => string> = [mainLogPath, stashLogPath, headLogPath];
+
+/** The log `ref` names — the single place the target-to-file mapping lives,
+ *  so a row that targets `HEAD` or `refs/stash` can never silently assert
+ *  against `main`'s log instead. */
+const logPathFor = (dir: string, ref: string): string => {
+  if (ref === 'refs/stash') return stashLogPath(dir);
+  if (ref === 'HEAD') return headLogPath(dir);
+  return mainLogPath(dir);
+};
 
 /** Every entry's age (days) lies at least 5 days from every cutoff the
  *  matrix below uses (30/45/50/60/90/100/120/150), so neither git's own
@@ -64,18 +84,18 @@ interface RowOids {
   readonly u2: string;
 }
 
-const reflogLine = (oldId: string, newId: string, now: number, label: string): string =>
-  `${oldId} ${newId} Ada <ada@example.com> ${now - (AGES[label] as number) * DAY} +0000\t${label}\n`;
+const reflogLine = (oldId: string, newId: string, label: string): string =>
+  `${oldId} ${newId} Ada <ada@example.com> ${NOW - (AGES[label] as number) * DAY} +0000\t${label}\n`;
 
-const buildLogText = (now: number, oids: RowOids): string =>
+const buildLogText = (oids: RowOids): string =>
   [
-    reflogLine(oids.zero, oids.a, now, 'e1'),
-    reflogLine(oids.a, oids.b, now, 'e2'),
-    reflogLine(oids.b, oids.u, now, 'e3'),
-    reflogLine(oids.u, oids.b, now, 'e4'),
-    reflogLine(oids.b, oids.c, now, 'e5'),
-    reflogLine(oids.c, oids.u2, now, 'e6'),
-    reflogLine(oids.u2, oids.c, now, 'e7'),
+    reflogLine(oids.zero, oids.a, 'e1'),
+    reflogLine(oids.a, oids.b, 'e2'),
+    reflogLine(oids.b, oids.u, 'e3'),
+    reflogLine(oids.u, oids.b, 'e4'),
+    reflogLine(oids.b, oids.c, 'e5'),
+    reflogLine(oids.c, oids.u2, 'e6'),
+    reflogLine(oids.u2, oids.c, 'e7'),
   ].join('');
 
 /** The surviving entries' own labels, read back from a rewritten log. */
@@ -93,11 +113,9 @@ describe.skipIf(!GIT_AVAILABLE)(
   () => {
     let baseDir = '';
     let oids: RowOids = { zero: '0'.repeat(40), a: '', b: '', c: '', u: '', u2: '' };
-    let now = 0;
     const caseRoots: string[] = [];
 
     beforeAll(async () => {
-      now = Math.floor(Date.now() / 1000);
       baseDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-reflog-expire-config-'));
       runGit(['init', '-q', '-b', 'main', baseDir]);
       git(baseDir, 'config', 'user.name', 'Ada');
@@ -113,7 +131,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       ): string => {
         const args = ['-C', baseDir, 'commit-tree', tree];
         for (const parent of parents) args.push('-p', parent);
-        return runGit([...args, '-m', message], { env: datedEnv(now - ageDays * DAY) }).trim();
+        return runGit([...args, '-m', message], { env: datedEnv(NOW - ageDays * DAY) }).trim();
       };
       const a = commitAt('a', 200, []);
       const b = commitAt('b', 100, [a]);
@@ -144,25 +162,35 @@ describe.skipIf(!GIT_AVAILABLE)(
     /** Both `dir`'s log and config are planted fresh, independent of any
      *  earlier row's rewrite. */
     const seedRow = async (dir: string, configText: string | undefined): Promise<void> => {
-      const logText = buildLogText(now, oids);
-      await writeFile(mainLogPath(dir), logText);
-      // The rows targeting `refs/stash` directly need its own log seeded
-      // from the same seven entries, so they exercise the identical matrix.
-      await writeFile(stashLogPath(dir), logText);
+      const logText = buildLogText(oids);
+      // All three logs carry the identical seven entries, so a row targeting
+      // `refs/stash` or `HEAD` exercises the same matrix as a `main` row —
+      // and a row that expires one of them proves the other two untouched.
+      await Promise.all(ALL_LOGS.map((logPath) => writeFile(logPath(dir), logText)));
       if (configText !== undefined) {
-        await appendFile(path.join(dir, '.git', 'config'), configText);
+        await appendFile(configPath(dir), configText);
       }
     };
+
+    /** Every seeded log's bytes, in a fixed order, for the untouched-log
+     *  assertions both row tables make. */
+    const readAllLogs = async (dir: string): Promise<ReadonlyArray<Buffer>> =>
+      Promise.all(ALL_LOGS.map((logPath) => readFile(logPath(dir))));
 
     interface SuccessRow {
       readonly label: string;
       readonly config?: string;
+      /** The ref both tools are pointed at; `refs/heads/main` when absent. */
       readonly ref?: string;
+      /** No ref argument and no `--all` — the sweep has no target at all. */
+      readonly noRef?: boolean;
       readonly all?: boolean;
       readonly expire?: string;
       readonly expireUnreachable?: string;
       readonly kept: ReadonlyArray<string>;
     }
+
+    const targetOf = (row: SuccessRow): string => row.ref ?? 'refs/heads/main';
 
     const gitArgsFor = (row: SuccessRow): ReadonlyArray<string> => {
       const args = ['reflog', 'expire'];
@@ -170,8 +198,15 @@ describe.skipIf(!GIT_AVAILABLE)(
       if (row.expire !== undefined) args.push(`--expire=${row.expire}`);
       if (row.expireUnreachable !== undefined)
         args.push(`--expire-unreachable=${row.expireUnreachable}`);
-      if (row.all !== true) args.push(row.ref ?? 'refs/heads/main');
+      if (row.all !== true && row.noRef !== true) args.push(targetOf(row));
       return args;
+    };
+
+    /** The `--all` / single-ref / no-target choice, shared by both tools. */
+    const targetOptionFor = (row: SuccessRow): { readonly all?: true; readonly ref?: string } => {
+      if (row.all === true) return { all: true };
+      if (row.noRef === true) return {};
+      return { ref: targetOf(row) };
     };
 
     const successRows: ReadonlyArray<SuccessRow> = [
@@ -269,9 +304,21 @@ describe.skipIf(!GIT_AVAILABLE)(
         kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
       },
       {
+        label: 'refs/stash targeted directly under finite global cutoffs',
+        config: '[gc]\n\treflogExpire = 45.days.ago\n\treflogExpireUnreachable = 15.days.ago\n',
+        ref: 'refs/stash',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
         label: 'refs/stash targeted directly, with a pattern configuring it',
         config: '[gc "refs/stash"]\n\treflogExpire = 45.days.ago\n',
         ref: 'refs/stash',
+        kept: ['e6', 'e7'],
+      },
+      {
+        label: 'refs/stash targeted directly with an explicit --expire flag',
+        ref: 'refs/stash',
+        expire: '45.days.ago',
         kept: ['e6', 'e7'],
       },
       {
@@ -281,9 +328,113 @@ describe.skipIf(!GIT_AVAILABLE)(
         kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
       },
       {
+        label: 'HEAD targeted directly with no configuration at all',
+        ref: 'HEAD',
+        kept: ['e6', 'e7'],
+      },
+      {
+        label: 'HEAD targeted directly, with a pattern naming HEAD itself',
+        config: '[gc "HEAD"]\n\treflogExpire = never\n\treflogExpireUnreachable = never\n',
+        ref: 'HEAD',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
         label: 'every reflog expired together under --all --expire=now',
         all: true,
         expire: 'now',
+        kept: [],
+      },
+      {
+        label: 'the branch short name as the argument, plain defaults',
+        ref: 'main',
+        kept: ['e6', 'e7'],
+      },
+      {
+        label: 'no ref argument and no --all, so the sweep has no target',
+        noRef: true,
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'both global cutoffs set tighter than every surviving entry but two',
+        config: '[gc]\n\treflogExpire = 45.days.ago\n\treflogExpireUnreachable = 15.days.ago\n',
+        kept: ['e6', 'e7'],
+      },
+      {
+        label: 'finite global cutoffs plus an --expire=never flag',
+        config: '[gc]\n\treflogExpire = 120.days.ago\n\treflogExpireUnreachable = 45.days.ago\n',
+        expire: 'never',
+        kept: ['e1', 'e2', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'finite global cutoffs plus an --expire-unreachable=never flag',
+        config: '[gc]\n\treflogExpire = 120.days.ago\n\treflogExpireUnreachable = 45.days.ago\n',
+        expireUnreachable: 'never',
+        kept: ['e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'finite global cutoffs overridden by both flags at once',
+        config: '[gc]\n\treflogExpire = 120.days.ago\n\treflogExpireUnreachable = 45.days.ago\n',
+        expire: '150.days.ago',
+        expireUnreachable: '5.days.ago',
+        kept: ['e2', 'e5'],
+      },
+      {
+        label: 'a matching pattern setting both slots at once',
+        config:
+          '[gc "refs/heads/*"]\n\treflogExpire = 120.days.ago\n\treflogExpireUnreachable = 45.days.ago\n',
+        kept: ['e2', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'global cutoffs first, then a matching pattern that sets only one slot',
+        config:
+          '[gc]\n\treflogExpire = 120.days.ago\n\treflogExpireUnreachable = 45.days.ago\n[gc "refs/heads/*"]\n\treflogExpire = never\n',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'the same matching pattern first, with the global cutoffs after it',
+        config:
+          '[gc "refs/heads/*"]\n\treflogExpire = never\n[gc]\n\treflogExpire = 120.days.ago\n\treflogExpireUnreachable = 45.days.ago\n',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'a pattern under refs/tags that cannot match a branch — defaults apply',
+        config: '[gc "refs/tags/*"]\n\treflogExpire = never\n\treflogExpireUnreachable = never\n',
+        kept: ['e6', 'e7'],
+      },
+      {
+        label: 'a pattern spelling the full refname with no wildcard at all',
+        config:
+          '[gc "refs/heads/main"]\n\treflogExpire = never\n\treflogExpireUnreachable = never\n',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'a pattern spelling only the short name, which the full refname never matches',
+        config: '[gc "main"]\n\treflogExpire = never\n\treflogExpireUnreachable = never\n',
+        kept: ['e6', 'e7'],
+      },
+      {
+        label: 'a pattern of refs/** — the double star is no wider than a single one',
+        config: '[gc "refs/**"]\n\treflogExpire = never\n\treflogExpireUnreachable = never\n',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'the false keyword standing in for never on both cutoffs',
+        config: '[gc]\n\treflogExpire = false\n\treflogExpireUnreachable = false\n',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'the now keyword on the total cutoff',
+        config: '[gc]\n\treflogExpire = now\n',
+        kept: [],
+      },
+      {
+        label: 'the all keyword on the unreachable cutoff',
+        config: '[gc]\n\treflogExpireUnreachable = all\n',
+        kept: [],
+      },
+      {
+        label: 'raw @-prefixed epoch seconds for both cutoffs',
+        config: `[gc]\n\treflogExpire = @${NOW - 50 * DAY}\n\treflogExpireUnreachable = @${NOW - 5 * DAY}\n`,
         kept: [],
       },
     ];
@@ -302,21 +453,19 @@ describe.skipIf(!GIT_AVAILABLE)(
           const ctx = createNodeContext({ workDir: ours });
           await reflog(ctx, {
             action: 'expire',
-            ...(row.all === true ? { all: true } : { ref: row.ref ?? 'refs/heads/main' }),
+            ...targetOptionFor(row),
             ...(row.expire !== undefined ? { expire: row.expire } : {}),
             ...(row.expireUnreachable !== undefined
               ? { expireUnreachable: row.expireUnreachable }
               : {}),
           });
 
-          // Assert
+          // Assert — the peer's own surviving entries are the declared
+          // outcome, and every seeded log matches the peer's byte for byte,
+          // so the two logs this row did NOT target are proven untouched too.
           expect(gitResult.exitCode).toBe(0);
-          const logPath = row.ref === 'refs/stash' ? stashLogPath(peer) : mainLogPath(peer);
-          const oursLogPath = row.ref === 'refs/stash' ? stashLogPath(ours) : mainLogPath(ours);
-          const peerKept = await survivingLabels(logPath);
-          const oursKept = await survivingLabels(oursLogPath);
-          expect(peerKept.slice().sort()).toEqual([...row.kept].sort());
-          expect(oursKept.slice().sort()).toEqual([...row.kept].sort());
+          expect(await survivingLabels(logPathFor(peer, targetOf(row)))).toEqual([...row.kept]);
+          expect(await readAllLogs(ours)).toEqual(await readAllLogs(peer));
         });
       });
     });
@@ -325,103 +474,203 @@ describe.skipIf(!GIT_AVAILABLE)(
       readonly label: string;
       readonly config: string;
       readonly ref?: string;
+      /** No ref argument and no `--all` — the sweep would otherwise be a no-op. */
+      readonly noRef?: boolean;
       readonly expire?: string;
+      readonly expireUnreachable?: string;
+      /** The one refusal this row must produce — never a disjunction. */
+      readonly code: 'CONFIG_BAD_DATE_VALUE' | 'CONFIG_MISSING_VALUE';
+      /** Fully-qualified key, lower-cased with the subsection kept verbatim. */
+      readonly key: string;
+      /** The offending raw value; absent for a present-but-valueless key. */
+      readonly value?: string;
+      /** The config line that must be blamed, matched verbatim against the
+       *  seeded file — the line NUMBER is read off the file, never restated,
+       *  so the "first bad line, not last-wins" rows differ by construction. */
+      readonly culprit: string;
     }
 
     const refusalRows: ReadonlyArray<RefusalRow> = [
-      { label: 'a bogus value on a global key', config: '[gc]\n\treflogExpire = bogus\n' },
+      {
+        label: 'a bogus value on a global key',
+        config: '[gc]\n\treflogExpire = bogus\n',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
+      },
       {
         label: 'a valueless global key',
         config: '[gc]\n\treflogExpire\n',
+        code: 'CONFIG_MISSING_VALUE',
+        key: 'gc.reflogexpire',
+        culprit: '\treflogExpire',
+      },
+      {
+        label: 'a global key whose value is present but empty',
+        config: '[gc]\n\treflogExpire =\n',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: '',
+        culprit: '\treflogExpire =',
       },
       {
         label: 'a bogus entry followed by a later valid one for the same key',
         config: '[gc]\n\treflogExpire = bogus\n\treflogExpire = never\n',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
+      },
+      {
+        label: 'a valid entry followed by a bogus one for the same key',
+        config: '[gc]\n\treflogExpire = never\n\treflogExpire = bogus\n',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
       },
       {
         label: 'a bogus value on a pattern that would not even match the target',
         config: '[gc "refs/tags/*"]\n\treflogExpire = bogus\n',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.refs/tags/*.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
       },
       {
         label: 'a bogus global value together with a ref that does not resolve',
         config: '[gc]\n\treflogExpire = bogus\n',
         ref: 'refs/heads/nope',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
       },
       {
         label: 'a bogus global value together with an also-bogus --expire flag',
         config: '[gc]\n\treflogExpire = bogus\n',
         expire: 'bogus2',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
+      },
+      {
+        label: 'a bogus global value while both cutoff flags are given explicitly',
+        config: '[gc]\n\treflogExpire = bogus\n',
+        expire: 'now',
+        expireUnreachable: 'now',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
+      },
+      {
+        label: 'a bogus global value with a malformed core key after it',
+        config: '[gc]\n\treflogExpire = bogus\n[core]\n\tdeltaBaseCacheLimit = bogus\n',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
+      },
+      {
+        label: 'the same two malformed keys with the core one written first',
+        config: '[core]\n\tdeltaBaseCacheLimit = bogus\n[gc]\n\treflogExpire = bogus\n',
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
+      },
+      {
+        label: 'a bogus global value with no ref argument and no --all',
+        // A malformed reflog-expiry VALUE refuses even where the target sweep
+        // would otherwise be a no-op — unlike a malformed
+        // `core.deltaBaseCacheLimit`, which the repo-settings class skips
+        // entirely with zero targets.
+        config: '[gc]\n\treflogExpire = bogus\n',
+        noRef: true,
+        code: 'CONFIG_BAD_DATE_VALUE',
+        key: 'gc.reflogexpire',
+        value: 'bogus',
+        culprit: '\treflogExpire = bogus',
       },
     ];
 
+    /** The 1-based line `culprit` occupies in `dir`'s config — and proof it
+     *  occupies exactly one, so the number is the file's answer, not a guess. */
+    const culpritLineIn = async (dir: string, culprit: string): Promise<number> => {
+      const lines = (await readFile(configPath(dir), 'utf8')).split('\n');
+      expect(lines.indexOf(culprit)).toBe(lines.lastIndexOf(culprit));
+      expect(lines.indexOf(culprit)).toBeGreaterThanOrEqual(0);
+      return lines.indexOf(culprit) + 1;
+    };
+
+    /** git's own two refusal lines, rebuilt from tsgit's structured refusal
+     *  data alone — the library never renders them, so this is the only place
+     *  the two tools' messages can be compared. */
+    const gitRefusalText = (
+      data: Record<string, unknown>,
+      repoDir: string,
+      code: RefusalRow['code'],
+    ): string => {
+      const key = data['key'] as string;
+      const first =
+        code === 'CONFIG_MISSING_VALUE'
+          ? `error: missing value for '${key}'`
+          : `error: '${data['value'] as string}' for '${key}' is not a valid timestamp`;
+      const source = path.relative(repoDir, data['source'] as string);
+      return `${first}\nfatal: bad config variable '${key}' in file '${source}' at line ${data['line'] as number}\n`;
+    };
+
     describe.each(refusalRows)('Given $label', (row) => {
       describe('When expire runs', () => {
-        it('Then both git and tsgit refuse, and the log is untouched on both', async () => {
+        it('Then both tools name the same key, value and line, and write nothing', async () => {
           // Arrange
           const peer = await caseDir(`bad-peer-${row.label.replace(/\W+/g, '')}`);
           const ours = await caseDir(`bad-ours-${row.label.replace(/\W+/g, '')}`);
           await seedRow(peer, row.config);
           await seedRow(ours, row.config);
-          const beforePeer = await readFile(mainLogPath(peer), 'utf8');
-          const beforeOurs = await readFile(mainLogPath(ours), 'utf8');
+          const beforePeer = await readAllLogs(peer);
+          const beforeOurs = await readAllLogs(ours);
 
           // Act
           const gitArgs = ['reflog', 'expire'];
           if (row.expire !== undefined) gitArgs.push(`--expire=${row.expire}`);
-          gitArgs.push(row.ref ?? 'refs/heads/main');
+          if (row.expireUnreachable !== undefined)
+            gitArgs.push(`--expire-unreachable=${row.expireUnreachable}`);
+          if (row.noRef !== true) gitArgs.push(row.ref ?? 'refs/heads/main');
           const gitResult = tryRunGitWithExit(['-C', peer, ...gitArgs]);
           const ctx = createNodeContext({ workDir: ours });
           let caught: unknown;
           try {
             await reflog(ctx, {
               action: 'expire',
-              ref: row.ref ?? 'refs/heads/main',
+              ...(row.noRef === true ? {} : { ref: row.ref ?? 'refs/heads/main' }),
               ...(row.expire !== undefined ? { expire: row.expire } : {}),
+              ...(row.expireUnreachable !== undefined
+                ? { expireUnreachable: row.expireUnreachable }
+                : {}),
             });
           } catch (err) {
             caught = err;
           }
 
-          // Assert
-          expect(gitResult.exitCode).toBe(128);
+          // Assert — the exact refusal, located; then git's own two stderr
+          // lines rebuilt from that refusal data and matched against git's.
           expect(caught).toBeInstanceOf(TsgitError);
-          const code = (caught as TsgitError).data.code;
-          expect(code === 'CONFIG_BAD_DATE_VALUE' || code === 'CONFIG_MISSING_VALUE').toBe(true);
-          expect(await readFile(mainLogPath(peer), 'utf8')).toBe(beforePeer);
-          expect(await readFile(mainLogPath(ours), 'utf8')).toBe(beforeOurs);
-        });
-      });
-    });
-
-    describe('Given no ref, no --all, and a bogus gc.reflogExpire', () => {
-      describe('When expire runs', () => {
-        it('Then both tools still refuse — configuration is parsed before the no-op', async () => {
-          // Arrange — a malformed reflog-expiry VALUE refuses even where the
-          // target sweep would otherwise be a no-op (unlike a malformed
-          // core.deltaBaseCacheLimit, which the repo-settings class skips
-          // entirely with zero targets — covered separately by unit and
-          // command-level interop rows for the plain no-op case).
-          const peer = await caseDir('noop-peer');
-          const ours = await caseDir('noop-ours');
-          await seedRow(peer, '[gc]\n\treflogExpire = bogus\n');
-          await seedRow(ours, '[gc]\n\treflogExpire = bogus\n');
-          const beforePeer = await readFile(mainLogPath(peer), 'utf8');
-
-          // Act
-          const gitResult = tryRunGitWithExit(['-C', peer, 'reflog', 'expire']);
-          const ctx = createNodeContext({ workDir: ours });
-          let caught: unknown;
-          try {
-            await reflog(ctx, { action: 'expire' });
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
+          const data = (caught as TsgitError).data as unknown as Record<string, unknown>;
+          expect(data).toEqual({
+            code: row.code,
+            key: row.key,
+            source: configPath(ours),
+            line: await culpritLineIn(ours, row.culprit),
+            ...(row.value !== undefined ? { value: row.value } : {}),
+          });
           expect(gitResult.exitCode).toBe(128);
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_DATE_VALUE');
-          expect(await readFile(mainLogPath(peer), 'utf8')).toBe(beforePeer);
+          expect(gitResult.stderr).toBe(gitRefusalText(data, ours, row.code));
+          expect(await readAllLogs(peer)).toEqual(beforePeer);
+          expect(await readAllLogs(ours)).toEqual(beforeOurs);
         });
       });
     });
