@@ -430,6 +430,9 @@ interface NameCheck {
   readonly name: RefName;
   readonly facts: RefNameFacts;
   readonly checkedUnderLock: boolean;
+  /** Whether a directory sits at the name's loose path — the `EISDIR` git's
+   *  own lock meets, and clears or refuses, at this update's turn. */
+  readonly looseDirectory: boolean;
 }
 
 /** `applyRefUpdates`' unit of work: a run of consecutive deletes applied as
@@ -1401,13 +1404,18 @@ function createFilesRefStore(ctx: Context): RefStore {
     throw directoryNotEmpty(path);
   }
 
+  /** The byte-smallest loose ref inside `dir`, which must be a directory. */
+  async function smallestLooseRefIn(dir: string, name: RefName): Promise<RefName | undefined> {
+    const names = (await walkRefDir(dir, name)).filter((under) => isSafeRefName(under));
+    return names.reduce<RefName | undefined>(smallerName, undefined);
+  }
+
   /** The byte-smallest loose ref under `name`'s loose path, when a directory
    *  sits there. */
   async function smallestLooseRefUnder(name: RefName): Promise<RefName | undefined> {
     const dir = looseRefPath(refDir(name), name);
     if ((await pathKind(dir)) !== 'directory') return undefined;
-    const names = (await walkRefDir(dir, name)).filter((under) => isSafeRefName(under));
-    return names.reduce<RefName | undefined>(smallerName, undefined);
+    return smallestLooseRefIn(dir, name);
   }
 
   /**
@@ -1645,14 +1653,18 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  the lock of an earlier update under it. */
   async function nameCheckFor(name: RefName, earlier: readonly RefName[]): Promise<NameCheck> {
     const prefixes = refNamePrefixes(name);
-    const looseUnder = await smallestLooseRefUnder(name);
+    // One `pathKind` answers both questions the lock would ask at this path.
+    const looseDirectory = (await pathKind(looseRefPath(refDir(name), name))) === 'directory';
+    const looseUnder = looseDirectory
+      ? await smallestLooseRefIn(looseRefPath(refDir(name), name), name)
+      : undefined;
     const smallestExistingUnder = smallerName(await smallestPackedRefUnder(name), looseUnder);
     const checkedUnderLock =
       looseUnder !== undefined ||
       earlier.some((other) => other.startsWith(`${name}/`)) ||
       (await hasLooseFileAt(prefixes));
     const facts = { existingPrefixes: await existingNames(prefixes), smallestExistingUnder };
-    return { name, facts, checkedUnderLock };
+    return { name, facts, checkedUnderLock, looseDirectory };
   }
 
   async function absentNameChecks(updates: readonly RefUpdate[]): Promise<readonly NameCheck[]> {
@@ -1698,16 +1710,30 @@ function createFilesRefStore(ctx: Context): RefStore {
     const transaction = prefixRelatedTransactionNames(updates);
     if (transaction === undefined) return;
     const checks = await absentNameChecks(updates);
-    const underLock = new Map(checks.filter((check) => check.checkedUnderLock).map(keyedByName));
+    const byUpdateName = new Map(checks.map(keyedByName));
     for (const update of updates) {
-      const check = underLock.get(update.name);
-      if (check !== undefined) refuseFirstConflict([check], transaction);
+      await raiseLockRefusals(byUpdateName.get(update.name), transaction);
       await checkExpected(update.name, expectedOf(update));
     }
     refuseFirstConflict(
       checks.filter((check) => !check.checkedUnderLock),
       transaction,
     );
+  }
+
+  /** Everything git's lock over one absent name raises at that name's turn:
+   *  the availability check it runs while the lock meets a regular file at a
+   *  prefix or a ref under the name, then the directory at the path it
+   *  clears — removing a tree of empty directories, as git's own lock does
+   *  even when a later update goes on to refuse — or refuses over. */
+  async function raiseLockRefusals(
+    check: NameCheck | undefined,
+    transaction: TransactionNames,
+  ): Promise<void> {
+    if (check === undefined) return;
+    if (check.checkedUnderLock) refuseFirstConflict([check], transaction);
+    if (!check.looseDirectory) return;
+    await clearDirectory(check.name, looseRefPath(refDir(check.name), check.name));
   }
 
   /** Applies `updates` in order, each consecutive run of deletes as one

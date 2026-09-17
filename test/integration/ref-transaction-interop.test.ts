@@ -2182,6 +2182,85 @@ describe.skipIf(!GIT_AVAILABLE)(
       const listRemotes = (dir: string): string =>
         git(dir, 'for-each-ref', '--format=%(refname)', 'refs/remotes/');
 
+      interface BlockedRow {
+        readonly label: string;
+        readonly slug: string;
+        /** Where the create of the blocked name sits among the updates. */
+        readonly blockedAt: number;
+        readonly blocked: boolean;
+      }
+
+      const BLOCKED_ROWS: readonly BlockedRow[] = [
+        {
+          label: 'the blocked name before a pair of colliding creates',
+          slug: 'blocked-first',
+          blockedAt: 0,
+          blocked: true,
+        },
+        {
+          label: 'a pair of colliding creates before the blocked name',
+          slug: 'blocked-last',
+          blockedAt: 2,
+          blocked: true,
+        },
+      ];
+
+      describe('When git update-ref --stdin and applyRefUpdates meet a blocked directory', () => {
+        it.each(BLOCKED_ROWS)(
+          'Then both report $label the same way',
+          async ({ slug, blockedAt, blocked }) => {
+            // Arrange — a lock file nothing can remove sits at `blk`'s path.
+            const { peer, ours, ctx } = await filesCasePair(slug);
+            const id = filesC1;
+            for (const dir of [peer, ours]) {
+              await mkdir(path.join(dir, '.git', 'refs', 'remotes', 'blk'), { recursive: true });
+              await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'blk', 'x.lock'), '');
+            }
+            const pair: readonly StdinUpdate[] = [
+              ['create', 'g'],
+              ['create', 'g/x'],
+            ];
+            const lines = stdinOf(pair, id)
+              .split(/(?<=\n)/)
+              .filter((line) => line.length > 0);
+            lines.splice(blockedAt, 0, `create ${remote('blk')} ${id}\n`);
+            const refUpdates = [...refUpdatesOf(pair, id)];
+            refUpdates.splice(blockedAt, 0, {
+              kind: 'set',
+              name: remote('blk'),
+              id: id as ObjectId,
+            });
+            const refsBefore = listRemotes(peer);
+            const sut = getRefStore(ctx);
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+              input: lines.join(''),
+              env: runGitEnv(),
+            });
+            let caught: unknown;
+            try {
+              await sut.applyRefUpdates(refUpdates);
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(blocked).toBe(true);
+            expect(gitResult.exitCode).toBe(128);
+            expect(gitResult.stderr).toContain(
+              `there is a non-empty directory '${path.join('.git', 'refs', 'remotes', 'blk')}' blocking reference '${remote('blk')}'`,
+            );
+            expect((caught as TsgitError).data).toEqual({
+              code: 'DIRECTORY_NOT_EMPTY',
+              path: `${ctx.layout.gitDir}/${remote('blk')}`,
+            });
+            expect(listRemotes(peer)).toBe(refsBefore);
+            expect(listRemotes(ours)).toBe(refsBefore);
+          },
+        );
+      });
+
       interface PriorityRow {
         readonly label: string;
         readonly slug: string;

@@ -363,6 +363,75 @@ describe('ref-store — names that collide inside one transaction', () => {
     });
 
     describe.skipIf(backend === 'reftable')(
+      'Given a directory nothing can be removed from at one name',
+      () => {
+        describe.each([
+          {
+            label: 'that name before a pair of colliding creates',
+            updates: [set('blk'), set('g'), set('g/x')],
+            blocked: true,
+          },
+          {
+            label: 'a pair of colliding creates before that name',
+            updates: [set('g'), set('g/x'), set('blk')],
+            blocked: true,
+          },
+          {
+            label: 'that name before a value mismatch',
+            updates: [set('blk'), set('g'), set('g/x'), set('m', OTHER_ID)],
+            blocked: true,
+          },
+          {
+            label: 'a value mismatch before that name',
+            updates: [set('m', OTHER_ID), set('blk'), set('g'), set('g/x')],
+            blocked: false,
+          },
+        ])('When applyRefUpdates applies $label', ({ updates, blocked }) => {
+          it('Then it refuses with the one git raises while taking that lock', async () => {
+            // Arrange
+            const ctx = await build();
+            const sut = createRefStore(ctx);
+            await sut.applyRefUpdates([set('m')]);
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref('blk')}/x.lock`, '');
+
+            // Act
+            const data = await refusalOf(() => sut.applyRefUpdates(updates));
+
+            // Assert
+            expect(data).toEqual(
+              blocked
+                ? { code: 'DIRECTORY_NOT_EMPTY', path: `${ctx.layout.gitDir}/${ref('blk')}` }
+                : { code: 'REF_UPDATE_CONFLICT', name: ref('m'), expected: OTHER_ID, actual: ID },
+            );
+          });
+        });
+      },
+    );
+
+    describe.skipIf(backend === 'reftable')(
+      'Given a tree of empty directories before a name that refuses',
+      () => {
+        describe('When applyRefUpdates applies both', () => {
+          it('Then the earlier tree is gone, as git leaves it after the same refusal', async () => {
+            // Arrange
+            const ctx = await build();
+            const sut = createRefStore(ctx);
+            await ctx.fs.mkdir(`${ctx.layout.gitDir}/${ref('e1')}/a/b`);
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref('blk')}/x.lock`, '');
+
+            // Act
+            await refusalOf(() =>
+              sut.applyRefUpdates([set('e1'), set('blk'), set('g'), set('g/x')]),
+            );
+
+            // Assert
+            expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${ref('e1')}`)).toBe(false);
+          });
+        });
+      },
+    );
+
+    describe.skipIf(backend === 'reftable')(
       'Given a packed ref above a loose ref of its own',
       () => {
         describe('When applyRefUpdates moves the loose ref under it', () => {
