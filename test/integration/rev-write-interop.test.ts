@@ -234,7 +234,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   // X1 / X2 — the byte compares
   // ---------------------------------------------------------------------
 
-  describe('Given a tsgit-written pack copied into a scratch dir, When git index-pack -o regenerates its own .rev (X1)', () => {
+  describe('Given a tsgit-written pack copied into a scratch dir, When git index-pack -o regenerates its own .rev', () => {
     it("Then tsgit's .rev is byte-identical to git's", async () => {
       // Arrange
       const dir = await freshRepo('byte-identical');
@@ -254,7 +254,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
     });
   });
 
-  describe('Given a fixture whose oid and offset orders are non-monotonically correlated, When both tools build its .rev (X2)', () => {
+  describe('Given a fixture whose oid and offset orders are non-monotonically correlated, When both tools build its .rev', () => {
     it("Then the body is a non-trivial permutation, not [0, 1, …, N−1], and still matches git's bytes", async () => {
       // Arrange
       const dir = await freshRepo('non-monotonic');
@@ -281,7 +281,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   // X3 / X4 — acceptance by both fsck implementations
   // ---------------------------------------------------------------------
 
-  describe('Given a repo whose pack dir tsgit wrote, When git verify-pack -v and git fsck --strict run (X3)', () => {
+  describe('Given a repo whose pack dir tsgit wrote, When git verify-pack -v and git fsck --strict run', () => {
     it('Then both exit 0', async () => {
       // Arrange
       const dir = await freshRepo('git-verify');
@@ -300,7 +300,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
     });
   });
 
-  describe('Given the same repo, When tsgit fsck runs (X4)', () => {
+  describe('Given the same repo, When tsgit fsck runs', () => {
     it('Then exit bit 64 is clear with no rev-index finding', async () => {
       // Arrange
       const dir = await freshRepo('tsgit-fsck');
@@ -325,7 +325,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   // X5 / X6 — the config gate's absent/valueless arms
   // ---------------------------------------------------------------------
 
-  describe('Given pack.writeReverseIndex=false in the local config, When packObjects runs (X5)', () => {
+  describe('Given pack.writeReverseIndex=false in the local config, When packObjects runs', () => {
     it('Then no .rev is written and git fsck --strict stays clean', async () => {
       // Arrange
       const dir = await freshRepo('rev-disabled');
@@ -346,7 +346,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
     });
   });
 
-  describe('Given pack.writeReverseIndex valueless in the local config, When packObjects runs (X6)', () => {
+  describe('Given pack.writeReverseIndex valueless in the local config, When packObjects runs', () => {
     it('Then .rev is written', async () => {
       // Arrange — git's CLI cannot emit a valueless entry; the config file is
       // written directly.
@@ -367,7 +367,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   // X7 / X7b — the refusal and the accepted integer arm, both tools
   // ---------------------------------------------------------------------
 
-  describe('Given pack.writeReverseIndex=maybe, When the same repo state is handed to both tools (X7)', () => {
+  describe('Given pack.writeReverseIndex=maybe, When the same repo state is handed to both tools', () => {
     it('Then git exits 128 and tsgit throws CONFIG_BAD_BOOLEAN_VALUE, neither writing new artefacts', async () => {
       // Arrange
       const dir = await freshRepo('rev-bad-boolean');
@@ -433,7 +433,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
     { value: '2', expectRev: true },
     { value: '0', expectRev: false },
   ])(
-    'Given pack.writeReverseIndex=$value, When the same repo state is handed to both tools (X7b)',
+    'Given pack.writeReverseIndex=$value, When the same repo state is handed to both tools',
     ({ value, expectRev }) => {
       it(`Then both tools accept it, .rev present: ${String(expectRev)}`, async () => {
         // Arrange
@@ -470,7 +470,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   // X8 / X9 — the other write surfaces
   // ---------------------------------------------------------------------
 
-  describe('Given a fresh clone against a local git peer over git-http-backend, When repo.clone runs (X8)', () => {
+  describe('Given a fresh clone against a local git peer over git-http-backend, When repo.clone runs', () => {
     it('Then the fetched pack dir has all three artefacts and git reads objects out of it', async () => {
       // Arrange
       const projectRoot = await newRoot('x8-project');
@@ -516,7 +516,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
     }, 30_000);
   });
 
-  describe('Given packObjects targets an outputDirectory outside the repo pack dir, When it runs (X9)', () => {
+  describe('Given packObjects targets an outputDirectory outside the repo pack dir, When it runs', () => {
     it('Then the outside directory holds all three artefacts', async () => {
       // Arrange — "outside the repo" means outside `.git/objects/pack`, the
       // same shape the unit suite's own `outputDirectory` fixture uses; the
@@ -545,7 +545,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
   // X10 — the self-read, at the always-on scale
   // ---------------------------------------------------------------------
 
-  describe('Given a small tsgit-written pack, When tsgit re-reads its own .rev via loadPackRevIndex (X10)', () => {
+  describe('Given a small tsgit-written pack, When tsgit re-reads its own .rev via loadPackRevIndex', () => {
     it('Then it reports usable and revIndexPositions matches packPositionMap', async () => {
       // Arrange
       const dir = await freshRepo('self-reread');
