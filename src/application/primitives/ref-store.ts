@@ -341,6 +341,9 @@ const isPrunableParent = (dir: string, root: string): boolean =>
 
 type PathKind = 'directory' | 'file' | 'absent';
 
+/** {@link PathKind} with a symbolic link told apart from a regular file. */
+type LooseLeafKind = PathKind | 'link';
+
 /** A loose ref's leaf, read without following it: a regular file's
  *  content, a symbolic link, or no loose ref (absent, or a directory). */
 type LooseLeaf =
@@ -376,6 +379,21 @@ const PLAIN_READER_CODES: ReadonlySet<string> = new Set([
 /** The byte-smaller of two optional names. */
 const smallerName = (a: RefName | undefined, b: RefName | undefined): RefName | undefined =>
   a === undefined || (b !== undefined && b < a) ? b : a;
+
+/** One packable ref's surviving loose file, and what kind of leaf it is. */
+interface LooseDuplicate {
+  readonly name: RefName;
+  readonly loose: string;
+  /** The value `packed-refs` now carries for `name`. */
+  readonly id: ObjectId;
+  readonly kind: 'file' | 'link';
+}
+
+/** git's pruning order — descending full ref name, across every namespace.
+ *  Names are distinct, so no equal case can arise. */
+// Stryker disable next-line EqualityOperator: equivalent — duplicate names are distinct, so < and <= behave identically
+const byDescendingName = (a: LooseDuplicate, b: LooseDuplicate): number =>
+  a.name < b.name ? 1 : -1;
 
 /** One delete's loose-file footprint, resolved before any lock is taken. */
 interface DeleteTarget {
@@ -1017,15 +1035,26 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (await hasLooseFile(path)) await ctx.fs.rm(path);
   }
 
-  /** What sits at `path` without following a link there — `absent` also
-   *  when a component above it is a regular file. */
-  async function leafKind(path: string): Promise<PathKind> {
+  /** What sits at `path` without following a link there, telling a link apart
+   *  from a regular file — `absent` also when a component above it is a
+   *  regular file. One `lstat`, the same call {@link leafKind} makes. */
+  async function looseLeafKind(path: string): Promise<LooseLeafKind> {
     try {
-      return (await ctx.fs.lstat(path)).isDirectory ? 'directory' : 'file';
+      const stat = await ctx.fs.lstat(path);
+      if (stat.isDirectory) return 'directory';
+      return stat.isSymbolicLink ? 'link' : 'file';
     } catch (err) {
       if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return 'absent';
       throw err;
     }
+  }
+
+  /** {@link looseLeafKind} for a caller that treats a link as the file it is
+   *  on disk — every write and delete path, which renames or unlinks either
+   *  the same way. */
+  async function leafKind(path: string): Promise<PathKind> {
+    const kind = await looseLeafKind(path);
+    return kind === 'link' ? 'file' : kind;
   }
 
   /** Whether a file or link — never a directory — sits at `path`: `false`
@@ -1640,34 +1669,76 @@ function createFilesRefStore(ctx: Context): RefStore {
    * OWN absence already reads back as zero entries, so an empty repo is
    * left byte-for-byte unchanged rather than gaining a header-only file.
    */
+  /** Every packable ref whose loose file still duplicates the packed value,
+   *  carrying the leaf kind its single `lstat` already answered. */
+  async function looseDuplicates(
+    packable: readonly RefEntry[],
+  ): Promise<readonly LooseDuplicate[]> {
+    // Pooled through the same `ioBound` bucket `buildPackedEntry` uses — each
+    // probe is an independent read, and `boundedMapFor`'s input-order result
+    // keeps the duplicates in packable (ascending name) order.
+    const kinds = await boundedMapFor(ctx, 'ioBound', packable, (entry) =>
+      looseLeafKind(looseRefPath(refDir(entry.name), entry.name)),
+    );
+    return packable.flatMap((entry, index) => {
+      const kind = kinds[index];
+      if (kind !== 'file' && kind !== 'link') return [];
+      // `packableEntries` already narrowed to the `'direct'` arm.
+      const { id } = entry.value as Extract<ResolveDirectResult, { kind: 'direct' }>;
+      return [{ name: entry.name, loose: looseRefPath(refDir(entry.name), entry.name), id, kind }];
+    });
+  }
+
+  /** git's pruning delete re-reads the ref under `REF_NO_DEREF` and refuses
+   *  unless it still holds the value `packed-refs` now carries. Only a
+   *  read-through link can stop holding it mid-run, when the file it names was
+   *  pruned first. */
+  async function stillHoldsPackedValue(duplicate: LooseDuplicate): Promise<boolean> {
+    const current = await resolveDirect(duplicate.name);
+    return current.kind === 'direct' && current.id === duplicate.id;
+  }
+
+  /**
+   * The loose files git's pruning actually removes. git commits one pruning
+   * delete per ref in DESCENDING name order, so a read-through symbolic link
+   * whose target an earlier delete already removed no longer resolves: git
+   * reports an error, keeps the link, and still exits 0. Only a link can reach
+   * that state, so a repository without one keeps the order-free pooled
+   * removal — where a mid-way failure leaves an arbitrary subset pruned rather
+   * than a prefix, safe because `packed-refs` is already written and any
+   * surviving loose duplicate holds the same value it does.
+   */
+  async function prunePackedDuplicates(
+    duplicates: readonly LooseDuplicate[],
+  ): Promise<readonly RefName[]> {
+    if (!duplicates.some((duplicate) => duplicate.kind === 'link')) {
+      await boundedMapFor(ctx, 'ioBound', duplicates, (duplicate) => ctx.fs.rm(duplicate.loose));
+      return duplicates.map((duplicate) => duplicate.name);
+    }
+    const removed: RefName[] = [];
+    for (const duplicate of [...duplicates].sort(byDescendingName)) {
+      if (duplicate.kind === 'link' && !(await stillHoldsPackedValue(duplicate))) continue;
+      await ctx.fs.rm(duplicate.loose);
+      removed.push(duplicate.name);
+    }
+    return removed;
+  }
+
   async function packRefs(): Promise<PackRefsOutcome> {
     const packable = await packableEntries();
     if (packable.length === 0) {
       return { packedRefCount: 0, prunedLooseRefCount: 0, removedOrphanCount: 0 };
     }
-    // Pooled through the same `ioBound` bucket `buildPackedEntry` uses below
-    // — each probe is an independent read, and `boundedMapFor`'s
-    // input-order result lets `toPrune` stay filtered in packable order.
-    const dupeExists = await boundedMapFor(ctx, 'ioBound', packable, (entry) =>
-      hasLooseFile(looseRefPath(refDir(entry.name), entry.name)),
-    );
-    const toPrune = packable
-      .filter((_entry, index) => dupeExists[index] === true)
-      .map((entry) => entry.name);
+    const duplicates = await looseDuplicates(packable);
     const entries = await boundedMapFor(ctx, 'ioBound', packable, buildPackedEntry);
     const content = serializePackedRefs({ entries, peeling: 'fully', sorted: true });
     await ctx.fs.writeUtf8(packedRefsPath(commonGitDir(ctx)), content);
     packedCache = undefined;
-    // A mid-way failure here leaves an arbitrary subset of `toPrune` pruned
-    // rather than a prefix — safe because `packed-refs` is already written:
-    // any surviving loose duplicate holds the same value packed-refs does.
-    await boundedMapFor(ctx, 'ioBound', toPrune, (name) =>
-      ctx.fs.rm(looseRefPath(refDir(name), name)),
-    );
-    await prunePackedLooseParents(toPrune);
+    const pruned = await prunePackedDuplicates(duplicates);
+    await prunePackedLooseParents(pruned);
     return {
       packedRefCount: packable.length,
-      prunedLooseRefCount: toPrune.length,
+      prunedLooseRefCount: pruned.length,
       removedOrphanCount: 0,
     };
   }

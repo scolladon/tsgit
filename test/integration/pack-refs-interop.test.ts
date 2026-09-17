@@ -15,7 +15,18 @@
  *   unique:         packRefs packs every ref exactly as git pack-refs --all does, on both backends
  *   interopSurface: packRefs
  */
-import { access, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -116,6 +127,65 @@ describe.skipIf(!GIT_AVAILABLE)('packRefs interop — files backend', () => {
         const oursPacked = await readFile(path.join(pair.ours, '.git/packed-refs'), 'utf8');
         expect(oursPacked).toBe(peerPacked);
         expect(await looseHeadsEntries(ours)).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a symbolic link read through to a ref named before it', () => {
+    describe('When git pack-refs --all runs on the peer and packRefs runs on ours', () => {
+      it('Then both pack the link at that value, keep it on disk and still succeed', async () => {
+        // Arrange — the link sorts before its target, so the target's own
+        // prune runs first and the link stops resolving.
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: commitEnv });
+          runGit(['-C', dir, 'branch', 'side']);
+          await symlink('side', path.join(dir, '.git/refs/heads/rel'));
+        }
+        const ours = createNodeContext({ workDir: pair.ours });
+
+        // Act
+        const peerRun = tryRunGitWithExit(['-C', pair.peer, 'pack-refs', '--all']);
+        const result = await packRefs(ours);
+
+        // Assert
+        expect(peerRun.exitCode).toBe(0);
+        expect(result.prunedLooseRefCount).toBe(2);
+        const peerPacked = await readFile(path.join(pair.peer, '.git/packed-refs'), 'utf8');
+        const oursPacked = await readFile(path.join(pair.ours, '.git/packed-refs'), 'utf8');
+        expect(oursPacked).toBe(peerPacked);
+        for (const dir of [pair.peer, pair.ours]) {
+          expect((await lstat(path.join(dir, '.git/refs/heads/rel'))).isSymbolicLink()).toBe(true);
+          expect(await pathExists(path.join(dir, '.git/refs/heads/side'))).toBe(false);
+        }
+      });
+    });
+  });
+
+  describe('Given a symbolic link read through to a ref named after it', () => {
+    describe('When git pack-refs --all runs on the peer and packRefs runs on ours', () => {
+      it('Then both remove the link along with the ref it named', async () => {
+        // Arrange — the link sorts after its target, so its own prune runs
+        // first, while the file it reads through is still there.
+        for (const dir of [pair.peer, pair.ours]) {
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: commitEnv });
+          runGit(['-C', dir, 'branch', 'side']);
+          await symlink('side', path.join(dir, '.git/refs/heads/zz'));
+        }
+        const ours = createNodeContext({ workDir: pair.ours });
+
+        // Act
+        const peerRun = tryRunGitWithExit(['-C', pair.peer, 'pack-refs', '--all']);
+        const result = await packRefs(ours);
+
+        // Assert
+        expect(peerRun.exitCode).toBe(0);
+        expect(result.prunedLooseRefCount).toBe(3);
+        const peerPacked = await readFile(path.join(pair.peer, '.git/packed-refs'), 'utf8');
+        const oursPacked = await readFile(path.join(pair.ours, '.git/packed-refs'), 'utf8');
+        expect(oursPacked).toBe(peerPacked);
+        for (const dir of [pair.peer, pair.ours]) {
+          expect(await pathExists(path.join(dir, '.git/refs/heads/zz'))).toBe(false);
+        }
       });
     });
   });

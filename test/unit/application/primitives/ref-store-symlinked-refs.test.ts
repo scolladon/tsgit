@@ -374,3 +374,84 @@ describe('ref-store — a symbolic link as a loose ref', () => {
     });
   });
 });
+
+describe('ref-store — packing a repository holding a read-through link', () => {
+  describe.each(ADAPTERS)('$adapter adapter', ({ build }) => {
+    describe('Given a link named before the ref it reads through', () => {
+      describe('When packRefs runs', () => {
+        it('Then the link is packed at that value, kept on disk, and not counted as pruned', async () => {
+          // Arrange
+          const { ctx, first } = await seedRepository(build);
+          await ctx.fs.symlink('side', gitPath(ctx, 'refs/heads/rel'));
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.packRefs();
+
+          // Assert
+          expect(result).toEqual({
+            packedRefCount: 2,
+            prunedLooseRefCount: 1,
+            removedOrphanCount: 0,
+          });
+          expect(await ctx.fs.readUtf8(gitPath(ctx, 'packed-refs'))).toBe(
+            `# pack-refs with: peeled fully-peeled sorted \n${first} refs/heads/rel\n${first} ${SIDE}\n`,
+          );
+          expect(await isSymbolicLink(ctx, 'refs/heads/rel')).toBe(true);
+          expect(await ctx.fs.exists(gitPath(ctx, SIDE))).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a link named after the ref it reads through', () => {
+      describe('When packRefs runs', () => {
+        it('Then the link is removed with the ref it named', async () => {
+          // Arrange
+          const { ctx, first } = await seedRepository(build);
+          await ctx.fs.symlink('side', gitPath(ctx, 'refs/heads/zz'));
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.packRefs();
+
+          // Assert
+          expect(result).toEqual({
+            packedRefCount: 2,
+            prunedLooseRefCount: 2,
+            removedOrphanCount: 0,
+          });
+          expect(await ctx.fs.readUtf8(gitPath(ctx, 'packed-refs'))).toBe(
+            `# pack-refs with: peeled fully-peeled sorted \n${first} ${SIDE}\n${first} refs/heads/zz\n`,
+          );
+          expect(await ctx.fs.exists(gitPath(ctx, 'refs/heads/zz'))).toBe(false);
+          expect(await ctx.fs.exists(gitPath(ctx, SIDE))).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a link whose text names a ref', () => {
+      describe('When packRefs runs', () => {
+        it('Then the symbolic link is neither packed nor removed', async () => {
+          // Arrange
+          const { ctx, first } = await seedRepository(build);
+          await ctx.fs.symlink(SIDE, gitPath(ctx, LINK));
+          const sut = createRefStore(ctx);
+
+          // Act
+          const result = await sut.packRefs();
+
+          // Assert
+          expect(result).toEqual({
+            packedRefCount: 1,
+            prunedLooseRefCount: 1,
+            removedOrphanCount: 0,
+          });
+          expect(await ctx.fs.readUtf8(gitPath(ctx, 'packed-refs'))).toBe(
+            `# pack-refs with: peeled fully-peeled sorted \n${first} ${SIDE}\n`,
+          );
+          expect(await isSymbolicLink(ctx, LINK)).toBe(true);
+        });
+      });
+    });
+  });
+});
