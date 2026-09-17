@@ -73,6 +73,20 @@ describe.skipIf(!GIT_AVAILABLE)('integration — ref listing parity with canonic
       .map((line) => `${prefix}${line}`)
       .sort();
 
+  /** The branch names one listing form prints, fully qualified and sorted.
+   *  `show-ref` leads with an oid and `branch -v` with a current marker plus
+   *  a short name, so each shape is reduced to its ref name here. */
+  const gitBranchNames = (args: ReadonlyArray<string>): ReadonlyArray<string> =>
+    git(base, ...args)
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        if (args[0] === 'show-ref') return line.slice(line.indexOf(' ') + 1);
+        if (args[0] === 'branch') return `refs/heads/${line.slice(2).split(/\s+/)[0] ?? ''}`;
+        return line;
+      })
+      .sort();
+
   describe('Given branch symrefs that are over-deep, dangling and looping', () => {
     describe('When both tools list branches', () => {
       it('Then they name exactly the same branches', async () => {
@@ -102,6 +116,62 @@ describe.skipIf(!GIT_AVAILABLE)('integration — ref listing parity with canonic
         // Assert
         const chain = branches.find((branch) => branch.name === ('refs/heads/chain1' as RefName));
         expect(chain?.id).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the other listing forms git offers over the same refs', () => {
+    describe.each([
+      { label: 'for-each-ref', args: ['for-each-ref', '--format=%(refname)', 'refs/heads'] },
+      { label: 'show-ref --heads', args: ['show-ref', '--heads'] },
+      { label: 'branch -v', args: ['branch', '-v'] },
+    ])('When $label and tsgit branchList both enumerate them', (row) => {
+      it('Then every form names exactly the branches tsgit lists', async () => {
+        // Arrange — each form prints its own columns, so the names are read
+        // back out of the line rather than assumed to be the whole line.
+        const expected = gitBranchNames(row.args);
+
+        // Act
+        const { branches } = await branchList(ctx);
+
+        // Assert
+        expect(branches.map((branch) => branch.name as string).sort()).toEqual(expected);
+        expect(expected).not.toContain('refs/heads/chain0');
+        expect(expected).toContain('refs/heads/chain1');
+      });
+    });
+
+    describe('When show-ref and tsgit branchList both report the values', () => {
+      it('Then every branch carries the same object id on both sides', async () => {
+        // Arrange
+        const expected = new Map(
+          git(base, 'show-ref', '--heads')
+            .split('\n')
+            .filter((line) => line.length > 0)
+            .map((line) => [line.slice(line.indexOf(' ') + 1), line.slice(0, line.indexOf(' '))]),
+        );
+
+        // Act
+        const { branches } = await branchList(ctx);
+
+        // Assert
+        expect(
+          new Map(branches.map((branch) => [branch.name as string, branch.id as string])),
+        ).toEqual(expected);
+      });
+    });
+
+    describe('When for-each-ref and tsgit tagList both enumerate the tags', () => {
+      it('Then both name only the tag whose chain resolves', async () => {
+        // Arrange
+        const expected = gitNames('', 'for-each-ref', '--format=%(refname)', 'refs/tags');
+
+        // Act
+        const { tags } = await tagList(ctx);
+
+        // Assert
+        expect(tags.map((tag) => tag.name as string).sort()).toEqual(expected);
+        expect(expected).toEqual(['refs/tags/plain']);
       });
     });
   });
