@@ -234,12 +234,11 @@ const repairChain = (
 
 type ExpireOptions = Extract<ReflogAction, { readonly action: 'expire' }>;
 
-/** The batched result of expiring every target: per-ref counts summed, and
- *  every target's rewrite queued for the single closing `applyRefUpdates`. */
+/** The result of sweeping every target: per-ref counts summed. Each target's
+ *  rewrite is already on disk by the time this is returned. */
 interface ExpireOutcome {
   readonly removed: number;
   readonly kept: number;
-  readonly updates: RefUpdate[];
 }
 
 /** The `--expire`/`--expire-unreachable` flags, parsed — `resolveCutoff`
@@ -274,8 +273,18 @@ const resolveExpiryPolicy = async (
   return expiryPolicyFor(config, explicitCuts(opts, now), defaultCuts(now));
 };
 
-/** Strictly sequential: each target's reachability state is built inside
- *  `expireReflog`, never shared, so one target's walk never leaks into another's. */
+/**
+ * Strictly sequential: each target's reachability state is built inside
+ * `expireReflog`, never shared, so one target's walk never leaks into
+ * another's — and each target's rewrite is committed as the sweep reaches
+ * it, never batched behind the last one. git rewrites a log the moment that
+ * log is swept, on both backends (the files backend replaces the file; the
+ * reftable backend appends a table of its own), so a refusal part-way
+ * through leaves every earlier target already rewritten on disk. The cost is
+ * one transaction per target rather than one per run — on reftable a full
+ * stack transaction plus a compaction attempt each time, measured 3.6-5x on
+ * a 200-800 ref sweep — paid to keep the on-disk state faithful.
+ */
 const expireTargets = async (
   ctx: Context,
   targets: ReadonlyArray<RefName>,
@@ -283,32 +292,25 @@ const expireTargets = async (
 ): Promise<ExpireOutcome> => {
   let removed = 0;
   let kept = 0;
-  const updates: RefUpdate[] = [];
   for (const ref of targets) {
     const { expireCut, unreachableCut } = policy.cutoffsFor(ref);
     const outcome = await expireReflog(ctx, ref, expireCut, unreachableCut);
     removed += outcome.removed;
     kept += outcome.kept;
-    updates.push(outcome.update);
+    await getRefStore(ctx).applyRefUpdates([outcome.update]);
   }
-  return { removed, kept, updates };
+  return { removed, kept };
 };
 
 const runExpire = async (ctx: Context, opts: ExpireOptions): Promise<ReflogResult> => {
   const policy = await resolveExpiryPolicy(ctx, Math.floor(Date.now() / 1000), opts);
   const targets = await resolveExpireTargets(ctx, opts);
-  // The repo-settings class is reached only once a target has resolved, and
-  // never with zero targets (git's `builtin/reflog.c` parses options and
-  // resolves `repo_dwim_log` before the settings the walk itself needs).
-  if (targets.length > 0) await assertRepoSettingsValid(ctx);
+  // A named target re-reads the whole configuration before its sweep starts,
+  // so the repo-settings class refuses there whatever the cutoffs are — and
+  // never with zero targets. A swept target (`--all`) reaches the class only
+  // where it would read an object, inside `expireKindFor`.
+  if (opts.all !== true && targets.length > 0) await assertRepoSettingsValid(ctx);
   const outcome = await expireTargets(ctx, targets, policy);
-  // One transaction for every target: on the reftable backend each
-  // applyRefUpdates call is a full stack transaction plus a compaction
-  // attempt, so a per-ref loop makes `expire --all` cost grow faster than linearly in ref count
-  // (measured 3.6-5x at 200-800 refs) and leaves a partial rewrite behind if
-  // one ref fails mid-loop. An empty list is a no-op on both backends, so
-  // zero targets need no guard.
-  await getRefStore(ctx).applyRefUpdates(outcome.updates);
   return { kind: 'expire', removed: outcome.removed, kept: outcome.kept };
 };
 
@@ -411,20 +413,38 @@ type ExpireKind =
   | { readonly kind: 'always' }
   | { readonly kind: 'walk'; readonly tips: ReadonlyArray<ObjectId> };
 
-const expireKindFor = async (
+/** A named target's kind. git resolves its tip commit BEFORE the cutoff pair
+ *  can shortcut the walk, so this target reads objects — and so reaches the
+ *  repo-settings class — whatever the cutoffs are. */
+const namedTargetKind = async (
   ctx: Context,
   ref: RefName,
   expireCut: number,
   unreachableCut: number,
 ): Promise<ExpireKind> => {
+  await assertRepoSettingsValid(ctx);
   if (unreachableCut <= expireCut) return { kind: 'always' };
-  if (ref === 'HEAD') return { kind: 'walk', tips: await resolveTips(ctx) };
   const direct = await getRefStore(ctx).resolveDirect(ref);
   if (direct.kind !== 'direct') return { kind: 'always' };
   // git's `lookup_commit_reference_gently`: a tip naming a missing object
   // never blocks expiry, it just never resolves to a commit — `always`.
   const peeled = await peelGently(ctx, direct.id);
   return peeled === undefined ? { kind: 'always' } : { kind: 'walk', tips: [peeled.commit.id] };
+};
+
+const expireKindFor = async (
+  ctx: Context,
+  ref: RefName,
+  expireCut: number,
+  unreachableCut: number,
+): Promise<ExpireKind> => {
+  if (ref !== 'HEAD') return namedTargetKind(ctx, ref, expireCut, unreachableCut);
+  // `HEAD` reads no tip of its own: it marks from every ref, and only when
+  // the unreachable cutoff can still move a verdict. Under a cutoff pair
+  // that cannot, `HEAD`'s sweep reads nothing and never reaches the class.
+  if (unreachableCut <= expireCut) return { kind: 'always' };
+  await assertRepoSettingsValid(ctx);
+  return { kind: 'walk', tips: await resolveTips(ctx) };
 };
 
 /** Mark-and-sweep state for one ref's walk: `marked` commits are confirmed

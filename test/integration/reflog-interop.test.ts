@@ -2682,14 +2682,15 @@ describe.skipIf(!GIT_AVAILABLE)(
               `fatal: bad numeric config value '${data['value'] as string}' for '${data['key'] as string}' in file ${path.relative(ours, data['source'] as string)}: ${data['reason'] as string}\n`,
             );
             // The named branch log is untouched on both. git reaches the
-            // class only once the sweep needs the object store, so it has
-            // already rewritten `logs/HEAD` by then; tsgit applies one
-            // transaction after the whole sweep, so nothing of its own moves.
+            // Both sweep in the same order and rewrite each log as they
+            // reach it, so both leave `logs/HEAD` emptied — the class is
+            // reached on the branch that follows it, whose own log neither
+            // tool has touched.
+            expect(beforeHead).not.toBe('');
             for (const dir of [peer, ours]) {
               expect(await readFile(mainLogPath(dir), 'utf8')).toBe(beforeMain);
+              expect(await readFile(headLogPath(dir), 'utf8')).toBe('');
             }
-            expect(await readFile(headLogPath(peer), 'utf8')).toBe('');
-            expect(await readFile(headLogPath(ours), 'utf8')).toBe(beforeHead);
           });
         });
       });

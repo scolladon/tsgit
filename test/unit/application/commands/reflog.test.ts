@@ -496,12 +496,30 @@ describe('reflog command', () => {
       });
     });
 
-    describe('When reflog expire runs with --all over an existing reflog', () => {
+    describe('When reflog expire runs with --all over a HEAD reflog alone', () => {
+      it('Then it sweeps that log without ever reaching the class', async () => {
+        // Arrange — `HEAD`'s sweep reads no object under the default cutoff
+        // pair, and the class is only ever read where an object would be.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await appendReflog(ctx, HEAD, entry());
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        const result = await reflog(ctx, { action: 'expire', all: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+        expect(await readReflog(ctx, HEAD)).toEqual([]);
+      });
+    });
+
+    describe('When reflog expire runs with --all over a branch reflog', () => {
       it('Then it throws CONFIG_BAD_NUMERIC_VALUE', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
-        await appendReflog(ctx, HEAD, entry());
+        await appendReflog(ctx, BRANCH, entry());
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
 
         // Act
@@ -1776,6 +1794,82 @@ describe('reflog command', () => {
             expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
           });
         });
+
+        describe('When expire sweeps every log and the class refuses part-way through', () => {
+          it('Then the logs swept before the refusal stay rewritten on disk', async () => {
+            // Arrange — the sweep reaches HEAD first, and HEAD alone needs no
+            // object of its own under these cutoffs, so the class refusal
+            // lands on the branch that follows it.
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], wallNow());
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [entry({ newId: tip })]);
+            await writeReflog(ctx, BRANCH, [entry({ newId: tip })]);
+            await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+            const sut = reflog;
+
+            // Act
+            let caught: unknown;
+            try {
+              await sut(ctx, { action: 'expire', all: true, expire: 'now' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+            expect(await readReflog(ctx, HEAD)).toEqual([]);
+            expect(await readReflog(ctx, BRANCH)).toHaveLength(1);
+          });
+        });
+
+        describe('When expire sweeps a lone HEAD log under cutoffs that need no walk', () => {
+          it('Then it never reaches the class and sweeps that log clean', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], wallNow());
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [entry({ newId: tip })]);
+            await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+            const sut = reflog;
+
+            // Act
+            const result = await sut(ctx, { action: 'expire', all: true, expire: 'now' });
+
+            // Assert
+            expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+            expect(await readReflog(ctx, HEAD)).toEqual([]);
+          });
+        });
+
+        describe('When expire sweeps a lone HEAD log under cutoffs that do need the walk', () => {
+          it('Then the class refuses before that log is rewritten', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            const tip = await writeCommit(ctx, [], wallNow());
+            await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+            await writeReflog(ctx, HEAD, [entry({ newId: tip })]);
+            await seedConfig(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+            const sut = reflog;
+
+            // Act
+            let caught: unknown;
+            try {
+              await sut(ctx, {
+                action: 'expire',
+                all: true,
+                expire: 'never',
+                expireUnreachable: 'now',
+              });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+            expect(await readReflog(ctx, HEAD)).toHaveLength(1);
+          });
+        });
       });
     });
 
@@ -2119,7 +2213,7 @@ describe('reflog command', () => {
 
     describe('Given --all over one log with a stale entry and one log with only recent entries', () => {
       describe('When expire', () => {
-        it('Then both rewrites land in one ref transaction', async () => {
+        it('Then each rewrite lands in its own transaction, in sweep order', async () => {
           // Arrange
           const now = wallNow();
           const ctx = createMemoryContext();
@@ -2144,12 +2238,10 @@ describe('reflog command', () => {
 
           // Assert
           expect(result).toEqual({ kind: 'expire', removed: 1, kept: 2 });
-          expect(batches).toHaveLength(1);
+          expect(batches).toHaveLength(2);
           expect(batches).toMatchObject([
-            [
-              { kind: 'reflogReplace', name: HEAD, entries: [recent] },
-              { kind: 'reflogReplace', name: BRANCH, entries: [recent] },
-            ],
+            [{ kind: 'reflogReplace', name: HEAD, entries: [recent] }],
+            [{ kind: 'reflogReplace', name: BRANCH, entries: [recent] }],
           ]);
         });
       });
