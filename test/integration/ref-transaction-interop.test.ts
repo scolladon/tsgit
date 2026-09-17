@@ -2924,6 +2924,9 @@ describe.skipIf(!GIT_AVAILABLE)(
         readonly existing: readonly string[];
         readonly updates: readonly StdinUpdate[];
         readonly refusal: Readonly<Record<'files' | 'reftable', readonly [string, string, string]>>;
+        /** Packs `existing` on the files backend, so no loose file is left to
+         *  answer an availability question a name under it asks. */
+        readonly packExisting?: boolean;
       }
       const remote = (short: string): RefName => `refs/remotes/${short}` as RefName;
       const same = (code: string, blocking: string, message: string) => ({
@@ -3026,6 +3029,50 @@ describe.skipIf(!GIT_AVAILABLE)(
             ],
           },
         },
+        {
+          label: 'deleting the existing r2/x before deleting the absent r2 above it',
+          slug: 'delete-under-delete-above',
+          existing: ['r2/x'],
+          updates: [
+            ['delete', 'r2/x'],
+            ['delete', 'r2'],
+          ],
+          refusal: same(
+            'FILE_EXISTS',
+            'r2/x',
+            "'refs/remotes/r2/x' exists; cannot create 'refs/remotes/r2'",
+          ),
+        },
+        {
+          label: 'deleting the existing sd before deleting the absent sd/x under it',
+          slug: 'delete-above-delete-under',
+          existing: ['sd'],
+          updates: [
+            ['delete', 'sd'],
+            ['delete', 'sd/x'],
+          ],
+          refusal: same(
+            'NOT_A_DIRECTORY',
+            'sd',
+            "'refs/remotes/sd' exists; cannot create 'refs/remotes/sd/x'",
+          ),
+        },
+        {
+          label: 'a colliding create pair before a create under an existing packed name',
+          slug: 'pair-before-packed-blocker',
+          existing: ['pk'],
+          packExisting: true,
+          updates: [
+            ['create', 'q'],
+            ['create', 'q/x'],
+            ['create', 'pk/x'],
+          ],
+          refusal: same(
+            'FILE_EXISTS',
+            'q/x',
+            "cannot process 'refs/remotes/q' and 'refs/remotes/q/x'",
+          ),
+        },
       ];
       const BACKENDS = [
         { backend: 'files', pairOf: filesCasePair, commit: () => filesC1 },
@@ -3123,6 +3170,56 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect(listRemotes(ours)).toBe(refsBefore);
           },
         );
+      });
+
+      describe('When git update-ref --stdin and applyRefUpdates queue a create over an empty directory tree behind a name that can never be locked', () => {
+        it('Then both refuse on the blocked name, write nothing, and leave the tree standing', async () => {
+          // Arrange — `blk` can never be locked; `et` is a name whose loose
+          // path is an empty directory tree, which only its OWN turn clears
+          // — and its turn never comes.
+          const { peer, ours, ctx } = await filesCasePair('blocked-before-empty-tree');
+          const id = filesC1;
+          const treePath = (dir: string): string =>
+            path.join(dir, '.git', 'refs', 'remotes', 'et', 'a', 'b');
+          for (const dir of [peer, ours]) {
+            await mkdir(path.join(dir, '.git', 'refs', 'remotes', 'blk'), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'blk', 'x.lock'), '');
+            await mkdir(treePath(dir), { recursive: true });
+          }
+          const order: readonly StdinUpdate[] = [
+            ['create', 'blk'],
+            ['create', 'et'],
+          ];
+          const refsBefore = listRemotes(peer);
+          const sut = getRefStore(ctx);
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+            input: stdinOf(order, id),
+            env: runGitEnv(),
+          });
+          let caught: unknown;
+          try {
+            await sut.applyRefUpdates(refUpdatesOf(order, id));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            `there is a non-empty directory '${path.join('.git', 'refs', 'remotes', 'blk')}' blocking reference '${remote('blk')}'`,
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'DIRECTORY_NOT_EMPTY',
+            path: `${ctx.layout.gitDir}/${remote('blk')}`,
+          });
+          expect(listRemotes(peer)).toBe(refsBefore);
+          expect(listRemotes(ours)).toBe(refsBefore);
+          for (const dir of [peer, ours]) {
+            expect(await pathExists(treePath(dir))).toBe(true);
+          }
+        });
       });
 
       interface PriorityRow {
@@ -3343,12 +3440,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         ({ backend, pairOf, commit }) => {
           it.each(ROWS)(
             'Then both refuse $label and change nothing',
-            async ({ slug, existing, updates, refusal }) => {
+            async ({ slug, existing, updates, refusal, packExisting }) => {
               // Arrange
               const { peer, ours, ctx } = await pairOf(`names-${backend}-${slug}`);
               const id = commit();
               for (const dir of [peer, ours]) {
                 for (const short of existing) runGit(['-C', dir, 'update-ref', remote(short), id]);
+                if (packExisting === true && backend === 'files') git(dir, 'pack-refs', '--all');
               }
               const refsBefore = listRemotes(peer);
               const sut = getRefStore(ctx);
