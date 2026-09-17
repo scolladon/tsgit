@@ -261,6 +261,7 @@ const isDirectEntry = (entry: TrackingRefEntry): entry is DirectTrackingRef =>
 const isSymbolicEntry = (entry: TrackingRefEntry): entry is SymbolicTrackingRef =>
   entry.kind === 'symbolic';
 
+const REFS_PREFIX = 'refs/';
 const REMOTES_PREFIX_LENGTH = 'refs/remotes/'.length;
 
 /**
@@ -529,6 +530,15 @@ export const remoteSetUrl = async (
   return { remote: toRemoteInfo(input.name, refreshed) };
 };
 
+/** Every ref `remote`'s fetch refspecs bring in, wherever it lives: git
+ *  matches each refspec destination against the whole ref space, so a
+ *  destination outside `refs/remotes/<name>/` selects refs there instead. */
+const fetchedRefs = async (ctx: Context, remote: RemoteInfo): Promise<ReadonlyArray<RefName>> => {
+  const all = await enumerateRefs(ctx);
+  // git walks `refs/`, so `HEAD` is never a candidate even detached.
+  return all.filter((ref) => ref.startsWith(REFS_PREFIX) && fetchesInto(remote.fetchRefspecs, ref));
+};
+
 /** Each of `names` that resolves to a direct value, with that value. */
 const directTrackingValues = async (
   ctx: Context,
@@ -561,12 +571,7 @@ export const remoteShow = async (
   const entry = config.remote?.get(input.name);
   if (entry === undefined && input.name === '') throw remoteNotConfigured(input.name);
   const info = entry === undefined ? adHocRemote(input.name) : toRemoteInfo(input.name, entry);
-  // A remote fetches nothing into its own tracking namespace unless one of
-  // its refspecs says so, so nothing is attached under that namespace either.
-  const names = mapsTrackingNamespace(info.fetchRefspecs, input.name)
-    ? await listTrackingRefs(ctx, input.name)
-    : [];
-  const trackingRefs = await directTrackingValues(ctx, names);
+  const trackingRefs = await directTrackingValues(ctx, await fetchedRefs(ctx, info));
   const referrers = listBranchReferrers(config, input.name);
   const trackedBy = referrers.map((referrer) => ({ branch: referrer.ref, merge: referrer.merge }));
   return { remote: { ...info, trackingRefs, trackedBy } };

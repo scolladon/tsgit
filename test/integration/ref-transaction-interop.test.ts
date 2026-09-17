@@ -1448,6 +1448,50 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe.each([
+      {
+        label: 'a destination outside the remote namespace',
+        spec: '+refs/heads/*:refs/other/origin/*',
+        planted: 'refs/other/origin/z',
+      },
+      {
+        label: 'a destination nested under the remote',
+        spec: '+refs/heads/*:refs/remotes/origin/deep/*',
+        planted: 'refs/remotes/origin/deep/x',
+      },
+    ])('Given $label, When both tools describe the remote', ({ spec, planted }) => {
+      it('Then both attach exactly the refs that refspec fetches into, and no other', async () => {
+        // Arrange — git matches each refspec destination against the whole
+        // ref space, so `refs/remotes/origin/main` is NOT a tracking ref here.
+        const { peer, ctx } = await remoteRenameCasePair(`remote-show-select-${planted.length}`);
+        const ours = path.dirname(ctx.layout.gitDir);
+        const oid = git(peer, 'rev-parse', 'HEAD').trim();
+        for (const repo of [peer, ours]) {
+          runGit(['-C', repo, 'config', '--unset-all', 'remote.origin.fetch']);
+          runGit(['-C', repo, 'config', '--add', 'remote.origin.fetch', spec]);
+          runGit(['-C', repo, 'update-ref', planted, oid]);
+        }
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'show', '-n', 'origin']);
+        const result = await remoteShow(ctx, { name: 'origin' });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        const lines = gitResult.stdout.split('\n');
+        const listed: string[] = [];
+        for (const line of lines.slice(lines.findIndex((l) => l.includes('Remote branch')) + 1)) {
+          if (!line.startsWith('    ')) break;
+          listed.push(line.trim());
+        }
+        expect(listed).toHaveLength(1);
+        expect([...result.remote.trackingRefs.keys()]).toEqual([planted]);
+        expect(result.remote.trackingRefs.get(planted as RefName)).toBe(oid);
+        expect(gitResult.stdout).not.toContain('\n    main\n');
+        expect(result.remote.trackingRefs.has('refs/remotes/origin/main' as RefName)).toBe(false);
+      });
+    });
+
     describe('Given a name no remote is configured under', () => {
       describe('When both tools describe it without querying the network', () => {
         it('Then both report the name itself as the url, with no refspec and no tracking ref', async () => {

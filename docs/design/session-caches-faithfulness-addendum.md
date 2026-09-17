@@ -2441,12 +2441,34 @@ present, both list nothing. `remoteShow` therefore gates its tracking-ref scan o
 `mapsTrackingNamespace` too — which is what makes the ad-hoc remote report none.
 
 Unpinned and recorded: `remote show -n ''` prints `error: No such remote: ''` and then **exits 139**
-(`SIGSEGV`) on git 2.55.0; tsgit refuses `REMOTE_NOT_CONFIGURED` for the empty name, transcribing the
-refusal and not the crash. Also recorded: git selects a remote's tracking refs by matching each
-refspec destination *pattern*, so a destination such as `+refs/heads/*:refs/other/origin/*` makes
-`show` list `refs/other/origin/z`, and a `+refs/heads/*:refs/remotes/origin/deep/*` refspec makes it
-list only what lives under `deep/`. `remoteShow` still enumerates `refs/remotes/<name>/` once the
-gate passes.
+(`SIGSEGV`) on git 2.55.0 — a crash, not a refusal, so there is nothing to transcribe; tsgit refuses
+`REMOTE_NOT_CONFIGURED` for the empty name, reproducing the printed refusal condition and leaving the
+repository untouched, as the crashing git does.
+
+### `show` selects tracking refs by refspec destination (2026-09-17)
+
+Same harness. git does not scan `refs/remotes/<name>/` at all: it walks the **whole ref space** and
+keeps every ref at least one of the remote's fetch refspecs fetches into, with no exclusion for refs
+another remote also fetches. Base: `refs/heads/side`, `refs/other/origin/z`,
+`refs/remotes/origin/deep/x`, `refs/remotes/origin/main`, `refs/remotes/zzz/q`.
+
+| `remote.origin.fetch` | `show -n origin` attaches |
+|---|---|
+| (none) | nothing |
+| `+refs/heads/*:refs/other/origin/*` | `refs/other/origin/z` — `origin/main` is **not** a tracking ref |
+| `+refs/heads/*:refs/remotes/origin/deep/*` | `refs/remotes/origin/deep/x` only |
+| both of the above, either order | both, as a set |
+| `+refs/heads/main:refs/remotes/origin/main` (no star) | `refs/remotes/origin/main` |
+| `+refs/heads/*` (no colon) | nothing — no destination to match |
+| `+refs/heads/*:refs/remotes/zzz/*`, with `zzz` also configured | `refs/remotes/zzz/q` — unlike `remove`, `show` applies no "another remote covers it" exclusion |
+| `+refs/heads/*:refs/heads/*` | `refs/heads/side` — local branches |
+| `+refs/*:refs/*` (mirror) | every ref in the repository |
+| the same destination twice | each ref once |
+| `+refs/heads/*:*` with a **detached** HEAD | `refs/heads/…` only — `HEAD` is never a candidate, git walking `refs/` |
+
+`remoteShow` therefore enumerates every ref under `refs/` and filters with `fetchesInto` — the same
+predicate `remove` uses — instead of the `refs/remotes/<name>/` prefix scan plus a namespace gate.
+Symbolic refs stay unreported, as before.
 
 ### `remote remove` deletes only what it alone fetches (2026-09-17)
 

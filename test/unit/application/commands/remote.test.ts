@@ -159,6 +159,84 @@ const MAPPED_REFSPECS = [
 const remoteConfigWithFetch = (refspecs: readonly string[]): string =>
   `[remote "origin"]\n\turl = u\n${refspecs.map((spec) => `\tfetch = ${spec}\n`).join('')}`;
 
+/** The ref space `show`'s selection is probed over. */
+const SHOW_FIXTURE_REFS = [
+  'refs/heads/side',
+  'refs/other/origin/z',
+  'refs/remotes/origin/deep/x',
+  'refs/remotes/origin/main',
+  'refs/remotes/zzz/q',
+] as unknown as readonly RefName[];
+
+const OUTSIDE_SPEC = '+refs/heads/*:refs/other/origin/*';
+const DEEP_SPEC = '+refs/heads/*:refs/remotes/origin/deep/*';
+const ZZZ_CONFIG = '[remote "zzz"]\n\turl = z\n\tfetch = +refs/heads/*:refs/remotes/zzz/*\n';
+
+/** What `show` attaches for a remote carrying each refspec shape: every ref
+ *  in the repository at least one of them fetches into, and nothing else. */
+const SHOW_SELECTION = [
+  {
+    label: 'no fetch refspec',
+    refspecs: [] as readonly string[],
+    extraConfig: '',
+    expected: [] as readonly string[],
+  },
+  {
+    label: 'a destination outside refs/remotes',
+    refspecs: [OUTSIDE_SPEC],
+    extraConfig: '',
+    expected: ['refs/other/origin/z'],
+  },
+  {
+    label: 'a destination nested under the remote',
+    refspecs: [DEEP_SPEC],
+    extraConfig: '',
+    expected: ['refs/remotes/origin/deep/x'],
+  },
+  {
+    label: 'two destinations, the nested one first',
+    refspecs: [DEEP_SPEC, OUTSIDE_SPEC],
+    extraConfig: '',
+    expected: ['refs/other/origin/z', 'refs/remotes/origin/deep/x'],
+  },
+  {
+    label: 'the same two destinations in the other order',
+    refspecs: [OUTSIDE_SPEC, DEEP_SPEC],
+    extraConfig: '',
+    expected: ['refs/other/origin/z', 'refs/remotes/origin/deep/x'],
+  },
+  {
+    label: 'a destination with no star',
+    refspecs: ['+refs/heads/main:refs/remotes/origin/main'],
+    extraConfig: '',
+    expected: ['refs/remotes/origin/main'],
+  },
+  {
+    label: 'a refspec with no colon',
+    refspecs: ['+refs/heads/*'],
+    extraConfig: '',
+    expected: [],
+  },
+  {
+    label: "a destination inside another configured remote's namespace",
+    refspecs: ['+refs/heads/*:refs/remotes/zzz/*'],
+    extraConfig: ZZZ_CONFIG,
+    expected: ['refs/remotes/zzz/q'],
+  },
+  {
+    label: 'a destination inside the local branch namespace',
+    refspecs: ['+refs/heads/*:refs/heads/*'],
+    extraConfig: '',
+    expected: ['refs/heads/side'],
+  },
+  {
+    label: 'the same destination twice',
+    refspecs: ['+refs/heads/*:refs/remotes/origin/*', '+refs/heads/*:refs/remotes/origin/*'],
+    extraConfig: '',
+    expected: ['refs/remotes/origin/deep/x', 'refs/remotes/origin/main'],
+  },
+];
+
 /** `origin` with the canonical refspec, plus a branch tracking it. */
 const TRACKED_ORIGIN_CONFIG =
   '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n';
@@ -2612,6 +2690,56 @@ describe('application/commands/remote', () => {
             code: 'REMOTE_NOT_CONFIGURED',
             remote: '',
           });
+        });
+      });
+    });
+    describe.each(BACKENDS)('Given a planted ref space on the $label store', ({ frame }) => {
+      describe.each(SHOW_SELECTION)(
+        'Given $label, When remoteShow runs',
+        ({ refspecs, extraConfig, expected }) => {
+          it('Then exactly the refs those refspecs fetch into are attached', async () => {
+            // Arrange
+            const ctx = frame(createMemoryContext());
+            await seed(ctx, `${remoteConfigWithFetch(refspecs)}${extraConfig}`);
+            await getRefStore(ctx).applyRefUpdates(
+              SHOW_FIXTURE_REFS.map((name) => ({ kind: 'set', name, id: ORIGIN_ID }) as const),
+            );
+
+            // Act
+            const result = await remoteShow(ctx, { name: 'origin' });
+
+            // Assert
+            expect([...result.remote.trackingRefs.keys()].sort()).toEqual([...expected].sort());
+            for (const name of expected) {
+              expect(result.remote.trackingRefs.get(name as RefName)).toBe(ORIGIN_ID);
+            }
+          });
+        },
+      );
+    });
+
+    describe('Given a detached HEAD and a refspec whose destination is a bare star', () => {
+      describe('When remoteShow runs', () => {
+        it('Then HEAD is not among the tracking refs, only the refs under refs/', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, remoteConfigWithFetch(['+refs/heads/*:*']));
+          await getRefStore(ctx).applyRefUpdates([
+            ...SHOW_FIXTURE_REFS.map((name) => ({ kind: 'set', name, id: ORIGIN_ID }) as const),
+            { kind: 'set', name: 'HEAD' as RefName, id: ORIGIN_ID },
+          ]);
+
+          // Act
+          const result = await remoteShow(ctx, { name: 'origin' });
+
+          // Assert
+          expect([...result.remote.trackingRefs.keys()].sort()).toEqual([
+            'refs/heads/side',
+            'refs/other/origin/z',
+            'refs/remotes/origin/deep/x',
+            'refs/remotes/origin/main',
+            'refs/remotes/zzz/q',
+          ]);
         });
       });
     });
