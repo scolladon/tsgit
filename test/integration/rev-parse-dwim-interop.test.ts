@@ -11,13 +11,19 @@
  *   unique:         ref DWIM skips a candidate git's reading walk cannot resolve and tries the next
  *   interopSurface: revParse
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { branchCreate } from '../../src/application/commands/branch.js';
+import { checkout } from '../../src/application/commands/checkout.js';
+import { log } from '../../src/application/commands/log.js';
+import { reset } from '../../src/application/commands/reset.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import { mergeBase } from '../../src/application/primitives/merge-base.js';
 import type { TsgitError } from '../../src/domain/error.js';
+import type { ObjectId } from '../../src/domain/objects/index.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -58,6 +64,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
   let repo = '';
   let first = '';
   let second = '';
+  const caseRoots: string[] = [];
 
   beforeAll(async () => {
     repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-dwim-interop-'));
@@ -79,11 +86,26 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
     git(repo, 'update-ref', 'refs/heads/cy', first);
     git(repo, 'symbolic-ref', 'refs/tags/dg', 'refs/tags/nope');
     git(repo, 'update-ref', 'refs/heads/dg', first);
+    // A short name two namespaces carry, the tag on the newer commit.
+    git(repo, 'update-ref', 'refs/heads/amb', first);
+    git(repo, 'update-ref', 'refs/tags/amb', second);
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
     await rm(repo, { recursive: true, force: true });
+    await Promise.all(
+      caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    );
   });
+
+  /** A private copy of the shared fixture, for the rows that write. */
+  const caseRepo = async (slug: string): Promise<string> => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-rev-parse-dwim-${slug}-`));
+    caseRoots.push(root);
+    const dir = path.join(root, 'repo');
+    await cp(repo, dir, { recursive: true });
+    return dir;
+  };
 
   describe('Given candidates git skips ahead of one it resolves', () => {
     describe('When git rev-parse and revParse resolve the short name', () => {
@@ -130,30 +152,103 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
 
   describe('Given a five-hop chain', () => {
     describe('When both resolve it named in full or through a partial prefix', () => {
-      it.each([{ argument: 'refs/heads/x' }, { argument: 'heads/x' }])(
-        'Then neither resolves $argument',
-        async ({ argument }) => {
-          // Arrange
-          const sut = revParse;
-          const ctx = createNodeContext({ workDir: repo });
+      it.each([
+        { argument: 'refs/heads/x', verify: true },
+        { argument: 'heads/x', verify: true },
+        { argument: 'refs/heads/x', verify: false },
+        { argument: 'heads/x', verify: false },
+      ])('Then neither resolves $argument (--verify: $verify)', async ({ argument, verify }) => {
+        // Arrange — both forms refuse; only the wording git prints differs,
+        // so the row runs each one rather than assuming they agree.
+        const sut = revParse;
+        const ctx = createNodeContext({ workDir: repo });
 
-          // Act
-          let caught: unknown;
-          try {
-            await sut(ctx, argument);
-          } catch (err) {
-            caught = err;
-          }
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, argument);
+        } catch (err) {
+          caught = err;
+        }
 
-          // Assert
-          const gitResult = tryRunGitWithExit(['-C', repo, 'rev-parse', '--verify', argument], {
-            env: runGitEnv(),
-          });
-          expect(gitResult.exitCode).toBe(128);
-          expect(gitResult.stderr).toContain('ignoring dangling symref refs/heads/x');
-          expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: argument });
-        },
-      );
+        // Assert
+        const gitResult = tryRunGitWithExit(
+          ['-C', repo, 'rev-parse', ...(verify ? ['--verify'] : []), argument],
+          { env: runGitEnv() },
+        );
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain('ignoring dangling symref refs/heads/x');
+        expect(gitResult.stderr).toContain(
+          verify ? 'Needed a single revision' : 'ambiguous argument',
+        );
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: argument });
+      });
+    });
+  });
+
+  describe('Given a short name a branch and a tag both carry', () => {
+    describe('When git rev-parse and revParse both resolve it', () => {
+      it('Then both take the tag, which the ladder reaches first', async () => {
+        // Arrange
+        const sut = revParse;
+        const ctx = createNodeContext({ workDir: repo });
+
+        // Act
+        const result = await sut(ctx, 'amb');
+
+        // Assert
+        const gitResult = tryRunGitWithExit(['-C', repo, 'rev-parse', 'amb'], { env: runGitEnv() });
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stderr).toBe("warning: refname 'amb' is ambiguous.\n");
+        expect(gitResult.stdout.trim()).toBe(second);
+        expect(result).toBe(second);
+        expect(git(repo, 'rev-parse', 'refs/heads/amb').trim()).toBe(first);
+      });
+    });
+  });
+
+  describe('Given a short name whose earlier candidate git cannot walk', () => {
+    describe('When the surfaces that take a name, other than rev-parse, resolve it', () => {
+      it('Then every one of them lands on the later candidate, on both tools', async () => {
+        // Arrange — one copy per tool: four of these five surfaces write.
+        const peer = await caseRepo('dw4-peer');
+        const ours = await caseRepo('dw4-ours');
+        const ctx = createNodeContext({ workDir: ours });
+
+        // Act — git's five
+        const gitLog = tryRunGitWithExit(['-C', peer, 'log', '-1', '--format=%H', 'y'], {
+          env: runGitEnv(),
+        });
+        const gitMergeBase = tryRunGitWithExit(['-C', peer, 'merge-base', 'y', 'main'], {
+          env: runGitEnv(),
+        });
+        runGit(['-C', peer, 'branch', 'fresh-branch', 'y'], { env: IDENTITY_ENV });
+        runGit(['-C', peer, 'reset', '--soft', 'y'], { env: IDENTITY_ENV });
+        runGit(['-C', peer, 'checkout', '--detach', 'y'], { env: IDENTITY_ENV });
+
+        // Act — tsgit's four name-taking equivalents; `mergeBase` takes
+        // resolved ids, so its DWIM is `revParse`'s, run here explicitly.
+        const entries = await log(ctx, { rev: 'y', limit: 1 });
+        const bases = await mergeBase(ctx, [
+          (await revParse(ctx, 'y')) as ObjectId,
+          (await revParse(ctx, 'main')) as ObjectId,
+        ]);
+        const created = await branchCreate(ctx, { name: 'fresh-branch', startPoint: 'y' });
+        const resetResult = await reset(ctx, { mode: 'soft', rev: 'y' });
+        const detached = await checkout(ctx, { rev: 'y', detach: true });
+
+        // Assert
+        expect(gitLog.stdout.trim()).toBe(first);
+        expect(gitMergeBase.stdout.trim()).toBe(first);
+        expect(git(peer, 'rev-parse', 'refs/heads/fresh-branch').trim()).toBe(first);
+        expect(git(peer, 'rev-parse', 'HEAD').trim()).toBe(first);
+        expect(entries[0]?.id).toBe(first);
+        expect(bases).toEqual([first]);
+        expect(created.id).toBe(first);
+        expect(resetResult.id).toBe(first);
+        expect(detached.id).toBe(first);
+        expect(git(ours, 'rev-parse', 'HEAD').trim()).toBe(git(peer, 'rev-parse', 'HEAD').trim());
+      });
     });
   });
 });

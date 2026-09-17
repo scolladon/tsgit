@@ -361,6 +361,38 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
       });
     });
 
+    describe('When git branch --force and tsgit branchCreate with force both cut from it', () => {
+      it('Then force changes nothing — the ambiguity is refused before the name is looked at', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo('ambiguous-force');
+        git(dir, 'branch', 'twice', commitId);
+        git(dir, 'tag', 'twice', commitId);
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          dir,
+          'branch',
+          '--force',
+          'b-forced-git',
+          'twice',
+        ]);
+        const error = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'b-forced-tsgit', startPoint: 'twice', force: true }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          "warning: refname 'twice' is ambiguous.\nfatal: ambiguous object name: 'twice'\n",
+        );
+        expect(error.data.code).toBe('REVPARSE_AMBIGUOUS');
+        if (error.data.code === 'REVPARSE_AMBIGUOUS') {
+          expect(error.data.expression).toBe('twice');
+        }
+      });
+    });
+
     describe('When git tag and tsgit tagCreate both cut from it', () => {
       it('Then both take it without refusing — only branch checks the count', async () => {
         // Arrange — the same short name as a branch AND a tag.
@@ -379,6 +411,49 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         expect(git(dir, 'rev-parse', 'refs/tags/t-amb-tsgit').trim()).toBe(
           git(dir, 'rev-parse', 'refs/tags/t-amb-git').trim(),
         );
+      });
+    });
+  });
+
+  describe('Given a branch literally named HEAD alongside the pseudo-ref', () => {
+    describe('When git branch and tsgit branchCreate both pass HEAD as the start point', () => {
+      it('Then both refuse — the literal HEAD now names two things', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo('head-ambiguous');
+        git(dir, 'update-ref', 'refs/heads/HEAD', commitId);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-head-git', 'HEAD']);
+        const error = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'b-head-tsgit', startPoint: 'HEAD' }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          "warning: refname 'HEAD' is ambiguous.\nfatal: ambiguous object name: 'HEAD'\n",
+        );
+        expect(error.data.code).toBe('REVPARSE_AMBIGUOUS');
+        if (error.data.code === 'REVPARSE_AMBIGUOUS') {
+          expect(error.data.expression).toBe('HEAD');
+        }
+      });
+    });
+
+    describe('When git branch and tsgit branchCreate both omit the start point', () => {
+      it('Then both accept — the omitted default never goes through the ladder', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo('head-ambiguous-omitted');
+        git(dir, 'update-ref', 'refs/heads/HEAD', commitId);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-default-git']);
+        const result = await branchCreate(ctx, { name: 'b-default-tsgit' });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stderr).toBe('');
+        expect(result.id).toBe(commitId);
       });
     });
   });
