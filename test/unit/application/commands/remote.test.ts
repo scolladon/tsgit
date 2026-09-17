@@ -57,6 +57,63 @@ const recordBatches = (ctx: Context): RefUpdate[][] => {
   return batches;
 };
 
+/** Both ref backends, so a rule that binds on each can be swept once. */
+const BACKENDS = [
+  { label: 'files', frame: (ctx: Context): Context => ctx },
+  { label: 'reftable', frame: withReftableStorage },
+] as const;
+
+/** `refs/remotes/` is 13 bytes; renaming `origin` (6) to `up2` overwrites
+ *  bytes 13..19 of the target, whatever those bytes happen to be. */
+const SPLICED_TARGETS = [
+  {
+    label: 'a target under another remote',
+    target: 'refs/remotes/other/main',
+    spliced: 'refs/remotes/up2main',
+  },
+  {
+    label: 'a target under refs/heads',
+    target: 'refs/heads/feature-long-name',
+    spliced: 'refs/heads/feup2long-name',
+  },
+  {
+    label: 'a target under a remote prefixed by the old name',
+    target: 'refs/remotes/originX/main',
+    spliced: 'refs/remotes/up2X/main',
+  },
+  {
+    label: 'a target under a remote merely containing the old name',
+    target: 'refs/remotes/myorigin/main',
+    spliced: 'refs/remotes/up2in/main',
+  },
+  {
+    label: 'a target equal to the old remote prefix',
+    target: 'refs/remotes/origin',
+    spliced: 'refs/remotes/up2',
+  },
+  {
+    label: 'a target one byte longer than the slice',
+    target: 'refs/remotes/originz',
+    spliced: 'refs/remotes/up2z',
+  },
+].map((row) => ({ ...row, target: row.target as RefName }));
+
+/** Targets too short for the slice: git's splice refuses over them. */
+const UNSPLICEABLE_TARGETS = [
+  { label: 'a target one byte shorter than the slice', target: 'refs/remotes/origi' },
+  { label: 'a target far shorter than the slice', target: 'refs/heads/main' },
+].map((row) => ({ ...row, target: row.target as RefName }));
+
+/** `origin` with the canonical refspec, one direct tracking ref and a
+ *  symbolic `origin/HEAD` aimed at `target`. */
+const seedRenameSource = async (ctx: Context, target: RefName): Promise<void> => {
+  await seed(ctx, '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n');
+  await getRefStore(ctx).applyRefUpdates([
+    { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+    { kind: 'setSymbolic', name: ORIGIN_HEAD, target },
+  ]);
+};
+
 /** Renames `origin` to `to`, returning what it threw (or `undefined`). */
 const renameRefusal = async (ctx: Context, to: string): Promise<unknown> => {
   try {
@@ -1845,6 +1902,69 @@ describe('application/commands/remote', () => {
             `${ORIGIN_ID}\n`,
           );
           expect(await ctx.fs.readUtf8(`${gitDir}/config`)).toBe(configBefore);
+        });
+      });
+    });
+
+    describe.each(BACKENDS)('Given a symbolic tracking ref on the $label store', ({ frame }) => {
+      describe.each(SPLICED_TARGETS)(
+        'Given $label, When remoteRename runs',
+        ({ target, spliced }) => {
+          it('Then the renamed symref points at the spliced target', async () => {
+            // Arrange
+            const ctx = frame(createMemoryContext());
+            await seedRenameSource(ctx, target);
+
+            // Act
+            await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+            // Assert
+            expect(await getRefStore(ctx).resolveDirect(UP2_HEAD)).toEqual({
+              kind: 'symbolic',
+              target: spliced,
+            });
+          });
+        },
+      );
+
+      describe.each(UNSPLICEABLE_TARGETS)('Given $label, When remoteRename runs', ({ target }) => {
+        it('Then it throws INVALID_REF and leaves every tracking ref where it was', async () => {
+          // Arrange
+          const ctx = frame(createMemoryContext());
+          await seedRenameSource(ctx, target);
+
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
+
+          // Assert
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_REF');
+          if (data.code !== 'INVALID_REF') throw new Error('unreachable');
+          expect(data.reason).toBe(
+            `symbolic ref target '${target}' is shorter than the renamed slice`,
+          );
+          const store = getRefStore(ctx);
+          expect(await store.resolveDirect(ORIGIN_HEAD)).toEqual({ kind: 'symbolic', target });
+          expect(await store.resolveDirect(ORIGIN_MAIN)).toEqual({ kind: 'direct', id: ORIGIN_ID });
+          expect(await store.resolveDirect(UP2_HEAD)).toEqual({ kind: 'missing' });
+          expect(await store.resolveDirect(UP2_MAIN)).toEqual({ kind: 'missing' });
+        });
+      });
+
+      describe('Given a renamed name already taken and an unspliceable symref target', () => {
+        describe('When remoteRename runs', () => {
+          it('Then the unspliceable target refuses ahead of the name conflict', async () => {
+            // Arrange
+            const ctx = frame(createMemoryContext());
+            await seedRenameSource(ctx, 'refs/heads/main' as RefName);
+            await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: UP2_MAIN, id: STALE_ID }]);
+
+            // Act
+            const caught = await renameRefusal(ctx, 'up2');
+
+            // Assert
+            expect((caught as TsgitError).data.code).toBe('INVALID_REF');
+          });
         });
       });
     });

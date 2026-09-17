@@ -11,7 +11,7 @@ import { invalidOption, remoteExists, remoteNotConfigured } from '../../domain/c
 import type { TsgitError } from '../../domain/error.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/object-id.js';
 import { REMOTE_REMOVE_REFLOG } from '../../domain/reflog/reflog-messages.js';
-import { refUpdateConflict } from '../../domain/refs/error.js';
+import { invalidRef, refUpdateConflict } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
@@ -235,20 +235,55 @@ const isDirectEntry = (entry: TrackingRefEntry): entry is DirectTrackingRef =>
 const isSymbolicEntry = (entry: TrackingRefEntry): entry is SymbolicTrackingRef =>
   entry.kind === 'symbolic';
 
-const renamedName = (name: RefName, from: string, to: string): RefName =>
-  `refs/remotes/${to}/${name.slice(`refs/remotes/${from}/`.length)}` as RefName;
+const REMOTES_PREFIX_LENGTH = 'refs/remotes/'.length;
+
+/**
+ * git's rewrite of a name a rename touches: the bytes at `refs/remotes/`'s
+ * length, for as many bytes as the old remote name is long, replaced by the
+ * new name — whatever those bytes spell and wherever the name lives.
+ */
+const spliceRemoteName = (value: string, rename: TrackingRename): string =>
+  value.slice(0, REMOTES_PREFIX_LENGTH) +
+  rename.to +
+  value.slice(REMOTES_PREFIX_LENGTH + rename.from.length);
+
+const renamedName = (name: RefName, rename: TrackingRename): RefName =>
+  spliceRemoteName(name, rename) as RefName;
 
 /** git's own rename message names the full ref paths, not the remote names. */
 const trackingRenameMessage = (oldRef: RefName, newRef: RefName): string =>
   `remote: renamed ${oldRef} to ${newRef}`;
 
-/** A symref's target is rewritten only when it points inside the remote
- *  being renamed (the pinned shape `<remote>/HEAD` takes) — any other
- *  target survives verbatim. */
-const rewriteSymbolicTarget = (target: RefName, from: string, to: string): RefName => {
-  const prefix = `refs/remotes/${from}/`;
-  return target.startsWith(prefix) ? renamedName(target, from, to) : target;
+/**
+ * A symref's target takes the same splice as the ref's own name, with no
+ * check that it points inside the remote being renamed — so a target under
+ * another namespace is rewritten into a dangling name, and one too short to
+ * hold the slice has no bytes to overwrite and refuses.
+ */
+const rewriteSymbolicTarget = (target: RefName, rename: TrackingRename): RefName => {
+  if (target.length < REMOTES_PREFIX_LENGTH + rename.from.length) {
+    throw invalidRef(`symbolic ref target '${target}' is shorter than the renamed slice`);
+  }
+  return spliceRemoteName(target, rename) as RefName;
 };
+
+/** A symbolic tracking ref beside the two names git splices for it — both
+ *  computed while the rename is prepared, before anything is written. */
+interface RenamedSymref {
+  readonly entry: SymbolicTrackingRef;
+  readonly name: RefName;
+  readonly target: RefName;
+}
+
+const prepareSymrefs = (
+  symbolic: readonly SymbolicTrackingRef[],
+  rename: TrackingRename,
+): readonly RenamedSymref[] =>
+  symbolic.map((entry) => ({
+    entry,
+    name: renamedName(entry.name, rename),
+    target: rewriteSymbolicTarget(entry.target, rename),
+  }));
 
 /**
  * The refusal a rename's create meets at `target`, if any. git queues every
@@ -307,7 +342,7 @@ const createDirectTrackingRefs = async (
   const store = getRefStore(ctx);
   const updates: RefUpdate[] = [];
   for (const entry of direct) {
-    const target = renamedName(entry.name, rename.from, rename.to);
+    const target = renamedName(entry.name, rename);
     updates.push(directCreate(entry, target));
     if (!(await store.hasReflog(entry.name))) continue;
     await store.moveReflog(entry.name, target);
@@ -327,38 +362,29 @@ const movesSymrefLog = (ctx: Context): boolean =>
  * log, and the `noDeref` delete appends the referent's value from before the
  * delete to it, as git's does.
  */
-const carrySymbolicLog = async (
-  ctx: Context,
-  entry: SymbolicTrackingRef,
-  rename: TrackingRename,
-): Promise<void> => {
+const carrySymbolicLog = async (ctx: Context, renamed: RenamedSymref): Promise<void> => {
   const store = getRefStore(ctx);
-  const target = renamedName(entry.name, rename.from, rename.to);
   await (movesSymrefLog(ctx)
-    ? store.moveReflog(entry.name, target)
-    : store.copyReflog(entry.name, target));
+    ? store.moveReflog(renamed.entry.name, renamed.name)
+    : store.copyReflog(renamed.entry.name, renamed.name));
 };
 
-/** A symbolic tracking ref's create under its renamed name, its target
- *  rewritten into the new namespace — with a null-id rename entry on the
- *  files backend only. */
-const symbolicCreate = (
-  ctx: Context,
-  entry: SymbolicTrackingRef,
-  rename: TrackingRename,
-): RefUpdate => {
-  const name = renamedName(entry.name, rename.from, rename.to);
-  const target = rewriteSymbolicTarget(entry.target, rename.from, rename.to);
+/** A symbolic tracking ref's create under its spliced name and target —
+ *  with a null-id rename entry on the files backend only. */
+const symbolicCreate = (ctx: Context, renamed: RenamedSymref): RefUpdate => {
+  const { name, target } = renamed;
   if (!movesSymrefLog(ctx)) return { kind: 'setSymbolic', name, target };
   const zero = zeroOid(ctx.hashConfig);
-  const reflog = { oldId: zero, newId: zero, message: trackingRenameMessage(entry.name, name) };
-  return { kind: 'setSymbolic', name, target, reflog };
+  const message = trackingRenameMessage(renamed.entry.name, name);
+  return { kind: 'setSymbolic', name, target, reflog: { oldId: zero, newId: zero, message } };
 };
 
 /**
  * Move every tracking ref from `refs/remotes/<from>/` to `refs/remotes/<to>/`:
- * every renamed name proven free, the direct refs created, the symbolic
- * refs' logs carried, every old name deleted in ONE ref transaction, and the
+ * every symref's two names spliced first (git splices them while it prepares
+ * the rename, so an unspliceable target refuses ahead of any name conflict),
+ * every renamed name proven free, the direct refs created, the symbolic refs'
+ * logs carried, every old name deleted in ONE ref transaction, and the
  * symbolic `<to>/HEAD` created last, once its target already exists.
  */
 const renameTrackingRefs = async (
@@ -366,16 +392,16 @@ const renameTrackingRefs = async (
   rename: TrackingRename,
 ): Promise<readonly RefName[]> => {
   const resolved = await readTrackingValues(ctx, await listTrackingRefs(ctx, rename.from));
+  const symbolic = prepareSymrefs(resolved.filter(isSymbolicEntry), rename);
   // Every renamed name, in the ref order git queues the rename in.
-  const renamedNames = resolved.map((entry) => renamedName(entry.name, rename.from, rename.to));
+  const renamedNames = resolved.map((entry) => renamedName(entry.name, rename));
   await assertRenamedNamesFree(ctx, renamedNames);
-  const symbolic = resolved.filter(isSymbolicEntry);
   await createDirectTrackingRefs(ctx, resolved.filter(isDirectEntry), rename);
-  for (const entry of symbolic) await carrySymbolicLog(ctx, entry, rename);
+  for (const renamed of symbolic) await carrySymbolicLog(ctx, renamed);
   const oldNames = resolved.map((entry) => entry.name);
   await deleteRefs(ctx, oldNames, { noDeref: true });
-  for (const entry of symbolic) {
-    await getRefStore(ctx).applyRefUpdates([symbolicCreate(ctx, entry, rename)]);
+  for (const renamed of symbolic) {
+    await getRefStore(ctx).applyRefUpdates([symbolicCreate(ctx, renamed)]);
   }
   return renamedNames;
 };

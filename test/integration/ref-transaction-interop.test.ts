@@ -1366,6 +1366,109 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a tracking HEAD aimed outside the remote being renamed', () => {
+      describe('When the remote is renamed', () => {
+        it('Then both tools splice a fixed slice of the target and leave the same dangling symref', async () => {
+          // Arrange — git rewrites the target by overwriting the bytes at
+          // `refs/remotes/`'s length for the old remote's length, without
+          // checking the target lives under that remote at all.
+          const { peer, ours, ctx } = await remoteRenameCasePair('remote-rename-splice');
+          const outside = 'refs/remotes/other/main';
+          for (const repo of [peer, ours]) {
+            git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', outside);
+          }
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'up2'], {
+            env: { ...runGitEnv(), GIT_COMMITTER_NAME: 'A', GIT_COMMITTER_EMAIL: 'a@x' },
+          });
+          await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          const peerTarget = tryRunGitWithExit([
+            '-C',
+            peer,
+            'symbolic-ref',
+            'refs/remotes/up2/HEAD',
+          ]);
+          expect(peerTarget.exitCode).toBe(0);
+          expect(peerTarget.stdout.trim()).toBe('refs/remotes/up2main');
+          expect(await getRefStore(ctx).resolveDirect('refs/remotes/up2/HEAD' as RefName)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/remotes/up2main',
+          });
+          const oursTarget = tryRunGitWithExit([
+            '-C',
+            ours,
+            'symbolic-ref',
+            'refs/remotes/up2/HEAD',
+          ]);
+          expect(oursTarget.stdout.trim()).toBe(peerTarget.stdout.trim());
+        });
+      });
+    });
+
+    describe('Given a tracking HEAD whose target is shorter than the spliced slice', () => {
+      describe('When the remote is renamed', () => {
+        it('Then both tools refuse and leave every tracking ref exactly where it was', async () => {
+          // Arrange — `refs/heads/main` is 15 bytes; the slice git overwrites
+          // runs to byte 19, so its splice has nothing to overwrite.
+          const { peer, ours, ctx } = await remoteRenameCasePair('remote-rename-short-target');
+          const shortTarget = 'refs/heads/main';
+          for (const repo of [peer, ours]) {
+            git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', shortTarget);
+          }
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'up2'], {
+            env: { ...runGitEnv(), GIT_COMMITTER_NAME: 'A', GIT_COMMITTER_EMAIL: 'a@x' },
+          });
+          try {
+            await remoteRename(ctx, { from: 'origin', to: 'up2' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_REF');
+          if (data.code !== 'INVALID_REF') throw new Error('unreachable');
+          expect(data.reason).toBe(
+            `symbolic ref target '${shortTarget}' is shorter than the renamed slice`,
+          );
+          for (const repo of [peer, ours]) {
+            const kept = tryRunGitWithExit([
+              '-C',
+              repo,
+              'symbolic-ref',
+              'refs/remotes/origin/HEAD',
+            ]);
+            expect(kept.exitCode).toBe(0);
+            expect(kept.stdout.trim()).toBe(shortTarget);
+            const moved = tryRunGitWithExit([
+              '-C',
+              repo,
+              'show-ref',
+              '--verify',
+              'refs/remotes/up2/main',
+            ]);
+            expect(moved.exitCode).not.toBe(0);
+            const source = tryRunGitWithExit([
+              '-C',
+              repo,
+              'show-ref',
+              '--verify',
+              'refs/remotes/origin/main',
+            ]);
+            expect(source.exitCode).toBe(0);
+          }
+        });
+      });
+    });
+
     describe('Given a symbolic ref', () => {
       describe('When it is deleted by its own name', () => {
         it('Then both git and tsgit dereference: the target is gone, the symref itself survives', async () => {
