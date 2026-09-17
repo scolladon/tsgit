@@ -1520,7 +1520,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a reftable-backed checked-out branch with two commits', () => {
       describe('When it is renamed', () => {
-        it("Then, after migrating each side to the files format, logs/HEAD and the renamed branch's own log are byte-identical", async () => {
+        it("Then migrating each side to the files format leaves logs/HEAD and the renamed branch's own log byte-identical", async () => {
           // Arrange — build a reftable repo with git, copy it twice, rename
           // on each side (git's CLI, tsgit's `branchRename`), then migrate
           // BOTH copies to the files format so their raw log bytes can be
