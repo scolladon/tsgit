@@ -268,7 +268,8 @@ describe.skipIf(!GIT_AVAILABLE)(
     };
 
     const ZERO: ObjectId = '0'.repeat(40) as ObjectId;
-    const branchRef = (name: string): RefName => `refs/heads/${name}` as RefName;
+    const HEADS = 'refs/heads/';
+    const branchRef = (name: string): RefName => `${HEADS}${name}` as RefName;
 
     const expectTsgitConflict = async (
       fn: () => Promise<unknown>,
@@ -1401,6 +1402,130 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(data.code).toBe('REMOTE_EXISTS');
           if (data.code !== 'REMOTE_EXISTS') throw new Error('unreachable');
           expect(data.remote).toBe('origin');
+        });
+      });
+    });
+
+    describe('Given a tracking ref already sitting under the name a rename would move onto', () => {
+      describe('When both tools rename the remote', () => {
+        it('Then both refuse, move no ref, and leave the identical half-renamed config behind', async () => {
+          // Arrange — `refs/remotes/up2/main` is taken, so the rename's very
+          // first renamed name is already occupied.
+          const { peer, ours, ctx } = await remoteRenameCasePair('remote-rename-name-taken');
+          const oid = git(peer, 'rev-parse', 'HEAD').trim();
+          for (const repo of [peer, ours]) {
+            runGit(['-C', repo, 'update-ref', 'refs/remotes/origin/aaa', oid]);
+            runGit(['-C', repo, 'update-ref', 'refs/remotes/up2/main', oid]);
+          }
+          const refsBefore = git(
+            peer,
+            'for-each-ref',
+            '--format=%(refname) %(objectname)',
+            'refs/remotes',
+          );
+          const sut = remoteRename;
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'up2']);
+          try {
+            await sut(ctx, { from: 'origin', to: 'up2' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git refuses under the taken name's own lock.
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            "renaming remote references failed: cannot lock ref 'refs/remotes/up2/main': reference already exists",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/up2/main',
+            expected: 'absent',
+            actual: oid,
+          });
+
+          // Assert — no ref moved on either side.
+          for (const repo of [peer, ours]) {
+            expect(
+              git(repo, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes'),
+            ).toBe(refsBefore);
+          }
+
+          // Assert — the config is committed only as far as git got: the
+          // section header renamed, its fetch refspec and the tracking
+          // branch still naming the old remote.
+          expect(remoteAndBranchConfig(ours)).toBe(remoteAndBranchConfig(peer));
+          expect(remoteAndBranchConfig(peer).split('\n')).toEqual([
+            `remote.up2.url=${git(peer, 'config', '--local', 'remote.up2.url').trim()}`,
+            'remote.up2.fetch=+refs/heads/*:refs/remotes/origin/*',
+            'branch.main.remote=origin',
+            'branch.main.merge=refs/heads/main',
+          ]);
+        });
+      });
+    });
+
+    describe('Given a symbolic tracking ref planted inside the destination a fetch refspec matches', () => {
+      /** The names `git remote show` prints under "Remote branches": each
+       *  matched local ref mapped back through the refspec to the name the
+       *  remote itself carries, with `refs/heads/` stripped. */
+      const remoteSideNames = (spec: string, refs: readonly RefName[]): readonly string[] => {
+        const [source = '', destination = ''] = spec.replace(/^\+/, '').split(':');
+        const sourcePrefix = source.slice(0, -1);
+        const destinationPrefix = destination.slice(0, -1);
+        return refs
+          .map((ref) => `${sourcePrefix}${ref.slice(destinationPrefix.length)}`)
+          .map((name) => (name.startsWith(HEADS) ? name.slice(HEADS.length) : name))
+          .sort();
+      };
+      const listedBranches = (stdout: string): readonly string[] => {
+        const lines = stdout.split('\n');
+        const start = lines.findIndex((line) => line.includes('Remote branch')) + 1;
+        const listed: string[] = [];
+        for (const line of lines.slice(start)) {
+          if (!line.startsWith('    ')) break;
+          listed.push(line.trim());
+        }
+        return listed;
+      };
+
+      describe.each([
+        {
+          label: "the remote's own namespace",
+          spec: '+refs/heads/*:refs/remotes/origin/*',
+          symref: 'refs/remotes/origin/sym',
+          target: 'refs/remotes/origin/main',
+        },
+        {
+          label: "a mirror's whole ref space",
+          spec: '+refs/*:refs/*',
+          symref: 'refs/heads/mirrored',
+          target: 'refs/heads/main',
+        },
+      ])('When both tools describe a remote fetching into $label', ({ spec, symref, target }) => {
+        it('Then both attach every direct ref the refspec matches and neither attaches the symbolic one', async () => {
+          // Arrange
+          const { peer, ctx } = await remoteRenameCasePair(`remote-show-symref-${spec.length}`);
+          const ours = path.dirname(ctx.layout.gitDir);
+          for (const repo of [peer, ours]) {
+            runGit(['-C', repo, 'config', '--unset-all', 'remote.origin.fetch']);
+            runGit(['-C', repo, 'config', '--add', 'remote.origin.fetch', spec]);
+            runGit(['-C', repo, 'symbolic-ref', symref, target]);
+          }
+          const sut = remoteShow;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'show', '-n', 'origin']);
+          const result = await sut(ctx, { name: 'origin' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          const attached = [...result.remote.trackingRefs.keys()];
+          expect(remoteSideNames(spec, attached)).toEqual([...listedBranches(gitResult.stdout)]);
+          expect(attached).not.toContain(symref);
+          expect(listedBranches(gitResult.stdout).length).toBeGreaterThan(0);
         });
       });
     });
