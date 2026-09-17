@@ -18,6 +18,7 @@ import {
 } from '../../domain/reflog/expire-policy.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { isSafeRefName, refCandidates, validateRefName } from '../../domain/refs/index.js';
+import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { readReflogExpiryConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
@@ -103,9 +104,63 @@ export const reflog = async (ctx: Context, opts: ReflogAction = {}): Promise<Ref
   return runShow(ctx, opts.ref ?? 'HEAD');
 };
 
+/** One reflog `show` reads from: the entries, and the name they are labelled with. */
+interface ShowSource {
+  readonly ref: RefName;
+  readonly entries: ReadonlyArray<ReflogEntry>;
+}
+
+/** The log of the ref the argument resolves to, when the chain ends on
+ *  another name — git's read follows a symbolic ref even though
+ *  {@link hasReflog} (and so `exists`) never does. */
+const entriesViaTarget = async (
+  ctx: Context,
+  arg: RefName,
+): Promise<ReadonlyArray<ReflogEntry>> => {
+  const terminal = await resolveTerminalName(ctx, arg);
+  if (terminal === undefined || terminal === arg) return [];
+  return readReflogLenient(ctx, terminal);
+};
+
+/** git's two closing literal prefixes for a short argument, in its order. */
+const entriesUnderPrefixes = async (
+  ctx: Context,
+  arg: RefName,
+): Promise<ReadonlyArray<ReflogEntry>> => {
+  for (const name of [`refs/${arg}` as RefName, `${HEADS_PREFIX}${arg}` as RefName]) {
+    if (!isSafeRefName(name)) continue;
+    const entries = await readReflogLenient(ctx, name);
+    if (entries.length > 0) return entries;
+  }
+  return [];
+};
+
+/** `repo_dwim_log`'s answer — the only source that relabels, to the name it
+ *  found the log under. None found leaves the argument labelling no entries. */
+const entriesViaCandidates = async (ctx: Context, arg: RefName): Promise<ShowSource> => {
+  const found = await findReflogCandidate(ctx, arg);
+  if (found === undefined) return { ref: arg, entries: [] };
+  return { ref: found, entries: await readReflogLenient(ctx, found) };
+};
+
+/**
+ * git's `read_complete_reflog`: the argument's own log, then the log of the
+ * ref it resolves to, then the logs at `refs/<arg>` and `refs/heads/<arg>` —
+ * every one of them labelled with the argument as typed. Only when all four
+ * come back empty does {@link entriesViaCandidates} run and relabel.
+ */
+const showSourceFor = async (ctx: Context, arg: RefName): Promise<ShowSource> => {
+  const own = await readReflogLenient(ctx, arg);
+  if (own.length > 0) return { ref: arg, entries: own };
+  const viaTarget = await entriesViaTarget(ctx, arg);
+  if (viaTarget.length > 0) return { ref: arg, entries: viaTarget };
+  const viaPrefixes = await entriesUnderPrefixes(ctx, arg);
+  if (viaPrefixes.length > 0) return { ref: arg, entries: viaPrefixes };
+  return entriesViaCandidates(ctx, arg);
+};
+
 const runShow = async (ctx: Context, refName: string): Promise<ReflogResult> => {
-  const ref = resolveUserRef(refName);
-  const stored = await readReflogLenient(ctx, ref);
+  const { ref, entries: stored } = await showSourceFor(ctx, resolveUserRef(refName));
   const lastIndex = stored.length - 1;
   // Build newest-first directly: output position `index` (0 = newest) reads the
   // entry at file position `lastIndex - index` — no array mutation.
@@ -147,8 +202,9 @@ const runDelete = async (
   ctx: Context,
   opts: { readonly ref: string; readonly index: number; readonly rewrite?: boolean },
 ): Promise<ReflogResult> => {
-  const ref = resolveUserRef(opts.ref);
-  if (!(await hasReflog(ctx, ref))) throw reflogNotFound(ref);
+  // git's `reflog_delete` resolves its argument through `repo_dwim_log`, the
+  // same walk `expire` uses — so a symbolic ref rewrites its TARGET's log.
+  const ref = await dwimReflog(ctx, opts.ref);
   const stored = await readReflogLenient(ctx, ref);
   const target = selectTarget(stored.length, opts.index);
   const survivors =
@@ -274,14 +330,22 @@ const resolveExpireTargets = async (
 /**
  * git's `repo_dwim_log`: the first `refCandidates` entry that both resolves
  * for reading AND carries a log — its own, else (for a symref) its target's
- * — wins; none found refuses `REFLOG_NOT_FOUND` with the argument as typed.
+ * — wins, or `undefined` when no candidate does.
  */
-const dwimReflog = async (ctx: Context, arg: string): Promise<RefName> => {
+const findReflogCandidate = async (ctx: Context, arg: string): Promise<RefName | undefined> => {
   for (const candidate of refCandidates(arg)) {
     const found = await logForCandidate(ctx, candidate);
     if (found !== undefined) return found;
   }
-  throw reflogNotFound(arg as RefName);
+  return undefined;
+};
+
+/** {@link findReflogCandidate} for the verbs that need a target: none found
+ *  refuses `REFLOG_NOT_FOUND` with the argument as typed. */
+const dwimReflog = async (ctx: Context, arg: string): Promise<RefName> => {
+  const found = await findReflogCandidate(ctx, arg);
+  if (found === undefined) throw reflogNotFound(arg as RefName);
+  return found;
 };
 
 const logForCandidate = async (

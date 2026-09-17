@@ -5,8 +5,13 @@ import { reflog } from '../../../../src/application/commands/reflog.js';
 import * as readCommitMetaMod from '../../../../src/application/primitives/internal/read-commit-meta.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
-import { appendReflog, writeReflog } from '../../../../src/application/primitives/reflog-store.js';
+import {
+  appendReflog,
+  readReflog,
+  writeReflog,
+} from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
@@ -64,6 +69,15 @@ const writeCommit = (
     extraHeaders: [],
   };
   return writeObject(ctx, { type: 'commit', id: '' as ObjectId, data });
+};
+
+/**
+ * A repository whose `HEAD` resolves. Every verb that goes through git's
+ * candidate walk reads the ref before it reads the log, so an unborn `HEAD`
+ * carrying a log file is a state git itself refuses to delete from.
+ */
+const seedLiveHead = async (ctx: Context): Promise<void> => {
+  await seedRepo(ctx, { refs: { 'refs/heads/main': OID_X } });
 };
 
 /** The repository-state files every `reflog` run reads before resolving a
@@ -154,7 +168,7 @@ describe('reflog command', () => {
         it('Then it reads that branch reflog', async () => {
           // Arrange — pins that `ref` is honoured, not hard-coded to HEAD.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await appendReflog(ctx, BRANCH, entry({ message: 'branch entry' }));
 
           // Act
@@ -163,6 +177,132 @@ describe('reflog command', () => {
           // Assert
           expect(result.kind === 'show' && result.ref).toBe(BRANCH);
           expect(result.kind === 'show' && result.entries[0]?.selector).toBe('refs/heads/main@{0}');
+        });
+      });
+    });
+
+    describe('Given a symbolic ref with no log of its own over a branch that has one', () => {
+      describe('When reflog show names the symbolic ref by its full name', () => {
+        it("Then it reads the target's entries and labels them with the name as given", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedLiveHead(ctx);
+          await appendReflog(ctx, BRANCH, entry({ message: 'branch entry' }));
+          await writeSymbolicRef(ctx, 'refs/heads/z' as RefName, BRANCH);
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, { action: 'show', ref: 'refs/heads/z' });
+
+          // Assert
+          expect(result.kind === 'show' && result.ref).toBe('refs/heads/z');
+          expect(result.kind === 'show' && result.entries[0]?.selector).toBe('refs/heads/z@{0}');
+          expect(result.kind === 'show' && result.entries[0]?.entry.message).toBe('branch entry');
+        });
+      });
+
+      describe('When reflog show names the symbolic ref by a short name', () => {
+        it('Then it labels the entries with the full name the log was found under', async () => {
+          // Arrange — nothing carries a log at `z`, `refs/z` or `refs/heads/z`,
+          // so only the closing candidate walk finds one, under the target.
+          const ctx = createMemoryContext();
+          await seedLiveHead(ctx);
+          await appendReflog(ctx, BRANCH, entry({ message: 'branch entry' }));
+          await writeSymbolicRef(ctx, 'refs/heads/z' as RefName, BRANCH);
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, { action: 'show', ref: 'z' });
+
+          // Assert
+          expect(result.kind === 'show' && result.ref).toBe(BRANCH);
+          expect(result.kind === 'show' && result.entries[0]?.selector).toBe('refs/heads/main@{0}');
+        });
+      });
+
+      describe('When reflog delete names an entry through the symbolic ref', () => {
+        it("Then the entry leaves the target's log and the symbolic ref keeps none", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedLiveHead(ctx);
+          await appendReflog(ctx, BRANCH, entry({ message: 'older' }));
+          await appendReflog(ctx, BRANCH, entry({ message: 'newest' }));
+          await writeSymbolicRef(ctx, 'refs/heads/z' as RefName, BRANCH);
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, { action: 'delete', ref: 'refs/heads/z', index: 0 });
+
+          // Assert
+          expect(result.kind === 'delete' && result.removed?.message).toBe('newest');
+          expect((await readReflog(ctx, BRANCH)).map((e) => e.message)).toEqual(['older']);
+          expect(await getRefStore(ctx).hasReflog('refs/heads/z' as RefName)).toBe(false);
+        });
+      });
+
+      describe('When reflog exists names the symbolic ref', () => {
+        it('Then it reports no log — presence is never dereferenced', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedLiveHead(ctx);
+          await appendReflog(ctx, BRANCH, entry({ message: 'branch entry' }));
+          await writeSymbolicRef(ctx, 'refs/heads/z' as RefName, BRANCH);
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, { action: 'exists', ref: 'refs/heads/z' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'exists', exists: false });
+        });
+      });
+    });
+
+    describe('Given a symbolic ref carrying a log of its own over a branch that has one', () => {
+      describe('When reflog show names it', () => {
+        it('Then its own entries win and the target is never read', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await appendReflog(ctx, BRANCH, entry({ message: 'branch entry' }));
+          await writeSymbolicRef(ctx, 'refs/heads/z' as RefName, BRANCH);
+          await appendReflog(ctx, 'refs/heads/z' as RefName, entry({ message: 'own entry' }));
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, { action: 'show', ref: 'refs/heads/z' });
+
+          // Assert
+          expect(result.kind === 'show' && result.ref).toBe('refs/heads/z');
+          expect(result.kind === 'show' && result.entries.map((e) => e.entry.message)).toEqual([
+            'own entry',
+          ]);
+        });
+      });
+    });
+
+    describe('Given a symbolic ref whose target does not exist', () => {
+      describe('When reflog delete names an entry through it', () => {
+        it('Then it refuses by the name as typed, carrying no log', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeSymbolicRef(ctx, 'refs/heads/dang' as RefName, 'refs/heads/nope' as RefName);
+          const sut = reflog;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, { action: 'delete', ref: 'refs/heads/dang', index: 0 });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: 'refs/heads/dang',
+          });
         });
       });
     });
@@ -258,7 +398,7 @@ describe('reflog command', () => {
         it('Then still returns true — a present-but-empty log is not "no reflog" (matches real git)', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await writeReflog(ctx, BRANCH, [entry()]);
           await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 0 });
 
@@ -390,7 +530,7 @@ describe('reflog command', () => {
         it('Then the middle entry is dropped and returned', async () => {
           // Arrange — index counts newest-first: index 1 is the second-newest.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ message: 'first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
           const third = entry({ oldId: OID_Y, newId: OID_Z, message: 'third' });
@@ -418,7 +558,7 @@ describe('reflog command', () => {
         it('Then the newest entry is removed', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ message: 'first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
           await writeReflog(ctx, HEAD, [first, second]);
@@ -445,7 +585,7 @@ describe('reflog command', () => {
           // Arrange — file order: first, second, third. Deleting `second` (index 1,
           // newest-first) with rewrite repairs `third.oldId` to `second.oldId`.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ oldId: ZERO_OID, newId: OID_X, message: 'first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
           const third = entry({ oldId: OID_Y, newId: OID_Z, message: 'third' });
@@ -473,7 +613,7 @@ describe('reflog command', () => {
           // Arrange — deleting the file-order-last (index 0, newest) entry: there is
           // no following entry to repair, so rewrite is a no-op on the remainder.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ oldId: ZERO_OID, newId: OID_X, message: 'first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
           await writeReflog(ctx, HEAD, [first, second]);
@@ -495,7 +635,7 @@ describe('reflog command', () => {
         it('Then the following entry oldId is NOT repaired', async () => {
           // Arrange — without rewrite, `third.oldId` keeps the deleted entry's newId.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ oldId: ZERO_OID, newId: OID_X, message: 'first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
           const third = entry({ oldId: OID_Y, newId: OID_Z, message: 'third' });
@@ -520,7 +660,7 @@ describe('reflog command', () => {
           // Arrange — two entries; index 1 (newest-first) targets file position 0,
           // the oldest entry. This is the lower boundary of the valid index range.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ message: 'first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
           await writeReflog(ctx, HEAD, [first, second]);
@@ -544,7 +684,7 @@ describe('reflog command', () => {
         it('Then throws REFLOG_NOT_FOUND with the ref', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
 
           // Act
           let caught: unknown;
@@ -571,7 +711,7 @@ describe('reflog command', () => {
           // having a reflog makes `.git/logs/refs/heads/feature` a
           // directory (holding `x`'s own file), not `feature`'s own reflog.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await appendReflog(ctx, 'refs/heads/feature/x' as RefName, entry());
 
           // Act
@@ -597,7 +737,7 @@ describe('reflog command', () => {
         it('Then resolves with removed absent', async () => {
           // Arrange — two entries, index 2 is out of range.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await writeReflog(ctx, HEAD, [entry(), entry({ oldId: OID_X, newId: OID_Y })]);
 
           // Act
@@ -615,7 +755,7 @@ describe('reflog command', () => {
         it('Then resolves with removed absent', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await writeReflog(ctx, HEAD, [entry()]);
 
           // Act
@@ -633,7 +773,7 @@ describe('reflog command', () => {
         it('Then resolves with removed absent', async () => {
           // Arrange — the file exists (so not REFLOG_NOT_FOUND) but holds no entries.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await writeReflog(ctx, HEAD, []);
 
           // Act
@@ -652,7 +792,7 @@ describe('reflog command', () => {
           // Arrange — NaN would index `stored[NaN]` as `undefined` and bypass the
           // range guard; the integer guard must reject it.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await writeReflog(ctx, HEAD, [entry()]);
 
           // Act
@@ -670,7 +810,7 @@ describe('reflog command', () => {
         it('Then resolves with removed absent', async () => {
           // Arrange — 1.5 is in range numerically but is not a valid entry index.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           await writeReflog(ctx, HEAD, [entry(), entry({ oldId: OID_X, newId: OID_Y })]);
 
           // Act
@@ -690,7 +830,7 @@ describe('reflog command', () => {
           // refuse the malformed line itself), so the corruption actually lands
           // on disk.
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const kept = entry({ message: 'kept' });
           const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
           await ctx.fs.writeUtf8(reflogPath, `${serializeReflogLine(kept, 40)}garbage line\n`);
@@ -713,7 +853,7 @@ describe('reflog command', () => {
         it('Then the log is still rewritten and its content is unchanged', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+          await seedLiveHead(ctx);
           const first = entry({ message: 'first' });
           const second = entry({ oldId: OID_X, newId: OID_Y, message: 'second' });
           await writeReflog(ctx, HEAD, [first, second]);
@@ -796,10 +936,13 @@ describe('reflog command', () => {
         });
       });
       describe('When reflog delete', () => {
-        it('Then throws INVALID_REF', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await seedRepo(ctx, {});
+        it('Then throws REFLOG_NOT_FOUND with the argument as passed, touching no path under it', async () => {
+          // Arrange — `delete` resolves its argument through the same walk
+          // `expire` uses, so an invalid name folds into "could not be found"
+          // rather than a format refusal, and reaches no path under it.
+          const base = createMemoryContext();
+          await seedRepo(base, {});
+          const { ctx, calls } = instrumentedContext(base);
 
           // Act
           let caught: unknown;
@@ -810,7 +953,11 @@ describe('reflog command', () => {
           }
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('INVALID_REF');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: '../../etc/passwd',
+          });
+          expect(calls().some((call) => call.path.includes('etc/passwd'))).toBe(false);
         });
       });
       describe('When reflog expire', () => {
@@ -3154,7 +3301,7 @@ describe('reflog command', () => {
             // Arrange — only `reflog expire` (and `gc`'s reflog task) reads
             // these keys; every other verb must ignore it entirely.
             const ctx = createMemoryContext();
-            await seedRepo(ctx, {});
+            await seedLiveHead(ctx);
             await seedConfig(ctx, '[gc]\n\treflogExpire = bogus\n');
             await appendReflog(ctx, HEAD, entry());
 
