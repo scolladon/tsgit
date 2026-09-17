@@ -3033,9 +3033,9 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given a valid config accepted by a first tsgit command, then an external tool rewrites it to a malformed value', () => {
-    describe('When a second operational tsgit command runs on the same session (no invalidateConfigCache call)', () => {
-      it('Then the second command refuses — the operational gate is the freshness boundary for a raw external edit', async () => {
+  describe('Given a valid config accepted by a first tsgit command, then canonical git rewrites the value in place', () => {
+    describe('When git and the same warm tsgit session each read the repository again', () => {
+      it('Then both refuse, naming the same key and value', async () => {
         // Arrange — one Context/session reused across both "commands": the
         // epoch and its verdict memos are session-keyed, so a fresh
         // createNodeContext per call (this file's usual pattern, chosen to
@@ -3046,9 +3046,18 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         const ctx = createNodeContext({ workDir: pair.ours });
         await assertOperationalRepository(ctx);
 
-        // Act — canonical git rewrites the file directly, bypassing every
-        // tsgit config writer (and its invalidateConfigCache pairing)
-        await writeFile(configPath, '[core]\n\tsparseCheckout = maybe\n', 'utf8');
+        // Act — a real `git config` process rewrites the value, bypassing
+        // every tsgit config writer (and its invalidateConfigCache pairing);
+        // both tools are then pointed back at the repository.
+        const rewrite = tryRunGitWithExit([
+          '-C',
+          pair.ours,
+          'config',
+          'core.sparseCheckout',
+          'maybe',
+        ]);
+        expect(rewrite.exitCode).toBe(0);
+        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'status', '--porcelain']);
         let caught: unknown;
         try {
           await assertOperationalRepository(ctx);
@@ -3056,11 +3065,21 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
           caught = err;
         }
 
-        // Assert
+        // Assert — git's own fatal line, rebuilt from tsgit's refusal data.
         expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as { code: string; key: string };
-        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
-        expect(data.key).toBe('core.sparsecheckout');
+        const data = (caught as TsgitError).data as unknown as Record<string, unknown>;
+        expect(data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.sparsecheckout',
+          source: configPath,
+          value: 'maybe',
+        });
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          `fatal: bad boolean config value '${data['value'] as string}' for '${data['key'] as string}'\n`,
+        );
+        // git's in-place rewrite touched the value alone.
+        expect(await readFile(configPath, 'utf8')).toBe('[core]\n\tsparseCheckout = maybe\n');
       });
     });
   });
