@@ -403,11 +403,13 @@ describe('ref-store — packing a repository holding a read-through link', () =>
       });
     });
 
-    describe('Given a link named after the ref it reads through', () => {
+    describe('Given two links to one ref, one named before it and one after', () => {
       describe('When packRefs runs', () => {
-        it('Then the link is removed with the ref it named', async () => {
-          // Arrange
+        it('Then only the later link goes with the ref, and the earlier one survives', async () => {
+          // Arrange — both orders in one repository, so the outcome can only
+          // be reached by removing the names in descending order.
           const { ctx, first } = await seedRepository(build);
+          await ctx.fs.symlink('side', gitPath(ctx, 'refs/heads/aa'));
           await ctx.fs.symlink('side', gitPath(ctx, 'refs/heads/zz'));
           const sut = createRefStore(ctx);
 
@@ -416,13 +418,14 @@ describe('ref-store — packing a repository holding a read-through link', () =>
 
           // Assert
           expect(result).toEqual({
-            packedRefCount: 2,
+            packedRefCount: 3,
             prunedLooseRefCount: 2,
             removedOrphanCount: 0,
           });
           expect(await ctx.fs.readUtf8(gitPath(ctx, 'packed-refs'))).toBe(
-            `# pack-refs with: peeled fully-peeled sorted \n${first} ${SIDE}\n${first} refs/heads/zz\n`,
+            `# pack-refs with: peeled fully-peeled sorted \n${first} refs/heads/aa\n${first} ${SIDE}\n${first} refs/heads/zz\n`,
           );
+          expect(await isSymbolicLink(ctx, 'refs/heads/aa')).toBe(true);
           expect(await ctx.fs.exists(gitPath(ctx, 'refs/heads/zz'))).toBe(false);
           expect(await ctx.fs.exists(gitPath(ctx, SIDE))).toBe(false);
         });
