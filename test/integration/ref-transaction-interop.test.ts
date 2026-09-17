@@ -2074,6 +2074,128 @@ describe.skipIf(!GIT_AVAILABLE)(
       const listRemotes = (dir: string): string =>
         git(dir, 'for-each-ref', '--format=%(refname)', 'refs/remotes/');
 
+      interface PriorityRow {
+        readonly label: string;
+        readonly slug: string;
+        /** `update <ref> <id> <mismatched old>` lines are spelled by index. */
+        readonly updates: readonly StdinUpdate[];
+        /** Where the mismatching update sits among `updates`. */
+        readonly mismatchAt: number;
+        readonly refusal: Readonly<
+          Record<'files' | 'reftable', { readonly code: string; readonly blocking?: string }>
+        >;
+      }
+
+      const CONFLICT: Record<
+        'files' | 'reftable',
+        { readonly code: string; readonly blocking?: string }
+      > = {
+        files: { code: 'NOT_A_DIRECTORY', blocking: 'v' },
+        reftable: { code: 'REF_UPDATE_CONFLICT' },
+      };
+      const MISMATCH = {
+        files: { code: 'REF_UPDATE_CONFLICT' },
+        reftable: { code: 'REF_UPDATE_CONFLICT' },
+      } as const;
+
+      const PRIORITY_ROWS: readonly PriorityRow[] = [
+        {
+          label: 'a pair checked under their locks before the value mismatch',
+          slug: 'lock-before-mismatch',
+          updates: [
+            ['create', 'v/w'],
+            ['create', 'v/w/y'],
+          ],
+          mismatchAt: 2,
+          refusal: CONFLICT,
+        },
+        {
+          label: 'the value mismatch before a pair checked under their locks',
+          slug: 'mismatch-before-lock',
+          updates: [
+            ['create', 'v/w'],
+            ['create', 'v/w/y'],
+          ],
+          mismatchAt: 0,
+          refusal: MISMATCH,
+        },
+        {
+          label: 'a pair checked only in the batch before the value mismatch',
+          slug: 'batch-before-mismatch',
+          updates: [
+            ['create', 'f'],
+            ['create', 'f/x'],
+          ],
+          mismatchAt: 2,
+          refusal: MISMATCH,
+        },
+      ];
+
+      describe.each(BACKENDS)(
+        'When git update-ref --stdin and applyRefUpdates run both refusals on $backend',
+        ({ backend, pairOf, commit }) => {
+          it.each(PRIORITY_ROWS)(
+            'Then both report $label the same way',
+            async ({ slug, updates, mismatchAt, refusal }) => {
+              // Arrange — `v` exists, so a create under it is refused while
+              // its lock is taken; `main` is moved with a value it does not
+              // hold, so its own update refuses too.
+              const { peer, ours, ctx } = await pairOf(`${backend}-${slug}`);
+              const id = commit();
+              for (const dir of [peer, ours]) runGit(['-C', dir, 'update-ref', remote('v'), id]);
+              const mismatch = `update ${remote('v')} ${id} ${ZERO}\n`;
+              const lines = [
+                ...stdinOf(updates, id)
+                  .split(/(?<=\n)/)
+                  .filter((l) => l.length > 0),
+              ];
+              lines.splice(mismatchAt, 0, mismatch);
+              const mismatchUpdate: RefUpdate = {
+                kind: 'set',
+                name: remote('v'),
+                id: id as ObjectId,
+                expected: 'absent',
+              };
+              const refUpdates = [...refUpdatesOf(updates, id)];
+              refUpdates.splice(mismatchAt, 0, mismatchUpdate);
+              const refsBefore = listRemotes(peer);
+              const sut = getRefStore(ctx);
+
+              // Act
+              const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+                input: lines.join(''),
+                env: runGitEnv(),
+              });
+              let caught: unknown;
+              try {
+                await sut.applyRefUpdates(refUpdates);
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert
+              const expected = refusal[backend];
+              expect(gitResult.exitCode).toBe(128);
+              expect(gitResult.stderr).toContain(
+                expected.blocking === undefined
+                  ? `cannot lock ref '${remote('v')}': reference already exists`
+                  : `'${remote(expected.blocking)}' exists; cannot create`,
+              );
+              expect((caught as TsgitError).data).toEqual(
+                expected.blocking === undefined
+                  ? { code: expected.code, name: remote('v'), expected: 'absent', actual: id }
+                  : {
+                      code: expected.code,
+                      path: `${ctx.layout.gitDir}/${remote(expected.blocking)}`,
+                    },
+              );
+              expect(listRemotes(peer)).toBe(refsBefore);
+              expect(listRemotes(ours)).toBe(refsBefore);
+            },
+          );
+        },
+      );
+
       interface SingleRow {
         readonly label: string;
         readonly slug: string;

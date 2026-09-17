@@ -339,6 +339,14 @@ const NOT_A_DIRECTORY_PATH_CODES: ReadonlySet<string> = new Set([
   'NOT_A_DIRECTORY',
 ]);
 
+/** Every refusal a `<loose>.lock` creation can carry when a regular file, not
+ *  contention, is what blocked it: the adapters that surface the path fault,
+ *  and `REF_LOCKED` for the one whose lock creation cannot report a reason. */
+const LOCK_PATH_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  ...NOT_A_DIRECTORY_PATH_CODES,
+  'REF_LOCKED',
+]);
+
 /** Whether `dir` sits strictly below an immediate child of `root` — the
  *  only directories an empty-parent climb may remove. */
 const isPrunableParent = (dir: string, root: string): boolean =>
@@ -1323,7 +1331,12 @@ function createFilesRefStore(ctx: Context): RefStore {
       );
       return prepared;
     } catch (err) {
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) {
+      // A lock that could not be created for a path reason — reported as the
+      // adapter's own path refusal, or, where the platform gives the lock
+      // creation no way to say why, as the lock refusal itself — is git's
+      // `'X' exists; cannot create 'Y'` whenever a regular file sits at a
+      // prefix. A genuine contention refusal falls straight back through.
+      if (LOCK_PATH_REFUSAL_CODES.has(errorDataCode(err) ?? '')) {
         await assertNoFileInTheWay(name, path);
       }
       throw err;
@@ -1651,6 +1664,13 @@ function createFilesRefStore(ctx: Context): RefStore {
     return checks;
   }
 
+  const keyedByName = (check: NameCheck): readonly [RefName, NameCheck] => [check.name, check];
+
+  /** The value `update` requires the ref to hold, when it requires one — a
+   *  log-only update never does. */
+  const expectedOf = (update: RefUpdate): ObjectId | 'absent' | undefined =>
+    isRefChanging(update) ? update.expected : undefined;
+
   const refuseFirstConflict = (
     checks: readonly NameCheck[],
     transaction: TransactionNames,
@@ -1662,26 +1682,36 @@ function createFilesRefStore(ctx: Context): RefStore {
   };
 
   /**
-   * git's availability check over a transaction naming prefix-related refs,
-   * before any lock: the absent names it would change without a required
-   * value, those git checks under their lock first, then the rest — each
-   * group in update order.
+   * git's prepare loop over a transaction naming prefix-related refs: each
+   * update in order contributes the refusals its own lock would raise — a
+   * name git checks while taking that lock, then its compare-and-swap — and
+   * only once every lock is held does the batch availability check run over
+   * the remaining names, still in update order.
+   *
+   * Cost: the fact-gathering reads, plus one re-read per update carrying a
+   * required value — paid only by a transaction that already pays the check.
    */
-  async function assertTransactionNamesAvailable(updates: readonly RefUpdate[]): Promise<void> {
+  async function assertTransactionPrepares(updates: readonly RefUpdate[]): Promise<void> {
     const transaction = prefixRelatedTransactionNames(updates);
     if (transaction === undefined) return;
     const checks = await absentNameChecks(updates);
+    const underLock = new Map(checks.filter((check) => check.checkedUnderLock).map(keyedByName));
+    for (const update of updates) {
+      const check = underLock.get(update.name);
+      if (check !== undefined) refuseFirstConflict([check], transaction);
+      await checkExpected(update.name, expectedOf(update));
+    }
     refuseFirstConflict(
-      [...checks.filter((c) => c.checkedUnderLock), ...checks.filter((c) => !c.checkedUnderLock)],
+      checks.filter((check) => !check.checkedUnderLock),
       transaction,
     );
   }
 
   /** Applies `updates` in order, each consecutive run of deletes as one
-   *  transaction ({@link applyDeletes}), once the transaction's own names are
-   *  known not to collide. */
+   *  transaction ({@link applyDeletes}), once every refusal git's own prepare
+   *  would raise has been given its turn. */
   async function applyRefUpdates(updates: readonly RefUpdate[]): Promise<void> {
-    await assertTransactionNamesAvailable(updates);
+    await assertTransactionPrepares(updates);
     for (const run of toUpdateRuns(updates)) {
       await (run.kind === 'deletes' ? applyDeletes(run.updates) : applyOne(run.update));
     }

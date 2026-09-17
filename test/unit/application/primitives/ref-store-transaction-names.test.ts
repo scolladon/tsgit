@@ -246,6 +246,53 @@ const SINGLE_ROWS: readonly SingleRow[] = [
   },
 ];
 
+interface PriorityRow {
+  readonly label: string;
+  readonly updates: readonly RefUpdate[];
+  readonly refusal: Readonly<
+    Record<Backend, { readonly code: string; readonly blocking?: string }>
+  >;
+}
+
+/** One transaction carrying a name conflict AND a value mismatch. The files
+ *  backend raises each name it checks while taking that name's lock in update
+ *  order, and only afterwards the names it checks in one batch; the reftable
+ *  backend verifies every value first. */
+const PRIORITY_ROWS: readonly PriorityRow[] = [
+  {
+    label: 'the mismatch first, a name checked under its lock after it',
+    updates: [set('m', OTHER_ID), set('v/w')],
+    refusal: {
+      files: { code: 'REF_UPDATE_CONFLICT' },
+      reftable: { code: 'REF_UPDATE_CONFLICT' },
+    },
+  },
+  {
+    label: 'a pair of colliding creates first, the mismatch after them',
+    updates: [set('f'), set('f/x'), set('m', OTHER_ID)],
+    refusal: {
+      files: { code: 'REF_UPDATE_CONFLICT' },
+      reftable: { code: 'REF_UPDATE_CONFLICT' },
+    },
+  },
+  {
+    label: 'a pair checked under their locks first, the mismatch after them',
+    updates: [set('v/w'), set('v/w/y'), set('m', OTHER_ID)],
+    refusal: {
+      files: { code: 'NOT_A_DIRECTORY', blocking: 'v' },
+      reftable: { code: 'REF_UPDATE_CONFLICT' },
+    },
+  },
+  {
+    label: 'the mismatch first, a pair checked under their locks after it',
+    updates: [set('m', OTHER_ID), set('v/w'), set('v/w/y')],
+    refusal: {
+      files: { code: 'REF_UPDATE_CONFLICT' },
+      reftable: { code: 'REF_UPDATE_CONFLICT' },
+    },
+  },
+];
+
 describe('ref-store — names that collide inside one transaction', () => {
   describe.each(BACKENDS)('$label', ({ backend, build }) => {
     describe.each(ROWS)('Given $label', ({ existing, updates, refusal }) => {
@@ -330,6 +377,31 @@ describe('ref-store — names that collide inside one transaction', () => {
           expect(await sut.listRefNames(`${REMOTES}/` as RefName)).toEqual([ref('k')]);
         });
       });
+    });
+
+    describe('Given one transaction carrying both a name conflict and a value mismatch', () => {
+      describe.each(PRIORITY_ROWS)(
+        'When applyRefUpdates applies $label',
+        ({ updates, refusal }) => {
+          it('Then it refuses with the one git reports for that backend', async () => {
+            // Arrange
+            const ctx = await build();
+            const sut = createRefStore(ctx);
+            await sut.applyRefUpdates([set('v'), set('m')]);
+
+            // Act
+            const data = await refusalOf(() => sut.applyRefUpdates(updates));
+
+            // Assert
+            const expected = refusal[backend];
+            expect(data).toEqual(
+              expected.blocking === undefined
+                ? { code: expected.code, name: ref('m'), expected: OTHER_ID, actual: ID }
+                : { code: expected.code, path: `${ctx.layout.gitDir}/${ref(expected.blocking)}` },
+            );
+          });
+        },
+      );
     });
 
     describe.skipIf(backend === 'reftable')('Given prefix-related names that all exist', () => {
