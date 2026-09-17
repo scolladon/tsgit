@@ -34,6 +34,13 @@ const ABBREVIATED_LENGTH = 7;
 const lastLogSubject = (dir: string): string =>
   git(dir, 'reflog', 'show', '--format=%gs', '-1', 'HEAD').trim();
 
+/** `<dir>/.git/HEAD` and the newest `logs/HEAD` subject — the two files a
+ *  detaching or switching move actually writes. */
+const headState = async (dir: string): Promise<{ head: string; subject: string }> => ({
+  head: await readFile(path.join(dir, '.git', 'HEAD'), 'utf8'),
+  subject: lastLogSubject(dir),
+});
+
 const IDENTITY_ENV: NodeJS.ProcessEnv = {
   ...runGitEnv(),
   GIT_AUTHOR_NAME: 'A',
@@ -146,7 +153,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
     describe('When both tools detach onto it', () => {
       it('Then they land on the same object, the branch checkout looks at first', async () => {
         // Arrange
-        const { peer, ctx } = await casePair('ambiguous');
+        const { peer, ours, ctx } = await casePair('ambiguous');
 
         // Act
         git(peer, 'checkout', '--detach', 'amb');
@@ -155,6 +162,25 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
         // Assert
         expect(result.id).toBe(git(peer, 'rev-parse', 'HEAD').trim());
         expect(result.id).toBe(git(peer, 'rev-parse', 'refs/heads/amb').trim());
+        expect(await headState(ours)).toEqual(await headState(peer));
+      });
+    });
+
+    describe('When both tools switch to it without asking to detach', () => {
+      it('Then both attach to the branch the name also carries', async () => {
+        // Arrange
+        const { peer, ours, ctx } = await casePair('ambiguous-attached');
+
+        // Act
+        runGit(['-C', peer, 'checkout', 'amb'], { env: IDENTITY_ENV });
+        const result = await checkout(ctx, { rev: 'amb' });
+
+        // Assert
+        expect(result.detached).toBe(false);
+        expect(result.branch).toBe('refs/heads/amb');
+        expect(result.id).toBe(git(peer, 'rev-parse', 'refs/heads/amb').trim());
+        expect(await headState(ours)).toEqual(await headState(peer));
+        expect(lastLogSubject(peer)).toBe('checkout: moving from main to amb');
       });
     });
 
@@ -173,18 +199,24 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
       });
     });
 
-    describe('When both tools tag its partially qualified branch path', () => {
-      it('Then both tags name the branch', async () => {
+    describe.each([
+      { label: 'branch', slug: 'tag-heads', target: 'heads/amb', ref: 'refs/heads/amb' },
+      { label: 'tag', slug: 'tag-tags', target: 'tags/amb', ref: 'refs/tags/amb' },
+    ])('When both tools tag its partially qualified $label path', (row) => {
+      it('Then both tags name the ref that path picks out', async () => {
         // Arrange
-        const { peer, ctx } = await casePair('tag-heads');
+        const { peer, ctx } = await casePair(row.slug);
 
         // Act
-        runGit(['-C', peer, 'tag', 'fresh', 'heads/amb'], { env: IDENTITY_ENV });
-        const result = await tagCreate(ctx, { name: 'fresh', target: 'heads/amb' });
+        runGit(['-C', peer, 'tag', 'fresh', row.target], { env: IDENTITY_ENV });
+        const result = await tagCreate(ctx, { name: 'fresh', target: row.target });
 
         // Assert
         expect(result.id).toBe(git(peer, 'rev-parse', 'refs/tags/fresh').trim());
-        expect(result.id).toBe(git(peer, 'rev-parse', 'refs/heads/amb').trim());
+        expect(result.id).toBe(git(peer, 'rev-parse', row.ref).trim());
+        expect(git(peer, 'rev-parse', 'refs/heads/amb').trim()).not.toBe(
+          git(peer, 'rev-parse', 'refs/tags/amb').trim(),
+        );
       });
     });
   });
@@ -193,7 +225,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
     describe('When both tools detach onto it', () => {
       it('Then they land on the tag', async () => {
         // Arrange
-        const { peer, ctx } = await casePair('tag-only');
+        const { peer, ours, ctx } = await casePair('tag-only');
 
         // Act
         git(peer, 'checkout', '--detach', 'release');
@@ -202,6 +234,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
         // Assert
         expect(result.id).toBe(git(peer, 'rev-parse', 'HEAD').trim());
         expect(result.id).toBe(git(peer, 'rev-parse', 'refs/tags/release').trim());
+        expect(await headState(ours)).toEqual(await headState(peer));
       });
     });
   });
@@ -210,7 +243,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
     describe('When both tools detach onto it', () => {
       it('Then they land on the tracking ref', async () => {
         // Arrange
-        const { peer, ctx } = await casePair('remote-short');
+        const { peer, ours, ctx } = await casePair('remote-short');
 
         // Act
         git(peer, 'switch', '--detach', 'org/tgt');
@@ -219,6 +252,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
         // Assert
         expect(result.id).toBe(git(peer, 'rev-parse', 'HEAD').trim());
         expect(result.id).toBe(git(peer, 'rev-parse', 'refs/remotes/org/tgt').trim());
+        expect(await headState(ours)).toEqual(await headState(peer));
       });
     });
   });
