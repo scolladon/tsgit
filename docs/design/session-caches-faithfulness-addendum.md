@@ -2946,6 +2946,18 @@ every old value first, then checks names in update order.
 | PO6 | `verify refs/heads/nope <oid>` (absent), then `create f` + `create f/x` | `cannot lock ref 'refs/heads/nope': unable to resolve reference` | same |
 | PO7 | `create <blocked dir>` first, then `create g` + `create g/x` | `there is a non-empty directory '…' blocking reference '…'` | n/a |
 
+**PO6 is a design residual, not a gap.** `verify` is `ref_transaction_update` with a NULL new value:
+a compare-and-swap that never writes. `RefUpdate` has no such kind — every arm it carries changes a
+ref, a symbolic ref or a log — so a two-tool row for PO6 would not be running the same operation on
+both sides, and the closest tsgit shape (`set` to the value already held) writes where git does not.
+Adding a `verify` kind would widen a public union with an arm no command in the library produces and
+no caller can reach, which is dead surface rather than faithfulness. What PO6 actually pins — that a
+required old value on a name that does not resolve refuses `unable to resolve reference` ahead of the
+batch availability check, on both backends — is pinned through the write-carrying equivalent instead:
+a delete guarded by an old value on an absent name above an existing one, and a reftable write
+guarded by a real old value under an existing ref. Revisit only if a command surface ever needs a
+check-without-write.
+
 ### Pins — the name a `checkout`/`switch` or `tag` target stands for
 
 `parse_branchname_arg` reads `refs/heads/<arg>` first and only falls back to `get_oid_mb`; `builtin/tag.c`
