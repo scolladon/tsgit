@@ -233,8 +233,8 @@ describe('ref-store — a directory at a ref or log path', () => {
     });
 
     describe('Given a directory holding a file at the log path', () => {
-      describe('When a logged set writes the ref', () => {
-        it('Then the append refuses PERMISSION_DENIED and the file stays', async () => {
+      describe('When a logged set would create the ref', () => {
+        it('Then it refuses before the ref is written and nothing on disk changes', async () => {
           // Arrange
           const ctx = await build();
           await ctx.fs.writeUtf8(gitPath(ctx, `logs/${REF}/f`), 'kept\n');
@@ -253,8 +253,87 @@ describe('ref-store — a directory at a ref or log path', () => {
           );
 
           // Assert
-          expect((refusal as { code: string }).code).toBe('PERMISSION_DENIED');
+          expect(refusal).toEqual({
+            code: 'DIRECTORY_NOT_EMPTY',
+            path: gitPath(ctx, `logs/${REF}`),
+          });
+          expect(await ctx.fs.exists(gitPath(ctx, REF))).toBe(false);
           expect(await ctx.fs.readUtf8(gitPath(ctx, `logs/${REF}/f`))).toBe('kept\n');
+        });
+      });
+
+      describe('When a logged set would move a ref that already exists', () => {
+        it('Then the ref keeps its bytes', async () => {
+          // Arrange
+          const ctx = await build();
+          const sut = createRefStore(ctx);
+          await sut.applyRefUpdates([{ kind: 'set', name: REF, id: ID }]);
+          await ctx.fs.writeUtf8(gitPath(ctx, `logs/${REF}/f`), 'kept\n');
+
+          // Act
+          const refusal = await refusalOf(() =>
+            sut.applyRefUpdates([
+              {
+                kind: 'set',
+                name: REF,
+                id: OTHER_ID,
+                reflog: { oldId: ID, newId: OTHER_ID, message: 'w' },
+              },
+            ]),
+          );
+
+          // Assert
+          expect((refusal as { code: string }).code).toBe('DIRECTORY_NOT_EMPTY');
+          expect(await ctx.fs.readUtf8(gitPath(ctx, REF))).toBe(`${ID}\n`);
+        });
+      });
+
+      describe('When a logged symbolic set would create the ref', () => {
+        it('Then it refuses before the ref is written', async () => {
+          // Arrange
+          const ctx = await build();
+          await ctx.fs.writeUtf8(gitPath(ctx, `logs/${REF}/f`), 'kept\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const refusal = await refusalOf(() =>
+            sut.applyRefUpdates([
+              {
+                kind: 'setSymbolic',
+                name: REF,
+                target: 'refs/heads/main' as RefName,
+                reflog: { oldId: '0'.repeat(40) as ObjectId, newId: ID, message: 's' },
+              },
+            ]),
+          );
+
+          // Assert
+          expect((refusal as { code: string }).code).toBe('DIRECTORY_NOT_EMPTY');
+          expect(await ctx.fs.exists(gitPath(ctx, REF))).toBe(false);
+        });
+      });
+
+      describe('When a set of a ref git does not log by default writes it', () => {
+        it('Then the ref is written and the blocked log directory is left alone', async () => {
+          // Arrange
+          const ctx = await build();
+          const name = 'refs/misc/y' as RefName;
+          await ctx.fs.writeUtf8(gitPath(ctx, `logs/${name}/f`), 'kept\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          await sut.applyRefUpdates([
+            {
+              kind: 'set',
+              name,
+              id: ID,
+              reflog: { oldId: '0'.repeat(40) as ObjectId, newId: ID, message: 'w' },
+            },
+          ]);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(gitPath(ctx, name))).toBe(`${ID}\n`);
+          expect(await ctx.fs.readUtf8(gitPath(ctx, `logs/${name}/f`))).toBe('kept\n');
         });
       });
     });

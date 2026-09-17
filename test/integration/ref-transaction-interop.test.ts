@@ -278,6 +278,91 @@ describe.skipIf(!GIT_AVAILABLE)(
       throw new Error('unreachable');
     };
 
+    describe("Given a directory holding a file at a branch's log path", () => {
+      describe('When git update-ref and applyRefUpdates write that branch', () => {
+        it('Then both refuse before the ref is written and leave the tree untouched', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('log-dir-blocked');
+          const branch = 'refs/heads/blocked';
+          for (const dir of [peer, ours]) {
+            await mkdir(path.join(dir, '.git', 'logs', branch), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'logs', branch, 'f'), 'kept\n');
+          }
+          const sut = getRefStore(ctx);
+
+          // Act
+          const gitResult = tryRunGitWithExit(
+            ['-C', peer, 'update-ref', '-m', 'w', branch, filesC1],
+            { env: pinnedEnv(COMMITTER_EPOCH) },
+          );
+          let caught: unknown;
+          try {
+            await sut.applyRefUpdates([
+              {
+                kind: 'set',
+                name: branch as RefName,
+                id: filesC1 as ObjectId,
+                reflog: { oldId: ZERO, newId: filesC1 as ObjectId, message: 'w' },
+              },
+            ]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            `there are still logs under '${path.join('.git', 'logs', branch)}'`,
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'DIRECTORY_NOT_EMPTY',
+            path: `${ctx.layout.gitDir}/logs/${branch}`,
+          });
+          for (const dir of [peer, ours]) {
+            expect(await pathExists(path.join(dir, '.git', branch))).toBe(false);
+            expect(await readFile(path.join(dir, '.git', 'logs', branch, 'f'), 'utf8')).toBe(
+              'kept\n',
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a directory holding a file at the log path of a ref git never logs', () => {
+      describe('When git update-ref and applyRefUpdates write that ref', () => {
+        it('Then both write the ref and leave the blocked log directory alone', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('log-dir-unlogged');
+          const ref = 'refs/misc/unlogged';
+          for (const dir of [peer, ours]) {
+            await mkdir(path.join(dir, '.git', 'logs', ref), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'logs', ref, 'f'), 'kept\n');
+          }
+          const sut = getRefStore(ctx);
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '-m', 'w', ref, filesC1], {
+            env: pinnedEnv(COMMITTER_EPOCH),
+          });
+          await sut.applyRefUpdates([
+            {
+              kind: 'set',
+              name: ref as RefName,
+              id: filesC1 as ObjectId,
+              reflog: { oldId: ZERO, newId: filesC1 as ObjectId, message: 'w' },
+            },
+          ]);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, ours]) {
+            expect(await readFile(path.join(dir, '.git', ref), 'utf8')).toBe(`${filesC1}\n`);
+            expect(await readFile(path.join(dir, '.git', 'logs', ref, 'f'), 'utf8')).toBe('kept\n');
+          }
+        });
+      });
+    });
+
     describe('Given an existing loose branch with a reflog', () => {
       describe('When it is deleted through the null object id', () => {
         it('Then git and tsgit both remove the ref and its log', async () => {

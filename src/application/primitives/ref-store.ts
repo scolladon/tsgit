@@ -66,7 +66,12 @@ import {
   reflogPath,
 } from './path-layout.js';
 import { readObject } from './read-object.js';
-import { recordRefUpdate } from './record-ref-update.js';
+import {
+  commitRefUpdate,
+  prepareRefUpdate,
+  type ReflogWrite,
+  recordRefUpdate,
+} from './record-ref-update.js';
 import { createReftableRefStore } from './reftable-ref-store.js';
 import { MAX_PEEL_DEPTH, MAX_REFLOG_BYTES } from './types.js';
 import { exceedsMaxPeelDepth } from './validators.js';
@@ -1219,20 +1224,40 @@ function createFilesRefStore(ctx: Context): RefStore {
     return [...names];
   }
 
+  /** Writes `content` onto `name`, with its reflog entry's log path settled
+   *  first: git writes every log before it renames any lockfile into place,
+   *  so a log path it cannot set up refuses before the ref changes. */
+  async function applyRefWrite(
+    name: RefName,
+    content: Uint8Array,
+    reflog: ReflogAppend | undefined,
+  ): Promise<void> {
+    const write = await writeLooseRef(name, content, () => prepareReflog(name, reflog));
+    if (name === HEAD_NAME) invalidateHeadSlot(ctx);
+    if (reflog === undefined || write === undefined) return;
+    await commitRefUpdate(ctx, name, write, reflog.oldId, reflog.newId, reflog.message);
+  }
+
+  function prepareReflog(
+    name: RefName,
+    reflog: ReflogAppend | undefined,
+  ): Promise<ReflogWrite | undefined> {
+    if (reflog === undefined) return Promise.resolve(undefined);
+    return prepareRefUpdate(ctx, name, { unconditional: reflog.unconditional === true });
+  }
+
   async function applySet(update: Extract<RefUpdate, { kind: 'set' }>): Promise<void> {
     await checkExpected(update.name, update.expected);
-    await writeLooseRef(update.name, TEXT_ENCODER.encode(serializeDirectRef(update.id)));
-    if (update.name === HEAD_NAME) invalidateHeadSlot(ctx);
-    await applyReflog(update.name, update.reflog);
+    const content = TEXT_ENCODER.encode(serializeDirectRef(update.id));
+    await applyRefWrite(update.name, content, update.reflog);
   }
 
   async function applySetSymbolic(
     update: Extract<RefUpdate, { kind: 'setSymbolic' }>,
   ): Promise<void> {
     await checkExpected(update.name, update.expected);
-    await writeLooseRef(update.name, TEXT_ENCODER.encode(serializeSymbolicRef(update.target)));
-    if (update.name === HEAD_NAME) invalidateHeadSlot(ctx);
-    await applyReflog(update.name, update.reflog);
+    const content = TEXT_ENCODER.encode(serializeSymbolicRef(update.target));
+    await applyRefWrite(update.name, content, update.reflog);
   }
 
   const packedRefsLocked = (path: string): TsgitError =>
@@ -1274,15 +1299,26 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (blocking !== undefined) throw notADirectory(blocking);
   }
 
-  /** `atomicWriteRef` onto `name`'s loose file. A lock that cannot be created
-   *  for a path reason checks for a file in the way, so a normal write pays
-   *  no extra `stat`. */
-  async function writeLooseRef(name: RefName, content: Uint8Array): Promise<void> {
+  /** `atomicWriteRef` onto `name`'s loose file, with `prepareLog` run under
+   *  the held lock between the lock's own refusals and the rename — git's
+   *  lock-then-log-then-rename order. A lock that cannot be created for a
+   *  path reason checks for a file in the way, so a normal write pays no
+   *  extra `stat`. Answers whatever `prepareLog` decided, for the caller to
+   *  commit once the ref is in place. */
+  async function writeLooseRef(
+    name: RefName,
+    content: Uint8Array,
+    prepareLog: () => Promise<ReflogWrite | undefined>,
+  ): Promise<ReflogWrite | undefined> {
     const path = looseRefPath(refDir(name), name);
+    let prepared: ReflogWrite | undefined;
     try {
       await atomicWriteRef(ctx, name, path, content, (rename) =>
-        commitLooseRef(name, path, rename),
+        commitLooseRef(name, path, rename, async () => {
+          prepared = await prepareLog();
+        }),
       );
+      return prepared;
     } catch (err) {
       if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) {
         await assertNoFileInTheWay(name, path);
@@ -1298,8 +1334,14 @@ function createFilesRefStore(ctx: Context): RefStore {
     name: RefName,
     path: string,
     rename: () => Promise<void>,
+    prepareLog: () => Promise<void>,
   ): Promise<void> {
     await refuseRefsUnderIfPacked(name);
+    try {
+      await prepareLog();
+    } catch (err) {
+      await refuseBlockedRefPathFirst(name, path, err);
+    }
     try {
       await rename();
     } catch (err) {
@@ -1307,6 +1349,19 @@ function createFilesRefStore(ctx: Context): RefStore {
       await clearDirectory(name, path);
       await rename();
     }
+  }
+
+  /** git settles the ref path while it takes the lock and only then sets the
+   *  log up, so a directory at the ref path reports ahead of a blocked log
+   *  path. The probe is paid only when the log path already refused — a
+   *  removable tree there lets `refusal` stand, as git's own order does. */
+  async function refuseBlockedRefPathFirst(
+    name: RefName,
+    path: string,
+    refusal: unknown,
+  ): Promise<never> {
+    if (await isDirectoryPath(path)) await clearDirectory(name, path);
+    throw refusal;
   }
 
   /**
