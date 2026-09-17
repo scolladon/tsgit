@@ -40,6 +40,7 @@ import {
   type ReftableCheck,
   serializeReftable,
 } from '../../src/domain/refs/index.js';
+import type { ReftableLogRecord } from '../../src/domain/refs/reftable/reftable-log.js';
 import type { ReftableWriteOptions } from '../../src/domain/refs/reftable/reftable-writer.js';
 import { DEFAULT_RESTART_INTERVAL } from '../../src/domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../src/ports/context.js';
@@ -1054,6 +1055,16 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
 
   const REFLOG_SELECTOR = /@\{(\d+) ([+-]\d{4})\}$/;
 
+  /** Every log record `name` carries in the stack itself — the records on
+   *  disk, not the lines `git log -g` chooses to display. */
+  const reftableLogRecords = async (
+    context: Context,
+    name: RefName,
+  ): Promise<ReadonlyArray<ReftableLogRecord>> => {
+    const stack = await loadReftableStack(context, reftableDir(context.layout.gitDir));
+    return [...stack.logs(name)];
+  };
+
   /** `git log -g --date=raw --format='%H<TAB>%gd<TAB>%gs' <ref>`, parsed
    *  oldest -> newest (git itself lists newest -> oldest, matching
    *  `git reflog show`) — the FULL oid, never the abbreviated one
@@ -1118,6 +1129,19 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         // (timestamp + timezone) and message, read back by git ITSELF —
         // closing the gap a tsgit-only encode/decode round trip cannot: a
         // shared encoding bug would cancel out there but not here.
+        // The reftable itself holds FIVE records for the renamed branch: the
+        // three moved ones plus the rename's own pair (the tip cleared, then
+        // re-set). `git log -g` collapses that pair into one displayed line,
+        // so the porcelain alone cannot tell the written shape apart from a
+        // single-record one — the stack is read directly for the count.
+        const renamedRecords = await reftableLogRecords(ctx, 'refs/heads/renamed' as RefName);
+        expect(renamedRecords.map((record) => record.entry.kind)).toEqual([
+          'entry',
+          'entry',
+          'entry',
+          'entry',
+          'entry',
+        ]);
         const renamedLog = reflogRows(dir, 'renamed');
         expect(renamedLog).toHaveLength(4);
         renamedLog.slice(0, 3).forEach((row, index) => {
