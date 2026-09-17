@@ -179,17 +179,30 @@ implemented, and the numbers are recorded with it.
 Unit fixtures that write refs to synthetic oids through `updateRef` must write a real object first,
 or use a non-branch ref where the type is not the point; `applyRefUpdates` fixtures are untouched.
 
-Inside one process tsgit is stricter than git: `parse_object` returns an object the process has
-already parsed without hashing it again. tsgit's caches outlive a command and are filled by
-unverified reads, so they cannot stand in for git's object table, and tsgit hashes on every
-verified update. A fresh git process — what every pin measures — reaches the same verdicts.
+Inside one process tsgit takes git's own shortcut: `parse_object` returns an object the process
+has already parsed without hashing it again, out of a table scoped to that process. tsgit's
+general object caches cannot stand in for that table — they outlive a command and are filled by
+unverified reads — so the verification keeps a memo of its own instead. A `Context` remembers each
+id it has verified together with the type it found, and a later update naming a remembered id
+re-probes presence and then skips the hash and the parse acceptance. A `Context` is tsgit's
+process-scoped equivalent, and the memo lives and dies with it; it holds at most 4096 ids, oldest
+forgotten first. What it never skips: existence, which is re-probed with `hasObject` on every
+update; the branch type check, which is decided per ref name and so runs every time; and any
+verdict that depended on `.git/shallow`, which is never remembered at all, because the shallow set
+can change under one `Context`. A fresh git process — what every pin measures — reaches the same
+verdicts.
 
 Residuals, recorded:
 
 - **In-process type conflicts from earlier parses.** git also refuses when an id was already
   parsed as another type earlier in the same process — another update in one
-  `update-ref --stdin` transaction, for instance. tsgit keeps no process-wide object table, so only
-  the conflict a commit's own bytes produce is transcribed.
+  `update-ref --stdin` transaction, for instance. tsgit's memo records only ids this verification
+  itself accepted, not every object the process has read, so only the conflict a commit's own bytes
+  produce is transcribed.
+- **An object corrupted under a live `Context`.** Once a `Context` has verified an id, a later
+  update naming that id is served from the memo as long as the object is still present — so bytes
+  rewritten in place to no longer hash to their id are not re-detected within that `Context`. A
+  fresh git process re-hashes and refuses; so does a fresh `Context`.
 - **`info/grafts`.** tsgit reads no grafts file, so for a commit listed there the parent-equals-tree
   refusal applies where git skips the lookup; shallow boundaries match.
 - **Writers outside DC-C2's set** — internal writers of ids the same command produced (`commit`,

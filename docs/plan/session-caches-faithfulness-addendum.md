@@ -2672,7 +2672,10 @@ empty-tree rows, the empty-blob row, and C1/C3 on the reftable twin.
 - A related-test failure in the pre-commit hook for a command suite is this part's fixture debt, not flake:
   enumerate below and fix fixtures (write a real object, or use a non-branch ref where the type is not the
   point).
-- `hashStoredObject` hashes even when a cache hit is available — do not add a "trusted cache" shortcut.
+- `hashStoredObject` hashes even when a general cache hit is available: the object caches are filled by
+  unverified reads and outlive a command, so none of them is a verification oracle. The one shortcut that
+  is allowed is the verification's own per-`Context` memo of ids it has already verified — git's
+  `parse_object` takes the same shortcut from its per-process object table.
 - If biome refuses the comment-only `for await` body, drain with `count` from
   `src/application/primitives/snapshot-operators/terminals.ts:7` instead; commit 2 replaces the loop anyway.
 

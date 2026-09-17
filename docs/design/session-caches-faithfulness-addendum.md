@@ -496,10 +496,14 @@ Two supporting changes, both in P17 commit 1:
 - The parsed-object memo is not on this path: its only reader is `resolveObject`
   (`object-resolver.ts:128-130`), and even there it is consulted after
   `resolveObjectContentWithDepth` has run the hash.
-- Stricter than git inside one process: git skips the hash for an object the process already
-  parsed. tsgit's caches outlive a command and are filled by unverified reads, so they cannot
-  stand in for git's object table; tsgit hashes on every verified update. For a fresh git
-  process — what every pin measures — the verdicts agree.
+- As git does inside one process: git skips the hash for an object the process has already
+  parsed, out of its per-process object table. tsgit's general caches outlive a command and are
+  filled by unverified reads, so they cannot stand in for that table; the verification carries a
+  memo of its own instead, keyed by `Context` — each verified id with the type found, bounded at
+  4096, presence still re-probed on every update, the branch type check still decided per ref
+  name, and a verdict that depended on `.git/shallow` never remembered. For a fresh git process —
+  what every pin measures — the verdicts agree. What a live `Context` does not re-detect is an
+  object corrupted in place after it verified it.
 
 **Guarantee — a large blob is not materialised.** A loose object whose compressed file exceeds the
 gate, and a packed base entry whose payload or declared size exceeds it, are hashed as they
