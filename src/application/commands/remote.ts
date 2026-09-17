@@ -465,9 +465,6 @@ export const remoteRename = async (
   input: RemoteRenameInput,
 ): Promise<RemoteRenameResult> => {
   await assertAcceptedRepository(ctx);
-  if (input.from === input.to) {
-    throw invalidOption('remote.rename', 'from and to must differ');
-  }
   const config = await readConfig(ctx);
   const fromEntry = renameSource(config, input);
   const referrers = listBranchReferrers(config, input.from);
@@ -521,6 +518,15 @@ const directTrackingValues = async (
   return values;
 };
 
+/** A name no `[remote "<name>"]` block configures still describes a remote:
+ *  git treats the name itself as the url, with no refspec of its own. */
+const adHocRemote = (name: string): RemoteInfo => ({
+  name,
+  url: name,
+  pushUrl: undefined,
+  fetchRefspecs: [],
+});
+
 export const remoteShow = async (
   ctx: Context,
   input: RemoteShowInput,
@@ -528,9 +534,15 @@ export const remoteShow = async (
   await assertAcceptedRepository(ctx);
   const config = await readConfig(ctx);
   const entry = config.remote?.get(input.name);
-  if (entry === undefined) throw remoteNotConfigured(input.name);
-  const trackingRefs = await directTrackingValues(ctx, await listTrackingRefs(ctx, input.name));
+  if (entry === undefined && input.name === '') throw remoteNotConfigured(input.name);
+  const info = entry === undefined ? adHocRemote(input.name) : toRemoteInfo(input.name, entry);
+  // A remote fetches nothing into its own tracking namespace unless one of
+  // its refspecs says so, so nothing is attached under that namespace either.
+  const names = mapsTrackingNamespace(info.fetchRefspecs, input.name)
+    ? await listTrackingRefs(ctx, input.name)
+    : [];
+  const trackingRefs = await directTrackingValues(ctx, names);
   const referrers = listBranchReferrers(config, input.name);
   const trackedBy = referrers.map((referrer) => ({ branch: referrer.ref, merge: referrer.merge }));
-  return { remote: { ...toRemoteInfo(input.name, entry), trackingRefs, trackedBy } };
+  return { remote: { ...info, trackingRefs, trackedBy } };
 };

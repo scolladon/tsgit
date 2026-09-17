@@ -10,7 +10,7 @@
  * `logs/…` file the row names.
  *
  * @proves
- *   surface:        updateRef, fetch, branch.delete, tag.delete, remote.remove
+ *   surface:        updateRef, fetch, branch.delete, tag.delete, remote.remove, remote.rename, remote.show
  *   bucket:         cross-tool-interop
  *   unique:         ref updates dereference symbolic refs and delete as git's ref transaction does
  *   interopSurface: updateRef
@@ -30,7 +30,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { remoteRename } from '../../src/application/commands/remote.js';
+import { remoteRename, remoteShow } from '../../src/application/commands/remote.js';
 import { getRefStore, type RefUpdate } from '../../src/application/primitives/ref-store.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -1369,6 +1369,59 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(peerOrphanLog.trim().split('\n')).toHaveLength(2);
           expect(peerOrphanLog).toContain(`${ZERO} A <a@x>`);
           expect(peerOrphanLog.trimEnd().endsWith(`+0000`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a configured remote renamed onto its own name', () => {
+      describe('When both tools rename it', () => {
+        it('Then both report the target as an existing remote, not a bad argument', async () => {
+          // Arrange
+          const { peer, ctx } = await remoteRenameCasePair('remote-rename-self');
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'origin']);
+          try {
+            await remoteRename(ctx, { from: 'origin', to: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(3);
+          expect(gitResult.stderr).toContain('remote origin already exists');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('REMOTE_EXISTS');
+          if (data.code !== 'REMOTE_EXISTS') throw new Error('unreachable');
+          expect(data.remote).toBe('origin');
+        });
+      });
+    });
+
+    describe('Given a name no remote is configured under', () => {
+      describe('When both tools describe it without querying the network', () => {
+        it('Then both report the name itself as the url, with no refspec and no tracking ref', async () => {
+          // Arrange — `git remote show -n` is the local-only form tsgit's
+          // `show` always is; it never refuses an unconfigured name.
+          const { peer, ctx } = await remoteRenameCasePair('remote-show-unknown');
+          const oid = git(peer, 'rev-parse', 'HEAD').trim();
+          runGit(['-C', peer, 'update-ref', 'refs/remotes/nope/x', oid]);
+          await updateRef(ctx, 'refs/remotes/nope/x' as RefName, oid as ObjectId, {
+            reflogMessage: 'plant',
+          });
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'show', '-n', 'nope']);
+          const result = await remoteShow(ctx, { name: 'nope' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout).toContain('Fetch URL: nope');
+          expect(gitResult.stdout).not.toContain('Remote branch');
+          expect(result.remote.url).toBe('nope');
+          expect(result.remote.fetchRefspecs).toEqual([]);
+          expect(result.remote.trackingRefs.size).toBe(0);
         });
       });
     });

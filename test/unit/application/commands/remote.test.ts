@@ -991,9 +991,9 @@ describe('application/commands/remote', () => {
       });
     });
 
-    describe('Given to equals from', () => {
+    describe('Given a configured remote renamed onto its own name', () => {
       describe('When remoteRename runs', () => {
-        it('Then it throws INVALID_OPTION', async () => {
+        it('Then it throws REMOTE_EXISTS naming that remote', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, ORIGIN_TRACKING_CONFIG);
@@ -1008,10 +1008,33 @@ describe('application/commands/remote', () => {
 
           // Assert
           const data = (caught as TsgitError).data;
-          expect(data.code).toBe('INVALID_OPTION');
-          if (data.code !== 'INVALID_OPTION') throw new Error('unreachable');
-          expect(data.option).toBe('remote.rename');
-          expect(data.reason).toContain('differ');
+          expect(data.code).toBe('REMOTE_EXISTS');
+          if (data.code !== 'REMOTE_EXISTS') throw new Error('unreachable');
+          expect(data.remote).toBe('origin');
+        });
+      });
+    });
+
+    describe('Given an unconfigured remote renamed onto its own name', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the missing source refuses first', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
+          let caught: unknown;
+
+          // Act
+          try {
+            await remoteRename(ctx, { from: 'nope', to: 'nope' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+          if (data.code !== 'REMOTE_NOT_CONFIGURED') throw new Error('unreachable');
+          expect(data.remote).toBe('nope');
         });
       });
     });
@@ -2339,23 +2362,65 @@ describe('application/commands/remote', () => {
   });
 
   describe('show', () => {
-    describe('Given an unknown remote', () => {
+    describe('Given a name no remote is configured under', () => {
       describe('When remoteShow runs', () => {
-        it('Then it throws REMOTE_NOT_CONFIGURED', async () => {
+        it('Then it reports the name as its own url with nothing else attached', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
-          let caught: unknown;
 
           // Act
-          try {
-            await remoteShow(ctx, { name: 'origin' });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          expect((caught as TsgitError).data.code).toBe('REMOTE_NOT_CONFIGURED');
+          expect(result.remote).toEqual({
+            name: 'origin',
+            url: 'origin',
+            pushUrl: undefined,
+            fetchRefspecs: [],
+            trackingRefs: new Map(),
+            trackedBy: [],
+          });
+        });
+      });
+    });
+
+    describe('Given a name no remote is configured under but tracking refs under it', () => {
+      describe('When remoteShow runs', () => {
+        it('Then no tracking ref is attached, since nothing fetches into that namespace', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: 'refs/remotes/nope/x' as RefName, id: ORIGIN_ID },
+          ]);
+
+          // Act
+          const result = await remoteShow(ctx, { name: 'nope' });
+
+          // Assert
+          expect(result.remote.trackingRefs).toEqual(new Map());
+          expect(result.remote.url).toBe('nope');
+        });
+      });
+    });
+
+    describe('Given a configured remote with no fetch refspec but tracking refs under it', () => {
+      describe('When remoteShow runs', () => {
+        it('Then no tracking ref is attached, since nothing fetches into that namespace', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+          ]);
+
+          // Act
+          const result = await remoteShow(ctx, { name: 'origin' });
+
+          // Assert
+          expect(result.remote.trackingRefs).toEqual(new Map());
+          expect(result.remote.url).toBe('u');
         });
       });
     });
@@ -2440,7 +2505,25 @@ describe('application/commands/remote', () => {
 
     describe('Given an unconfigured name that cannot form a tracking ref name', () => {
       describe('When remoteShow runs', () => {
-        it('Then it refuses REMOTE_NOT_CONFIGURED, as git looks the remote up rather than checking its syntax', async () => {
+        it('Then it still reports the name as its own url, its syntax never checked', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx);
+
+          // Act
+          const result = await remoteShow(ctx, { name: 'a b' });
+
+          // Assert
+          expect(result.remote.name).toBe('a b');
+          expect(result.remote.url).toBe('a b');
+          expect(result.remote.fetchRefspecs).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given the empty name', () => {
+      describe('When remoteShow runs', () => {
+        it('Then it refuses REMOTE_NOT_CONFIGURED', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx);
@@ -2448,7 +2531,7 @@ describe('application/commands/remote', () => {
 
           // Act
           try {
-            await remoteShow(ctx, { name: 'a b' });
+            await remoteShow(ctx, { name: '' });
           } catch (err) {
             caught = err;
           }
@@ -2456,7 +2539,7 @@ describe('application/commands/remote', () => {
           // Assert
           expect((caught as TsgitError).data).toEqual({
             code: 'REMOTE_NOT_CONFIGURED',
-            remote: 'a b',
+            remote: '',
           });
         });
       });

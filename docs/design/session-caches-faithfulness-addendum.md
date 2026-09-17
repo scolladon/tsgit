@@ -2418,6 +2418,36 @@ string — is replaced by `rewriteTrackingFetchRefspecs` (the splice) beside `ma
 (the gate), both in `src/application/commands/internal/remote-config.ts`. `remoteRename` calls
 `renameTrackingRefs` only when the gate says yes; `movedTrackingRefs` is then empty.
 
+### `remote rename <a> <a>` and `remote show -n <unknown>` (2026-09-17)
+
+Same harness.
+
+| Command | git | tsgit before | tsgit now |
+|---|---|---|---|
+| `remote rename a a` (`a` configured) | exit 3, `error: remote a already exists.` | `INVALID_OPTION` (`remote.rename`, "from and to must differ"), raised before the config is even read | `REMOTE_EXISTS` with `remote: 'a'` |
+| `remote rename nope nope` | exit 2, `error: No such remote: 'nope'` | `INVALID_OPTION` | `REMOTE_NOT_CONFIGURED` with `remote: 'nope'` |
+| `remote show -n nope` | exit 0; `Fetch URL: nope`, `Push  URL: nope`, no `Remote branch` block | `REMOTE_NOT_CONFIGURED` | the same shape, structurally: `url` = the name, `pushUrl` undefined, `fetchRefspecs` empty, `trackingRefs` empty, `trackedBy` from config |
+| `remote show -n 'a b'` / `'..'` / `'x.lock'` / `'a:b'` / `'a^b'` | exit 0, the same ad-hoc shape — the name's syntax is never checked | `REMOTE_NOT_CONFIGURED` | the ad-hoc shape |
+
+The same-name refusal needs no guard of its own: git looks the source up, then checks whether the
+target is already a remote, and `a` is. Deleting tsgit's `from === to` guard puts `renameSource` in
+exactly git's order and reproduces both rows.
+
+`show` never queries the network, so tsgit's `show` **is** git's `-n` form; the refusal was the only
+difference. One consequence carried by the same probes: git finds a remote's tracking refs through
+its **fetch refspec destinations**, not by scanning `refs/remotes/<name>/`. `show -n nope` with
+`refs/remotes/nope/x` present, and `show -n origin` with no fetch refspec and `refs/remotes/origin/main`
+present, both list nothing. `remoteShow` therefore gates its tracking-ref scan on
+`mapsTrackingNamespace` too — which is what makes the ad-hoc remote report none.
+
+Unpinned and recorded: `remote show -n ''` prints `error: No such remote: ''` and then **exits 139**
+(`SIGSEGV`) on git 2.55.0; tsgit refuses `REMOTE_NOT_CONFIGURED` for the empty name, transcribing the
+refusal and not the crash. Also recorded: git selects a remote's tracking refs by matching each
+refspec destination *pattern*, so a destination such as `+refs/heads/*:refs/other/origin/*` makes
+`show` list `refs/other/origin/z`, and a `+refs/heads/*:refs/remotes/origin/deep/*` refspec makes it
+list only what lives under `deep/`. `remoteShow` still enumerates `refs/remotes/<name>/` once the
+gate passes.
+
 ### Docs consequences
 
 - `docs/use/primitives/update-ref.md` — its signature block documents `{ oldId?, message? }`, which no
