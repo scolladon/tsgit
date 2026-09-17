@@ -32,7 +32,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { branchDelete, branchRename } from '../../src/application/commands/branch.js';
+import { branchCreate, branchDelete, branchRename } from '../../src/application/commands/branch.js';
 import { notesAdd } from '../../src/application/commands/notes.js';
 import { remoteRemove, remoteRename, remoteShow } from '../../src/application/commands/remote.js';
 import { tagCreate, tagDelete } from '../../src/application/commands/tag.js';
@@ -3763,6 +3763,326 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a ref file sitting where a deeper name would need a directory', () => {
+      describe('When both tools read and delete the deeper name', () => {
+        it('Then every read form reports it absent and the branch delete refuses by name', async () => {
+          // Arrange — `refs/heads/main` is a regular ref file, so nothing can
+          // live at `refs/heads/main/deep`.
+          const { peer, ctx } = await filesCasePair('file-blocks-deeper-name');
+          const deeper = 'refs/heads/main/deep' as RefName;
+          const sut = getRefStore(ctx);
+
+          // Act
+          const resolved = await sut.resolveDirect(deeper);
+          const listed = await sut.listRefNames(deeper);
+          let caught: unknown;
+          try {
+            await branchDelete(ctx, { name: 'main/deep' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git's four read forms
+          expect(tryRunGitWithExit(['-C', peer, 'show-ref', deeper]).exitCode).toBe(1);
+          expect(tryRunGitWithExit(['-C', peer, 'show-ref', deeper]).stdout).toBe('');
+          const symbolic = tryRunGitWithExit(['-C', peer, 'symbolic-ref', deeper]);
+          expect(symbolic.exitCode).toBe(128);
+          expect(symbolic.stderr).toContain(`ref ${deeper} is not a symbolic ref`);
+          const enumerated = tryRunGitWithExit([
+            '-C',
+            peer,
+            'for-each-ref',
+            '--format=%(refname)',
+            deeper,
+          ]);
+          expect(enumerated.exitCode).toBe(0);
+          expect(enumerated.stdout).toBe('');
+          const verified = tryRunGitWithExit(['-C', peer, 'rev-parse', '--verify', deeper]);
+          expect(verified.exitCode).toBe(128);
+          expect(verified.stderr).toContain('Needed a single revision');
+
+          // Assert — tsgit answers the same, by the same three questions
+          expect(resolved).toEqual({ kind: 'missing' });
+          expect(listed).toEqual([]);
+          const gitDelete = tryRunGitWithExit(['-C', peer, 'branch', '-d', 'main/deep']);
+          expect(gitDelete.exitCode).toBe(1);
+          expect(gitDelete.stderr).toContain("error: branch 'main/deep' not found");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'BRANCH_NOT_FOUND',
+            name: deeper,
+          });
+        });
+      });
+    });
+
+    describe('Given a name that is absent while a ref lives under it', () => {
+      describe('When both tools delete it with an old value to check', () => {
+        it('Then both refuse on the value they cannot read, never on the name under it', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('delete-above-with-old-value');
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'update-ref', 'refs/remotes/p/q', filesC1]);
+          }
+          const before = await snapshotOf(peer);
+          const sut = updateRef;
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'update-ref',
+            '-d',
+            'refs/remotes/p',
+            filesC1,
+          ]);
+          try {
+            await sut(ctx, 'refs/remotes/p' as RefName, ZERO, {
+              delete: true,
+              expected: filesC1 as ObjectId,
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toContain(
+            "cannot lock ref 'refs/remotes/p': unable to resolve reference 'refs/remotes/p'",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/p',
+            expected: filesC1,
+            actual: 'absent',
+          });
+          expect(await snapshotOf(ours)).toEqual(before);
+          expect(await snapshotOf(peer)).toEqual(before);
+        });
+      });
+    });
+
+    describe('Given an empty directory standing where a new ref must be written', () => {
+      const plantEmptyDir = async (dirs: readonly string[], name: string): Promise<void> => {
+        for (const dir of dirs) {
+          await mkdir(path.join(dir, '.git', 'refs', 'heads', name), { recursive: true });
+        }
+      };
+
+      describe('When both tools make a create-guarded write there', () => {
+        it('Then both remove the directory and leave the same ref and logs behind', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('empty-dir-guarded-write');
+          await plantEmptyDir([peer, ours], 'd3');
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 80) * 1000);
+          const sut = updateRef;
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'update-ref', 'refs/heads/d3', filesC1, ZERO],
+              { env: pinnedEnv(COMMITTER_EPOCH + 80) },
+            );
+            await sut(ctx, branchRef('d3'), filesC1 as ObjectId, {
+              expected: 'absent',
+              reflogMessage: '',
+            });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, ours]) {
+            expect((await lstat(path.join(dir, '.git', 'refs', 'heads', 'd3'))).isFile()).toBe(
+              true,
+            );
+          }
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+
+      describe('When both tools make a symbolic-ref write there', () => {
+        it('Then both remove the directory and leave the same symbolic file and logs behind', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('empty-dir-symbolic-write');
+          await plantEmptyDir([peer, ours], 'd4');
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 80) * 1000);
+          const sut = getRefStore(ctx);
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'symbolic-ref', 'refs/heads/d4', 'refs/heads/main'],
+              { env: pinnedEnv(COMMITTER_EPOCH + 80) },
+            );
+            await sut.applyRefUpdates([
+              {
+                kind: 'setSymbolic',
+                name: branchRef('d4'),
+                target: branchRef('main'),
+                reflog: { oldId: ZERO, newId: filesC2 as ObjectId, message: '' },
+              },
+            ]);
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, ours]) {
+            expect(await readFile(path.join(dir, '.git', 'refs', 'heads', 'd4'), 'utf8')).toBe(
+              'ref: refs/heads/main\n',
+            );
+          }
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+    });
+
+    describe('Given a file standing inside the log directory a new branch would need', () => {
+      describe('When both tools create that branch', () => {
+        it('Then both refuse naming the logs under it and neither writes the ref', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('branch-create-blocked-log');
+          for (const dir of [peer, ours]) {
+            await mkdir(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e9'), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e9', 'f'), '');
+          }
+          const before = await snapshotOf(peer);
+          const sut = branchCreate;
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'branch', 'e9', 'refs/heads/x']);
+          try {
+            await sut(ctx, { name: 'e9', startPoint: 'refs/heads/x' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            `cannot update the ref 'refs/heads/e9': there are still logs under '${path.join('.git', 'logs', 'refs', 'heads', 'e9')}'`,
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'DIRECTORY_NOT_EMPTY',
+            path: `${ctx.layout.gitDir}/logs/refs/heads/e9`,
+          });
+          expect(await snapshotOf(ours)).toEqual(before);
+          expect(await snapshotOf(peer)).toEqual(before);
+        });
+      });
+
+      describe('When both tools write that ref with reference logging turned off', () => {
+        it('Then both write the ref and leave the blocking directory exactly as it was', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('blocked-log-unlogged');
+          for (const dir of [peer, ours]) {
+            git(dir, 'config', 'core.logAllRefUpdates', 'false');
+            await mkdir(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e8'), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e8', 'f'), '');
+          }
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 81) * 1000);
+          const sut = updateRef;
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'update-ref', '-m', 'w', 'refs/heads/e8', filesC1],
+              { env: pinnedEnv(COMMITTER_EPOCH + 81) },
+            );
+            await sut(ctx, branchRef('e8'), filesC1 as ObjectId, { reflogMessage: 'w' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, ours]) {
+            expect(await readFile(path.join(dir, '.git', 'refs', 'heads', 'e8'), 'utf8')).toBe(
+              `${filesC1}\n`,
+            );
+            expect(
+              await pathExists(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e8', 'f')),
+            ).toBe(true);
+          }
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+    });
+
+    describe('Given a packed-only ref deleted through the null object id', () => {
+      describe('When both tools apply that form', () => {
+        it('Then both drop the same packed line and leave packed-refs byte-identical', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('packed-only-null-id-delete');
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/p1', ZERO]);
+          await sut(ctx, branchRef('p1'), ZERO, { reflogMessage: '' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          const peerPacked = await readFile(path.join(peer, '.git', 'packed-refs'), 'utf8');
+          expect(peerPacked).not.toContain('refs/heads/p1');
+          expect(await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8')).toBe(peerPacked);
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+    });
+
+    describe('Given a name under an existing ref on the reftable backend', () => {
+      describe('When both tools write it with a real old value to check', () => {
+        it('Then both refuse on the value they cannot read, ahead of the name conflict', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await reftableCasePair('reftable-under-existing-old-value');
+          const id = git(reftableBase, 'rev-parse', 'refs/heads/main').trim();
+          for (const dir of [peer, ours]) runGit(['-C', dir, 'update-ref', 'refs/remotes/k', id]);
+          const before = await snapshotOf(peer);
+          const sut = getRefStore(ctx);
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+            input: `update refs/remotes/k/z ${id} ${id}\n`,
+            env: runGitEnv(),
+          });
+          try {
+            await sut.applyRefUpdates([
+              {
+                kind: 'set',
+                name: 'refs/remotes/k/z' as RefName,
+                id: id as ObjectId,
+                expected: id as ObjectId,
+              },
+            ]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            "cannot lock ref 'refs/remotes/k/z': unable to resolve reference 'refs/remotes/k/z'",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/remotes/k/z',
+            expected: id,
+            actual: 'absent',
+          });
+          expect(await snapshotOf(ours)).toEqual(before);
+          expect(await snapshotOf(peer)).toEqual(before);
+        });
+      });
+    });
+
     describe('Given a transaction whose own names collide, on both tools and both backends', () => {
       type StdinUpdate = readonly ['create' | 'delete', string];
       interface CollisionRow {
@@ -3875,6 +4195,17 @@ describe.skipIf(!GIT_AVAILABLE)(
               "cannot process 'refs/remotes/q' and 'refs/remotes/q/x'",
             ],
           },
+        },
+        {
+          label: 'a lone create under an existing name, sent through the batch form',
+          slug: 'batch-create-under-existing',
+          existing: ['k'],
+          updates: [['create', 'k/s']],
+          refusal: same(
+            'NOT_A_DIRECTORY',
+            'k',
+            "'refs/remotes/k' exists; cannot create 'refs/remotes/k/s'",
+          ),
         },
         {
           label: 'deleting the existing r2/x before deleting the absent r2 above it',
@@ -4019,6 +4350,84 @@ describe.skipIf(!GIT_AVAILABLE)(
         );
       });
 
+      describe.each([
+        {
+          label: 'that name alone',
+          slug: 'blocked-alone',
+          existingRef: undefined as string | undefined,
+          updates: [['create', 'blk']] as readonly StdinUpdate[],
+          blockedWins: true,
+        },
+        {
+          label: 'that name before a create under an existing one',
+          slug: 'blocked-before-under',
+          existingRef: 'v',
+          updates: [
+            ['create', 'blk'],
+            ['create', 'v/w'],
+          ] as readonly StdinUpdate[],
+          blockedWins: true,
+        },
+        {
+          label: 'a create under an existing name before that name',
+          slug: 'under-before-blocked',
+          existingRef: 'v',
+          updates: [
+            ['create', 'v/w'],
+            ['create', 'blk'],
+          ] as readonly StdinUpdate[],
+          blockedWins: false,
+        },
+      ])(
+        'When git update-ref --stdin and applyRefUpdates send $label with a directory blocking it',
+        ({ slug, existingRef, updates, blockedWins }) => {
+          it('Then both refuse on the same one of the two and change nothing', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await filesCasePair(`blocked-priority-${slug}`);
+            const id = filesC1;
+            for (const dir of [peer, ours]) {
+              if (existingRef !== undefined) {
+                runGit(['-C', dir, 'update-ref', remote(existingRef), id]);
+              }
+              await mkdir(path.join(dir, '.git', 'refs', 'remotes', 'blk'), { recursive: true });
+              await writeFile(path.join(dir, '.git', 'refs', 'remotes', 'blk', 'x.lock'), '');
+            }
+            const refsBefore = listRemotes(peer);
+            const sut = getRefStore(ctx);
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+              input: stdinOf(updates, id),
+              env: runGitEnv(),
+            });
+            let caught: unknown;
+            try {
+              await sut.applyRefUpdates(refUpdatesOf(updates, id));
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(128);
+            expect(gitResult.stderr).toContain(
+              blockedWins
+                ? `there is a non-empty directory '${path.join('.git', 'refs', 'remotes', 'blk')}' blocking reference '${remote('blk')}'`
+                : "'refs/remotes/v' exists; cannot create 'refs/remotes/v/w'",
+            );
+            expect((caught as TsgitError).data).toEqual(
+              blockedWins
+                ? {
+                    code: 'DIRECTORY_NOT_EMPTY',
+                    path: `${ctx.layout.gitDir}/${remote('blk')}`,
+                  }
+                : { code: 'NOT_A_DIRECTORY', path: `${ctx.layout.gitDir}/${remote('v')}` },
+            );
+            expect(listRemotes(peer)).toBe(refsBefore);
+            expect(listRemotes(ours)).toBe(refsBefore);
+          });
+        },
+      );
+
       describe('When git update-ref --stdin and applyRefUpdates queue a create over an empty directory tree behind a name that can never be locked', () => {
         it('Then both refuse on the blocked name, write nothing, and leave the tree standing', async () => {
           // Arrange — `blk` can never be locked; `et` is a name whose loose
@@ -4123,6 +4532,16 @@ describe.skipIf(!GIT_AVAILABLE)(
             ['create', 'v/w/y'],
           ],
           mismatchAt: 0,
+          refusal: MISMATCH,
+        },
+        {
+          label: 'the value mismatch between a pair checked only in the batch',
+          slug: 'mismatch-between-batch-pair',
+          updates: [
+            ['create', 'f'],
+            ['create', 'f/x'],
+          ],
+          mismatchAt: 1,
           refusal: MISMATCH,
         },
         {
@@ -4233,6 +4652,16 @@ describe.skipIf(!GIT_AVAILABLE)(
           code: 'FILE_EXISTS',
           blocking: 'e/x',
           message: "'refs/remotes/e/x' exists; cannot create 'refs/remotes/e'",
+        },
+        {
+          label: 'creating d/x/y under the existing d/x',
+          slug: 'single-create-two-under',
+          existing: 'd/x',
+          update: ['create', 'd/x/y'],
+          exitCode: 128,
+          code: 'NOT_A_DIRECTORY',
+          blocking: 'd/x',
+          message: "'refs/remotes/d/x' exists; cannot create 'refs/remotes/d/x/y'",
         },
         {
           label: 'deleting the absent d/x/y under the existing d/x',
