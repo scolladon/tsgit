@@ -2469,7 +2469,7 @@ another remote also fetches. Base: `refs/heads/side`, `refs/other/origin/z`,
 | `+refs/heads/*:refs/remotes/origin/deep/*` | `refs/remotes/origin/deep/x` only |
 | both of the above, either order | both, as a set |
 | `+refs/heads/main:refs/remotes/origin/main` (no star) | `refs/remotes/origin/main` |
-| `+refs/heads/*` (no colon) | nothing — no destination to match |
+| `+refs/heads/*` (no colon) | **nothing is listed: git refuses the whole command**, exit 128 `fatal: invalid refspec '+refs/heads/*'` — re-probed against git 2.55.0; a colon-free fetch refspec never reaches the destination match |
 | `+refs/heads/*:refs/remotes/zzz/*`, with `zzz` also configured | `refs/remotes/zzz/q` — unlike `remove`, `show` applies no "another remote covers it" exclusion |
 | `+refs/heads/*:refs/heads/*` | `refs/heads/side` — local branches |
 | `+refs/*:refs/*` (mirror) | every ref in the repository |
