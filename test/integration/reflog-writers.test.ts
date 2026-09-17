@@ -172,7 +172,7 @@ describe('integration — reflog writers', () => {
 
       // Assert
       const headLog = await readReflog(ctx, HEAD);
-      expect(headLog.at(-1)?.message).toBe(`checkout: moving from main to ${first.id.slice(0, 7)}`);
+      expect(headLog.at(-1)?.message).toBe(`checkout: moving from main to ${first.id}`);
       expect(headLog.at(-1)?.newId).toBe(first.id);
     });
   });

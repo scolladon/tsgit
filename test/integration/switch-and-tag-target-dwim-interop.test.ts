@@ -11,7 +11,7 @@
  *   unique:         a detaching checkout and a tag target take git's revision ladder
  *   interopSurface: checkout
  */
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -28,6 +28,11 @@ import {
 } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
+const ABBREVIATED_LENGTH = 7;
+
+/** The subject of `<dir>`'s newest `logs/HEAD` entry. */
+const lastLogSubject = (dir: string): string =>
+  git(dir, 'reflog', 'show', '--format=%gs', '-1', 'HEAD').trim();
 
 const IDENTITY_ENV: NodeJS.ProcessEnv = {
   ...runGitEnv(),
@@ -79,6 +84,63 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
     await cp(base, ours, { recursive: true });
     return { peer, ours, ctx: createNodeContext({ workDir: ours }) };
   };
+
+  describe('Given a name no branch carries, switched to without asking to detach', () => {
+    describe.each([
+      { label: 'a tag', slug: 'plain-tag', arg: 'release', ref: 'refs/tags/release' },
+      {
+        label: 'a remote-tracking path',
+        slug: 'plain-remote',
+        arg: 'org/tgt',
+        ref: 'refs/remotes/org/tgt',
+      },
+    ])('When both tools switch to $label', ({ slug, arg, ref }) => {
+      it('Then both detach onto it with byte-identical HEAD and log lines', async () => {
+        // Arrange
+        const { peer, ours, ctx } = await casePair(slug);
+
+        // Act
+        runGit(['-C', peer, 'checkout', arg], { env: IDENTITY_ENV });
+        const result = await checkout(ctx, { rev: arg });
+
+        // Assert
+        expect(result.detached).toBe(true);
+        expect(result.branch).toBeUndefined();
+        expect(result.id).toBe(git(peer, 'rev-parse', ref).trim());
+        expect(await readFile(path.join(ours, '.git', 'HEAD'), 'utf8')).toBe(
+          await readFile(path.join(peer, '.git', 'HEAD'), 'utf8'),
+        );
+        expect(lastLogSubject(ours)).toBe(lastLogSubject(peer));
+        expect(lastLogSubject(peer)).toBe(`checkout: moving from main to ${arg}`);
+      });
+    });
+  });
+
+  describe('Given an object id switched to as typed', () => {
+    describe.each([
+      { label: 'in full', slug: 'oid-full', abbreviate: false },
+      { label: 'abbreviated', slug: 'oid-short', abbreviate: true },
+    ])('When both tools switch to it $label', ({ slug, abbreviate }) => {
+      it('Then both log the argument exactly as it was handed over', async () => {
+        // Arrange
+        const { peer, ours, ctx } = await casePair(slug);
+        const full = git(peer, 'rev-parse', 'refs/tags/release').trim();
+        const arg = abbreviate ? full.slice(0, ABBREVIATED_LENGTH) : full;
+
+        // Act
+        runGit(['-C', peer, 'checkout', arg], { env: IDENTITY_ENV });
+        const result = await checkout(ctx, { rev: arg });
+
+        // Assert
+        expect(result.id).toBe(full);
+        expect(await readFile(path.join(ours, '.git', 'HEAD'), 'utf8')).toBe(
+          await readFile(path.join(peer, '.git', 'HEAD'), 'utf8'),
+        );
+        expect(lastLogSubject(ours)).toBe(lastLogSubject(peer));
+        expect(lastLogSubject(peer)).toBe(`checkout: moving from main to ${arg}`);
+      });
+    });
+  });
 
   describe('Given a short name that is both a branch and a tag', () => {
     describe('When both tools detach onto it', () => {

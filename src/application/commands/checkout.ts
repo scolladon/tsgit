@@ -2,12 +2,10 @@ import { branchNotFound, invalidOption } from '../../domain/commands/error.js';
 import {
   FILE_MODE,
   type FilePath,
-  isOid,
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
-import { refNotFound } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
@@ -28,7 +26,7 @@ import {
   requireWorkTree,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
-import { resolveSwitchName } from './internal/revision-name.js';
+import { resolveRevisionName } from './internal/revision-name.js';
 
 export interface CheckoutSwitchOptions {
   readonly rev: string;
@@ -60,9 +58,27 @@ const isSwitch = (opts: CheckoutOptions): opts is CheckoutSwitchOptions =>
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
 
+/**
+ * git's own branch-argument parse reads `refs/heads/<arg>` before anything else:
+ * a name a branch carries keeps the switch on that branch, and only that.
+ * `undefined` for a name that does not format as a refname either — git's own
+ * `check_refname_format` gate before the same read.
+ */
+const branchRefFor = async (ctx: Context, rev: string): Promise<RefName | undefined> => {
+  let name: RefName;
+  try {
+    name = validateRefName(`${HEADS_PREFIX}${rev}`);
+  } catch {
+    return undefined;
+  }
+  return (await refExists(ctx, name)) ? name : undefined;
+};
+
+/** The object a switch detaches onto once no branch carries the name: git's
+ *  `get_oid_mb` fallback over the revision ladder. */
 const resolveSwitchOid = async (ctx: Context, rev: string): Promise<ObjectId> => {
-  const id = await resolveSwitchName(ctx, rev);
-  if (id === undefined) throw refNotFound(rev as RefName);
+  const id = await resolveRevisionName(ctx, rev);
+  if (id === undefined) throw branchNotFound(validateRefName(`${HEADS_PREFIX}${rev}`));
   return id;
 };
 
@@ -84,20 +100,19 @@ const headCheckoutLabel = (
 };
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
-  const detached = opts.detach === true || isOid(opts.rev, ctx.hashConfig);
   const priorHead = await readHeadRaw(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
-  let branchRef: RefName | undefined;
-  let oid: ObjectId;
-  if (detached) {
-    oid = await resolveSwitchOid(ctx, opts.rev);
-  } else {
-    branchRef = validateRefName(`${HEADS_PREFIX}${opts.rev}`);
-    if (!(await refExists(ctx, branchRef))) {
-      throw branchNotFound(branchRef);
-    }
-    oid = await resolveRef(ctx, branchRef);
-  }
+  // The branch lookup runs whatever `detach` says — git reads
+  // `refs/heads/<arg>` before its revision ladder either way, and only the
+  // ATTACH decision consults the flag. A name no branch carries detaches, as
+  // git's own fallback does: a tag, a remote-tracking path or an object id.
+  const onBranch = await branchRefFor(ctx, opts.rev);
+  const detached = opts.detach === true || onBranch === undefined;
+  const branchRef = detached ? undefined : onBranch;
+  const oid =
+    onBranch === undefined
+      ? await resolveSwitchOid(ctx, opts.rev)
+      : await resolveRef(ctx, onBranch);
 
   // Read target tree — git objects are content-addressed and immutable, so
   // this can happen outside the index lock without risk.
@@ -144,7 +159,8 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
         reflog: {
           oldId: oldOid,
           newId: oid,
-          message: `checkout: moving from ${fromLabel} to ${oid.slice(0, 7)}`,
+          // git echoes the argument it was handed, abbreviated or not.
+          message: `checkout: moving from ${fromLabel} to ${opts.rev}`,
         },
       },
     ]);
