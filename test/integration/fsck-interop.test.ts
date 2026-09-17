@@ -1691,6 +1691,32 @@ let symlinkRefDir = '';
 let symlinkRefCtx: Context;
 const SYMLINKED_REF = 'refs/heads/rel';
 
+/** Roots created per row below, removed together in this family's teardown. */
+const symlinkDepthRoots: string[] = [];
+
+/** Every `symlinkRef` finding, in ref order — the whole set, so an extra
+ *  finding on either side changes the comparison. */
+const symlinkRefFindings = (
+  findings: ReadonlyArray<FsckFinding>,
+): ReadonlyArray<FsckFinding & { type: 'bad-ref' }> =>
+  findings
+    .filter(
+      (f): f is FsckFinding & { type: 'bad-ref' } =>
+        f.type === 'bad-ref' && f.msgId === 'symlinkRef',
+    )
+    .slice()
+    .sort((a, b) => (a.ref < b.ref ? -1 : 1));
+
+/** git's own stderr for a set of `symlinkRef` notices, rebuilt from tsgit's
+ *  structured findings alone — the library never renders a line. */
+const symlinkRefStderr = (
+  findings: ReadonlyArray<FsckFinding & { type: 'bad-ref' }>,
+  prefix: string,
+): string =>
+  findings
+    .map((f) => `${prefix}: ${f.ref}: ${f.msgId}: use deprecated symbolic link for symref\n`)
+    .join('');
+
 beforeAll(async () => {
   symlinkRefDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlinkRef-'));
   initRepo(symlinkRefDir);
@@ -1706,6 +1732,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (symlinkRefDir !== '') await rm(symlinkRefDir, { recursive: true, force: true });
+  await Promise.all(
+    symlinkDepthRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
 });
 
 describe.skipIf(!GIT_AVAILABLE)('Given a loose ref that is a symbolic link', () => {
@@ -1721,19 +1750,116 @@ describe.skipIf(!GIT_AVAILABLE)('Given a loose ref that is a symbolic link', () 
       expect(gitResult.exitCode).toBe(0);
       expect(result.exitCode).toBe(0);
 
-      // Assert — the warning names the link's own ref path
-      const warned = result.findings.find(
-        (f): f is FsckFinding & { type: 'bad-ref' } =>
-          f.type === 'bad-ref' && f.msgId === 'symlinkRef',
-      );
-      expect(warned).toBeDefined();
-      expect(warned?.severity).toBe('warning');
-      expect(warned?.ref).toBe(SYMLINKED_REF);
+      // Assert — the whole warning SET, not just one member: an extra
+      // finding on either side changes the list and fails the row.
+      const warned = symlinkRefFindings(result.findings);
+      expect(warned.map((f) => f.severity)).toEqual(['warning']);
+      expect(warned.map((f) => f.ref)).toEqual([SYMLINKED_REF]);
 
-      // Reconstruct git's exact stderr line and assert byte-equality
-      expect(gitResult.stderr).toContain(
-        `warning: ${warned?.ref}: ${warned?.msgId}: use deprecated symbolic link for symref`,
+      // Reconstruct git's exact stderr and assert byte-equality
+      expect(gitResult.stderr).toBe(symlinkRefStderr(warned, 'warning'));
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given links at several depths and one naming a directory of refs',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then both report exactly one warning per link, and neither descends the directory', async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlink-depths-'));
+        symlinkDepthRoots.push(dir);
+        initRepo(dir);
+        await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+        runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'branch', 'side', 'main'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'update-ref', 'refs/heads/other/x', 'HEAD'], { env: SAFE_ENV });
+        const heads = path.join(dir, '.git', 'refs', 'heads');
+        await mkdir(path.join(heads, 'nest'), { recursive: true });
+        await symlink('other', path.join(heads, 'dl'));
+        await symlink('../side', path.join(heads, 'nest', 'deep'));
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        const warned = symlinkRefFindings(result.findings);
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
+        expect(warned.map((f) => f.ref)).toEqual(['refs/heads/dl', 'refs/heads/nest/deep']);
+        expect(gitResult.stderr).toBe(symlinkRefStderr(warned, 'warning'));
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given HEAD itself stored as a symbolic link to a branch', () => {
+  describe('When fsck runs', () => {
+    it('Then neither tool reports anything — the walk covers refs only', async () => {
+      // Arrange
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlink-head-'));
+      symlinkDepthRoots.push(dir);
+      initRepo(dir);
+      await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+      runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+      runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+      await rm(path.join(dir, '.git', 'HEAD'));
+      await symlink('refs/heads/main', path.join(dir, '.git', 'HEAD'));
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(0);
+      expect(gitResult.stderr).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(symlinkRefFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given fsck.symlinkRef re-typed in the configuration', () => {
+  describe.each([
+    { level: 'error', exitCode: 8, prefix: 'error' },
+    { level: 'ignore', exitCode: 0, prefix: undefined },
+  ])('When fsck runs with the notice set to $level', (row) => {
+    it('Then git re-types it while tsgit keeps reporting the fixed warning', async () => {
+      // Arrange — tsgit has no `fsck.<msg-id>` severity table, so the notice
+      // it reports is the same one at every configured level.
+      const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-symlink-${row.level}-`));
+      symlinkDepthRoots.push(dir);
+      initRepo(dir);
+      await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+      runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+      runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+      runGit(['-C', dir, 'branch', 'side', 'main'], { env: SAFE_ENV });
+      await symlink('side', path.join(dir, '.git', 'refs', 'heads', 'rel'));
+      runGit(['-C', dir, 'config', 'fsck.symlinkRef', row.level], { env: SAFE_ENV });
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert — git's side
+      expect(gitResult.exitCode).toBe(row.exitCode);
+      expect(gitResult.stderr).toBe(
+        row.prefix === undefined
+          ? ''
+          : `${row.prefix}: ${SYMLINKED_REF}: symlinkRef: use deprecated symbolic link for symref\n`,
       );
+
+      // Assert — tsgit's side, unchanged by the key
+      const warned = symlinkRefFindings(result.findings);
+      expect(warned.map((f) => f.severity)).toEqual(['warning']);
+      expect(warned.map((f) => f.ref)).toEqual([SYMLINKED_REF]);
+      expect(result.exitCode).toBe(0);
     });
   });
 });
