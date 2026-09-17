@@ -2105,6 +2105,442 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given remotes whose fetch refspecs decide what a command touches', () => {
+      let remoteBase = '';
+      let remoteBaseCommit = '';
+
+      beforeAll(async () => {
+        remoteBase = await mkdtemp(path.join(os.tmpdir(), 'tsgit-ref-transaction-remote-base-'));
+        caseRoots.push(remoteBase);
+        runGit(['init', '-q', '-b', 'main', remoteBase]);
+        git(remoteBase, 'config', 'user.name', 'A');
+        git(remoteBase, 'config', 'user.email', 'a@x');
+        git(remoteBase, 'config', 'commit.gpgsign', 'false');
+        disableAutoMaintenance(remoteBase);
+        await writeFile(path.join(remoteBase, 'f.txt'), 'c1\n');
+        git(remoteBase, 'add', '-A');
+        runGit(['-C', remoteBase, 'commit', '-q', '-m', 'c1'], {
+          env: pinnedEnv(COMMITTER_EPOCH + 90),
+        });
+        remoteBaseCommit = git(remoteBase, 'rev-parse', 'HEAD').trim();
+        runGit(['-C', remoteBase, 'branch', 'side', 'main'], {
+          env: pinnedEnv(COMMITTER_EPOCH + 90),
+        });
+        runGit(['-C', remoteBase, 'remote', 'add', 'origin', 'https://example.invalid/r.git']);
+        for (const name of [
+          'refs/other/origin/z',
+          'refs/remotes/origin/deep/x',
+          'refs/remotes/origin/main',
+          // A name the exact destination `…/origin/main` must NOT match.
+          'refs/remotes/origin/mainline',
+          'refs/remotes/origin/sub/x',
+          'refs/remotes/zzz/q',
+        ]) {
+          runGit(['-C', remoteBase, 'update-ref', name, remoteBaseCommit], {
+            env: pinnedEnv(COMMITTER_EPOCH + 90),
+          });
+        }
+      }, SETUP_TIMEOUT);
+
+      /** A `peer` / `ours` pair off the shared remote base, with `origin`'s
+       *  fetch refspecs replaced by `specs` and an optional second remote. */
+      const remoteCasePair = async (
+        slug: string,
+        specs: readonly string[],
+        otherSpec?: string,
+      ): Promise<{ readonly peer: string; readonly ours: string; readonly ctx: Context }> => {
+        const peer = await cloneRepo(remoteBase, `${slug}-peer`);
+        const ours = await cloneRepo(remoteBase, `${slug}-ours`);
+        for (const dir of [peer, ours]) {
+          runGit(['-C', dir, 'config', '--unset-all', 'remote.origin.fetch']);
+          for (const spec of specs)
+            runGit(['-C', dir, 'config', '--add', 'remote.origin.fetch', spec]);
+          if (otherSpec !== undefined) {
+            runGit(['-C', dir, 'remote', 'add', 'other', 'https://example.invalid/o.git']);
+            runGit(['-C', dir, 'config', '--unset-all', 'remote.other.fetch']);
+            runGit(['-C', dir, 'config', '--add', 'remote.other.fetch', otherSpec]);
+          }
+        }
+        return { peer, ours, ctx: nodeCtx(ours) };
+      };
+
+      /** The names printed under "Remote branches" by `git remote show`. */
+      const listedBranchNames = (stdout: string): readonly string[] => {
+        const lines = stdout.split('\n');
+        const start = lines.findIndex((line) => line.includes('Remote branch')) + 1;
+        const listed: string[] = [];
+        for (const line of lines.slice(start)) {
+          if (!line.startsWith('    ')) break;
+          listed.push(line.trim());
+        }
+        return listed;
+      };
+
+      describe.each([
+        {
+          slug: 'none',
+          specs: [] as readonly string[],
+          listed: [] as readonly string[],
+          attaches: [] as readonly string[],
+        },
+        {
+          slug: 'outside',
+          specs: ['+refs/heads/*:refs/other/origin/*'],
+          listed: ['z'],
+          attaches: ['refs/other/origin/z'],
+        },
+        {
+          slug: 'nested',
+          specs: ['+refs/heads/*:refs/remotes/origin/deep/*'],
+          listed: ['x'],
+          attaches: ['refs/remotes/origin/deep/x'],
+        },
+        {
+          slug: 'both',
+          specs: ['+refs/heads/*:refs/other/origin/*', '+refs/heads/*:refs/remotes/origin/deep/*'],
+          listed: ['x', 'z'],
+          attaches: ['refs/other/origin/z', 'refs/remotes/origin/deep/x'],
+        },
+        {
+          slug: 'no-star',
+          specs: ['+refs/heads/main:refs/remotes/origin/main'],
+          listed: ['main'],
+          attaches: ['refs/remotes/origin/main'],
+        },
+        {
+          slug: 'another-remotes-namespace',
+          specs: ['+refs/heads/*:refs/remotes/zzz/*'],
+          listed: ['q'],
+          attaches: ['refs/remotes/zzz/q'],
+        },
+        {
+          slug: 'local-branches',
+          specs: ['+refs/heads/*:refs/heads/*'],
+          listed: ['main', 'side'],
+          attaches: ['refs/heads/main', 'refs/heads/side'],
+        },
+        {
+          slug: 'mirror',
+          specs: ['+refs/*:refs/*'],
+          listed: [
+            'main',
+            'refs/other/origin/z',
+            'refs/remotes/origin/deep/x',
+            'refs/remotes/origin/main',
+            'refs/remotes/origin/mainline',
+            'refs/remotes/origin/sub/x',
+            'refs/remotes/zzz/q',
+            'side',
+          ],
+          attaches: [
+            'refs/heads/main',
+            'refs/heads/side',
+            'refs/other/origin/z',
+            'refs/remotes/origin/deep/x',
+            'refs/remotes/origin/main',
+            'refs/remotes/origin/mainline',
+            'refs/remotes/origin/sub/x',
+            'refs/remotes/zzz/q',
+          ],
+        },
+        {
+          slug: 'twice',
+          specs: [
+            '+refs/heads/*:refs/remotes/origin/deep/*',
+            '+refs/heads/*:refs/remotes/origin/deep/*',
+          ],
+          listed: ['x'],
+          attaches: ['refs/remotes/origin/deep/x'],
+        },
+      ])(
+        'When both tools describe a remote configured with the $slug refspec shape',
+        ({ slug, specs, listed, attaches }) => {
+          it('Then both select the same refs, by refspec destination and never by namespace', async () => {
+            // Arrange
+            const { peer, ctx } = await remoteCasePair(`remote-show-${slug}`, specs);
+            const sut = remoteShow;
+
+            // Act
+            const result = await sut(ctx, { name: 'origin' });
+            const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'show', '-n', 'origin']);
+
+            // Assert
+            expect(gitResult.exitCode).toBe(0);
+            expect(listedBranchNames(gitResult.stdout)).toEqual([...listed]);
+            expect([...result.remote.trackingRefs.keys()].sort()).toEqual([...attaches]);
+            expect(result.remote.trackingRefs.size).toBe(listed.length);
+          });
+        },
+      );
+
+      describe.each([
+        {
+          slug: 'canonical',
+          specs: ['+refs/heads/*:refs/remotes/origin/*'],
+          other: undefined as string | undefined,
+          deleted: [
+            'refs/remotes/origin/deep/x',
+            'refs/remotes/origin/main',
+            'refs/remotes/origin/mainline',
+            'refs/remotes/origin/sub/x',
+          ],
+        },
+        { slug: 'no-refspec', specs: [], other: undefined, deleted: [] as readonly string[] },
+        {
+          slug: 'outside-the-remotes-space',
+          specs: ['+refs/heads/*:refs/other/origin/*'],
+          other: undefined,
+          deleted: [] as readonly string[],
+        },
+        {
+          slug: 'nested-destination',
+          specs: ['+refs/heads/*:refs/remotes/origin/sub/*'],
+          other: undefined,
+          deleted: ['refs/remotes/origin/sub/x'],
+        },
+        {
+          slug: 'another-remotes-namespace',
+          specs: ['+refs/heads/*:refs/remotes/zzz/*'],
+          other: undefined,
+          deleted: ['refs/remotes/zzz/q'],
+        },
+        {
+          slug: 'fully-covered-elsewhere',
+          specs: ['+refs/heads/*:refs/remotes/origin/*'],
+          other: '+refs/heads/*:refs/remotes/origin/*',
+          deleted: [] as readonly string[],
+        },
+        {
+          slug: 'partly-covered-elsewhere',
+          specs: ['+refs/heads/*:refs/remotes/origin/*'],
+          other: '+refs/heads/*:refs/remotes/origin/sub/*',
+          deleted: [
+            'refs/remotes/origin/deep/x',
+            'refs/remotes/origin/main',
+            'refs/remotes/origin/mainline',
+          ],
+        },
+        {
+          slug: 'covered-by-a-mirror',
+          specs: ['+refs/heads/*:refs/remotes/origin/*'],
+          other: '+refs/*:refs/*',
+          deleted: [] as readonly string[],
+        },
+      ])(
+        'When both tools remove a remote whose refspec shape is $slug',
+        ({ slug, specs, other, deleted }) => {
+          it('Then both delete exactly the refs it alone fetches and leave the rest alone', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await remoteCasePair(`remote-remove-${slug}`, specs, other);
+            const surviving = (dir: string): readonly string[] =>
+              git(dir, 'for-each-ref', '--format=%(refname)', 'refs/remotes', 'refs/other')
+                .trim()
+                .split('\n')
+                .filter((line) => line.length > 0);
+            const before = surviving(peer);
+            const sut = remoteRemove;
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'remove', 'origin']);
+            const result = await sut(ctx, { name: 'origin' });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(0);
+            expect(before.filter((name) => !surviving(peer).includes(name))).toEqual([...deleted]);
+            expect([...result.removedTrackingRefs].sort()).toEqual([...deleted]);
+            expect(surviving(ours)).toEqual(surviving(peer));
+            // The removed refs take their logs with them on both sides.
+            for (const name of deleted) {
+              for (const dir of [peer, ours]) {
+                expect(await pathExists(path.join(dir, '.git', 'logs', name))).toBe(false);
+              }
+            }
+            expect(remoteAndBranchConfig(ours)).toBe(remoteAndBranchConfig(peer));
+          });
+        },
+      );
+
+      describe.each([
+        {
+          slug: 'no-refspec',
+          specs: [] as readonly string[],
+          after: [] as readonly string[],
+          moves: false,
+        },
+        {
+          slug: 'outside-the-remotes-space',
+          specs: ['+refs/heads/*:refs/other/origin/*'],
+          after: ['+refs/heads/*:refs/other/origin/*'],
+          moves: false,
+        },
+        {
+          slug: 'a-mirror',
+          specs: ['+refs/*:refs/*'],
+          after: ['+refs/*:refs/*'],
+          moves: false,
+        },
+        {
+          slug: 'a-longer-name-sharing-the-prefix',
+          specs: ['+refs/heads/*:refs/remotes/originX/*'],
+          after: ['+refs/heads/*:refs/remotes/originX/*'],
+          moves: false,
+        },
+        {
+          slug: 'the-canonical-one',
+          specs: ['+refs/heads/*:refs/remotes/origin/*'],
+          after: ['+refs/heads/*:refs/remotes/up2/*'],
+          moves: true,
+        },
+        {
+          slug: 'one-without-a-plus',
+          specs: ['refs/heads/release:refs/remotes/origin/release'],
+          after: ['refs/heads/release:refs/remotes/up2/release'],
+          moves: true,
+        },
+        {
+          slug: 'one-without-a-star',
+          specs: ['+refs/heads/main:refs/remotes/origin/main'],
+          after: ['+refs/heads/main:refs/remotes/up2/main'],
+          moves: true,
+        },
+        {
+          slug: 'a-star-framed-by-text',
+          specs: ['+refs/heads/*:refs/remotes/origin/pre*post'],
+          after: ['+refs/heads/*:refs/remotes/up2/pre*post'],
+          moves: true,
+        },
+        {
+          slug: 'a-nested-destination',
+          specs: ['+refs/heads/*:refs/remotes/origin/deep/*'],
+          after: ['+refs/heads/*:refs/remotes/up2/deep/*'],
+          moves: true,
+        },
+        {
+          slug: 'the-canonical-one-beside-another',
+          specs: ['+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/other/x/*'],
+          after: ['+refs/heads/*:refs/remotes/up2/*', '+refs/tags/*:refs/other/x/*'],
+          moves: true,
+        },
+      ])(
+        'When both tools rename a remote whose fetch refspec is $slug',
+        ({ slug, specs, after, moves }) => {
+          it('Then both splice the same destination and move tracking refs only when one names them', async () => {
+            // Arrange
+            const { peer, ours, ctx } = await remoteCasePair(`remote-rename-spec-${slug}`, specs);
+            const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 91) * 1000);
+            const sut = remoteRename;
+
+            // Act
+            let gitResult: { readonly exitCode: number };
+            let result: Awaited<ReturnType<typeof remoteRename>>;
+            try {
+              gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'up2'], {
+                env: pinnedEnv(COMMITTER_EPOCH + 91),
+              });
+              result = await sut(ctx, { from: 'origin', to: 'up2' });
+            } finally {
+              dateSpy.mockRestore();
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(0);
+            const specsAfter = (dir: string): readonly string[] =>
+              tryRunGitWithExit(['-C', dir, 'config', '--local', '--get-all', 'remote.up2.fetch'])
+                .stdout.split('\n')
+                .filter((line) => line.length > 0);
+            expect(specsAfter(peer)).toEqual([...after]);
+            expect(specsAfter(ours)).toEqual([...after]);
+            expect(result.movedTrackingRefs.length > 0).toBe(moves);
+            expect(
+              git(peer, 'for-each-ref', '--format=%(refname)', 'refs/remotes').includes(
+                'refs/remotes/up2/',
+              ),
+            ).toBe(moves);
+            expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+          });
+        },
+      );
+
+      describe('When both tools rename a remote no config carries onto its own name', () => {
+        it('Then both report the source as unconfigured, not the target as taken', async () => {
+          // Arrange
+          const { peer, ctx } = await remoteCasePair('remote-rename-unknown-self', []);
+          const sut = remoteRename;
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'nope', 'nope']);
+          try {
+            await sut(ctx, { from: 'nope', to: 'nope' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(2);
+          expect(gitResult.stderr).toContain("error: No such remote: 'nope'");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NOT_CONFIGURED',
+            remote: 'nope',
+          });
+        });
+      });
+
+      describe('When both tools rename a remote onto a name that is not a valid remote name', () => {
+        it('Then both refuse the new name after the source and target lookups', async () => {
+          // Arrange
+          const { peer, ctx } = await remoteCasePair('remote-rename-invalid-name', []);
+          const sut = remoteRename;
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'a b']);
+          try {
+            await sut(ctx, { from: 'origin', to: 'a b' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain("fatal: 'a b' is not a valid remote name");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NAME_INVALID',
+            name: 'a b',
+            reason: 'name does not form a valid refs/remotes/<name>/ ref name',
+          });
+        });
+      });
+
+      describe.each([
+        { slug: 'a-space', name: 'a b' },
+        { slug: 'dot-dot', name: '..' },
+        { slug: 'a-lock-suffix', name: 'x.lock' },
+        { slug: 'a-colon', name: 'a:b' },
+        { slug: 'a-caret', name: 'a^b' },
+      ])('When both tools describe the unconfigured name $slug', ({ slug, name }) => {
+        it('Then both report the name itself as the url with nothing attached', async () => {
+          // Arrange
+          const { peer, ctx } = await remoteCasePair(`remote-show-adhoc-${slug}`, []);
+          const sut = remoteShow;
+
+          // Act
+          const result = await sut(ctx, { name });
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'show', '-n', name]);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout).toContain(`Fetch URL: ${name}`);
+          expect(gitResult.stdout).toContain(`Push  URL: ${name}`);
+          expect(gitResult.stdout).not.toContain('Remote branch');
+          expect(result.remote.url).toBe(name);
+          expect(result.remote.pushUrl).toBeUndefined();
+          expect(result.remote.fetchRefspecs).toEqual([]);
+          expect(result.remote.trackingRefs.size).toBe(0);
+        });
+      });
+    });
+
     describe('Given a symbolic ref', () => {
       describe('When it is deleted by its own name', () => {
         it('Then both git and tsgit dereference: the target is gone, the symref itself survives', async () => {
