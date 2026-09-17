@@ -21,18 +21,20 @@
  *                    lines, and annotated-tag peeling, match git 2.55.0
  *   interopSurface: branch
  */
+import { cp, mkdtemp, rm } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchCreate } from '../../src/application/commands/branch.js';
+import { tagCreate } from '../../src/application/commands/tag.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
-  initBothRepos,
-  makePeerPair,
-  type PeerPair,
+  runGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
@@ -56,31 +58,45 @@ const catchTsgitError = async (thrower: () => Promise<unknown>): Promise<TsgitEr
 };
 
 describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
-  let pair: PeerPair;
-  let ctx: Context;
-  let commitId: string;
-  let treeId: string;
-  let blobId: string;
+  let base = '';
+  let commitId = '';
+  let treeId = '';
+  let blobId = '';
+  const caseRoots: string[] = [];
+
+  /** A private copy of the shared fixture. Rows create refs, so no two of
+   *  them may share a repository — nor a Context, whose session cache would
+   *  otherwise outlive the copy it was opened on. */
+  const caseRepo = async (
+    slug: string,
+  ): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-branch-start-point-${slug}-`));
+    caseRoots.push(root);
+    const dir = path.join(root, 'repo');
+    await cp(base, dir, { recursive: true });
+    return { dir, ctx: createNodeContext({ workDir: dir }) };
+  };
 
   beforeAll(async () => {
-    pair = await makePeerPair('branch-start-point');
-    initBothRepos(pair.peer, pair.ours);
-    disableAutoMaintenance(pair.ours);
-    git(pair.ours, 'commit', '-q', '--allow-empty', '-m', 'root');
-    commitId = git(pair.ours, 'rev-parse', 'HEAD').trim();
-    treeId = git(pair.ours, 'write-tree').trim();
-    blobId = git(pair.ours, 'hash-object', '-w', '--stdin').trim();
-    git(pair.ours, 'tag', 'light-to-tree', treeId);
-    git(pair.ours, 'tag', '-a', 'tag-to-tree', '-m', 'tag-to-tree', treeId);
-    git(pair.ours, 'tag', '-a', 'tag-to-commit', '-m', 'tag-to-commit', commitId);
-    // A fresh Context only after every git-side write above — reading through
-    // a Context created earlier could see a session cache populated before
-    // the fixture existed.
-    ctx = createNodeContext({ workDir: pair.ours });
+    base = await mkdtemp(path.join(os.tmpdir(), 'tsgit-branch-start-point-base-'));
+    runGit(['init', '-q', '-b', 'main', base]);
+    git(base, 'config', 'user.name', 'Ada');
+    git(base, 'config', 'user.email', 'ada@example.com');
+    disableAutoMaintenance(base);
+    git(base, 'commit', '-q', '--allow-empty', '-m', 'root');
+    commitId = git(base, 'rev-parse', 'HEAD').trim();
+    treeId = git(base, 'write-tree').trim();
+    blobId = git(base, 'hash-object', '-w', '--stdin').trim();
+    git(base, 'tag', 'light-to-tree', treeId);
+    git(base, 'tag', '-a', 'tag-to-tree', '-m', 'tag-to-tree', treeId);
+    git(base, 'tag', '-a', 'tag-to-commit', '-m', 'tag-to-commit', commitId);
   }, 60_000);
 
   afterAll(async () => {
-    await pair.dispose();
+    await rm(base, { recursive: true, force: true });
+    await Promise.all(
+      caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    );
   });
 
   describe('Given a bare name only one namespace carries', () => {
@@ -88,16 +104,11 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
       it('Then both land on the same oid', async () => {
         // Arrange — a tag-only short name, which git expands through its
         // revision ladder rather than reading verbatim.
-        git(pair.ours, 'tag', 'ladder-tag', commitId);
+        const { dir, ctx } = await caseRepo('ladder');
+        git(dir, 'tag', 'ladder-tag', commitId);
 
         // Act
-        const gitResult = tryRunGitWithExit([
-          '-C',
-          pair.ours,
-          'branch',
-          'b-ladder-git',
-          'ladder-tag',
-        ]);
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-ladder-git', 'ladder-tag']);
         const result = await branchCreate(ctx, {
           name: 'b-ladder-tsgit',
           startPoint: 'ladder-tag',
@@ -106,7 +117,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         // Assert
         expect(gitResult.exitCode).toBe(0);
         expect(result.id).toBe(commitId);
-        expect(git(pair.ours, 'rev-parse', 'refs/heads/b-ladder-git').trim()).toBe(result.id);
+        expect(git(dir, 'rev-parse', 'refs/heads/b-ladder-git').trim()).toBe(result.id);
       });
     });
   });
@@ -115,11 +126,12 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both cut from it', () => {
       it('Then both refuse, naming the expression as ambiguous', async () => {
         // Arrange — the same short name as a branch AND a tag.
-        git(pair.ours, 'branch', 'twice', commitId);
-        git(pair.ours, 'tag', 'twice', commitId);
+        const { dir, ctx } = await caseRepo('ambiguous');
+        git(dir, 'branch', 'twice', commitId);
+        git(dir, 'tag', 'twice', commitId);
 
         // Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b-amb-git', 'twice']);
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-amb-git', 'twice']);
         const error = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'b-amb-tsgit', startPoint: 'twice' }),
         );
@@ -135,14 +147,24 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
       });
     });
 
-    describe('When a tag is created over that same name on both sides', () => {
+    describe('When git tag and tsgit tagCreate both cut from it', () => {
       it('Then both take it without refusing — only branch checks the count', async () => {
-        // Arrange + Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'tag', 't-amb-git', 'twice']);
+        // Arrange — the same short name as a branch AND a tag.
+        const { dir, ctx } = await caseRepo('tag-over-ambiguous');
+        git(dir, 'branch', 'twice', commitId);
+        git(dir, 'tag', 'twice', commitId);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'tag', 't-amb-git', 'twice']);
+        const result = await tagCreate(ctx, { name: 't-amb-tsgit', target: 'twice' });
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
-        expect(git(pair.ours, 'rev-parse', 'refs/tags/t-amb-git').trim()).toBe(commitId);
+        expect(git(dir, 'rev-parse', 'refs/tags/t-amb-git').trim()).toBe(commitId);
+        expect(result.id).toBe(commitId);
+        expect(git(dir, 'rev-parse', 'refs/tags/t-amb-tsgit').trim()).toBe(
+          git(dir, 'rev-parse', 'refs/tags/t-amb-git').trim(),
+        );
       });
     });
   });
@@ -151,7 +173,8 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run', () => {
       it('Then both succeed and land on the same oid', async () => {
         // Arrange + Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b1-git', commitId]);
+        const { dir, ctx } = await caseRepo('commit');
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b1-git', commitId]);
         const result = await branchCreate(ctx, { name: 'b1-tsgit', startPoint: commitId });
 
         // Assert
@@ -165,7 +188,8 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run', () => {
       it('Then both refuse with exit 128 and the reconstructed lines match git byte-for-byte', async () => {
         // Arrange + Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b2-git', treeId]);
+        const { dir, ctx } = await caseRepo('tree-oid');
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b2-git', treeId]);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'b2-tsgit', startPoint: treeId }),
         );
@@ -187,7 +211,8 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run', () => {
       it('Then both refuse with exit 128 and the reconstructed lines match git byte-for-byte', async () => {
         // Arrange + Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b3-git', blobId]);
+        const { dir, ctx } = await caseRepo('blob-oid');
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b3-git', blobId]);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'b3-tsgit', startPoint: blobId }),
         );
@@ -209,15 +234,16 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run', () => {
       it('Then both peel to the commit, never landing on the tag object', async () => {
         // Arrange
+        const { dir, ctx } = await caseRepo('tag-to-commit');
         const startPoint = 'refs/tags/tag-to-commit';
 
         // Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b4-git', startPoint]);
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b4-git', startPoint]);
         const result = await branchCreate(ctx, { name: 'b4-tsgit', startPoint });
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
-        const gitPeeled = git(pair.ours, 'rev-parse', `${startPoint}^{commit}`).trim();
+        const gitPeeled = git(dir, 'rev-parse', `${startPoint}^{commit}`).trim();
         expect(gitPeeled).toBe(commitId);
         expect(result.id).toBe(commitId);
       });
@@ -228,17 +254,18 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run', () => {
       it('Then both refuse — the reported oid is the tag object, not its target', async () => {
         // Arrange
+        const { dir, ctx } = await caseRepo('tag-to-tree');
         const startPoint = 'refs/tags/tag-to-tree';
 
         // Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b5-git', startPoint]);
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b5-git', startPoint]);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'b5-tsgit', startPoint }),
         );
 
         // Assert
         expect(gitResult.exitCode).toBe(128);
-        const tagOid = git(pair.ours, 'rev-parse', startPoint).trim();
+        const tagOid = git(dir, 'rev-parse', startPoint).trim();
         expect(err.data).toEqual({
           code: 'UNEXPECTED_OBJECT_TYPE',
           expected: 'commit',
@@ -254,10 +281,11 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run', () => {
       it('Then both refuse — the reported oid is the tree the ref points at directly', async () => {
         // Arrange
+        const { dir, ctx } = await caseRepo('light-to-tree');
         const startPoint = 'refs/tags/light-to-tree';
 
         // Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b6-git', startPoint]);
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b6-git', startPoint]);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'b6-tsgit', startPoint }),
         );
@@ -279,7 +307,8 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run', () => {
       it('Then both refuse with exit 128, on a different refusal than the typing check', async () => {
         // Arrange + Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b7-git', 'nope-xyz']);
+        const { dir, ctx } = await caseRepo('unresolvable');
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b7-git', 'nope-xyz']);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'b7-tsgit', startPoint: 'nope-xyz' }),
         );
@@ -298,7 +327,8 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         // Arrange + Act — a start point that would itself refuse (a tree oid)
         // proves the name check runs first: if it ran second the refusal
         // would report UNEXPECTED_OBJECT_TYPE instead of an invalid name.
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'bad..name', treeId]);
+        const { dir, ctx } = await caseRepo('invalid-name');
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'bad..name', treeId]);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'bad..name', startPoint: treeId }),
         );
@@ -315,11 +345,12 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run without force', () => {
       it('Then both refuse as already-exists, before the start point ever resolves', async () => {
         // Arrange
-        git(pair.ours, 'branch', 'side-git', commitId);
+        const { dir, ctx } = await caseRepo('exists-unresolvable');
+        git(dir, 'branch', 'side-git', commitId);
         await branchCreate(ctx, { name: 'side-tsgit', startPoint: commitId });
 
         // Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'side-git', 'nope-xyz']);
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'side-git', 'nope-xyz']);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'side-tsgit', startPoint: 'nope-xyz' }),
         );
@@ -336,11 +367,12 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     describe('When git branch and tsgit branchCreate both run without force', () => {
       it('Then both refuse as already-exists — the exists check precedes typing too', async () => {
         // Arrange
-        git(pair.ours, 'branch', 'side2-git', commitId);
+        const { dir, ctx } = await caseRepo('exists-non-commit');
+        git(dir, 'branch', 'side2-git', commitId);
         await branchCreate(ctx, { name: 'side2-tsgit', startPoint: commitId });
 
         // Act
-        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'side2-git', treeId]);
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'side2-git', treeId]);
         const err = await catchTsgitError(() =>
           branchCreate(ctx, { name: 'side2-tsgit', startPoint: treeId }),
         );
