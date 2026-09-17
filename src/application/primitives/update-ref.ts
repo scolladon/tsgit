@@ -1,3 +1,19 @@
+/**
+ * Ref-update transaction. Verifies the target, walks the symref chain, then
+ * lands the new value and its reflog entries across whichever backend the
+ * repository uses (loose files, `packed-refs`, or reftable).
+ *
+ * The per-backend byte formats are declared by their own writers; what this
+ * module owns is the transaction's outcome — which refs exist, what they
+ * point at, and which reflogs grew — so the comparison against canonical
+ * git is the readback (`git show-ref --verify`, `git symbolic-ref`), not
+ * the ref file's bytes.
+ *
+ * @writes
+ *   surface: updateRef
+ *   kind:    equivalent-under-readback
+ *   format:  git-ref-transaction-state
+ */
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
