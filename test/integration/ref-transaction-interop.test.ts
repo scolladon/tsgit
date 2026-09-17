@@ -32,9 +32,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { branchDelete } from '../../src/application/commands/branch.js';
+import { branchDelete, branchRename } from '../../src/application/commands/branch.js';
+import { notesAdd } from '../../src/application/commands/notes.js';
 import { remoteRemove, remoteRename, remoteShow } from '../../src/application/commands/remote.js';
-import { tagDelete } from '../../src/application/commands/tag.js';
+import { tagCreate, tagDelete } from '../../src/application/commands/tag.js';
 import { getRefStore, type RefUpdate } from '../../src/application/primitives/ref-store.js';
 import { resolveRefForReading } from '../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
@@ -136,6 +137,32 @@ const pathExists = async (p: string): Promise<boolean> => {
     throw err;
   }
 };
+
+/** Every observable byte of a repository's ref state. */
+const snapshotOf = async (
+  dir: string,
+): Promise<{
+  readonly refs: string;
+  readonly head: string | undefined;
+  readonly files: Record<string, string>;
+  readonly packed: string | undefined;
+  readonly logs: Record<string, string>;
+}> => ({
+  refs: tryRunGitWithExit([
+    '-C',
+    dir,
+    'for-each-ref',
+    '--format=%(refname) %(objectname) %(symref)',
+  ]).stdout,
+  head: (await pathExists(path.join(dir, '.git', 'HEAD')))
+    ? await readFile(path.join(dir, '.git', 'HEAD'), 'utf8')
+    : undefined,
+  files: await readRefTree(dir),
+  packed: (await pathExists(path.join(dir, '.git', 'packed-refs')))
+    ? await readFile(path.join(dir, '.git', 'packed-refs'), 'utf8')
+    : undefined,
+  logs: await readLogTree(dir),
+});
 
 describe.skipIf(!GIT_AVAILABLE)(
   'integration — updateRef ref-transaction parity with canonical git',
@@ -1895,6 +1922,189 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given porcelain ref commands aimed at absent names and at symbolic ones', () => {
+      const PORCELAIN_EPOCH = COMMITTER_EPOCH + 70;
+
+      describe('When git branch -d and -D and tsgit branchDelete name a branch nothing carries', () => {
+        it('Then both refuse by name and neither writes anything', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('branch-delete-missing');
+          const before = await snapshotOf(peer);
+          const sut = branchDelete;
+          let caught: unknown;
+
+          // Act
+          const soft = tryRunGitWithExit(['-C', peer, 'branch', '-d', 'nope']);
+          const forced = tryRunGitWithExit(['-C', peer, 'branch', '-D', 'nope']);
+          try {
+            await sut(ctx, { name: 'nope' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          for (const result of [soft, forced]) {
+            expect(result.exitCode).toBe(1);
+            expect(result.stderr).toContain("error: branch 'nope' not found");
+          }
+          expect((caught as TsgitError).data).toEqual({
+            code: 'BRANCH_NOT_FOUND',
+            name: 'refs/heads/nope',
+          });
+          expect(await snapshotOf(ours)).toEqual(before);
+          expect(await snapshotOf(peer)).toEqual(before);
+        });
+      });
+
+      describe('When git remote remove and tsgit remoteRemove name a remote no config carries', () => {
+        it('Then both refuse by name and neither touches a ref or the config', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await remoteRenameCasePair('remote-remove-missing');
+          const before = await snapshotOf(peer);
+          const configBefore = remoteAndBranchConfig(peer);
+          const sut = remoteRemove;
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'remove', 'nope']);
+          try {
+            await sut(ctx, { name: 'nope' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(2);
+          expect(gitResult.stderr).toContain("error: No such remote: 'nope'");
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REMOTE_NOT_CONFIGURED',
+            remote: 'nope',
+          });
+          expect(await snapshotOf(ours)).toEqual(before);
+          expect(remoteAndBranchConfig(ours)).toBe(configBefore);
+          expect(remoteAndBranchConfig(peer)).toBe(configBefore);
+        });
+      });
+
+      describe('When git tag -f and tsgit tagCreate reset a tag name held by a symbolic ref', () => {
+        it('Then both move the pointed-at tag, keep the symbolic ref, and agree on every ref', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('tag-force-symref');
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'tag', 'tt3', filesC1], { env: pinnedEnv(PORCELAIN_EPOCH) });
+            runGit(['-C', dir, 'symbolic-ref', 'refs/tags/ts3', 'refs/tags/tt3'], {
+              env: pinnedEnv(PORCELAIN_EPOCH),
+            });
+          }
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((PORCELAIN_EPOCH + 1) * 1000);
+          const sut = tagCreate;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stdout: string };
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, 'tag', '-f', 'ts3', filesC2], {
+              env: pinnedEnv(PORCELAIN_EPOCH + 1),
+            });
+            await sut(ctx, { name: 'ts3', target: filesC2, force: true });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout.trim()).toBe(`Updated tag 'ts3' (was ${filesC1.slice(0, 7)})`);
+          expect(await readFile(path.join(peer, '.git', 'refs', 'tags', 'ts3'), 'utf8')).toBe(
+            'ref: refs/tags/tt3\n',
+          );
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+
+      describe('When git branch -m and tsgit branchRename rename a checked-out branch with no log of its own', () => {
+        it('Then both write the same pair of HEAD entries and the same single rename entry', async () => {
+          // Arrange — `main` is moved back and its log removed, so the rename
+          // has no history to carry onto the destination.
+          const { peer, ours, ctx } = await filesCasePair('branch-rename-no-log');
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'update-ref', 'refs/heads/main', filesC1], {
+              env: pinnedEnv(PORCELAIN_EPOCH),
+            });
+            await rm(path.join(dir, '.git', 'logs', 'refs', 'heads', 'main'));
+          }
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((PORCELAIN_EPOCH + 1) * 1000);
+          const sut = branchRename;
+
+          // Act
+          let gitResult: { readonly exitCode: number };
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, 'branch', '-m', 'main', 'r2'], {
+              env: pinnedEnv(PORCELAIN_EPOCH + 1),
+            });
+            await sut(ctx, { from: 'main', to: 'r2' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          const renameMessage = 'Branch: renamed refs/heads/main to refs/heads/r2';
+          expect(
+            await readFile(path.join(peer, '.git', 'logs', 'refs', 'heads', 'r2'), 'utf8'),
+          ).toBe(`${filesC1} ${filesC1} A <a@x> ${PORCELAIN_EPOCH + 1} +0000\t${renameMessage}\n`);
+          const peerHead = await readFile(path.join(peer, '.git', 'logs', 'HEAD'), 'utf8');
+          expect(peerHead.trimEnd().split('\n').slice(-2)).toEqual([
+            `${filesC1} ${ZERO} A <a@x> ${PORCELAIN_EPOCH + 1} +0000\t${renameMessage}`,
+            `${ZERO} ${filesC1} A <a@x> ${PORCELAIN_EPOCH + 1} +0000\t${renameMessage}`,
+          ]);
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+
+      describe('When git notes add and tsgit notesAdd write through a notes ref that is symbolic and dangling', () => {
+        it('Then both write the target the symbolic ref names and keep the symbolic ref itself', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('notes-dangling-symref');
+          for (const dir of [peer, ours]) {
+            runGit(['-C', dir, 'symbolic-ref', 'refs/notes/commits', 'refs/notes/other'], {
+              env: pinnedEnv(PORCELAIN_EPOCH),
+            });
+          }
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(PORCELAIN_EPOCH * 1000);
+          const sut = notesAdd;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stderr: string };
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, 'notes', 'add', '-m', 'first', 'HEAD'], {
+              env: pinnedEnv(PORCELAIN_EPOCH),
+            });
+            await sut(ctx, {
+              object: 'HEAD',
+              content: new TextEncoder().encode('first\n'),
+            });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toContain(
+            'warning: ignoring dangling symref refs/notes/commits',
+          );
+          for (const dir of [peer, ours]) {
+            expect(await readFile(path.join(dir, '.git', 'refs', 'notes', 'commits'), 'utf8')).toBe(
+              'ref: refs/notes/other\n',
+            );
+          }
+          expect(
+            tryRunGitWithExit(['-C', ours, 'show-ref', '--verify', 'refs/notes/other']).stdout,
+          ).toBe(
+            tryRunGitWithExit(['-C', peer, 'show-ref', '--verify', 'refs/notes/other']).stdout,
+          );
+        });
+      });
+    });
+
     describe('Given a symbolic ref', () => {
       describe('When it is deleted by its own name', () => {
         it('Then both git and tsgit dereference: the target is gone, the symref itself survives', async () => {
@@ -2221,32 +2431,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       const c1 = (): string => filesC1;
       const c2 = (): string => filesC2;
       const zero = (): string => ZERO;
-
-      /** Every observable byte of a repository's ref state. */
-      const snapshotOf = async (
-        dir: string,
-      ): Promise<{
-        readonly refs: string;
-        readonly head: string | undefined;
-        readonly files: Record<string, string>;
-        readonly packed: string | undefined;
-        readonly logs: Record<string, string>;
-      }> => ({
-        refs: tryRunGitWithExit([
-          '-C',
-          dir,
-          'for-each-ref',
-          '--format=%(refname) %(objectname) %(symref)',
-        ]).stdout,
-        head: (await pathExists(path.join(dir, '.git', 'HEAD')))
-          ? await readFile(path.join(dir, '.git', 'HEAD'), 'utf8')
-          : undefined,
-        files: await readRefTree(dir),
-        packed: (await pathExists(path.join(dir, '.git', 'packed-refs')))
-          ? await readFile(path.join(dir, '.git', 'packed-refs'), 'utf8')
-          : undefined,
-        logs: await readLogTree(dir),
-      });
 
       const gitArgsOf = (row: SymrefWriteRow): readonly string[] => [
         'update-ref',
