@@ -26,7 +26,8 @@ import {
   assertRemoteNameUnnested,
   type BranchReferrer,
   listBranchReferrers,
-  rewriteDefaultFetchRefspecs,
+  mapsTrackingNamespace,
+  rewriteTrackingFetchRefspecs,
   validateRemoteName,
 } from './internal/remote-config.js';
 
@@ -414,7 +415,7 @@ const fetchRewriteOperations = (
   rename: TrackingRename,
   fetch: ReadonlyArray<string>,
 ): ConfigOperation[] => {
-  const specs = rewriteDefaultFetchRefspecs(fetch, rename.from, rename.to);
+  const specs = rewriteTrackingFetchRefspecs(fetch, rename.from, rename.to);
   const entry = { section: 'remote', subsection: rename.to, key: 'fetch' } as const;
   const appends = specs.map((value): ConfigOperation => ({ kind: 'appendEntry', ...entry, value }));
   // With no spec at all, removing the absent key rewrites nothing, so no guard is needed.
@@ -473,8 +474,13 @@ export const remoteRename = async (
   // git commits the section header before it prepares the ref move, so a
   // refused rename leaves the section renamed and its values untouched.
   await updateConfigOperations(ctx, renameSectionOperations(input));
-  const moved = await renameTrackingRefs(ctx, input);
-  await updateConfigOperations(ctx, renameValueOperations(input, fromEntry.fetch ?? [], referrers));
+  // git moves tracking refs only for a remote whose fetch refspecs actually
+  // map into `refs/remotes/<from>/`; every other remote keeps its refs.
+  const fetch = fromEntry.fetch ?? [];
+  const moved = mapsTrackingNamespace(fetch, input.from)
+    ? await renameTrackingRefs(ctx, input)
+    : [];
+  await updateConfigOperations(ctx, renameValueOperations(input, fetch, referrers));
   const rewrittenBranches = referrers.map((referrer) => referrer.ref);
   return { from: input.from, to: input.to, movedTrackingRefs: moved, rewrittenBranches };
 };

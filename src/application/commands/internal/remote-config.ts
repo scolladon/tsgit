@@ -75,18 +75,40 @@ export const listBranchReferrers = (
   return referrers;
 };
 
+const TRACKING_DESTINATION_PREFIX = ':refs/remotes/';
+
+/** git's marker for a refspec that fetches into a remote's own tracking
+ *  namespace: the literal `:refs/remotes/<name>/`, anywhere in the spec. */
+const trackingDestination = (name: string): string => `${TRACKING_DESTINATION_PREFIX}${name}/`;
+
 /**
- * Apply the canonical-refspec rewrite from `from` to `to`. Only the exact
- * `+refs/heads/*:refs/remotes/<from>/*` form is matched; every other
- * refspec is preserved verbatim. Matches canonical git's
- * `builtin/remote.c::migrate_file` behaviour exactly.
+ * Whether any of `refspecs` fetches into `<name>`'s own tracking namespace.
+ * git moves no tracking ref at all when none does — a remote with no fetch
+ * refspec, a mirror's `+refs/*:refs/*` and a destination outside
+ * `refs/remotes/<name>/` all leave every ref exactly where it was.
  */
-export const rewriteDefaultFetchRefspecs = (
+export const mapsTrackingNamespace = (refspecs: ReadonlyArray<string>, name: string): boolean => {
+  const marker = trackingDestination(name);
+  return refspecs.some((spec) => spec.includes(marker));
+};
+
+/**
+ * One refspec with the remote name spliced from `from` to `to` at the FIRST
+ * `:refs/remotes/<from>/` it holds — whatever surrounds it, stars in odd
+ * positions included. A refspec holding no such destination survives
+ * verbatim, the shape git's `Not updating non-default fetch refspec` names.
+ */
+const rewriteFetchRefspec = (spec: string, from: string, to: string): string => {
+  const at = spec.indexOf(trackingDestination(from));
+  if (at < 0) return spec;
+  const start = at + TRACKING_DESTINATION_PREFIX.length;
+  return spec.slice(0, start) + to + spec.slice(start + from.length);
+};
+
+/** Every refspec of a renamed remote, each spliced where it fetches into
+ *  `from`'s own tracking namespace. */
+export const rewriteTrackingFetchRefspecs = (
   refspecs: ReadonlyArray<string>,
   from: string,
   to: string,
-): ReadonlyArray<string> => {
-  const canonical = `+refs/heads/*:refs/remotes/${from}/*`;
-  const rewritten = `+refs/heads/*:refs/remotes/${to}/*`;
-  return refspecs.map((spec) => (spec === canonical ? rewritten : spec));
-};
+): ReadonlyArray<string> => refspecs.map((spec) => rewriteFetchRefspec(spec, from, to));

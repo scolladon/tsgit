@@ -1373,6 +1373,54 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe.each([
+      { label: 'no fetch refspec at all', spec: undefined },
+      { label: 'a destination outside the remote', spec: '+refs/heads/*:refs/other/origin/*' },
+      { label: "a mirror's whole-namespace refspec", spec: '+refs/*:refs/*' },
+    ])('Given $label, When the remote is renamed', ({ spec }) => {
+      it('Then neither tool moves a tracking ref, though both re-point the config', async () => {
+        // Arrange — git moves tracking refs only for a remote whose fetch
+        // refspecs actually map into `refs/remotes/<old>/`.
+        const { peer, ours, ctx } = await remoteRenameCasePair(
+          `remote-rename-gate-${spec === undefined ? 'none' : spec.length}`,
+        );
+        for (const repo of [peer, ours]) {
+          git(repo, 'config', '--unset-all', 'remote.origin.fetch');
+          if (spec !== undefined) git(repo, 'config', '--add', 'remote.origin.fetch', spec);
+        }
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'origin', 'up2'], {
+          env: { ...runGitEnv(), GIT_COMMITTER_NAME: 'A', GIT_COMMITTER_EMAIL: 'a@x' },
+        });
+        const result = await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.movedTrackingRefs).toEqual([]);
+        for (const repo of [peer, ours]) {
+          const stayed = tryRunGitWithExit([
+            '-C',
+            repo,
+            'show-ref',
+            '--verify',
+            'refs/remotes/origin/main',
+          ]);
+          expect(stayed.exitCode).toBe(0);
+          const moved = tryRunGitWithExit([
+            '-C',
+            repo,
+            'show-ref',
+            '--verify',
+            'refs/remotes/up2/main',
+          ]);
+          expect(moved.exitCode).not.toBe(0);
+        }
+        expect(remoteAndBranchConfig(ours)).toBe(remoteAndBranchConfig(peer));
+        expect(remoteAndBranchConfig(peer)).toContain('remote.up2.url=');
+      });
+    });
+
     describe('Given a tracking HEAD aimed outside the remote being renamed', () => {
       describe('When the remote is renamed', () => {
         it('Then both tools splice a fixed slice of the target and leave the same dangling symref', async () => {

@@ -104,6 +104,61 @@ const UNSPLICEABLE_TARGETS = [
   { label: 'a target far shorter than the slice', target: 'refs/heads/main' },
 ].map((row) => ({ ...row, target: row.target as RefName }));
 
+/** `origin` carrying the canonical refspec — the gate on moving any
+ *  tracking ref at all. */
+const ORIGIN_TRACKING_CONFIG =
+  '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n';
+
+/** Fetch refspecs that do NOT map into `refs/remotes/origin/`: git moves no
+ *  tracking ref for any of them. */
+const UNMAPPED_REFSPECS = [
+  { label: 'no fetch refspec at all', refspecs: [] as readonly string[] },
+  { label: 'a destination outside refs/remotes', refspecs: ['+refs/heads/*:refs/other/origin/*'] },
+  { label: "a mirror's whole-namespace refspec", refspecs: ['+refs/*:refs/*'] },
+  {
+    label: 'a destination under a remote merely prefixed by the name',
+    refspecs: ['+refs/heads/*:refs/remotes/originX/*'],
+  },
+  {
+    label: 'several refspecs, none of them mapping',
+    refspecs: ['+refs/tags/*:refs/other/x/*', '+refs/heads/*:refs/remotes/originX/*'],
+  },
+];
+
+/** Fetch refspecs that DO map into `refs/remotes/origin/`, with the splice
+ *  git makes at the first such destination. */
+const MAPPED_REFSPECS = [
+  {
+    label: 'the canonical refspec',
+    refspec: '+refs/heads/*:refs/remotes/origin/*',
+    rewritten: '+refs/heads/*:refs/remotes/up2/*',
+  },
+  {
+    label: 'a refspec with no force marker',
+    refspec: 'refs/heads/release:refs/remotes/origin/release',
+    rewritten: 'refs/heads/release:refs/remotes/up2/release',
+  },
+  {
+    label: 'a star in an odd position',
+    refspec: '+refs/heads/*:refs/remotes/origin/pre*post',
+    rewritten: '+refs/heads/*:refs/remotes/up2/pre*post',
+  },
+  {
+    label: 'no star at all',
+    refspec: '+refs/heads/main:refs/remotes/origin/main',
+    rewritten: '+refs/heads/main:refs/remotes/up2/main',
+  },
+  {
+    label: 'a destination nested deeper under the remote',
+    refspec: '+refs/heads/*:refs/remotes/origin/deep/*',
+    rewritten: '+refs/heads/*:refs/remotes/up2/deep/*',
+  },
+];
+
+/** `[remote "origin"]` carrying exactly `refspecs`, in order. */
+const remoteConfigWithFetch = (refspecs: readonly string[]): string =>
+  `[remote "origin"]\n\turl = u\n${refspecs.map((spec) => `\tfetch = ${spec}\n`).join('')}`;
+
 /** `origin` with the canonical refspec, plus a branch tracking it. */
 const TRACKED_ORIGIN_CONFIG =
   '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n';
@@ -941,7 +996,7 @@ describe('application/commands/remote', () => {
         it('Then it throws INVALID_OPTION', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           let caught: unknown;
 
           // Act
@@ -1033,14 +1088,15 @@ describe('application/commands/remote', () => {
       });
     });
 
-    describe('Given a custom (non-canonical) fetch refspec', () => {
+    describe("Given a fetch refspec aimed at another remote's tracking namespace", () => {
       describe('When remoteRename runs', () => {
         it('Then the refspec is preserved verbatim', async () => {
-          // Arrange — note: leading `+` missing, so the canonical heuristic does NOT match.
+          // Arrange — the destination names `other`, not the remote being
+          // renamed, so git's splice never reaches it.
           const ctx = createMemoryContext();
           await seed(
             ctx,
-            '[remote "origin"]\n\turl = u\n\tfetch = refs/heads/release:refs/remotes/origin/release\n',
+            '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/other/*\n',
           );
 
           // Act
@@ -1048,14 +1104,14 @@ describe('application/commands/remote', () => {
 
           // Assert
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-          expect(written).toContain('fetch = refs/heads/release:refs/remotes/origin/release');
+          expect(written).toContain('fetch = +refs/heads/*:refs/remotes/other/*');
         });
       });
     });
 
-    describe('Given a mixed list (canonical and custom refspecs)', () => {
+    describe('Given two refspecs that both map into the tracking namespace', () => {
       describe('When remoteRename runs', () => {
-        it('Then only the canonical entry is rewritten AND refspec order is preserved', async () => {
+        it('Then both are rewritten AND refspec order is preserved', async () => {
           // Arrange — order matters: the canonical-first/custom-second
           // arrangement must survive the rename so `.git/config` byte
           // layout matches canonical git.
@@ -1072,7 +1128,7 @@ describe('application/commands/remote', () => {
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
           const canonicalAt = written.indexOf('fetch = +refs/heads/*:refs/remotes/upstream/*');
           const customAt = written.indexOf(
-            'fetch = +refs/heads/release:refs/remotes/origin/release',
+            'fetch = +refs/heads/release:refs/remotes/upstream/release',
           );
           expect(canonicalAt).toBeGreaterThan(-1);
           expect(customAt).toBeGreaterThan(-1);
@@ -1086,7 +1142,7 @@ describe('application/commands/remote', () => {
         it('Then they are moved with the same OIDs', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const oid = 'a'.repeat(40);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
 
@@ -1100,10 +1156,6 @@ describe('application/commands/remote', () => {
             await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/upstream/main`)
           ).trim();
           expect(moved).toBe(oid);
-          // The source had no fetch refspec, so the renamed section gets none
-          // either — the empty-spec path writes no `fetch` line.
-          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
-          expect(written).not.toContain('fetch');
         });
       });
     });
@@ -1113,7 +1165,7 @@ describe('application/commands/remote', () => {
         it('Then the new name keeps that history and gains one full-ref-name rename entry', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const oid = 'a'.repeat(40);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
           await ctx.fs.writeUtf8(
@@ -1146,7 +1198,7 @@ describe('application/commands/remote', () => {
         it('Then the new name has no reflog either', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const oid = 'a'.repeat(40);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oid}\n`);
 
@@ -1166,7 +1218,7 @@ describe('application/commands/remote', () => {
         it('Then the new name has no reflog either', async () => {
           // Arrange
           const ctx = withReftableStorage(createMemoryContext());
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const store = getRefStore(ctx);
           await store.applyRefUpdates([
             {
@@ -1185,12 +1237,114 @@ describe('application/commands/remote', () => {
       });
     });
 
+    describe.each(UNMAPPED_REFSPECS)('Given $label, When remoteRename runs', ({ refspecs }) => {
+      it('Then no tracking ref moves and every refspec survives verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, remoteConfigWithFetch(refspecs));
+        await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID }]);
+
+        // Act
+        const result = await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+        // Assert
+        expect(result.movedTrackingRefs).toEqual([]);
+        const store = getRefStore(ctx);
+        expect(await store.resolveDirect(ORIGIN_MAIN)).toEqual({ kind: 'direct', id: ORIGIN_ID });
+        expect(await store.resolveDirect(UP2_MAIN)).toEqual({ kind: 'missing' });
+        const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(written).toContain('[remote "up2"]');
+        for (const spec of refspecs) expect(written).toContain(`fetch = ${spec}`);
+      });
+    });
+
+    describe.each(MAPPED_REFSPECS)(
+      'Given $label, When remoteRename runs',
+      ({ refspec, rewritten }) => {
+        it('Then the tracking refs move and the refspec is spliced onto the new name', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, remoteConfigWithFetch([refspec]));
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+          ]);
+
+          // Act
+          const result = await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+          // Assert
+          expect(result.movedTrackingRefs).toEqual([UP2_MAIN]);
+          expect(await getRefStore(ctx).resolveDirect(UP2_MAIN)).toEqual({
+            kind: 'direct',
+            id: ORIGIN_ID,
+          });
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain(`fetch = ${rewritten}`);
+        });
+      },
+    );
+
+    describe('Given one mapping refspec among refspecs that do not map', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the refs move, only the mapping refspec is spliced, and the order is kept', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const specs = [
+            '+refs/tags/*:refs/other/x/*',
+            '+refs/heads/*:refs/remotes/origin/*',
+            '+refs/notes/*:refs/remotes/originX/*',
+          ];
+          await seed(ctx, remoteConfigWithFetch(specs));
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+          ]);
+
+          // Act
+          const result = await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+          // Assert
+          expect(result.movedTrackingRefs).toEqual([UP2_MAIN]);
+          __resetConfigCacheForTests();
+          expect((await remoteList(ctx)).remotes[0]?.fetchRefspecs).toEqual([
+            '+refs/tags/*:refs/other/x/*',
+            '+refs/heads/*:refs/remotes/up2/*',
+            '+refs/notes/*:refs/remotes/originX/*',
+          ]);
+        });
+      });
+    });
+
+    describe('Given no refspec mapping the tracking namespace and a branch tracking the remote', () => {
+      describe('When remoteRename runs', () => {
+        it('Then the section and the referrer are still re-pointed at the new name', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
+          ]);
+
+          // Act
+          const result = await remoteRename(ctx, { from: 'origin', to: 'up2' });
+
+          // Assert
+          expect(result.movedTrackingRefs).toEqual([]);
+          expect(result.rewrittenBranches).toEqual(['refs/heads/main']);
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+          expect(written).toContain('[remote "up2"]');
+          expect(written).toContain('remote = up2');
+          // Nothing to rewrite, so the renamed section gets no `fetch` line.
+          expect(written).not.toContain('fetch');
+        });
+      });
+    });
+
     describe('Given an unlogged symbolic tracking ref (HEAD) on a reftable-backend Context', () => {
       describe('When remoteRename runs', () => {
         it('Then the new HEAD symref exists with no reflog either', async () => {
           // Arrange
           const ctx = withReftableStorage(createMemoryContext());
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const store = getRefStore(ctx);
           await store.applyRefUpdates([
             {
@@ -1248,7 +1402,7 @@ describe('application/commands/remote', () => {
           // surfaces the packed entry, and the move now rewrites
           // packed-refs to drop it, as `git remote rename` does.
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const oid = 'a'.repeat(40);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/packed-refs`,
@@ -1275,7 +1429,7 @@ describe('application/commands/remote', () => {
         it('Then the moved history gains one rename entry and the old packed-refs line is gone', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const oid = 'a'.repeat(40);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/packed-refs`,
@@ -1306,7 +1460,7 @@ describe('application/commands/remote', () => {
         it('Then the new HEAD symref is re-created with a rewritten target and a null-id rename entry', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/refs/remotes/origin/main`,
             `${'a'.repeat(40)}\n`,
@@ -1348,7 +1502,7 @@ describe('application/commands/remote', () => {
           // Arrange
           vi.spyOn(Date, 'now').mockReturnValue(FROZEN_EPOCH_SECONDS * 1000);
           const ctx = withReftableStorage(createMemoryContext());
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const store = getRefStore(ctx);
           await store.applyRefUpdates([
             { kind: 'set', name: ORIGIN_MAIN, id: ORIGIN_ID },
@@ -1386,7 +1540,7 @@ describe('application/commands/remote', () => {
         it('Then the creates share one batch, every old name is deleted in one ref transaction, and HEAD is re-created last', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/dev`, `${STALE_ID}\n`);
           await ctx.fs.writeUtf8(
@@ -1455,7 +1609,7 @@ describe('application/commands/remote', () => {
         it("Then the old names' deletes share one ref transaction with HEAD's kept-log entry", async () => {
           // Arrange
           const ctx = withReftableStorage(createMemoryContext());
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const store = getRefStore(ctx);
           await store.applyRefUpdates([
             {
@@ -1527,7 +1681,7 @@ describe('application/commands/remote', () => {
         it('Then every direct ref moves before the symbolic ref does', async () => {
           // Arrange — git's own order: direct refs first, the symref last.
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/refs/remotes/origin/main`,
             `${'a'.repeat(40)}\n`,
@@ -1564,7 +1718,7 @@ describe('application/commands/remote', () => {
         it('Then it refuses the existing name before writing any ref or log', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           const originLog = `${ZERO_ID} ${ORIGIN_ID} A <a@x> 1700000000 +0000\tfetch origin\n`;
           const staleLog = `${ZERO_ID} ${STALE_ID} A <a@x> 1700000000 +0000\tstale up2\n`;
@@ -1598,7 +1752,7 @@ describe('application/commands/remote', () => {
         it('Then it refuses the existing name before writing any ref or log', async () => {
           // Arrange
           const ctx = withReftableStorage(createMemoryContext());
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const store = getRefStore(ctx);
           await store.applyRefUpdates([
             {
@@ -1642,7 +1796,7 @@ describe('application/commands/remote', () => {
         it('Then the refusal names the byte-smallest existing name', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/zzz`, `${ORIGIN_ID}\n`);
@@ -1669,7 +1823,7 @@ describe('application/commands/remote', () => {
         it('Then it refuses that name with its referent value and every ref stays put', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${STALE_ID}\n`);
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
@@ -1706,7 +1860,7 @@ describe('application/commands/remote', () => {
         it('Then it refuses that name with its referent value and every ref stays put', async () => {
           // Arrange
           const ctx = withReftableStorage(createMemoryContext());
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const store = getRefStore(ctx);
           await store.applyRefUpdates([
             { kind: 'set', name: 'refs/heads/main' as RefName, id: STALE_ID },
@@ -1744,7 +1898,7 @@ describe('application/commands/remote', () => {
         it('Then it refuses that name with an absent actual value and every ref stays put', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
@@ -1775,7 +1929,7 @@ describe('application/commands/remote', () => {
         it('Then the unreadable referent refuses the rename and every ref stays put', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/HEAD`, `ref: ${ORIGIN_MAIN}\n`);
@@ -1802,7 +1956,7 @@ describe('application/commands/remote', () => {
         it('Then it throws REMOTE_NAME_INVALID', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           let caught: unknown;
 
           // Act
@@ -1864,7 +2018,7 @@ describe('application/commands/remote', () => {
         it('Then it refuses REMOTE_NOT_CONFIGURED', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           let caught: unknown;
 
           // Act
@@ -1888,7 +2042,7 @@ describe('application/commands/remote', () => {
         it('Then it throws REMOTE_NAME_INVALID before moving any ref or rewriting the config', async () => {
           // Arrange
           const ctx = createMemoryContext();
-          await seed(ctx, '[remote "origin"]\n\turl = u\n');
+          await seed(ctx, ORIGIN_TRACKING_CONFIG);
           const gitDir = ctx.layout.gitDir;
           await ctx.fs.writeUtf8(`${gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
           const configBefore = await ctx.fs.readUtf8(`${gitDir}/config`);

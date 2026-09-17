@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   listBranchReferrers,
-  rewriteDefaultFetchRefspecs,
+  mapsTrackingNamespace,
+  rewriteTrackingFetchRefspecs,
   validateRemoteName,
 } from '../../../../../src/application/commands/internal/remote-config.js';
 import type { ParsedConfig } from '../../../../../src/application/primitives/config-read.js';
@@ -155,7 +156,7 @@ describe('application/commands/internal/remote-config', () => {
     });
   });
 
-  describe('rewriteDefaultFetchRefspecs', () => {
+  describe('rewriteTrackingFetchRefspecs', () => {
     describe('Given a list of fetch refspecs', () => {
       describe('When rewritten from `old` to `new`', () => {
         it.each([
@@ -167,8 +168,8 @@ describe('application/commands/internal/remote-config', () => {
           },
           {
             refspecs: ['+refs/heads/release:refs/remotes/old/release'],
-            expected: ['+refs/heads/release:refs/remotes/old/release'],
-            label: 'a custom refspec is preserved verbatim',
+            expected: ['+refs/heads/release:refs/remotes/new/release'],
+            label: 'a star-free destination under the remote is rewritten too',
           },
           {
             refspecs: [
@@ -177,23 +178,93 @@ describe('application/commands/internal/remote-config', () => {
             ],
             expected: [
               '+refs/heads/*:refs/remotes/new/*',
-              '+refs/heads/release:refs/remotes/old/release',
+              '+refs/heads/release:refs/remotes/new/release',
             ],
-            label: 'only the canonical entry changes in a mixed list',
+            label: 'every mapping entry changes and the order is preserved',
           },
           { refspecs: [], expected: [], label: 'an empty list returns an empty list' },
           {
             refspecs: ['refs/heads/*:refs/remotes/old/*'],
-            expected: ['refs/heads/*:refs/remotes/old/*'],
-            label:
-              'the canonical default refspec without the leading `+` is preserved verbatim (no implicit force-form match)',
+            expected: ['refs/heads/*:refs/remotes/new/*'],
+            label: 'the leading `+` plays no part in the match',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/oldish/*'],
+            expected: ['+refs/heads/*:refs/remotes/oldish/*'],
+            label: 'a destination under a remote merely prefixed by the name is preserved',
+          },
+          {
+            refspecs: ['+refs/*:refs/*'],
+            expected: ['+refs/*:refs/*'],
+            label: "a mirror's whole-namespace refspec is preserved",
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/deep/*'],
+            expected: ['+refs/heads/*:refs/remotes/new/deep/*'],
+            label: 'a destination nested deeper under the remote is rewritten',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/pre*post'],
+            expected: ['+refs/heads/*:refs/remotes/new/pre*post'],
+            label: 'a star in an odd position does not stop the splice',
+          },
+          {
+            refspecs: ['+refs/remotes/old/x:refs/remotes/old/y'],
+            expected: ['+refs/remotes/old/x:refs/remotes/new/y'],
+            label: 'only the destination occurrence is spliced, never the source',
           },
         ])('Then $label', ({ refspecs, expected }) => {
           // Arrange + Act
-          const result = rewriteDefaultFetchRefspecs(refspecs, 'old', 'new');
+          const result = rewriteTrackingFetchRefspecs(refspecs, 'old', 'new');
 
           // Assert
           expect(result).toEqual(expected);
+        });
+      });
+    });
+  });
+
+  describe('mapsTrackingNamespace', () => {
+    describe('Given a list of fetch refspecs', () => {
+      describe("When asked whether any maps into `old`'s tracking namespace", () => {
+        it.each([
+          { refspecs: [], expected: false, label: 'an empty list maps nothing' },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/*'],
+            expected: true,
+            label: 'the canonical default refspec maps',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/other/old/*'],
+            expected: false,
+            label: 'a destination outside refs/remotes does not map',
+          },
+          {
+            refspecs: ['+refs/*:refs/*'],
+            expected: false,
+            label: "a mirror's whole-namespace refspec does not map",
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/oldish/*'],
+            expected: false,
+            label: 'a remote merely prefixed by the name does not map',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old'],
+            expected: false,
+            label: 'a destination equal to the namespace without its slash does not map',
+          },
+          {
+            refspecs: ['+refs/tags/*:refs/other/x/*', '+refs/heads/*:refs/remotes/old/deep/*'],
+            expected: true,
+            label: 'one mapping entry among non-mapping ones is enough',
+          },
+        ])('Then $label', ({ refspecs, expected }) => {
+          // Arrange + Act
+          const result = mapsTrackingNamespace(refspecs, 'old');
+
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });

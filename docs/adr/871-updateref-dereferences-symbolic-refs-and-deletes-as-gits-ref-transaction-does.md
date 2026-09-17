@@ -198,6 +198,14 @@ the write chain, reads `HEAD` for coupling, checks `expected`, and applies every
   so a refusal in between leaves `[remote "<new>"]` carrying values that still name `<old>`.
   `remote.rename` therefore issues the section rename as its own config operation ahead of
   `renameTrackingRefs`, and the value rewrite as a second one after it.
+- **`remote.rename`'s refspec gate** (added 2026-09-17, same probes). git moves tracking refs only
+  when at least one of the remote's fetch refspecs holds the literal `:refs/remotes/<old>/`; a remote
+  with no fetch refspec, a mirror's `+refs/*:refs/*`, or a destination outside that namespace leaves
+  every ref where it was while the section rename and the `branch.<x>.remote` re-points still happen.
+  Where a spec does hold the marker, the remote name is spliced at the **first** occurrence, so the
+  source side of a spec is never touched and a star in an odd position is irrelevant.
+  `rewriteDefaultFetchRefspecs`, which matched only the exact canonical string, is replaced by
+  `rewriteTrackingFetchRefspecs` beside the gate `mapsTrackingNamespace`.
 
   | Refusal | git exit | Config left behind | Refs |
   |---|---|---|---|

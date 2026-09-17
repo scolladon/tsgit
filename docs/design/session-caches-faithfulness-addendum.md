@@ -2391,6 +2391,33 @@ So the **ref** half keeps its up-front refusal — that IS git's order, confirme
 sorted ahead of the conflicting one staying put — and only the **config** half moves: `remoteRename`
 writes `renameSectionOperations` before `renameTrackingRefs` and `renameValueOperations` after it.
 
+### `remote.rename`'s refspec gate and splice (2026-09-17)
+
+Same harness. git moves tracking refs at all only when at least one of the remote's **fetch
+refspecs** holds the literal `:refs/remotes/<old>/`; otherwise it warns `Not updating non-default
+fetch refspec` per spec and returns 0 with every ref where it was. The config section rename and the
+`branch.<x>.remote` re-points happen either way. Where a spec does hold the marker, git splices the
+remote name at the **first** such occurrence, `strbuf_splice(spec, ptr + strlen(":refs/remotes/"),
+strlen(<old>), <new>)` — so the source side of a spec is never touched.
+
+| `remote.origin.fetch` | tracking refs move? | spec afterwards |
+|---|---|---|
+| (none) | no | (none) |
+| `+refs/heads/*:refs/other/origin/*` | no | verbatim |
+| `+refs/*:refs/*` (mirror) | no | verbatim |
+| `+refs/heads/*:refs/remotes/originX/*` | no | verbatim |
+| `+refs/heads/*:refs/remotes/origin/*` | yes | `+refs/heads/*:refs/remotes/up2/*` |
+| `refs/heads/release:refs/remotes/origin/release` (no `+`) | yes | `refs/heads/release:refs/remotes/up2/release` |
+| `+refs/heads/main:refs/remotes/origin/main` (no star) | yes | `+refs/heads/main:refs/remotes/up2/main` |
+| `+refs/heads/*:refs/remotes/origin/pre*post` | yes | `+refs/heads/*:refs/remotes/up2/pre*post` |
+| `+refs/heads/*:refs/remotes/origin/deep/*` | yes | `+refs/heads/*:refs/remotes/up2/deep/*` |
+| canonical **plus** `+refs/tags/*:refs/other/x/*` | yes | canonical spliced, the other verbatim, order kept |
+
+`rewriteDefaultFetchRefspecs` — which matched only the exact `+refs/heads/*:refs/remotes/<from>/*`
+string — is replaced by `rewriteTrackingFetchRefspecs` (the splice) beside `mapsTrackingNamespace`
+(the gate), both in `src/application/commands/internal/remote-config.ts`. `remoteRename` calls
+`renameTrackingRefs` only when the gate says yes; `movedTrackingRefs` is then empty.
+
 ### Docs consequences
 
 - `docs/use/primitives/update-ref.md` — its signature block documents `{ oldId?, message? }`, which no
