@@ -2339,6 +2339,360 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
         });
       });
+
+      describe('Given a symbolic ref carrying its own log but pointing at a missing branch', () => {
+        describe('When expire runs on the dangling symref (full and short name)', () => {
+          it.each([
+            { label: 'the full name', arg: 'refs/heads/sym' },
+            { label: 'the short name', arg: 'sym' },
+          ])(
+            'Then $label both refuse REFLOG_NOT_FOUND, and the log survives on both',
+            async ({ arg }) => {
+              // Arrange — the symref resolves for writing but never for
+              // reading, so its own log is never consulted.
+              const dir = await caseDir(`dwim-dangling-${arg.replace(/\W/g, '')}`);
+              git(dir, 'symbolic-ref', 'refs/heads/sym', 'refs/heads/nope');
+              await cp(mainLogPath(dir), branchLogPath(dir, 'sym'));
+              const before = await readFile(branchLogPath(dir, 'sym'), 'utf8');
+              const ctx = createNodeContext({ workDir: dir });
+
+              // Act
+              const gitResult = tryRunGitWithExit([
+                '-C',
+                dir,
+                'reflog',
+                'expire',
+                '--expire=now',
+                arg,
+              ]);
+              let caught: unknown;
+              try {
+                await reflog(ctx, { action: 'expire', ref: arg, expire: 'now' });
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert
+              expect(gitResult.exitCode).toBe(255);
+              expect(gitResult.stderr).toBe(`error: reflog could not be found: '${arg}'\n`);
+              expect((caught as TsgitError).data).toEqual({ code: 'REFLOG_NOT_FOUND', ref: arg });
+              expect(await readFile(branchLogPath(dir, 'sym'), 'utf8')).toBe(before);
+            },
+          );
+        });
+      });
+
+      describe('Given HEAD pointing at a branch that was never born, with logs/HEAD present', () => {
+        describe('When expire runs on HEAD', () => {
+          it('Then both tools refuse REFLOG_NOT_FOUND and leave logs/HEAD intact', async () => {
+            // Arrange
+            const dir = await caseDir('dwim-unborn-head');
+            git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/unborn');
+            const before = await readFile(headLogPath(dir), 'utf8');
+            expect(before.length).toBeGreaterThan(0);
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              dir,
+              'reflog',
+              'expire',
+              '--expire=now',
+              'HEAD',
+            ]);
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'now' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(255);
+            expect(gitResult.stderr).toBe("error: reflog could not be found: 'HEAD'\n");
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'HEAD',
+            });
+            expect(await readFile(headLogPath(dir), 'utf8')).toBe(before);
+          });
+        });
+      });
+
+      describe('Given a loose ref whose file holds text that is not an object id', () => {
+        describe('When expire runs on that ref, whose log exists', () => {
+          it('Then both tools refuse REFLOG_NOT_FOUND and leave the log intact', async () => {
+            // Arrange — resolution for reading fails on the content itself,
+            // before the log is looked for.
+            const dir = await caseDir('dwim-unparseable-ref');
+            await writeFile(refPath(dir, 'refs/heads/bad'), 'not-an-object-id\n');
+            await cp(mainLogPath(dir), branchLogPath(dir, 'bad'));
+            const before = await readFile(branchLogPath(dir, 'bad'), 'utf8');
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              dir,
+              'reflog',
+              'expire',
+              '--expire=now',
+              'refs/heads/bad',
+            ]);
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'refs/heads/bad', expire: 'now' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(255);
+            expect(gitResult.stderr).toBe("error: reflog could not be found: 'refs/heads/bad'\n");
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REFLOG_NOT_FOUND',
+              ref: 'refs/heads/bad',
+            });
+            expect(await readFile(branchLogPath(dir, 'bad'), 'utf8')).toBe(before);
+          });
+        });
+      });
+
+      describe('Given a ref naming an object that was never written, with a log of its own', () => {
+        describe.each([
+          {
+            label: 'an explicit --expire=now',
+            flags: { expire: 'now' } as const,
+            gitFlags: ['--expire=now'],
+          },
+          {
+            label: 'an explicit --expire=never with --expire-unreachable=now',
+            flags: { expire: 'never', expireUnreachable: 'now' } as const,
+            gitFlags: ['--expire=never', '--expire-unreachable=now'],
+          },
+        ])('When expire runs with $label', ({ label, flags, gitFlags }) => {
+          it('Then both tools fully expire the log, byte-identical', async () => {
+            // Arrange — resolution never reads the object, so the target is
+            // accepted; the tip then peels to nothing, which is what makes
+            // even the unreachable-only cutoff sweep every entry.
+            const slug = label.replace(/\W+/g, '');
+            const peer = await caseDir(`dwim-missing-object-peer-${slug}`);
+            const ours = await caseDir(`dwim-missing-object-ours-${slug}`);
+            for (const dir of [peer, ours]) {
+              await writeFile(refPath(dir, 'refs/heads/ghost'), `${'1'.repeat(40)}\n`);
+              await cp(mainLogPath(dir), branchLogPath(dir, 'ghost'));
+            }
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              peer,
+              'reflog',
+              'expire',
+              ...gitFlags,
+              'refs/heads/ghost',
+            ]);
+            const ctx = createNodeContext({ workDir: ours });
+            await reflog(ctx, { action: 'expire', ref: 'refs/heads/ghost', ...flags });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(0);
+            const peerBytes = await readFile(branchLogPath(peer, 'ghost'));
+            expect(peerBytes).toHaveLength(0);
+            expect(await readFile(branchLogPath(ours, 'ghost'))).toEqual(peerBytes);
+          });
+        });
+      });
+
+      describe('Given no ref argument and no --all', () => {
+        describe('When expire runs with --expire=now', () => {
+          it('Then both tools leave every log untouched', async () => {
+            // Arrange
+            const peer = await caseDir('dwim-no-target-peer');
+            const ours = await caseDir('dwim-no-target-ours');
+            const beforeMain = await readFile(mainLogPath(peer), 'utf8');
+            const beforeHead = await readFile(headLogPath(peer), 'utf8');
+            expect(beforeMain.length).toBeGreaterThan(0);
+            expect(beforeHead.length).toBeGreaterThan(0);
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', peer, 'reflog', 'expire', '--expire=now']);
+            const ctx = createNodeContext({ workDir: ours });
+            const result = await reflog(ctx, { action: 'expire', expire: 'now' });
+
+            // Assert — HEAD is NOT defaulted to: neither log moves.
+            expect(gitResult.exitCode).toBe(0);
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+            for (const dir of [peer, ours]) {
+              expect(await readFile(mainLogPath(dir), 'utf8')).toBe(beforeMain);
+              expect(await readFile(headLogPath(dir), 'utf8')).toBe(beforeHead);
+            }
+          });
+        });
+      });
+    });
+
+    describe('the repo-settings class relative to target resolution', () => {
+      /** A `core.deltaBaseCacheLimit` the class refuses — appended LAST, so
+       *  every `git` call that builds the fixture still runs on a clean config. */
+      const poisonClass = (dir: string): Promise<void> =>
+        appendFile(path.join(dir, '.git', 'config'), '[core]\n\tdeltaBaseCacheLimit = bogus\n');
+
+      describe('Given a malformed core.deltaBaseCacheLimit and a target that cannot resolve', () => {
+        describe.each([
+          { label: 'a name no ref ever had', arg: 'refs/heads/nope', orphanLog: false },
+          { label: 'a deleted ref whose log remains', arg: 'refs/heads/gone', orphanLog: true },
+        ])('When expire runs against $label', ({ label, arg, orphanLog }) => {
+          it('Then both tools refuse on the target, never on the class', async () => {
+            // Arrange
+            const dir = await caseDir(`class-after-target-${label.replace(/\W+/g, '')}`);
+            if (orphanLog) {
+              git(dir, 'branch', 'gone');
+              await rm(refPath(dir, 'refs/heads/gone'));
+            }
+            await poisonClass(dir);
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              dir,
+              'reflog',
+              'expire',
+              '--expire=now',
+              arg,
+            ]);
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: arg, expire: 'now' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert — the class refusal never appears on either side.
+            expect(gitResult.exitCode).toBe(255);
+            expect(gitResult.stderr).toBe(`error: reflog could not be found: '${arg}'\n`);
+            expect((caught as TsgitError).data).toEqual({ code: 'REFLOG_NOT_FOUND', ref: arg });
+          });
+        });
+      });
+
+      describe('Given a malformed core.deltaBaseCacheLimit and an unparseable --expire value', () => {
+        describe('When expire runs on HEAD', () => {
+          it('Then both tools refuse on the flag, never on the class', async () => {
+            // Arrange
+            const dir = await caseDir('class-after-flag');
+            await poisonClass(dir);
+            const before = await readFile(headLogPath(dir), 'utf8');
+            const ctx = createNodeContext({ workDir: dir });
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              dir,
+              'reflog',
+              'expire',
+              '--expire=bogus',
+              'HEAD',
+            ]);
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', ref: 'HEAD', expire: 'bogus' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert — git names the flag; tsgit's own refusal for this one
+            // path is a recorded divergence in message, not in ordering.
+            expect(gitResult.exitCode).toBe(128);
+            expect(gitResult.stderr).toBe("fatal: invalid timestamp 'bogus' given to '--expire'\n");
+            expect((caught as TsgitError).data).toEqual({
+              code: 'REVPARSE_UNRESOLVED',
+              expression: 'bogus',
+            });
+            expect(await readFile(headLogPath(dir), 'utf8')).toBe(before);
+          });
+        });
+      });
+
+      describe('Given a malformed core.deltaBaseCacheLimit and no target at all', () => {
+        describe('When expire runs with --expire=now and no ref', () => {
+          it('Then both tools succeed — zero targets never reach the class', async () => {
+            // Arrange
+            const peer = await caseDir('class-zero-target-peer');
+            const ours = await caseDir('class-zero-target-ours');
+            for (const dir of [peer, ours]) await poisonClass(dir);
+            const before = await readFile(mainLogPath(peer), 'utf8');
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', peer, 'reflog', 'expire', '--expire=now']);
+            const ctx = createNodeContext({ workDir: ours });
+            const result = await reflog(ctx, { action: 'expire', expire: 'now' });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(0);
+            expect(gitResult.stderr).toBe('');
+            expect(result).toEqual({ kind: 'expire', removed: 0, kept: 0 });
+            for (const dir of [peer, ours]) {
+              expect(await readFile(mainLogPath(dir), 'utf8')).toBe(before);
+            }
+          });
+        });
+      });
+
+      describe('Given a malformed core.deltaBaseCacheLimit and reflogs to sweep', () => {
+        describe('When expire runs with --all --expire=now', () => {
+          it('Then both tools refuse on the class, naming the same key and value', async () => {
+            // Arrange
+            const peer = await caseDir('class-all-peer');
+            const ours = await caseDir('class-all-ours');
+            for (const dir of [peer, ours]) await poisonClass(dir);
+            const beforeMain = await readFile(mainLogPath(peer), 'utf8');
+            const beforeHead = await readFile(headLogPath(peer), 'utf8');
+
+            // Act
+            const gitResult = tryRunGitWithExit([
+              '-C',
+              peer,
+              'reflog',
+              'expire',
+              '--all',
+              '--expire=now',
+            ]);
+            const ctx = createNodeContext({ workDir: ours });
+            let caught: unknown;
+            try {
+              await reflog(ctx, { action: 'expire', all: true, expire: 'now' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert — git's own fatal line, rebuilt from tsgit's refusal data.
+            const data = (caught as TsgitError).data as unknown as Record<string, unknown>;
+            expect(data).toEqual({
+              code: 'CONFIG_BAD_NUMERIC_VALUE',
+              key: 'core.deltabasecachelimit',
+              source: path.join(ours, '.git', 'config'),
+              value: 'bogus',
+              reason: 'invalid unit',
+            });
+            expect(gitResult.exitCode).toBe(128);
+            expect(gitResult.stderr).toBe(
+              `fatal: bad numeric config value '${data['value'] as string}' for '${data['key'] as string}' in file ${path.relative(ours, data['source'] as string)}: ${data['reason'] as string}\n`,
+            );
+            // The named branch log is untouched on both. git reaches the
+            // class only once the sweep needs the object store, so it has
+            // already rewritten `logs/HEAD` by then; tsgit applies one
+            // transaction after the whole sweep, so nothing of its own moves.
+            for (const dir of [peer, ours]) {
+              expect(await readFile(mainLogPath(dir), 'utf8')).toBe(beforeMain);
+            }
+            expect(await readFile(headLogPath(peer), 'utf8')).toBe('');
+            expect(await readFile(headLogPath(ours), 'utf8')).toBe(beforeHead);
+          });
+        });
+      });
     });
   },
 );
