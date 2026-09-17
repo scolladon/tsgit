@@ -71,6 +71,7 @@ import {
 } from './internal/push-refspecs.js';
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import type { ParsedRefspec } from './internal/refspec.js';
+import { readRemoteConfig } from './internal/remote-config.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import {
   assertOperationalRepository,
@@ -154,7 +155,7 @@ const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResu
   const head = await readHeadRaw(ctx);
   const branchRef = branchRefFromHead(head);
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   const remoteName = resolvePushRemote(config, opts.remote, currentBranch);
   const url = await resolveRemoteUrl(ctx, remoteName);
   const plan = await planPushRefspecs(config, opts, head);

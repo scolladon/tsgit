@@ -42,6 +42,7 @@ import { assertValidRemoteName, defaultRemoteName } from './internal/default-rem
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
+import { readRemoteConfig } from './internal/remote-config.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
@@ -91,7 +92,7 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
   const head = await readHeadRaw(ctx);
   const branchRef = branchRefFromHead(head);
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 

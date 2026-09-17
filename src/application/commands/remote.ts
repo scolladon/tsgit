@@ -13,7 +13,7 @@ import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/objec
 import { REMOTE_REMOVE_REFLOG } from '../../domain/reflog/reflog-messages.js';
 import { invalidRef, refUpdateConflict } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
-import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
+import type { ParsedConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
@@ -28,6 +28,7 @@ import {
   fetchesInto,
   listBranchReferrers,
   mapsTrackingNamespace,
+  readRemoteConfig,
   rewriteTrackingFetchRefspecs,
   validateRemoteName,
 } from './internal/remote-config.js';
@@ -124,7 +125,7 @@ const toRemoteInfo = (
 
 export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
   await assertAcceptedRepository(ctx);
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   if (config.remote === undefined) return { remotes: [] };
   const remotes: RemoteInfo[] = [];
   for (const [name, entry] of config.remote) {
@@ -145,7 +146,7 @@ const addedRemoteOperations = (input: RemoteAddInput, fetchSpec: string): Config
 
 export const remoteAdd = async (ctx: Context, input: RemoteAddInput): Promise<RemoteAddResult> => {
   await assertAcceptedRepository(ctx);
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   // git's own order: an existing remote refuses before its name is checked,
   // and the name's syntax before its nesting against the other remotes.
   if (config.remote?.has(input.name) === true) throw remoteExists(input.name);
@@ -209,7 +210,7 @@ export const remoteRemove = async (
   input: RemoteRemoveInput,
 ): Promise<RemoteRemoveResult> => {
   await assertAcceptedRepository(ctx);
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
   const trackingRefs = removableTrackingRefs(config, input.name, await listRemoteTrackingRefs(ctx));
   const referrers = listBranchReferrers(config, input.name);
@@ -491,7 +492,7 @@ export const remoteRename = async (
   input: RemoteRenameInput,
 ): Promise<RemoteRenameResult> => {
   await assertAcceptedRepository(ctx);
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   const fromEntry = renameSource(config, input);
   const referrers = listBranchReferrers(config, input.from);
   // git commits the section header before it prepares the ref move, so a
@@ -514,7 +515,7 @@ export const remoteSetUrl = async (
 ): Promise<RemoteSetUrlResult> => {
   await assertAcceptedRepository(ctx);
   assertUrlSafe(input.url);
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
   const key = input.push === true ? 'pushurl' : 'url';
   await updateConfigOperations(ctx, [
@@ -526,7 +527,7 @@ export const remoteSetUrl = async (
       value: input.url,
     },
   ]);
-  const refreshed = (await readConfig(ctx)).remote?.get(input.name);
+  const refreshed = (await readRemoteConfig(ctx)).remote?.get(input.name);
   return { remote: toRemoteInfo(input.name, refreshed) };
 };
 
@@ -567,7 +568,7 @@ export const remoteShow = async (
   input: RemoteShowInput,
 ): Promise<RemoteShowResult> => {
   await assertAcceptedRepository(ctx);
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   const entry = config.remote?.get(input.name);
   if (entry === undefined && input.name === '') throw remoteNotConfigured(input.name);
   const info = entry === undefined ? adHocRemote(input.name) : toRemoteInfo(input.name, entry);

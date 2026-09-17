@@ -212,8 +212,8 @@ const SHOW_SELECTION = [
     expected: ['refs/remotes/origin/main'],
   },
   {
-    label: 'a refspec with no colon',
-    refspecs: ['+refs/heads/*'],
+    label: 'a colon-free refspec naming no wildcard, which lands in FETCH_HEAD',
+    refspecs: ['+refs/heads/main'],
     extraConfig: '',
     expected: [],
   },
@@ -2869,6 +2869,118 @@ describe('application/commands/remote', () => {
             version: 99,
           });
         });
+      });
+    });
+  });
+});
+
+describe('Given a fetch refspec whose wildcard has no destination to land in', () => {
+  const CONFIG = '[remote "origin"]\n\turl = u\n\tfetch = +refs/heads/*\n';
+
+  describe.each([
+    { label: 'remoteShow', act: (ctx: Context) => remoteShow(ctx, { name: 'origin' }) },
+    { label: 'remoteRemove', act: (ctx: Context) => remoteRemove(ctx, { name: 'origin' }) },
+    {
+      label: 'remoteRename',
+      act: (ctx: Context) => remoteRename(ctx, { from: 'origin', to: 'up2' }),
+    },
+    { label: 'remoteList', act: (ctx: Context) => remoteList(ctx) },
+  ])('When $label reads that remote', ({ act }) => {
+    it('Then it refuses the refspec itself, naming the value verbatim', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await act(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError | undefined)?.data).toMatchObject({
+        code: 'REFSPEC_INVALID',
+        raw: '+refs/heads/*',
+      });
+    });
+  });
+
+  describe('When remoteRemove names a remote nothing configures', () => {
+    it('Then the refspec refusal still wins — git builds every remote before it looks one up', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await remoteRemove(ctx, { name: 'nope' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError | undefined)?.data).toMatchObject({
+        code: 'REFSPEC_INVALID',
+        raw: '+refs/heads/*',
+      });
+    });
+  });
+});
+
+describe('Given fetch refspec shapes git accepts', () => {
+  describe.each([
+    { label: 'a colon-free plain name, which lands in FETCH_HEAD', spec: 'refs/heads/main' },
+    { label: 'wildcards on both sides', spec: '+refs/heads/*:refs/remotes/origin/*' },
+    { label: 'exact names on both sides', spec: 'refs/heads/main:refs/remotes/origin/main' },
+    { label: 'an empty destination', spec: 'refs/heads/main:' },
+  ])('When remoteShow reads a remote configured with $label', ({ spec }) => {
+    it('Then it reads the remote without refusing', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, `[remote "origin"]\n\turl = u\n\tfetch = ${spec}\n`);
+
+      // Act
+      const result = await remoteShow(ctx, { name: 'origin' });
+
+      // Assert
+      expect(result.remote.fetchRefspecs).toEqual([spec]);
+    });
+  });
+});
+
+describe('Given fetch refspec shapes git refuses for a mismatched wildcard', () => {
+  describe.each([
+    {
+      label: 'a wildcard source against an exact destination',
+      spec: 'refs/heads/*:refs/remotes/origin/x',
+    },
+    {
+      label: 'an exact source against a wildcard destination',
+      spec: 'refs/heads/x:refs/remotes/origin/*',
+    },
+    { label: 'two wildcards on each side', spec: 'refs/heads/**:refs/remotes/origin/**' },
+    { label: 'an empty source against a wildcard destination', spec: ':refs/remotes/origin/*' },
+  ])('When remoteShow reads a remote configured with $label', ({ spec }) => {
+    it('Then it refuses the refspec itself, naming the value verbatim', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, `[remote "origin"]\n\turl = u\n\tfetch = ${spec}\n`);
+
+      // Act
+      let caught: unknown;
+      try {
+        await remoteShow(ctx, { name: 'origin' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError | undefined)?.data).toMatchObject({
+        code: 'REFSPEC_INVALID',
+        raw: spec,
       });
     });
   });
