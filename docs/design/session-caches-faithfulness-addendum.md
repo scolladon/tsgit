@@ -2846,15 +2846,10 @@ uses `repo_get_oid` directly, which is the plain gitrevisions ladder.
 
 ### Residuals
 
-- **A name conflict against a blocking directory** (PO7): git raises the directory refusal while it
-  takes that update's lock, so it reports ahead of a batch-checked name conflict; tsgit discovers the
-  directory only when the rename meets it, after the batch check has already refused.
-- **An update that requires a current value, under a packed blocker**: git skips the availability
-  check for it entirely (SU9); tsgit's write path runs the packed-side check for every write. The two
-  agree on every state git itself can produce — only a hand-planted packed parent with a loose child
-  separates them.
-- **Reftable's "first name under"**: the check materialises the stack's sorted names rather than
-  seeking to `<name>/`, which git's own iterator does in O(log R). No syscall either way.
+Every residual this round recorded was folded in by the user on 2026-09-17 and is pinned in
+**Ref-store scope folds, round three** below: the blocking directory's turn in the prepare pass (BD),
+the availability check's existence filter (EX), reftable's seek (SK), `checkout`'s detaching fallback
+(CD), an ambiguous branch start point (AM) and a regular file in a ref name's path (FP).
 
 ### Docs consequences
 
@@ -2864,3 +2859,147 @@ uses `repo_get_oid` directly, which is the plain gitrevisions ladder.
 - `docs/use/commands/branch.md`: a rename onto a nested name; a listing that drops an unreadable chain.
 - `docs/use/commands/tag.md`, `checkout.md`: the target name goes through the revision ladder.
 - `docs/use/commands/fsck.md`, `docs/use/errors.md`: the `symlinkRef` warning.
+
+## Ref-store scope folds, round three (lock-turn directories, the existence filter, the reftable seek, checkout's fallback, ambiguity, blocked paths)
+
+<!-- cspell:ignore ENOTDIR EISDIR dwim seeked -->
+
+### Where this comes from
+
+The six residuals round two left behind, folded in by the user on 2026-09-17 and decided in ADR-874.
+Pins are git 2.55.0 under the same isolated environment as the earlier rounds.
+
+### Pins — a directory at a ref path takes its turn with the lock (files backend)
+
+`lock_raw_ref` meets `EISDIR` while taking that update's own lock, so the refusal lands in UPDATE
+order — ahead of the batch availability check whatever the order, and ahead of a later
+compare-and-swap — and the empty directories it removes on the way stay removed even when a later
+update goes on to refuse.
+
+| # | `update-ref --stdin` input (`blk/` holds a lock file) | Result |
+|---|---|---|
+| BD1 | `create blk`, then `create g` + `create g/x` | `cannot lock ref '…/blk': there is a non-empty directory '.git/refs/remotes/blk' blocking reference '…/blk'` |
+| BD2 | `create g` + `create g/x`, then `create blk` | the same directory refusal — the batch check never gets its turn |
+| BD3 | `create blk`, then a mismatching `update` | the directory refusal |
+| BD4 | a mismatching `update`, then `create blk` | the mismatch |
+| BD5 | `create blk` alone | the directory refusal |
+| BD6 | `create blk`, then `create v/w` (`v` exists) | the directory refusal |
+| BD7 | `create v/w`, then `create blk` | `'…/v' exists; cannot create '…/v/w'` |
+| BD8 | an empty tree at `e1/a/b`, `create e1` then `create blk` | refuses on `blk`; `refs/remotes/e1/` is **gone** |
+| BD9 | `create blk` then `create e2` (empty tree at `e2/a/b`) | refuses on `blk`; `refs/remotes/e2/` is **kept** |
+
+### Pins — the availability check's filter is existence, not the required value
+
+`lock_raw_ref` adds a name to the batch only from its `ENOENT` arm — the read that already consulted
+`packed-refs`. A ref the store can find is never checked, whatever value the update requires; a ref it
+cannot find with a required value dies on the value instead.
+
+| # | Setup | Command | Exit | Result |
+|---|---|---|---|---|
+| EX1 | `refs/remotes/k` packed, `refs/remotes/k/z` loose | `update-ref refs/remotes/k/z C2` | 0 | written — the loose read finds `k/z`, so its name is never checked |
+| EX2 | EX1 | `update-ref refs/remotes/k/z C2 <matching old>` | 0 | written |
+| EX3 | `refs/remotes/k` AND `refs/remotes/k/z` both packed | `update-ref refs/remotes/k/z C2` | 0 | written — `packed-refs` answers for the name |
+| EX4 | `refs/remotes/k` packed, `k/z` absent | `update-ref refs/remotes/k/z C1` | 128 | `'refs/remotes/k' exists; cannot create 'refs/remotes/k/z'` |
+| EX5 | `refs/remotes/p/q` packed, `p` absent | `update-ref -d refs/remotes/p <old>` | 1 | `cannot lock ref '…/p': unable to resolve reference` — the value, not the name |
+| EX6 | reftable, `refs/remotes/k` in the stack | `update refs/remotes/k/z <new> 0{40}` | 128 | the name conflict — an `expect-absent` value still leaves the ref absent |
+| EX7 | reftable, same | `update refs/remotes/k/z <new> <real old>` | 128 | `unable to resolve reference` — the value first |
+
+### Pins — a regular file in a ref name's path
+
+`files_read_raw_ref` `lstat`s the loose path first: `ENOTDIR` leaves the read there and — unlike
+`ENOENT` — never consults `packed-refs`. Every read surface reports the name absent and exits clean;
+only the write side turns it into a refusal.
+
+| # | Setup | Command | Exit | Output |
+|---|---|---|---|---|
+| FP1 | `refs/heads/main` a ref file | `rev-parse --verify refs/heads/main/deep` | 128 | `Needed a single revision` |
+| FP2 | FP1 | `show-ref refs/heads/main/deep` | 1 | nothing |
+| FP3 | FP1 | `symbolic-ref refs/heads/main/deep` | 128 | `not a symbolic ref` |
+| FP4 | FP1 | `for-each-ref refs/heads/main/deep` | 0 | nothing |
+| FP5 | FP1 | `branch -d main/deep` | 1 | `branch 'main/deep' not found` |
+| FP6 | FP1, two levels down | `rev-parse --verify refs/heads/main/deep/deeper` | 128 | the same "no such ref" |
+| FP7 | `refs/remotes/q` a loose file, `refs/remotes/q/z` PACKED | `rev-parse --verify refs/remotes/q/z` | 128 | does not resolve — the packed value is **not** reached |
+| FP8 | FP7 | `for-each-ref refs/remotes/`, `show-ref` | 0 | both still LIST `refs/remotes/q/z` at its packed value |
+| FP9 | FP7 | `update-ref refs/remotes/q/z/w C1` | 128 | `'refs/remotes/q' exists; cannot create 'refs/remotes/q/z/w'` |
+
+### Pins — `checkout` over a name no branch carries
+
+`parse_branchname_arg` reads `refs/heads/<arg>` first — whatever `--detach` says — and falls back to
+the revision ladder, detaching. The `logs/HEAD` subject echoes the ARGUMENT, never an abbreviation
+git computed itself.
+
+| # | Setup | Command | Result |
+|---|---|---|---|
+| CD1 | tag `release` = C1 | `checkout release` | detaches; `.git/HEAD` = C1's oid; `checkout: moving from main to release` |
+| CD2 | `refs/remotes/org/tgt` = C1 | `checkout org/tgt` | detaches; `… to org/tgt` |
+| CD3 | — | `checkout <full oid>` | detaches; `… to <full oid>` |
+| CD4 | — | `checkout <7-char oid>` | detaches; `… to <7-char oid>` |
+| CD5 | branch `amb` + tag `amb` | `checkout amb` | `warning: refname 'amb' is ambiguous`, switches to the BRANCH |
+| CD6 | branch `amb` + tag `amb` | `checkout --detach amb` | detaches onto the BRANCH's commit — the branch read runs either way |
+
+### Pins — an ambiguous short name, by surface
+
+`create_branch` alone consults `dwim_ref`'s match COUNT and dies on more than one; every other
+surface takes the first candidate and warns.
+
+| # | Command (`amb` a branch AND a tag) | Exit | Output |
+|---|---|---|---|
+| AM1 | `branch nb amb`, `branch --force nb amb` | 128 | `warning: refname 'amb' is ambiguous.` then `fatal: ambiguous object name: 'amb'` |
+| AM2 | `rev-parse amb`, `rev-parse --verify amb` | 0 | the warning, then the TAG's oid |
+| AM3 | `tag nt amb`, `tag -a -m m nt2 amb` | 0 | the warning; the tag is created |
+| AM4 | `checkout --detach amb`, `switch --detach amb` | 0 | the warning; the BRANCH's commit |
+| AM5 | `reset --soft amb`, `merge-base amb main`, `log -1 amb`, `cat-file -t amb`, `update-ref refs/heads/zz amb` | 0 | the warning; each resolves |
+| AM6 | `branch nb HEAD` with `refs/heads/HEAD` present | 128 | the same ambiguity refusal |
+| AM7 | `branch nb` (no start point) with `refs/heads/HEAD` present | 0 | the CURRENT branch's own commit — git passes the resolved ref name, not the literal `HEAD` |
+| AM8 | `branch nb <tag>` / `<remote-tracking path>` / `<abbrev oid>` / `<annotated tag>` | 0 | each resolves through the ladder, peeled to its commit |
+
+### Changes
+
+- **The directory's turn.** `nameCheckFor` already `stat`s the name's loose path to find the smallest
+  ref under it; it now records whether that path is a directory from the SAME call. The prepare loop
+  raises, per update in order, the name check that update's lock would run and then the directory it
+  would clear or refuse over. **Cost: zero added syscalls** — one `pathKind` per absent checked name,
+  exactly as before.
+- **The existence filter.** The files store's packed-side check returns early when neither a packed
+  prefix nor a packed ref under the name exists (the common case, unchanged), and otherwise reads the
+  ref once before refusing — so an existing ref with a packed blocker is written. **Cost: one read,
+  and only once a blocker is already known to be there.** `DeleteTarget` loses its `checked` flag: a
+  required value on an absent ref never reaches that point, the compare-and-swap having refused first.
+- **The reftable seek.** `iterateReftableRefsFrom(table, from)` finds its first block the way a lookup
+  does — through the ref index, O(log R) — and CONTINUES into the blocks that follow, so a `from`
+  sorting past the last key of the index-resolved block is never mistaken for "nothing after it".
+  `walkBlockRecords` takes the seeked record as an optional resume point, its own name seeding the
+  prefix decompression. `ReftableStack.entriesFrom(from)` merges those per-table iterators with the
+  same shadowing `entries()` uses. The availability check asks for the first live name at or after
+  `<name>/` and stops at the first name past the prefix. **Cost: one index descent plus the records
+  actually under the name, instead of a decode of every record in the stack. No syscall either way.**
+- **`checkout`'s fallback.** The branch read runs whatever `detach` says; a name no branch carries
+  detaches through the revision ladder. The `logs/HEAD` subject is the caller's own argument on both
+  arms. **Cost: one `refExists` on the detaching path, which git pays too.**
+- **Ambiguity.** `resolvingCandidates` collects every object id the candidate namespaces resolve to —
+  git's `dwim_ref` reads them all as well — and `branch.create` refuses `REVPARSE_AMBIGUOUS` on more
+  than one. Its start point otherwise goes through the shared ladder, so a tag, a remote-tracking path
+  or an abbreviated oid all work. A branch created with no start point resolves `HEAD` directly, never
+  through the ladder, as git hands `create_branch` the current branch's own ref name.
+- **A blocked path.** A `NOT_A_DIRECTORY` open reports a new `blocked` loose leaf, which
+  `resolveDirect` answers `missing` for WITHOUT the packed fallback `FILE_NOT_FOUND` takes — git's
+  own `lstat` stop. `readLooseContent` folds it the same way. The callers that existed only to catch
+  the old refusal are gone: `existsForNameCheck` becomes a plain `refIsPresent`, and the rename's
+  destination gate drops its nested-name exemption. Enumeration is untouched, so a packed ref under a
+  blocking file is still listed at its packed value — as `for-each-ref` lists it.
+
+### Residuals
+
+- **`checkout` has no pathspec fallback**: git answers an unresolvable argument with `error: pathspec
+  '<x>' did not match any file(s) known to git`; tsgit's switch surface refuses `BRANCH_NOT_FOUND`,
+  the paths surface being a separate call.
+- **The ambiguity warning is not surfaced**: git prints `warning: refname '<x>' is ambiguous.`
+  wherever it takes the first candidate; tsgit's structured results carry no warnings channel for it.
+
+### Docs consequences
+
+- `docs/use/primitives/resolve-ref.md`: a name blocked by a file in its path reads as absent.
+- `docs/use/commands/branch.md`: the start-point ladder and its ambiguity refusal.
+- `docs/use/commands/checkout.md`: a name no branch carries detaches; the reflog subject echoes the
+  argument.
+- `docs/use/errors.md`: `REVPARSE_AMBIGUOUS` from `branch.create`.
