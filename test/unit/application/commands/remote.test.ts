@@ -2238,7 +2238,7 @@ describe('application/commands/remote', () => {
 
     describe.each(BACKENDS)('Given a symbolic tracking ref on the $label store', ({ frame }) => {
       describe.each(SPLICED_TARGETS)(
-        'Given $label, When remoteRename runs',
+        'When remoteRename runs with $label',
         ({ target, spliced }) => {
           it('Then the renamed symref points at the spliced target', async () => {
             // Arrange
@@ -2257,7 +2257,7 @@ describe('application/commands/remote', () => {
         },
       );
 
-      describe.each(SHORT_TARGETS)('Given $label, When remoteRename runs', ({ target }) => {
+      describe.each(SHORT_TARGETS)('When remoteRename runs with $label', ({ target }) => {
         it('Then it throws INVALID_REF and leaves every tracking ref where it was', async () => {
           // Arrange
           const ctx = frame(createMemoryContext());
@@ -2281,20 +2281,18 @@ describe('application/commands/remote', () => {
         });
       });
 
-      describe('Given a renamed name already taken and a symref target too short to splice', () => {
-        describe('When remoteRename runs', () => {
-          it('Then the short target refuses ahead of the name conflict', async () => {
-            // Arrange
-            const ctx = frame(createMemoryContext());
-            await seedRenameSource(ctx, 'refs/heads/main' as RefName);
-            await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: UP2_MAIN, id: STALE_ID }]);
+      describe('When remoteRename runs with the new name already taken and a target too short to splice', () => {
+        it('Then the short target refuses ahead of the name conflict', async () => {
+          // Arrange
+          const ctx = frame(createMemoryContext());
+          await seedRenameSource(ctx, 'refs/heads/main' as RefName);
+          await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: UP2_MAIN, id: STALE_ID }]);
 
-            // Act
-            const caught = await renameRefusal(ctx, 'up2');
+          // Act
+          const caught = await renameRefusal(ctx, 'up2');
 
-            // Assert
-            expect((caught as TsgitError).data.code).toBe('INVALID_REF');
-          });
+          // Assert
+          expect((caught as TsgitError).data.code).toBe('INVALID_REF');
         });
       });
     });
@@ -2695,7 +2693,7 @@ describe('application/commands/remote', () => {
     });
     describe.each(BACKENDS)('Given a planted ref space on the $label store', ({ frame }) => {
       describe.each(SHOW_SELECTION)(
-        'Given $label, When remoteShow runs',
+        'When remoteShow runs with $label',
         ({ refspecs, extraConfig, expected }) => {
           it('Then exactly the refs those refspecs fetch into are attached', async () => {
             // Arrange
