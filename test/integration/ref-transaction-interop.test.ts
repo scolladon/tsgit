@@ -2572,6 +2572,124 @@ describe.skipIf(!GIT_AVAILABLE)(
           }),
         },
         {
+          label: 'a delete through a symbolic ref whose target is absent',
+          slug: 'delete-dangling-symref',
+          plant: () => [link('refs/heads/dd', 'refs/heads/nope')],
+          ref: 'refs/heads/dd',
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: "a no-deref delete guarded by the referent's own value",
+          slug: 'no-deref-delete-old-match',
+          plant: () => [point('refs/heads/x', c1)()],
+          ref: 'refs/heads/sym',
+          old: c1,
+          noDeref: true,
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref delete guarded by a value the referent does not hold',
+          slug: 'no-deref-delete-old-mismatch',
+          plant: () => [point('refs/heads/x', c1)()],
+          ref: 'refs/heads/sym',
+          old: c2,
+          noDeref: true,
+          remove: true,
+          exitCode: 1,
+          stderr: () =>
+            `cannot lock ref 'refs/heads/sym': is at ${filesC1} but expected ${filesC2}`,
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/sym',
+            expected: filesC2,
+            actual: filesC1,
+          }),
+        },
+        {
+          label: "a dereferencing delete guarded by the target's own value",
+          slug: 'delete-old-match',
+          plant: () => [point('refs/heads/x', c1)()],
+          ref: 'refs/heads/sym',
+          old: c1,
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a dereferencing delete guarded by a value the target does not hold',
+          slug: 'delete-old-mismatch',
+          plant: () => [point('refs/heads/x', c1)()],
+          ref: 'refs/heads/sym',
+          old: c2,
+          remove: true,
+          exitCode: 1,
+          stderr: () =>
+            `cannot lock ref 'refs/heads/sym': is at ${filesC1} but expected ${filesC2}`,
+          refusal: () => ({
+            code: 'REF_UPDATE_CONFLICT',
+            name: 'refs/heads/sym',
+            expected: filesC2,
+            actual: filesC1,
+          }),
+        },
+        {
+          label: 'a dereferencing delete named as HEAD',
+          slug: 'delete-through-head',
+          plant: () => [],
+          ref: 'HEAD',
+          message: 'm',
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref delete named as HEAD',
+          slug: 'no-deref-delete-head',
+          plant: () => [],
+          ref: 'HEAD',
+          message: 'm',
+          noDeref: true,
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: "a delete of the middle of HEAD's chain",
+          slug: 'delete-middle-of-head-chain',
+          plant: () => [point('refs/heads/x', c1)(), link('HEAD', 'refs/heads/sym')],
+          ref: 'refs/heads/sym',
+          message: 'm',
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a delete named as HEAD reaching its target through two links',
+          slug: 'delete-head-two-links',
+          plant: () => [point('refs/heads/x', c1)(), link('HEAD', 'refs/heads/sym')],
+          ref: 'HEAD',
+          message: 'm',
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a delete of a dangling link that HEAD itself names',
+          slug: 'delete-dangling-under-head',
+          plant: () => [link('refs/heads/dd', 'refs/heads/nope'), link('HEAD', 'refs/heads/dd')],
+          ref: 'refs/heads/dd',
+          message: 'm',
+          remove: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref delete of the branch HEAD names',
+          slug: 'no-deref-delete-head-branch',
+          plant: () => [point('refs/heads/main', c1)()],
+          ref: 'refs/heads/main',
+          message: 'm',
+          noDeref: true,
+          remove: true,
+          exitCode: 0,
+        },
+        {
           label: "a no-deref write on the middle of HEAD's chain",
           slug: 'no-deref-middle-of-head-chain',
           plant: () => [point('refs/heads/x', c1)(), link('HEAD', 'refs/heads/sym')],
@@ -2617,6 +2735,40 @@ describe.skipIf(!GIT_AVAILABLE)(
           if (row.refusal === undefined) expect(caught).toBeUndefined();
           else expect((caught as TsgitError).data).toEqual(row.refusal());
           expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+    });
+
+    describe('Given a reftable repository whose HEAD record is deleted without dereferencing', () => {
+      describe('When git update-ref and tsgit updateRef remove it', () => {
+        it('Then both drop the table record and both leave the .git/HEAD stub untouched', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await reftableCasePair('no-deref-delete-head-reftable');
+          const stubBefore = await readFile(path.join(peer, '.git', 'HEAD'), 'utf8');
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'update-ref',
+            '--no-deref',
+            '-d',
+            'HEAD',
+          ]);
+          await sut(ctx, 'HEAD' as RefName, ZERO, { delete: true, noDeref: true });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          for (const dir of [peer, ours]) {
+            const symbolic = tryRunGitWithExit(['-C', dir, 'symbolic-ref', 'HEAD']);
+            expect(symbolic.exitCode).toBe(128);
+            expect(symbolic.stderr).toContain('ref HEAD is not a symbolic ref');
+            // The stub file the reftable format leaves in place is NOT the
+            // record, so the directory stays a repository.
+            expect(await readFile(path.join(dir, '.git', 'HEAD'), 'utf8')).toBe(stubBefore);
+          }
+          expect(stubBefore).toBe('ref: refs/heads/.invalid\n');
         });
       });
     });
