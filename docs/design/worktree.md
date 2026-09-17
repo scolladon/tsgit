@@ -202,7 +202,10 @@ admin dirs: `shared`, then `shared1`, `shared2`, … (no separator; git's
    (default `HEAD`) → start oid + tree.
 2. Decide mode:
    - `branch` set (`-b`) → create new branch `<branch>` at start oid; refuse
-     `BRANCH_EXISTS` unless `force`.
+     `BRANCH_EXISTS` unless `force`, and refuse `BRANCH_CHECKED_OUT` — even
+     WITH `force` — when a worktree already holds `<branch>` (git's
+     `cannot force update the branch … used by worktree at …`: force permits
+     a second checkout of a held branch, never moving the branch itself).
    - else `commitish` names an existing local branch & not `detach` → check that
      branch out (no new branch); refuse if it is already used by another
      worktree (`BRANCH_CHECKED_OUT`) unless `force`.
@@ -237,6 +240,8 @@ small, property-tested round-trip improvement to the domain codec.
 - target dir exists & non-empty → `WORKTREE_PATH_EXISTS`.
 - new branch already exists (no `force`) → `BRANCH_EXISTS`.
 - requested branch already used by another worktree (no `force`) → `BRANCH_CHECKED_OUT`.
+- new branch already exists AND a worktree holds it (even with `force`) →
+  `BRANCH_CHECKED_OUT`, carrying the holding worktree's path.
 - `commitish` unresolvable → `REVPARSE_UNRESOLVED` (existing).
 - bare-repo guard where a working tree is required is N/A — `add` is the verb
   that *creates* a working tree; it is permitted from a bare main repo.

@@ -20,10 +20,12 @@ import {
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
+import { branchCheckedOut } from '../../domain/worktree/error.js';
 import type { Context } from '../../ports/context.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
+import { listWorktrees } from '../primitives/list-worktrees.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, type RefStore, refExists } from '../primitives/ref-store.js';
 import {
@@ -142,6 +144,20 @@ const omittedStartPointLabel = async (ctx: Context): Promise<string> => {
   return current === undefined ? HEAD_NAME : shortBranchName(current);
 };
 
+/**
+ * git's `find_shared_symref`: a forced rewrite of an existing branch is
+ * refused while ANY worktree's HEAD names it — the current checkout, a
+ * linked worktree, or a linked worktree whose directory is gone but whose
+ * registration has not been pruned. A detached HEAD names no branch, and a
+ * bare main checkout is skipped outright, so neither holds anything. The
+ * check runs before the start point is resolved, so an unresolvable start
+ * point on a held branch still reports the worktree.
+ */
+const assertNoWorktreeHolds = async (ctx: Context, name: RefName): Promise<void> => {
+  const holder = (await listWorktrees(ctx)).find((worktree) => worktree.branch === name);
+  if (holder !== undefined) throw branchCheckedOut(name, holder.path);
+};
+
 export const branchCreate = async (
   ctx: Context,
   input: BranchCreateInput,
@@ -153,6 +169,7 @@ export const branchCreate = async (
   // refuses an unforced clobber and types the reflog message below.
   const held = await refResolvesForReading(ctx, name);
   if (!force && held) throw branchExists(name);
+  if (force && held) await assertNoWorktreeHolds(ctx, name);
   const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
   // git hands `create_branch` the CURRENT branch's own resolved ref name when
   // no start point is given, so the default never goes through the ladder —

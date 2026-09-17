@@ -215,5 +215,44 @@ describe.skipIf(!GIT_AVAILABLE)('worktree interop', () => {
         expect(tsgitRefused).toBe(true);
       });
     });
+
+    describe('When add force-creates a branch another worktree already holds', () => {
+      it('Then both refuse the branch rewrite even though force was asked for', async () => {
+        // Arrange — force lets a held branch be CHECKED OUT again, but never
+        // lets the branch itself be moved out from under its holder.
+        runGit(['init', '-q', '-b', 'main', pair.peer]);
+        await writeFile(path.join(pair.peer, 'a.txt'), 'hello\n');
+        runGit(['-C', pair.peer, 'add', 'a.txt'], { env: COMMIT_ENV });
+        runGit(['-C', pair.peer, 'commit', '-m', 'seed commit'], { env: COMMIT_ENV });
+        const peerHolder = `${pair.peer}-holder`;
+        created.push(peerHolder);
+        runGit(['-C', pair.peer, 'worktree', 'add', '-q', peerHolder, '-b', 'held']);
+        const holder = sibling('holder');
+        await repo.worktree.add({ path: holder, branch: 'held' });
+
+        // Act
+        const gitOutput = tryRunGit([
+          '-C',
+          pair.peer,
+          'worktree',
+          'add',
+          '--force',
+          '-B',
+          'held',
+          `${pair.peer}-second`,
+        ]);
+        const tsgitCode = await repo.worktree
+          .add({ path: sibling('second'), branch: 'held', force: true })
+          .then(() => undefined)
+          .catch((err) => (err as { data?: { code?: string } }).data?.code);
+
+        // Assert
+        expect(gitOutput.stderr).toContain(
+          "cannot force update the branch 'held' used by worktree",
+        );
+        expect(tsgitCode).toBe('BRANCH_CHECKED_OUT');
+        expect(git(holder, 'rev-parse', 'refs/heads/held').trim()).toBe(headOid());
+      });
+    });
   });
 });

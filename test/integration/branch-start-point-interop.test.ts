@@ -21,7 +21,7 @@
  *                    lines, and annotated-tag peeling, match git 2.55.0
  *   interopSurface: branch
  */
-import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -29,6 +29,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchCreate } from '../../src/application/commands/branch.js';
 import { tagCreate } from '../../src/application/commands/tag.js';
 import { TsgitError } from '../../src/domain/error.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -77,7 +78,12 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
   const caseRepo = async (
     slug: string,
   ): Promise<{ readonly dir: string; readonly ctx: Context }> => {
-    const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-branch-start-point-${slug}-`));
+    // Realpath'd: git records the resolved path in a linked worktree's
+    // `gitdir` pointer, and on a platform whose temp dir is itself a symlink
+    // an unresolved root would not match what the pointer names.
+    const root = await realpath(
+      await mkdtemp(path.join(os.tmpdir(), `tsgit-branch-start-point-${slug}-`)),
+    );
     caseRoots.push(root);
     const dir = path.join(root, 'repo');
     await cp(base, dir, { recursive: true });
@@ -148,6 +154,161 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         expect(await lastLogMessage(dir, 'refs/heads/b-det-tsgit')).toBe(
           await lastLogMessage(dir, 'refs/heads/b-det-git'),
         );
+      });
+    });
+  });
+
+  describe('Given a branch the main worktree has checked out', () => {
+    describe('When git branch --force and tsgit branchCreate with force both rewrite it', () => {
+      it('Then both refuse, naming the branch and the worktree holding it', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo('held-main');
+        git(dir, 'commit', '-q', '--allow-empty', '-m', 'second');
+        const older = git(dir, 'rev-parse', 'HEAD~1').trim();
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '--force', 'main', older]);
+        const err = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'main', startPoint: older, force: true }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          `fatal: cannot force update the branch 'main' used by worktree at '${dir}'\n`,
+        );
+        expect(err.data.code).toBe('BRANCH_CHECKED_OUT');
+        if (err.data.code === 'BRANCH_CHECKED_OUT') {
+          expect(err.data.branch).toBe('refs/heads/main');
+          expect(err.data.path).toBe(dir);
+        }
+        expect(git(dir, 'rev-parse', 'refs/heads/main').trim()).not.toBe(older);
+      });
+    });
+
+    describe('When git branch --force and tsgit branchCreate with force both pass a start point nothing resolves', () => {
+      it('Then both refuse on the worktree, never reaching the start point', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo('held-order');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '--force', 'main', 'nope-xyz']);
+        const err = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'main', startPoint: 'nope-xyz', force: true }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain("cannot force update the branch 'main'");
+        expect(err.data.code).toBe('BRANCH_CHECKED_OUT');
+      });
+    });
+  });
+
+  describe('Given a branch only a linked worktree has checked out', () => {
+    describe('When git branch --force and tsgit branch.create with force both rewrite it', () => {
+      it('Then both refuse, naming the linked worktree rather than the current one', async () => {
+        // Arrange — a linked worktree sits outside the main working tree, so
+        // the repository facade (not a bare Context) is the caller that can
+        // reach it.
+        const { dir } = await caseRepo('held-linked');
+        const linked = path.join(dir, '..', 'linked');
+        git(dir, 'worktree', 'add', '-q', linked, '-b', 'sidecar');
+        const repo = await openRepository({ cwd: dir });
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '--force', 'sidecar', commitId]);
+        const err = await catchTsgitError(() =>
+          repo.branch.create({ name: 'sidecar', startPoint: commitId, force: true }),
+        );
+        await repo.dispose();
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          `fatal: cannot force update the branch 'sidecar' used by worktree at '${linked}'\n`,
+        );
+        expect(err.data.code).toBe('BRANCH_CHECKED_OUT');
+        if (err.data.code === 'BRANCH_CHECKED_OUT') {
+          expect(err.data.branch).toBe('refs/heads/sidecar');
+          expect(err.data.path).toBe(linked);
+        }
+      });
+    });
+  });
+
+  describe('Given a branch no worktree has checked out', () => {
+    describe('When git branch --force and tsgit branchCreate with force both rewrite it', () => {
+      it('Then both rewrite it and land on the same oid', async () => {
+        // Arrange
+        const { dir, ctx } = await caseRepo('free-branch');
+        git(dir, 'branch', 'spare-git', commitId);
+        await branchCreate(ctx, { name: 'spare-tsgit', startPoint: commitId });
+        git(dir, 'commit', '-q', '--allow-empty', '-m', 'second');
+        const moved = git(dir, 'rev-parse', 'HEAD').trim();
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '--force', 'spare-git', moved]);
+        const result = await branchCreate(ctx, {
+          name: 'spare-tsgit',
+          startPoint: moved,
+          force: true,
+        });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(git(dir, 'rev-parse', 'refs/heads/spare-git').trim()).toBe(moved);
+        expect(result.id).toBe(moved);
+      });
+    });
+  });
+
+  describe('Given a branch a worktree cut from but then detached away from', () => {
+    describe('When git branch --force and tsgit branch.create with force both rewrite it', () => {
+      it('Then both accept — a detached HEAD holds no branch', async () => {
+        // Arrange
+        const { dir } = await caseRepo('detached-holder');
+        const linked = path.join(dir, '..', 'detached');
+        git(dir, 'worktree', 'add', '-q', linked, '-b', 'loose');
+        git(linked, 'checkout', '-q', '--detach');
+        const repo = await openRepository({ cwd: dir });
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '--force', 'loose', commitId]);
+        const result = await repo.branch.create({
+          name: 'loose',
+          startPoint: commitId,
+          force: true,
+        });
+        await repo.dispose();
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.id).toBe(commitId);
+        expect(git(dir, 'rev-parse', 'refs/heads/loose').trim()).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a bare repository whose HEAD names a branch', () => {
+    describe('When git branch --force and tsgit branchCreate with force both rewrite it', () => {
+      it('Then both accept — a bare main checkout holds no branch', async () => {
+        // Arrange
+        const { dir } = await caseRepo('bare-head');
+        const bare = path.join(dir, '..', 'bare.git');
+        runGit(['clone', '-q', '--bare', dir, bare]);
+        const ctx = createNodeContext({ gitDir: bare, workDir: bare, bare: true });
+        git(bare, 'branch', 'spare-git', commitId);
+        git(bare, 'commit-tree', '-m', 'unused', treeId);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', bare, 'branch', '--force', 'main', commitId]);
+        const result = await branchCreate(ctx, { name: 'main', startPoint: commitId, force: true });
+
+        // Assert
+        expect(git(bare, 'symbolic-ref', 'HEAD').trim()).toBe('refs/heads/main');
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.id).toBe(commitId);
       });
     });
   });
