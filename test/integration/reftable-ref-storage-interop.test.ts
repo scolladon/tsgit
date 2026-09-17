@@ -716,6 +716,97 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
       });
     });
 
+    describe('When a name is created whose availability check seeks into a late block', () => {
+      it('Then both refuse it, naming the ref that already sits above it', async () => {
+        // Arrange — twin copies of the 20-block fixture: the check seeks to
+        // `refs/heads/b02999/child/`, which sorts past every key of the block
+        // the ref index lands in, so the walk has to continue into the next.
+        const peer = path.join(rootDir, 'seek-above-peer');
+        const ours = path.join(rootDir, 'seek-above-ours');
+        cpSync(big.dir, peer, { recursive: true });
+        cpSync(big.dir, ours, { recursive: true });
+        const ctx = reftableCtx(ours);
+        const sha = git(peer, 'rev-parse', 'HEAD').trim();
+
+        // Act
+        const gitResult = tryRunGitWithExit(
+          ['-C', peer, 'update-ref', 'refs/heads/b02999/child', sha],
+          { env: runGitEnv() },
+        );
+        let caught: unknown;
+        try {
+          await updateRef(ctx, 'refs/heads/b02999/child' as RefName, sha as ObjectId, {
+            reflogMessage: 'update by test',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(
+          "'refs/heads/b02999' exists; cannot create 'refs/heads/b02999/child'",
+        );
+        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+        expect(showRefNames(ours)).not.toContain('refs/heads/b02999/child');
+      });
+    });
+
+    describe('When a name is created whose seek crosses a block and finds nothing under it', () => {
+      it('Then tsgit writes it and git reads it back out of the tsgit-written stack', async () => {
+        // Arrange — `refs/heads/b02999x/` sorts between the last key of one
+        // block and the first key of the next, so a walk that stopped at the
+        // indexed block would have to be right for the wrong reason.
+        const ours = path.join(rootDir, 'seek-free');
+        cpSync(big.dir, ours, { recursive: true });
+        const ctx = reftableCtx(ours);
+        const sha = git(ours, 'rev-parse', 'HEAD').trim();
+
+        // Act
+        await updateRef(ctx, 'refs/heads/b02999x' as RefName, sha as ObjectId, {
+          reflogMessage: 'update by test',
+        });
+
+        // Assert
+        expect(git(ours, 'show-ref', 'refs/heads/b02999x').trim()).toBe(
+          `${sha} refs/heads/b02999x`,
+        );
+        expect(tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() }).exitCode).toBe(0);
+      });
+    });
+
+    describe('When a name is created over a tombstone left under it by an earlier table', () => {
+      it('Then both accept — a deleted name under the prefix blocks nothing', async () => {
+        // Arrange — the child created, the child deleted (its tombstone still
+        // in the stack), then the parent created over it.
+        const peer = path.join(rootDir, 'seek-tombstone-peer');
+        const ours = path.join(rootDir, 'seek-tombstone-ours');
+        cpSync(big.dir, peer, { recursive: true });
+        cpSync(big.dir, ours, { recursive: true });
+        const sha = git(peer, 'rev-parse', 'HEAD').trim();
+        for (const dir of [peer, ours]) {
+          git(dir, 'update-ref', 'refs/heads/b02999x/child', sha);
+          git(dir, 'update-ref', '-d', 'refs/heads/b02999x/child');
+        }
+        const ctx = reftableCtx(ours);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/b02999x', sha], {
+          env: runGitEnv(),
+        });
+        await updateRef(ctx, 'refs/heads/b02999x' as RefName, sha as ObjectId, {
+          reflogMessage: 'update by test',
+        });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(git(ours, 'show-ref', 'refs/heads/b02999x').trim()).toBe(
+          git(peer, 'show-ref', 'refs/heads/b02999x').trim(),
+        );
+        expect(tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() }).exitCode).toBe(0);
+      });
+    });
+
     describe('When the parsed footer is inspected', () => {
       it('Then section placement matches the measured fixture layout', async () => {
         // Arrange
