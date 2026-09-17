@@ -412,7 +412,7 @@ describe('ref-store — names that collide inside one transaction', () => {
       'Given a tree of empty directories before a name that refuses',
       () => {
         describe('When applyRefUpdates applies both', () => {
-          it('Then the earlier tree is gone, as git leaves it after the same refusal', async () => {
+          it('Then the earlier tree is gone and its ref unwritten, as git leaves both after the same refusal', async () => {
             // Arrange
             const ctx = await build();
             const sut = createRefStore(ctx);
@@ -424,12 +424,56 @@ describe('ref-store — names that collide inside one transaction', () => {
               sut.applyRefUpdates([set('e1'), set('blk'), set('g'), set('g/x')]),
             );
 
-            // Assert
+            // Assert — the lock clearing the tree is a prepare-time side
+            // effect git also leaves behind; the ref itself belongs to the
+            // commit that never ran.
             expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${ref('e1')}`)).toBe(false);
+            expect(await sut.resolveDirect(ref('e1'))).toEqual({ kind: 'missing' });
           });
         });
       },
     );
+
+    describe('Given a name that writes cleanly before one nothing can lock', () => {
+      describe('When applyRefUpdates applies both', () => {
+        it('Then neither lands — a run refuses before it commits any of its updates', async () => {
+          // Arrange — `blk` refuses on both backends: on files a directory
+          // holds its path, on reftable a ref already lives under the name.
+          const ctx = await build();
+          const sut = createRefStore(ctx);
+          const blocker =
+            backend === 'reftable'
+              ? sut.applyRefUpdates([set('blk/under')])
+              : ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref('blk')}/x.lock`, '');
+          await blocker;
+
+          // Act
+          await refusalOf(() => sut.applyRefUpdates([set('et'), set('blk')]));
+
+          // Assert
+          expect(await sut.resolveDirect(ref('et'))).toEqual({ kind: 'missing' });
+        });
+      });
+
+      describe('When applyRefUpdates applies them in the other order', () => {
+        it('Then the clean name stays unwritten too — its turn never comes', async () => {
+          // Arrange
+          const ctx = await build();
+          const sut = createRefStore(ctx);
+          const blocker =
+            backend === 'reftable'
+              ? sut.applyRefUpdates([set('blk/under')])
+              : ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref('blk')}/x.lock`, '');
+          await blocker;
+
+          // Act
+          await refusalOf(() => sut.applyRefUpdates([set('blk'), set('et')]));
+
+          // Assert
+          expect(await sut.resolveDirect(ref('et'))).toEqual({ kind: 'missing' });
+        });
+      });
+    });
 
     describe.skipIf(backend === 'reftable')(
       'Given a packed ref above a loose ref of its own',

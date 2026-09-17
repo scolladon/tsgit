@@ -53,6 +53,7 @@ import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
   isCheckedWhenAbsent,
   isRefChanging,
+  NO_TRANSACTION_NAMES,
   prefixRelatedTransactionNames,
   refNameConflictRefusal,
 } from './internal/transaction-names.js';
@@ -471,6 +472,15 @@ function assertNoDuplicateNames(updates: readonly DeleteUpdate[]): void {
   if (duplicate !== undefined) throw refCycleDetected([duplicate, duplicate]);
 }
 
+/** git's `ref_update_reject_duplicates` runs at the head of the prepare, ahead
+ *  of every lock and compare-and-swap — so each delete run is screened for a
+ *  repeated name before any update contributes a refusal of its own. */
+function assertNoRunRepeatsAName(updates: readonly RefUpdate[]): void {
+  for (const run of toUpdateRuns(updates)) {
+    if (run.kind === 'deletes') assertNoDuplicateNames(run.updates);
+  }
+}
+
 /** The byte-wise smallest name `updates` carries more than once. */
 function smallestDuplicateName(updates: readonly DeleteUpdate[]): RefName | undefined {
   const seen = new Set<RefName>();
@@ -501,6 +511,9 @@ const holdsAnyName = (
 ): boolean => [...names].some((name) => index.has(name));
 
 const packedCacheKey = (stat: FileStat): string => `${stat.mtimeMs}:${stat.size}`;
+/** The smallest run whose updates can be left half-applied, and so the
+ *  smallest one that pays for a prepare pass ahead of its writes. */
+const MIN_TRANSACTION_SIZE = 2;
 const REFS_DIR = 'refs';
 const SYMBOLIC_PREFIX = 'ref: ';
 /** Matches valid SHA-1 (40-hex) or SHA-256 (64-hex) loose-ref content. */
@@ -1604,7 +1617,6 @@ function createFilesRefStore(ctx: Context): RefStore {
    * being pruned — matching git's unlock-then-`try_remove_empty_parents`.
    */
   async function applyDeletes(updates: readonly DeleteUpdate[]): Promise<void> {
-    assertNoDuplicateNames(updates);
     for (const update of updates) await checkExpected(update.name, update.expected);
     const targets = await boundedMapFor(ctx, 'ioBound', updates, deleteTargetFor);
     const lockable = targets.filter((target) => target.looseDirExists);
@@ -1697,18 +1709,22 @@ function createFilesRefStore(ctx: Context): RefStore {
   };
 
   /**
-   * git's prepare loop over a transaction naming prefix-related refs: each
-   * update in order contributes the refusals its own lock would raise — a
-   * name git checks while taking that lock, then its compare-and-swap — and
-   * only once every lock is held does the batch availability check run over
-   * the remaining names, still in update order.
+   * git's prepare loop: each update in order contributes the refusals its own
+   * lock would raise — a name git checks while taking that lock, then its
+   * compare-and-swap — and only once every lock is held does the batch
+   * availability check run over the remaining names, still in update order.
+   * Every refusal a run carries therefore lands before the run writes any of
+   * its updates, which is what makes the run all-or-nothing the way git's
+   * transaction is: no ref of a run that refuses is ever left behind.
    *
    * Cost: the fact-gathering reads, plus one re-read per update carrying a
-   * required value — paid only by a transaction that already pays the check.
+   * required value — skipped entirely by a lone update, which has nothing to
+   * be atomic with and raises the same refusals at its own turn.
    */
   async function assertTransactionPrepares(updates: readonly RefUpdate[]): Promise<void> {
-    const transaction = prefixRelatedTransactionNames(updates);
-    if (transaction === undefined) return;
+    if (updates.length < MIN_TRANSACTION_SIZE) return;
+    assertNoRunRepeatsAName(updates);
+    const transaction = prefixRelatedTransactionNames(updates) ?? NO_TRANSACTION_NAMES;
     const checks = await absentNameChecks(updates);
     const byUpdateName = new Map(checks.map(keyedByName));
     for (const update of updates) {
