@@ -50,6 +50,25 @@ export async function resolveTerminalName(
 }
 
 /**
+ * git's `refs_resolve_ref_unsafe(RESOLVE_REF_READING)`: the object id `name`
+ * resolves to, or `undefined` when the chain ends missing, loops, runs past
+ * the reading walk's cap, or ends on a name or content that does not parse.
+ * git's ref iterators (`branch`, `tag -l`, `for-each-ref`, `show-ref`) drop
+ * exactly those entries and still exit 0.
+ */
+export async function resolveRefForReading(
+  ctx: Context,
+  name: RefName | 'HEAD',
+): Promise<ObjectId | undefined> {
+  try {
+    return await resolveRefOrMissing(ctx, name);
+  } catch (err) {
+    if (UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '')) return undefined;
+    throw err;
+  }
+}
+
+/**
  * git's `refs_ref_exists` / `refs_read_ref`: whether `name` resolves for
  * READING. A dangling symref does not — so a creation guarded by this check
  * (`tag`, `branch`) writes through it rather than refusing an "existing"

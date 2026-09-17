@@ -23,7 +23,11 @@ import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
-import { refResolvesForReading, resolveRef } from '../primitives/resolve-ref.js';
+import {
+  refResolvesForReading,
+  resolveRef,
+  resolveRefForReading,
+} from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
@@ -71,8 +75,11 @@ export const tagList = async (ctx: Context): Promise<TagListResult> => {
   const tags: TagInfo[] = [];
   for (const entry of entries) {
     // A tag ref is always direct in practice; a hand-crafted symbolic one
-    // still resolves faithfully via the general (chain-following) resolver.
-    const id = entry.value.kind === 'direct' ? entry.value.id : await resolveRef(ctx, entry.name);
+    // resolves through the reading walk, which drops a chain that dangles,
+    // loops or runs past its cap — the entries git's own iterator omits.
+    const id =
+      entry.value.kind === 'direct' ? entry.value.id : await resolveRefForReading(ctx, entry.name);
+    if (id === undefined) continue;
     tags.push({ name: entry.name, id });
   }
   // `listRefs` yields distinct entry names, so a.name === b.name never occurs:

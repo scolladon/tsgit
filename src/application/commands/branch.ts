@@ -19,7 +19,11 @@ import { transactionLogging } from '../primitives/internal/ref-transaction-loggi
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore, type RefStore, refExists } from '../primitives/ref-store.js';
-import { refResolvesForReading, resolveRef } from '../primitives/resolve-ref.js';
+import {
+  refResolvesForReading,
+  resolveRef,
+  resolveRefForReading,
+} from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import {
   assertOperationalRepository,
@@ -72,8 +76,11 @@ export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   const branches: BranchInfo[] = [];
   for (const entry of entries) {
     // A branch ref is always direct in practice; a hand-crafted symbolic one
-    // still resolves faithfully via the general (chain-following) resolver.
-    const id = entry.value.kind === 'direct' ? entry.value.id : await resolveRef(ctx, entry.name);
+    // resolves through the reading walk, which drops a chain that dangles,
+    // loops or runs past its cap — the entries git's own iterator omits.
+    const id =
+      entry.value.kind === 'direct' ? entry.value.id : await resolveRefForReading(ctx, entry.name);
+    if (id === undefined) continue;
     branches.push({ name: entry.name, id, current: entry.name === currentTarget });
   }
   branches.sort((a, b) => compareRefName(a.name, b.name));
