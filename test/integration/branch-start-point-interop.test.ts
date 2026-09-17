@@ -7,12 +7,11 @@
  * on-disk repository. Pins git's exact refusal ordering and shape: exit
  * codes, the `error:`/`fatal:` lines reconstructed from tsgit's thrown
  * `{ id, expected, actual }` plus the caller's own start point, and the
- * peel of an annotated tag to its commit. Fully-qualified `refs/tags/<name>`
- * start points are used on both sides so the two callers pass
- * byte-identical strings — tsgit's ladder does not DWIM a bare tag name
- * (documented, out-of-scope gap), so a bare name would make the two
- * composed `fatal:` lines disagree on grammar the typing refusal never
- * touched.
+ * peel of an annotated tag to its commit. The typing rows pass
+ * fully-qualified `refs/tags/<name>` start points on both sides so the two
+ * callers hand over byte-identical strings; the ladder rows below pass the
+ * bare names git's own `dwim_ref` expands, including the ambiguous one it
+ * alone refuses.
  *
  * @proves
  *   surface:        branch.create
@@ -82,6 +81,70 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
 
   afterAll(async () => {
     await pair.dispose();
+  });
+
+  describe('Given a bare name only one namespace carries', () => {
+    describe('When git branch and tsgit branchCreate both cut from it', () => {
+      it('Then both land on the same oid', async () => {
+        // Arrange — a tag-only short name, which git expands through its
+        // revision ladder rather than reading verbatim.
+        git(pair.ours, 'tag', 'ladder-tag', commitId);
+
+        // Act
+        const gitResult = tryRunGitWithExit([
+          '-C',
+          pair.ours,
+          'branch',
+          'b-ladder-git',
+          'ladder-tag',
+        ]);
+        const result = await branchCreate(ctx, {
+          name: 'b-ladder-tsgit',
+          startPoint: 'ladder-tag',
+        });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.id).toBe(commitId);
+        expect(git(pair.ours, 'rev-parse', 'refs/heads/b-ladder-git').trim()).toBe(result.id);
+      });
+    });
+  });
+
+  describe('Given a bare name two namespaces carry', () => {
+    describe('When git branch and tsgit branchCreate both cut from it', () => {
+      it('Then both refuse, naming the expression as ambiguous', async () => {
+        // Arrange — the same short name as a branch AND a tag.
+        git(pair.ours, 'branch', 'twice', commitId);
+        git(pair.ours, 'tag', 'twice', commitId);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'branch', 'b-amb-git', 'twice']);
+        const error = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'b-amb-tsgit', startPoint: 'twice' }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain("fatal: ambiguous object name: 'twice'");
+        expect(error.data.code).toBe('REVPARSE_AMBIGUOUS');
+        if (error.data.code === 'REVPARSE_AMBIGUOUS') {
+          expect(error.data.expression).toBe('twice');
+          expect(error.data.candidates.length).toBeGreaterThan(1);
+        }
+      });
+    });
+
+    describe('When a tag is created over that same name on both sides', () => {
+      it('Then both take it without refusing — only branch checks the count', async () => {
+        // Arrange + Act
+        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'tag', 't-amb-git', 'twice']);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(git(pair.ours, 'rev-parse', 'refs/tags/t-amb-git').trim()).toBe(commitId);
+      });
+    });
   });
 
   describe('Given a startPoint that resolves to a commit', () => {

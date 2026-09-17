@@ -57,6 +57,27 @@ export const resolveRevisionName = async (
 };
 
 /**
+ * Every object id `name`'s candidate namespaces resolve to, in ladder order —
+ * git's `dwim_ref` count. Reading them all is what `dwim_ref` does too; only
+ * `branch`'s start point consults the count, and it refuses more than one.
+ */
+export const resolvingCandidates = async (
+  ctx: Context,
+  name: string,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const found: ObjectId[] = [];
+  for (const candidate of refCandidates(name)) {
+    try {
+      const id = await resolveRefOrMissing(ctx, candidate);
+      if (id !== undefined) found.push(id);
+    } catch {
+      // A dangling or broken candidate is skipped, as `expand_ref` skips it.
+    }
+  }
+  return found;
+};
+
+/**
  * `checkout`/`switch`'s own order: `refs/heads/<name>` is consulted BEFORE
  * the revision ladder, so a name that is both a branch and a tag detaches
  * onto the branch where `rev-parse` would answer the tag.

@@ -4,6 +4,8 @@
  * Context-aware function; the namespace binder lives in
  * `internal/branch-namespace.ts`.
  */
+
+import { revparseAmbiguous } from '../../domain/commands/error.js';
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
@@ -30,6 +32,7 @@ import {
   branchRefFromHead,
   readHeadRaw,
 } from './internal/repo-state.js';
+import { resolveRevisionName, resolvingCandidates } from './internal/revision-name.js';
 
 export interface BranchInfo {
   readonly name: RefName;
@@ -130,8 +133,15 @@ export const branchCreate = async (
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   const force = input.force === true;
   if (!force && (await refResolvesForReading(ctx, name))) throw branchExists(name);
-  const startPoint = input.startPoint ?? 'HEAD';
-  const target = await requireCommit(ctx, await resolveBranchTarget(ctx, startPoint));
+  const startPoint = input.startPoint ?? HEAD_NAME;
+  // git hands `create_branch` the CURRENT branch's own resolved ref name when
+  // no start point is given, so the default never goes through the ladder —
+  // and never reports ambiguity against a branch literally named `HEAD`.
+  const start =
+    input.startPoint === undefined
+      ? await resolveRef(ctx, HEAD_NAME)
+      : await resolveBranchTarget(ctx, input.startPoint);
+  const target = await requireCommit(ctx, start);
   await writeNewBranch(ctx, { name, target, force, reflogMessage: branchCreatedFrom(startPoint) });
   return { name, id: target };
 };
@@ -326,6 +336,8 @@ const repointHeadAfterRename = async (
   ]);
 };
 
+const HEAD_NAME = 'HEAD' as RefName;
+
 const BRANCH_RENAME = 'branch.rename';
 
 interface RenameRequest {
@@ -438,20 +450,19 @@ const appendRenameEntries = (
     ? appendRenameEntriesReftable(ctx, store, input)
     : appendRenameEntriesFiles(store, input);
 
+/**
+ * A branch's start point, through git's revision ladder. `create_branch` is
+ * the one surface that refuses an ambiguous short name rather than taking the
+ * first candidate and warning — `dwim_ref` returning more than one match is
+ * its `ambiguous object name` refusal.
+ */
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {
   if (isOid(startPoint, ctx.hashConfig)) return startPoint as ObjectId;
-  const candidates: ReadonlyArray<RefName | 'HEAD'> =
-    startPoint === 'HEAD'
-      ? ['HEAD']
-      : [`${HEADS_PREFIX}${startPoint}` as RefName, startPoint as RefName];
-  for (const candidate of candidates) {
-    try {
-      return await resolveRef(ctx, candidate);
-    } catch {
-      // continue
-    }
-  }
-  throw branchNotFound(startPoint as RefName);
+  const candidates = await resolvingCandidates(ctx, startPoint);
+  if (candidates.length > 1) throw revparseAmbiguous(startPoint, candidates);
+  const id = await resolveRevisionName(ctx, startPoint);
+  if (id === undefined) throw branchNotFound(startPoint as RefName);
+  return id;
 };
 
 /**
