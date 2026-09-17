@@ -13,7 +13,8 @@ import type {
   Tag,
   TagData,
 } from '../../domain/objects/index.js';
-import { isOid, serializeTagContent, stripspace, zeroOid } from '../../domain/objects/index.js';
+import { serializeTagContent, stripspace, zeroOid } from '../../domain/objects/index.js';
+import { refNotFound } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
@@ -31,6 +32,7 @@ import {
 import { updateRef } from '../primitives/update-ref.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
+import { resolveRevisionName } from './internal/revision-name.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
 export interface TagInfo {
@@ -89,6 +91,13 @@ export const tagList = async (ctx: Context): Promise<TagListResult> => {
   return { tags };
 };
 
+/** `tag`'s target argument, through git's revision ladder. */
+const resolveTagTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
+  const id = await resolveRevisionName(ctx, target);
+  if (id === undefined) throw refNotFound(target as RefName);
+  return id;
+};
+
 export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<TagCreateResult> => {
   await assertOperationalRepository(ctx);
   // git reads tag.gpgsign for a lightweight tag too, and refuses a malformed
@@ -97,9 +106,9 @@ export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<Ta
   await assertValidBooleanConfig(ctx, 'tag', undefined, ['gpgsign']);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
   const target = input.target !== undefined ? input.target : await currentHeadId(ctx);
-  const targetId = isOid(target, ctx.hashConfig)
-    ? (target as ObjectId)
-    : await resolveRef(ctx, target as RefName);
+  // git's `repo_get_oid`, never peeled: a lightweight tag over an annotated
+  // one records that tag object's own id.
+  const targetId = await resolveTagTarget(ctx, target);
   // git's own order (builtin/tag.c:658-694): resolve the target (above),
   // validate the name (above), class it (the point where git TYPES the
   // target, for both the annotated and the lightweight path — an

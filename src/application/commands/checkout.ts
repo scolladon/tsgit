@@ -7,6 +7,7 @@ import {
   type RefName,
 } from '../../domain/objects/index.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
+import { refNotFound } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
@@ -27,6 +28,7 @@ import {
   requireWorkTree,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { resolveSwitchName } from './internal/revision-name.js';
 
 export interface CheckoutSwitchOptions {
   readonly rev: string;
@@ -59,8 +61,9 @@ const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
 
 const resolveSwitchOid = async (ctx: Context, rev: string): Promise<ObjectId> => {
-  if (isOid(rev, ctx.hashConfig)) return rev as ObjectId;
-  return resolveRef(ctx, rev as RefName);
+  const id = await resolveSwitchName(ctx, rev);
+  if (id === undefined) throw refNotFound(rev as RefName);
+  return id;
 };
 
 /** git's checkout reflog label: the branch short-name on a branch, the

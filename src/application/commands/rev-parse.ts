@@ -3,9 +3,7 @@ import { applyGraft } from '../../domain/commit/graft.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
   type HashConfig,
-  isOid,
   type ObjectId,
-  ObjectId as ObjectIdFactory,
   type RefName,
   zeroOid,
 } from '../../domain/objects/index.js';
@@ -23,8 +21,7 @@ import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
-import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
-import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
+import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
   parseExpression,
@@ -32,6 +29,7 @@ import {
   type RevExpression,
   type RevOperation,
 } from './internal/rev-parse-grammar.js';
+import { resolveRevisionName } from './internal/revision-name.js';
 
 export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
   await assertOperationalRepository(ctx);
@@ -61,25 +59,12 @@ const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise
 };
 
 const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
-  if (isOid(base, ctx.hashConfig)) return ObjectIdFactory.from(base);
-  // Try as a ref name; the verbatim candidate also covers the HEAD literal,
-  // which resolveRef accepts directly. resolveRefOrMissing signals a miss by
-  // returning undefined rather than throwing REF_NOT_FOUND, so a swept-past
-  // candidate costs no stack-capturing throw; git's expand_ref still
-  // continues past any OTHER failure (a dangling/broken candidate), hence
-  // the catch stays.
-  for (const candidate of refCandidates(base)) {
-    try {
-      const id = await resolveRefOrMissing(ctx, candidate);
-      if (id !== undefined) return id;
-    } catch {
-      // continue
-    }
-  }
-  // Not a ref — try as an abbreviated object id (git's get_oid fallback).
-  // Throws AMBIGUOUS_OID_PREFIX when the prefix matches more than one object.
-  const byPrefix = await resolveOidPrefix(ctx, base);
-  if (byPrefix !== undefined) return byPrefix;
+  // The shared `get_oid` ladder: a full-width oid, then the gitrevisions
+  // candidate namespaces (the verbatim one also covering the `HEAD` literal),
+  // then an abbreviated object id — which still throws AMBIGUOUS_OID_PREFIX
+  // when the prefix matches more than one object.
+  const id = await resolveRevisionName(ctx, base);
+  if (id !== undefined) return id;
   throw objectNotFound(base as ObjectId);
 };
 
