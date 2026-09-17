@@ -172,6 +172,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     let reftableBase = '';
     let filesC1 = '';
     let filesC2 = '';
+    let filesTree = '';
     let remoteRenameBase = '';
     let remoteRenameUpstream = '';
     let remoteRenameSrc = '';
@@ -195,6 +196,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         env: pinnedEnv(COMMITTER_EPOCH + 1),
       });
       filesC2 = git(filesBase, 'rev-parse', 'HEAD').trim();
+      filesTree = git(filesBase, 'rev-parse', 'HEAD^{tree}').trim();
       runGit(['-C', filesBase, 'branch', 'b', 'main'], { env: pinnedEnv(COMMITTER_EPOCH + 2) });
       runGit(['-C', filesBase, 'branch', 'x', 'main'], { env: pinnedEnv(COMMITTER_EPOCH + 3) });
       runGit(['-C', filesBase, 'symbolic-ref', 'refs/heads/sym', 'refs/heads/x']);
@@ -2545,6 +2547,38 @@ describe.skipIf(!GIT_AVAILABLE)(
         },
       );
 
+      describe('When a fetch refspec whose wildcard has no destination sits beside a rename that cannot land', () => {
+        it('Then both refuse the refspec itself, ahead of the source and target lookups', async () => {
+          // Arrange — the source is unconfigured AND the target name is
+          // invalid, so every name refusal this rename could raise loses to
+          // the one the remote table raises while it is being built.
+          const { peer, ours, ctx } = await remoteCasePair('remote-rename-bad-refspec', [
+            '+refs/heads/*',
+          ]);
+          const before = await snapshotOf(peer);
+          const sut = remoteRename;
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'remote', 'rename', 'nope', 'bad name']);
+          try {
+            await sut(ctx, { from: 'nope', to: 'bad name' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe("fatal: invalid refspec '+refs/heads/*'\n");
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'REFSPEC_INVALID',
+            raw: '+refs/heads/*',
+          });
+          expect(await snapshotOf(ours)).toEqual(before);
+          expect(remoteAndBranchConfig(ours)).toBe(remoteAndBranchConfig(peer));
+        });
+      });
+
       describe('When both tools rename a remote no config carries onto its own name', () => {
         it('Then both report the source as unconfigured, not the target as taken', async () => {
           // Arrange
@@ -2950,7 +2984,14 @@ describe.skipIf(!GIT_AVAILABLE)(
         () => ['update-ref', '-m', 'plant', name, id()];
       const c1 = (): string => filesC1;
       const c2 = (): string => filesC2;
+      const tree = (): string => filesTree;
       const zero = (): string => ZERO;
+      /** `k1 → x`, `k2 → k1`, … — a chain of `length` symbolic refs whose
+       *  deepest link needs one read per hop plus the terminal's. */
+      const chainLinks = (length: number): readonly (readonly string[])[] =>
+        Array.from({ length }, (_, index) =>
+          link(`refs/heads/k${index + 1}`, index === 0 ? 'refs/heads/x' : `refs/heads/k${index}`),
+        );
 
       const gitArgsOf = (row: SymrefWriteRow): readonly string[] => [
         'update-ref',
@@ -3401,6 +3442,123 @@ describe.skipIf(!GIT_AVAILABLE)(
           newId: c2,
           message: 'm',
           noDeref: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a one-link write through a symbolic ref',
+          slug: 'symref-one-link-write',
+          plant: () => [point('refs/heads/x', c1)()],
+          ref: 'refs/heads/sym',
+          newId: c2,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a no-deref write over a symbolic ref carrying no old value',
+          slug: 'no-deref-write-no-old',
+          plant: () => [point('refs/heads/x', c1)()],
+          ref: 'refs/heads/sym',
+          newId: c2,
+          message: 'nd',
+          noDeref: true,
+          exitCode: 0,
+        },
+        {
+          label: 'a tree written to HEAD',
+          slug: 'tree-to-head',
+          plant: () => [point('refs/heads/main', c1)()],
+          ref: 'HEAD',
+          newId: tree,
+          message: 'm',
+          exitCode: 128,
+          stderr: () => `trying to write non-commit object ${filesTree} to branch 'HEAD'`,
+          refusal: () => ({
+            code: 'UNEXPECTED_OBJECT_TYPE',
+            expected: 'commit',
+            actual: 'tree',
+            id: filesTree,
+          }),
+        },
+        {
+          label: 'a tree written to HEAD without dereferencing',
+          slug: 'tree-to-head-no-deref',
+          plant: () => [point('refs/heads/main', c1)()],
+          ref: 'HEAD',
+          newId: tree,
+          message: 'm',
+          noDeref: true,
+          exitCode: 128,
+          stderr: () => `trying to write non-commit object ${filesTree} to branch 'HEAD'`,
+          refusal: () => ({
+            code: 'UNEXPECTED_OBJECT_TYPE',
+            expected: 'commit',
+            actual: 'tree',
+            id: filesTree,
+          }),
+        },
+        {
+          label: 'a tree written through a branch name whose target does not exist',
+          slug: 'tree-through-dangling-branch',
+          plant: () => [link('refs/heads/s3', 'refs/heads/nope3')],
+          ref: 'refs/heads/s3',
+          newId: tree,
+          exitCode: 128,
+          stderr: () => `trying to write non-commit object ${filesTree} to branch 'refs/heads/s3'`,
+          refusal: () => ({
+            code: 'UNEXPECTED_OBJECT_TYPE',
+            expected: 'commit',
+            actual: 'tree',
+            id: filesTree,
+          }),
+        },
+        {
+          label: 'a tree written through a tag name that reaches a branch',
+          slug: 'tree-through-tag-symref',
+          plant: () => [link('refs/tags/ts9', 'refs/heads/x')],
+          ref: 'refs/tags/ts9',
+          newId: tree,
+          exitCode: 0,
+        },
+        {
+          label: 'a tree written through a branch name that reaches an absent tag',
+          slug: 'tree-through-branch-to-tag',
+          plant: () => [link('refs/heads/bt', 'refs/tags/tt10')],
+          ref: 'refs/heads/bt',
+          newId: tree,
+          exitCode: 128,
+          stderr: () => `trying to write non-commit object ${filesTree} to branch 'refs/heads/bt'`,
+          refusal: () => ({
+            code: 'UNEXPECTED_OBJECT_TYPE',
+            expected: 'commit',
+            actual: 'tree',
+            id: filesTree,
+          }),
+        },
+        {
+          label: 'a write through a chain of five symbolic refs',
+          slug: 'chain-five-write',
+          plant: () => chainLinks(5),
+          ref: 'refs/heads/k5',
+          newId: c1,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a write through a chain of six symbolic refs',
+          slug: 'chain-six-write',
+          plant: () => chainLinks(6),
+          ref: 'refs/heads/k6',
+          newId: c1,
+          message: 'm',
+          exitCode: 0,
+        },
+        {
+          label: 'a delete through a chain of six symbolic refs',
+          slug: 'chain-six-delete',
+          plant: () => chainLinks(6),
+          ref: 'refs/heads/k6',
+          message: 'm',
+          remove: true,
           exitCode: 0,
         },
       ];
@@ -4454,6 +4612,37 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
+      describe('When both tools create a branch there', () => {
+        it('Then both remove the directory and leave the same ref and logs behind', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair('empty-dir-branch-create');
+          await plantEmptyDir([peer, ours], 'd5');
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 80) * 1000);
+          const sut = branchCreate;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stderr: string };
+          try {
+            gitResult = tryRunGitWithExit(['-C', peer, 'branch', 'd5', 'main'], {
+              env: pinnedEnv(COMMITTER_EPOCH + 80),
+            });
+            await sut(ctx, { name: 'd5', startPoint: 'main' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          for (const dir of [peer, ours]) {
+            expect((await lstat(path.join(dir, '.git', 'refs', 'heads', 'd5'))).isFile()).toBe(
+              true,
+            );
+          }
+          expect(await snapshotOf(ours)).toEqual(await snapshotOf(peer));
+        });
+      });
+
       describe('When both tools make a symbolic-ref write there', () => {
         it('Then both remove the directory and leave the same symbolic file and logs behind', async () => {
           // Arrange
@@ -4525,6 +4714,46 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
           expect(await snapshotOf(ours)).toEqual(before);
           expect(await snapshotOf(peer)).toEqual(before);
+        });
+      });
+
+      describe('When both tools write that ref on the reftable backend', () => {
+        it('Then neither consults the tree — reftable logs live in the stack, not under logs/', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await reftableCasePair('blocked-log-reftable');
+          for (const dir of [peer, ours]) {
+            await mkdir(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e8'), { recursive: true });
+            await writeFile(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e8', 'f'), 'junk');
+          }
+          const reftableMain = git(reftableBase, 'rev-parse', 'refs/heads/main').trim();
+          const dateSpy = vi.spyOn(Date, 'now').mockReturnValue((COMMITTER_EPOCH + 82) * 1000);
+          const sut = updateRef;
+
+          // Act
+          let gitResult: { readonly exitCode: number; readonly stderr: string };
+          try {
+            gitResult = tryRunGitWithExit(
+              ['-C', peer, 'update-ref', '-m', 'w', 'refs/heads/e8', reftableMain],
+              { env: pinnedEnv(COMMITTER_EPOCH + 82) },
+            );
+            await sut(ctx, branchRef('e8'), reftableMain as ObjectId, { reflogMessage: 'w' });
+          } finally {
+            dateSpy.mockRestore();
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          expect(git(peer, 'rev-parse', 'refs/heads/e8').trim()).toBe(reftableMain);
+          expect(await getRefStore(ctx).resolveDirect(branchRef('e8'))).toEqual({
+            kind: 'direct',
+            id: reftableMain,
+          });
+          for (const dir of [peer, ours]) {
+            expect(
+              await readFile(path.join(dir, '.git', 'logs', 'refs', 'heads', 'e8', 'f'), 'utf8'),
+            ).toBe('junk');
+          }
         });
       });
 
