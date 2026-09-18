@@ -15,7 +15,7 @@
  * `withStat` must reproduce the auto-recurse — never crash on the tree oid.
  *
  * @proves
- *   surface:        diff.ignoreWhitespace / diff.withStat (non-recursive)
+ *   surface:        diff.ignoreWhitespace, diff.withStat
  *   bucket:         cross-tool-interop
  *   unique:         a non-recursive diff over a changed/added/removed
  *                    sub-directory matches git's drop-under--w and

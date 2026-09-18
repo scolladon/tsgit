@@ -7,7 +7,7 @@
  * (must be dropped) alongside a real-content-change file (must survive).
  *
  * @proves
- *   surface:        diff.ignoreWhitespace / diff.ignoreCrAtEol / diff.ignoreBlankLines
+ *   surface:        diff.ignoreWhitespace, diff.ignoreCrAtEol, diff.ignoreBlankLines
  *   bucket:         cross-tool-interop
  *   unique:         the streaming predicate path and the interned-Myers stat path agree with
  *                    each other AND with git's --ignore-all-space / --ignore-space-change /

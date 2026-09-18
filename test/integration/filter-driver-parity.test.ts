@@ -17,8 +17,8 @@
  * adapter and uses a local tmp dir (no spawned git) for node adapter.
  *
  * @proves
- *   surface:  add / checkout / status / diff
- *   bucket:   cross-adapter-parity
+ *   surface:  add, checkout, status, diff
+ *   bucket:   multi-adapter-parity
  *   unique:   memory adapter with filter=lfs + diff=lfs declares attributes
  *             but has no runner — raw stage / verbatim checkout / raw-based
  *             status / raw OID diff (inert fallback)

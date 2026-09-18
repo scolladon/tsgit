@@ -10,9 +10,9 @@
  * the walk's visible set/order, only how cheaply it gets there.
  *
  * @proves
- *   surface:        log (walkCommits / walkCommitsByDate via the commit-graph reader)
+ *   surface:        log, walkCommits, walkCommitsByDate
  *   bucket:         cross-tool-interop
- *   unique:         commit-graph single-file / chain-split / absent / stale-chain parity
+ *   unique:         the commit-graph reader's single-file, chain-split, absent and stale-chain parity behind both walkers
  *   interopSurface: commit-graph
  */
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';

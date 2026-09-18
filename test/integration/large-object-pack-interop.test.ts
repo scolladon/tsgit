@@ -15,9 +15,9 @@
  *        regression guard proving the loose path is unaffected.
  *
  * @proves
- *   surface:        readBlob / readObject (packed path)
- *   bucket:         large-object-interop
- *   unique:         packed blobs >64 KiB readable byte-identical to canonical git
+ *   surface:        readBlob, readObject
+ *   bucket:         cross-tool-interop
+ *   unique:         packed blobs over 64 KiB read back byte-identical to canonical git through the packed path
  *   interopSurface: packfile
  */
 import { execFileSync } from 'node:child_process';

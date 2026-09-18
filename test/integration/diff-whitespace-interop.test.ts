@@ -19,7 +19,7 @@
  * @proves
  *   surface: diff.whitespace
  *   bucket:  cross-tool-interop
- *   unique:  the whitespace diff family (-w / -b / --ignore-space-at-eol / --ignore-cr-at-eol / --ignore-blank-lines) matches upstream git across name-status, numstat, quiet, and patch bytes, plus the whitespace-agnostic similarity invariant
+ *   unique:  the whole whitespace diff family matches upstream git across name-status, numstat, quiet and patch bytes, plus the whitespace-agnostic similarity invariant
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';

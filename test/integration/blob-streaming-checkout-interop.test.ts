@@ -13,9 +13,9 @@
  *   C6 — stash-apply untracked restore (site D, cap dropped): byte-identical
  *
  * @proves
- *   surface:        checkout / merge / stash (write side)
- *   bucket:         write-side-interop
- *   unique:         streamed writes byte-identical to canonical git across all consumer sites
+ *   surface:        checkout, merge, stash
+ *   bucket:         cross-tool-interop
+ *   unique:         streamed writes on the write side are byte-identical to canonical git across all consumer sites
  *   interopSurface: checkout, merge, stash
  */
 import { execFileSync } from 'node:child_process';
