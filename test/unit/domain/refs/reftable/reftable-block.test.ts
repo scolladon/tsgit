@@ -8,6 +8,7 @@ import {
   decodeObjRecord,
   findInBlock,
   iterateReftableRefs,
+  iterateReftableRefsFrom,
   lookupReftableRef,
   type ReftableRefRecord,
   readPrefixedName,
@@ -1008,8 +1009,8 @@ describe('reftable-block', () => {
       // block-boundary arithmetic treats the file header as part of the
       // first block's own span, so an index record naming the first block
       // always carries `block_position: 0`, never its true file offset.
-      // `resolveRefBlockPosition`/`collectIndexLeaves` translate that `0`
-      // back to `header.length` before reading a block-type byte there.
+      // `resolveRefBlockPosition` translates that `0` back to
+      // `header.length` before reading a block-type byte there.
       const pos0 = header.length;
       const block0IndexPosition = 0;
       const block1 = buildRefBlock({
@@ -1030,9 +1031,13 @@ describe('reftable-block', () => {
         isFirstBlock: false,
       });
       const posTop = posLeaf + leafIndex.length;
+      // `blockSize: 0` — the blocks below are concatenated with no padding,
+      // which is what an UNALIGNED table declares; advertising a stride the
+      // bytes do not keep would describe a table no writer produces.
       const reftable = parseReftable(
         buildReftable({
           version: 1,
+          blockSize: 0,
           blocks: [block0, block1, leafIndex, topIndex],
           refIndexPosition: posTop,
         }),
@@ -1348,9 +1353,8 @@ describe('reftable-block', () => {
      *  the index block itself — the self-referential shape the security
      *  reviewer's PoC patched into real writer output, one field at a time,
      *  leaving the footer CRC (which only covers the footer's own bytes)
-     *  valid throughout. `resolveRefBlockPosition`'s iterative descent and
-     *  `collectIndexLeaves`'s recursive one both walk straight back into this
-     *  same block forever without a depth bound. */
+     *  valid throughout. `resolveRefBlockPosition`'s descent walks straight
+     *  back into this same block forever without a depth bound. */
     function buildCyclicIndexReftable(): ReturnType<typeof parseReftable> {
       const header = buildReftableHeader({ version: 1 });
       const refBlock = buildRefBlock({
@@ -1388,14 +1392,18 @@ describe('reftable-block', () => {
         }, 2000);
       });
 
-      describe('When iterating every ref via the recursive index-leaf walk', () => {
-        it('Then refuses with cycle rather than overflowing the stack', () => {
+      describe('When the seeked walk descends it to find its floor', () => {
+        it('Then refuses with cycle rather than looping forever', () => {
           // Arrange
           const reftable = buildCyclicIndexReftable();
-          const sut = iterateReftableRefs;
+          const sut = iterateReftableRefsFrom;
 
           // Act & Assert
-          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+          expectRefusal(
+            () => Array.from(sut(reftable, RefName.from('refs/heads/aaa'))),
+            'cycle',
+            'ref index descent',
+          );
         }, 2000);
       });
     });
@@ -1707,16 +1715,86 @@ describe('reftable-block', () => {
         }, 2000);
       });
 
-      describe('When iterating every ref via the recursive index-leaf walk', () => {
+      describe('When the seeked walk descends it to find its floor', () => {
         it('Then refuses with cycle — the 65th level sits past the 64-level bound', () => {
           // Arrange
           const reftable = buildIndexChain(65);
-          const sut = iterateReftableRefs;
+          const sut = iterateReftableRefsFrom;
 
           // Act & Assert
-          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+          expectRefusal(
+            () => Array.from(sut(reftable, RefName.from('refs/heads/leaf'))),
+            'cycle',
+            'ref index descent',
+          );
         }, 2000);
       });
+    });
+  });
+});
+
+describe('reftable — an index whose top level spans several blocks', () => {
+  /** `blockSize: 128` with 200 sequential refs: measured, the ref index then
+   *  needs more blocks than one level can hold, and the writer leaves a top
+   *  level of several — the footer naming only its FIRST. Every ref the
+   *  blocks beside it cover is reachable only by walking on past that block,
+   *  which is what git's own reader does. */
+  const CROWDED_INDEX_REF_COUNT = 200;
+
+  const buildCrowdedIndexTable = async (): Promise<Reftable> => {
+    const options: ReftableWriteOptions = {
+      hashId: 'sha1',
+      blockSize: 128,
+      restartInterval: 2,
+      indexObjects: false,
+      minUpdateIndex: 0n,
+      maxUpdateIndex: 1000n,
+    };
+    const refs = makeSequentialRefs(CROWDED_INDEX_REF_COUNT);
+    return parseReftable(await serializeReftable(refs, [], options, identityDeflate));
+  };
+
+  describe('When every ref is walked', () => {
+    it('Then every ref written is yielded, not only those the first top block covers', async () => {
+      // Arrange
+      const table = await buildCrowdedIndexTable();
+      const sut = iterateReftableRefs;
+
+      // Act
+      const walked = [...sut(table)];
+
+      // Assert
+      expect(walked).toHaveLength(CROWDED_INDEX_REF_COUNT);
+    });
+  });
+
+  describe('When every ref is looked up by name', () => {
+    it('Then every ref written is found, not only those the first top block covers', async () => {
+      // Arrange
+      const table = await buildCrowdedIndexTable();
+      const names = makeSequentialRefs(CROWDED_INDEX_REF_COUNT).map((ref) => ref.name);
+      const sut = lookupReftableRef;
+
+      // Act
+      const missing = names.filter((name) => sut(table, name) === undefined);
+
+      // Assert
+      expect(missing).toEqual([]);
+    });
+  });
+
+  describe('When the walk is seeked to a name the first top block does not cover', () => {
+    it('Then it lands on that name rather than reporting nothing at or after it', async () => {
+      // Arrange
+      const table = await buildCrowdedIndexTable();
+      const last = makeSequentialRefs(CROWDED_INDEX_REF_COUNT).at(-1)!.name;
+      const sut = iterateReftableRefsFrom;
+
+      // Act
+      const seen = [...sut(table, last)].map((record) => record.name);
+
+      // Assert
+      expect(seen).toEqual([last]);
     });
   });
 });

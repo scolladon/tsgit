@@ -19,7 +19,12 @@ import {
 } from '../../../../../src/domain/refs/reftable/reftable-log.js';
 import { encodeOfsDistance } from '../../../../../src/domain/storage/pack-entry.js';
 import type { LogRecordEntrySpec, LogRecordSpec } from './arbitraries.js';
-import { buildReftable, buildReftableHeader, buildReftableLogBlock } from './arbitraries.js';
+import {
+  buildIndexBlock,
+  buildReftable,
+  buildReftableHeader,
+  buildReftableLogBlock,
+} from './arbitraries.js';
 
 // --- Fixture helpers -----------------------------------------------------
 
@@ -633,6 +638,48 @@ describe('reftable-log', () => {
             Array.from(iterateReftableLogs(withIndexTable)),
           );
         });
+      });
+    });
+  });
+
+  describe('Given a log index deep enough to need a level below its top block', () => {
+    describe('When loading the table', () => {
+      it('Then the walk stops where the log blocks stop, not where the footer points', async () => {
+        // Arrange — the lower index level sits BETWEEN the last log block and
+        // the top block the footer names, so a walk bounded only by the
+        // footer's position reaches an index block and tries to inflate it.
+        const header = buildReftableHeader({ version: 1 });
+        const record: LogRecordSpec = {
+          refName: 'refs/heads/only',
+          updateIndex: 1n,
+          entry: entrySpec({ message: 'only' }),
+        };
+        const logBlock = await buildReftableLogBlock({ records: [record] }, deflate);
+        const leafIndex = buildIndexBlock({
+          records: [{ key: 'refs/heads/only', blockPosition: header.length }],
+          isFirstBlock: false,
+        });
+        const topIndexPosition = header.length + logBlock.length + leafIndex.length;
+        const topIndex = buildIndexBlock({
+          records: [{ key: 'refs/heads/only', blockPosition: header.length + logBlock.length }],
+          isFirstBlock: false,
+        });
+        const bytes = buildReftable({
+          version: 1,
+          blocks: [logBlock, leafIndex, topIndex],
+          logPosition: header.length,
+          logIndexPosition: topIndexPosition,
+        });
+        const sut = loadReftable;
+
+        // Act
+        const table = await sut(bytes, inflateAt);
+
+        // Assert
+        expect(table.logBlocks).toHaveLength(1);
+        expect(Array.from(iterateReftableLogs(table)).map((entry) => entry.name)).toStrictEqual([
+          'refs/heads/only',
+        ]);
       });
     });
   });

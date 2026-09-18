@@ -19,7 +19,13 @@ import { ObjectId, type RefName } from '../../objects/index.js';
 import type { ReflogEntry } from '../../reflog/reflog-entry.js';
 import { invalidReftable } from '../error.js';
 import { decodeSafeRefName, readPrefixedName } from './reftable-block.js';
-import { parseReftable, type Reftable, readUint24, readVarint } from './reftable-format.js';
+import {
+  blockTypeAt,
+  parseReftable,
+  type Reftable,
+  readUint24,
+  readVarint,
+} from './reftable-format.js';
 
 /** `log_type` — the low bits of `log_record`'s packed
  *  `(suffix_length << SUFFIX_SHIFT) | log_type` field, the same packing
@@ -37,6 +43,10 @@ const LOG_TYPE_MASK = 0x7;
  * is — the reason the first restart offset is `4`, not `0`.
  */
 export const LOG_BLOCK_HEADER_LENGTH = 4;
+
+/** The block-type byte an index block opens with — what a log-block walk
+ *  meets when it has run out of log blocks and reached the log index. */
+const INDEX_BLOCK_TYPE = 'i';
 
 const RESTART_ENTRY_SIZE = 3;
 const RESTART_COUNT_SIZE = 2;
@@ -437,6 +447,23 @@ function isDecompressFailure(err: unknown): err is TsgitError & {
   return err instanceof TsgitError && err.data.code === 'DECOMPRESS_FAILED';
 }
 
+/**
+ * Whether the walk below has already run past the log blocks into the log
+ * index, which is what ends it.
+ *
+ * `logSectionEnd` can only name the block the FOOTER points at, and a log
+ * index deep enough to need more than one level writes its lower levels
+ * BETWEEN the last log block and that top block — so an index block there is
+ * the section's end, not a block to inflate. Only an index block ends the walk
+ * this way: anything else still reaches the size and inflation refusals below,
+ * so a corrupt section is never quietly read as a short one.
+ */
+function reachedLogIndex(table: Reftable, offset: number): boolean {
+  if (table.footer.logIndexPosition === 0) return false;
+  if (offset + LOG_BLOCK_HEADER_LENGTH > table._bytes.length) return false;
+  return blockTypeAt(table, offset) === INDEX_BLOCK_TYPE;
+}
+
 async function collectLogBlocks(
   table: Reftable,
   inflateAt: InflateAt,
@@ -462,7 +489,7 @@ async function collectLogBlocks(
   const blocks: Uint8Array[] = [];
   let offset = table.footer.logPosition;
   let totalInflatedBytes = 0;
-  while (offset < sectionEnd) {
+  while (offset < sectionEnd && !reachedLogIndex(table, offset)) {
     // The guards above bound the two footer POSITIONS; this bounds the READ
     // they lead to. `sectionEnd` may legitimately equal the file length, so
     // an offset in the last three bytes still leaves no room for the 4-byte

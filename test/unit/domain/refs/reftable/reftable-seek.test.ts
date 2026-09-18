@@ -99,9 +99,13 @@ const buildForeignIndexTable = (): Reftable => {
     ],
     restartIndices: [0, 1],
   });
+  // `blockSize: 0` — the blocks above are concatenated with no padding, which
+  // is what an UNALIGNED table declares; advertising a stride the bytes do not
+  // keep would describe a table no writer produces.
   return parseReftable(
     buildReftable({
       version: 1,
+      blockSize: 0,
       blocks: [firstBlock, secondBlock, indexBlock],
       refIndexPosition: indexBlockStart,
     }),

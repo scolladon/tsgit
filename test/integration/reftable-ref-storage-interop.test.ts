@@ -237,6 +237,43 @@ const buildBigFixture = (rootDir: string): BigFixture => {
   return { dir, ctx: reftableCtx(dir), refCount: BIG_REF_COUNT + 1 };
 };
 
+interface CrowdedIndexFixture {
+  readonly dir: string;
+  readonly ctx: Context;
+  readonly lastRef: RefName;
+}
+
+const CROWDED_INDEX_REF_COUNT = 3000;
+
+/**
+ * The same shape as {@link buildBigFixture}, written with git's own
+ * `reftable.blockSize` turned down to 256 bytes. The ref index then needs more
+ * blocks than one index level can hold, and git's writer leaves a TOP level of
+ * several blocks with the footer naming only its first — the layout a reader
+ * that stops at that one block silently loses most of the ref set to.
+ */
+const buildCrowdedIndexFixture = (rootDir: string): CrowdedIndexFixture => {
+  const dir = path.join(rootDir, 'crowded-index');
+  initReftableRepo(dir);
+  git(dir, 'config', 'reftable.blockSize', '256');
+  git(dir, 'config', 'reftable.restartInterval', '2');
+  runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+    env: dateEnv(1_700_000_000, '+0000'),
+  });
+  const sha = git(dir, 'rev-parse', 'HEAD').trim();
+  const lines: string[] = [];
+  for (let i = 0; i < CROWDED_INDEX_REF_COUNT; i += 1) {
+    lines.push(`create refs/heads/b${i.toString().padStart(6, '0')} ${sha}`);
+  }
+  runGit(['-C', dir, 'update-ref', '--stdin'], {
+    input: `${lines.join('\n')}\n`,
+    env: dateEnv(1_700_000_000, '+0000'),
+  });
+  git(dir, 'pack-refs', '--all');
+  const last = `refs/heads/b${(CROWDED_INDEX_REF_COUNT - 1).toString().padStart(6, '0')}`;
+  return { dir, ctx: reftableCtx(dir), lastRef: last as RefName };
+};
+
 interface HundredFixture {
   readonly dir: string;
   readonly ctx: Context;
@@ -461,6 +498,7 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
   let main: MainFixture;
   let sha256: Sha256Fixture;
   let big: BigFixture;
+  let crowdedIndex: CrowdedIndexFixture;
   let hundred: HundredFixture;
   let worktree: WorktreeFixture;
   let corruptControl: { readonly dir: string; readonly ctx: Context };
@@ -471,6 +509,7 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
     main = buildMainFixture(rootDir);
     sha256 = buildSha256Fixture(rootDir);
     big = buildBigFixture(rootDir);
+    crowdedIndex = buildCrowdedIndexFixture(rootDir);
     hundred = buildHundredFixture(rootDir);
     worktree = buildWorktreeFixture(rootDir);
 
@@ -695,6 +734,37 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
             .filter((name) => name !== 'HEAD')
             .sort(),
         ).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a fixture whose ref index git wrote across several top-level blocks', () => {
+    describe('When tsgit reads the ref set', () => {
+      it('Then every ref git shows is walked, not only those the first top block covers', async () => {
+        // Arrange
+        const expected = showRefNames(crowdedIndex.dir);
+        const sut = getRefStore(crowdedIndex.ctx);
+
+        // Act
+        const listed = await sut.listRefs();
+        const names = listed.map((entry) => entry.name).filter((name) => name !== 'HEAD');
+
+        // Assert
+        expect(names.slice().sort()).toEqual(expected);
+      });
+    });
+
+    describe('When tsgit resolves a name only a later top-level block covers', () => {
+      it('Then it reads the same object id git resolves it to', async () => {
+        // Arrange
+        const expected = git(crowdedIndex.dir, 'rev-parse', crowdedIndex.lastRef).trim();
+        const sut = resolveRef;
+
+        // Act
+        const resolved = await sut(crowdedIndex.ctx, crowdedIndex.lastRef);
+
+        // Assert
+        expect(resolved).toBe(expected);
       });
     });
   });
