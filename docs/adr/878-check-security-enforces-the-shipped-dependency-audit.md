@@ -33,13 +33,14 @@ developer's user-level `~/.npmrc` makes `npm` refuse any **project-scoped** invo
 `EALLOWSCRIPTS` — including `npm audit` run from inside an npm script, though a direct `npm
 audit` in the same directory succeeds. The old `|| true` hid that too.
 
-That entry cannot simply be removed. It is what lets claude-code's global auto-update run its
-postinstall, and that postinstall hardlinks the real native binary over a JS stub the package
-ships; without it every auto-update silently leaves the stub and the CLI stops working. npm
-offers no config scope that covers global installs only (its chain is cli > env > project > user
-> global > builtin), and an `allowScripts` field in the project's `package.json` does not
-suppress the error — both were measured. So a developer keeping that entry is a state the gate
-has to tolerate rather than fight.
+That entry cannot simply be removed. A globally installed tool unrelated to this repository may
+legitimately need its postinstall to run — a package that ships a small launcher stub and swaps
+in a platform binary during postinstall is broken by skipping it, silently, on every update.
+And npm offers no config scope that covers global installs only: its chain is
+cli > env > project > user > global > builtin, so any file that permits the global case also
+reaches project-scoped commands. An `allowScripts` field in the project's own `package.json`
+does not suppress the error either. Both were measured. A developer keeping that entry is
+therefore a state this gate has to tolerate rather than fight.
 
 ## Decision
 
