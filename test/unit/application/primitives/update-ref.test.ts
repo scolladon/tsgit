@@ -1725,8 +1725,8 @@ describe('updateRef', () => {
 
           // Assert
           expect((caught as TsgitError).data).toEqual({
-            code: 'INVALID_OBJECT_ID',
-            value: 'garbage',
+            code: 'INVALID_REF',
+            reason: 'refs/heads/g is broken',
           });
           expect(fixture.calls).toEqual([]);
         });

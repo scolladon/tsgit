@@ -1,4 +1,4 @@
-import { TsgitError } from '../error.js';
+import { sanitizeForDisplay, TsgitError } from '../error.js';
 import { errorDataCode } from '../error-data-code.js';
 import type { ObjectId } from './object-id.js';
 
@@ -48,8 +48,16 @@ export type DomainObjectError =
       readonly limit: number;
     };
 
+/** An object id is at most 64 hex characters, so echoing more than that never
+ *  describes an id — it describes whatever file the rejected string came out
+ *  of, which a refusal must not carry. */
+export const MAX_OBJECT_ID_IN_ERROR = 64;
+
 export const invalidObjectId = (value: string): TsgitError =>
-  new TsgitError({ code: 'INVALID_OBJECT_ID', value });
+  new TsgitError({
+    code: 'INVALID_OBJECT_ID',
+    value: sanitizeForDisplay(value).slice(0, MAX_OBJECT_ID_IN_ERROR),
+  });
 
 export const invalidObjectHeader = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OBJECT_HEADER', reason });

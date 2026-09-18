@@ -1281,7 +1281,7 @@ describe('revert mutation-hardening surfaces', () => {
 
         // Assert
         expect(data.code).not.toBe('NO_INITIAL_COMMIT');
-        expect(data.code).toBe('INVALID_OBJECT_ID');
+        expect(data.code).toBe('INVALID_REF');
       });
     });
   });

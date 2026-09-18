@@ -35,14 +35,30 @@ describe('object-id', () => {
     describe('Given an invalid hex string', () => {
       describe('When calling ObjectId.from', () => {
         it.each([
-          { hex: 'xyz', label: 'invalid hex characters' },
-          { hex: '', label: 'an empty string' },
-          { hex: 'A'.repeat(40), label: 'uppercase hex' },
-          { hex: 'a'.repeat(39), label: 'a 39-char (one under SHA-1 width) string' },
-          { hex: 'a'.repeat(41), label: 'a 41-char (one over SHA-1 width) string' },
-          { hex: 'a'.repeat(63), label: 'a 63-char (one under SHA-256 width) string' },
-          { hex: 'a'.repeat(65), label: 'a 65-char (one over SHA-256 width) string' },
-        ])('Then throws INVALID_OBJECT_ID for $label', ({ hex }) => {
+          { hex: 'xyz', echo: 'xyz', label: 'invalid hex characters' },
+          { hex: '', echo: '', label: 'an empty string' },
+          { hex: 'A'.repeat(40), echo: 'A'.repeat(40), label: 'uppercase hex' },
+          {
+            hex: 'a'.repeat(39),
+            echo: 'a'.repeat(39),
+            label: 'a 39-char (one under SHA-1 width) string',
+          },
+          {
+            hex: 'a'.repeat(41),
+            echo: 'a'.repeat(41),
+            label: 'a 41-char (one over SHA-1 width) string',
+          },
+          {
+            hex: 'a'.repeat(63),
+            echo: 'a'.repeat(63),
+            label: 'a 63-char (one under SHA-256 width) string',
+          },
+          {
+            hex: 'a'.repeat(65),
+            echo: 'a'.repeat(64),
+            label: 'a 65-char (one over SHA-256 width) string',
+          },
+        ])('Then throws INVALID_OBJECT_ID for $label', ({ hex, echo }) => {
           // Arrange
           const sut = ObjectId.from;
 
@@ -54,7 +70,7 @@ describe('object-id', () => {
             expect(error).toBeInstanceOf(TsgitError);
             expect((error as TsgitError).data).toEqual({
               code: 'INVALID_OBJECT_ID',
-              value: hex,
+              value: echo,
             });
           }
         });
@@ -112,9 +128,9 @@ describe('object-id', () => {
     describe('Given a 40-char hex string with trailing whitespace', () => {
       describe('When calling ObjectId.from', () => {
         it.each([
-          { suffix: '\n', label: 'a trailing newline' },
-          { suffix: '\r', label: 'a trailing carriage return' },
-        ])('Then throws INVALID_OBJECT_ID for $label', ({ suffix }) => {
+          { suffix: '\n', echoed: '\n', label: 'a trailing newline' },
+          { suffix: '\r', echoed: '\\x0D', label: 'a trailing carriage return' },
+        ])('Then throws INVALID_OBJECT_ID for $label', ({ suffix, echoed }) => {
           // Arrange
           const hex = `${'a'.repeat(40)}${suffix}`;
 
@@ -126,7 +142,7 @@ describe('object-id', () => {
             expect(error).toBeInstanceOf(TsgitError);
             expect((error as TsgitError).data).toEqual({
               code: 'INVALID_OBJECT_ID',
-              value: hex,
+              value: `${'a'.repeat(40)}${echoed}`,
             });
           }
         });
@@ -147,7 +163,7 @@ describe('object-id', () => {
             expect(error).toBeInstanceOf(TsgitError);
             expect((error as TsgitError).data).toEqual({
               code: 'INVALID_OBJECT_ID',
-              value: hex,
+              value: `${'a'.repeat(39)}\\xD83D\\xDE00`,
             });
           }
         });
@@ -174,12 +190,28 @@ describe('object-id', () => {
     describe('Given a hex string of the wrong width', () => {
       describe('When calling ObjectId.fromTrustedHex', () => {
         it.each([
-          { hex: 'a'.repeat(39), label: 'a 39-char (one under SHA-1 width) string' },
-          { hex: 'a'.repeat(41), label: 'a 41-char (one over SHA-1 width) string' },
-          { hex: 'a'.repeat(63), label: 'a 63-char (one under SHA-256 width) string' },
-          { hex: 'a'.repeat(65), label: 'a 65-char (one over SHA-256 width) string' },
-          { hex: '', label: 'an empty string' },
-        ])('Then throws INVALID_OBJECT_ID for $label', ({ hex }) => {
+          {
+            hex: 'a'.repeat(39),
+            echo: 'a'.repeat(39),
+            label: 'a 39-char (one under SHA-1 width) string',
+          },
+          {
+            hex: 'a'.repeat(41),
+            echo: 'a'.repeat(41),
+            label: 'a 41-char (one over SHA-1 width) string',
+          },
+          {
+            hex: 'a'.repeat(63),
+            echo: 'a'.repeat(63),
+            label: 'a 63-char (one under SHA-256 width) string',
+          },
+          {
+            hex: 'a'.repeat(65),
+            echo: 'a'.repeat(64),
+            label: 'a 65-char (one over SHA-256 width) string',
+          },
+          { hex: '', echo: '', label: 'an empty string' },
+        ])('Then throws INVALID_OBJECT_ID for $label', ({ hex, echo }) => {
           // Arrange
           const sut = ObjectId.fromTrustedHex;
 
@@ -191,7 +223,7 @@ describe('object-id', () => {
             expect(error).toBeInstanceOf(TsgitError);
             expect((error as TsgitError).data).toEqual({
               code: 'INVALID_OBJECT_ID',
-              value: hex,
+              value: echo,
             });
           }
         });

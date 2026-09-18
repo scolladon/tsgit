@@ -163,7 +163,7 @@ describe('resolveRef', () => {
 
   describe('Given a loose ref file whose content is neither an oid nor a symbolic target', () => {
     describe('When resolveRef is called', () => {
-      it('Then throws INVALID_OBJECT_ID (a non-miss failure still propagates)', async () => {
+      it('Then throws INVALID_REF naming the ref (a non-miss failure still propagates)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/bad', 'not-a-valid-ref-content\n');
@@ -173,7 +173,10 @@ describe('resolveRef', () => {
           await resolveRef(ctx, 'refs/heads/bad' as RefName);
           expect.unreachable();
         } catch (error) {
-          expect((error as TsgitError).data.code).toBe('INVALID_OBJECT_ID');
+          expect((error as TsgitError).data).toEqual({
+            code: 'INVALID_REF',
+            reason: 'refs/heads/bad is broken',
+          });
         }
       });
     });

@@ -9,6 +9,7 @@ import {
   invalidTag,
   invalidTreeEntry,
   isObjectNotFound,
+  MAX_OBJECT_ID_IN_ERROR,
   objectNotFound,
   objectTooLarge,
   type TsgitError,
@@ -28,6 +29,42 @@ describe('error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'INVALID_OBJECT_ID', value: 'xyz' });
+        });
+      });
+    });
+
+    describe('Given invalidObjectId called with a whole foreign file as its value', () => {
+      describe('When checking error.data.value', () => {
+        it('Then it is capped at one object id and carries none of the trailing bytes', () => {
+          // Arrange
+          const fileContent = `PRIVATE-LINE\n${'z'.repeat(5000)}`;
+
+          // Act
+          const result = invalidObjectId(fileContent);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: `PRIVATE-LINE\n${'z'.repeat(MAX_OBJECT_ID_IN_ERROR - 'PRIVATE-LINE\n'.length)}`,
+          });
+        });
+      });
+    });
+
+    describe('Given invalidObjectId called with a value holding raw control bytes', () => {
+      describe('When checking error.data.value', () => {
+        it('Then every byte outside the printable set is a visible escape', () => {
+          // Arrange
+          const raw = 'a\u0000b\u001Bc\u00FF';
+
+          // Act
+          const result = invalidObjectId(raw);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: 'a\\x00b\\x1Bc\\xFF',
+          });
         });
       });
     });

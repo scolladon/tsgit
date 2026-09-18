@@ -540,15 +540,31 @@ const fromLooseContent = (content: string): ResolveDirectResult => {
 const unparseableFollowedContent = (name: RefName): TsgitError =>
   invalidRef(`${name} is a symbolic link to content that is not a ref`);
 
-/** {@link fromLooseContent} for followed content: `parseLooseRef` refuses only
- *  content that is not a ref, and that refusal carries the bytes it read. */
-const fromFollowedContent = (name: RefName, content: string): ResolveDirectResult => {
+/**
+ * The refusal for a loose ref file that does not parse. The file is reached by
+ * a lexically composed path, so a symlinked DIRECTORY component can put any
+ * file on the far end of a name the read guard accepts — the no-follow open
+ * guards only the leaf. git reports such a ref broken by name alone, so the
+ * refusal carries no byte of whatever was read.
+ */
+const unparseableLooseContent = (name: RefName): TsgitError => invalidRef(`${name} is broken`);
+
+/** {@link fromLooseContent} with `refusal(name)` in place of the parse error,
+ *  which carries the bytes it read: no loose reader may echo them. */
+const fromNamedContent = (
+  name: RefName,
+  content: string,
+  refusal: (name: RefName) => TsgitError,
+): ResolveDirectResult => {
   try {
     return fromLooseContent(content);
   } catch {
-    throw unparseableFollowedContent(name);
+    throw refusal(name);
   }
 };
+
+const fromFollowedContent = (name: RefName, content: string): ResolveDirectResult =>
+  fromNamedContent(name, content, unparseableFollowedContent);
 
 /** Byte-wise total order over ref names, matching git's own ref ordering (never `localeCompare`). */
 const compareRefNames = (a: RefName, b: RefName): number => {
@@ -791,7 +807,9 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (leaf.kind === 'symlink') {
       return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
     }
-    if (leaf.kind === 'content') return fromLooseContent(leaf.content);
+    if (leaf.kind === 'content') {
+      return fromNamedContent(name, leaf.content, unparseableLooseContent);
+    }
     if (leaf.kind === 'blocked') return MISSING;
     return resolvePacked(name);
   }

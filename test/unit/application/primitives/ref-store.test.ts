@@ -2272,7 +2272,7 @@ describe('ref-store', () => {
         expect(JSON.stringify((caught as TsgitError).data)).not.toContain('PRIVATE');
       });
 
-      it('Then a regular ref file still refuses as its own content parses', async () => {
+      it('Then a regular ref file refuses INVALID_REF naming it, never echoing its bytes', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/g', 'garbage\n');
@@ -2288,9 +2288,33 @@ describe('ref-store', () => {
 
         // Assert
         expect((caught as TsgitError).data).toEqual({
-          code: 'INVALID_OBJECT_ID',
-          value: 'garbage',
+          code: 'INVALID_REF',
+          reason: 'refs/heads/g is broken',
         });
+      });
+
+      it('Then a name composed through a symlinked directory refuses without the file bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir('/repo/foreign');
+        await ctx.fs.writeUtf8('/repo/foreign/passwd', `PRIVATE-LINE\n${'z'.repeat(5000)}\n`);
+        await ctx.fs.symlink('../../../foreign', '/repo/.git/refs/heads/x');
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.resolveDirect('refs/heads/x/passwd' as RefName);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'refs/heads/x/passwd is broken',
+        });
+        expect(JSON.stringify((caught as TsgitError).data)).not.toContain('PRIVATE');
       });
     });
   });
