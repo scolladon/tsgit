@@ -182,7 +182,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REMOTE_ADVERTISES_NO_REFS` | — | Server returned an empty ref list. |
 | `REMOTE_FILTER_UNSUPPORTED` | — | Server's capabilities lack `filter` (v1 capability list or v2 `fetch` command's sub-features). |
 | `REMOTE_NOT_CONFIGURED` | `name` | `[remote "<name>"]` not in `.git/config`. |
-| `SIDEBAND_FATAL` | `message` | Server emitted a sideband fatal-error line. |
+| `REMOTE_ERROR` | `message` | Server sent an `ERR` pkt-line. The peer's own text, escaped and cut to 4096 characters. |
+| `SIDEBAND_FATAL` | `message` | Server emitted a sideband fatal-error line. The peer's own text, escaped and cut to 4096 characters. |
 | `SIGNED_PUSH_UNSUPPORTED` | — | `push({ signed: 'yes' })` but the server does not advertise the `push-cert` capability. Nothing is sent. (`'if-asked'` falls back to an unsigned push.) |
 | `TOO_MANY_ADVERTISED_REFS` | `count, limit` | Server advertised more refs than the cap (v1 ref advertisement or v2 `ls-refs` response). |
 | `TOO_MANY_REDIRECTS` | `count, limit` | HTTP redirect loop / overflow. |
