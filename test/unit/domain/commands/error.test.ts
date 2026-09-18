@@ -89,6 +89,8 @@ import { type FilePath, ObjectId, type RefName } from '../../../../src/domain/ob
  *  camelCase and lower-cased the way git echoes it, matching the id the
  *  interop fixture drives real git with. */
 const UNKNOWN_FSCK_MSG_ID = 'noSuchThing'.toLowerCase();
+const FATAL_FSCK_MSG_ID = 'nulInHeader'.toLowerCase();
+const SOFT_SEVERITY_WORD = 'warn';
 
 const OID1 = ObjectId.from('a'.repeat(40));
 const OID2 = ObjectId.from('b'.repeat(40));
@@ -1323,13 +1325,13 @@ describe('domain commands error — config factory data', () => {
       it('Then data carries code, msgId, severity, source, and line individually', () => {
         // Arrange + Act
         const sut = fsckCannotDemote;
-        const result = sut('nulinheader', 'ignore', '/abs/.git/config', 7);
+        const result = sut(FATAL_FSCK_MSG_ID, 'ignore', '/abs/.git/config', 7);
 
         // Assert
         const data = result.data;
         expect(data.code).toBe('FSCK_CANNOT_DEMOTE');
         if (data.code !== 'FSCK_CANNOT_DEMOTE') return;
-        expect(data.msgId).toBe('nulinheader');
+        expect(data.msgId).toBe(FATAL_FSCK_MSG_ID);
         expect(data.severity).toBe('ignore');
         expect(data.source).toBe('/abs/.git/config');
         expect(data.line).toBe(7);
@@ -1340,13 +1342,18 @@ describe('domain commands error — config factory data', () => {
       it('Then data.severity is sanitized for display', () => {
         // Arrange + Act
         const sut = fsckCannotDemote;
-        const result = sut('nulinheader', '\x1B[2Jwarn', '/abs/.git/config', 7);
+        const result = sut(
+          FATAL_FSCK_MSG_ID,
+          `\x1B[2J${SOFT_SEVERITY_WORD}`,
+          '/abs/.git/config',
+          7,
+        );
 
         // Assert
         const data = result.data;
         expect(data.code).toBe('FSCK_CANNOT_DEMOTE');
         if (data.code !== 'FSCK_CANNOT_DEMOTE') return;
-        expect(data.severity).toBe('\\x1B[2Jwarn');
+        expect(data.severity).toBe(`\\x1B[2J${SOFT_SEVERITY_WORD}`);
       });
     });
   });
@@ -1671,12 +1678,12 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       {
         code: 'FSCK_CANNOT_DEMOTE',
-        msgId: 'nulinheader',
+        msgId: FATAL_FSCK_MSG_ID,
         severity: 'ignore',
         source: '/repo/.git/config',
         line: 7,
       },
-      'FSCK_CANNOT_DEMOTE: cannot demote nulinheader to ignore in file /repo/.git/config at line 7',
+      `FSCK_CANNOT_DEMOTE: cannot demote ${FATAL_FSCK_MSG_ID} to ignore in file /repo/.git/config at line 7`,
     ],
     [
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },
