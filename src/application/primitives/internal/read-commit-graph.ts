@@ -1,5 +1,5 @@
 /**
- * Read-side commit-graph support (Pin D). Serves `root-tree / parents /
+ * Read-side commit-graph support. Serves `root-tree / parents /
  * generation / committer-date` for a commit straight from a parsed
  * `commit-graph` — either the single-file form (`objects/info/commit-graph`)
  * or the chain/split form (`objects/info/commit-graphs/commit-graph-chain` +
@@ -155,7 +155,7 @@ function parseChainLayerHashes(chainText: string): readonly string[] {
 
 /**
  * Load the chain form. A chain that references a layer file which no longer
- * exists is treated as an ABSENT graph (Pin D staleness) — git's own
+ * exists is treated as an ABSENT graph — git's own
  * behaviour for a chain with a missing layer (warn + fall back, exit 0).
  */
 async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | undefined> {

@@ -1,7 +1,6 @@
 /**
  * Three-way tree merge applied to the working tree + index. Shared by
- * `stash apply` and (later) the Phase 22 apply step (cherry-pick / revert /
- * rebase). Composes the pure domain `mergeTrees` / `mergeContent` with the
+ * `stash apply`, `cherry-pick`, `revert` and `rebase`. Composes the pure domain `mergeTrees` / `mergeContent` with the
  * working-tree writers; it writes NO commit, ref, or `MERGE_HEAD` — the caller
  * owns those.
  *

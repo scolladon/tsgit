@@ -431,10 +431,10 @@ export interface Repository {
   };
 
   /**
-   * Lazy snapshot factory wired to the cached resolver stack (Phase 20.1).
-   * Each method returns a `Snapshot` handle that performs no I/O until
-   * iterated; in-flight iterations are isolated from concurrent writes
-   * via the iteration-stability invariant (design §8.0 + ADR-150).
+   * Lazy snapshot factory wired to the cached resolver stack. Each method
+   * returns a `Snapshot` handle that performs no I/O until iterated;
+   * in-flight iterations are isolated from concurrent writes by the
+   * iteration-stability invariant (ADR-150).
    */
   readonly snapshot: SnapshotFactory;
 

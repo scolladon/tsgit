@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Diff-scoped Stryker invocation (Phase 19.1).
+ * Diff-scoped Stryker invocation.
  *
  * Reads `TSGIT_MUTATE_PATHS_FILE` (set by CI from `compute-mutation-scope.sh`)
  * or `--mutate <comma-list>` argv (for local dev), then spawns:

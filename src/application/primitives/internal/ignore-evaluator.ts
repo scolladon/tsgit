@@ -20,8 +20,8 @@ export interface IgnoreEvaluator {
 }
 
 /**
- * Build an `IgnoreEvaluator` from the four ignore sources documented in
- * Phase 14.3. Per-directory `.gitignore` files are NOT loaded eagerly —
+ * Build an `IgnoreEvaluator` from the four repository-wide ignore sources.
+ * Per-directory `.gitignore` files are NOT loaded eagerly —
  * the caller (typically `buildRepoIgnorePredicate`) loads them on
  * demand during the walk, so subtrees pruned by a parent rule are
  * never read.

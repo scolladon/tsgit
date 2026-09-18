@@ -168634,7 +168634,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Lazy snapshot factory wired to the cached resolver stack (Phase 20.1).\nEach method returns a "
+										"text": "Lazy snapshot factory wired to the cached resolver stack. Each method\nreturns a "
 									},
 									{
 										"kind": "code",
@@ -168642,7 +168642,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " handle that performs no I/O until\niterated; in-flight iterations are isolated from concurrent writes\nvia the iteration-stability invariant (design §8.0 + ADR-150)."
+										"text": " handle that performs no I/O until iterated;\nin-flight iterations are isolated from concurrent writes by the\niteration-stability invariant (ADR-150)."
 									}
 								]
 							},
