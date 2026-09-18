@@ -160,6 +160,23 @@ describe('matchRefGlob', () => {
       });
     });
 
+    describe('When a set is negated', () => {
+      it('Then neither the marker nor the opening bracket becomes a member', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const openingBracket = sut('refs/heads/m[!a]in', 'refs/heads/m[in');
+        const bangMarker = sut('refs/heads/m[!a]in', 'refs/heads/m!in');
+        const caretMarker = sut('refs/heads/m[^a]in', 'refs/heads/m^in');
+
+        // Assert
+        expect(openingBracket).toBe(true);
+        expect(bangMarker).toBe(true);
+        expect(caretMarker).toBe(true);
+      });
+    });
+
     describe('When `\\` escapes a member', () => {
       it('Then the escaped character is a literal member, not special', () => {
         // Arrange + Act + Assert
@@ -176,6 +193,57 @@ describe('matchRefGlob', () => {
         expect(matchRefGlob('m[[:x]n', 'm:n')).toBe(true);
         expect(matchRefGlob('m[[:x]n', 'mxn')).toBe(true);
         expect(matchRefGlob('m[[:x]n', 'myn')).toBe(false);
+      });
+    });
+
+    describe('When `[` is a member and the set closes right after it', () => {
+      it('Then `[` stays an ordinary member instead of opening a class', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const member = sut('m[[]n', 'm[n');
+        const nonMember = sut('m[[]n', 'man');
+
+        // Assert
+        expect(member).toBe(true);
+        expect(nonMember).toBe(false);
+      });
+    });
+
+    describe('When a member is followed by `:` outside any class', () => {
+      it('Then the member, the `:` and its successor are three ordinary members', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const beforeColon = sut('m[a:b]n', 'man');
+        const theColon = sut('m[a:b]n', 'm:n');
+        const afterColon = sut('m[a:b]n', 'mbn');
+        const openingBracket = sut('m[a:b]n', 'm[n');
+
+        // Assert
+        expect(beforeColon).toBe(true);
+        expect(theColon).toBe(true);
+        expect(afterColon).toBe(true);
+        expect(openingBracket).toBe(false);
+      });
+    });
+
+    describe('When a class opens right after a literal `]` member', () => {
+      it('Then the class name is read from its own `[:`, not from the earlier `]`', () => {
+        // Arrange
+        const sut = matchRefGlob;
+
+        // Act
+        const bracketMember = sut('m[][:alpha:]]n', 'm]n');
+        const classMember = sut('m[][:alpha:]]n', 'man');
+        const outsideBoth = sut('m[][:alpha:]]n', 'm1n');
+
+        // Assert
+        expect(bracketMember).toBe(true);
+        expect(classMember).toBe(true);
+        expect(outsideBoth).toBe(false);
       });
     });
 
@@ -232,10 +300,10 @@ describe('matchRefGlob', () => {
         const sut = matchRefGlob;
 
         // Act
-        const results = ['m:n', 'm]n', 'mn'].map((text) => sut('m[[::]]n', text));
+        const results = ['m:n', 'm]n', 'mn', 'm:]n', 'm[]n'].map((text) => sut('m[[::]]n', text));
 
         // Assert
-        expect(results).toEqual([false, false, false]);
+        expect(results).toEqual([false, false, false, false, false]);
       });
     });
 
