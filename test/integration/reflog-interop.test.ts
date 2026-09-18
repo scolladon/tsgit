@@ -93,6 +93,20 @@ const pinnedCommitterEnv = (epoch: number): NodeJS.ProcessEnv => ({
 const splitGitLines = (raw: string): ReadonlyArray<string> =>
   raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n');
 
+/** The `<ref>@{n}` selector `git reflog show` prints on each stdout line —
+ *  `<abbrev-oid> <selector>: <message>`. The selector is the one part of that
+ *  line the library models (as `ReflogShowEntry.selector`); the abbreviated oid
+ *  is rendering the library deliberately never produces. */
+const gitShowSelectors = (stdout: string): ReadonlyArray<string> =>
+  stdout
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map(
+      (line) =>
+        line.slice(line.indexOf(' ') + 1, line.indexOf('@{')) +
+        line.slice(line.indexOf('@{'), line.indexOf('}') + 1),
+    );
+
 interface GitReflogRow {
   readonly newId: string;
   readonly message: string;
@@ -1358,6 +1372,116 @@ describe.skipIf(!GIT_AVAILABLE)(
             code: 'REVPARSE_UNRESOLVED',
             expression: 'HEAD',
           });
+        });
+      });
+    });
+
+    describe('Given a loose ref that is a symbolic ref carrying no log of its own', () => {
+      /** Writes `refs/heads/sym` as a symbolic ref by hand: `git symbolic-ref`
+       *  would log the write, and a log of its own is exactly what these rows
+       *  must not have. */
+      const plantSymbolicRef = async (dir: string): Promise<void> => {
+        await writeFile(refPath(dir, 'refs/heads/sym'), 'ref: refs/heads/main\n', 'utf8');
+      };
+
+      describe('When reflog show runs on the symbolic name in full', () => {
+        it('Then both read the target log and label it with the name as typed', async () => {
+          // Arrange
+          const dir = await caseDir('symref-show-full');
+          await plantSymbolicRef(dir);
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'refs/heads/sym']);
+          const result = await sut(ctx, { action: 'show', ref: 'refs/heads/sym' });
+
+          // Assert — the entries are the target's, on both sides
+          expect(gitResult.exitCode).toBe(0);
+          expect(result.kind).toBe('show');
+          if (result.kind !== 'show') throw new Error('expected a show result');
+          expectShowParity(result.entries, gitReflogRows(dir, 'refs/heads/main'));
+
+          // Assert — and both label them with the argument, not the target
+          expect(result.ref).toBe('refs/heads/sym');
+          expect(gitShowSelectors(gitResult.stdout)).toEqual(
+            result.entries.map((entry) => `refs/heads/sym@{${entry.index}}`),
+          );
+          expect(result.entries.map((entry) => entry.selector)).toEqual(
+            gitShowSelectors(gitResult.stdout),
+          );
+        });
+      });
+
+      describe('When reflog show runs on the symbolic name in short form', () => {
+        it('Then both relabel to the name the log was found under', async () => {
+          // Arrange
+          const dir = await caseDir('symref-show-short');
+          await plantSymbolicRef(dir);
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'sym']);
+          const result = await sut(ctx, { action: 'show', ref: 'sym' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          if (result.kind !== 'show') throw new Error('expected a show result');
+          expectShowParity(result.entries, gitReflogRows(dir, 'refs/heads/main'));
+          expect(result.ref).toBe('refs/heads/main');
+          expect(gitShowSelectors(gitResult.stdout)).toEqual(
+            result.entries.map((entry) => `refs/heads/main@{${entry.index}}`),
+          );
+          expect(result.entries.map((entry) => entry.selector)).toEqual(
+            gitShowSelectors(gitResult.stdout),
+          );
+        });
+      });
+
+      describe('When reflog delete runs on the symbolic name', () => {
+        it("Then both rewrite the TARGET's log, byte-identically, and plant no log for the link", async () => {
+          // Arrange
+          const peer = await caseDir('symref-delete-peer');
+          const ours = await caseDir('symref-delete-ours');
+          await plantSymbolicRef(peer);
+          await plantSymbolicRef(ours);
+          const sut = reflog;
+
+          // Act
+          git(peer, 'reflog', 'delete', 'refs/heads/sym@{0}');
+          await sut(createNodeContext({ workDir: ours }), {
+            action: 'delete',
+            ref: 'refs/heads/sym',
+            index: 0,
+          });
+
+          // Assert — the target's log, byte for byte
+          expect(await readFile(branchLogPath(ours, 'main'))).toEqual(
+            await readFile(branchLogPath(peer, 'main')),
+          );
+
+          // Assert — and neither tool gave the link a log of its own
+          expect(await pathExists(branchLogPath(peer, 'sym'))).toBe(false);
+          expect(await pathExists(branchLogPath(ours, 'sym'))).toBe(false);
+        });
+      });
+
+      describe('When reflog exists runs on the symbolic name', () => {
+        it('Then neither follows the link — the presence question is asked of the name itself', async () => {
+          // Arrange
+          const dir = await caseDir('symref-exists');
+          await plantSymbolicRef(dir);
+          const ctx = createNodeContext({ workDir: dir });
+          const sut = reflog;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'reflog', 'exists', 'refs/heads/sym']);
+          const result = await sut(ctx, { action: 'exists', ref: 'refs/heads/sym' });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(result).toEqual({ kind: 'exists', exists: false });
         });
       });
     });
