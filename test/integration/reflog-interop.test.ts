@@ -176,7 +176,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     let reachabilityWithDBaseDir = '';
     let reachabilityWithDB = '';
     /**
-     * A fifth base repo pinning F1: `main` commits P then Q then R, then a
+     * A fifth base repo for the lazy date bound: `main` commits P then Q then R, then a
      * `reset --hard` back to P and forward to R again — R's parent Q sits
      * below the total cutoff under test, so the bounded pass marks Q but
      * never expands it, leaving P (reachable only through Q) unmarked. Git's
@@ -185,7 +185,7 @@ describe.skipIf(!GIT_AVAILABLE)(
      */
     let frontierBaseDir = '';
     /**
-     * A sixth base repo pinning F3: `main` commits A, then HEAD detaches and
+     * A sixth base repo for the detached-HEAD tip: `main` commits A, then HEAD detaches and
      * commits B — B is reachable only by way of the detached HEAD, which
      * `UE_HEAD` never seeds as a tip in its own right.
      */

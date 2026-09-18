@@ -218,7 +218,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     });
 
     describe('When rev-parse --git-dir runs', () => {
-      it('Then git exits 128 and tsgit revParse throws — O6: even --git-dir dies', async () => {
+      it('Then git exits 128 and tsgit revParse throw even when the git directory is named outright', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir']);
 
@@ -240,7 +240,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     });
 
     describe('When branch -d nope (unforced, nonexistent) runs', () => {
-      it('Then git exits 128 and tsgit branchDelete throws the class — O1: dies before "not found"', async () => {
+      it('Then git exits 128 and tsgit branchDelete refuses on the class before reporting an absent branch', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'branch', '-d', 'nope']);
 
@@ -251,7 +251,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     });
 
     describe('When tag -d nope (nonexistent) runs', () => {
-      it('Then git exits 1 ("not found") and tsgit tagDelete throws TAG_NOT_FOUND, not the class — O2', async () => {
+      it('Then git exits 1 and tsgit tagDelete reports the absent tag rather than the class', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'tag', '-d', 'nope']);
         let caught: unknown;
@@ -269,7 +269,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     });
 
     describe('When tag t3 nope (an unresolvable target) runs', () => {
-      it('Then git exits 128 with an unresolved-ref fatal, and tsgit tagCreate throws REF_NOT_FOUND, not the class — O3', async () => {
+      it('Then git exits 128 on the unresolved ref and tsgit tagCreate reports it rather than the class', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'tag', 't3', 'nope']);
         let caught: unknown;
@@ -554,7 +554,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
     describe('When sparse-checkout list runs', () => {
-      it('Then both die on the class — W1: the class is checked before the work-tree requirement', async () => {
+      it('Then both die on the class, which is checked before the work-tree requirement', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'sparse-checkout', 'list']);
 
@@ -566,7 +566,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     });
 
     describe('When stash list runs', () => {
-      it('Then both die on the WORK TREE requirement, not the class — W1: git checks NEED_WORK_TREE first', async () => {
+      it('Then both die on the work-tree requirement, which git checks ahead of the class', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'stash', 'list']);
         let caught: unknown;
@@ -601,7 +601,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
     describe('When pack-refs --all runs with nothing packable', () => {
-      it('Then both succeed — N1: the idle fixture runs in both tools', async () => {
+      it('Then both succeed, so the fixture itself is not what makes the other rows refuse', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'pack-refs', '--all']);
         const result = await packRefs(ctx);
@@ -754,7 +754,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
     describe('When rev-parse HEAD runs', () => {
-      it('Then both refuse — C1: a malformed core.deltaBaseCacheLimit dies on the class', async () => {
+      it('Then both refuse, because a malformed core.deltaBaseCacheLimit dies on the class', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
         let caught: unknown;
@@ -776,7 +776,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     });
 
     describe('When the file value is overridden — git by -c, tsgit by cacheBudgets', () => {
-      it('Then both succeed — C5: an option-overridden file value is never validated', async () => {
+      it('Then both succeed, because an option-overridden file value is never validated', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit([
           '-C',
@@ -814,7 +814,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
     describe('When rev-parse HEAD runs', () => {
-      it('Then both refuse — C4: the gate observes the effective (last-wins) value', async () => {
+      it('Then both refuse, because the gate observes the effective last-wins value', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
         let caught: unknown;
