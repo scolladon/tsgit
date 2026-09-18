@@ -6,5 +6,5 @@ export type {
   FsckSeverity,
   FsckSeverityTable,
 } from './types.js';
-export type { ValidateObjectInput } from './validate-object.js';
+export type { ObjectFinding, ValidateObjectInput } from './validate-object.js';
 export { validateObject } from './validate-object.js';

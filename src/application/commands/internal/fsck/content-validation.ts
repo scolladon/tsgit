@@ -2,6 +2,7 @@ import { TsgitError } from '../../../../domain/error.js';
 import type {
   FsckObjectType,
   FsckSeverityTable,
+  ObjectFinding,
   ValidateObjectInput,
 } from '../../../../domain/fsck/index.js';
 import { retypeSeverity, validateObject } from '../../../../domain/fsck/index.js';
@@ -15,20 +16,22 @@ import { readRawObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-codes.js';
 import type { FsckFinding } from './types.js';
 
-type RawObjectResult =
-  | {
-      readonly ok: true;
-      readonly kind: FsckObjectType;
-      readonly rawBody: Uint8Array;
-      /**
-       * Computes this object's hash from its as-stored bytes, for
-       * verification against the indexed id. A closure (not a materialised
-       * buffer) so the packed arm can hash header+body incrementally without
-       * ever concatenating them.
-       */
-      readonly computeHash: () => Promise<string>;
-    }
-  | { readonly ok: false; readonly msgId: string };
+/** An object whose raw bytes a reader did decode, ready for the catalogue and
+ *  the hash check alike. */
+interface ReadableObject {
+  readonly ok: true;
+  readonly kind: FsckObjectType;
+  readonly rawBody: Uint8Array;
+  /**
+   * Computes this object's hash from its as-stored bytes, for
+   * verification against the indexed id. A closure (not a materialised
+   * buffer) so the packed arm can hash header+body incrementally without
+   * ever concatenating them.
+   */
+  readonly computeHash: () => Promise<string>;
+}
+
+type RawObjectResult = ReadableObject | { readonly ok: false; readonly msgId: string };
 
 /**
  * Read an object's raw decompressed body for content validation.
@@ -153,6 +156,17 @@ interface ContentValidationResult {
   readonly exitBit: number;
 }
 
+/** A sub-check that found nothing and carries no exit bit. */
+const EMPTY_RESULT: ContentValidationResult = { findings: [], exitBit: 0 };
+
+/** Everything the catalogue pass needs beyond the object itself. */
+interface CatalogueOptions {
+  readonly strict: boolean;
+  readonly blobFilenames: ReadonlyMap<ObjectId, string>;
+  readonly severities: FsckSeverityTable;
+  readonly skipped: ReadonlySet<string>;
+}
+
 /**
  * Build the kind-specific `validateObject` input. Every oid-bearing kind needs
  * the repository's own hash config: a raw tree's binary shas carry no width
@@ -182,69 +196,96 @@ function buildValidateObjectInput(
   }
 }
 
+/** The refusal for an object no reader could decode. git raises it through
+ *  `error()`, never `report()`, so no `fsck.<msg-id>` re-types it: the report
+ *  and its exit bit both stand whatever the repository configured. */
+const unreadableObjectResult = (id: ObjectId, msgId: string): ContentValidationResult => ({
+  findings: [{ type: 'bad-object', id, objectType: 'unknown', msgId, severity: 'error' }],
+  exitBit: EXIT_CORRUPT,
+});
+
+/** Every catalogue finding the repository's `fsck.<msg-id>` table still
+ *  reports, and the exit bit its error-severity ones carry. */
+function retypedFindings(
+  id: ObjectId,
+  kind: FsckObjectType,
+  catalogued: ReadonlyArray<ObjectFinding>,
+  severities: FsckSeverityTable,
+): ContentValidationResult {
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
+  for (const finding of catalogued) {
+    const severity = retypeSeverity(severities, finding.msgId, finding.severity);
+    if (severity === 'ignore') continue;
+    findings.push({ type: 'bad-object', id, objectType: kind, msgId: finding.msgId, severity });
+    if (severity === 'error') exitBit |= EXIT_CONTENT_ERROR;
+  }
+  return { findings, exitBit };
+}
+
+/**
+ * One object's catalogue findings. `fsck.skipList` reaches exactly here: git
+ * still runs every check and drops the REPORT for a listed oid, so the finding
+ * and the exit bit it would have carried disappear together. The
+ * unreadable-object arm and the hash check are `error()` calls in git, never
+ * `report()` ones, and no list silences them.
+ */
+function catalogueResult(
+  ctx: Context,
+  id: ObjectId,
+  raw: ReadableObject,
+  options: CatalogueOptions,
+): ContentValidationResult {
+  if (options.skipped.has(id)) return EMPTY_RESULT;
+  // For blobs, pass filename when the blob appears under a special name
+  // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
+  const fileName = raw.kind === 'blob' ? options.blobFilenames.get(id) : undefined;
+  const input = buildValidateObjectInput(
+    ctx.hashConfig,
+    raw.kind,
+    raw.rawBody,
+    options.strict,
+    fileName,
+  );
+  return retypedFindings(id, raw.kind, validateObject(input), options.severities);
+}
+
+/**
+ * The object's own hash, verified from the bytes already read (no second
+ * `readObject`). For loose objects this hashes the full inflated bytes
+ * (header + body) as stored; for pack objects the object's own header
+ * (rebuilt from its type + content) followed by its own body, not a
+ * re-encoding. A mismatch does not preclude the catalogue checks, and a
+ * hash that cannot be computed at all is the corrupt object those checks
+ * may already have reported.
+ */
+async function hashResult(id: ObjectId, raw: ReadableObject): Promise<ContentValidationResult> {
+  try {
+    const computedHash = await raw.computeHash();
+    if (computedHash === id) return EMPTY_RESULT;
+    return {
+      findings: [{ type: 'hash-mismatch', id, actual: computedHash as ObjectId }],
+      exitBit: EXIT_HASH_MISMATCH,
+    };
+  } catch {
+    return EMPTY_RESULT;
+  }
+}
+
 /** Validate one object's content and hash, accumulating findings and exit bit. */
 async function validateOneObject(
   ctx: Context,
   id: ObjectId,
-  strict: boolean,
-  blobFilenames: ReadonlyMap<ObjectId, string>,
-  severities: FsckSeverityTable,
-  skipped: ReadonlySet<string>,
+  options: CatalogueOptions,
 ): Promise<ContentValidationResult> {
-  const findings: FsckFinding[] = [];
-  let exitBit = 0;
-
   const rawResult = await tryGetRawObjectBody(ctx, id);
-  if (!rawResult.ok) {
-    // git raises an unreadable object through `error()`, never `report()`, so
-    // no `fsck.<msg-id>` re-types it: the report and its exit bit both stand
-    // whatever the repository configured.
-    findings.push({
-      type: 'bad-object',
-      id,
-      objectType: 'unknown',
-      msgId: rawResult.msgId,
-      severity: 'error',
-    });
-    return { findings, exitBit: EXIT_CORRUPT };
-  }
-
-  const { kind, rawBody, computeHash } = rawResult;
-
-  // For blobs, pass filename when the blob appears under a special name
-  // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
-  const fileName = kind === 'blob' ? blobFilenames.get(id) : undefined;
-  // `fsck.skipList` reaches exactly here: git still runs every check and
-  // drops the REPORT for a listed oid, so the finding and the exit bit it
-  // would have carried disappear together. The corrupt-object arm above and
-  // the hash check below are `error()` calls in git, never `report()` ones,
-  // and no list silences them.
-  const catalogueFindings = skipped.has(id)
-    ? []
-    : validateObject(buildValidateObjectInput(ctx.hashConfig, kind, rawBody, strict, fileName));
-  for (const catalogued of catalogueFindings) {
-    const severity = retypeSeverity(severities, catalogued.msgId, catalogued.severity);
-    if (severity === 'ignore') continue;
-    findings.push({ type: 'bad-object', id, objectType: kind, msgId: catalogued.msgId, severity });
-    if (severity === 'error') exitBit |= EXIT_CONTENT_ERROR;
-  }
-
-  // Hash check: verify hash from the bytes already read (no second readObject).
-  // For loose objects this hashes the full inflated bytes (header + body) as
-  // stored. For pack objects it hashes the object's own header (rebuilt from
-  // its type + content) followed by its own body, not a re-encoding.
-  // Hash-mismatch does not preclude catalogue checks above.
-  try {
-    const computedHash = await computeHash();
-    if (computedHash !== id) {
-      findings.push({ type: 'hash-mismatch', id, actual: computedHash as ObjectId });
-      exitBit |= EXIT_HASH_MISMATCH;
-    }
-  } catch {
-    // Hash computation failure — treated as a corrupt object; catalogue checks may already have fired.
-  }
-
-  return { findings, exitBit };
+  if (!rawResult.ok) return unreadableObjectResult(id, rawResult.msgId);
+  const catalogue = catalogueResult(ctx, id, rawResult, options);
+  const hash = await hashResult(id, rawResult);
+  return {
+    findings: [...catalogue.findings, ...hash.findings],
+    exitBit: catalogue.exitBit | hash.exitBit,
+  };
 }
 
 /**
@@ -262,16 +303,10 @@ export async function runContentValidationPass(
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
+  const options: CatalogueOptions = { strict, blobFilenames, severities, skipped };
 
   for (const id of universe) {
-    const { findings: objFindings, exitBit: objBit } = await validateOneObject(
-      ctx,
-      id,
-      strict,
-      blobFilenames,
-      severities,
-      skipped,
-    );
+    const { findings: objFindings, exitBit: objBit } = await validateOneObject(ctx, id, options);
     findings.push(...objFindings);
     exitBit |= objBit;
   }
