@@ -300,6 +300,27 @@ describe('packRefs — files backend', () => {
     });
   });
 
+  describe('Given a files repository whose refs all peel to themselves', () => {
+    describe('When packRefs runs', () => {
+      it('Then it learns each ref\u2019s type from its metadata, never inflating the object', async () => {
+        // Arrange \u2014 a commit peels to itself, so its bytes are never needed;
+        // only its TYPE is, and a packed base entry answers that from its
+        // pack header with no inflate at all.
+        const { ctx } = await seedOneCommit();
+        const readObject = vi.spyOn(readObjectMod, 'readObject');
+        const readObjectMetadata = vi.spyOn(readObjectMod, 'readObjectMetadata');
+        const sut = packRefs;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(readObjectMetadata).toHaveBeenCalled();
+        expect(readObject).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a files repository with commits', () => {
     describe('When packRefs runs', () => {
       it('Then the packed-refs header declares the sorted trait', async () => {
@@ -401,13 +422,41 @@ describe('packRefs — files backend', () => {
     });
   });
 
+  describe('Given an object store whose type probe and object bytes disagree', () => {
+    describe('When packRefs runs', () => {
+      it('Then it refuses, naming the type the bytes actually carried', async () => {
+        // Arrange — the peel walk reads an object only after the probe has
+        // said `tag`; a store that then hands back something else has
+        // contradicted itself, and the peel says so rather than guessing.
+        const { ctx } = await seedOneCommit();
+        vi.spyOn(readObjectMod, 'readObjectMetadata').mockResolvedValue({
+          type: 'tag',
+          uncompressedSize: 1,
+        });
+        const sut = packRefs;
+
+        // Act
+        const refusal = await sut(ctx).catch((error: unknown) => error);
+
+        // Assert
+        const data = (refusal as TsgitError).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+          expect(data.expected).toBe('tag');
+          expect(data.actual).toBe('commit');
+        }
+      });
+    });
+  });
+
   describe('Given more packable refs than the ioBound limit', () => {
     describe('When packRefs runs', () => {
       it('Then packed-entry building peaks at exactly the bound', async () => {
         // Arrange — an explicit ioBound distinct from cpuBound so a
         // bucket-swap regression (deriving the pool from the wrong bucket)
         // fails loudly. Each ref points at its own distinct commit so every
-        // one reaches its own `readObject` peel call.
+        // one reaches its own type probe, the read the peel walk makes per
+        // ref before it ever asks for an object's bytes.
         const ioBound = 3;
         const width = ioBound + 4;
         const base = createMemoryContext();
@@ -425,15 +474,15 @@ describe('packRefs — files backend', () => {
         const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
         let inFlight = 0;
         let maxInFlight = 0;
-        const realReadObject = readObjectMod.readObject;
+        const realReadObjectMetadata = readObjectMod.readObjectMetadata;
         const spy = vi
-          .spyOn(readObjectMod, 'readObject')
-          .mockImplementation(async (spyCtx, id, opts) => {
+          .spyOn(readObjectMod, 'readObjectMetadata')
+          .mockImplementation(async (spyCtx, id) => {
             inFlight += 1;
             if (inFlight > maxInFlight) maxInFlight = inFlight;
             await Promise.resolve();
             inFlight -= 1;
-            return realReadObject(spyCtx, id, opts);
+            return realReadObjectMetadata(spyCtx, id);
           });
         const sut = packRefs;
 

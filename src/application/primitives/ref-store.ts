@@ -10,6 +10,7 @@ import {
 } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
+import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
@@ -67,7 +68,7 @@ import {
   perWorktreeRefDir,
   reflogPath,
 } from './path-layout.js';
-import { readObject } from './read-object.js';
+import { readObject, readObjectMetadata } from './read-object.js';
 import {
   commitRefUpdate,
   prepareRefUpdate,
@@ -1846,20 +1847,36 @@ function createFilesRefStore(ctx: Context): RefStore {
     );
   }
 
-  /** Follows a tag chain to its first non-tag object — the peeled OID a
-   *  packed-refs entry for an annotated tag carries on its own `^` line. */
+  /** The object an annotated tag names, read only once the type probe above
+   *  has already answered `tag` for this id — so the refusal states an
+   *  invariant the object store would have to contradict itself to reach. */
+  async function tagTargetOf(id: ObjectId): Promise<ObjectId> {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'tag') throw unexpectedObjectType('tag', object.type, id);
+    return object.data.object;
+  }
+
+  /**
+   * Follows a tag chain to its first non-tag object — the peeled OID a
+   * packed-refs entry for an annotated tag carries on its own `^` line.
+   *
+   * git's `peel_object` shape: ask `oid_object_info` for the TYPE first, which
+   * a packed base entry answers straight from its pack header with no inflate
+   * at all, and read the object's bytes only once that answer is `tag`. Nearly
+   * every packable ref names a commit and peels to itself, so `pack-refs --all`
+   * stops paying a pack lookup, delta-chain resolution and inflate per ref.
+   */
   async function peelToNonTag(id: ObjectId): Promise<ObjectId> {
     let current = id;
     let depth = 0;
-    for (;;) {
-      const object = await readObject(ctx, current);
-      if (object.type !== 'tag') return current;
+    while ((await readObjectMetadata(ctx, current)).type === 'tag') {
       depth += 1;
       if (exceedsMaxPeelDepth(depth, MAX_PEEL_DEPTH)) {
         throw refChainTooDeep(depth, []);
       }
-      current = object.data.object;
+      current = await tagTargetOf(current);
     }
+    return current;
   }
 
   async function buildPackedEntry(entry: RefEntry): Promise<PackedRefEntry> {
