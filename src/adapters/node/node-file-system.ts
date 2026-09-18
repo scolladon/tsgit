@@ -1014,8 +1014,15 @@ export class NodeFileSystem implements FileSystem {
       if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
       throw err;
     }
-    await this.removeTree(real, path);
-    this.parentRealpathCache.clear();
+    try {
+      await this.removeTree(real, path);
+    } finally {
+      // Cleared on the failure path too, as `rename` clears on its own: the
+      // walk removes children bottom-up, so a rejection part-way leaves
+      // siblings already gone and every cached parent realpath under the tree
+      // describing a shape that is no longer there.
+      this.parentRealpathCache.clear();
+    }
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {

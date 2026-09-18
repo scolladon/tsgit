@@ -10,6 +10,7 @@
  */
 import * as fs from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
 import {
   mapConcurrent,
   NodeFileSystem,
@@ -18,7 +19,7 @@ import {
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { dataFor } from '../../../fixtures/tsgit-error-data.js';
-import { eacces, eexist, eloop, enoent, enotdir, fakeFsOps } from './node-fs-fakes.js';
+import { eacces, eexist, eloop, enoent, enotdir, entry, fakeFsOps } from './node-fs-fakes.js';
 
 describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () => {
   const fileStat = {
@@ -3794,6 +3795,48 @@ describe('NodeFileSystem — resolveWrite `..`-and-separator prefilter (DI)', ()
 
         // Assert
         expect(mkdirSpy).toHaveBeenCalledWith('/root/other', { recursive: true });
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — rmRecursive parent-realpath invalidation (DI)', () => {
+  const rootDir = '/root';
+  const CHILD = '/root/sub/a.bin';
+
+  /**
+   * A tree `/root/sub/a.bin` whose directory removal fails: the child is gone
+   * by then, so every cached realpath under `/root/sub` describes a tree that
+   * no longer has that shape.
+   */
+  const partialRemovalOps = (realpathSpy: (input: string) => Promise<string>) =>
+    fakeFsOps({
+      realpath: realpathSpy as unknown as FsOperations['realpath'],
+      lstat: vi.fn().mockImplementation(async (input: string) => {
+        if (input === '/root/sub') return entry('directory', 2);
+        if (input === CHILD) return entry('file', 3);
+        throw enoent();
+      }),
+      readdir: vi.fn().mockResolvedValue([{ name: 'a.bin' }]),
+      rmdir: vi.fn().mockRejectedValue(eacces()),
+    });
+
+  describe('Given a cached parent realpath and a recursive removal that fails partway', () => {
+    describe('When a later write resolves the same parent', () => {
+      it('Then the parent is realpathed afresh — the failed removal cleared the cache', async () => {
+        // Arrange
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const sut = new NodeFileSystem(rootDir, posixPolicy, partialRemovalOps(realpathSpy));
+        await sut.write(CHILD, new Uint8Array([1]));
+        await expect(sut.rmRecursive('/root/sub')).rejects.toBeInstanceOf(TsgitError);
+        const before = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
+
+        // Act
+        await sut.write('/root/sub/b.bin', new Uint8Array([2]));
+
+        // Assert
+        const after = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
+        expect(after).toBe(before + 1);
       });
     });
   });
