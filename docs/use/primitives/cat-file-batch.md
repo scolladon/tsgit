@@ -20,7 +20,9 @@ type CatFileBatchEntry =
 - Strict input order. Sequential reads — one in-flight `readObject` at a time.
 - Missing objects yield `{ ok: false, id, reason: 'missing' }`. Other resolver errors propagate.
 - Partial-clone lazy-fetch is transparent.
-- `maxBytes` is forwarded to `readObject`; a long batch over untrusted ids cannot exhaust the heap.
+- `maxBytes` is forwarded to `readObject`; a long batch over untrusted ids cannot exhaust the heap. It measures a loose object's real inflated bytes, never its header's claim.
+- **`size` is the stored size, as `git cat-file --batch` reports it.** For a loose object that is the header's own claim, read off disk and passed through untouched; every other route reports the content length. The two are the same number for every object whose stored header is honest. A loose **blob** whose header lies is still served — `object` carries its real bytes while `size` carries the claim, which is the pair git's `--batch` record prints ([ADR-863](../../adr/863-a-size-lying-loose-header-serves-a-blobs-bytes-and-refuses-other-types.md)). A loose commit, tree or tag whose header lies refuses `INVALID_OBJECT_HEADER`, and that refusal propagates — it is not a per-entry `missing` sentinel.
+- For a size independent of how the object happens to be stored, read [`readObjectMetadata`](read-object.md#object-size) instead: its `uncompressedSize` comes from the object's content, so it survives a `gc` repack unchanged.
 
 ## Example
 
