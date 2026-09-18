@@ -67,6 +67,12 @@ function collectSymlinkNotices(
  * zero-OID pointer git synthesises for it. That pointer is reported OUTSIDE the catalogue —
  * `fsck.badRefOid` does not reach it, measured against git 2.55.0 — so it
  * always stands, at error severity, contributing bit 2.
+ *
+ * The two halves reach different names. git's ref-store content check stops at
+ * every symbolic link, so a name read through one carries the pointer alone;
+ * its ref iterator reads through, so that pointer is still reported under the
+ * linked name (measured: a link onto a broken ref yields `symlinkRef` and the
+ * pointer, and the `badRefContent` line names the real ref only).
  */
 function collectBadContentNotices(
   ctx: Context,
@@ -80,7 +86,8 @@ function collectBadContentNotices(
   let exitBit = 0;
   for (const finding of integrityFindings) {
     if (finding.msgId !== 'badRefContent') continue;
-    if (reportContent) {
+    const gradeContent = reportContent && !finding.throughSymlink;
+    if (gradeContent) {
       findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity });
     }
     findings.push({
@@ -91,7 +98,7 @@ function collectBadContentNotices(
       target: zeroOid(ctx.hashConfig),
     });
     exitBit |= EXIT_MISSING;
-    if (reportContent && severity === 'error') exitBit |= EXIT_REFS_CONTENT;
+    if (gradeContent && severity === 'error') exitBit |= EXIT_REFS_CONTENT;
   }
   return { findings, exitBit };
 }

@@ -2567,7 +2567,7 @@ describe('ref-store', () => {
 
   describe('Given a loose ref whose body is neither an oid nor a symbolic ref', () => {
     describe('When verifyIntegrity is called', () => {
-      it('Then a badRefContent finding is returned for that ref', async () => {
+      it('Then a badRefContent finding is returned, marked as reachable without a link', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-a-valid-sha\n');
@@ -2577,7 +2577,63 @@ describe('ref-store', () => {
         const result = await sut.verifyIntegrity();
 
         // Assert
-        expect(result).toContainEqual({ ref: 'refs/heads/garbage', msgId: 'badRefContent' });
+        expect(result).toContainEqual({
+          ref: 'refs/heads/garbage',
+          msgId: 'badRefContent',
+          throughSymlink: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a link onto a ref whose body is neither an oid nor a symbolic ref', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the linked name is marked as read through a link, the real name is not', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-a-valid-sha\n');
+        await ctx.fs.symlink('garbage', '/repo/.git/refs/heads/link');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(
+          result
+            .filter((f) => 'msgId' in f && f.msgId === 'badRefContent')
+            .slice()
+            .sort((a, b) => ('ref' in a && 'ref' in b && a.ref < b.ref ? -1 : 1)),
+        ).toEqual([
+          { ref: 'refs/heads/garbage', msgId: 'badRefContent', throughSymlink: false },
+          { ref: 'refs/heads/link', msgId: 'badRefContent', throughSymlink: true },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a link onto a directory holding a ref with an unreadable body', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then the name beneath the link is marked as read through a link', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/other/garbage', 'not-a-valid-sha\n');
+        await ctx.fs.symlink('../other', '/repo/.git/refs/heads/dl');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(
+          result
+            .filter((f) => 'msgId' in f && f.msgId === 'badRefContent')
+            .slice()
+            .sort((a, b) => ('ref' in a && 'ref' in b && a.ref < b.ref ? -1 : 1)),
+        ).toEqual([
+          { ref: 'refs/heads/dl/garbage', msgId: 'badRefContent', throughSymlink: true },
+          { ref: 'refs/other/garbage', msgId: 'badRefContent', throughSymlink: false },
+        ]);
       });
     });
   });

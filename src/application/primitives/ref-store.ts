@@ -226,7 +226,19 @@ export interface RefEntry {
 }
 
 export type RefIntegrityFinding =
-  | { readonly ref: RefName; readonly msgId: 'badRefContent' }
+  | {
+      readonly ref: RefName;
+      readonly msgId: 'badRefContent';
+      /**
+       * The name was only reachable by reading THROUGH a symbolic link — the
+       * link itself, or something beneath a linked directory. git's ref-store
+       * content check walks `refs/**` with `lstat` and stops at every link, so
+       * it never grades such a name's content; its ref ITERATOR does read
+       * through, so the zero pointer the broken body stands for is still
+       * reported under the linked name.
+       */
+      readonly throughSymlink: boolean;
+    }
   | { readonly ref: RefName; readonly msgId: 'symlinkRef' }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
   | {
@@ -1042,22 +1054,31 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  grammar check — fsck's refs-verify pass runs its own OID-presence check
    *  against its scan-scoped universe once no `badRefContent` finding has
    *  already flagged this ref. */
-  async function looseBodyFinding(name: RefName): Promise<RefIntegrityFinding | undefined> {
+  async function looseBodyFinding(
+    name: RefName,
+    throughSymlink: boolean,
+  ): Promise<RefIntegrityFinding | undefined> {
     const raw = await readLooseContent(name);
     if (raw === undefined) return undefined;
     const content = raw.replace(/[\r\n]+$/, '');
     if (content.startsWith(SYMBOLIC_PREFIX)) return undefined;
-    if (!LOOSE_OID_RE.test(content)) return { ref: name, msgId: 'badRefContent' };
+    if (!LOOSE_OID_RE.test(content)) return { ref: name, msgId: 'badRefContent', throughSymlink };
     const oid = content as ObjectId;
     if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), oid))) return undefined;
     return { ref: name, msgId: 'badRefOid', target: oid };
   }
 
+  /** Whether `name` is a symbolic link, or sits under one — the two shapes the
+   *  content walk cannot reach without reading through a link. */
+  const readThroughLink = (name: RefName, linked: ReadonlySet<RefName>): boolean =>
+    linked.has(name) || [...linked].some((link) => name.startsWith(`${link}/`));
+
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
-    for (const ref of await linkedRefNames()) findings.push({ ref, msgId: 'symlinkRef' });
+    const linked = new Set(await linkedRefNames());
+    for (const ref of linked) findings.push({ ref, msgId: 'symlinkRef' });
     for (const name of await walkAllLooseRefNames(undefined)) {
-      const finding = await looseBodyFinding(name);
+      const finding = await looseBodyFinding(name, readThroughLink(name, linked));
       if (finding !== undefined) findings.push(finding);
     }
     return findings;

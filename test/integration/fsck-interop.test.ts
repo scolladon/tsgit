@@ -1764,12 +1764,30 @@ describe.skipIf(!GIT_AVAILABLE)('Given a loose ref that is a symbolic link', () 
   });
 });
 
+/** git's stderr lines for a ref walk, rebuilt from the structured findings:
+ *  one line per symlink notice, one per content notice, one per zero pointer.
+ *  `content` is the raw text the broken ref holds, which git echoes verbatim. */
+const refWalkStderr = (findings: ReadonlyArray<FsckFinding>, content: string): string[] =>
+  findings
+    .filter((f): f is FsckFinding & { type: 'bad-ref' } => f.type === 'bad-ref')
+    .map((f) => {
+      if (f.msgId === 'symlinkRef') {
+        return `warning: ${f.ref}: symlinkRef: use deprecated symbolic link for symref`;
+      }
+      if (f.msgId === 'badRefContent') {
+        return `${f.severity === 'error' ? 'error' : 'warning'}: ${f.ref}: badRefContent: ${content}`;
+      }
+      return `error: ${f.ref}: invalid sha1 pointer ${f.target}`;
+    });
+
 describe.skipIf(!GIT_AVAILABLE)(
-  'Given links at several depths and one naming a directory of refs',
+  'Given links at several depths and one naming a directory holding a broken ref',
   () => {
     describe('When fsck runs', () => {
-      it('Then both report exactly one warning per link, and neither descends the directory', async () => {
-        // Arrange
+      it('Then both warn once per link and report the broken ref under its real name only', async () => {
+        // Arrange — `refs/heads/other/broken` holds text that is not an object
+        // name, so a walk that followed `refs/heads/dl` into that directory
+        // would report the SAME fault a second time, under the linked name.
         const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlink-depths-'));
         symlinkDepthRoots.push(dir);
         initRepo(dir);
@@ -1779,6 +1797,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         runGit(['-C', dir, 'branch', 'side', 'main'], { env: SAFE_ENV });
         runGit(['-C', dir, 'update-ref', 'refs/heads/other/x', 'HEAD'], { env: SAFE_ENV });
         const heads = path.join(dir, '.git', 'refs', 'heads');
+        await writeFile(path.join(heads, 'other', 'broken'), 'garbage\n');
         await mkdir(path.join(heads, 'nest'), { recursive: true });
         await symlink('other', path.join(heads, 'dl'));
         await symlink('../side', path.join(heads, 'nest', 'deep'));
@@ -1787,13 +1806,85 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Act
         const gitResult = gitFsck(dir, '--full');
         const result = await fsck(ctx);
+        const enumerated = runGit(['-C', dir, 'for-each-ref', '--format=%(refname)'], {
+          env: SAFE_ENV,
+        })
+          .trim()
+          .split('\n');
 
-        // Assert
+        // Assert — git's own ref enumeration DOES read through the link, so the
+        // audit's silence about `refs/heads/dl/broken` is a property of the fsck
+        // walk, not of the link being unreadable.
+        expect(enumerated).toContain('refs/heads/dl/x');
+
+        // Assert — exactly one notice per link
         const warned = symlinkRefFindings(result.findings);
-        expect(gitResult.exitCode).toBe(0);
-        expect(result.exitCode).toBe(0);
         expect(warned.map((f) => f.ref)).toEqual(['refs/heads/dl', 'refs/heads/nest/deep']);
-        expect(gitResult.stderr).toBe(symlinkRefStderr(warned, 'warning'));
+
+        // Assert — the CONTENT notice names the real ref alone, while the zero
+        // pointer the broken body stands for is reported under both names.
+        expect(
+          result.findings
+            .filter((f) => f.type === 'bad-ref' && f.msgId !== 'symlinkRef')
+            .map((f) => (f.type === 'bad-ref' ? `${f.msgId} ${f.ref}` : ''))
+            .sort(),
+        ).toEqual([
+          'badRefContent refs/heads/other/broken',
+          'badRefOid refs/heads/dl/broken',
+          'badRefOid refs/heads/other/broken',
+        ]);
+
+        // Assert — git's whole stderr, rebuilt from those structured fields
+        expect(gitResult.stderr.split('\n').filter(Boolean).sort()).toEqual(
+          refWalkStderr(result.findings, 'garbage').sort(),
+        );
+        expect(gitResult.exitCode).toBe(10);
+        expect(result.exitCode).toBe(gitResult.exitCode);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a link whose target ref holds text that is not an object name',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then the content notice names the real ref alone and both names carry the pointer', async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlink-broken-'));
+        symlinkDepthRoots.push(dir);
+        initRepo(dir);
+        await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+        runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+        const heads = path.join(dir, '.git', 'refs', 'heads');
+        await writeFile(path.join(heads, 'broken-ref'), 'garbage\n');
+        await symlink('broken-ref', path.join(heads, 'broken-link'));
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert — one content notice, two pointers, one symlink notice
+        expect(
+          result.findings
+            .filter((f): f is FsckFinding & { type: 'bad-ref' } => f.type === 'bad-ref')
+            .map((f) => `${f.msgId} ${f.ref}`)
+            .sort(),
+        ).toEqual([
+          'badRefContent refs/heads/broken-ref',
+          'badRefOid refs/heads/broken-link',
+          'badRefOid refs/heads/broken-ref',
+          'symlinkRef refs/heads/broken-link',
+        ]);
+
+        // Assert — git's whole stderr, rebuilt from those structured fields
+        expect(gitResult.stderr.split('\n').filter(Boolean).sort()).toEqual(
+          refWalkStderr(result.findings, 'garbage').sort(),
+        );
+        expect(gitResult.exitCode).toBe(10);
+        expect(result.exitCode).toBe(gitResult.exitCode);
       });
     });
   },
