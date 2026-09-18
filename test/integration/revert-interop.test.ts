@@ -18,6 +18,12 @@
  *   surface: revert
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
+ *
+ * @proves
+ *   surface:        revert, revert.continue
+ *   bucket:         cross-tool-interop
+ *   unique:         the revert todo verb and the Revert message embedding the reverted oid survive a handover between the two tools
+ *   interopSurface: sequencer
  */
 import { existsSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';

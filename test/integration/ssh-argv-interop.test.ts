@@ -14,6 +14,12 @@
  * identical to tsgit's except for one pinned, intentional divergence: git
  * 2's default protocol v2 adds `-o SendEnv=GIT_PROTOCOL`, which tsgit (v0/v1
  * only) never emits — that pair is stripped before comparing.
+ *
+ * @proves
+ *   surface:        sshArgv
+ *   bucket:         cross-tool-interop
+ *   unique:         real git's ssh argv matches tsgit's own computation across all three ways the ssh program is resolved
+ *   interopSurface: sshArgv
  */
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';

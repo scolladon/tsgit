@@ -13,6 +13,12 @@
  * Isolation is load-bearing: `runGit` from interop-helpers scrubs all `GIT_*` env
  * vars, points `HOME` at a non-existent path, and sets `GIT_CONFIG_NOSYSTEM=1` —
  * no global/system/XDG git config engages.
+ *
+ * @proves
+ *   surface:        diff.textconv
+ *   bucket:         cross-tool-interop
+ *   unique:         a textconv driver transforms both diff sides to git's own bytes while the structured change keeps its raw oids
+ *   interopSurface: diff
  */
 import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';

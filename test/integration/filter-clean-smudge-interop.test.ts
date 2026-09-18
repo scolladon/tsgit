@@ -18,6 +18,12 @@
  * Isolation is load-bearing: `runGit` from interop-helpers scrubs all `GIT_*`
  * env vars, points `HOME` at a non-existent path, and sets `GIT_CONFIG_NOSYSTEM=1`
  * — no global/system/XDG git config engages.
+ *
+ * @proves
+ *   surface:        add.filters, checkout.filters
+ *   bucket:         cross-tool-interop
+ *   unique:         clean and smudge drivers take content on stdin with no positional argv, and required decides whether a failure is fatal
+ *   interopSurface: add
  */
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';

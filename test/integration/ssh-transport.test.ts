@@ -11,6 +11,11 @@
  * client-side session (spawn, argv, pkt-line exchange, shared-iterator
  * continuation, close) against the real git service programs without an
  * actual sshd.
+ *
+ * @proves
+ *   surface: fetch.ssh, pull.ssh, push.ssh, sshTransport.inert
+ *   bucket:  coverage-gap
+ *   unique:  the full ssh client session drives real upload-pack and receive-pack, and the memory adapter refuses one inertly
  */
 import { accessSync, cpSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

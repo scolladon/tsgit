@@ -1,3 +1,9 @@
 {
-  "surfaces": []
+  "surfaces": [
+    {
+      "surface": "cruftMtimes",
+      "reason": "The sidecar's body ends with the checksum of the cruft pack it describes, so its bytes are identical across two tools only when their cruft packs are byte-identical — which nothing guarantees, since each side deflates the same objects with its own compressor. A cross-tool row asserting equal bytes would therefore be asserting the packer, not the sidecar. maintenance-interop.test.ts covers what this surface can honestly claim cross-tool: it reads real git's own pack-<sha>.mtimes off disk, decodes it with tsgit's parser, and asserts the same oid-to-mtime mapping tsgit's own sidecar yields for the same forced mtime — format agreement on header, body order and trailer, proven against git's bytes.",
+      "deferredTo": null
+    }
+  ]
 }

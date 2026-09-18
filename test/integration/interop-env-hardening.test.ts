@@ -12,6 +12,11 @@
  * ever passes on one author's machine); the system probe injects its own
  * config so it proves the closure on any machine, not only one that happens to
  * carry an ambient system setting.
+ *
+ * @proves
+ *   surface: interopHelpers.spawnEnv
+ *   bucket:  coverage-gap
+ *   unique:  the shared git spawn helper closes every ambient-config vector git would otherwise read, one guard per vector
  */
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
