@@ -32,7 +32,7 @@ export const MAX_WALK_SEEDS = 1024;
 /** Hard cap on walkCommits' pending queue size to prevent unbounded heap growth. */
 export const MAX_WALK_QUEUE_SIZE = MAX_WALK_SEEDS * 64;
 
-/** Max.git/index file size readIndex will accept. */
+/** Max `.git/index` file size readIndex will accept. */
 export const MAX_INDEX_BYTES = 256 * 1024 * 1024;
 
 /** Max commit message byte length createCommit will accept. */

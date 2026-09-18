@@ -31,7 +31,7 @@ export type RepositoryFormatRefusal =
 
 /**
  * Repository physical layout — where the working tree and `.git` directory live.
- * Renamed in from the previous `RepositoryConfig` (port-tier) to free that
+ * Renamed from the previous `RepositoryConfig` (port-tier) to free that
  * name for the facade-tier `RepositoryConfig` shape (auth/parallelism/etc.).
  */
 export interface RepositoryLayout {
@@ -41,7 +41,7 @@ export interface RepositoryLayout {
    * NULL`.
    */
   readonly workDir?: string;
-  /** Absolute path to the.git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
+  /** Absolute path to the `.git` directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
   readonly gitDir: string;
   /**
    * Absolute path to the shared **common** git dir — objects, `packed-refs`,

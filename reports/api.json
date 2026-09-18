@@ -109277,7 +109277,15 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Repository physical layout — where the working tree and.git directory live.\nRenamed in from the previous "
+								"text": "Repository physical layout — where the working tree and "
+							},
+							{
+								"kind": "code",
+								"text": "`.git`"
+							},
+							{
+								"kind": "text",
+								"text": " directory live.\nRenamed from the previous "
 							},
 							{
 								"kind": "code",
@@ -109495,7 +109503,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Absolute path to the.git directory (usually "
+										"text": "Absolute path to the "
+									},
+									{
+										"kind": "code",
+										"text": "`.git`"
+									},
+									{
+										"kind": "text",
+										"text": " directory (usually "
 									},
 									{
 										"kind": "code",
@@ -133516,7 +133532,15 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Max.git/index file size readIndex will accept."
+								"text": "Max "
+							},
+							{
+								"kind": "code",
+								"text": "`.git/index`"
+							},
+							{
+								"kind": "text",
+								"text": " file size readIndex will accept."
 							}
 						]
 					},
