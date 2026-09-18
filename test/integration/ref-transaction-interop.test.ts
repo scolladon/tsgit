@@ -4907,6 +4907,48 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(await snapshotOf(peer)).toEqual(before);
         });
       });
+
+      describe('When both tools write it demanding that it be absent', () => {
+        it('Then both refuse on the name conflict — a satisfied absence still cannot create it', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await reftableCasePair('reftable-under-existing-absent');
+          const id = git(reftableBase, 'rev-parse', 'refs/heads/main').trim();
+          for (const dir of [peer, ours]) runGit(['-C', dir, 'update-ref', 'refs/remotes/k', id]);
+          const before = await snapshotOf(peer);
+          const sut = getRefStore(ctx);
+          let caught: unknown;
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', '--stdin'], {
+            input: `update refs/remotes/k/z ${id} ${ZERO}\n`,
+            env: runGitEnv(),
+          });
+          try {
+            await sut.applyRefUpdates([
+              {
+                kind: 'set',
+                name: 'refs/remotes/k/z' as RefName,
+                id: id as ObjectId,
+                expected: 'absent',
+              },
+            ]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(
+            "'refs/remotes/k' exists; cannot create 'refs/remotes/k/z'",
+          );
+          expect((caught as TsgitError).data).toEqual({
+            code: 'NOT_A_DIRECTORY',
+            path: `${ctx.layout.gitDir}/refs/remotes/k`,
+          });
+          expect(await snapshotOf(ours)).toEqual(before);
+          expect(await snapshotOf(peer)).toEqual(before);
+        });
+      });
     });
 
     describe('Given a transaction whose own names collide, on both tools and both backends', () => {
@@ -5428,6 +5470,16 @@ describe.skipIf(!GIT_AVAILABLE)(
             ['create', 'f/x'],
           ],
           mismatchAt: 2,
+          refusal: MISMATCH,
+        },
+        {
+          label: 'the value mismatch ahead of a pair checked only in the batch',
+          slug: 'mismatch-before-batch-pair',
+          updates: [
+            ['create', 'f'],
+            ['create', 'f/x'],
+          ],
+          mismatchAt: 0,
           refusal: MISMATCH,
         },
       ];
