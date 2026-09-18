@@ -55,8 +55,7 @@ const SHEBANG = /^#![^\n]*\n/;
 const KEY_LINE = /^\s*([a-z]+)\s*:\s*(.+?)\s*$/;
 const KIND_SET: ReadonlySet<string> = new Set<string>(WRITE_KINDS);
 
-const stripCommentStar = (line: string): string =>
-  line.replace(/^\s*\*\s?/, '');
+const stripCommentStar = (line: string): string => line.replace(/^\s*\*\s?/, '');
 
 const findFirstJsdoc = (
   source: string,
@@ -74,22 +73,33 @@ interface CollectedKeys {
   readonly format?: string;
 }
 
+type MutableKeys = { surface?: string; kind?: string; format?: string };
+
+const KNOWN_KEYS = new Set(['surface', 'kind', 'format']);
+
+/** The key a line names together with its value, or `undefined` when the
+ *  line is blank, is not a `key: value` pair, or names a key this tag
+ *  does not carry. */
+const readKeyLine = (raw: string): readonly [keyof MutableKeys, string] | undefined => {
+  const inner = stripCommentStar(raw);
+  if (inner.trim().length === 0) return undefined;
+  const match = inner.match(KEY_LINE);
+  if (match === null) return undefined;
+  const [, key, value] = match;
+  if (key === undefined || value === undefined) return undefined;
+  if (!KNOWN_KEYS.has(key)) return undefined;
+  return [key as keyof MutableKeys, value];
+};
+
 const collectKeys = (block: string): CollectedKeys => {
   const writesIdx = block.indexOf('@writes');
   if (writesIdx === -1) return {};
-  const after = block.slice(writesIdx);
-  const lines = after.split('\n').slice(1);
-  const out: { surface?: string; kind?: string; format?: string } = {};
-  for (const raw of lines) {
-    const inner = stripCommentStar(raw);
-    if (inner.trim().length === 0) continue;
-    const match = inner.match(KEY_LINE);
-    if (match === null) continue;
-    const [, key, value] = match;
-    if (key === undefined || value === undefined) continue;
-    if (key === 'surface' && out.surface === undefined) out.surface = value;
-    else if (key === 'kind' && out.kind === undefined) out.kind = value;
-    else if (key === 'format' && out.format === undefined) out.format = value;
+  const out: MutableKeys = {};
+  for (const raw of block.slice(writesIdx).split('\n').slice(1)) {
+    const pair = readKeyLine(raw);
+    // First entry wins: a repeated key inside one block is the author's own
+    // duplicate, and the tag reads top-down like git's own config does.
+    if (pair !== undefined && out[pair[0]] === undefined) out[pair[0]] = pair[1];
   }
   return out;
 };
@@ -104,14 +114,8 @@ const countOccurrences = (haystack: string, needle: string): number => {
   return count;
 };
 
-const validateFormat = (
-  value: string,
-  config: WritesTagConfig,
-): WritesError | null => {
-  if (
-    value.length < config.formatMinLength ||
-    value.length > config.formatMaxLength
-  ) {
+const validateFormat = (value: string, config: WritesTagConfig): WritesError | null => {
+  if (value.length < config.formatMinLength || value.length > config.formatMaxLength) {
     return {
       reason: 'bad-format',
       detail: `length out of range [${config.formatMinLength}, ${config.formatMaxLength}] (got ${value.length})`,
@@ -123,10 +127,7 @@ const validateFormat = (
   return null;
 };
 
-export const parseWritesTag = (
-  rawSource: string,
-  config: WritesTagConfig,
-): WritesResult => {
+export const parseWritesTag = (rawSource: string, config: WritesTagConfig): WritesResult => {
   const normalised = rawSource.replace(/\r\n/g, '\n');
   if (countOccurrences(normalised, '@writes') > 1) {
     return { ok: false, error: { reason: 'duplicate-writes-block' } };
@@ -140,34 +141,36 @@ export const parseWritesTag = (
   if (!block.includes('@writes')) {
     return { ok: false, error: { reason: 'no-writes-block' } };
   }
-  const { surface, kind, format } = collectKeys(block);
-  const missing: string[] = [];
-  if (surface === undefined) missing.push('surface');
-  if (kind === undefined) missing.push('kind');
-  if (format === undefined) missing.push('format');
+  return validateKeys(collectKeys(block), config);
+};
+
+const REQUIRED_KEYS = ['surface', 'kind', 'format'] as const;
+
+/** The keys the block left out, in declaration order. */
+const missingKeys = (keys: CollectedKeys): ReadonlyArray<string> =>
+  REQUIRED_KEYS.filter((key) => keys[key] === undefined);
+
+/** Every value check the three keys carry, once all three are present. */
+const validateValues = (
+  surface: string,
+  kind: string,
+  format: string,
+  config: WritesTagConfig,
+): WritesError | null => {
+  if (!config.surfaceRegex.test(surface)) return { reason: 'bad-surface', detail: surface };
+  if (!KIND_SET.has(kind)) return { reason: 'bad-kind', detail: kind };
+  return validateFormat(format, config);
+};
+
+const validateKeys = (keys: CollectedKeys, config: WritesTagConfig): WritesResult => {
+  const missing = missingKeys(keys);
   if (missing.length > 0) {
-    return {
-      ok: false,
-      error: { reason: 'missing-key', detail: missing.join(', ') },
-    };
+    return { ok: false, error: { reason: 'missing-key', detail: missing.join(', ') } };
   }
-  const surfaceValue = surface as string;
-  const kindValue = kind as string;
-  const formatValue = format as string;
-  if (!config.surfaceRegex.test(surfaceValue)) {
-    return { ok: false, error: { reason: 'bad-surface', detail: surfaceValue } };
-  }
-  if (!KIND_SET.has(kindValue)) {
-    return { ok: false, error: { reason: 'bad-kind', detail: kindValue } };
-  }
-  const formatError = validateFormat(formatValue, config);
-  if (formatError !== null) return { ok: false, error: formatError };
-  return {
-    ok: true,
-    tag: {
-      surface: surfaceValue,
-      kind: kindValue as WriteKind,
-      format: formatValue,
-    },
-  };
+  const surface = keys.surface as string;
+  const kind = keys.kind as string;
+  const format = keys.format as string;
+  const error = validateValues(surface, kind, format, config);
+  if (error !== null) return { ok: false, error };
+  return { ok: true, tag: { surface, kind: kind as WriteKind, format } };
 };

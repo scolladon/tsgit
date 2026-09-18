@@ -46,8 +46,10 @@ export interface ComputeGapsOutput {
   readonly orphanCoverage: ReadonlyArray<Coverage>;
 }
 
-const byName = <T,>(get: (item: T) => string) =>
-  (a: T, b: T): number => get(a).localeCompare(get(b));
+const byName =
+  <T>(get: (item: T) => string) =>
+  (a: T, b: T): number =>
+    get(a).localeCompare(get(b));
 
 export const computeGaps = (input: ComputeGapsInput): ComputeGapsOutput => {
   const exemptSet = new Set(input.exempt.map((entry) => entry.surface));

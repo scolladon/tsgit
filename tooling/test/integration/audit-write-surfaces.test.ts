@@ -28,10 +28,7 @@ interface CliRun {
   readonly code: number;
 }
 
-const runScript = async (
-  root: string,
-  extraArgs: ReadonlyArray<string> = [],
-): Promise<CliRun> => {
+const runScript = async (root: string, extraArgs: ReadonlyArray<string> = []): Promise<CliRun> => {
   const outDir = path.join(root, 'out');
   try {
     const { stdout, stderr } = await execFileAsync('node', [
@@ -81,11 +78,7 @@ export const stub = 1;
   await writeFile(path.join(root, relPath), body);
 };
 
-const writeInteropTest = async (
-  root: string,
-  relPath: string,
-  surface: string,
-): Promise<void> => {
+const writeInteropTest = async (root: string, relPath: string, surface: string): Promise<void> => {
   const body = `/**
  * @proves
  *   surface:        ${surface}
