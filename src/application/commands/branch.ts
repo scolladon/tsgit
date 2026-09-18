@@ -251,6 +251,11 @@ export const branchDelete = async (
  * only runs `branch_merged` when what came back is an oid, so a branch that
  * is itself a symbolic ref is deleted unchecked however far behind its
  * target stands (measured, git 2.55.0).
+ *
+ * `check_branch_commit` peels that oid before the valve sees it, so a branch
+ * standing on an annotated tag is measured at the commit the tag names. A tip
+ * that names no commit at all never reaches the valve: git refuses on the
+ * type instead of reporting the branch unmerged (measured, git 2.55.0).
  */
 const assertFullyMerged = async (
   ctx: Context,
@@ -258,7 +263,8 @@ const assertFullyMerged = async (
   held: ResolveDirectResult,
 ): Promise<void> => {
   if (held.kind !== 'direct') return;
-  if (await branchMerged(ctx, name, held.id)) return;
+  const tipCommit = await requireCommit(ctx, held.id);
+  if (await branchMerged(ctx, name, tipCommit)) return;
   throw branchNotFullyMerged(name);
 };
 
