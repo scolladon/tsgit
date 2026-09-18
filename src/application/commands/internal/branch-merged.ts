@@ -23,12 +23,18 @@ import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { isAncestor } from './is-ancestor.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
+import { assertFetchRefspecsValid } from './remote-config.js';
 
 const HEAD_NAME = 'HEAD' as RefName;
 
 /** git's pseudo-remote for "this repository": `branch.<n>.merge` then names a
  *  local ref outright instead of one a fetch refspec has to map. */
 const LOCAL_REMOTE = '.';
+
+/** git's `^` marker for a refspec that excludes rather than maps. */
+const NEGATIVE_PREFIX = '^';
+/** git's `+` marker for a force-updating refspec. */
+const FORCE_PREFIX = '+';
 
 /** `tipCommit` is the branch tip already peeled to a commit, the way git's
  *  `check_branch_commit` peels it before consulting the valve at all. */
@@ -69,8 +75,28 @@ const upstreamRef = async (ctx: Context, name: RefName): Promise<RefName | undef
   const merge = tracking?.merge;
   const remote = tracking?.remote;
   if (merge === undefined || remote === undefined) return undefined;
+  // git reaches the remote through `remote_get`, which builds the whole remote
+  // table before answering and dies on the first unusable fetch refspec — any
+  // remote's, not only the one this branch names.
+  assertFetchRefspecsValid(config);
   if (remote === LOCAL_REMOTE) return merge as RefName;
   return firstMapping(config.remote?.get(remote)?.fetch, merge as RefName);
+};
+
+/**
+ * Whether `query_refspecs` consults `spec` for a named source at all. It skips
+ * a negative refspec and one carrying no destination outright. An EMPTY
+ * destination is not skipped there but maps to the empty ref name, which
+ * resolves to nothing; and an empty source stands for `HEAD`, which no
+ * `branch.<n>.merge` value names. Both reach the same answer by being skipped.
+ */
+const mapsNamedSource = (spec: string): boolean => {
+  if (spec.startsWith(NEGATIVE_PREFIX)) return false;
+  const body = spec.startsWith(FORCE_PREFIX) ? spec.slice(1) : spec;
+  // git splits on the LAST colon; a ref name can hold none, so the two agree
+  // on every spec `assertFetchRefspecsValid` lets through.
+  const colon = body.lastIndexOf(':');
+  return colon > 0 && colon < body.length - 1;
 };
 
 /** The first fetch refspec that maps `ref`, the way git's
@@ -80,6 +106,7 @@ const firstMapping = (
   ref: RefName,
 ): RefName | undefined => {
   for (const spec of specs ?? []) {
+    if (!mapsNamedSource(spec)) continue;
     const mapped = applyRefspec(parseRefspec(spec), ref);
     if (mapped !== undefined) return mapped;
   }
