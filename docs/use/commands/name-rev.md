@@ -17,8 +17,8 @@ repo.nameRev(rev?: string, opts?: NameRevOptions): Promise<NameRevResult>;
 
 interface NameRevOptions {
   readonly tags?: boolean;                            // restrict sources to refs/tags/*
-  readonly refs?: string | ReadonlyArray<string>;    // full-refname globs to include (*/? cross /)
-  readonly exclude?: string | ReadonlyArray<string>; // full-refname globs to drop
+  readonly refs?: string | ReadonlyArray<string>;    // full-refname wildmatch globs to include
+  readonly exclude?: string | ReadonlyArray<string>; // full-refname wildmatch globs to drop
 }
 
 type NameRevStep =
@@ -37,9 +37,20 @@ interface NameRevResult {
 
 - **All refs by default:** every ref under `refs/` (branches, remotes, tags) is a
   naming source; `HEAD` is never used. `tags: true` restricts to `refs/tags/*`;
-  `refs`/`exclude` filter by full-refname glob where `*`/`?` **cross `/`** (git's
-  `name-rev --refs`/`--exclude`; a different dialect from `describe`'s anchored
-  short-name `match`, [ADR-285](../../adr/285-name-rev-ref-glob-dialect.md)).
+  `refs`/`exclude` filter by full-refname glob (git's `name-rev --refs`/`--exclude`;
+  a different dialect from `describe`'s anchored short-name `match`,
+  [ADR-285](../../adr/285-name-rev-ref-glob-dialect.md)).
+- **Glob dialect:** git's `wildmatch(pattern, ref, 0)` — matched over UTF-8
+  bytes, anchored at both ends, case-sensitive. `*` and `?` **cross `/`**, and a
+  run of `*` is no wider than a single one. `[…]` is a POSIX bracket expression:
+  `[!…]` and `[^…]` both negate, `a-z` is an inclusive **byte** range, the twelve
+  C-locale `[:class:]` names are supported, and a `]` written first is a literal
+  member. `\` escapes exactly one byte, inside a bracket expression or outside
+  it. A pattern git's matcher aborts on — an unterminated `[`, an unknown
+  `[:class:]`, a trailing `\` — matches **nothing**; it is not a refusal.
+  `[…]` and `\` used to be matched literally and now match as git does
+  ([ADR-866](../../adr/866-reflog-expire-honours-the-gc-reflog-expire-keys.md));
+  the same dialect drives [`reflog`](reflog.md)'s `gc.<pattern>` keys.
 - **Selection:** a ref containing the commit wins over a non-tag at any distance
   (tag preference); among same-kind names the nearer wins, then the older tagger
   date breaks an equal-distance tie (git's `is_better_name`, pinned against git
@@ -96,6 +107,6 @@ await repo.describe(commitOid, { contains: true });      // the nearest containi
 
 - Primitives: [`readObject`](../primitives/read-object.md), [`resolveRef`](../primitives/resolve-ref.md)
 - Related commands: [`describe`](describe.md), [`tag`](tag.md), [`log`](log.md)
-- ADRs: [283](../../adr/283-name-rev-structured-path.md), [284](../../adr/284-describe-contains-delegation.md), [285](../../adr/285-name-rev-ref-glob-dialect.md), [461](../../adr/461-name-rev-cutoff-pure-domain-helpers.md), [462](../../adr/462-name-rev-cutoff-target-date-upfront-read.md), [463](../../adr/463-name-rev-cutoff-underflow-guard-transcription.md), [464](../../adr/464-name-rev-bench-and-read-count-pin.md)
+- ADRs: [283](../../adr/283-name-rev-structured-path.md), [284](../../adr/284-describe-contains-delegation.md), [285](../../adr/285-name-rev-ref-glob-dialect.md), [461](../../adr/461-name-rev-cutoff-pure-domain-helpers.md), [462](../../adr/462-name-rev-cutoff-target-date-upfront-read.md), [463](../../adr/463-name-rev-cutoff-underflow-guard-transcription.md), [464](../../adr/464-name-rev-bench-and-read-count-pin.md), [866](../../adr/866-reflog-expire-honours-the-gc-reflog-expire-keys.md)
 - Roadmap: Phase 23 — Inspection (v3)
 ```
